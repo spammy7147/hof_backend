@@ -2,6 +2,7 @@ package app.spammy.hof.account.repository
 
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.entity.HofCookieEntity
+import app.spammy.hof.account.service.HofCookieCipher
 import app.spammy.hof.common.persistence.QueryDslConfig
 import jakarta.persistence.EntityManager
 import java.time.Instant
@@ -9,6 +10,9 @@ import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
 import org.springframework.context.annotation.Import
+import org.springframework.boot.test.context.TestConfiguration
+import org.springframework.context.annotation.Bean
+import java.util.Base64
 import org.springframework.test.context.ActiveProfiles
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -17,7 +21,12 @@ import kotlin.test.assertTrue
 
 @ActiveProfiles("test")
 @DataJpaTest
-@Import(QueryDslConfig::class, AccountQueryRepository::class, CookieQueryRepository::class)
+@Import(
+    QueryDslConfig::class,
+    AccountQueryRepository::class,
+    CookieQueryRepository::class,
+    AccountQueryRepositoryTest.CookieCipherTestConfig::class,
+)
 class AccountQueryRepositoryTest {
     @Autowired
     private lateinit var accountRepository: HofAccountRepository
@@ -90,6 +99,37 @@ class AccountQueryRepositoryTest {
         assertEquals(listOf("new-auth", "new-csrf", "new-session"), found.map(HofCookieEntity::value))
         assertEquals(replacementCookies.map(HofCookieEntity::id).toSet(), found.map(HofCookieEntity::id).toSet())
         assertTrue(found.none { cookie -> cookie.id in oldCookieIds })
+    }
+
+    @Test
+    fun readsEncryptedAndLegacyCookieValuesAsPlainRequestValues() {
+        val savedAccount = accountRepository.save(account(loginId = "encrypted-cookie-user"))
+        val cipher = CookieCipherTestConfig.cipher()
+        cookieRepository.saveAll(
+            listOf(
+                cookie(savedAccount, "PHPSESSID", cipher.encrypt("secret-session")),
+                cookie(savedAccount, "NO", "legacy-value"),
+            ),
+        )
+        cookieRepository.flush()
+        entityManager.clear()
+
+        val values = cookieQueryRepository.findValueMapByAccountId(savedAccount.id)
+
+        assertEquals(mapOf("NO" to "legacy-value", "PHPSESSID" to "secret-session"), values)
+    }
+
+    @TestConfiguration
+    class CookieCipherTestConfig {
+        @Bean
+        fun hofCookieCipher(): HofCookieCipher = cipher()
+
+        companion object {
+            fun cipher(): HofCookieCipher =
+                HofCookieCipher(
+                    Base64.getEncoder().encodeToString(ByteArray(32) { index -> (index + 41).toByte() }),
+                )
+        }
     }
 
     private fun account(loginId: String): HofAccountEntity =

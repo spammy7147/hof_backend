@@ -151,6 +151,7 @@ class RefreshTokenServiceTest {
     private fun properties() = AuthProperties(
         jwtSecret = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
         credentialEncryptionKey = "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=",
+        cookieEncryptionKey = "KSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj9AQUJDREVGR0g=",
         refreshTokenTtl = Duration.ofDays(30),
         refreshReuseGrace = Duration.ofSeconds(10),
     )

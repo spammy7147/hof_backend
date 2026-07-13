@@ -25,9 +25,16 @@ import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPat
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 import tools.jackson.databind.ObjectMapper
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 @ActiveProfiles("test")
-@SpringBootTest
+@SpringBootTest(
+    properties = [
+        "hof.auth.login-rate-limit-per-id=2",
+        "hof.auth.login-rate-limit-per-ip=1000",
+        "hof.auth.refresh-rate-limit-per-ip=1000",
+    ],
+)
 @AutoConfigureMockMvc
 class AuthApiSecurityTest(
     @Autowired private val mockMvc: MockMvc,
@@ -48,6 +55,7 @@ class AuthApiSecurityTest(
             .andExpect(jsonPath("$.refreshTokenExpiresAt").isString)
             .andExpect(jsonPath("$.accountId").doesNotExist())
             .andExpect(cookie().doesNotExist("hof_refresh_token"))
+            .andExpect(header().string("Cache-Control", "no-store"))
     }
 
     @Test
@@ -63,6 +71,7 @@ class AuthApiSecurityTest(
             .andExpect(cookie().httpOnly("hof_refresh_token", true))
             .andExpect(cookie().path("hof_refresh_token", "/api/auth"))
             .andExpect(header().string("Set-Cookie", containsString("SameSite=Strict")))
+            .andExpect(header().string("Cache-Control", "no-store"))
     }
 
     @Test
@@ -86,6 +95,7 @@ class AuthApiSecurityTest(
             .andExpect(status().isOk)
             .andExpect(jsonPath("$.accessToken").isString)
             .andExpect(jsonPath("$.refreshToken").isString)
+            .andExpect(header().string("Cache-Control", "no-store"))
             .andReturn()
         val secondRefresh = objectMapper
             .readValue(refresh.response.contentAsString, TokenResponse::class.java)
@@ -95,7 +105,9 @@ class AuthApiSecurityTest(
             post("/api/auth/logout")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("""{"refreshToken":"$secondRefresh"}"""),
-        ).andExpect(status().isNoContent)
+        )
+            .andExpect(status().isNoContent)
+            .andExpect(header().string("Cache-Control", "no-store"))
 
         mockMvc.perform(
             post("/api/auth/refresh")
@@ -104,6 +116,7 @@ class AuthApiSecurityTest(
         )
             .andExpect(status().isUnauthorized)
             .andExpect(jsonPath("$.code").value("AUTH_TOKEN_INVALID"))
+            .andExpect(header().string("Cache-Control", "no-store"))
     }
 
     @Test
@@ -116,6 +129,12 @@ class AuthApiSecurityTest(
     }
 
     @Test
+    fun unspecifiedAuthSubpathsAreNotImplicitlyPublic() {
+        mockMvc.perform(get("/api/auth/internal"))
+            .andExpect(status().isUnauthorized)
+    }
+
+    @Test
     fun apiAllowsCredentialedCorsPreflightForExpoWeb() {
         mockMvc.perform(
             options("/api/auth/login")
@@ -125,6 +144,32 @@ class AuthApiSecurityTest(
             .andExpect(status().isOk)
             .andExpect(header().string("Access-Control-Allow-Origin", "http://localhost:8081"))
             .andExpect(header().string("Access-Control-Allow-Credentials", "true"))
+    }
+
+    @Test
+    fun rateLimitedResponsesExposeRetryAfterWithoutSensitiveDetails() {
+        repeat(2) { index ->
+            mockMvc.perform(
+                post("/api/auth/login")
+                    .with { request -> request.remoteAddr = "198.51.100.77"; request }
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"loginId":"limited-user","password":"wrong-$index","clientType":"NATIVE"}"""),
+            )
+        }
+
+        mockMvc.perform(
+            post("/api/auth/login")
+                .with { request -> request.remoteAddr = "198.51.100.77"; request }
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""{"loginId":"limited-user","password":"wrong-final","clientType":"NATIVE"}"""),
+            )
+            .andExpect(status().isTooManyRequests)
+            .andExpect { result ->
+                val retryAfter = requireNotNull(result.response.getHeader("Retry-After")).toLong()
+                assertTrue(retryAfter in 1L..60L)
+            }
+            .andExpect(jsonPath("$.code").value("RATE_LIMITED"))
+            .andExpect(header().string("Cache-Control", "no-store"))
     }
 
     @TestConfiguration

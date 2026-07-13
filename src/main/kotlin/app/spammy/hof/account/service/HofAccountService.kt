@@ -28,6 +28,7 @@ class HofAccountService(
     private val accountQueryRepository: AccountQueryRepository,
     private val cookieQueryRepository: CookieQueryRepository,
     private val credentialCipher: CredentialCipher,
+    private val cookieCipher: HofCookieCipher,
     private val requestFactory: HofRequestFactory,
     private val gateway: HofGateway,
     private val loginStateParser: LoginStateParser,
@@ -60,6 +61,13 @@ class HofAccountService(
             )
 
         return loginAccount(accountRepository.save(account))
+    }
+
+    @Transactional
+    fun reauthenticate(accountId: Long): HofAccountEntity {
+        val account = accountQueryRepository.findById(accountId)
+            ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
+        return loginAccount(account)
     }
 
     /**
@@ -108,7 +116,7 @@ class HofAccountService(
                 HofCookieEntity(
                     account = account,
                     name = name,
-                    value = value,
+                    value = cookieCipher.encrypt(value),
                     domain = "sic.zerosic.com",
                     path = "/ZeroHOF",
                     updatedAt = now,

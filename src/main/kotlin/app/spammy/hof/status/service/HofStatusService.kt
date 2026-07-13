@@ -35,7 +35,7 @@ class HofStatusService(
     fun fetch(accountId: Long): HofStatusResponse {
         val account = accountQueryRepository.findById(accountId)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
-        val cookies = cookieQueryRepository.findByAccountId(account.id).toCookieMap()
+        val cookies = cookieQueryRepository.findValueMapByAccountId(account.id)
         if (cookies.isEmpty()) {
             log.warn("HOF status rejected accountId={} reason=no-cookies", account.id)
             throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "저장된 HOF 로그인 쿠키가 없습니다.")
@@ -68,9 +68,4 @@ class HofStatusService(
         )
     }
 
-    /**
-     * DB 쿠키 Entity 목록을 HOF HTTP client가 쓰는 name/value Map으로 바꾼다.
-     */
-    private fun List<HofCookieEntity>.toCookieMap(): Map<String, String> =
-        associate { cookie -> cookie.name to cookie.value }
 }

@@ -11,7 +11,9 @@ object LogSanitizer {
         "x-api-key",
     )
     private val sensitiveJsonFieldPattern =
-        Regex("""("(?i:password|pass|encryptedPassword|cookie|token|authorization)"\s*:\s*")([^"]*)(")""")
+        Regex(
+            """("(?i:password|pass|encryptedPassword|cookie|cookieValue|token|accessToken|refreshToken|authorization)"\s*:\s*")([^"]*)(")""",
+        )
 
     /**
      * JSON body 안의 민감 필드를 `***`로 바꾼다.

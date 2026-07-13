@@ -7,6 +7,7 @@ import org.springframework.security.config.annotation.web.builders.HttpSecurity
 import org.springframework.security.config.http.SessionCreationPolicy
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity
 import org.springframework.security.web.SecurityFilterChain
+import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter
 import org.springframework.http.HttpMethod
 import org.springframework.web.cors.CorsConfiguration
 import org.springframework.web.cors.CorsConfigurationSource
@@ -25,7 +26,7 @@ class SecurityConfig(
      * 인증 API와 health check만 공개하고 나머지 요청은 유효한 Bearer JWT를 요구한다.
      */
     @Bean
-    fun securityFilterChain(http: HttpSecurity): SecurityFilterChain =
+    fun securityFilterChain(http: HttpSecurity): SecurityFilterChain {
         http
             .sessionManagement { sessions -> sessions.sessionCreationPolicy(SessionCreationPolicy.STATELESS) }
             .cors { }
@@ -33,7 +34,13 @@ class SecurityConfig(
             .authorizeHttpRequests { requests ->
                 requests
                     .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
-                    .requestMatchers("/api/auth/**", "/actuator/health", "/error").permitAll()
+                    .requestMatchers(
+                        HttpMethod.POST,
+                        "/api/auth/login",
+                        "/api/auth/refresh",
+                        "/api/auth/logout",
+                    ).permitAll()
+                    .requestMatchers("/actuator/health", "/error").permitAll()
                     .anyRequest().authenticated()
             }
             .oauth2ResourceServer { resourceServer ->
@@ -44,7 +51,10 @@ class SecurityConfig(
             .httpBasic { basic -> basic.disable() }
             .formLogin { form -> form.disable() }
             .logout { logout -> logout.disable() }
-            .build()
+            .addFilterBefore(HttpsEnforcementFilter(properties), BearerTokenAuthenticationFilter::class.java)
+
+        return http.build()
+    }
 
     /**
      * Expo web/native 개발 환경에서 백엔드 API를 호출할 수 있게 CORS를 허용한다.

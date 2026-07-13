@@ -60,7 +60,7 @@ class CharacterSyncJobService(
     fun startSyncJob(accountId: Long): CharacterSyncJobResponse {
         val account = accountQueryRepository.findById(accountId)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
-        val cookies = cookieQueryRepository.findByAccountId(accountId).toCookieMap()
+        val cookies = cookieQueryRepository.findValueMapByAccountId(accountId)
         if (cookies.isEmpty()) {
             throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "저장된 HOF 로그인 쿠키가 없습니다.")
         }
@@ -149,7 +149,7 @@ class CharacterSyncJobService(
         val accountId = job.account.id
         val account = accountQueryRepository.findById(accountId)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
-        val cookies = cookieQueryRepository.findByAccountId(accountId).toCookieMap()
+        val cookies = cookieQueryRepository.findValueMapByAccountId(accountId)
         if (cookies.isEmpty()) {
             throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "저장된 HOF 로그인 쿠키가 없습니다.")
         }
@@ -291,8 +291,6 @@ class CharacterSyncJobService(
         syncJobQueryRepository.findByAccountIdAndId(accountId, jobId)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "캐릭터 동기화 작업을 찾지 못했습니다.")
 
-    private fun List<HofCookieEntity>.toCookieMap(): Map<String, String> =
-        associate { cookie -> cookie.name to cookie.value }
 
     private fun CharacterSyncJobEntity.toResponse(
         characters: List<CharacterResponse>,

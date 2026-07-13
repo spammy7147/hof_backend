@@ -71,4 +71,5 @@ class HofBinaryHttpClientTest {
         sendResponseHeaders(statusCode, body.size.toLong())
         responseBody.use { output -> output.write(body) }
     }
+
 }

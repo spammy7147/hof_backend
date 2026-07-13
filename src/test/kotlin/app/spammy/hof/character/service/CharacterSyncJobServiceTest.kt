@@ -1,7 +1,6 @@
 package app.spammy.hof.character.service
 
 import app.spammy.hof.account.entity.HofAccountEntity
-import app.spammy.hof.account.entity.HofCookieEntity
 import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.CookieQueryRepository
 import app.spammy.hof.character.dto.CharacterPatternSlotResponse
@@ -160,16 +159,8 @@ class CharacterSyncJobServiceTest {
             null
         }.`when`(eventService).publish(anySyncEvent())
         Mockito.`when`(accountQueryRepository.findById(1L)).thenReturn(account)
-        Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(
-            listOf(
-                HofCookieEntity(
-                    account = account,
-                    name = "PHPSESSID",
-                    value = "abc",
-                    updatedAt = now,
-                ),
-            ),
-        )
+        Mockito.`when`(cookieQueryRepository.findValueMapByAccountId(1L))
+            .thenReturn(mapOf("PHPSESSID" to "abc"))
         Mockito.`when`(syncJobRepository.save(anySyncJob()))
             .thenAnswer { invocation ->
                 val job = invocation.arguments[0] as CharacterSyncJobEntity

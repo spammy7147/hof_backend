@@ -47,6 +47,23 @@ class HofRequestFactory {
         url = "$HOF_BASE_URL?$pageQuery",
     )
 
+    fun questPage(): HofRequest = HofRequest(
+        method = HofHttpMethod.GET,
+        url = "$HOF_BASE_URL?menu=quest",
+    )
+
+    fun questAction(
+        action: String,
+        actionNo: String,
+    ): HofRequest {
+        require(action in setOf("get", "complete")) { "Unsupported quest action: $action" }
+        return HofRequest(
+            method = HofHttpMethod.GET,
+            url = "$HOF_BASE_URL?menu=quest",
+            formFields = mapOf("action" to action, "no" to actionNo),
+        )
+    }
+
     /**
      * 캐릭터 저장 패턴 슬롯을 원본 세션에 로드하는 form 요청을 만든다.
      */

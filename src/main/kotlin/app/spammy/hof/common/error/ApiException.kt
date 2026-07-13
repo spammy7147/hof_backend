@@ -9,4 +9,5 @@ class ApiException(
     val errorCode: ErrorCode,
     override val message: String,
     override val cause: Throwable? = null,
+    val retryAfterSeconds: Long? = null,
 ) : RuntimeException(message, cause)

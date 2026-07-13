@@ -5,6 +5,7 @@ import app.spammy.hof.account.entity.HofCookieEntity
 import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.CookieQueryRepository
 import app.spammy.hof.account.repository.HofCookieRepository
+import app.spammy.hof.account.service.HofCookieCipher
 import app.spammy.hof.battle.dto.BattlePatternLoadRequest
 import app.spammy.hof.battle.dto.RunBattleRequest
 import app.spammy.hof.battle.entity.AccountBattleMapStateEntity
@@ -44,6 +45,7 @@ import app.spammy.hof.external.parser.LoginStateParser
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito
 import java.time.Instant
+import java.util.Base64
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
@@ -92,6 +94,9 @@ class BattleRunServiceTest {
         captchaQueryRepository = captchaQueryRepository,
         cookieRepository = cookieRepository,
         cookieQueryRepository = cookieQueryRepository,
+        cookieCipher = HofCookieCipher(
+            Base64.getEncoder().encodeToString(ByteArray(32) { index -> (index + 41).toByte() }),
+        ),
         gateway = gateway,
         challengeParser = CaptchaChallengeParser(),
         imageManager = CaptchaImageManager(binaryGateway, captchaImageFileStore),
@@ -181,16 +186,8 @@ class BattleRunServiceTest {
     @Test
     fun runBattleLoadsRequestedPatternThenPostsBattleAndParsesResult() {
         Mockito.`when`(accountQueryRepository.findById(1L)).thenReturn(account)
-        Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(
-            listOf(
-                HofCookieEntity(
-                    account = account,
-                    name = "PHPSESSID",
-                    value = "abc",
-                    updatedAt = now,
-                ),
-            ),
-        )
+        Mockito.`when`(cookieQueryRepository.findValueMapByAccountId(1L))
+            .thenReturn(mapOf("PHPSESSID" to "abc"))
         Mockito.`when`(
             characterQueryRepository.findByAccountIdAndHofCharacterIds(
                 1L,
@@ -243,16 +240,8 @@ class BattleRunServiceTest {
     @Test
     fun runBattleReturnsAndRecordsEveryRoundFromThreeBattleResponse() {
         Mockito.`when`(accountQueryRepository.findById(1L)).thenReturn(account)
-        Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(
-            listOf(
-                HofCookieEntity(
-                    account = account,
-                    name = "PHPSESSID",
-                    value = "abc",
-                    updatedAt = now,
-                ),
-            ),
-        )
+        Mockito.`when`(cookieQueryRepository.findValueMapByAccountId(1L))
+            .thenReturn(mapOf("PHPSESSID" to "abc"))
         Mockito.`when`(
             characterQueryRepository.findByAccountIdAndHofCharacterIds(
                 1L,
@@ -282,6 +271,8 @@ class BattleRunServiceTest {
     @Test
     fun runBattleStopsAndDoesNotRecordLogWhenVigilanteCaptchaAppears() {
         Mockito.`when`(accountQueryRepository.findById(1L)).thenReturn(account)
+        Mockito.`when`(cookieQueryRepository.findValueMapByAccountId(1L))
+            .thenReturn(mapOf("PHPSESSID" to "abc"))
         Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(
             listOf(
                 HofCookieEntity(

@@ -8,6 +8,7 @@ import org.slf4j.MDC
 import org.springframework.core.Ordered
 import org.springframework.core.annotation.Order
 import org.springframework.http.MediaType
+import org.springframework.http.HttpHeaders
 import org.springframework.stereotype.Component
 import org.springframework.web.filter.OncePerRequestFilter
 import org.springframework.web.util.ContentCachingRequestWrapper
@@ -68,6 +69,9 @@ class HttpExchangeLoggingFilter : OncePerRequestFilter() {
             )
             throw error
         } finally {
+            if (request.isAuthenticationRequest()) {
+                cachedResponse.setHeader(HttpHeaders.CACHE_CONTROL, "no-store")
+            }
             log.info(
                 "HTTP OUT requestId={} method={} uri={} status={} durationMs={} requestBody={} responseBody={}",
                 requestId,
@@ -76,7 +80,7 @@ class HttpExchangeLoggingFilter : OncePerRequestFilter() {
                 cachedResponse.status,
                 elapsedMs(startedAt),
                 requestBody(cachedRequest),
-                responseBody(cachedResponse),
+                responseBody(cachedRequest, cachedResponse),
             )
             cachedResponse.copyBodyToResponse()
             MDC.remove("requestId")
@@ -107,13 +111,24 @@ class HttpExchangeLoggingFilter : OncePerRequestFilter() {
      * 요청 body bytes를 문자열로 디코딩하고 민감한 값을 마스킹한다.
      */
     private fun requestBody(request: ContentCachingRequestWrapper): String =
-        decodeAndSanitize(request.contentAsByteArray, request.characterEncoding)
+        if (request.isAuthenticationRequest()) {
+            REDACTED_BODY
+        } else {
+            decodeAndSanitize(request.contentAsByteArray, request.characterEncoding)
+        }
 
     /**
      * 응답 body bytes를 문자열로 디코딩하고 민감한 값을 마스킹한다.
      */
-    private fun responseBody(response: ContentCachingResponseWrapper): String =
-        decodeAndSanitize(response.contentAsByteArray, response.characterEncoding)
+    private fun responseBody(
+        request: HttpServletRequest,
+        response: ContentCachingResponseWrapper,
+    ): String =
+        if (request.isAuthenticationRequest()) {
+            REDACTED_BODY
+        } else {
+            decodeAndSanitize(response.contentAsByteArray, response.characterEncoding)
+        }
 
     /**
      * bytes를 문자셋 기준으로 문자열화하고 긴 body는 preview로 줄인다.
@@ -144,7 +159,13 @@ class HttpExchangeLoggingFilter : OncePerRequestFilter() {
         return requestURI.endsWith("/events") || accept.contains(MediaType.TEXT_EVENT_STREAM_VALUE)
     }
 
+    /** 로그인·갱신·로그아웃 payload는 필드 추가 여부와 무관하게 로그에서 완전히 제외한다. */
+    private fun HttpServletRequest.isAuthenticationRequest(): Boolean =
+        requestURI == AUTH_API_PREFIX || requestURI.startsWith("$AUTH_API_PREFIX/")
+
     private companion object {
+        const val AUTH_API_PREFIX = "/api/auth"
+        const val REDACTED_BODY = "<redacted>"
         const val REQUEST_CACHE_LIMIT = 16 * 1024
     }
 }

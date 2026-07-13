@@ -44,7 +44,7 @@ class CharacterPatternService(
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
         characterQueryRepository.findByAccountIdAndHofCharacterId(account.id, hofCharacterId)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "캐릭터를 찾지 못했습니다.")
-        val cookies = cookieQueryRepository.findByAccountId(account.id).toCookieMap()
+        val cookies = cookieQueryRepository.findValueMapByAccountId(account.id)
         if (cookies.isEmpty()) {
             log.warn(
                 "Character pattern load rejected accountId={} characterId={} slot={} reason=no-cookies",
@@ -97,6 +97,4 @@ class CharacterPatternService(
     /**
      * DB 쿠키 Entity 목록을 HOF HTTP client가 쓰는 Map으로 바꾼다.
      */
-    private fun List<HofCookieEntity>.toCookieMap(): Map<String, String> =
-        associate { cookie -> cookie.name to cookie.value }
 }

@@ -4,6 +4,7 @@ import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.entity.HofCookieEntity
 import app.spammy.hof.account.repository.CookieQueryRepository
 import app.spammy.hof.account.repository.HofCookieRepository
+import app.spammy.hof.account.service.HofCookieCipher
 import app.spammy.hof.captcha.dto.CaptchaChallengeResponse
 import app.spammy.hof.captcha.entity.CaptchaChallengeEntity
 import app.spammy.hof.captcha.entity.CaptchaFormFieldEntity
@@ -38,10 +39,12 @@ class CaptchaService(
     private val captchaQueryRepository: CaptchaQueryRepository,
     private val cookieRepository: HofCookieRepository,
     private val cookieQueryRepository: CookieQueryRepository,
+    private val cookieCipher: HofCookieCipher,
     private val gateway: HofGateway,
     private val challengeParser: CaptchaChallengeParser,
     private val imageManager: CaptchaImageManager,
     private val timeProvider: TimeProvider,
+    private val automationHook: CaptchaAutomationHook? = null,
 ) {
     /**
      * HOF 응답 HTML에서 캡차/자경단 통행증 신호를 찾고 pending challenge로 저장한다.
@@ -123,6 +126,8 @@ class CaptchaService(
             )
         }
 
+        automationHook?.detected(savedChallenge)
+
         return savedChallenge.toResponse()
     }
 
@@ -171,7 +176,7 @@ class CaptchaService(
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "캡차 이미지를 찾지 못했습니다.")
 
         val storedCookies = cookieQueryRepository.findByAccountId(accountId)
-        val cookies = storedCookies.associate { cookie -> cookie.name to cookie.value }
+        val cookies = storedCookies.associate { cookie -> cookie.name to cookieCipher.decrypt(cookie.value) }
         return imageManager.downloadRequired(imageUrl, cookies)
     }
 
@@ -206,7 +211,7 @@ class CaptchaService(
         }
 
         val storedCookies = cookieQueryRepository.findByAccountId(accountId)
-        val cookies = storedCookies.associate { cookie -> cookie.name to cookie.value }
+        val cookies = storedCookies.associate { cookie -> cookie.name to cookieCipher.decrypt(cookie.value) }
         if (cookies.isEmpty()) {
             throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "저장된 HOF 로그인 쿠키가 없습니다.")
         }
@@ -259,6 +264,7 @@ class CaptchaService(
         challenge.answer = normalizedAnswer
         challenge.answeredAt = timeProvider.now()
         imageManager.deleteAfterCommit(challenge.account.id, challenge.id)
+        automationHook?.answered(challenge)
 
         return challenge.toResponse()
     }
@@ -303,7 +309,7 @@ class CaptchaService(
         prompt: String,
     ): CaptchaChallengeMetadata? {
         val storedCookies = cookieQueryRepository.findByAccountId(account.id)
-        val cookies = storedCookies.associate { cookie -> cookie.name to cookie.value }
+        val cookies = storedCookies.associate { cookie -> cookie.name to cookieCipher.decrypt(cookie.value) }
         if (cookies.isEmpty()) {
             return null
         }
@@ -372,7 +378,7 @@ class CaptchaService(
         storedCookies: List<HofCookieEntity>,
         setCookies: Map<String, String>,
     ): Map<String, String> {
-        val currentCookies = storedCookies.associate { cookie -> cookie.name to cookie.value }
+        val currentCookies = storedCookies.associate { cookie -> cookie.name to cookieCipher.decrypt(cookie.value) }
         if (setCookies.isEmpty()) {
             return currentCookies
         }
@@ -382,14 +388,14 @@ class CaptchaService(
         setCookies.forEach { (name, value) ->
             val existingCookie = cookiesByName[name]
             if (existingCookie != null) {
-                existingCookie.value = value
+                existingCookie.value = cookieCipher.encrypt(value)
                 existingCookie.updatedAt = now
             } else {
                 cookieRepository.save(
                     HofCookieEntity(
                         account = account,
                         name = name,
-                        value = value,
+                        value = cookieCipher.encrypt(value),
                         domain = "sic.zerosic.com",
                         path = "/ZeroHOF",
                         updatedAt = now,
@@ -490,9 +496,7 @@ class CaptchaService(
      * 계정에 저장된 HOF 쿠키를 name/value Map으로 읽는다.
      */
     private fun findCookieMap(accountId: Long): Map<String, String> =
-        cookieQueryRepository.findByAccountId(accountId)
-            .orEmpty()
-            .associate { cookie -> cookie.name to cookie.value }
+        cookieQueryRepository.findValueMapByAccountId(accountId)
 
     /**
      * 저장해 둔 원본 form field에 사용자의 답안 값을 채워 제출용 field Map을 만든다.
