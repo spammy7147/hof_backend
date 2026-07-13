@@ -44,7 +44,7 @@ class BattleMapService(
 
         val account = accountQueryRepository.findById(accountId)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
-        val cookies = cookieQueryRepository.findByAccountId(account.id).toCookieMap()
+        val cookies = cookieQueryRepository.findValueMapByAccountId(account.id)
         if (cookies.isEmpty()) {
             log.warn("Battle map list rejected accountId={} categoryId={} reason=no-cookies", account.id, categoryId)
             throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "저장된 HOF 로그인 쿠키가 없습니다.")
@@ -109,12 +109,6 @@ class BattleMapService(
             )
             BattleCategoryId.RAID -> BattleMapSource(pageQuery = "raid_hunt", mapQuery = "raid_common")
         }
-
-    /**
-     * DB 쿠키 Entity 목록을 HOF HTTP client가 쓰는 Map으로 바꾼다.
-     */
-    private fun List<HofCookieEntity>.toCookieMap(): Map<String, String> =
-        associate { cookie -> cookie.name to cookie.value }
 
     private data class BattleMapSource(
         val pageQuery: String,

@@ -1,7 +1,6 @@
 package app.spammy.hof.status.service
 
 import app.spammy.hof.account.entity.HofAccountEntity
-import app.spammy.hof.account.entity.HofCookieEntity
 import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.CookieQueryRepository
 import app.spammy.hof.common.error.ApiException
@@ -41,16 +40,8 @@ class HofStatusServiceTest {
     @Test
     fun fetchUsesStoredCookiesAndReturnsParsedStatus() {
         Mockito.`when`(accountQueryRepository.findById(1L)).thenReturn(account)
-        Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(
-            listOf(
-                HofCookieEntity(
-                    account = account,
-                    name = "PHPSESSID",
-                    value = "session-value",
-                    updatedAt = now,
-                ),
-            ),
-        )
+        Mockito.`when`(cookieQueryRepository.findValueMapByAccountId(1L))
+            .thenReturn(mapOf("PHPSESSID" to "session-value"))
 
         val response = service.fetch(1L)
 
@@ -80,7 +71,7 @@ class HofStatusServiceTest {
     @Test
     fun fetchRejectsAccountWithoutStoredCookies() {
         Mockito.`when`(accountQueryRepository.findById(1L)).thenReturn(account)
-        Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(emptyList())
+        Mockito.`when`(cookieQueryRepository.findValueMapByAccountId(1L)).thenReturn(emptyMap())
 
         val error = assertFailsWith<ApiException> { service.fetch(1L) }
 

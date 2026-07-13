@@ -20,6 +20,18 @@ class LogSanitizerTest {
     }
 
     @Test
+    fun sanitizeBodyMasksConcreteAccessAndRefreshTokenFields() {
+        val sanitized = LogSanitizer.sanitizeBody(
+            """{"accessToken":"access-secret","refreshToken":"refresh-secret"}""",
+        )
+
+        assertTrue(sanitized.contains(""""accessToken":"***""""))
+        assertTrue(sanitized.contains(""""refreshToken":"***""""))
+        assertFalse(sanitized.contains("access-secret"))
+        assertFalse(sanitized.contains("refresh-secret"))
+    }
+
+    @Test
     fun sanitizeHeaderMasksSensitiveHeaders() {
         assertEquals("Authorization=<masked>", LogSanitizer.sanitizeHeader("Authorization", "Bearer token"))
         assertEquals("Cookie=<masked>", LogSanitizer.sanitizeHeader("Cookie", "PHPSESSID=abc"))

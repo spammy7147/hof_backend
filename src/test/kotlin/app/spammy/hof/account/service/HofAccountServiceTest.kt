@@ -25,6 +25,9 @@ class HofAccountServiceTest {
     private val credentialCipher = AesGcmCredentialCipher(
         Base64.getEncoder().encodeToString(ByteArray(32) { index -> (index + 1).toByte() }),
     )
+    private val cookieCipher = HofCookieCipher(
+        Base64.getEncoder().encodeToString(ByteArray(32) { index -> (index + 41).toByte() }),
+    )
     private val accountRepository = Mockito.mock(HofAccountRepository::class.java)
     private val cookieRepository = Mockito.mock(HofCookieRepository::class.java)
     private val accountQueryRepository = Mockito.mock(AccountQueryRepository::class.java)
@@ -36,6 +39,7 @@ class HofAccountServiceTest {
         accountQueryRepository = accountQueryRepository,
         cookieQueryRepository = cookieQueryRepository,
         credentialCipher = credentialCipher,
+        cookieCipher = cookieCipher,
         requestFactory = HofRequestFactory(),
         gateway = gateway,
         loginStateParser = LoginStateParser(),
@@ -74,6 +78,10 @@ class HofAccountServiceTest {
         Mockito.verify(cookieRepository).flush()
         Mockito.verify(cookieRepository, Mockito.times(2)).save(capture(cookieCaptor, existingCookie))
         assertEquals(setOf("PHPSESSID", "NO"), cookieCaptor.allValues.map { it.name }.toSet())
+        assertEquals(
+            setOf("initial", "42"),
+            cookieCaptor.allValues.map { cookie -> cookieCipher.decrypt(cookie.value) }.toSet(),
+        )
         assertEquals(now, account.lastLoginAt)
     }
 

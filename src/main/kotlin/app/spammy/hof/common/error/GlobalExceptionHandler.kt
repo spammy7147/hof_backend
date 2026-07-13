@@ -2,6 +2,7 @@ package app.spammy.hof.common.error
 
 import app.spammy.hof.common.time.TimeProvider
 import org.springframework.http.ResponseEntity
+import org.springframework.http.HttpHeaders
 import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.RestControllerAdvice
 
@@ -18,8 +19,9 @@ class GlobalExceptionHandler(
     @ExceptionHandler(ApiException::class)
     fun handleApiException(exception: ApiException): ResponseEntity<ErrorResponse> {
         val code = exception.errorCode
-        return ResponseEntity
-            .status(code.status)
+        val builder = ResponseEntity.status(code.status)
+        exception.retryAfterSeconds?.let { seconds -> builder.header(HttpHeaders.RETRY_AFTER, seconds.toString()) }
+        return builder
             .body(
                 ErrorResponse(
                     code = code.name,

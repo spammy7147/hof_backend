@@ -12,6 +12,7 @@ class JwtTokenServiceTest {
     private val properties = AuthProperties(
         jwtSecret = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
         credentialEncryptionKey = "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=",
+        cookieEncryptionKey = "KSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj9AQUJDREVGR0g=",
         accessTokenTtl = Duration.ofMinutes(30),
         issuer = "hof-backend",
         audience = "hof-api",

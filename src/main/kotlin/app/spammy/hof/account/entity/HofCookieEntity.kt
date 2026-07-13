@@ -28,7 +28,7 @@ class HofCookieEntity(
     @Column(name = "name", nullable = false)
     var name: String,
 
-    @Column(name = "cookie_value", nullable = false)
+    @Column(name = "cookie_value", nullable = false, columnDefinition = "text")
     var value: String,
 
     @Column(name = "domain")

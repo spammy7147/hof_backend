@@ -4,6 +4,7 @@ import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.entity.HofCookieEntity
 import app.spammy.hof.account.repository.CookieQueryRepository
 import app.spammy.hof.account.repository.HofCookieRepository
+import app.spammy.hof.account.service.HofCookieCipher
 import app.spammy.hof.captcha.entity.CaptchaChallengeEntity
 import app.spammy.hof.captcha.entity.CaptchaFormFieldEntity
 import app.spammy.hof.captcha.repository.CaptchaChallengeRepository
@@ -24,6 +25,7 @@ import org.mockito.Mockito
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import java.time.Instant
+import java.util.Base64
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -46,12 +48,16 @@ class CaptchaServiceTest {
     private val gateway = FakeHofGateway()
     private val binaryGateway = FakeHofBinaryGateway()
     private val captchaImageFileStore = FakeCaptchaImageFileStore()
+    private val cookieCipher = HofCookieCipher(
+        Base64.getEncoder().encodeToString(ByteArray(32) { index -> (index + 41).toByte() }),
+    )
     private val service = CaptchaService(
         captchaChallengeRepository = repository,
         captchaFormFieldRepository = formFieldRepository,
         captchaQueryRepository = queryRepository,
         cookieRepository = cookieRepository,
         cookieQueryRepository = cookieQueryRepository,
+        cookieCipher = cookieCipher,
         gateway = gateway,
         challengeParser = CaptchaChallengeParser(),
         imageManager = CaptchaImageManager(binaryGateway, captchaImageFileStore),
@@ -273,11 +279,11 @@ class CaptchaServiceTest {
             mapOf("PHPSESSID" to "fresh-session", "_CAPTCHA" to "fresh-captcha"),
             binaryGateway.cookies.single(),
         )
-        assertEquals("fresh-session", sessionCookie.value)
+        assertEquals("fresh-session", cookieCipher.decrypt(sessionCookie.value))
         val cookieCaptor = ArgumentCaptor.forClass(HofCookieEntity::class.java)
         Mockito.verify(cookieRepository).save(capture(cookieCaptor, cookie()))
         assertEquals("_CAPTCHA", cookieCaptor.value.name)
-        assertEquals("fresh-captcha", cookieCaptor.value.value)
+        assertEquals("fresh-captcha", cookieCipher.decrypt(cookieCaptor.value.value))
         assertContentEquals(imageBytes, captchaImageFileStore.files["1:21"]?.bytes)
     }
 

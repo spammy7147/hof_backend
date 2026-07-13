@@ -28,6 +28,7 @@ class HofAccountService(
     private val accountQueryRepository: AccountQueryRepository,
     private val cookieQueryRepository: CookieQueryRepository,
     private val credentialCipher: CredentialCipher,
+    private val cookieCipher: HofCookieCipher,
     private val requestFactory: HofRequestFactory,
     private val gateway: HofGateway,
     private val loginStateParser: LoginStateParser,
@@ -115,7 +116,7 @@ class HofAccountService(
                 HofCookieEntity(
                     account = account,
                     name = name,
-                    value = value,
+                    value = cookieCipher.encrypt(value),
                     domain = "sic.zerosic.com",
                     path = "/ZeroHOF",
                     updatedAt = now,

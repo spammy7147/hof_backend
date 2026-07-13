@@ -5,6 +5,7 @@ import app.spammy.hof.account.entity.HofCookieEntity
 import app.spammy.hof.account.repository.CookieQueryRepository
 import app.spammy.hof.account.repository.HofAccountRepository
 import app.spammy.hof.account.repository.HofCookieRepository
+import app.spammy.hof.account.service.HofCookieCipher
 import app.spammy.hof.captcha.entity.CaptchaChallengeEntity
 import app.spammy.hof.captcha.repository.CaptchaChallengeRepository
 import app.spammy.hof.captcha.repository.CaptchaQueryRepository
@@ -19,6 +20,7 @@ import app.spammy.hof.external.model.HofBinaryResponse
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
 import java.time.Instant
+import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
@@ -463,6 +465,12 @@ class CaptchaServicePersistenceTest {
 
         @Bean
         fun timeProvider(): TimeProvider = TimeProvider { NOW }
+
+        @Bean
+        fun hofCookieCipher(): HofCookieCipher =
+            HofCookieCipher(
+                Base64.getEncoder().encodeToString(ByteArray(32) { index -> (index + 41).toByte() }),
+            )
     }
 
     class FakeHofGateway : HofGateway {

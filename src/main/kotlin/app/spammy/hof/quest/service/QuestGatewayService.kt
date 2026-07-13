@@ -36,7 +36,7 @@ class QuestGatewayService(
     ): List<QuestSnapshot> {
         accountQueryRepository.findById(accountId)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
-        val cookies = cookieQueryRepository.findByAccountId(accountId).toCookieMap()
+        val cookies = cookieQueryRepository.findValueMapByAccountId(accountId)
         if (cookies.isEmpty()) throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "저장된 HOF 로그인 쿠키가 없습니다.")
         val response = gateway.execute(request, cookies)
         val login = loginStateParser.parse(response.body)
@@ -46,5 +46,4 @@ class QuestGatewayService(
         return parser.parse(response.body)
     }
 
-    private fun List<HofCookieEntity>.toCookieMap(): Map<String, String> = associate { it.name to it.value }
 }

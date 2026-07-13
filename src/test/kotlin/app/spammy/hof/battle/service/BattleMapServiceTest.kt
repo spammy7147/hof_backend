@@ -6,6 +6,7 @@ import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.CookieQueryRepository
 import app.spammy.hof.account.repository.HofAccountRepository
 import app.spammy.hof.account.repository.HofCookieRepository
+import app.spammy.hof.account.service.HofCookieCipher
 import app.spammy.hof.battle.entity.BattleMapAliasEntity
 import app.spammy.hof.battle.entity.BattleMapEntity
 import app.spammy.hof.battle.entity.BattleMapGroupEntity
@@ -24,6 +25,7 @@ import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
 import app.spammy.hof.external.parser.BattleMapParser
 import java.time.Instant
+import java.util.Base64
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -350,6 +352,10 @@ class BattleMapServiceTest {
 
     @TestConfiguration
     class TestConfig {
+        @Bean
+        fun hofCookieCipher(): HofCookieCipher =
+            HofCookieCipher(Base64.getEncoder().encodeToString(ByteArray(32) { 11 }))
+
         @Bean
         fun timeProvider(): TimeProvider = TimeProvider { NOW }
 

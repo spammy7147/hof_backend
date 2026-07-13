@@ -15,4 +15,5 @@ enum class ErrorCode(val status: HttpStatus) {
     AUTH_TOKEN_INVALID(HttpStatus.UNAUTHORIZED),
     REFRESH_RETRY_REQUIRED(HttpStatus.CONFLICT),
     REFRESH_TOKEN_REUSED(HttpStatus.UNAUTHORIZED),
+    RATE_LIMITED(HttpStatus.TOO_MANY_REQUESTS),
 }

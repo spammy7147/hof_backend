@@ -5,7 +5,7 @@ import kotlin.test.assertEquals
 
 class HofCookieHeaderBuilderTest {
     @Test
-    fun buildsCookieHeaderFromNameValues() {
+    fun buildsCookieHeaderFromPlainRequestValues() {
         val header = HofCookieHeaderBuilder().build(
             mapOf(
                 "PHPSESSID" to "abc",

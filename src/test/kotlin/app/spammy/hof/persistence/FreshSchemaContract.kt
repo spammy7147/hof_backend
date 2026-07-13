@@ -184,7 +184,7 @@ internal object FreshSchemaContract {
         ),
         table(
             "hof_cookies",
-            serialId(), requiredBigint("account_id"), requiredVarchar("name"), requiredVarchar("cookie_value"),
+            serialId(), requiredBigint("account_id"), requiredVarchar("name"), requiredText("cookie_value"),
             optionalVarchar("domain"), optionalVarchar("path"), optionalInstant("expires_at"),
             requiredInstant("updated_at"),
         ),
