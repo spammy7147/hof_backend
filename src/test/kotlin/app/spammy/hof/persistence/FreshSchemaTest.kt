@@ -51,6 +51,7 @@ class FreshSchemaTest {
                 "2" to "seed battle map catalog",
                 "3" to "add token authentication",
                 "4" to "add unified automation state",
+                "5" to "add automation messaging",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -67,6 +68,7 @@ class FreshSchemaTest {
                 "V2__seed_battle_map_catalog.sql",
                 "V3__add_token_authentication.sql",
                 "V4__add_unified_automation_state.sql",
+                "V5__add_automation_messaging.sql",
             ),
             migrationNames,
         )

@@ -5,6 +5,7 @@ import app.spammy.hof.automation.entity.QAutomationJobEntity.automationJobEntity
 import app.spammy.hof.automation.entity.QAutomationProfileEntity.automationProfileEntity
 import com.querydsl.jpa.impl.JPAQueryFactory
 import org.springframework.stereotype.Repository
+import java.time.Instant
 
 /** 자동화 job의 PK·소유권·현재 활성 상태 조회를 모두 QueryDSL로 수행한다. */
 @Repository
@@ -82,6 +83,25 @@ class AutomationJobQueryRepository(
                 automationJobEntity.status.`in`(statuses),
             )
             .fetchOne() ?: 0L
+    }
+
+    fun findRecoverable(now: Instant): List<AutomationJobEntity> {
+        val runnable = baseQuery()
+            .where(
+                automationJobEntity.status.`in`("PENDING", "RUNNING"),
+                automationJobEntity.nextRunAt.isNull.or(automationJobEntity.nextRunAt.loe(now)),
+            )
+            .orderBy(automationJobEntity.id.asc())
+            .fetch()
+        val dueConfig = baseQuery()
+            .where(
+                automationJobEntity.status.eq("WAITING_CONFIG"),
+                automationJobEntity.nextRunAt.isNotNull,
+                automationJobEntity.nextRunAt.loe(now),
+            )
+            .orderBy(automationJobEntity.id.asc())
+            .fetch()
+        return (runnable + dueConfig).distinctBy { it.id }
     }
 
     private fun baseQuery() =

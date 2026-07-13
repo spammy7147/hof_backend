@@ -338,6 +338,23 @@ internal object FreshSchemaContract {
             optionalInstant("started_at"), optionalInstant("finished_at"), requiredInstant("updated_at"),
         ),
         table(
+            "automation_outbox",
+            serialId(), requiredVarchar("event_id", 80), requiredBigint("account_id"), requiredVarchar("topic", 120),
+            requiredVarchar("event_key", 80), requiredText("payload"), requiredInstant("created_at"),
+            requiredInstant("available_at"), optionalInstant("published_at"),
+        ),
+        table(
+            "automation_consumed_events",
+            requiredVarchar("event_id", 80), requiredInstant("consumed_at"),
+            primaryKey = listOf("event_id"),
+        ),
+        table(
+            "account_automation_leases",
+            requiredBigint("account_id"), requiredVarchar("owner_id", 120), requiredInstant("lease_until"),
+            requiredInstant("updated_at"),
+            primaryKey = listOf("account_id"),
+        ),
+        table(
             "battle_logs",
             serialId(), requiredBigint("account_id"), optionalBigint("battle_map_id"),
             requiredVarchar("category_id", 50), requiredVarchar("map_code", 100),
@@ -402,6 +419,7 @@ internal object FreshSchemaContract {
             "automation_module_configs", "uk_automation_module_configs_profile_module", "profile_id", "module_type",
         ),
         key("automation_action_runs", "uk_automation_action_runs_request_key", "request_key"),
+        key("automation_outbox", "uk_automation_outbox_event_id", "event_id"),
         key("battle_log_participants", "uk_battle_log_participants_log_slot", "battle_log_id", "slot_index"),
         key(
             "battle_log_loots", "uk_battle_log_loots_log_display_order", "battle_log_id", "display_order",
@@ -457,6 +475,14 @@ internal object FreshSchemaContract {
         fk(
             "fk_automation_action_runs_job", "automation_action_runs.job_id",
             "automation_jobs.id", DeleteAction.CASCADE,
+        ),
+        fk(
+            "fk_automation_outbox_account", "automation_outbox.account_id",
+            "hof_accounts.id", DeleteAction.CASCADE,
+        ),
+        fk(
+            "fk_account_automation_leases_account", "account_automation_leases.account_id",
+            "hof_accounts.id", DeleteAction.CASCADE,
         ),
         fk("fk_battle_logs_account", "battle_logs.account_id", "hof_accounts.id", DeleteAction.CASCADE),
         fk("fk_battle_logs_battle_map", "battle_logs.battle_map_id", "battle_maps.id", DeleteAction.SET_NULL),
@@ -515,6 +541,14 @@ internal object FreshSchemaContract {
         index(
             "automation_action_runs", "idx_automation_action_runs_job_status_updated",
             "job_id", "status", "updated_at", "id",
+        ),
+        index(
+            "automation_outbox", "idx_automation_outbox_unpublished",
+            "published_at", "available_at", "id",
+        ),
+        index(
+            "account_automation_leases", "idx_account_automation_leases_until",
+            "lease_until", "account_id",
         ),
         index("battle_logs", "idx_battle_logs_account_created", "account_id", "created_at", "id"),
         index("battle_logs", "idx_battle_logs_account_outcome", "account_id", "outcome", "id"),
