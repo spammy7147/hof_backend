@@ -31,6 +31,7 @@ data class TimeSettingsRequest(
 
 data class ToggleModuleRequest(
     val enabled: Boolean = true,
+    @field:Valid @field:Size(max = 100) val maps: List<ModuleMapRequest> = emptyList(),
 )
 
 data class NormalQuestSettingsRequest(

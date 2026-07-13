@@ -16,6 +16,7 @@ import app.spammy.hof.automation.repository.AutomationJobRepository
 import app.spammy.hof.automation.repository.AutomationModuleConfigRepository
 import app.spammy.hof.automation.repository.AutomationProfileRepository
 import app.spammy.hof.automation.repository.UnifiedAutomationQueryRepository
+import app.spammy.hof.automation.port.AutomationWakeupPort
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
@@ -33,6 +34,7 @@ class UnifiedAutomationService(
     private val queryRepository: UnifiedAutomationQueryRepository,
     private val objectMapper: ObjectMapper,
     private val timeProvider: TimeProvider,
+    private val wakeupPort: AutomationWakeupPort,
 ) {
     @Transactional
     fun get(accountId: Long): UnifiedAutomationStatusResponse {
@@ -55,7 +57,14 @@ class UnifiedAutomationService(
         val now = timeProvider.now()
         moduleConfigRepository.saveAll(request.toConfigs(profile, now))
         profile.updatedAt = now
-        return buildStatus(profile, queryRepository.findCurrentJob(accountId), request)
+        val current = queryRepository.findCurrentJob(accountId)
+        if (current?.status == "WAITING_CONFIG") {
+            current.status = "RUNNING"
+            current.message = "설정 반영 후 재개 대기"
+            current.nextRunAt = now
+        }
+        if (current?.status == "RUNNING") wakeupPort.wake(accountId, "SETTINGS_UPDATED")
+        return buildStatus(profile, current, request)
     }
 
     @Transactional
@@ -63,11 +72,12 @@ class UnifiedAutomationService(
         val profile = findOrCreateProfile(accountId)
         val current = queryRepository.findCurrentJob(accountId)
         val job = current ?: newRunningJob(profile, timeProvider.now())
-        if (job.status == "PAUSED") {
+        if (job.status in setOf("PAUSED", "WAITING_CONFIG", "WAITING_LOGIN")) {
             job.status = "RUNNING"
             job.finishedAt = null
             job.updatedAt = timeProvider.now()
         }
+        if (job.status == "RUNNING") wakeupPort.wake(accountId, "USER_START")
         buildStatus(profile, job, readSettings(profile.id))
     }
 
@@ -77,7 +87,9 @@ class UnifiedAutomationService(
 
     @Transactional
     fun resume(accountId: Long): UnifiedAutomationStatusResponse =
-        transition(accountId, setOf("PAUSED"), "RUNNING", finished = false)
+        transition(accountId, setOf("PAUSED"), "RUNNING", finished = false).also {
+            wakeupPort.wake(accountId, "USER_RESUME")
+        }
 
     @Transactional
     fun stop(accountId: Long): UnifiedAutomationStatusResponse =

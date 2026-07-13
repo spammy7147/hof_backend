@@ -8,6 +8,7 @@ data class KeyQuestMapCandidate(
     val keyCount: Int?,
     val executionOrder: Int,
     val partyPresetId: Long? = null,
+    val categoryId: String = "battle_map",
 )
 
 @Component

@@ -18,6 +18,7 @@ data class AutomationMapCandidate(
     val mapName: String,
     val executionOrder: Int,
     val partyPresetId: Long? = null,
+    val categoryId: String = "battle_map",
 )
 
 data class UnionCandidate(
@@ -44,6 +45,7 @@ data class AutomationDecision(
     val type: AutomationDecisionType,
     val moduleType: AutomationModuleType?,
     val questId: String? = null,
+    val actionNo: String? = null,
     val map: AutomationMapCandidate? = null,
     val keyQuestBattle: QuestDecision.Battle? = null,
     val unionTarget: UnionCandidate? = null,
@@ -59,10 +61,16 @@ class AutomationDecisionPolicy {
                 AutomationDecisionType.CLAIM_QUEST,
                 moduleForQuest(quest.questId),
                 questId = quest.questId,
+                actionNo = quest.actionNo,
             )
         }
         snapshot.acceptablePriorityQuest?.let { quest ->
-            return AutomationDecision(AutomationDecisionType.ACCEPT_QUEST, AutomationModuleType.KEY_QUEST, questId = quest.questId)
+            return AutomationDecision(
+                AutomationDecisionType.ACCEPT_QUEST,
+                AutomationModuleType.KEY_QUEST,
+                questId = quest.questId,
+                actionNo = quest.actionNo,
+            )
         }
         snapshot.priorityQuestDecision?.let { return it.toAutomationDecision(AutomationModuleType.KEY_QUEST) }
         if (isTimeOverflow(snapshot) && snapshot.timeMap != null) {
@@ -93,13 +101,23 @@ class AutomationDecisionPolicy {
         snapshot.timeMax > 0 && snapshot.timeCurrent.toLong() * 100 > snapshot.timeMax.toLong() * snapshot.timeThresholdPercent
 
     private fun QuestDecision.toAutomationDecision(module: AutomationModuleType): AutomationDecision = when (this) {
-        is QuestDecision.Accept -> AutomationDecision(AutomationDecisionType.ACCEPT_QUEST, module, questId = questId)
-        is QuestDecision.Claim -> AutomationDecision(AutomationDecisionType.CLAIM_QUEST, module, questId = questId)
+        is QuestDecision.Accept -> AutomationDecision(
+            AutomationDecisionType.ACCEPT_QUEST,
+            module,
+            questId = questId,
+            actionNo = actionNo,
+        )
+        is QuestDecision.Claim -> AutomationDecision(
+            AutomationDecisionType.CLAIM_QUEST,
+            module,
+            questId = questId,
+            actionNo = actionNo,
+        )
         is QuestDecision.Battle -> AutomationDecision(
             AutomationDecisionType.RUN_BATTLE,
             module,
             questId = questId,
-            map = AutomationMapCandidate(map.mapCode, map.mapName, map.executionOrder, map.partyPresetId),
+            map = AutomationMapCandidate(map.mapCode, map.mapName, map.executionOrder, map.partyPresetId, map.categoryId),
             keyQuestBattle = this,
         )
         is QuestDecision.WaitingConfig -> AutomationDecision(

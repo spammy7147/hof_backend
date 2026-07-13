@@ -23,6 +23,19 @@ class AutomationJobQueryRepository(
             )
             .fetchOne()
 
+    fun findCurrentByAccountIdAndStatusesForJobId(
+        jobId: Long,
+        statuses: Collection<String>,
+    ): AutomationJobEntity? {
+        if (statuses.isEmpty()) return null
+        return baseQuery()
+            .where(
+                automationJobEntity.id.eq(jobId),
+                automationJobEntity.status.`in`(statuses),
+            )
+            .fetchOne()
+    }
+
     /**
      * 지정한 활성 상태 중 가장 최근에 변경된 job을 반환한다.
      *
