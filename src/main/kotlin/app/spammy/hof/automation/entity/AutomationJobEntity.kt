@@ -10,6 +10,7 @@ import jakarta.persistence.Id
 import jakarta.persistence.JoinColumn
 import jakarta.persistence.ManyToOne
 import jakarta.persistence.Table
+import jakarta.persistence.Version
 import java.time.Instant
 
 /**
@@ -53,4 +54,20 @@ class AutomationJobEntity(
 
     @Column(name = "finished_at")
     var finishedAt: Instant?,
+
+    @Column(name = "current_module", length = 50)
+    var currentModule: String? = null,
+
+    @Column(name = "current_action", length = 255)
+    var currentAction: String? = null,
+
+    @Column(name = "next_run_at")
+    var nextRunAt: Instant? = null,
+
+    @Column(name = "last_heartbeat_at")
+    var lastHeartbeatAt: Instant? = null,
+
+    @Version
+    @Column(name = "version", nullable = false)
+    var version: Long = 0,
 )

@@ -20,7 +20,10 @@ internal object FreshSchemaContract {
                 expected.assertMatches(tableName, requireNotNull(actualColumns[columnName]))
             }
         }
-        assertFalse(TABLES.values.flatMap { it.columns.keys }.any { it.endsWith("_json", ignoreCase = true) })
+        assertEquals(
+            setOf("settings_json", "payload_json"),
+            TABLES.values.flatMap { it.columns.keys }.filter { it.endsWith("_json", ignoreCase = true) }.toSet(),
+        )
     }
 
     fun assertRelationalContracts(connection: Connection) {
@@ -310,12 +313,29 @@ internal object FreshSchemaContract {
             "automation_profile_maps",
             serialId(), requiredBigint("profile_id"), requiredBigint("battle_map_id"),
             optionalBigint("party_preset_id"), requiredInteger("execution_order"),
+            requiredVarchar("module_type", 50), requiredVarchar("purpose", 50),
         ),
         table(
             "automation_jobs",
             serialId(), requiredBigint("account_id"), requiredBigint("profile_id"), requiredVarchar("status"),
             requiredInteger("current_step_index"), optionalText("message"), requiredInstant("created_at"),
             optionalInstant("started_at"), requiredInstant("updated_at"), optionalInstant("finished_at"),
+            optionalVarchar("current_module", 50), optionalVarchar("current_action"), optionalInstant("next_run_at"),
+            optionalInstant("last_heartbeat_at"), requiredBigint("version"),
+        ),
+        table(
+            "automation_module_configs",
+            serialId(), requiredBigint("profile_id"), requiredVarchar("module_type", 50),
+            requiredBoolean("enabled"), requiredInteger("priority"), requiredText("settings_json"),
+            requiredInstant("created_at"), requiredInstant("updated_at"),
+        ),
+        table(
+            "automation_action_runs",
+            serialId(), requiredBigint("job_id"), requiredVarchar("module_type", 50),
+            requiredVarchar("action_type", 80), optionalVarchar("action_key"), requiredVarchar("status", 50),
+            requiredVarchar("request_key"), requiredText("payload_json"), requiredInteger("attempt_count"),
+            optionalInstant("next_attempt_at"), optionalText("last_error"), requiredInstant("created_at"),
+            optionalInstant("started_at"), optionalInstant("finished_at"), requiredInstant("updated_at"),
         ),
         table(
             "battle_logs",
@@ -378,6 +398,10 @@ internal object FreshSchemaContract {
         ),
         key("party_preset_members", "uk_party_preset_members_preset_slot", "preset_id", "slot_index"),
         key("automation_profile_maps", "uk_automation_profile_maps_profile_map", "profile_id", "battle_map_id"),
+        key(
+            "automation_module_configs", "uk_automation_module_configs_profile_module", "profile_id", "module_type",
+        ),
+        key("automation_action_runs", "uk_automation_action_runs_request_key", "request_key"),
         key("battle_log_participants", "uk_battle_log_participants_log_slot", "battle_log_id", "slot_index"),
         key(
             "battle_log_loots", "uk_battle_log_loots_log_display_order", "battle_log_id", "display_order",
@@ -426,6 +450,14 @@ internal object FreshSchemaContract {
         ),
         fk("fk_automation_jobs_account", "automation_jobs.account_id", "hof_accounts.id", DeleteAction.CASCADE),
         fk("fk_automation_jobs_profile", "automation_jobs.profile_id", "automation_profiles.id", DeleteAction.RESTRICT),
+        fk(
+            "fk_automation_module_configs_profile", "automation_module_configs.profile_id",
+            "automation_profiles.id", DeleteAction.CASCADE,
+        ),
+        fk(
+            "fk_automation_action_runs_job", "automation_action_runs.job_id",
+            "automation_jobs.id", DeleteAction.CASCADE,
+        ),
         fk("fk_battle_logs_account", "battle_logs.account_id", "hof_accounts.id", DeleteAction.CASCADE),
         fk("fk_battle_logs_battle_map", "battle_logs.battle_map_id", "battle_maps.id", DeleteAction.SET_NULL),
         fk(
@@ -472,6 +504,18 @@ internal object FreshSchemaContract {
             "automation_jobs", "idx_automation_jobs_account_active_updated", "account_id", "status", "updated_at", "id",
         ),
         index("automation_jobs", "idx_automation_jobs_profile", "profile_id", "id"),
+        index(
+            "automation_jobs", "idx_automation_jobs_recovery",
+            "status", "next_run_at", "last_heartbeat_at", "id",
+        ),
+        index(
+            "automation_module_configs", "idx_automation_module_configs_profile_priority",
+            "profile_id", "priority", "id",
+        ),
+        index(
+            "automation_action_runs", "idx_automation_action_runs_job_status_updated",
+            "job_id", "status", "updated_at", "id",
+        ),
         index("battle_logs", "idx_battle_logs_account_created", "account_id", "created_at", "id"),
         index("battle_logs", "idx_battle_logs_account_outcome", "account_id", "outcome", "id"),
         index("battle_logs", "idx_battle_logs_battle_map", "battle_map_id", "id"),
@@ -535,6 +579,8 @@ internal object FreshSchemaContract {
         check("party_preset_members", "ck_party_preset_members_slot", "slot_index between 0 and 4"),
         check("automation_profile_maps", "ck_automation_profile_maps_execution_order", "execution_order >= 0"),
         check("automation_jobs", "ck_automation_jobs_current_step", "current_step_index >= 0"),
+        check("automation_module_configs", "ck_automation_module_configs_priority", "priority >= 0"),
+        check("automation_action_runs", "ck_automation_action_runs_attempt_count", "attempt_count >= 0"),
         check("battle_log_participants", "ck_battle_log_participants_slot", "slot_index >= 0"),
         check("battle_log_loots", "ck_battle_log_loots_order", "display_order >= 0"),
         check("battle_log_loots", "ck_battle_log_loots_quantity", "quantity > 0"),

@@ -49,4 +49,10 @@ class AutomationProfileMapEntity(
 
     @Column(name = "execution_order", nullable = false)
     var executionOrder: Int,
+
+    @Column(name = "module_type", nullable = false, length = 50)
+    var moduleType: String = AutomationModuleType.NORMAL_MAP.name,
+
+    @Column(name = "purpose", nullable = false, length = 50)
+    var purpose: String = "PRIMARY",
 )
