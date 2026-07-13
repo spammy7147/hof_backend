@@ -52,6 +52,7 @@ class FreshSchemaTest {
                 "3" to "add token authentication",
                 "4" to "add unified automation state",
                 "5" to "add automation messaging",
+                "6" to "add push and captcha resume",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -69,6 +70,7 @@ class FreshSchemaTest {
                 "V3__add_token_authentication.sql",
                 "V4__add_unified_automation_state.sql",
                 "V5__add_automation_messaging.sql",
+                "V6__add_push_and_captcha_resume.sql",
             ),
             migrationNames,
         )

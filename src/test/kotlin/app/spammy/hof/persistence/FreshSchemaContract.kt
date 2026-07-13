@@ -355,6 +355,12 @@ internal object FreshSchemaContract {
             primaryKey = listOf("account_id"),
         ),
         table(
+            "device_push_targets",
+            serialId(), requiredBigint("account_id"), requiredVarchar("platform", 20),
+            requiredVarchar("target_type", 20), requiredVarchar("installation_id", 160), requiredText("target_value"),
+            requiredBoolean("active"), requiredInstant("last_seen_at"), requiredInstant("created_at"),
+        ),
+        table(
             "battle_logs",
             serialId(), requiredBigint("account_id"), optionalBigint("battle_map_id"),
             requiredVarchar("category_id", 50), requiredVarchar("map_code", 100),
@@ -384,6 +390,7 @@ internal object FreshSchemaContract {
             optionalText("image_url"), requiredText("source_url"), optionalText("answer"),
             requiredInstant("created_at"), optionalInstant("answered_at"), optionalText("submit_url"),
             requiredVarchar("submit_method", 10), requiredVarchar("answer_field_name", 100),
+            optionalBigint("automation_action_run_id"),
         ),
         table(
             "captcha_form_fields",
@@ -420,6 +427,9 @@ internal object FreshSchemaContract {
         ),
         key("automation_action_runs", "uk_automation_action_runs_request_key", "request_key"),
         key("automation_outbox", "uk_automation_outbox_event_id", "event_id"),
+        key(
+            "device_push_targets", "uk_device_push_targets_account_installation", "account_id", "installation_id",
+        ),
         key("battle_log_participants", "uk_battle_log_participants_log_slot", "battle_log_id", "slot_index"),
         key(
             "battle_log_loots", "uk_battle_log_loots_log_display_order", "battle_log_id", "display_order",
@@ -484,6 +494,10 @@ internal object FreshSchemaContract {
             "fk_account_automation_leases_account", "account_automation_leases.account_id",
             "hof_accounts.id", DeleteAction.CASCADE,
         ),
+        fk(
+            "fk_device_push_targets_account", "device_push_targets.account_id",
+            "hof_accounts.id", DeleteAction.CASCADE,
+        ),
         fk("fk_battle_logs_account", "battle_logs.account_id", "hof_accounts.id", DeleteAction.CASCADE),
         fk("fk_battle_logs_battle_map", "battle_logs.battle_map_id", "battle_maps.id", DeleteAction.SET_NULL),
         fk(
@@ -496,6 +510,10 @@ internal object FreshSchemaContract {
         ),
         fk("fk_battle_log_loots_log", "battle_log_loots.battle_log_id", "battle_logs.id", DeleteAction.CASCADE),
         fk("fk_captcha_challenges_account", "captcha_challenges.account_id", "hof_accounts.id", DeleteAction.CASCADE),
+        fk(
+            "fk_captcha_challenges_automation_action", "captcha_challenges.automation_action_run_id",
+            "automation_action_runs.id", DeleteAction.SET_NULL,
+        ),
         fk(
             "fk_captcha_form_fields_challenge", "captcha_form_fields.challenge_id",
             "captcha_challenges.id", DeleteAction.CASCADE,
@@ -550,6 +568,10 @@ internal object FreshSchemaContract {
             "account_automation_leases", "idx_account_automation_leases_until",
             "lease_until", "account_id",
         ),
+        index(
+            "device_push_targets", "idx_device_push_targets_account_active",
+            "account_id", "active", "last_seen_at", "id",
+        ),
         index("battle_logs", "idx_battle_logs_account_created", "account_id", "created_at", "id"),
         index("battle_logs", "idx_battle_logs_account_outcome", "account_id", "outcome", "id"),
         index("battle_logs", "idx_battle_logs_battle_map", "battle_map_id", "id"),
@@ -561,6 +583,9 @@ internal object FreshSchemaContract {
         index(
             "captcha_challenges", "idx_captcha_challenges_account_status_created",
             "account_id", "status", "created_at", "id",
+        ),
+        index(
+            "captcha_challenges", "idx_captcha_challenges_automation_action", "automation_action_run_id",
         ),
         index("captcha_form_fields", "idx_captcha_form_fields_challenge_order", "challenge_id", "field_order", "id"),
     )

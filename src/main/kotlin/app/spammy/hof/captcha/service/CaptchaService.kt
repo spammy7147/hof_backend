@@ -42,6 +42,7 @@ class CaptchaService(
     private val challengeParser: CaptchaChallengeParser,
     private val imageManager: CaptchaImageManager,
     private val timeProvider: TimeProvider,
+    private val automationHook: CaptchaAutomationHook? = null,
 ) {
     /**
      * HOF 응답 HTML에서 캡차/자경단 통행증 신호를 찾고 pending challenge로 저장한다.
@@ -122,6 +123,8 @@ class CaptchaService(
                 cookies = imageCookies,
             )
         }
+
+        automationHook?.detected(savedChallenge)
 
         return savedChallenge.toResponse()
     }
@@ -259,6 +262,7 @@ class CaptchaService(
         challenge.answer = normalizedAnswer
         challenge.answeredAt = timeProvider.now()
         imageManager.deleteAfterCommit(challenge.account.id, challenge.id)
+        automationHook?.answered(challenge)
 
         return challenge.toResponse()
     }

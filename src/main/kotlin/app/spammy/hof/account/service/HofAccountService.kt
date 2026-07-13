@@ -62,6 +62,13 @@ class HofAccountService(
         return loginAccount(accountRepository.save(account))
     }
 
+    @Transactional
+    fun reauthenticate(accountId: Long): HofAccountEntity {
+        val account = accountQueryRepository.findById(accountId)
+            ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
+        return loginAccount(account)
+    }
+
     /**
      * HOF 홈 요청 후 로그인 요청을 보내고, 성공하면 쿠키를 DB에 저장한다.
      */

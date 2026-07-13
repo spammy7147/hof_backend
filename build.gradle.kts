@@ -24,6 +24,7 @@ dependencies {
 	implementation("org.springframework.boot:spring-boot-starter-actuator")
 	implementation("org.springframework.boot:spring-boot-starter-data-jpa")
 	implementation("com.querydsl:querydsl-jpa:5.1.0:jakarta")
+	implementation("com.google.firebase:firebase-admin:9.10.0")
 	implementation("org.springframework.boot:spring-boot-starter-flyway")
 	implementation("org.springframework.boot:spring-boot-starter-security")
 	implementation("org.springframework.boot:spring-boot-starter-oauth2-resource-server")

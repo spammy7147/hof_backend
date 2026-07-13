@@ -38,7 +38,11 @@ class UnifiedAutomationRunner(
         decision: app.spammy.hof.automation.policy.AutomationDecision,
     ) {
         val actionId = checkpointService.start(runnable, decision)
-        runCatching { actionExecutor.execute(runnable.accountId, decision) }
+        runCatching {
+            AutomationActionContext.withAction(actionId) {
+                actionExecutor.execute(runnable.accountId, decision)
+            }
+        }
             .onSuccess { result ->
                 checkpointService.succeed(actionId, result)
                 wakeupPort.wake(runnable.accountId, "ACTION_SUCCEEDED")

@@ -18,11 +18,12 @@ class DefaultAutomationActionExecutor(
     private val characterQueryRepository: CharacterQueryRepository,
     private val partyPresetQueryRepository: PartyPresetQueryRepository,
     private val objectMapper: ObjectMapper,
+    private val sessionRecoveryExecutor: HofSessionRecoveryExecutor,
 ) : AutomationActionExecutor {
     override fun execute(
         accountId: Long,
         decision: AutomationDecision,
-    ): String = when (decision.type) {
+    ): String = sessionRecoveryExecutor.execute(accountId) { when (decision.type) {
         AutomationDecisionType.ACCEPT_QUEST -> objectMapper.writeValueAsString(
             questGatewayService.accept(accountId, requireActionNo(decision)),
         )
@@ -35,7 +36,7 @@ class DefaultAutomationActionExecutor(
         AutomationDecisionType.WAITING_CONFIG,
         AutomationDecisionType.SLEEP,
         -> throw IllegalArgumentException("${decision.type} 결정은 외부 action으로 실행할 수 없습니다.")
-    }
+    } }
 
     private fun requireActionNo(decision: AutomationDecision): String = decision.actionNo
         ?: throw AutomationConfigurationException("퀘스트 처리 링크를 다시 불러와 주세요.")

@@ -14,6 +14,7 @@ import java.time.Instant
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import tools.jackson.databind.ObjectMapper
+import app.spammy.hof.push.service.PushOutboxService
 
 @Service
 class AutomationCheckpointService(
@@ -22,6 +23,7 @@ class AutomationCheckpointService(
     private val actionQueryRepository: AutomationActionRunQueryRepository,
     private val objectMapper: ObjectMapper,
     private val timeProvider: TimeProvider,
+    private val pushOutboxService: PushOutboxService,
 ) {
     @Transactional(readOnly = true)
     fun findRunnable(accountId: Long): RunnableAutomationJob? =
@@ -110,6 +112,13 @@ class AutomationCheckpointService(
             else -> if (error is AutomationConfigurationException) {
                 action.status = AutomationActionStatus.WAITING_CONFIG
                 action.job.status = "WAITING_CONFIG"
+                action.job.message = error.message
+                action.job.nextRunAt = null
+                pushOutboxService.enqueueLoginRequired(action.job.account)
+                null
+            } else if (error is AutomationLoginRequiredException) {
+                action.status = AutomationActionStatus.RETRY_WAIT
+                action.job.status = "WAITING_LOGIN"
                 action.job.message = error.message
                 action.job.nextRunAt = null
                 null
