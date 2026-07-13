@@ -1,0 +1,64 @@
+package app.spammy.hof.captcha.controller
+
+import app.spammy.hof.captcha.dto.CaptchaChallengeResponse
+import app.spammy.hof.captcha.dto.SubmitCaptchaAnswerRequest
+import app.spammy.hof.captcha.service.CaptchaService
+import app.spammy.hof.common.security.CurrentAccountId
+import org.springframework.http.CacheControl
+import org.springframework.http.MediaType
+import org.springframework.http.ResponseEntity
+import org.springframework.web.bind.annotation.GetMapping
+import org.springframework.web.bind.annotation.PathVariable
+import org.springframework.web.bind.annotation.PostMapping
+import org.springframework.web.bind.annotation.RequestBody
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.RestController
+
+@RestController
+@RequestMapping("/api/captcha")
+/**
+ * 캡차 조회, 이미지 로드, 답안 제출 API다.
+ */
+class CaptchaController(
+    private val captchaService: CaptchaService,
+) {
+    /**
+     * 현재 계정에 대기 중인 캡차 challenge를 조회한다.
+     */
+    @GetMapping("/current")
+    fun findCurrent(
+        @CurrentAccountId accountId: Long,
+    ): CaptchaChallengeResponse? =
+        captchaService.findCurrent(accountId)
+
+    /**
+     * 서버에 임시 저장한 캡차 이미지를 앱으로 내려준다.
+     */
+    @GetMapping("/{challengeId}/image")
+    fun loadImage(
+        @CurrentAccountId accountId: Long,
+        @PathVariable challengeId: Long,
+    ): ResponseEntity<ByteArray> {
+        val image = captchaService.loadImage(accountId = accountId, challengeId = challengeId)
+
+        return ResponseEntity.ok()
+            .contentType(MediaType.parseMediaType(image.contentType))
+            .cacheControl(CacheControl.noStore())
+            .body(image.bytes)
+    }
+
+    /**
+     * 사용자가 입력한 캡차 답안을 HOF 원본 서버에 제출한다.
+     */
+    @PostMapping("/{challengeId}/answer")
+    fun submitAnswer(
+        @CurrentAccountId accountId: Long,
+        @PathVariable challengeId: Long,
+        @RequestBody request: SubmitCaptchaAnswerRequest,
+    ): CaptchaChallengeResponse =
+        captchaService.submitAnswer(
+            accountId = accountId,
+            challengeId = challengeId,
+            answer = request.answer,
+        )
+}

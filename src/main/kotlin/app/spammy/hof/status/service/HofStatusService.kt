@@ -1,0 +1,76 @@
+package app.spammy.hof.status.service
+
+import app.spammy.hof.account.entity.HofCookieEntity
+import app.spammy.hof.account.repository.AccountQueryRepository
+import app.spammy.hof.account.repository.CookieQueryRepository
+import app.spammy.hof.common.error.ApiException
+import app.spammy.hof.common.error.ErrorCode
+import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.external.client.HofGateway
+import app.spammy.hof.external.client.HofRequestFactory
+import app.spammy.hof.external.parser.HofMainStatusParser
+import app.spammy.hof.status.dto.HofStatusResponse
+import org.slf4j.LoggerFactory
+import org.springframework.stereotype.Service
+import org.springframework.transaction.annotation.Transactional
+
+@Service
+/**
+ * HOF 홈 페이지 상태를 읽어 앱 상단 상태바용 데이터로 변환한다.
+ */
+class HofStatusService(
+    private val accountQueryRepository: AccountQueryRepository,
+    private val cookieQueryRepository: CookieQueryRepository,
+    private val requestFactory: HofRequestFactory,
+    private val gateway: HofGateway,
+    private val statusParser: HofMainStatusParser,
+    private val timeProvider: TimeProvider,
+) {
+    private val log = LoggerFactory.getLogger(HofStatusService::class.java)
+
+    /**
+     * 저장된 HOF 쿠키로 홈 페이지를 호출하고 플레이어명, Funds, Time, Work, Auction을 파싱한다.
+     */
+    @Transactional(readOnly = true)
+    fun fetch(accountId: Long): HofStatusResponse {
+        val account = accountQueryRepository.findById(accountId)
+            ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
+        val cookies = cookieQueryRepository.findByAccountId(account.id).toCookieMap()
+        if (cookies.isEmpty()) {
+            log.warn("HOF status rejected accountId={} reason=no-cookies", account.id)
+            throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "저장된 HOF 로그인 쿠키가 없습니다.")
+        }
+
+        log.info("HOF status requested accountId={} cookieNames={}", account.id, cookies.keys.sorted())
+        val response = gateway.execute(requestFactory.home(), cookies)
+        val parsed = statusParser.parse(response.body)
+        log.info(
+            "HOF status parsed accountId={} status={} playerName={} funds={} time={}/{} work={} auction={}",
+            account.id,
+            response.statusCode,
+            parsed.playerName,
+            parsed.funds,
+            parsed.timeCurrent,
+            parsed.timeMax,
+            parsed.work,
+            parsed.auction,
+        )
+
+        return HofStatusResponse(
+            accountId = account.id,
+            playerName = parsed.playerName,
+            funds = parsed.funds,
+            timeCurrent = parsed.timeCurrent,
+            timeMax = parsed.timeMax,
+            work = parsed.work,
+            auction = parsed.auction,
+            observedAt = timeProvider.now(),
+        )
+    }
+
+    /**
+     * DB 쿠키 Entity 목록을 HOF HTTP client가 쓰는 name/value Map으로 바꾼다.
+     */
+    private fun List<HofCookieEntity>.toCookieMap(): Map<String, String> =
+        associate { cookie -> cookie.name to cookie.value }
+}
