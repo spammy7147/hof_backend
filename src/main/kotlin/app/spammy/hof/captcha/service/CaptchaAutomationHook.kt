@@ -22,9 +22,20 @@ class CaptchaAutomationHook(
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
-    /** 현재 자동화 action을 캡차 대기로 연결하고 사용자 알림 outbox를 생성한다. */
+    /** 현재 토큰의 RUNNING attempt만 캡차 대기로 연결하고 사용자 알림 outbox를 생성한다. */
     fun detected(challenge: CaptchaChallengeEntity) {
-        val action = AutomationActionContext.currentActionId()?.let(actionQueryRepository::findById) ?: return
+        val token = AutomationActionContext.currentToken() ?: return
+        val action = actionQueryRepository.findByIdForUpdate(token.actionId) ?: return
+        if (action.status != AutomationActionStatus.RUNNING || action.attemptCount != token.attemptCount) {
+            log.debug(
+                "Ignoring stale captcha detection actionId={} attempt={} currentAttempt={} currentStatus={}",
+                token.actionId,
+                token.attemptCount,
+                action.attemptCount,
+                action.status,
+            )
+            return
+        }
         challenge.automationActionRun = action
         action.status = AutomationActionStatus.WAITING_CAPTCHA
         action.job.status = "WAITING_CAPTCHA"
@@ -42,6 +53,7 @@ class CaptchaAutomationHook(
      */
     fun answered(challenge: CaptchaChallengeEntity) {
         val action = challenge.automationActionRun ?: return
+        if (action.status != AutomationActionStatus.WAITING_CAPTCHA) return
         val now = timeProvider.now()
         action.status = AutomationActionStatus.ABORTED
         action.nextAttemptAt = null

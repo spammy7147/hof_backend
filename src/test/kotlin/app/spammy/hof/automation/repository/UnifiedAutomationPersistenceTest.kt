@@ -11,9 +11,17 @@ import app.spammy.hof.automation.entity.AutomationModuleQuestEntity
 import app.spammy.hof.automation.entity.AutomationModuleQuestMapEntity
 import app.spammy.hof.automation.entity.AutomationModuleType
 import app.spammy.hof.automation.entity.AutomationProfileEntity
+import app.spammy.hof.automation.policy.AutomationDecision
+import app.spammy.hof.automation.policy.AutomationDecisionType
+import app.spammy.hof.automation.policy.AutomationMapCandidate
+import app.spammy.hof.automation.service.AutomationCheckpointService
+import app.spammy.hof.automation.service.AutomationExecutionPayload
+import app.spammy.hof.battle.dto.BattlePatternLoadRequest
+import app.spammy.hof.battle.dto.RunBattleRequest
 import app.spammy.hof.battle.entity.BattleMapEntity
 import app.spammy.hof.battle.repository.BattleMapRepository
 import app.spammy.hof.common.persistence.QueryDslConfig
+import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.party.entity.PartyPresetEntity
 import app.spammy.hof.party.repository.PartyPresetRepository
 import jakarta.persistence.EntityManager
@@ -22,14 +30,21 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import org.mockito.Mockito
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
 import org.springframework.context.annotation.Import
 import org.springframework.test.context.ActiveProfiles
+import tools.jackson.module.kotlin.jacksonObjectMapper
 
 @DataJpaTest
 @ActiveProfiles("test")
-@Import(QueryDslConfig::class, UnifiedAutomationQueryRepository::class)
+@Import(
+    QueryDslConfig::class,
+    UnifiedAutomationQueryRepository::class,
+    AutomationJobQueryRepository::class,
+    AutomationActionRunQueryRepository::class,
+)
 class UnifiedAutomationPersistenceTest {
     @Autowired private lateinit var accountRepository: HofAccountRepository
     @Autowired private lateinit var profileRepository: AutomationProfileRepository
@@ -42,6 +57,8 @@ class UnifiedAutomationPersistenceTest {
     @Autowired private lateinit var battleMapRepository: BattleMapRepository
     @Autowired private lateinit var partyPresetRepository: PartyPresetRepository
     @Autowired private lateinit var queryRepository: UnifiedAutomationQueryRepository
+    @Autowired private lateinit var jobQueryRepository: AutomationJobQueryRepository
+    @Autowired private lateinit var actionQueryRepository: AutomationActionRunQueryRepository
     @Autowired private lateinit var entityManager: EntityManager
 
     @Test
@@ -126,6 +143,90 @@ class UnifiedAutomationPersistenceTest {
         assertEquals(restoredConfig.id, restoredAction.moduleConfig?.id)
         assertEquals("job:${job.id}:step:0", restoredAction.requestKey)
         assertEquals(1, restoredAction.attemptCount)
+    }
+
+    @Test
+    fun upgradesPersistedLegacyDecisionToPreparedPayloadBeforeRetryExecution() {
+        val now = Instant.parse("2026-07-14T03:00:00Z")
+        val account = newAccount("legacy-payload-upgrade", now)
+        val profile = newProfile(account, now)
+        val module = moduleConfigRepository.save(
+            newModule(profile, "레거시 복구", priority = 0, thresholdPercent = 90, now = now),
+        )
+        val job = jobRepository.save(
+            AutomationJobEntity(
+                account = account,
+                profile = profile,
+                status = "RUNNING",
+                currentStepIndex = 0,
+                message = null,
+                createdAt = now,
+                startedAt = now,
+                updatedAt = now,
+                finishedAt = null,
+                currentModule = module.moduleType.name,
+                currentModuleConfig = module,
+                currentAction = "레거시 맵",
+            ),
+        )
+        val decision = AutomationDecision(
+            type = AutomationDecisionType.RUN_BATTLE,
+            moduleType = module.moduleType,
+            moduleConfigId = module.id,
+            moduleRevision = module.updatedAt,
+            map = AutomationMapCandidate("legacy-map", "레거시 맵", 0, 301L),
+        )
+        val objectMapper = jacksonObjectMapper()
+        val action = actionRunRepository.save(
+            AutomationActionRunEntity(
+                job = job,
+                moduleConfig = module,
+                moduleType = module.moduleType,
+                actionType = decision.type.name,
+                actionKey = decision.map?.mapCode,
+                status = AutomationActionStatus.RETRY_WAIT,
+                requestKey = "job:${job.id}:step:0",
+                payloadJson = objectMapper.writeValueAsString(decision),
+                attemptCount = 1,
+                nextAttemptAt = now,
+                createdAt = now,
+                updatedAt = now,
+            ),
+        )
+        entityManager.flush()
+        entityManager.clear()
+        val checkpoint = AutomationCheckpointService(
+            jobQueryRepository = jobQueryRepository,
+            actionRepository = actionRunRepository,
+            actionQueryRepository = actionQueryRepository,
+            unifiedQueryRepository = queryRepository,
+            objectMapper = objectMapper,
+            timeProvider = TimeProvider { now },
+            pushOutboxService = Mockito.mock(app.spammy.hof.push.service.PushOutboxService::class.java),
+        )
+
+        val runnable = assertNotNull(checkpoint.findRunnable(account.id))
+        val retry = assertNotNull(runnable.retryAction)
+        assertEquals(true, retry.requiresPreparation)
+        val prepared = AutomationExecutionPayload(
+            decision = retry.payload.decision,
+            resolvedBattleRequest = RunBattleRequest(
+                categoryId = "battle_map",
+                mapCode = "legacy-map",
+                characterIds = listOf("character-legacy"),
+                patternLoads = listOf(BattlePatternLoadRequest("character-legacy", 3)),
+                battleCount = 2,
+            ),
+        )
+
+        val token = assertNotNull(checkpoint.resumeRetry(runnable, retry, prepared))
+        entityManager.flush()
+        entityManager.clear()
+
+        val upgraded = assertNotNull(actionQueryRepository.findById(action.id))
+        assertEquals(2, token.attemptCount)
+        assertEquals(AutomationActionStatus.RUNNING, upgraded.status)
+        assertEquals(prepared, objectMapper.readValue(upgraded.payloadJson, AutomationExecutionPayload::class.java))
     }
 
     @Test

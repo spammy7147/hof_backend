@@ -66,13 +66,20 @@ class AutomationCheckpointService(
         }
         if (currentAction?.status == AutomationActionStatus.RETRY_WAIT) {
             if (currentAction.nextAttemptAt?.isAfter(now) == true) return null
+            val decoded = try {
+                readPayload(currentAction.payloadJson)
+            } catch (error: Exception) {
+                markMalformedPayload(currentAction, now, error)
+                return null
+            }
             return RunnableAutomationJob(
                 jobId = job.id,
                 accountId = accountId,
                 currentStepIndex = job.currentStepIndex,
                 retryAction = RetryableAutomationAction(
                     actionId = currentAction.id,
-                    payload = readPayload(currentAction.payloadJson),
+                    payload = decoded.payload,
+                    requiresPreparation = decoded.requiresPreparation,
                 ),
             )
         }
@@ -84,7 +91,7 @@ class AutomationCheckpointService(
     fun start(
         runnable: RunnableAutomationJob,
         payload: AutomationExecutionPayload,
-    ): Long? {
+    ): AutomationExecutionToken? {
         val job = jobQueryRepository.findOwnedByAccountIdAndIdForUpdate(runnable.accountId, runnable.jobId)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "자동화 job을 찾지 못했습니다.")
         if (job.status != "RUNNING") throw ApiException(ErrorCode.INVALID_REQUEST, "실행 가능한 자동화 job이 아닙니다.")
@@ -139,23 +146,32 @@ class AutomationCheckpointService(
         job.lastHeartbeatAt = now
         job.nextRunAt = null
         job.updatedAt = now
-        return action.id
+        return AutomationExecutionToken(action.id, action.attemptCount)
     }
 
-    /** 저장된 RETRY_WAIT action을 동일 request key와 payload로 다시 RUNNING 상태로 전환한다. */
+    /**
+     * RETRY_WAIT action을 잠그고 준비 완료 payload를 저장한 뒤 새 실행 시도 토큰을 발급한다.
+     *
+     * 레거시 decision payload는 이 트랜잭션에서 새 prepared payload로 교체된다. 이미 새 형식인 재시도는
+     * 조회 시점의 exact payload와 동일한 값만 허용해 프리셋·패턴 변경이 현재 action에 섞이지 않게 한다.
+     */
     @Transactional
     fun resumeRetry(
         runnable: RunnableAutomationJob,
         retry: RetryableAutomationAction,
-    ): Boolean {
+        preparedPayload: AutomationExecutionPayload,
+    ): AutomationExecutionToken? {
         val job = jobQueryRepository.findOwnedByAccountIdAndIdForUpdate(runnable.accountId, runnable.jobId)
-            ?: return false
-        val action = actionQueryRepository.findById(retry.actionId) ?: return false
+            ?: return null
+        val action = actionQueryRepository.findByIdForUpdate(retry.actionId) ?: return null
         val expectedRequestKey = requestKey(runnable.jobId, runnable.currentStepIndex)
-        if (job.status != "RUNNING" || action.job.id != job.id) return false
-        if (action.requestKey != expectedRequestKey || action.status != AutomationActionStatus.RETRY_WAIT) return false
+        if (job.status != "RUNNING" || action.job.id != job.id) return null
+        if (action.requestKey != expectedRequestKey || action.status != AutomationActionStatus.RETRY_WAIT) return null
+        if (!isPreparedPayload(preparedPayload) || preparedPayload.decision != retry.payload.decision) return null
+        if (!retry.requiresPreparation && preparedPayload != retry.payload) return null
         val now = timeProvider.now()
-        if (action.nextAttemptAt?.isAfter(now) == true) return false
+        if (action.nextAttemptAt?.isAfter(now) == true) return null
+        action.payloadJson = objectMapper.writeValueAsString(preparedPayload)
         action.status = AutomationActionStatus.RUNNING
         action.attemptCount += 1
         action.nextAttemptAt = null
@@ -163,21 +179,25 @@ class AutomationCheckpointService(
         action.startedAt = now
         action.finishedAt = null
         action.updatedAt = now
-        job.currentModule = retry.payload.decision.moduleType?.name
+        job.currentModule = preparedPayload.decision.moduleType?.name
         job.currentModuleConfig = action.moduleConfig
-        job.currentAction = retry.payload.decision.map?.mapName
-            ?: retry.payload.decision.questId
-            ?: retry.payload.decision.type.name
+        job.currentAction = preparedPayload.decision.map?.mapName
+            ?: preparedPayload.decision.questId
+            ?: preparedPayload.decision.type.name
         job.lastHeartbeatAt = now
         job.nextRunAt = null
         job.updatedAt = now
-        return true
+        return AutomationExecutionToken(action.id, action.attemptCount)
     }
 
-    /** 성공한 action의 결과를 보존하고 step을 증가시킨 뒤 현재 실행 표시를 비운다. */
+    /**
+     * 토큰과 일치하는 RUNNING 시도만 성공 처리한다.
+     *
+     * 이전 시도의 늦은 완료나 캡차 답변 뒤 ABORTED된 action은 상태와 step을 전혀 변경하지 않는다.
+     */
     @Transactional
-    fun succeed(actionId: Long) {
-        val action = findAction(actionId)
+    fun succeed(token: AutomationExecutionToken): Boolean {
+        val action = findCurrentAttempt(token, "success") ?: return false
         val now = timeProvider.now()
         action.status = AutomationActionStatus.SUCCEEDED
         action.finishedAt = now
@@ -187,15 +207,16 @@ class AutomationCheckpointService(
         action.job.nextRunAt = now
         action.job.lastHeartbeatAt = now
         action.job.updatedAt = now
+        return true
     }
 
     /** 실패 유형에 따라 캡차·로그인·설정 대기 또는 지수 backoff 재시도로 전환한다. */
     @Transactional
     fun fail(
-        actionId: Long,
+        token: AutomationExecutionToken,
         error: Throwable,
     ): Instant? {
-        val action = findAction(actionId)
+        val action = findCurrentAttempt(token, "failure") ?: return null
         val now = timeProvider.now()
         action.lastError = error.message?.take(2000) ?: error.javaClass.simpleName
         action.updatedAt = now
@@ -234,6 +255,31 @@ class AutomationCheckpointService(
         }
     }
 
+    /** 레거시 payload 준비가 불가능하면 외부 호출 전에 기존 action과 job을 설정 대기로 고정한다. */
+    @Transactional
+    fun blockRetryForConfig(
+        runnable: RunnableAutomationJob,
+        retry: RetryableAutomationAction,
+        message: String,
+    ) {
+        val job = jobQueryRepository.findOwnedByAccountIdAndIdForUpdate(runnable.accountId, runnable.jobId) ?: return
+        val action = actionQueryRepository.findByIdForUpdate(retry.actionId) ?: return
+        val expectedRequestKey = requestKey(runnable.jobId, runnable.currentStepIndex)
+        if (job.status != "RUNNING" || action.job.id != job.id) return
+        if (action.requestKey != expectedRequestKey || action.status != AutomationActionStatus.RETRY_WAIT) return
+        val now = timeProvider.now()
+        action.status = AutomationActionStatus.WAITING_CONFIG
+        action.nextAttemptAt = null
+        action.lastError = message.take(2000)
+        action.updatedAt = now
+        job.status = "WAITING_CONFIG"
+        job.message = message
+        job.nextRunAt = null
+        job.lastHeartbeatAt = now
+        job.updatedAt = now
+        clearCurrentAction(job)
+    }
+
     /** 실행할 수 없는 설정만 남았을 때 job을 설정 대기로 전환하고 현재 모듈 표시를 비운다. */
     @Transactional
     fun blockForConfig(
@@ -261,16 +307,91 @@ class AutomationCheckpointService(
         job.updatedAt = timeProvider.now()
     }
 
-    private fun findAction(id: Long): AutomationActionRunEntity = actionQueryRepository.findById(id)
-        ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "자동화 action을 찾지 못했습니다.")
+    /** row lock 뒤 status와 attempt가 모두 일치하는 현재 시도만 반환한다. */
+    private fun findCurrentAttempt(
+        token: AutomationExecutionToken,
+        completionType: String,
+    ): AutomationActionRunEntity? {
+        val action = actionQueryRepository.findByIdForUpdate(token.actionId)
+        if (action == null) {
+            log.debug(
+                "Ignoring automation {} for missing action actionId={} attempt={}",
+                completionType,
+                token.actionId,
+                token.attemptCount,
+            )
+            return null
+        }
+        if (action.status != AutomationActionStatus.RUNNING || action.attemptCount != token.attemptCount) {
+            log.debug(
+                "Ignoring stale automation {} actionId={} attempt={} currentAttempt={} currentStatus={}",
+                completionType,
+                token.actionId,
+                token.attemptCount,
+                action.attemptCount,
+                action.status,
+            )
+            return null
+        }
+        return action
+    }
 
     private fun actionKey(decision: AutomationDecision): String? =
         decision.questId ?: decision.map?.mapCode
 
     private fun requestKey(jobId: Long, stepIndex: Int): String = "job:$jobId:step:$stepIndex"
 
-    private fun readPayload(payloadJson: String): AutomationExecutionPayload =
-        objectMapper.readValue(payloadJson, AutomationExecutionPayload::class.java)
+    /** 새 prepared payload를 우선 읽고, 과거 최상위 decision JSON은 실행 전 준비 대상으로 승격한다. */
+    private fun readPayload(payloadJson: String): DecodedPayload {
+        runCatching {
+            objectMapper.readValue(payloadJson, AutomationExecutionPayload::class.java)
+        }.getOrNull()?.takeIf(::isPreparedPayload)?.let { payload ->
+            return DecodedPayload(payload, requiresPreparation = false)
+        }
+
+        val legacyDecision = objectMapper.readValue(payloadJson, AutomationDecision::class.java)
+        return DecodedPayload(
+            payload = AutomationExecutionPayload(decision = legacyDecision),
+            requiresPreparation = true,
+        )
+    }
+
+    /** 새 형식은 action 종류에 필요한 exact 외부 요청이 실제로 포함된 경우에만 준비 완료로 인정한다. */
+    private fun isPreparedPayload(payload: AutomationExecutionPayload): Boolean = when (payload.decision.type) {
+        app.spammy.hof.automation.policy.AutomationDecisionType.RUN_BATTLE -> payload.resolvedBattleRequest != null
+        app.spammy.hof.automation.policy.AutomationDecisionType.ACCEPT_QUEST,
+        app.spammy.hof.automation.policy.AutomationDecisionType.CLAIM_QUEST,
+        -> payload.resolvedActionNo != null
+        app.spammy.hof.automation.policy.AutomationDecisionType.WAITING_CONFIG,
+        app.spammy.hof.automation.policy.AutomationDecisionType.SLEEP,
+        -> false
+    }
+
+    /** 손상 payload를 재조회 때마다 다시 역직렬화하지 않도록 action과 job을 명시적 안전 상태로 종료한다. */
+    private fun markMalformedPayload(
+        action: AutomationActionRunEntity,
+        now: Instant,
+        error: Exception,
+    ) {
+        log.warn(
+            "Automation retry payload unreadable jobId={} actionId={} attempt={} errorType={}",
+            action.job.id,
+            action.id,
+            action.attemptCount,
+            error.javaClass.name,
+        )
+        action.status = AutomationActionStatus.FAILED
+        action.nextAttemptAt = null
+        action.lastError = "저장된 자동화 실행 정보를 읽을 수 없습니다."
+        action.finishedAt = now
+        action.updatedAt = now
+        action.job.status = "WAITING_CONFIG"
+        action.job.message = "저장된 실행 정보를 확인할 수 없습니다. 자동화 설정을 다시 저장해 주세요."
+        action.job.nextRunAt = null
+        action.job.lastHeartbeatAt = now
+        action.job.updatedAt = now
+        clearCurrentAction(action.job)
+    }
 
     /** 다음 판단으로 넘어가는 상태에서 현재 action 표시와 모듈 FK를 함께 비운다. */
     private fun clearCurrentAction(job: app.spammy.hof.automation.entity.AutomationJobEntity) {
@@ -280,6 +401,11 @@ class AutomationCheckpointService(
     }
 
     private fun retrySeconds(attempt: Int): Long = minOf(300L, 5L shl minOf(6, (attempt - 1).coerceAtLeast(0)))
+
+    private data class DecodedPayload(
+        val payload: AutomationExecutionPayload,
+        val requiresPreparation: Boolean,
+    )
 
     private companion object {
         const val RUNNING_ACTION_LEASE_SECONDS = 300L

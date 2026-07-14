@@ -11,10 +11,23 @@ data class RunnableAutomationJob(
     val retryAction: RetryableAutomationAction? = null,
 )
 
-/** 재정렬·설정 변경과 무관하게 저장된 payload 그대로 다시 실행해야 하는 기존 action이다. */
+/**
+ * 실행 시도 한 번을 식별하는 불변 토큰이다.
+ *
+ * 같은 action row를 재시도할 때 [attemptCount]가 증가하므로, 이전 외부 요청의 늦은 응답은 현재 시도와
+ * 구분된다. HOF가 idempotency key를 제공하지 않아 외부 요청 자체는 at-least-once이지만, 늦은 응답이
+ * 최신 checkpoint를 성공·실패로 덮어쓰는 일은 이 토큰으로 차단한다.
+ */
+data class AutomationExecutionToken(
+    val actionId: Long,
+    val attemptCount: Int,
+)
+
+/** 저장 payload와 레거시 준비 필요 여부를 함께 전달하는 기존 action이다. */
 data class RetryableAutomationAction(
     val actionId: Long,
     val payload: AutomationExecutionPayload,
+    val requiresPreparation: Boolean = false,
 )
 
 /**

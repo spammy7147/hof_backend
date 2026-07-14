@@ -16,6 +16,12 @@ class AutomationActionRunQueryRepository(
         .where(automationActionRunEntity.id.eq(id))
         .fetchOne()
 
+    /** 성공·실패·캡차 전환 전 status와 attempt를 원자적으로 검증하도록 action row를 잠근다. */
+    fun findByIdForUpdate(id: Long): AutomationActionRunEntity? = baseQuery()
+        .where(automationActionRunEntity.id.eq(id))
+        .setLockMode(LockModeType.PESSIMISTIC_WRITE)
+        .fetchOne()
+
     fun findByRequestKey(requestKey: String): AutomationActionRunEntity? = baseQuery()
         .where(automationActionRunEntity.requestKey.eq(requestKey))
         .fetchOne()

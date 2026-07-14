@@ -65,10 +65,10 @@ class AutomationCheckpointServiceTest {
             (it.arguments[0] as AutomationActionRunEntity).also { action -> savedAction = action }
         }
 
-        val actionId = service.start(runnable, payload)
+        val token = service.start(runnable, payload)
 
         Mockito.verify(actionRepository).save(anyAction())
-        assertEquals(0L, actionId)
+        assertEquals(AutomationExecutionToken(0L, 1), token)
         assertEquals(module.id, savedAction?.moduleConfig?.id)
         assertEquals(module.id, job.currentModuleConfig?.id)
     }
@@ -105,6 +105,50 @@ class AutomationCheckpointServiceTest {
 
         assertEquals(action.id, runnable.retryAction?.actionId)
         assertEquals(originalPayload, runnable.retryAction?.payload)
+        assertEquals(false, runnable.retryAction?.requiresPreparation)
+    }
+
+    @Test
+    fun `findRunnable decodes a legacy decision payload for upgrade before retry`() {
+        val job = job()
+        val original = decision(505L, NOW)
+        val action = action(job, executionPayload(original)).also {
+            it.payloadJson = objectMapper.writeValueAsString(original)
+            it.status = AutomationActionStatus.RETRY_WAIT
+            it.nextAttemptAt = NOW
+        }
+        Mockito.`when`(jobQueryRepository.findCurrentByAccountIdAndStatuses(ACCOUNT_ID, setOf("RUNNING")))
+            .thenReturn(job)
+        Mockito.`when`(jobQueryRepository.findOwnedByAccountIdAndIdForUpdate(ACCOUNT_ID, job.id)).thenReturn(job)
+        Mockito.`when`(actionQueryRepository.findByRequestKeyForUpdate("job:${job.id}:step:0")).thenReturn(action)
+
+        val retry = assertNotNull(service.findRunnable(ACCOUNT_ID)?.retryAction)
+
+        assertEquals(original, retry.payload.decision)
+        assertEquals(true, retry.requiresPreparation)
+        assertNull(retry.payload.resolvedBattleRequest)
+    }
+
+    @Test
+    fun `findRunnable moves malformed retry payload to a safe terminal state`() {
+        val job = job()
+        val action = action(job, executionPayload(decision(505L, NOW))).also {
+            it.payloadJson = "{not-valid-json"
+            it.status = AutomationActionStatus.RETRY_WAIT
+            it.nextAttemptAt = NOW
+        }
+        Mockito.`when`(jobQueryRepository.findCurrentByAccountIdAndStatuses(ACCOUNT_ID, setOf("RUNNING")))
+            .thenReturn(job)
+        Mockito.`when`(jobQueryRepository.findOwnedByAccountIdAndIdForUpdate(ACCOUNT_ID, job.id)).thenReturn(job)
+        Mockito.`when`(actionQueryRepository.findByRequestKeyForUpdate("job:${job.id}:step:0")).thenReturn(action)
+
+        assertNull(service.findRunnable(ACCOUNT_ID))
+
+        assertEquals(AutomationActionStatus.FAILED, action.status)
+        assertEquals(NOW, action.finishedAt)
+        assertEquals("WAITING_CONFIG", job.status)
+        assertTrue(job.message.orEmpty().contains("실행 정보"))
+        assertNull(job.nextRunAt)
     }
 
     @Test
@@ -180,9 +224,9 @@ class AutomationCheckpointServiceTest {
         val job = job()
         val payload = executionPayload(decision(505L, NOW))
         val action = action(job, payload)
-        Mockito.`when`(actionQueryRepository.findById(action.id)).thenReturn(action)
+        Mockito.`when`(actionQueryRepository.findByIdForUpdate(action.id)).thenReturn(action)
 
-        service.succeed(action.id)
+        service.succeed(AutomationExecutionToken(action.id, 1))
 
         assertEquals(objectMapper.writeValueAsString(payload), action.payloadJson)
         assertEquals(AutomationActionStatus.SUCCEEDED, action.status)
@@ -196,9 +240,9 @@ class AutomationCheckpointServiceTest {
         val action = action(job, executionPayload(original)).also { it.moduleConfig = module }
         job.currentModuleConfig = module
         job.currentAction = original.map?.mapName
-        Mockito.`when`(actionQueryRepository.findById(action.id)).thenReturn(action)
+        Mockito.`when`(actionQueryRepository.findByIdForUpdate(action.id)).thenReturn(action)
 
-        service.fail(action.id, ApiException(ErrorCode.CAPTCHA_REQUIRED, "captcha"))
+        service.fail(AutomationExecutionToken(action.id, 1), ApiException(ErrorCode.CAPTCHA_REQUIRED, "captcha"))
 
         assertEquals(AutomationActionStatus.WAITING_CAPTCHA, action.status)
         assertEquals("WAITING_CAPTCHA", job.status)
@@ -218,12 +262,78 @@ class AutomationCheckpointServiceTest {
         val retry = RetryableAutomationAction(action.id, payload)
         val runnable = RunnableAutomationJob(job.id, ACCOUNT_ID, 0, retry)
         Mockito.`when`(jobQueryRepository.findOwnedByAccountIdAndIdForUpdate(ACCOUNT_ID, job.id)).thenReturn(job)
-        Mockito.`when`(actionQueryRepository.findById(action.id)).thenReturn(action)
+        Mockito.`when`(actionQueryRepository.findByIdForUpdate(action.id)).thenReturn(action)
 
-        assertEquals(true, service.resumeRetry(runnable, retry))
+        assertEquals(AutomationExecutionToken(action.id, 2), service.resumeRetry(runnable, retry, payload))
         assertEquals(AutomationActionStatus.RUNNING, action.status)
         assertEquals(2, action.attemptCount)
+        assertEquals(objectMapper.writeValueAsString(payload), action.payloadJson)
         Mockito.verify(jobQueryRepository).findOwnedByAccountIdAndIdForUpdate(ACCOUNT_ID, job.id)
+    }
+
+    @Test
+    fun `late previous attempt cannot complete or fail the newer attempt`() {
+        val job = job()
+        val payload = executionPayload(decision(505L, NOW))
+        val action = action(job, payload).also {
+            it.status = AutomationActionStatus.RETRY_WAIT
+            it.nextAttemptAt = NOW
+        }
+        val retry = RetryableAutomationAction(action.id, payload)
+        val runnable = RunnableAutomationJob(job.id, ACCOUNT_ID, 0, retry)
+        Mockito.`when`(jobQueryRepository.findOwnedByAccountIdAndIdForUpdate(ACCOUNT_ID, job.id)).thenReturn(job)
+        Mockito.`when`(actionQueryRepository.findByIdForUpdate(action.id)).thenReturn(action)
+
+        val oldToken = AutomationExecutionToken(action.id, 1)
+        val currentToken = assertNotNull(service.resumeRetry(runnable, retry, payload))
+        assertEquals(2, currentToken.attemptCount)
+
+        assertEquals(false, service.succeed(oldToken))
+        assertNull(service.fail(oldToken, IllegalStateException("late failure")))
+        assertEquals(AutomationActionStatus.RUNNING, action.status)
+        assertEquals(0, job.currentStepIndex)
+
+        assertEquals(true, service.succeed(currentToken))
+        assertEquals(AutomationActionStatus.SUCCEEDED, action.status)
+        assertEquals(1, job.currentStepIndex)
+
+        assertEquals(false, service.succeed(oldToken))
+        assertNull(service.fail(oldToken, IllegalStateException("later failure")))
+        assertEquals(AutomationActionStatus.SUCCEEDED, action.status)
+        assertEquals(1, job.currentStepIndex)
+    }
+
+    @Test
+    fun `legacy payload upgraded before execution remains retryable after waiting login`() {
+        val job = job()
+        val original = decision(505L, NOW)
+        val prepared = executionPayload(original)
+        val action = action(job, prepared).also {
+            it.payloadJson = objectMapper.writeValueAsString(original)
+            it.status = AutomationActionStatus.RETRY_WAIT
+            it.nextAttemptAt = NOW
+        }
+        Mockito.`when`(jobQueryRepository.findCurrentByAccountIdAndStatuses(ACCOUNT_ID, setOf("RUNNING")))
+            .thenReturn(job)
+        Mockito.`when`(jobQueryRepository.findOwnedByAccountIdAndIdForUpdate(ACCOUNT_ID, job.id)).thenReturn(job)
+        Mockito.`when`(actionQueryRepository.findByRequestKeyForUpdate("job:${job.id}:step:0")).thenReturn(action)
+        Mockito.`when`(actionQueryRepository.findByIdForUpdate(action.id)).thenReturn(action)
+
+        val firstRunnable = assertNotNull(service.findRunnable(ACCOUNT_ID))
+        val retry = assertNotNull(firstRunnable.retryAction)
+        assertEquals(true, retry.requiresPreparation)
+        val token = assertNotNull(service.resumeRetry(firstRunnable, retry, prepared))
+
+        service.fail(token, AutomationLoginRequiredException("로그인이 필요합니다."))
+
+        assertEquals("WAITING_LOGIN", job.status)
+        assertEquals(AutomationActionStatus.RETRY_WAIT, action.status)
+        assertEquals(objectMapper.writeValueAsString(prepared), action.payloadJson)
+
+        job.status = "RUNNING"
+        val resumed = assertNotNull(service.findRunnable(ACCOUNT_ID)?.retryAction)
+        assertEquals(false, resumed.requiresPreparation)
+        assertEquals(prepared, resumed.payload)
     }
 
     @Test
@@ -248,9 +358,10 @@ class AutomationCheckpointServiceTest {
         )
         val wakeup = Mockito.mock(AutomationAfterCommitWakeupService::class.java)
         val hook = CaptchaAutomationHook(actionQueryRepository, pushOutboxService, wakeup, TimeProvider { NOW })
-        Mockito.`when`(actionQueryRepository.findById(action.id)).thenReturn(action)
+        Mockito.`when`(actionQueryRepository.findByIdForUpdate(action.id)).thenReturn(action)
 
-        AutomationActionContext.withAction(action.id) { hook.detected(challenge) }
+        val token = AutomationExecutionToken(action.id, action.attemptCount)
+        AutomationActionContext.withToken(token) { hook.detected(challenge) }
         hook.answered(challenge)
 
         assertEquals(action, challenge.automationActionRun)
@@ -263,7 +374,59 @@ class AutomationCheckpointServiceTest {
         assertNull(job.currentModule)
         assertEquals(1, job.currentStepIndex)
         assertEquals(objectMapper.writeValueAsString(payload), action.payloadJson)
+
+        val lateChallenge = CaptchaChallengeEntity(
+            id = 78L,
+            account = job.account,
+            status = "PENDING",
+            prompt = "늦은 인증",
+            imageUrl = "late.png",
+            sourceUrl = "police",
+            answer = null,
+            createdAt = NOW,
+            answeredAt = null,
+        )
+        assertEquals(false, service.succeed(token))
+        assertNull(service.fail(token, IllegalStateException("late")))
+        AutomationActionContext.withToken(token) { hook.detected(lateChallenge) }
+
+        assertNull(lateChallenge.automationActionRun)
+        assertEquals(AutomationActionStatus.ABORTED, action.status)
+        assertEquals("RUNNING", job.status)
+        assertEquals(1, job.currentStepIndex)
         Mockito.verify(wakeup).wake(ACCOUNT_ID, "CAPTCHA_ANSWERED")
+    }
+
+    @Test
+    fun `captcha detected by a previous attempt cannot pause the current attempt`() {
+        val job = job()
+        val action = action(job, executionPayload(decision(505L, NOW))).also {
+            it.attemptCount = 2
+            it.status = AutomationActionStatus.RUNNING
+        }
+        val challenge = CaptchaChallengeEntity(
+            id = 79L,
+            account = job.account,
+            status = "PENDING",
+            prompt = "늦은 인증",
+            imageUrl = "late.png",
+            sourceUrl = "police",
+            answer = null,
+            createdAt = NOW,
+            answeredAt = null,
+        )
+        val wakeup = Mockito.mock(AutomationAfterCommitWakeupService::class.java)
+        val hook = CaptchaAutomationHook(actionQueryRepository, pushOutboxService, wakeup, TimeProvider { NOW })
+        Mockito.`when`(actionQueryRepository.findByIdForUpdate(action.id)).thenReturn(action)
+
+        AutomationActionContext.withToken(AutomationExecutionToken(action.id, 1)) {
+            hook.detected(challenge)
+        }
+
+        assertNull(challenge.automationActionRun)
+        assertEquals(AutomationActionStatus.RUNNING, action.status)
+        assertEquals("RUNNING", job.status)
+        Mockito.verifyNoInteractions(pushOutboxService)
     }
 
     private fun decision(moduleId: Long, revision: Instant) = AutomationDecision(
