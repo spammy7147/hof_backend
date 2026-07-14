@@ -11,7 +11,6 @@ import jakarta.persistence.Id
 import jakarta.persistence.JoinColumn
 import jakarta.persistence.ManyToOne
 import jakarta.persistence.Table
-import jakarta.persistence.Transient
 import java.time.Instant
 
 @Entity
@@ -46,32 +45,4 @@ class AutomationModuleConfigEntity(
 
     @Column(name = "updated_at", nullable = false)
     var updatedAt: Instant,
-) {
-    @Transient
-    @Deprecated("Temporary compatibility for the pre-normalization service; JSON is no longer persisted")
-    var settingsJson: String = "{}"
-
-    @Deprecated("Use normalized module fields and child entities")
-    constructor(
-        id: Long = 0,
-        profile: AutomationProfileEntity,
-        moduleType: AutomationModuleType,
-        enabled: Boolean,
-        priority: Int,
-        settingsJson: String,
-        createdAt: Instant,
-        updatedAt: Instant,
-    ) : this(
-        id = id,
-        profile = profile,
-        moduleType = moduleType,
-        enabled = enabled,
-        priority = priority,
-        displayName = moduleType.name,
-        thresholdPercent = null,
-        createdAt = createdAt,
-        updatedAt = updatedAt,
-    ) {
-        this.settingsJson = settingsJson
-    }
-}
+)
