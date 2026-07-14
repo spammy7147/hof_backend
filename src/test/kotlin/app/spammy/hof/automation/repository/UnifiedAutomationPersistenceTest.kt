@@ -14,6 +14,7 @@ import app.spammy.hof.automation.entity.AutomationProfileEntity
 import app.spammy.hof.automation.policy.AutomationDecision
 import app.spammy.hof.automation.policy.AutomationDecisionType
 import app.spammy.hof.automation.policy.AutomationMapCandidate
+import app.spammy.hof.automation.service.AutomationActionLockCoordinator
 import app.spammy.hof.automation.service.AutomationCheckpointService
 import app.spammy.hof.automation.service.AutomationExecutionPayload
 import app.spammy.hof.battle.dto.BattlePatternLoadRequest
@@ -199,6 +200,7 @@ class UnifiedAutomationPersistenceTest {
             jobQueryRepository = jobQueryRepository,
             actionRepository = actionRunRepository,
             actionQueryRepository = actionQueryRepository,
+            actionLockCoordinator = AutomationActionLockCoordinator(jobQueryRepository, actionQueryRepository),
             unifiedQueryRepository = queryRepository,
             objectMapper = objectMapper,
             timeProvider = TimeProvider { now },

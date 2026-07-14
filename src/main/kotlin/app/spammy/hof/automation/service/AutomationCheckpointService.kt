@@ -22,6 +22,7 @@ class AutomationCheckpointService(
     private val jobQueryRepository: AutomationJobQueryRepository,
     private val actionRepository: AutomationActionRunRepository,
     private val actionQueryRepository: AutomationActionRunQueryRepository,
+    private val actionLockCoordinator: AutomationActionLockCoordinator,
     private val unifiedQueryRepository: UnifiedAutomationQueryRepository,
     private val objectMapper: ObjectMapper,
     private val timeProvider: TimeProvider,
@@ -109,7 +110,7 @@ class AutomationCheckpointService(
             ?: return null
         val now = timeProvider.now()
         val requestKey = requestKey(job.id, job.currentStepIndex)
-        val existing = actionQueryRepository.findByRequestKey(requestKey)
+        val existing = actionQueryRepository.findByRequestKeyForUpdate(requestKey)
         if (existing?.status in setOf(AutomationActionStatus.RUNNING, AutomationActionStatus.RETRY_WAIT)) return null
         val action = existing?.apply {
             moduleConfig = module
@@ -197,16 +198,18 @@ class AutomationCheckpointService(
      */
     @Transactional
     fun succeed(token: AutomationExecutionToken): Boolean {
-        val action = findCurrentAttempt(token, "success") ?: return false
+        val locked = findCurrentAttempt(token, "success") ?: return false
+        val action = locked.action
+        val job = locked.job
         val now = timeProvider.now()
         action.status = AutomationActionStatus.SUCCEEDED
         action.finishedAt = now
         action.updatedAt = now
-        action.job.currentStepIndex += 1
-        clearCurrentAction(action.job)
-        action.job.nextRunAt = now
-        action.job.lastHeartbeatAt = now
-        action.job.updatedAt = now
+        job.currentStepIndex += 1
+        clearCurrentAction(job)
+        job.nextRunAt = now
+        job.lastHeartbeatAt = now
+        job.updatedAt = now
         return true
     }
 
@@ -216,40 +219,42 @@ class AutomationCheckpointService(
         token: AutomationExecutionToken,
         error: Throwable,
     ): Instant? {
-        val action = findCurrentAttempt(token, "failure") ?: return null
+        val locked = findCurrentAttempt(token, "failure") ?: return null
+        val action = locked.action
+        val job = locked.job
         val now = timeProvider.now()
         action.lastError = error.message?.take(2000) ?: error.javaClass.simpleName
         action.updatedAt = now
-        action.job.updatedAt = now
-        action.job.lastHeartbeatAt = now
+        job.updatedAt = now
+        job.lastHeartbeatAt = now
         val apiError = error as? ApiException
         return when (apiError?.errorCode) {
             ErrorCode.CAPTCHA_REQUIRED -> {
                 action.status = AutomationActionStatus.WAITING_CAPTCHA
-                action.job.status = "WAITING_CAPTCHA"
-                action.job.message = "인증이 필요합니다."
+                job.status = "WAITING_CAPTCHA"
+                job.message = "인증이 필요합니다."
                 null
             }
             else -> if (error is AutomationConfigurationException) {
                 action.status = AutomationActionStatus.WAITING_CONFIG
-                action.job.status = "WAITING_CONFIG"
-                action.job.message = error.message
-                action.job.nextRunAt = null
-                clearCurrentAction(action.job)
-                pushOutboxService.enqueueLoginRequired(action.job.account)
+                job.status = "WAITING_CONFIG"
+                job.message = error.message
+                job.nextRunAt = null
+                clearCurrentAction(job)
+                pushOutboxService.enqueueLoginRequired(job.account)
                 null
             } else if (error is AutomationLoginRequiredException) {
                 action.status = AutomationActionStatus.RETRY_WAIT
-                action.job.status = "WAITING_LOGIN"
-                action.job.message = error.message
-                action.job.nextRunAt = null
+                job.status = "WAITING_LOGIN"
+                job.message = error.message
+                job.nextRunAt = null
                 null
             } else {
                 val next = now.plusSeconds(retrySeconds(action.attemptCount))
                 action.status = AutomationActionStatus.RETRY_WAIT
                 action.nextAttemptAt = next
-                action.job.nextRunAt = next
-                action.job.message = "잠시 후 자동으로 다시 시도합니다."
+                job.nextRunAt = next
+                job.message = "잠시 후 자동으로 다시 시도합니다."
                 next
             }
         }
@@ -311,9 +316,9 @@ class AutomationCheckpointService(
     private fun findCurrentAttempt(
         token: AutomationExecutionToken,
         completionType: String,
-    ): AutomationActionRunEntity? {
-        val action = actionQueryRepository.findByIdForUpdate(token.actionId)
-        if (action == null) {
+    ): LockedAutomationAction? {
+        val locked = actionLockCoordinator.lock(token.actionId)
+        if (locked == null) {
             log.debug(
                 "Ignoring automation {} for missing action actionId={} attempt={}",
                 completionType,
@@ -322,6 +327,7 @@ class AutomationCheckpointService(
             )
             return null
         }
+        val action = locked.action
         if (action.status != AutomationActionStatus.RUNNING || action.attemptCount != token.attemptCount) {
             log.debug(
                 "Ignoring stale automation {} actionId={} attempt={} currentAttempt={} currentStatus={}",
@@ -333,7 +339,7 @@ class AutomationCheckpointService(
             )
             return null
         }
-        return action
+        return locked
     }
 
     private fun actionKey(decision: AutomationDecision): String? =

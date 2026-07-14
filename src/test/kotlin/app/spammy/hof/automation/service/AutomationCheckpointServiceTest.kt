@@ -12,6 +12,7 @@ import app.spammy.hof.automation.policy.AutomationDecisionType
 import app.spammy.hof.automation.policy.AutomationMapCandidate
 import app.spammy.hof.automation.repository.AutomationActionRunQueryRepository
 import app.spammy.hof.automation.repository.AutomationActionRunRepository
+import app.spammy.hof.automation.repository.AutomationActionLockTarget
 import app.spammy.hof.automation.repository.AutomationJobQueryRepository
 import app.spammy.hof.automation.repository.AutomationModuleAggregate
 import app.spammy.hof.automation.repository.UnifiedAutomationQueryRepository
@@ -36,6 +37,7 @@ class AutomationCheckpointServiceTest {
     private val jobQueryRepository = Mockito.mock(AutomationJobQueryRepository::class.java)
     private val actionRepository = Mockito.mock(AutomationActionRunRepository::class.java)
     private val actionQueryRepository = Mockito.mock(AutomationActionRunQueryRepository::class.java)
+    private val actionLockCoordinator = AutomationActionLockCoordinator(jobQueryRepository, actionQueryRepository)
     private val unifiedQueryRepository = Mockito.mock(UnifiedAutomationQueryRepository::class.java)
     private val pushOutboxService = Mockito.mock(PushOutboxService::class.java)
     private val objectMapper = jacksonObjectMapper()
@@ -43,6 +45,7 @@ class AutomationCheckpointServiceTest {
         jobQueryRepository,
         actionRepository,
         actionQueryRepository,
+        actionLockCoordinator,
         unifiedQueryRepository,
         objectMapper,
         TimeProvider { currentTime },
@@ -59,7 +62,7 @@ class AutomationCheckpointServiceTest {
         Mockito.`when`(jobQueryRepository.findOwnedByAccountIdAndIdForUpdate(ACCOUNT_ID, job.id)).thenReturn(job)
         Mockito.`when`(unifiedQueryRepository.findModule(ACCOUNT_ID, module.id))
             .thenReturn(AutomationModuleAggregate(module, emptyList(), emptyList()))
-        Mockito.`when`(actionQueryRepository.findByRequestKey("job:${job.id}:step:0")).thenReturn(null)
+        Mockito.`when`(actionQueryRepository.findByRequestKeyForUpdate("job:${job.id}:step:0")).thenReturn(null)
         var savedAction: AutomationActionRunEntity? = null
         Mockito.`when`(actionRepository.save(anyAction())).thenAnswer {
             (it.arguments[0] as AutomationActionRunEntity).also { action -> savedAction = action }
@@ -224,12 +227,13 @@ class AutomationCheckpointServiceTest {
         val job = job()
         val payload = executionPayload(decision(505L, NOW))
         val action = action(job, payload)
-        Mockito.`when`(actionQueryRepository.findByIdForUpdate(action.id)).thenReturn(action)
+        stubActionLock(action)
 
         service.succeed(AutomationExecutionToken(action.id, 1))
 
         assertEquals(objectMapper.writeValueAsString(payload), action.payloadJson)
         assertEquals(AutomationActionStatus.SUCCEEDED, action.status)
+        verifyJobThenActionLock(action)
     }
 
     @Test
@@ -240,7 +244,7 @@ class AutomationCheckpointServiceTest {
         val action = action(job, executionPayload(original)).also { it.moduleConfig = module }
         job.currentModuleConfig = module
         job.currentAction = original.map?.mapName
-        Mockito.`when`(actionQueryRepository.findByIdForUpdate(action.id)).thenReturn(action)
+        stubActionLock(action)
 
         service.fail(AutomationExecutionToken(action.id, 1), ApiException(ErrorCode.CAPTCHA_REQUIRED, "captcha"))
 
@@ -248,6 +252,7 @@ class AutomationCheckpointServiceTest {
         assertEquals("WAITING_CAPTCHA", job.status)
         assertEquals(module.id, job.currentModuleConfig?.id)
         assertEquals(original.map?.mapName, job.currentAction)
+        verifyJobThenActionLock(action)
     }
 
     @Test
@@ -283,6 +288,7 @@ class AutomationCheckpointServiceTest {
         val runnable = RunnableAutomationJob(job.id, ACCOUNT_ID, 0, retry)
         Mockito.`when`(jobQueryRepository.findOwnedByAccountIdAndIdForUpdate(ACCOUNT_ID, job.id)).thenReturn(job)
         Mockito.`when`(actionQueryRepository.findByIdForUpdate(action.id)).thenReturn(action)
+        stubActionLock(action)
 
         val oldToken = AutomationExecutionToken(action.id, 1)
         val currentToken = assertNotNull(service.resumeRetry(runnable, retry, payload))
@@ -318,6 +324,7 @@ class AutomationCheckpointServiceTest {
         Mockito.`when`(jobQueryRepository.findOwnedByAccountIdAndIdForUpdate(ACCOUNT_ID, job.id)).thenReturn(job)
         Mockito.`when`(actionQueryRepository.findByRequestKeyForUpdate("job:${job.id}:step:0")).thenReturn(action)
         Mockito.`when`(actionQueryRepository.findByIdForUpdate(action.id)).thenReturn(action)
+        stubActionLock(action)
 
         val firstRunnable = assertNotNull(service.findRunnable(ACCOUNT_ID))
         val retry = assertNotNull(firstRunnable.retryAction)
@@ -357,8 +364,8 @@ class AutomationCheckpointServiceTest {
             answeredAt = null,
         )
         val wakeup = Mockito.mock(AutomationAfterCommitWakeupService::class.java)
-        val hook = CaptchaAutomationHook(actionQueryRepository, pushOutboxService, wakeup, TimeProvider { NOW })
-        Mockito.`when`(actionQueryRepository.findByIdForUpdate(action.id)).thenReturn(action)
+        val hook = CaptchaAutomationHook(actionLockCoordinator, pushOutboxService, wakeup, TimeProvider { NOW })
+        stubActionLock(action)
 
         val token = AutomationExecutionToken(action.id, action.attemptCount)
         AutomationActionContext.withToken(token) { hook.detected(challenge) }
@@ -416,8 +423,8 @@ class AutomationCheckpointServiceTest {
             answeredAt = null,
         )
         val wakeup = Mockito.mock(AutomationAfterCommitWakeupService::class.java)
-        val hook = CaptchaAutomationHook(actionQueryRepository, pushOutboxService, wakeup, TimeProvider { NOW })
-        Mockito.`when`(actionQueryRepository.findByIdForUpdate(action.id)).thenReturn(action)
+        val hook = CaptchaAutomationHook(actionLockCoordinator, pushOutboxService, wakeup, TimeProvider { NOW })
+        stubActionLock(action)
 
         AutomationActionContext.withToken(AutomationExecutionToken(action.id, 1)) {
             hook.detected(challenge)
@@ -427,6 +434,23 @@ class AutomationCheckpointServiceTest {
         assertEquals(AutomationActionStatus.RUNNING, action.status)
         assertEquals("RUNNING", job.status)
         Mockito.verifyNoInteractions(pushOutboxService)
+        verifyJobThenActionLock(action)
+    }
+
+    private fun stubActionLock(action: AutomationActionRunEntity) {
+        val target = AutomationActionLockTarget(action.job.id, action.job.account.id)
+        Mockito.`when`(actionQueryRepository.findLockTargetById(action.id)).thenReturn(target)
+        Mockito.`when`(
+            jobQueryRepository.findOwnedByAccountIdAndIdForUpdate(target.accountId, target.jobId),
+        ).thenReturn(action.job)
+        Mockito.`when`(actionQueryRepository.findByIdForUpdate(action.id)).thenReturn(action)
+    }
+
+    private fun verifyJobThenActionLock(action: AutomationActionRunEntity) {
+        val order = Mockito.inOrder(actionQueryRepository, jobQueryRepository)
+        order.verify(actionQueryRepository).findLockTargetById(action.id)
+        order.verify(jobQueryRepository).findOwnedByAccountIdAndIdForUpdate(action.job.account.id, action.job.id)
+        order.verify(actionQueryRepository).findByIdForUpdate(action.id)
     }
 
     private fun decision(moduleId: Long, revision: Instant) = AutomationDecision(

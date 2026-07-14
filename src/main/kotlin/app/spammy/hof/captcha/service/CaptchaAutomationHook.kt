@@ -1,8 +1,8 @@
 package app.spammy.hof.captcha.service
 
 import app.spammy.hof.automation.entity.AutomationActionStatus
-import app.spammy.hof.automation.repository.AutomationActionRunQueryRepository
 import app.spammy.hof.automation.service.AutomationActionContext
+import app.spammy.hof.automation.service.AutomationActionLockCoordinator
 import app.spammy.hof.automation.service.AutomationAfterCommitWakeupService
 import app.spammy.hof.captcha.entity.CaptchaChallengeEntity
 import app.spammy.hof.common.time.TimeProvider
@@ -15,7 +15,7 @@ import org.slf4j.LoggerFactory
 /** 자동화 action과 전역 캡차 challenge의 일시정지·재개 상태를 연결한다. */
 @Component
 class CaptchaAutomationHook(
-    private val actionQueryRepository: AutomationActionRunQueryRepository,
+    private val actionLockCoordinator: AutomationActionLockCoordinator,
     private val pushOutboxService: PushOutboxService,
     private val afterCommitWakeupService: AutomationAfterCommitWakeupService,
     private val timeProvider: TimeProvider,
@@ -25,7 +25,10 @@ class CaptchaAutomationHook(
     /** 현재 토큰의 RUNNING attempt만 캡차 대기로 연결하고 사용자 알림 outbox를 생성한다. */
     fun detected(challenge: CaptchaChallengeEntity) {
         val token = AutomationActionContext.currentToken() ?: return
-        val action = actionQueryRepository.findByIdForUpdate(token.actionId) ?: return
+        val locked = actionLockCoordinator.lock(token.actionId) ?: return
+        val action = locked.action
+        val job = locked.job
+        if (job.account.id != challenge.account.id) return
         if (action.status != AutomationActionStatus.RUNNING || action.attemptCount != token.attemptCount) {
             log.debug(
                 "Ignoring stale captcha detection actionId={} attempt={} currentAttempt={} currentStatus={}",
@@ -38,10 +41,10 @@ class CaptchaAutomationHook(
         }
         challenge.automationActionRun = action
         action.status = AutomationActionStatus.WAITING_CAPTCHA
-        action.job.status = "WAITING_CAPTCHA"
-        action.job.message = "인증이 필요합니다."
-        action.job.nextRunAt = null
-        action.job.updatedAt = timeProvider.now()
+        job.status = "WAITING_CAPTCHA"
+        job.message = "인증이 필요합니다."
+        job.nextRunAt = null
+        job.updatedAt = timeProvider.now()
         pushOutboxService.enqueueCaptchaRequired(challenge.account, challenge.id)
     }
 
@@ -52,22 +55,26 @@ class CaptchaAutomationHook(
      * [app.spammy.hof.automation.service.AutomationSnapshotLoader] 조회에 반영된다.
      */
     fun answered(challenge: CaptchaChallengeEntity) {
-        val action = challenge.automationActionRun ?: return
+        val linkedAction = challenge.automationActionRun ?: return
+        val locked = actionLockCoordinator.lock(linkedAction.id) ?: return
+        val action = locked.action
+        val job = locked.job
+        if (job.account.id != challenge.account.id) return
         if (action.status != AutomationActionStatus.WAITING_CAPTCHA) return
         val now = timeProvider.now()
         action.status = AutomationActionStatus.ABORTED
         action.nextAttemptAt = null
         action.finishedAt = now
         action.updatedAt = now
-        action.job.status = "RUNNING"
-        action.job.currentStepIndex += 1
-        action.job.currentModule = null
-        action.job.currentModuleConfig = null
-        action.job.currentAction = null
-        action.job.message = "인증이 완료되어 최신 설정으로 자동화를 이어갑니다."
-        action.job.nextRunAt = now
-        action.job.lastHeartbeatAt = now
-        action.job.updatedAt = now
+        job.status = "RUNNING"
+        job.currentStepIndex += 1
+        job.currentModule = null
+        job.currentModuleConfig = null
+        job.currentAction = null
+        job.message = "인증이 완료되어 최신 설정으로 자동화를 이어갑니다."
+        job.nextRunAt = now
+        job.lastHeartbeatAt = now
+        job.updatedAt = now
         wakeAfterCommit(challenge.account.id)
     }
 
