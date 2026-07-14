@@ -299,8 +299,8 @@ class UnifiedAutomationService(
     /**
      * HTTP Bean Validation을 거치지 않는 내부 호출도 동일하게 보호하도록 문자열과 목록을 정규화한다.
      *
-     * 유형별 최소 설정과 목록 내 자연키·실행 순서 중복을 영속화 전에 거절해 DB 제약 오류가 사용자에게
-     * 노출되지 않게 한다.
+     * 유형별 필수·금지 설정과 목록 내 자연키·실행 순서 중복을 영속화 전에 거절해, 사용하지 않는 값이
+     * 조용히 버려지거나 DB 제약 오류가 사용자에게 노출되지 않게 한다.
      */
     private fun normalizeAndValidate(
         moduleType: AutomationModuleType,
@@ -317,6 +317,7 @@ class UnifiedAutomationService(
         if (maps.size > MAX_SETTING_ITEMS || quests.size > MAX_SETTING_ITEMS) {
             invalid("자동화 설정은 항목별로 최대 100개까지 저장할 수 있습니다.")
         }
+        validateTypeSpecificFields(moduleType, thresholdPercent, maps, quests)
         val normalizedMaps = normalizeMaps(maps, "모듈")
         val normalizedQuests = quests.map { quest ->
             val questCode = quest.questCode.trim()
@@ -339,21 +340,79 @@ class UnifiedAutomationService(
         } else {
             null
         }
+        return NormalizedSettings(name, enabled, normalizedThreshold, normalizedMaps, normalizedQuests)
+    }
+
+    /**
+     * 모듈 유형이 실제로 소비하는 필드만 받도록 요청 형태를 검증한다.
+     *
+     * 이 검증은 문자열·참조 정규화보다 먼저 실행한다. 사용하지 않는 필드에 잘못된 맵 코드 등이 함께
+     * 들어와도 참조 오류 대신 제거해야 할 설정을 직접 안내하며, create와 update가 한 규칙을 공유한다.
+     */
+    private fun validateTypeSpecificFields(
+        moduleType: AutomationModuleType,
+        thresholdPercent: Int?,
+        maps: List<AutomationModuleMapRequest>,
+        quests: List<AutomationModuleQuestRequest>,
+    ) {
         when (moduleType) {
-            AutomationModuleType.KEY_QUEST,
-            AutomationModuleType.OTHER_QUEST,
-            -> if (normalizedQuests.isEmpty()) invalid("실행할 퀘스트를 한 개 이상 선택해 주세요.")
+            AutomationModuleType.TIME_BURN -> {
+                if (quests.isNotEmpty()) {
+                    invalid("Time 자동 소모에서는 퀘스트를 사용하지 않습니다. 퀘스트 설정을 제거해 주세요.")
+                }
+            }
 
-            AutomationModuleType.COOLDOWN_ADVENTURE,
-            AutomationModuleType.DAILY_ADVENTURE,
-            -> if (normalizedMaps.isEmpty()) invalid("실행할 맵을 한 개 이상 선택해 주세요.")
+            AutomationModuleType.KEY_QUEST -> {
+                if (maps.isNotEmpty()) {
+                    invalid("열쇠 퀘스트에서는 모듈 맵을 사용하지 않습니다. 맵 설정을 제거해 주세요.")
+                }
+                if (thresholdPercent != null) {
+                    invalid("열쇠 퀘스트에서는 Time 기준을 사용하지 않습니다. Time 기준 설정을 제거해 주세요.")
+                }
+                if (quests.isEmpty()) invalid("실행할 퀘스트를 한 개 이상 선택해 주세요.")
+            }
 
-            AutomationModuleType.TIME_BURN -> Unit
+            AutomationModuleType.COOLDOWN_ADVENTURE -> {
+                validateAdventureFields("쿨다운 모험맵", thresholdPercent, maps, quests)
+            }
+
+            AutomationModuleType.DAILY_ADVENTURE -> {
+                validateAdventureFields("일일 제한 모험맵", thresholdPercent, maps, quests)
+            }
+
+            AutomationModuleType.OTHER_QUEST -> {
+                if (maps.isNotEmpty()) {
+                    invalid("일반 퀘스트에서는 모듈 맵을 사용하지 않습니다. 맵 설정을 제거해 주세요.")
+                }
+                if (quests.any { it.maps.isNotEmpty() }) {
+                    invalid("일반 퀘스트에서는 퀘스트별 맵을 사용하지 않습니다. 퀘스트별 맵 설정을 제거해 주세요.")
+                }
+                if (thresholdPercent != null) {
+                    invalid("일반 퀘스트에서는 Time 기준을 사용하지 않습니다. Time 기준 설정을 제거해 주세요.")
+                }
+                if (quests.isEmpty()) invalid("실행할 퀘스트를 한 개 이상 선택해 주세요.")
+            }
+
             AutomationModuleType.UNION,
             AutomationModuleType.NORMAL_MAP,
             -> invalid("지원하지 않는 자동화 유형입니다.")
         }
-        return NormalizedSettings(name, enabled, normalizedThreshold, normalizedMaps, normalizedQuests)
+    }
+
+    /** 쿨다운·일일 모험이 공유하는 필수 맵과 금지 필드 규칙을 같은 사용자 문구 형식으로 검사한다. */
+    private fun validateAdventureFields(
+        typeLabel: String,
+        thresholdPercent: Int?,
+        maps: List<AutomationModuleMapRequest>,
+        quests: List<AutomationModuleQuestRequest>,
+    ) {
+        if (quests.isNotEmpty()) {
+            invalid("${typeLabel}에서는 퀘스트를 사용하지 않습니다. 퀘스트 설정을 제거해 주세요.")
+        }
+        if (thresholdPercent != null) {
+            invalid("${typeLabel}에서는 Time 기준을 사용하지 않습니다. Time 기준 설정을 제거해 주세요.")
+        }
+        if (maps.isEmpty()) invalid("실행할 맵을 한 개 이상 선택해 주세요.")
     }
 
     /** 맵 문자열과 순서를 정규화하고 같은 목록 안의 맵·순서 중복을 제거한다. */

@@ -338,6 +338,142 @@ class UnifiedAutomationServiceTest {
     }
 
     @Test
+    fun createAndUpdateRejectEveryInvalidTypeSpecificFieldCombination() {
+        val profile = profile()
+        val battleMap = battleMap("battle_map", "gb0", "고블린")
+        val selectedMap = mapRequest(battleMap, presetId = null, executionOrder = 0)
+        val selectedQuest = AutomationModuleQuestRequest("0571", 0)
+        val cases = listOf(
+            InvalidTypeSpecificSettingsCase(
+                label = "Time 자동 소모의 기준 누락",
+                moduleType = AutomationModuleType.TIME_BURN,
+                thresholdPercent = null,
+                maps = listOf(selectedMap),
+                expectedMessagePart = "1%에서 100% 사이",
+            ),
+            InvalidTypeSpecificSettingsCase(
+                label = "Time 자동 소모의 기준 범위 초과",
+                moduleType = AutomationModuleType.TIME_BURN,
+                thresholdPercent = 101,
+                maps = listOf(selectedMap),
+                expectedMessagePart = "1%에서 100% 사이",
+            ),
+            InvalidTypeSpecificSettingsCase(
+                label = "Time 자동 소모의 퀘스트",
+                moduleType = AutomationModuleType.TIME_BURN,
+                thresholdPercent = 90,
+                maps = listOf(selectedMap),
+                quests = listOf(selectedQuest),
+                expectedMessagePart = "퀘스트 설정을 제거",
+            ),
+            InvalidTypeSpecificSettingsCase(
+                label = "열쇠 퀘스트의 모듈 맵",
+                moduleType = AutomationModuleType.KEY_QUEST,
+                thresholdPercent = null,
+                maps = listOf(selectedMap),
+                quests = listOf(selectedQuest),
+                expectedMessagePart = "맵 설정을 제거",
+            ),
+            InvalidTypeSpecificSettingsCase(
+                label = "열쇠 퀘스트의 Time 기준",
+                moduleType = AutomationModuleType.KEY_QUEST,
+                thresholdPercent = 90,
+                quests = listOf(selectedQuest),
+                expectedMessagePart = "Time 기준 설정을 제거",
+            ),
+            InvalidTypeSpecificSettingsCase(
+                label = "열쇠 퀘스트의 퀘스트 누락",
+                moduleType = AutomationModuleType.KEY_QUEST,
+                thresholdPercent = null,
+                expectedMessagePart = "퀘스트를 한 개 이상 선택",
+            ),
+            InvalidTypeSpecificSettingsCase(
+                label = "쿨다운 모험맵의 퀘스트",
+                moduleType = AutomationModuleType.COOLDOWN_ADVENTURE,
+                thresholdPercent = null,
+                maps = listOf(selectedMap),
+                quests = listOf(selectedQuest),
+                expectedMessagePart = "퀘스트 설정을 제거",
+            ),
+            InvalidTypeSpecificSettingsCase(
+                label = "쿨다운 모험맵의 Time 기준",
+                moduleType = AutomationModuleType.COOLDOWN_ADVENTURE,
+                thresholdPercent = 90,
+                maps = listOf(selectedMap),
+                expectedMessagePart = "Time 기준 설정을 제거",
+            ),
+            InvalidTypeSpecificSettingsCase(
+                label = "쿨다운 모험맵의 맵 누락",
+                moduleType = AutomationModuleType.COOLDOWN_ADVENTURE,
+                thresholdPercent = null,
+                expectedMessagePart = "맵을 한 개 이상 선택",
+            ),
+            InvalidTypeSpecificSettingsCase(
+                label = "일일 제한 모험맵의 퀘스트",
+                moduleType = AutomationModuleType.DAILY_ADVENTURE,
+                thresholdPercent = null,
+                maps = listOf(selectedMap),
+                quests = listOf(selectedQuest),
+                expectedMessagePart = "퀘스트 설정을 제거",
+            ),
+            InvalidTypeSpecificSettingsCase(
+                label = "일일 제한 모험맵의 Time 기준",
+                moduleType = AutomationModuleType.DAILY_ADVENTURE,
+                thresholdPercent = 90,
+                maps = listOf(selectedMap),
+                expectedMessagePart = "Time 기준 설정을 제거",
+            ),
+            InvalidTypeSpecificSettingsCase(
+                label = "일일 제한 모험맵의 맵 누락",
+                moduleType = AutomationModuleType.DAILY_ADVENTURE,
+                thresholdPercent = null,
+                expectedMessagePart = "맵을 한 개 이상 선택",
+            ),
+            InvalidTypeSpecificSettingsCase(
+                label = "일반 퀘스트의 모듈 맵",
+                moduleType = AutomationModuleType.OTHER_QUEST,
+                thresholdPercent = null,
+                maps = listOf(selectedMap),
+                quests = listOf(selectedQuest),
+                expectedMessagePart = "맵 설정을 제거",
+            ),
+            InvalidTypeSpecificSettingsCase(
+                label = "일반 퀘스트의 퀘스트별 맵",
+                moduleType = AutomationModuleType.OTHER_QUEST,
+                thresholdPercent = null,
+                quests = listOf(selectedQuest.copy(maps = listOf(selectedMap))),
+                expectedMessagePart = "퀘스트별 맵 설정을 제거",
+            ),
+            InvalidTypeSpecificSettingsCase(
+                label = "일반 퀘스트의 Time 기준",
+                moduleType = AutomationModuleType.OTHER_QUEST,
+                thresholdPercent = 90,
+                quests = listOf(selectedQuest),
+                expectedMessagePart = "Time 기준 설정을 제거",
+            ),
+            InvalidTypeSpecificSettingsCase(
+                label = "일반 퀘스트의 퀘스트 누락",
+                moduleType = AutomationModuleType.OTHER_QUEST,
+                thresholdPercent = null,
+                expectedMessagePart = "퀘스트를 한 개 이상 선택",
+            ),
+        )
+        stubInvalidTypeSpecificSettingsPersistence(profile, battleMap)
+
+        cases.forEachIndexed { index, case ->
+            assertInvalidTypeSpecificCreate(case)
+
+            val config = module(
+                profile = profile,
+                id = 1_000L + index,
+                type = case.moduleType,
+            )
+            Mockito.`when`(queryRepository.findModule(ACCOUNT_ID, config.id)).thenReturn(aggregate(config))
+            assertInvalidTypeSpecificUpdate(config.id, case)
+        }
+    }
+
+    @Test
     fun createRejectsDuplicateMapsQuestsAndExecutionOrders() {
         val duplicatedMap = AutomationModuleMapRequest("battle_map", "gb0", 1L, 0)
         val cases = listOf(
@@ -409,6 +545,67 @@ class UnifiedAutomationServiceTest {
         Mockito.`when`(moduleConfigRepository.save(anyModule())).thenAnswer { invocation ->
             copyModule(invocation.arguments[0] as AutomationModuleConfigEntity, id)
         }
+    }
+
+    /**
+     * 금지 필드 테스트가 참조 조회나 mock 기본값 때문에 실패하지 않도록 정상 저장 경로를 준비한다.
+     * 검증이 누락되면 요청이 끝까지 성공하므로 assertFailsWith가 정확히 회귀를 감지한다.
+     */
+    private fun stubInvalidTypeSpecificSettingsPersistence(
+        profile: AutomationProfileEntity,
+        battleMap: BattleMapEntity,
+    ) {
+        Mockito.`when`(queryRepository.findProfile(ACCOUNT_ID)).thenReturn(profile)
+        Mockito.`when`(queryRepository.findModules(profile.id)).thenReturn(emptyList())
+        Mockito.`when`(
+            battleMapQueryRepository.findMapsByCategoryIdAndMapCodePairs(setOf(battleMap.categoryId to battleMap.mapCode)),
+        ).thenReturn(listOf(battleMap))
+        Mockito.`when`(moduleConfigRepository.save(anyModule())).thenAnswer { it.arguments[0] }
+        Mockito.`when`(moduleQuestRepository.save(anyQuest())).thenAnswer { it.arguments[0] }
+        Mockito.`when`(profileRepository.save(anyProfile())).thenAnswer { it.arguments[0] }
+    }
+
+    /** create와 update가 같은 유형 검증과 사용자 안내 문구를 제공하는지 create 경로에서 확인한다. */
+    private fun assertInvalidTypeSpecificCreate(case: InvalidTypeSpecificSettingsCase) {
+        val failure = assertFailsWith<ApiException>(case.label) {
+            service.createModule(
+                ACCOUNT_ID,
+                CreateAutomationModuleRequest(
+                    displayName = case.label,
+                    moduleType = case.moduleType,
+                    enabled = true,
+                    thresholdPercent = case.thresholdPercent,
+                    maps = case.maps,
+                    quests = case.quests,
+                ),
+            )
+        }
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.errorCode, case.label)
+        assertTrue(failure.message.contains(case.expectedMessagePart), "${case.label}: ${failure.message}")
+    }
+
+    /** create와 동일한 금지 필드 규칙이 기존 모듈의 전체 교체 요청에도 적용되는지 확인한다. */
+    private fun assertInvalidTypeSpecificUpdate(
+        moduleId: Long,
+        case: InvalidTypeSpecificSettingsCase,
+    ) {
+        val failure = assertFailsWith<ApiException>(case.label) {
+            service.updateModule(
+                ACCOUNT_ID,
+                moduleId,
+                UpdateAutomationModuleRequest(
+                    displayName = case.label,
+                    enabled = true,
+                    thresholdPercent = case.thresholdPercent,
+                    maps = case.maps,
+                    quests = case.quests,
+                ),
+            )
+        }
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.errorCode, case.label)
+        assertTrue(failure.message.contains(case.expectedMessagePart), "${case.label}: ${failure.message}")
     }
 
     @Suppress("UNCHECKED_CAST")
@@ -558,6 +755,15 @@ class UnifiedAutomationServiceTest {
 
     private fun anyJob(): AutomationJobEntity =
         Mockito.any(AutomationJobEntity::class.java) ?: job(profile(), "RUNNING")
+
+    private data class InvalidTypeSpecificSettingsCase(
+        val label: String,
+        val moduleType: AutomationModuleType,
+        val thresholdPercent: Int?,
+        val maps: List<AutomationModuleMapRequest> = emptyList(),
+        val quests: List<AutomationModuleQuestRequest> = emptyList(),
+        val expectedMessagePart: String,
+    )
 
     private companion object {
         const val ACCOUNT_ID = 7L
