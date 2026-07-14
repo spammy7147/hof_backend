@@ -35,6 +35,7 @@ import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.party.entity.PartyPresetEntity
 import app.spammy.hof.party.repository.PartyPresetQueryRepository
 import java.time.Instant
+import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.transaction.support.TransactionSynchronization
@@ -587,7 +588,9 @@ class UnifiedAutomationService(
      * 설정과 job 변경이 실제 DB에 커밋된 뒤에만 실행기를 깨운다.
      *
      * 트랜잭션 동기화가 활성화된 운영 요청에서는 rollback된 설정을 실행기가 읽지 않도록 afterCommit에
-     * 등록한다. 서비스 단위 테스트나 배치 도구처럼 동기화가 없는 호출은 wake를 즉시 수행한다.
+     * 등록한다. RUNNING 또는 설정 보완으로 재개된 job은 callback 전에 `nextRunAt=now`가 커밋되므로,
+     * wake 전달이 실패해도 [app.spammy.hof.automation.recovery.AutomationRecoveryScheduler]가 due job을
+     * 다시 전달한다. 서비스 단위 테스트나 배치 도구처럼 동기화가 없는 호출도 같은 격리 경계를 쓴다.
      */
     private fun wakeAfterCommit(
         accountId: Long,
@@ -596,16 +599,33 @@ class UnifiedAutomationService(
         if (!TransactionSynchronizationManager.isActualTransactionActive() ||
             !TransactionSynchronizationManager.isSynchronizationActive()
         ) {
-            afterCommitWakeupService.wake(accountId, reason)
+            deliverWakeSafely(accountId, reason)
             return
         }
         TransactionSynchronizationManager.registerSynchronization(
             object : TransactionSynchronization {
                 override fun afterCommit() {
-                    afterCommitWakeupService.wake(accountId, reason)
+                    deliverWakeSafely(accountId, reason)
                 }
             },
         )
+    }
+
+    /** 이미 커밋된 API 결과를 wake 전달 실패로 실패 처리하지 않고 복구 스케줄러에 재시도를 맡긴다. */
+    private fun deliverWakeSafely(
+        accountId: Long,
+        reason: String,
+    ) {
+        try {
+            afterCommitWakeupService.wake(accountId, reason)
+        } catch (exception: Exception) {
+            logger.warn(
+                "Automation wake delivery failed accountId={} reason={} error={}",
+                accountId,
+                reason,
+                exception.javaClass.name,
+            )
+        }
     }
 
     /** 프로필 수정 시각을 모듈 구성 변경 시각과 맞춘다. */
@@ -777,6 +797,7 @@ class UnifiedAutomationService(
     )
 
     private companion object {
+        val logger = LoggerFactory.getLogger(UnifiedAutomationService::class.java)
         const val MAX_DISPLAY_NAME_LENGTH = 50
         const val MAX_CATEGORY_ID_LENGTH = 50
         const val MAX_MAP_CODE_LENGTH = 100

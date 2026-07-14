@@ -27,7 +27,7 @@ class AutomationModuleReadinessEvaluator(
             .groupBy { it.preset.id }
         val executablePresetIds = presetIds.filterTo(mutableSetOf()) { presetId ->
             val assignedMembers = membersByPresetId[presetId].orEmpty().filter { it.character != null }
-            assignedMembers.isNotEmpty() && assignedMembers.all { it.patternSlot != null }
+            assignedMembers.isNotEmpty() && assignedMembers.all { it.patternSlot?.canLoad == true }
         }
         val readyModuleIds = modules
             .filter { it.isReadyForExecution(executablePresetIds) }

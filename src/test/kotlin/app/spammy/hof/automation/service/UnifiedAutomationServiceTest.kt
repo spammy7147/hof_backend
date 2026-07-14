@@ -39,8 +39,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.junit.jupiter.api.assertDoesNotThrow
 import org.mockito.ArgumentCaptor
 import org.mockito.Mockito
+import org.springframework.transaction.support.TransactionSynchronization
 import org.springframework.transaction.support.TransactionSynchronizationManager
 
 class UnifiedAutomationServiceTest {
@@ -444,6 +446,28 @@ class UnifiedAutomationServiceTest {
     }
 
     @Test
+    fun waitingConfigRemainsBlockedWhenTheAssignedPatternCannotBeLoaded() {
+        val profile = profile()
+        val preset = preset(342L)
+        val config = module(profile, id = 342L, type = AutomationModuleType.TIME_BURN)
+        val configured = aggregate(config, maps = listOf(moduleMap(config, preset, "unloadable-map")))
+        val waiting = job(profile, "WAITING_CONFIG")
+        Mockito.`when`(queryRepository.findProfileForUpdate(ACCOUNT_ID)).thenReturn(profile)
+        Mockito.`when`(queryRepository.findModules(profile.id)).thenReturn(listOf(configured))
+        Mockito.`when`(queryRepository.findCurrentJob(ACCOUNT_ID)).thenReturn(waiting)
+        Mockito.`when`(partyPresetQueryRepository.findMembersByPresetIds(setOf(preset.id))).thenReturn(
+            listOf(presetMember(preset, withCharacter = true, withPattern = true, canLoad = false)),
+        )
+
+        service.reorderModules(ACCOUNT_ID, ReorderAutomationModulesRequest(listOf(config.id)))
+
+        assertEquals("WAITING_CONFIG", waiting.status)
+        assertEquals(null, waiting.nextRunAt)
+        Mockito.verify(jobRepository, Mockito.never()).save(waiting)
+        Mockito.verifyNoInteractions(afterCommitWakeupService)
+    }
+
+    @Test
     fun moduleMutationRegistersWakeAfterCommitAndKeepsRunningActionUntouched() {
         val profile = profile()
         val ready = readyOtherQuestModule(profile, id = 351L)
@@ -463,6 +487,60 @@ class UnifiedAutomationServiceTest {
             assertEquals(1, synchronizations.size)
             synchronizations.forEach { it.afterCommit() }
             Mockito.verify(afterCommitWakeupService).wake(ACCOUNT_ID, "MODULES_UPDATED")
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization()
+            TransactionSynchronizationManager.setActualTransactionActive(false)
+        }
+    }
+
+    @Test
+    fun afterCommitWakeFailureDoesNotEscapeOrChangeTheCommittedJobState() {
+        val profile = profile()
+        val ready = readyOtherQuestModule(profile, id = 352L)
+        val running = job(profile, "RUNNING").apply {
+            currentAction = "BATTLE:in-flight"
+            nextRunAt = NOW
+        }
+        Mockito.`when`(queryRepository.findProfileForUpdate(ACCOUNT_ID)).thenReturn(profile)
+        Mockito.`when`(queryRepository.findModules(profile.id)).thenReturn(listOf(ready))
+        Mockito.`when`(queryRepository.findCurrentJob(ACCOUNT_ID)).thenReturn(running)
+        Mockito.doThrow(IllegalStateException("delivery failed"))
+            .`when`(afterCommitWakeupService).wake(ACCOUNT_ID, "MODULES_UPDATED")
+        TransactionSynchronizationManager.setActualTransactionActive(true)
+        TransactionSynchronizationManager.initSynchronization()
+
+        try {
+            service.reorderModules(ACCOUNT_ID, ReorderAutomationModulesRequest(listOf(ready.config.id)))
+            val synchronizations = TransactionSynchronizationManager.getSynchronizations()
+
+            assertDoesNotThrow { synchronizations.forEach { it.afterCommit() } }
+            assertEquals("RUNNING", running.status)
+            assertEquals("BATTLE:in-flight", running.currentAction)
+            assertEquals(NOW, running.nextRunAt)
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization()
+            TransactionSynchronizationManager.setActualTransactionActive(false)
+        }
+    }
+
+    @Test
+    fun rolledBackModuleMutationDoesNotDeliverTheRegisteredWake() {
+        val profile = profile()
+        val ready = readyOtherQuestModule(profile, id = 353L)
+        val running = job(profile, "RUNNING")
+        Mockito.`when`(queryRepository.findProfileForUpdate(ACCOUNT_ID)).thenReturn(profile)
+        Mockito.`when`(queryRepository.findModules(profile.id)).thenReturn(listOf(ready))
+        Mockito.`when`(queryRepository.findCurrentJob(ACCOUNT_ID)).thenReturn(running)
+        TransactionSynchronizationManager.setActualTransactionActive(true)
+        TransactionSynchronizationManager.initSynchronization()
+
+        try {
+            service.reorderModules(ACCOUNT_ID, ReorderAutomationModulesRequest(listOf(ready.config.id)))
+            TransactionSynchronizationManager.getSynchronizations().forEach {
+                it.afterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK)
+            }
+
+            Mockito.verifyNoInteractions(afterCommitWakeupService)
         } finally {
             TransactionSynchronizationManager.clearSynchronization()
             TransactionSynchronizationManager.setActualTransactionActive(false)
@@ -812,6 +890,28 @@ class UnifiedAutomationServiceTest {
         Mockito.verify(partyPresetQueryRepository, Mockito.times(1)).findMembersByPresetIds(setOf(preset.id))
     }
 
+    @Test
+    fun startRejectsWhenTheAssignedPatternCannotBeLoaded() {
+        val profile = profile()
+        val preset = preset(503L)
+        val config = module(profile, id = 503L, type = AutomationModuleType.TIME_BURN)
+        val configured = aggregate(
+            config,
+            maps = listOf(moduleMap(config, preset, "unloadable-pattern-map")),
+        )
+        Mockito.`when`(accountQueryRepository.findByIdForUpdate(ACCOUNT_ID)).thenReturn(profile.account)
+        Mockito.`when`(queryRepository.findProfileForUpdate(ACCOUNT_ID)).thenReturn(profile)
+        Mockito.`when`(queryRepository.findModules(profile.id)).thenReturn(listOf(configured))
+        Mockito.`when`(partyPresetQueryRepository.findMembersByPresetIds(setOf(preset.id))).thenReturn(
+            listOf(presetMember(preset, withCharacter = true, withPattern = true, canLoad = false)),
+        )
+
+        val failure = assertFailsWith<ApiException> { service.start(ACCOUNT_ID) }
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.errorCode)
+        Mockito.verify(jobRepository, Mockito.never()).save(anyJob())
+    }
+
     private fun stubProfileAndCreate(
         profile: AutomationProfileEntity,
         id: Long,
@@ -1026,6 +1126,7 @@ class UnifiedAutomationServiceTest {
         preset: PartyPresetEntity,
         withCharacter: Boolean,
         withPattern: Boolean,
+        canLoad: Boolean = true,
     ): PartyPresetMemberEntity {
         val character = CharacterEntity(
             id = preset.id * 10,
@@ -1041,7 +1142,7 @@ class UnifiedAutomationServiceTest {
                 character = it,
                 slotCode = "0",
                 label = "기본",
-                canLoad = true,
+                canLoad = canLoad,
             )
         }.takeIf { withPattern }
         return PartyPresetMemberEntity(preset, 0, character, pattern)

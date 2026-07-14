@@ -60,6 +60,19 @@ class AutomationModuleReadinessEvaluatorTest {
             .findMembersByPresetIds(setOf(101L, 102L, 103L))
     }
 
+    @Test
+    fun rejectsAPresetWhoseAssignedPatternCannotBeLoaded() {
+        val preset = preset(104L)
+        val module = mapModule(206L, listOf(preset))
+        Mockito.`when`(presetQueryRepository.findMembersByPresetIds(setOf(preset.id))).thenReturn(
+            listOf(member(preset, slot = 0, withCharacter = true, withPattern = true, canLoad = false)),
+        )
+
+        val readiness = evaluator.evaluate(listOf(module))
+
+        assertFalse(readiness.isReady(module))
+    }
+
     private fun mapModule(
         id: Long,
         presets: List<PartyPresetEntity>,
@@ -124,6 +137,7 @@ class AutomationModuleReadinessEvaluatorTest {
         slot: Int,
         withCharacter: Boolean,
         withPattern: Boolean,
+        canLoad: Boolean = true,
     ): PartyPresetMemberEntity {
         val character = CharacterEntity(
             id = preset.id * 10 + slot,
@@ -139,7 +153,7 @@ class AutomationModuleReadinessEvaluatorTest {
                 character = it,
                 slotCode = "0",
                 label = "기본",
-                canLoad = true,
+                canLoad = canLoad,
             )
         }.takeIf { withPattern }
         return PartyPresetMemberEntity(preset, slot, character, pattern)

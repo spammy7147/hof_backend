@@ -152,6 +152,28 @@ class LiveAutomationSnapshotLoaderTest {
         Mockito.verify(partyPresetQueryRepository, Mockito.times(1)).findMembersByPresetIds(setOf(preset.id))
     }
 
+    @Test
+    fun compatibilityLoaderSkipsAModuleWhosePatternCannotBeLoaded() {
+        val configured = readyMapModule(
+            type = AutomationModuleType.TIME_BURN,
+            priority = 0,
+            thresholdPercent = 85,
+            mapCode = "unloadable-pattern-map",
+        )
+        val preset = configured.maps.single().partyPreset!!
+        stubSnapshotInputs(
+            quests = emptyList(),
+            modules = listOf(configured),
+            states = emptyList(),
+            members = listOf(presetMember(preset, withPattern = true, canLoad = false)),
+        )
+
+        val snapshot = loader.load(ACCOUNT_ID)
+
+        assertNull(snapshot.timeMap)
+        assertEquals(90, snapshot.timeThresholdPercent)
+    }
+
     /** 외부 HOF 조회와 QueryDSL aggregate를 고정해 테스트가 loader의 선택·조립 규칙만 검증하게 한다. */
     private fun stubSnapshotInputs(
         quests: List<QuestSnapshot>,
@@ -290,6 +312,7 @@ class LiveAutomationSnapshotLoaderTest {
     private fun presetMember(
         preset: PartyPresetEntity,
         withPattern: Boolean,
+        canLoad: Boolean = true,
     ): PartyPresetMemberEntity {
         val character = CharacterEntity(
             id = preset.id * 10,
@@ -304,7 +327,7 @@ class LiveAutomationSnapshotLoaderTest {
             character = character,
             slotCode = "0",
             label = "기본",
-            canLoad = true,
+            canLoad = canLoad,
         ).takeIf { withPattern }
         return PartyPresetMemberEntity(preset, 0, character, pattern)
     }
