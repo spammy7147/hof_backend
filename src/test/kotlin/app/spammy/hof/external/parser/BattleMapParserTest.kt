@@ -54,6 +54,55 @@ class BattleMapParserTest {
     }
 
     @Test
+    fun usesLaterVisibleNameWhenScenarioImageLinkAppearsFirst() {
+        val maps = parser.parse(
+            categoryId = "scenario_ocean",
+            queryName = "common",
+            html = """
+                <html>
+                  <body>
+                    <a href="index.php?common=Sink01"><img src="coral.gif"></a>
+                    <a href="index.php?common=Sink01"></a>
+                    <a href="index.php?common=Sink01">산호 숲</a>
+
+                    <a href="index.php?common=Sink03"><img src="sea.gif"></a>
+                    <a href="index.php?common=Sink03"></a>
+                    <a href="index.php?common=Sink03">바다 평원</a>
+
+                    <a href="index.php?common=Sink02"><img src="rune.gif"></a>
+                    <a href="index.php?common=Sink02"></a>
+                    <a href="index.php?common=Sink02">불길한 바닥</a>
+
+                    <a href="index.php?common=Sink04"><img src="ship.gif"></a>
+                    <a href="index.php?common=Sink04"></a>
+                    <a href="index.php?common=Sink04">선실 내부</a>
+
+                    <a href="index.php?common=Sink05"><img src="ship.gif"></a>
+                    <a href="index.php?common=Sink05"></a>
+                    <a href="index.php?common=Sink05">침수 구역</a>
+
+                    <a href="index.php?common=Sink06"><img src="ship.gif"></a>
+                    <a href="index.php?common=Sink06"></a>
+                    <a href="index.php?common=Sink06">하부 갑판</a>
+                  </body>
+                </html>
+            """.trimIndent(),
+        )
+
+        assertEquals(
+            listOf(
+                "Sink01" to "산호 숲",
+                "Sink03" to "바다 평원",
+                "Sink02" to "불길한 바닥",
+                "Sink04" to "선실 내부",
+                "Sink05" to "침수 구역",
+                "Sink06" to "하부 갑판",
+            ),
+            maps.map { map -> map.mapCode to map.name },
+        )
+    }
+
+    @Test
     fun parsesSavedBattleMapFixtureWithGroups() {
         val maps = parser.parse(
             categoryId = "battle_map",
