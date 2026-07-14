@@ -11,7 +11,10 @@ import org.springframework.context.annotation.Configuration
  * `v1.` 암호문이 아닌 값은 레거시 평문으로 간주한다. 새로 저장하는 값은 항상 AES-256-GCM 암호문이다.
  */
 class HofCookieCipher(base64Key: String) {
-    private val delegate = AesGcmCredentialCipher(base64Key)
+    private val delegate = AesGcmCredentialCipher(
+        base64Key = base64Key,
+        keyDescription = "HOF 세션 쿠키 암호화 키",
+    )
 
     fun encrypt(rawValue: String): String = delegate.encrypt(rawValue)
 

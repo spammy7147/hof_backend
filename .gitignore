@@ -2,6 +2,9 @@ HELP.md
 .gradle
 build/
 /data/
+.env
+.env.*
+.env.example
 !gradle/wrapper/gradle-wrapper.jar
 !**/src/main/**/build/
 !**/src/test/**/build/

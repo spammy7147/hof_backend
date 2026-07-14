@@ -30,16 +30,40 @@ class BattleMapParser {
         val seenCodes = linkedSetOf<String>()
         val seenUnresolvedIdentities = linkedSetOf<String>()
         val mapOrdersByGroup = mutableMapOf<Int, Int>()
+        val candidateLinks = document.select("a[href*=$queryName=], div[id^=$MAP_GROUP_ID_PREFIX] a[href]")
 
-        return document.select("a[href*=$queryName=], div[id^=$MAP_GROUP_ID_PREFIX] a[href]")
+        // 시나리오 지도는 동일한 맵 코드를 이미지, 클릭 영역, 한글 라벨 링크에 반복해서 사용한다.
+        // 첫 이미지 링크에는 텍스트가 없으므로 뒤에 있는 첫 유효 라벨을 코드별 보조 정보로 미리 수집한다.
+        val preferredTextByCode = linkedMapOf<String, PreferredMapText>()
+        candidateLinks.forEach { link ->
+            val mapCode = parseDirectMapCode(link.attr("href"), queryPattern) ?: return@forEach
+            val displayName = link.text().normalizedText()
+            if (displayName.isBlank()) return@forEach
+
+            preferredTextByCode.putIfAbsent(
+                mapCode,
+                PreferredMapText(
+                    displayName = displayName,
+                    contextText = link.parent()?.text()?.trim().orEmpty().ifBlank { displayName },
+                ),
+            )
+        }
+
+        return candidateLinks
             .mapNotNull { link ->
                 val rawHref = link.attr("href")
                 val groupElement = link.parents().firstOrNull { it.id().startsWith(MAP_GROUP_ID_PREFIX) }
-                val contextText = link.parent()?.text()?.trim().orEmpty().ifBlank { link.text() }
-                val displayName = link.text().normalizedText()
                 val groupOrder = groupElement?.groupOrder() ?: 0
                 val groupMetadata = groupElement?.previousElementSibling()?.text()?.toGroupMetadata()
                 val mapCode = parseDirectMapCode(rawHref, queryPattern)
+                val directDisplayName = link.text().normalizedText()
+                val preferredText = mapCode?.let(preferredTextByCode::get)
+                val displayName = directDisplayName.ifBlank { preferredText?.displayName.orEmpty() }
+                val contextText = if (directDisplayName.isBlank()) {
+                    preferredText?.contextText.orEmpty().ifBlank { displayName }
+                } else {
+                    link.parent()?.text()?.trim().orEmpty().ifBlank { displayName }
+                }
                 if (
                     mapCode == null &&
                     (groupElement == null || !isRequestedPlaceholderHref(rawHref, placeholderQueryNames))
@@ -333,5 +357,10 @@ class BattleMapParser {
 
     private data class CooldownRemaining(
         val seconds: Long,
+    )
+
+    private data class PreferredMapText(
+        val displayName: String,
+        val contextText: String,
     )
 }

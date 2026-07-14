@@ -18,6 +18,7 @@ import javax.crypto.spec.SecretKeySpec
 class AesGcmCredentialCipher(
     base64Key: String,
     private val secureRandom: SecureRandom = SecureRandom(),
+    private val keyDescription: String = "HOF 자격 증명 암호화 키",
 ) : CredentialCipher {
     private val key = decodeKey(base64Key)
 
@@ -51,9 +52,9 @@ class AesGcmCredentialCipher(
         val decoded = try {
             Base64.getDecoder().decode(base64Key)
         } catch (exception: IllegalArgumentException) {
-            throw IllegalArgumentException("HOF 자격 증명 암호화 키는 Base64 형식이어야 합니다.", exception)
+            throw IllegalArgumentException("${keyDescription}는 Base64 형식이어야 합니다.", exception)
         }
-        require(decoded.size == KEY_SIZE_BYTES) { "HOF 자격 증명 암호화 키는 32바이트여야 합니다." }
+        require(decoded.size == KEY_SIZE_BYTES) { "${keyDescription}는 32바이트여야 합니다." }
         return SecretKeySpec(decoded, "AES")
     }
 
