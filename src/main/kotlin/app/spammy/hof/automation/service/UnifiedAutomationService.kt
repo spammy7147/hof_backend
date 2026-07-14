@@ -38,6 +38,8 @@ import app.spammy.hof.party.repository.PartyPresetQueryRepository
 import java.time.Instant
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import org.springframework.transaction.support.TransactionSynchronization
+import org.springframework.transaction.support.TransactionSynchronizationManager
 
 /**
  * 사용자 구성형 통합 자동화의 모듈 설정과 실행 생명주기를 관리한다.
@@ -92,8 +94,11 @@ class UnifiedAutomationService(
             maps = request.maps,
             quests = request.quests,
         )
-        val profile = findOrCreateProfile(accountId)
+        val profile = lockOrCreateProfile(accountId)
         val existingModules = queryRepository.findModules(profile.id)
+        if (existingModules.size >= MAX_MODULES) {
+            invalid("자동화 모듈은 최대 100개까지 만들 수 있습니다.")
+        }
         val references = resolveReferences(accountId, settings)
         val now = timeProvider.now()
         val config = moduleConfigRepository.save(
@@ -110,7 +115,7 @@ class UnifiedAutomationService(
         )
         val children = saveChildren(config, settings, references)
         touchProfile(profile, now)
-        wakeRunningJob(accountId)
+        reconcileJobAfterModulesChanged(accountId, profile)
         return AutomationModuleAggregate(config, children.maps, children.quests).toResponse()
     }
 
@@ -126,6 +131,7 @@ class UnifiedAutomationService(
         moduleId: Long,
         request: UpdateAutomationModuleRequest,
     ): AutomationModuleResponse {
+        lockOrCreateProfile(accountId)
         val existing = findOwnedModule(accountId, moduleId)
         val settings = normalizeAndValidate(
             moduleType = existing.config.moduleType,
@@ -145,7 +151,7 @@ class UnifiedAutomationService(
         val config = moduleConfigRepository.save(existing.config)
         val children = saveChildren(config, settings, references)
         touchProfile(config.profile, now)
-        wakeRunningJob(accountId)
+        reconcileJobAfterModulesChanged(accountId, config.profile)
         return AutomationModuleAggregate(config, children.maps, children.quests).toResponse()
     }
 
@@ -160,17 +166,19 @@ class UnifiedAutomationService(
         accountId: Long,
         moduleId: Long,
     ) {
+        lockOrCreateProfile(accountId)
         val target = findOwnedModule(accountId, moduleId)
         val remaining = queryRepository.findModules(target.config.profile.id)
             .filterNot { it.config.id == target.config.id }
         moduleConfigRepository.delete(target.config)
+        moduleConfigRepository.flush()
         remaining.forEachIndexed { index, aggregate ->
             aggregate.config.priority = index
             aggregate.config.updatedAt = timeProvider.now()
         }
         if (remaining.isNotEmpty()) moduleConfigRepository.saveAll(remaining.map(AutomationModuleAggregate::config))
         touchProfile(target.config.profile, timeProvider.now())
-        wakeRunningJob(accountId)
+        reconcileJobAfterModulesChanged(accountId, target.config.profile)
     }
 
     /**
@@ -184,7 +192,7 @@ class UnifiedAutomationService(
         accountId: Long,
         request: ReorderAutomationModulesRequest,
     ): UnifiedAutomationStatusResponse {
-        val profile = findOrCreateProfile(accountId)
+        val profile = lockOrCreateProfile(accountId)
         val current = queryRepository.findModules(profile.id)
         validateCompleteOrder(current, request.moduleIds)
         val aggregateById = current.associateBy { it.config.id }
@@ -200,20 +208,20 @@ class UnifiedAutomationService(
             moduleConfigRepository.flush()
         }
         touchProfile(profile, now)
-        wakeRunningJob(accountId)
+        val mutationState = reconcileJobAfterModulesChanged(accountId, profile)
         return buildStatus(
             profile,
-            queryRepository.findCurrentJob(accountId),
-            queryRepository.findModules(profile.id),
+            mutationState.job,
+            mutationState.modules,
         )
     }
 
     /** 준비 완료된 활성 모듈이 있을 때만 통합 자동화 job을 시작하거나 재개한다. */
     @Transactional
-    fun start(accountId: Long): UnifiedAutomationStatusResponse = synchronized(ACCOUNT_JOB_LOCK) {
-        val profile = findOrCreateProfile(accountId)
+    fun start(accountId: Long): UnifiedAutomationStatusResponse {
+        val profile = lockOrCreateProfile(accountId)
         val modules = queryRepository.findModules(profile.id)
-        if (modules.none { it.config.enabled && it.isReady() }) {
+        if (modules.none { it.config.enabled && it.isReadyForExecution() }) {
             invalid("실행할 수 있는 자동화가 없습니다. 사용할 모듈의 맵과 파티 설정을 확인해 주세요.")
         }
         val current = queryRepository.findCurrentJob(accountId)
@@ -225,8 +233,8 @@ class UnifiedAutomationService(
             job.nextRunAt = now
             job.updatedAt = now
         }
-        if (job.status == "RUNNING") wakeupPort.wake(accountId, "USER_START")
-        buildStatus(profile, job, modules)
+        if (job.status == "RUNNING") wakeAfterCommit(accountId, "USER_START")
+        return buildStatus(profile, job, modules)
     }
 
     /** 실행 중인 통합 자동화를 새 행동을 시작하지 않는 일시정지 상태로 전환한다. */
@@ -238,7 +246,7 @@ class UnifiedAutomationService(
     @Transactional
     fun resume(accountId: Long): UnifiedAutomationStatusResponse =
         transition(accountId, setOf("PAUSED"), "RUNNING", finished = false).also {
-            wakeupPort.wake(accountId, "USER_RESUME")
+            wakeAfterCommit(accountId, "USER_RESUME")
         }
 
     /** 활성 상태의 통합 자동화를 종료하고 더 이상 다음 행동을 예약하지 않게 한다. */
@@ -289,6 +297,20 @@ class UnifiedAutomationService(
         )
     }
 
+    /**
+     * 설정 변경 전에 통합 프로필의 DB 쓰기 잠금을 획득한다.
+     *
+     * 신규 계정은 부모 프로필을 만든 뒤 flush하고 다시 잠금 조회한다. 일반 단위 테스트처럼 저장소가
+     * 실제 트랜잭션을 제공하지 않는 문맥에서는 방금 만든 프로필을 그대로 사용하지만, 운영 JPA 경로는
+     * 반드시 잠긴 managed entity를 반환한다.
+     */
+    private fun lockOrCreateProfile(accountId: Long): AutomationProfileEntity {
+        queryRepository.findProfileForUpdate(accountId)?.let { return it }
+        val created = findOrCreateProfile(accountId)
+        profileRepository.flush()
+        return queryRepository.findProfileForUpdate(accountId) ?: created
+    }
+
     /** 같은 계정의 UNIFIED 프로필에 속한 모듈만 반환해 수정·삭제 경계를 보장한다. */
     private fun findOwnedModule(
         accountId: Long,
@@ -316,6 +338,10 @@ class UnifiedAutomationService(
         if (name.length > MAX_DISPLAY_NAME_LENGTH) invalid("자동화 이름은 50자 이내로 입력해 주세요.")
         if (maps.size > MAX_SETTING_ITEMS || quests.size > MAX_SETTING_ITEMS) {
             invalid("자동화 설정은 항목별로 최대 100개까지 저장할 수 있습니다.")
+        }
+        val totalChildMaps = maps.size + quests.sumOf { it.maps.size }
+        if (totalChildMaps > MAX_SETTING_ITEMS) {
+            invalid("한 모듈의 전체 맵은 최대 100개까지 저장할 수 있습니다.")
         }
         validateTypeSpecificFields(moduleType, thresholdPercent, maps, quests)
         val normalizedMaps = normalizeMaps(maps, "모듈")
@@ -521,11 +547,57 @@ class UnifiedAutomationService(
         }
     }
 
-    /** 현재 RUNNING job만 깨워 다음 판단부터 최신 설정을 읽게 하며 진행 중 action은 변경하지 않는다. */
-    private fun wakeRunningJob(accountId: Long) {
-        if (queryRepository.findCurrentJob(accountId)?.status == "RUNNING") {
-            wakeupPort.wake(accountId, "MODULES_UPDATED")
+    /**
+     * 변경된 모듈 전체를 다시 읽어 설정 대기 job의 재개 여부와 응답 기준 상태를 한 번에 확정한다.
+     *
+     * 준비된 활성 모듈이 생긴 경우에만 `WAITING_CONFIG`를 `RUNNING`으로 전환한다. 이미 실행 중인
+     * action과 module, step은 유지하며 다음 의사결정 시각만 현재로 당긴다. RUNNING job은 상태를
+     * 수정하지 않고 커밋 뒤 wake만 예약한다.
+     */
+    private fun reconcileJobAfterModulesChanged(
+        accountId: Long,
+        profile: AutomationProfileEntity,
+    ): ModuleMutationState {
+        val modules = queryRepository.findModules(profile.id)
+        val job = queryRepository.findCurrentJob(accountId)
+        if (job?.status == "WAITING_CONFIG") {
+            if (modules.none { it.config.enabled && it.isReadyForExecution() }) {
+                return ModuleMutationState(job, modules)
+            }
+            val now = timeProvider.now()
+            job.status = "RUNNING"
+            job.message = "설정이 완료되어 자동화를 재개합니다."
+            job.nextRunAt = now
+            job.updatedAt = now
+            jobRepository.save(job)
         }
+        if (job?.status == "RUNNING") wakeAfterCommit(accountId, "MODULES_UPDATED")
+        return ModuleMutationState(job, modules)
+    }
+
+    /**
+     * 설정과 job 변경이 실제 DB에 커밋된 뒤에만 실행기를 깨운다.
+     *
+     * 트랜잭션 동기화가 활성화된 운영 요청에서는 rollback된 설정을 실행기가 읽지 않도록 afterCommit에
+     * 등록한다. 서비스 단위 테스트나 배치 도구처럼 동기화가 없는 호출은 wake를 즉시 수행한다.
+     */
+    private fun wakeAfterCommit(
+        accountId: Long,
+        reason: String,
+    ) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive() ||
+            !TransactionSynchronizationManager.isSynchronizationActive()
+        ) {
+            wakeupPort.wake(accountId, reason)
+            return
+        }
+        TransactionSynchronizationManager.registerSynchronization(
+            object : TransactionSynchronization {
+                override fun afterCommit() {
+                    wakeupPort.wake(accountId, reason)
+                }
+            },
+        )
     }
 
     /** 프로필 수정 시각을 모듈 구성 변경 시각과 맞춘다. */
@@ -572,7 +644,7 @@ class UnifiedAutomationService(
                         .map { it.toResponse() },
                 )
             }
-        val ready = isReady()
+        val ready = isReadyForExecution()
         return AutomationModuleResponse(
             id = config.id,
             displayName = config.displayName,
@@ -585,25 +657,6 @@ class UnifiedAutomationService(
             ready = ready,
             summary = summary(ready),
         )
-    }
-
-    /** 설정 유형별로 실제 행동 생성에 필요한 맵·프리셋·퀘스트가 모두 있는지 판정한다. */
-    private fun AutomationModuleAggregate.isReady(): Boolean = when (config.moduleType) {
-        AutomationModuleType.KEY_QUEST -> quests.isNotEmpty() && quests.all { quest ->
-            quest.maps.isNotEmpty() && quest.maps.all { it.partyPreset != null }
-        }
-
-        AutomationModuleType.TIME_BURN ->
-            config.thresholdPercent in 1..100 && maps.isNotEmpty() && maps.all { it.partyPreset != null }
-
-        AutomationModuleType.COOLDOWN_ADVENTURE,
-        AutomationModuleType.DAILY_ADVENTURE,
-        -> maps.isNotEmpty() && maps.all { it.partyPreset != null }
-
-        AutomationModuleType.OTHER_QUEST -> quests.isNotEmpty()
-        AutomationModuleType.UNION,
-        AutomationModuleType.NORMAL_MAP,
-        -> false
     }
 
     /** 모듈 목록에서 설정 상태를 빠르게 파악할 수 있는 사용자 문구를 만든다. */
@@ -709,12 +762,18 @@ class UnifiedAutomationService(
         val quests: List<AutomationModuleQuestAggregate>,
     )
 
+    private data class ModuleMutationState(
+        val job: AutomationJobEntity?,
+        val modules: List<AutomationModuleAggregate>,
+    )
+
     private companion object {
         const val MAX_DISPLAY_NAME_LENGTH = 50
         const val MAX_CATEGORY_ID_LENGTH = 50
         const val MAX_MAP_CODE_LENGTH = 100
         const val MAX_QUEST_CODE_LENGTH = 100
         const val MAX_SETTING_ITEMS = 100
+        const val MAX_MODULES = 100
         val SUPPORTED_MODULE_TYPES = setOf(
             AutomationModuleType.KEY_QUEST,
             AutomationModuleType.TIME_BURN,
@@ -722,6 +781,5 @@ class UnifiedAutomationService(
             AutomationModuleType.DAILY_ADVENTURE,
             AutomationModuleType.OTHER_QUEST,
         )
-        val ACCOUNT_JOB_LOCK = Any()
     }
 }

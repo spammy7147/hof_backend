@@ -28,21 +28,25 @@ class AutomationDecisionPolicyTest {
         assertEquals(AutomationModuleType.TIME_BURN, policy.decide(base.copy(priorityQuestDecision = null)).moduleType)
         assertEquals(
             AutomationModuleType.UNION,
-            policy.decide(base.copy(priorityQuestDecision = null, timeCurrent = 90)).moduleType,
+            policy.decide(base.copy(priorityQuestDecision = null, timeCurrent = 89)).moduleType,
         )
         assertEquals(
             AutomationModuleType.COOLDOWN_ADVENTURE,
-            policy.decide(base.copy(priorityQuestDecision = null, timeCurrent = 90, unionTarget = UnionCandidate("dead", 0))).moduleType,
+            policy.decide(base.copy(priorityQuestDecision = null, timeCurrent = 89, unionTarget = UnionCandidate("dead", 0))).moduleType,
         )
     }
 
     @Test
-    fun allClaimableQuestsWinBeforePriorityAcceptanceAndExactThresholdSleeps() {
+    fun allClaimableQuestsWinBeforePriorityAcceptanceAndExactThresholdRunsTimeBurn() {
         val claim = quest("0999", QuestState.CLAIMABLE)
         val accept = quest("0563", QuestState.AVAILABLE)
         assertEquals(AutomationDecisionType.CLAIM_QUEST, policy.decide(snapshot(claimable = claim, acceptable = accept)).type)
 
-        val sleep = policy.decide(snapshot(timeCurrent = 90, next = Instant.parse("2026-07-14T00:00:00Z")))
+        val exactThreshold = policy.decide(snapshot(timeCurrent = 90))
+        assertEquals(AutomationDecisionType.RUN_BATTLE, exactThreshold.type)
+        assertEquals(AutomationModuleType.TIME_BURN, exactThreshold.moduleType)
+
+        val sleep = policy.decide(snapshot(timeCurrent = 89, next = Instant.parse("2026-07-14T00:00:00Z")))
         assertEquals(AutomationDecisionType.SLEEP, sleep.type)
         assertEquals(Instant.parse("2026-07-14T00:00:00Z"), sleep.nextRunAt)
     }

@@ -8,9 +8,9 @@ import org.springframework.stereotype.Component
 class SelectedQuestPolicy {
     fun decide(
         quests: List<QuestSnapshot>,
-        selectedQuestIds: Set<String>,
+        selectedQuestIds: Collection<String>,
     ): QuestDecision? {
-        val selected = quests.filter { it.questId in selectedQuestIds }
+        val selected = selectedQuestIds.mapNotNull { id -> quests.firstOrNull { it.questId == id } }
         selected.firstOrNull { it.state == QuestState.CLAIMABLE }
             ?.let { return QuestDecision.Claim(it.questId, it.actionNo) }
         selected.firstOrNull { it.state == QuestState.AVAILABLE }

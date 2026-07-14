@@ -15,6 +15,7 @@ import app.spammy.hof.automation.entity.QAutomationProfileEntity.automationProfi
 import app.spammy.hof.battle.entity.QBattleMapEntity.battleMapEntity
 import app.spammy.hof.party.entity.QPartyPresetEntity.partyPresetEntity
 import com.querydsl.jpa.impl.JPAQueryFactory
+import jakarta.persistence.LockModeType
 import org.springframework.stereotype.Repository
 
 data class AutomationModuleAggregate(
@@ -39,6 +40,22 @@ class UnifiedAutomationQueryRepository(
                 automationProfileEntity.mode.eq(UNIFIED_MODE),
             )
             .orderBy(automationProfileEntity.id.asc())
+            .fetchFirst()
+
+    /**
+     * 모듈 순서가 바뀌는 트랜잭션 동안 계정의 통합 프로필 행을 쓰기 잠금으로 점유한다.
+     *
+     * 우선순위 계산과 전체 순서 교체가 여러 앱 인스턴스에서 동시에 실행되어도 같은 프로필의 변경은
+     * 직렬화된다. 잠금은 서비스의 create/update/delete/reorder 진입점에서 가장 먼저 획득한다.
+     */
+    fun findProfileForUpdate(accountId: Long): AutomationProfileEntity? =
+        queryFactory.selectFrom(automationProfileEntity)
+            .where(
+                automationProfileEntity.account.id.eq(accountId),
+                automationProfileEntity.mode.eq(UNIFIED_MODE),
+            )
+            .orderBy(automationProfileEntity.id.asc())
+            .setLockMode(LockModeType.PESSIMISTIC_WRITE)
             .fetchFirst()
 
     fun findConfigs(profileId: Long): List<AutomationModuleConfigEntity> =

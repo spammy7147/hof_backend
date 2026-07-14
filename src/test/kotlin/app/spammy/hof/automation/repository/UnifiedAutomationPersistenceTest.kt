@@ -125,6 +125,21 @@ class UnifiedAutomationPersistenceTest {
     }
 
     @Test
+    fun findsUnifiedProfileWithAPessimisticWriteLock() {
+        val now = Instant.parse("2026-07-13T00:30:00Z")
+        val account = newAccount("locked-unified-profile", now)
+        val unified = newProfile(account, now)
+        newProfile(account, now, mode = "TIME_BURN")
+        entityManager.flush()
+        entityManager.clear()
+
+        val locked = queryRepository.findProfileForUpdate(account.id)
+
+        assertEquals(unified.id, locked?.id)
+        assertEquals("UNIFIED", locked?.mode)
+    }
+
+    @Test
     fun persistsMultipleModulesOfTheSameTypeInPriorityOrder() {
         val now = Instant.parse("2026-07-13T01:00:00Z")
         val account = newAccount("duplicate-module-account", now)

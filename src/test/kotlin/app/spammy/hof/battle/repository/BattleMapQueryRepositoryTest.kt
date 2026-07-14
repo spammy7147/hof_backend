@@ -157,6 +157,36 @@ class BattleMapQueryRepositoryTest {
         assertEquals(emptyList(), queryRepository.findMapsByCategoryIdAndMapCodePairs(emptyList()))
     }
 
+    @Test
+    fun bulkExecutionStateLookupIsAccountScopedAndReturnsOnlyExactPairs() {
+        val owner = accountRepository.save(account("batch-state-owner"))
+        val other = accountRepository.save(account("batch-state-other"))
+        val requestedAdventure = mapRepository.save(catalogMap("adventure_map", "batch-Noble205"))
+        val crossedAdventure = mapRepository.save(catalogMap("adventure_map", "batch-snow22"))
+        val crossedBattle = mapRepository.save(catalogMap("battle_map", "batch-Noble205"))
+        val requestedBattle = mapRepository.save(catalogMap("battle_map", "batch-snow22"))
+        stateRepository.saveAll(
+            listOf(
+                state(owner, requestedAdventure, "index.php?sp_common=batch-Noble205"),
+                state(owner, crossedAdventure, "index.php?sp_common=batch-snow22"),
+                state(owner, crossedBattle, "index.php?common=batch-Noble205"),
+                state(owner, requestedBattle, "index.php?common=batch-snow22"),
+                state(other, requestedAdventure, "index.php?sp_common=other"),
+            ),
+        )
+
+        val result = queryRepository.findStatesForExecution(
+            owner.id,
+            setOf(
+                "adventure_map" to "batch-Noble205",
+                "battle_map" to "batch-snow22",
+            ),
+        )
+
+        assertEquals(listOf(requestedAdventure.id, requestedBattle.id), result.map { it.battleMap.id })
+        assertEquals(emptyList(), queryRepository.findStatesForExecution(owner.id, emptyList()))
+    }
+
     private fun account(loginId: String): HofAccountEntity =
         HofAccountEntity(
             loginId = loginId,

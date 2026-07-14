@@ -39,6 +39,8 @@ data class AutomationSnapshot(
     val readyDailyMap: AutomationMapCandidate?,
     val normalQuestDecision: QuestDecision?,
     val earliestNextRunAt: Instant?,
+    val claimableQuestModuleType: AutomationModuleType? = null,
+    val acceptablePriorityQuestModuleType: AutomationModuleType? = null,
 )
 
 data class AutomationDecision(
@@ -59,7 +61,7 @@ class AutomationDecisionPolicy {
         snapshot.claimableQuest?.let { quest ->
             return AutomationDecision(
                 AutomationDecisionType.CLAIM_QUEST,
-                moduleForQuest(quest.questId),
+                snapshot.claimableQuestModuleType ?: moduleForQuest(quest.questId),
                 questId = quest.questId,
                 actionNo = quest.actionNo,
             )
@@ -67,7 +69,7 @@ class AutomationDecisionPolicy {
         snapshot.acceptablePriorityQuest?.let { quest ->
             return AutomationDecision(
                 AutomationDecisionType.ACCEPT_QUEST,
-                AutomationModuleType.KEY_QUEST,
+                snapshot.acceptablePriorityQuestModuleType ?: AutomationModuleType.KEY_QUEST,
                 questId = quest.questId,
                 actionNo = quest.actionNo,
             )
@@ -98,7 +100,7 @@ class AutomationDecisionPolicy {
     }
 
     private fun isTimeOverflow(snapshot: AutomationSnapshot): Boolean =
-        snapshot.timeMax > 0 && snapshot.timeCurrent.toLong() * 100 > snapshot.timeMax.toLong() * snapshot.timeThresholdPercent
+        snapshot.timeMax > 0 && snapshot.timeCurrent.toLong() * 100 >= snapshot.timeMax.toLong() * snapshot.timeThresholdPercent
 
     private fun QuestDecision.toAutomationDecision(module: AutomationModuleType): AutomationDecision = when (this) {
         is QuestDecision.Accept -> AutomationDecision(

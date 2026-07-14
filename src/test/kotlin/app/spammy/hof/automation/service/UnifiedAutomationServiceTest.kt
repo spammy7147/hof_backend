@@ -39,6 +39,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import org.mockito.ArgumentCaptor
 import org.mockito.Mockito
+import org.springframework.transaction.support.TransactionSynchronizationManager
 
 class UnifiedAutomationServiceTest {
     private val accountQueryRepository = Mockito.mock(AccountQueryRepository::class.java)
@@ -90,7 +91,7 @@ class UnifiedAutomationServiceTest {
             aggregate(module(profile, id = 11L, priority = 0)),
             aggregate(module(profile, id = 12L, priority = 1)),
         )
-        Mockito.`when`(queryRepository.findProfile(ACCOUNT_ID)).thenReturn(profile)
+        Mockito.`when`(queryRepository.findProfileForUpdate(ACCOUNT_ID)).thenReturn(profile)
         Mockito.`when`(queryRepository.findModules(profile.id)).thenReturn(existing)
         Mockito.`when`(moduleConfigRepository.save(anyModule())).thenAnswer { invocation ->
             copyModule(invocation.arguments[0] as AutomationModuleConfigEntity, id = 31L)
@@ -111,6 +112,7 @@ class UnifiedAutomationServiceTest {
         assertEquals(AutomationModuleType.TIME_BURN, response.moduleType)
         assertEquals(2, response.priority)
         assertFalse(response.ready)
+        Mockito.verify(queryRepository).findProfileForUpdate(ACCOUNT_ID)
     }
 
     @Test
@@ -168,6 +170,7 @@ class UnifiedAutomationServiceTest {
         )
         val targetMap = battleMap("adventure_map", "Noble103", "저택 동관")
         val preset = preset()
+        Mockito.`when`(queryRepository.findProfileForUpdate(ACCOUNT_ID)).thenReturn(profile)
         Mockito.`when`(queryRepository.findModule(ACCOUNT_ID, config.id)).thenReturn(
             AutomationModuleAggregate(
                 config = config,
@@ -209,6 +212,7 @@ class UnifiedAutomationServiceTest {
         Mockito.verify(moduleQuestRepository).deleteAll(listOf(oldQuest))
         Mockito.verify(moduleMapRepository).deleteAll(listOf(oldMap))
         Mockito.verify(moduleConfigRepository).save(config)
+        Mockito.verify(queryRepository).findProfileForUpdate(ACCOUNT_ID)
     }
 
     @Test
@@ -234,6 +238,7 @@ class UnifiedAutomationServiceTest {
         val target = aggregate(module(profile, id = 62L, priority = 1))
         val last = aggregate(module(profile, id = 63L, priority = 2))
         val running = job(profile, status = "RUNNING")
+        Mockito.`when`(queryRepository.findProfileForUpdate(ACCOUNT_ID)).thenReturn(profile)
         Mockito.`when`(queryRepository.findModule(ACCOUNT_ID, target.config.id)).thenReturn(target)
         Mockito.`when`(queryRepository.findProfile(ACCOUNT_ID)).thenReturn(profile)
         Mockito.`when`(queryRepository.findModules(profile.id)).thenReturn(listOf(first, target, last))
@@ -246,6 +251,7 @@ class UnifiedAutomationServiceTest {
         Mockito.verify(moduleConfigRepository).saveAll(listOf(first.config, last.config))
         Mockito.verify(jobRepository, Mockito.never()).delete(running)
         Mockito.verify(wakeupPort).wake(ACCOUNT_ID, "MODULES_UPDATED")
+        Mockito.verify(queryRepository).findProfileForUpdate(ACCOUNT_ID)
     }
 
     @Test
@@ -277,7 +283,7 @@ class UnifiedAutomationServiceTest {
         val profile = profile()
         val first = aggregate(module(profile, id = 81L, priority = 0, displayName = "첫째"))
         val second = aggregate(module(profile, id = 82L, priority = 1, displayName = "둘째"))
-        Mockito.`when`(queryRepository.findProfile(ACCOUNT_ID)).thenReturn(profile)
+        Mockito.`when`(queryRepository.findProfileForUpdate(ACCOUNT_ID)).thenReturn(profile)
         Mockito.`when`(queryRepository.findModules(profile.id)).thenReturn(listOf(first, second))
 
         val response = service.reorderModules(
@@ -288,6 +294,214 @@ class UnifiedAutomationServiceTest {
         assertEquals(listOf(82L, 81L), response.modules.map { it.id })
         assertEquals(listOf(0, 1), response.modules.map { it.priority })
         Mockito.verify(moduleConfigRepository).saveAll(listOf(second.config, first.config))
+        Mockito.verify(queryRepository).findProfileForUpdate(ACCOUNT_ID)
+    }
+
+    @Test
+    fun createResumesWaitingConfigWhenTheLatestModulesContainAnActiveReadyModule() {
+        val profile = profile()
+        val ready = readyOtherQuestModule(profile, id = 301L)
+        val waiting = job(profile, "WAITING_CONFIG").apply {
+            message = "설정이 필요합니다."
+            currentAction = "BATTLE:already-running"
+        }
+        Mockito.`when`(queryRepository.findProfileForUpdate(ACCOUNT_ID)).thenReturn(profile)
+        Mockito.`when`(queryRepository.findModules(profile.id)).thenReturn(emptyList(), listOf(ready))
+        Mockito.`when`(queryRepository.findCurrentJob(ACCOUNT_ID)).thenReturn(waiting)
+        Mockito.`when`(moduleConfigRepository.save(anyModule())).thenAnswer { invocation ->
+            copyModule(invocation.arguments[0] as AutomationModuleConfigEntity, id = 301L)
+        }
+        Mockito.`when`(moduleQuestRepository.save(anyQuest())).thenAnswer { it.arguments[0] }
+
+        service.createModule(
+            ACCOUNT_ID,
+            CreateAutomationModuleRequest(
+                displayName = "일반 퀘스트",
+                moduleType = AutomationModuleType.OTHER_QUEST,
+                enabled = true,
+                thresholdPercent = null,
+                quests = listOf(AutomationModuleQuestRequest("1001", 0)),
+            ),
+        )
+
+        assertEquals("RUNNING", waiting.status)
+        assertEquals(NOW, waiting.nextRunAt)
+        assertEquals("설정이 완료되어 자동화를 재개합니다.", waiting.message)
+        assertEquals("BATTLE:already-running", waiting.currentAction)
+        Mockito.verify(jobRepository).save(waiting)
+        Mockito.verify(wakeupPort).wake(ACCOUNT_ID, "MODULES_UPDATED")
+    }
+
+    @Test
+    fun updateResumesWaitingConfigWhenTheEditedModuleBecomesReady() {
+        val profile = profile()
+        val config = module(profile, id = 311L, type = AutomationModuleType.OTHER_QUEST)
+        val waiting = job(profile, "WAITING_CONFIG")
+        val ready = aggregate(config, quests = listOf(questAggregate(config, "1001")))
+        Mockito.`when`(queryRepository.findProfileForUpdate(ACCOUNT_ID)).thenReturn(profile)
+        Mockito.`when`(queryRepository.findModule(ACCOUNT_ID, config.id)).thenReturn(aggregate(config))
+        Mockito.`when`(queryRepository.findModules(profile.id)).thenReturn(listOf(ready))
+        Mockito.`when`(queryRepository.findCurrentJob(ACCOUNT_ID)).thenReturn(waiting)
+        Mockito.`when`(moduleConfigRepository.save(anyModule())).thenAnswer { it.arguments[0] }
+        Mockito.`when`(moduleQuestRepository.save(anyQuest())).thenAnswer { it.arguments[0] }
+
+        service.updateModule(
+            ACCOUNT_ID,
+            config.id,
+            UpdateAutomationModuleRequest(
+                displayName = "완료된 퀘스트",
+                enabled = true,
+                thresholdPercent = null,
+                quests = listOf(AutomationModuleQuestRequest("1001", 0)),
+            ),
+        )
+
+        assertEquals("RUNNING", waiting.status)
+        assertEquals(NOW, waiting.nextRunAt)
+        Mockito.verify(jobRepository).save(waiting)
+        Mockito.verify(wakeupPort).wake(ACCOUNT_ID, "MODULES_UPDATED")
+    }
+
+    @Test
+    fun deleteResumesWaitingConfigWhenAnotherActiveReadyModuleRemains() {
+        val profile = profile()
+        val target = aggregate(module(profile, id = 321L, priority = 0))
+        val remaining = readyOtherQuestModule(profile, id = 322L, priority = 1)
+        val waiting = job(profile, "WAITING_CONFIG")
+        Mockito.`when`(queryRepository.findProfileForUpdate(ACCOUNT_ID)).thenReturn(profile)
+        Mockito.`when`(queryRepository.findModule(ACCOUNT_ID, target.config.id)).thenReturn(target)
+        Mockito.`when`(queryRepository.findModules(profile.id))
+            .thenReturn(listOf(target, remaining), listOf(remaining))
+        Mockito.`when`(queryRepository.findCurrentJob(ACCOUNT_ID)).thenReturn(waiting)
+
+        service.deleteModule(ACCOUNT_ID, target.config.id)
+
+        assertEquals("RUNNING", waiting.status)
+        assertEquals(NOW, waiting.nextRunAt)
+        Mockito.verify(jobRepository).save(waiting)
+        Mockito.verify(wakeupPort).wake(ACCOUNT_ID, "MODULES_UPDATED")
+    }
+
+    @Test
+    fun reorderResumesWaitingConfigWhenAnActiveReadyModuleExists() {
+        val profile = profile()
+        val incomplete = aggregate(module(profile, id = 331L, priority = 0))
+        val ready = readyOtherQuestModule(profile, id = 332L, priority = 1)
+        val waiting = job(profile, "WAITING_CONFIG")
+        Mockito.`when`(queryRepository.findProfileForUpdate(ACCOUNT_ID)).thenReturn(profile)
+        Mockito.`when`(queryRepository.findModules(profile.id)).thenReturn(listOf(incomplete, ready))
+        Mockito.`when`(queryRepository.findCurrentJob(ACCOUNT_ID)).thenReturn(waiting)
+
+        service.reorderModules(
+            ACCOUNT_ID,
+            ReorderAutomationModulesRequest(listOf(ready.config.id, incomplete.config.id)),
+        )
+
+        assertEquals("RUNNING", waiting.status)
+        assertEquals(NOW, waiting.nextRunAt)
+        Mockito.verify(jobRepository).save(waiting)
+        Mockito.verify(wakeupPort).wake(ACCOUNT_ID, "MODULES_UPDATED")
+    }
+
+    @Test
+    fun waitingConfigRemainsBlockedWhenTheLatestModulesAreNotReady() {
+        val profile = profile()
+        val incomplete = aggregate(module(profile, id = 341L, type = AutomationModuleType.TIME_BURN))
+        val waiting = job(profile, "WAITING_CONFIG")
+        Mockito.`when`(queryRepository.findProfileForUpdate(ACCOUNT_ID)).thenReturn(profile)
+        Mockito.`when`(queryRepository.findModules(profile.id)).thenReturn(emptyList(), listOf(incomplete))
+        Mockito.`when`(queryRepository.findCurrentJob(ACCOUNT_ID)).thenReturn(waiting)
+        Mockito.`when`(moduleConfigRepository.save(anyModule())).thenAnswer { invocation ->
+            copyModule(invocation.arguments[0] as AutomationModuleConfigEntity, id = 341L)
+        }
+
+        service.createModule(
+            ACCOUNT_ID,
+            CreateAutomationModuleRequest("미완성 Time", AutomationModuleType.TIME_BURN, true, 90),
+        )
+
+        assertEquals("WAITING_CONFIG", waiting.status)
+        assertEquals(null, waiting.nextRunAt)
+        Mockito.verify(jobRepository, Mockito.never()).save(waiting)
+        Mockito.verifyNoInteractions(wakeupPort)
+    }
+
+    @Test
+    fun moduleMutationRegistersWakeAfterCommitAndKeepsRunningActionUntouched() {
+        val profile = profile()
+        val ready = readyOtherQuestModule(profile, id = 351L)
+        val running = job(profile, "RUNNING").apply { currentAction = "BATTLE:in-flight" }
+        Mockito.`when`(queryRepository.findProfileForUpdate(ACCOUNT_ID)).thenReturn(profile)
+        Mockito.`when`(queryRepository.findModules(profile.id)).thenReturn(listOf(ready))
+        Mockito.`when`(queryRepository.findCurrentJob(ACCOUNT_ID)).thenReturn(running)
+        TransactionSynchronizationManager.setActualTransactionActive(true)
+        TransactionSynchronizationManager.initSynchronization()
+
+        try {
+            service.reorderModules(ACCOUNT_ID, ReorderAutomationModulesRequest(listOf(ready.config.id)))
+
+            Mockito.verifyNoInteractions(wakeupPort)
+            assertEquals("BATTLE:in-flight", running.currentAction)
+            val synchronizations = TransactionSynchronizationManager.getSynchronizations()
+            assertEquals(1, synchronizations.size)
+            synchronizations.forEach { it.afterCommit() }
+            Mockito.verify(wakeupPort).wake(ACCOUNT_ID, "MODULES_UPDATED")
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization()
+            TransactionSynchronizationManager.setActualTransactionActive(false)
+        }
+    }
+
+    @Test
+    fun createRejectsTheHundredAndFirstModuleWhileReorderAcceptsOneHundredModules() {
+        val profile = profile()
+        val modules = (0 until 100).map { index ->
+            aggregate(module(profile, id = 1_000L + index, priority = index))
+        }
+        Mockito.`when`(queryRepository.findProfileForUpdate(ACCOUNT_ID)).thenReturn(profile)
+        Mockito.`when`(queryRepository.findModules(profile.id)).thenReturn(modules)
+        Mockito.`when`(moduleConfigRepository.save(anyModule())).thenAnswer { it.arguments[0] }
+
+        val createFailure = assertFailsWith<ApiException> {
+            service.createModule(
+                ACCOUNT_ID,
+                CreateAutomationModuleRequest("101번째", AutomationModuleType.TIME_BURN, true, 90),
+            )
+        }
+        assertEquals(ErrorCode.INVALID_REQUEST, createFailure.errorCode)
+        assertTrue(createFailure.message.contains("최대 100개"))
+
+        val reversedIds = modules.map { it.config.id }.reversed()
+        val reordered = service.reorderModules(ACCOUNT_ID, ReorderAutomationModulesRequest(reversedIds))
+        assertEquals(reversedIds, reordered.modules.map { it.id })
+        assertEquals((0 until 100).toList(), reordered.modules.map { it.priority })
+    }
+
+    @Test
+    fun createRejectsMoreThanOneHundredChildMapsAcrossAllQuests() {
+        val firstQuestMaps = (0 until 100).map { index ->
+            AutomationModuleMapRequest("battle_map", "map-$index", null, index)
+        }
+        val request = CreateAutomationModuleRequest(
+            displayName = "과도한 열쇠 퀘스트",
+            moduleType = AutomationModuleType.KEY_QUEST,
+            enabled = true,
+            thresholdPercent = null,
+            quests = listOf(
+                AutomationModuleQuestRequest("0571", 0, firstQuestMaps),
+                AutomationModuleQuestRequest(
+                    "0563",
+                    1,
+                    listOf(AutomationModuleMapRequest("battle_map", "map-extra", null, 0)),
+                ),
+            ),
+        )
+
+        val failure = assertFailsWith<ApiException> { service.createModule(ACCOUNT_ID, request) }
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.errorCode)
+        assertTrue(failure.message.contains("전체 맵은 최대 100개"))
+        Mockito.verifyNoInteractions(battleMapQueryRepository)
     }
 
     @Test
@@ -687,6 +901,20 @@ class UnifiedAutomationServiceTest {
         quest = AutomationModuleQuestEntity(moduleConfig = config, questCode = questCode, executionOrder = 0),
         maps = emptyList(),
     )
+
+    private fun readyOtherQuestModule(
+        profile: AutomationProfileEntity,
+        id: Long,
+        priority: Int = 0,
+    ): AutomationModuleAggregate {
+        val config = module(
+            profile = profile,
+            id = id,
+            priority = priority,
+            type = AutomationModuleType.OTHER_QUEST,
+        )
+        return aggregate(config, quests = listOf(questAggregate(config, "1001")))
+    }
 
     private fun copyQuest(
         source: AutomationModuleQuestEntity,
