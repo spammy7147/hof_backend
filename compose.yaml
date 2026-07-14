@@ -1,52 +1,20 @@
 services:
-  postgres:
-    image: postgres:18.4-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: hof
-      POSTGRES_USER: hof
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
-    volumes:
-      - postgres-data:/var/lib/postgresql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U hof -d hof"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-
-  kafka:
-    image: apache/kafka:4.3.1
-    restart: unless-stopped
-    environment:
-      KAFKA_NODE_ID: 1
-      KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
-      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-    volumes:
-      - kafka-data:/var/lib/kafka/data
-
   hof-backend:
     build: .
     restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-      kafka:
-        condition: service_started
     environment:
       SPRING_PROFILES_ACTIVE: docker
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:?SPRING_DATASOURCE_URL is required}
+      SPRING_DATASOURCE_DRIVER_CLASS_NAME: ${SPRING_DATASOURCE_DRIVER_CLASS_NAME:-org.postgresql.Driver}
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:?SPRING_DATASOURCE_USERNAME is required}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:?SPRING_KAFKA_BOOTSTRAP_SERVERS is required}
       HOF_AUTH_JWT_SECRET: ${HOF_AUTH_JWT_SECRET:?HOF_AUTH_JWT_SECRET is required}
       HOF_CREDENTIAL_ENCRYPTION_KEY: ${HOF_CREDENTIAL_ENCRYPTION_KEY:?HOF_CREDENTIAL_ENCRYPTION_KEY is required}
       HOF_COOKIE_ENCRYPTION_KEY: ${HOF_COOKIE_ENCRYPTION_KEY:?HOF_COOKIE_ENCRYPTION_KEY is required}
+      HOF_AUTH_REQUIRE_HTTPS: ${HOF_AUTH_REQUIRE_HTTPS:-true}
+      HOF_AUTH_REFRESH_COOKIE_SECURE: ${HOF_AUTH_REFRESH_COOKIE_SECURE:-true}
+      HOF_AUTH_ALLOWED_ORIGINS: ${HOF_AUTH_ALLOWED_ORIGINS:?HOF_AUTH_ALLOWED_ORIGINS is required}
       GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/firebase-service-account.json
     volumes:
       - captcha-images:/var/lib/hof/captcha
@@ -55,6 +23,4 @@ services:
       - "8080:8080"
 
 volumes:
-  postgres-data:
-  kafka-data:
   captcha-images:

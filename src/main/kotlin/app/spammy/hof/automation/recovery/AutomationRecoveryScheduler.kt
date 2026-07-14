@@ -11,7 +11,7 @@ import org.springframework.stereotype.Component
 import org.springframework.transaction.annotation.Transactional
 
 @Component
-@Profile("docker")
+@Profile("docker | kafka")
 class AutomationRecoveryScheduler(
     private val queryRepository: AutomationJobQueryRepository,
     private val wakeupPort: AutomationWakeupPort,

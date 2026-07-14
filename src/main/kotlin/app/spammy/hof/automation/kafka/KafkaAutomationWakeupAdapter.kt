@@ -9,7 +9,7 @@ import org.springframework.stereotype.Component
 
 @Component
 @Primary
-@Profile("docker")
+@Profile("docker | kafka")
 class KafkaAutomationWakeupAdapter(
     private val outboxService: AutomationOutboxService,
 ) : AutomationWakeupPort {

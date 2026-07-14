@@ -10,11 +10,11 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 import org.springframework.beans.factory.ObjectProvider
-import org.springframework.stereotype.Component
 import org.springframework.context.annotation.Profile
+import org.springframework.stereotype.Component
 
 @Component
-@Profile("!docker")
+@Profile("!docker & !kafka")
 class LocalAutomationWakeupAdapter(
     private val runnerProvider: ObjectProvider<UnifiedAutomationRunner>,
 ) : AutomationWakeupPort {
