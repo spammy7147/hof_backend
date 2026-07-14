@@ -1,21 +1,28 @@
 package app.spammy.hof.captcha.service
 
 import app.spammy.hof.automation.entity.AutomationActionStatus
-import app.spammy.hof.automation.port.AutomationWakeupPort
 import app.spammy.hof.automation.repository.AutomationActionRunQueryRepository
 import app.spammy.hof.automation.service.AutomationActionContext
+import app.spammy.hof.automation.service.AutomationAfterCommitWakeupService
 import app.spammy.hof.captcha.entity.CaptchaChallengeEntity
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.push.service.PushOutboxService
 import org.springframework.stereotype.Component
+import org.springframework.transaction.support.TransactionSynchronization
+import org.springframework.transaction.support.TransactionSynchronizationManager
+import org.slf4j.LoggerFactory
 
+/** 자동화 action과 전역 캡차 challenge의 일시정지·재개 상태를 연결한다. */
 @Component
 class CaptchaAutomationHook(
     private val actionQueryRepository: AutomationActionRunQueryRepository,
     private val pushOutboxService: PushOutboxService,
-    private val wakeupPort: AutomationWakeupPort,
+    private val afterCommitWakeupService: AutomationAfterCommitWakeupService,
     private val timeProvider: TimeProvider,
 ) {
+    private val log = LoggerFactory.getLogger(javaClass)
+
+    /** 현재 자동화 action을 캡차 대기로 연결하고 사용자 알림 outbox를 생성한다. */
     fun detected(challenge: CaptchaChallengeEntity) {
         val action = AutomationActionContext.currentActionId()?.let(actionQueryRepository::findById) ?: return
         challenge.automationActionRun = action
@@ -27,16 +34,56 @@ class CaptchaAutomationHook(
         pushOutboxService.enqueueCaptchaRequired(challenge.account, challenge.id)
     }
 
+    /**
+     * 캡차를 발생시킨 과거 action을 종료하고 같은 job의 다음 step을 최신 설정 판단으로 재개한다.
+     *
+     * 과거 prepared payload를 재시도하지 않으므로 인증 대기 중 적용된 재정렬·수정·비활성화·삭제가 다음
+     * [app.spammy.hof.automation.service.AutomationSnapshotLoader] 조회에 반영된다.
+     */
     fun answered(challenge: CaptchaChallengeEntity) {
         val action = challenge.automationActionRun ?: return
         val now = timeProvider.now()
-        action.status = AutomationActionStatus.RETRY_WAIT
-        action.nextAttemptAt = now
+        action.status = AutomationActionStatus.ABORTED
+        action.nextAttemptAt = null
+        action.finishedAt = now
         action.updatedAt = now
         action.job.status = "RUNNING"
-        action.job.message = "인증 완료. 자동으로 이어서 실행합니다."
+        action.job.currentStepIndex += 1
+        action.job.currentModule = null
+        action.job.currentModuleConfig = null
+        action.job.currentAction = null
+        action.job.message = "인증이 완료되어 최신 설정으로 자동화를 이어갑니다."
         action.job.nextRunAt = now
+        action.job.lastHeartbeatAt = now
         action.job.updatedAt = now
-        wakeupPort.wake(challenge.account.id, "CAPTCHA_ANSWERED")
+        wakeAfterCommit(challenge.account.id)
+    }
+
+    /** 캡차와 job 변경이 commit된 뒤에만 다음 스냅샷 판단을 요청한다. */
+    private fun wakeAfterCommit(accountId: Long) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive() ||
+            !TransactionSynchronizationManager.isSynchronizationActive()
+        ) {
+            deliverWakeSafely(accountId)
+            return
+        }
+        TransactionSynchronizationManager.registerSynchronization(
+            object : TransactionSynchronization {
+                override fun afterCommit() = deliverWakeSafely(accountId)
+            },
+        )
+    }
+
+    /** 이미 성공한 캡차 API 응답을 wake 전달 오류로 실패시키지 않는다. */
+    private fun deliverWakeSafely(accountId: Long) {
+        try {
+            afterCommitWakeupService.wake(accountId, "CAPTCHA_ANSWERED")
+        } catch (exception: Exception) {
+            log.warn(
+                "Captcha automation wake failed accountId={} errorType={}",
+                accountId,
+                exception.javaClass.name,
+            )
+        }
     }
 }

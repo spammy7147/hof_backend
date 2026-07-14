@@ -29,5 +29,6 @@ enum class AutomationActionStatus {
     RETRY_WAIT,
     WAITING_CAPTCHA,
     WAITING_CONFIG,
+    ABORTED,
     FAILED,
 }

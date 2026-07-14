@@ -38,7 +38,11 @@ data class ConfiguredAutomationQuest(
     val maps: List<ConfiguredAutomationMap>,
 )
 
-/** 같은 유형도 ID별로 독립 평가하기 위한 정규화된 실행 모듈 스냅샷이다. */
+/**
+ * 같은 유형도 ID별로 독립 평가하기 위한 정규화된 실행 모듈 스냅샷이다.
+ *
+ * [configRevision]은 정책 판단 직후 설정 변경과 action checkpoint 사이의 경합을 감지하는 DB 수정 시각이다.
+ */
 data class AutomationModuleSnapshot(
     val id: Long,
     val type: AutomationModuleType,
@@ -46,6 +50,7 @@ data class AutomationModuleSnapshot(
     val thresholdPercent: Int?,
     val maps: List<ConfiguredAutomationMap>,
     val quests: List<ConfiguredAutomationQuest>,
+    val configRevision: Instant = Instant.EPOCH,
 )
 
 /** HOF 상태 응답 중 자동화 정책이 실제로 사용하는 Time 값만 노출한다. */
@@ -78,10 +83,12 @@ data class AutomationSnapshot(
     val now: Instant,
 )
 
+/** 정책 결과와 그 결과를 만든 정확한 모듈 revision을 함께 전달하는 단일 실행 결정이다. */
 data class AutomationDecision(
     val type: AutomationDecisionType,
     val moduleType: AutomationModuleType?,
     val moduleConfigId: Long? = null,
+    val moduleRevision: Instant? = null,
     val questId: String? = null,
     val actionNo: String? = null,
     val map: AutomationMapCandidate? = null,
@@ -273,6 +280,7 @@ class AutomationDecisionPolicy(
                 AutomationDecisionType.ACCEPT_QUEST,
                 module.type,
                 module.id,
+                module.configRevision,
                 questId = questId,
                 actionNo = actionNo,
             ),
@@ -282,6 +290,7 @@ class AutomationDecisionPolicy(
                 AutomationDecisionType.CLAIM_QUEST,
                 module.type,
                 module.id,
+                module.configRevision,
                 questId = questId,
                 actionNo = actionNo,
             ),
@@ -291,6 +300,7 @@ class AutomationDecisionPolicy(
                 AutomationDecisionType.RUN_BATTLE,
                 module.type,
                 module.id,
+                module.configRevision,
                 questId = questId,
                 map = AutomationMapCandidate(
                     map.mapCode,
@@ -313,6 +323,7 @@ class AutomationDecisionPolicy(
         type = AutomationDecisionType.RUN_BATTLE,
         moduleType = type,
         moduleConfigId = id,
+        moduleRevision = configRevision,
         map = AutomationMapCandidate(
             mapCode = map.mapCode,
             mapName = observedName,

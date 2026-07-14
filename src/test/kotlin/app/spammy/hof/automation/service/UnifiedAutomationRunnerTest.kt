@@ -30,13 +30,16 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(checkpoint.findRunnable(7L)).thenReturn(runnable)
         Mockito.`when`(snapshotLoader.load(7L)).thenReturn(snapshot)
         Mockito.`when`(decisionPolicy.decide(snapshot)).thenReturn(decision)
-        Mockito.`when`(checkpoint.start(runnable, decision)).thenReturn(31L)
-        Mockito.`when`(executor.execute(7L, decision)).thenReturn("{\"ok\":true}")
+        val payload = payload(decision)
+        Mockito.`when`(executor.prepare(7L, decision)).thenReturn(payload)
+        Mockito.`when`(checkpoint.start(runnable, payload)).thenReturn(31L)
+        Mockito.`when`(executor.execute(7L, payload)).thenReturn("{\"ok\":true}")
 
         runner.runOne(7L)
 
-        Mockito.verify(executor, Mockito.times(1)).execute(7L, decision)
-        Mockito.verify(checkpoint).succeed(31L, "{\"ok\":true}")
+        Mockito.verify(executor).prepare(7L, decision)
+        Mockito.verify(executor, Mockito.times(1)).execute(7L, payload)
+        Mockito.verify(checkpoint).succeed(31L)
         Mockito.verify(wakeup).wake(7L, "ACTION_SUCCEEDED")
         Mockito.verifyNoMoreInteractions(executor)
     }
@@ -52,19 +55,23 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(snapshotLoader.load(7L)).thenReturn(firstSnapshot, reorderedSnapshot)
         Mockito.`when`(decisionPolicy.decide(firstSnapshot)).thenReturn(first)
         Mockito.`when`(decisionPolicy.decide(reorderedSnapshot)).thenReturn(reordered)
-        Mockito.`when`(checkpoint.start(runnable, first)).thenReturn(31L)
-        Mockito.`when`(checkpoint.start(runnable, reordered)).thenReturn(32L)
-        Mockito.`when`(executor.execute(7L, first)).thenReturn("first-result")
-        Mockito.`when`(executor.execute(7L, reordered)).thenReturn("second-result")
+        val firstPayload = payload(first)
+        val reorderedPayload = payload(reordered)
+        Mockito.`when`(executor.prepare(7L, first)).thenReturn(firstPayload)
+        Mockito.`when`(executor.prepare(7L, reordered)).thenReturn(reorderedPayload)
+        Mockito.`when`(checkpoint.start(runnable, firstPayload)).thenReturn(31L)
+        Mockito.`when`(checkpoint.start(runnable, reorderedPayload)).thenReturn(32L)
+        Mockito.`when`(executor.execute(7L, firstPayload)).thenReturn("first-result")
+        Mockito.`when`(executor.execute(7L, reorderedPayload)).thenReturn("second-result")
 
         runner.runOne(7L)
         runner.runOne(7L)
 
         val order = Mockito.inOrder(snapshotLoader, executor)
         order.verify(snapshotLoader).load(7L)
-        order.verify(executor).execute(7L, first)
+        order.verify(executor).execute(7L, firstPayload)
         order.verify(snapshotLoader).load(7L)
-        order.verify(executor).execute(7L, reordered)
+        order.verify(executor).execute(7L, reorderedPayload)
     }
 
     @Test
@@ -80,14 +87,18 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(snapshotLoader.load(7L)).thenReturn(firstSnapshot, reorderedSnapshot)
         Mockito.`when`(decisionPolicy.decide(firstSnapshot)).thenReturn(first)
         Mockito.`when`(decisionPolicy.decide(reorderedSnapshot)).thenReturn(reordered)
-        Mockito.`when`(checkpoint.start(runnable, first)).thenReturn(31L)
-        Mockito.`when`(checkpoint.start(runnable, reordered)).thenReturn(32L)
-        Mockito.`when`(executor.execute(7L, first)).thenAnswer {
+        val firstPayload = payload(first)
+        val reorderedPayload = payload(reordered)
+        Mockito.`when`(executor.prepare(7L, first)).thenReturn(firstPayload)
+        Mockito.`when`(executor.prepare(7L, reordered)).thenReturn(reorderedPayload)
+        Mockito.`when`(checkpoint.start(runnable, firstPayload)).thenReturn(31L)
+        Mockito.`when`(checkpoint.start(runnable, reorderedPayload)).thenReturn(32L)
+        Mockito.`when`(executor.execute(7L, firstPayload)).thenAnswer {
             entered.countDown()
             release.await(2, TimeUnit.SECONDS)
             "first-result"
         }
-        Mockito.`when`(executor.execute(7L, reordered)).thenReturn("second-result")
+        Mockito.`when`(executor.execute(7L, reorderedPayload)).thenReturn("second-result")
         val pool = Executors.newSingleThreadExecutor()
 
         try {
@@ -101,8 +112,8 @@ class UnifiedAutomationRunnerTest {
             pool.shutdownNow()
         }
 
-        Mockito.verify(executor, Mockito.times(1)).execute(7L, first)
-        Mockito.verify(executor, Mockito.times(1)).execute(7L, reordered)
+        Mockito.verify(executor, Mockito.times(1)).execute(7L, firstPayload)
+        Mockito.verify(executor, Mockito.times(1)).execute(7L, reorderedPayload)
     }
 
     @Test
@@ -113,28 +124,51 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(checkpoint.findRunnable(7L)).thenReturn(runnable)
         Mockito.`when`(snapshotLoader.load(7L)).thenReturn(snapshot)
         Mockito.`when`(decisionPolicy.decide(snapshot)).thenReturn(stale)
-        Mockito.`when`(checkpoint.start(runnable, stale)).thenReturn(null)
+        val stalePayload = payload(stale)
+        Mockito.`when`(executor.prepare(7L, stale)).thenReturn(stalePayload)
+        Mockito.`when`(checkpoint.start(runnable, stalePayload)).thenReturn(null)
 
         runner.runOne(7L)
 
-        Mockito.verifyNoInteractions(executor)
+        Mockito.verify(executor, Mockito.never()).execute(Mockito.eq(7L), anyPayload())
         Mockito.verify(wakeup).wake(7L, "STALE_MODULE")
+    }
+
+    @Test
+    fun `prepare configuration failure blocks the job before creating an action`() {
+        val runnable = RunnableAutomationJob(11L, 7L, 0)
+        val snapshot = Mockito.mock(AutomationSnapshot::class.java)
+        val decision = battleDecision(101L, "missing-preset")
+        Mockito.`when`(checkpoint.findRunnable(7L)).thenReturn(runnable)
+        Mockito.`when`(snapshotLoader.load(7L)).thenReturn(snapshot)
+        Mockito.`when`(decisionPolicy.decide(snapshot)).thenReturn(decision)
+        Mockito.`when`(executor.prepare(7L, decision))
+            .thenThrow(AutomationConfigurationException("파티 설정 필요"))
+
+        runner.runOne(7L)
+
+        Mockito.verify(checkpoint).findRunnable(7L)
+        Mockito.verify(checkpoint).blockForConfig(11L, "파티 설정 필요")
+        Mockito.verifyNoMoreInteractions(checkpoint)
+        Mockito.verify(executor).prepare(7L, decision)
+        Mockito.verifyNoMoreInteractions(executor)
     }
 
     @Test
     fun `retry executes the original persisted decision without loading a new snapshot`() {
         val original = battleDecision(505L, "original")
-        val retry = RetryableAutomationAction(actionId = 91L, decision = original)
+        val originalPayload = payload(original)
+        val retry = RetryableAutomationAction(actionId = 91L, payload = originalPayload)
         val runnable = RunnableAutomationJob(11L, 7L, 4, retry)
         Mockito.`when`(checkpoint.findRunnable(7L)).thenReturn(runnable)
         Mockito.`when`(checkpoint.resumeRetry(runnable, retry)).thenReturn(true)
-        Mockito.`when`(executor.execute(7L, original)).thenReturn("retry-result")
+        Mockito.`when`(executor.execute(7L, originalPayload)).thenReturn("retry-result")
 
         runner.runOne(7L)
 
         Mockito.verifyNoInteractions(snapshotLoader, decisionPolicy)
-        Mockito.verify(executor).execute(7L, original)
-        Mockito.verify(checkpoint).succeed(91L, "retry-result")
+        Mockito.verify(executor).execute(7L, originalPayload)
+        Mockito.verify(checkpoint).succeed(91L)
     }
 
     @Test
@@ -158,6 +192,20 @@ class UnifiedAutomationRunnerTest {
         type = AutomationDecisionType.RUN_BATTLE,
         moduleType = AutomationModuleType.TIME_BURN,
         moduleConfigId = moduleId,
+        moduleRevision = Instant.parse("2026-07-14T00:00:00Z"),
         map = app.spammy.hof.automation.policy.AutomationMapCandidate(mapCode, mapCode, 0, 301L),
     )
+
+    private fun payload(decision: AutomationDecision) = AutomationExecutionPayload(
+        decision = decision,
+        resolvedBattleRequest = app.spammy.hof.battle.dto.RunBattleRequest(
+            categoryId = "battle_map",
+            mapCode = decision.map?.mapCode ?: "map",
+            characterIds = listOf("character-1"),
+            patternLoads = listOf(app.spammy.hof.battle.dto.BattlePatternLoadRequest("character-1", 1)),
+        ),
+    )
+
+    private fun anyPayload(): AutomationExecutionPayload =
+        Mockito.any(AutomationExecutionPayload::class.java) ?: payload(battleDecision(999L, "any"))
 }

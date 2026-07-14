@@ -76,6 +76,7 @@ class LiveAutomationSnapshotLoader(
             id = config.id,
             type = config.moduleType,
             priority = config.priority,
+            configRevision = config.updatedAt,
             thresholdPercent = config.thresholdPercent,
             maps = maps.map { selected ->
                 ConfiguredAutomationMap(

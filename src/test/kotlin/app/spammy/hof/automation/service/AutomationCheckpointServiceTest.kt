@@ -27,10 +27,12 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import org.mockito.Mockito
 import tools.jackson.module.kotlin.jacksonObjectMapper
 
 class AutomationCheckpointServiceTest {
+    private var currentTime = NOW
     private val jobQueryRepository = Mockito.mock(AutomationJobQueryRepository::class.java)
     private val actionRepository = Mockito.mock(AutomationActionRunRepository::class.java)
     private val actionQueryRepository = Mockito.mock(AutomationActionRunQueryRepository::class.java)
@@ -43,7 +45,7 @@ class AutomationCheckpointServiceTest {
         actionQueryRepository,
         unifiedQueryRepository,
         objectMapper,
-        TimeProvider { NOW },
+        TimeProvider { currentTime },
         pushOutboxService,
     )
 
@@ -52,7 +54,8 @@ class AutomationCheckpointServiceTest {
         val job = job()
         val module = module()
         val runnable = RunnableAutomationJob(job.id, ACCOUNT_ID, 0)
-        val decision = decision(module.id)
+        val decision = decision(module.id, module.updatedAt)
+        val payload = executionPayload(decision)
         Mockito.`when`(jobQueryRepository.findOwnedByAccountIdAndIdForUpdate(ACCOUNT_ID, job.id)).thenReturn(job)
         Mockito.`when`(unifiedQueryRepository.findModule(ACCOUNT_ID, module.id))
             .thenReturn(AutomationModuleAggregate(module, emptyList(), emptyList()))
@@ -62,7 +65,7 @@ class AutomationCheckpointServiceTest {
             (it.arguments[0] as AutomationActionRunEntity).also { action -> savedAction = action }
         }
 
-        val actionId = service.start(runnable, decision)
+        val actionId = service.start(runnable, payload)
 
         Mockito.verify(actionRepository).save(anyAction())
         assertEquals(0L, actionId)
@@ -74,11 +77,11 @@ class AutomationCheckpointServiceTest {
     fun `start ignores a module deleted after the snapshot was made`() {
         val job = job()
         val runnable = RunnableAutomationJob(job.id, ACCOUNT_ID, 0)
-        val decision = decision(404L)
+        val decision = decision(404L, NOW)
         Mockito.`when`(jobQueryRepository.findOwnedByAccountIdAndIdForUpdate(ACCOUNT_ID, job.id)).thenReturn(job)
         Mockito.`when`(unifiedQueryRepository.findModule(ACCOUNT_ID, 404L)).thenReturn(null)
 
-        assertNull(service.start(runnable, decision))
+        assertNull(service.start(runnable, executionPayload(decision)))
         Mockito.verifyNoInteractions(actionRepository)
         assertNull(job.currentModuleConfig)
     }
@@ -86,28 +89,111 @@ class AutomationCheckpointServiceTest {
     @Test
     fun `findRunnable restores a due retry from its persisted payload even after module deletion`() {
         val job = job()
-        val original = decision(505L)
-        val action = action(job, original).also {
+        val original = decision(505L, NOW)
+        val originalPayload = executionPayload(original)
+        val action = action(job, originalPayload).also {
             it.moduleConfig = null
             it.status = AutomationActionStatus.RETRY_WAIT
             it.nextAttemptAt = NOW
         }
         Mockito.`when`(jobQueryRepository.findCurrentByAccountIdAndStatuses(ACCOUNT_ID, setOf("RUNNING")))
             .thenReturn(job)
-        Mockito.`when`(actionQueryRepository.findByRequestKey("job:${job.id}:step:0")).thenReturn(action)
+        Mockito.`when`(jobQueryRepository.findOwnedByAccountIdAndIdForUpdate(ACCOUNT_ID, job.id)).thenReturn(job)
+        Mockito.`when`(actionQueryRepository.findByRequestKeyForUpdate("job:${job.id}:step:0")).thenReturn(action)
 
         val runnable = assertNotNull(service.findRunnable(ACCOUNT_ID))
 
         assertEquals(action.id, runnable.retryAction?.actionId)
-        assertEquals(original, runnable.retryAction?.decision)
+        assertEquals(originalPayload, runnable.retryAction?.payload)
+    }
+
+    @Test
+    fun `findRunnable keeps a running action inside the lease from executing twice`() {
+        val job = job()
+        val payload = executionPayload(decision(505L, NOW))
+        val action = action(job, payload).also {
+            it.status = AutomationActionStatus.RUNNING
+            it.startedAt = NOW.minusSeconds(60)
+        }
+        Mockito.`when`(jobQueryRepository.findCurrentByAccountIdAndStatuses(ACCOUNT_ID, setOf("RUNNING")))
+            .thenReturn(job)
+        Mockito.`when`(jobQueryRepository.findOwnedByAccountIdAndIdForUpdate(ACCOUNT_ID, job.id)).thenReturn(job)
+        Mockito.`when`(actionQueryRepository.findByRequestKeyForUpdate("job:${job.id}:step:0")).thenReturn(action)
+
+        assertNull(service.findRunnable(ACCOUNT_ID))
+        assertEquals(AutomationActionStatus.RUNNING, action.status)
+        assertEquals(1, action.attemptCount)
+    }
+
+    @Test
+    fun `findRunnable recovers a stale running action with its original prepared payload`() {
+        val job = job()
+        val payload = executionPayload(decision(505L, NOW))
+        val action = action(job, payload).also {
+            it.status = AutomationActionStatus.RUNNING
+            it.startedAt = NOW.minusSeconds(301)
+        }
+        Mockito.`when`(jobQueryRepository.findCurrentByAccountIdAndStatuses(ACCOUNT_ID, setOf("RUNNING")))
+            .thenReturn(job)
+        Mockito.`when`(jobQueryRepository.findOwnedByAccountIdAndIdForUpdate(ACCOUNT_ID, job.id)).thenReturn(job)
+        Mockito.`when`(actionQueryRepository.findByRequestKeyForUpdate("job:${job.id}:step:0")).thenReturn(action)
+
+        val runnable = assertNotNull(service.findRunnable(ACCOUNT_ID))
+
+        assertEquals(action.id, runnable.retryAction?.actionId)
+        assertEquals(payload, runnable.retryAction?.payload)
+        assertEquals(AutomationActionStatus.RETRY_WAIT, action.status)
+        assertEquals(NOW, action.nextAttemptAt)
+        assertTrue(job.message.orEmpty().contains("복구"))
+    }
+
+    @Test
+    fun `start rejects a disabled module after snapshot`() {
+        val job = job()
+        val module = module().also { it.enabled = false }
+        val runnable = RunnableAutomationJob(job.id, ACCOUNT_ID, 0)
+        val staleDecision = decision(module.id, module.updatedAt)
+        Mockito.`when`(jobQueryRepository.findOwnedByAccountIdAndIdForUpdate(ACCOUNT_ID, job.id)).thenReturn(job)
+        Mockito.`when`(unifiedQueryRepository.findModule(ACCOUNT_ID, module.id))
+            .thenReturn(AutomationModuleAggregate(module, emptyList(), emptyList()))
+
+        assertNull(service.start(runnable, executionPayload(staleDecision)))
+        Mockito.verifyNoInteractions(actionRepository)
+    }
+
+    @Test
+    fun `start rejects an enabled module changed after snapshot`() {
+        val job = job()
+        val module = module().also { it.updatedAt = NOW.plusSeconds(1) }
+        val runnable = RunnableAutomationJob(job.id, ACCOUNT_ID, 0)
+        val staleDecision = decision(module.id, NOW)
+        Mockito.`when`(jobQueryRepository.findOwnedByAccountIdAndIdForUpdate(ACCOUNT_ID, job.id)).thenReturn(job)
+        Mockito.`when`(unifiedQueryRepository.findModule(ACCOUNT_ID, module.id))
+            .thenReturn(AutomationModuleAggregate(module, emptyList(), emptyList()))
+
+        assertNull(service.start(runnable, executionPayload(staleDecision)))
+        Mockito.verifyNoInteractions(actionRepository)
+    }
+
+    @Test
+    fun `success preserves the prepared request payload for audit`() {
+        val job = job()
+        val payload = executionPayload(decision(505L, NOW))
+        val action = action(job, payload)
+        Mockito.`when`(actionQueryRepository.findById(action.id)).thenReturn(action)
+
+        service.succeed(action.id)
+
+        assertEquals(objectMapper.writeValueAsString(payload), action.payloadJson)
+        assertEquals(AutomationActionStatus.SUCCEEDED, action.status)
     }
 
     @Test
     fun `captcha failure keeps current action and module identity for retry`() {
         val job = job()
         val module = module()
-        val original = decision(module.id)
-        val action = action(job, original).also { it.moduleConfig = module }
+        val original = decision(module.id, module.updatedAt)
+        val action = action(job, executionPayload(original)).also { it.moduleConfig = module }
         job.currentModuleConfig = module
         job.currentAction = original.map?.mapName
         Mockito.`when`(actionQueryRepository.findById(action.id)).thenReturn(action)
@@ -123,12 +209,13 @@ class AutomationCheckpointServiceTest {
     @Test
     fun `resume retry locks the job and reopens only the original action`() {
         val job = job()
-        val original = decision(505L)
-        val action = action(job, original).also {
+        val original = decision(505L, NOW)
+        val payload = executionPayload(original)
+        val action = action(job, payload).also {
             it.status = AutomationActionStatus.RETRY_WAIT
             it.nextAttemptAt = NOW
         }
-        val retry = RetryableAutomationAction(action.id, original)
+        val retry = RetryableAutomationAction(action.id, payload)
         val runnable = RunnableAutomationJob(job.id, ACCOUNT_ID, 0, retry)
         Mockito.`when`(jobQueryRepository.findOwnedByAccountIdAndIdForUpdate(ACCOUNT_ID, job.id)).thenReturn(job)
         Mockito.`when`(actionQueryRepository.findById(action.id)).thenReturn(action)
@@ -140,11 +227,12 @@ class AutomationCheckpointServiceTest {
     }
 
     @Test
-    fun `captcha answer resumes the same action payload and module identity`() {
+    fun `captcha answer terminates the old action and resumes with a fresh step`() {
         val job = job()
         val module = module()
-        val original = decision(module.id)
-        val action = action(job, original).also { it.moduleConfig = module }
+        val original = decision(module.id, module.updatedAt)
+        val payload = executionPayload(original)
+        val action = action(job, payload).also { it.moduleConfig = module }
         job.currentModuleConfig = module
         job.currentAction = original.map?.mapName
         val challenge = CaptchaChallengeEntity(
@@ -158,7 +246,7 @@ class AutomationCheckpointServiceTest {
             createdAt = NOW,
             answeredAt = null,
         )
-        val wakeup = Mockito.mock(AutomationWakeupPort::class.java)
+        val wakeup = Mockito.mock(AutomationAfterCommitWakeupService::class.java)
         val hook = CaptchaAutomationHook(actionQueryRepository, pushOutboxService, wakeup, TimeProvider { NOW })
         Mockito.`when`(actionQueryRepository.findById(action.id)).thenReturn(action)
 
@@ -166,38 +254,54 @@ class AutomationCheckpointServiceTest {
         hook.answered(challenge)
 
         assertEquals(action, challenge.automationActionRun)
-        assertEquals(AutomationActionStatus.RETRY_WAIT, action.status)
+        assertEquals(AutomationActionStatus.ABORTED, action.status)
+        assertEquals(NOW, action.finishedAt)
         assertEquals("RUNNING", job.status)
         assertEquals(module.id, action.moduleConfig?.id)
-        assertEquals(module.id, job.currentModuleConfig?.id)
-        assertEquals(objectMapper.writeValueAsString(original), action.payloadJson)
+        assertNull(job.currentModuleConfig)
+        assertNull(job.currentAction)
+        assertNull(job.currentModule)
+        assertEquals(1, job.currentStepIndex)
+        assertEquals(objectMapper.writeValueAsString(payload), action.payloadJson)
         Mockito.verify(wakeup).wake(ACCOUNT_ID, "CAPTCHA_ANSWERED")
     }
 
-    private fun decision(moduleId: Long) = AutomationDecision(
+    private fun decision(moduleId: Long, revision: Instant) = AutomationDecision(
         type = AutomationDecisionType.RUN_BATTLE,
         moduleType = AutomationModuleType.TIME_BURN,
         moduleConfigId = moduleId,
+        moduleRevision = revision,
         map = AutomationMapCandidate("map", "테스트 맵", 0, 301L),
     )
 
-    private fun action(job: AutomationJobEntity, decision: AutomationDecision) = AutomationActionRunEntity(
+    private fun executionPayload(decision: AutomationDecision) = AutomationExecutionPayload(
+        decision = decision,
+        resolvedBattleRequest = app.spammy.hof.battle.dto.RunBattleRequest(
+            categoryId = "battle_map",
+            mapCode = "map",
+            characterIds = listOf("character-1"),
+            patternLoads = listOf(app.spammy.hof.battle.dto.BattlePatternLoadRequest("character-1", 2)),
+        ),
+    )
+
+    private fun action(job: AutomationJobEntity, payload: AutomationExecutionPayload) = AutomationActionRunEntity(
         id = 91L,
         job = job,
         moduleConfig = null,
         moduleType = AutomationModuleType.TIME_BURN,
-        actionType = decision.type.name,
-        actionKey = decision.map?.mapCode,
+        actionType = payload.decision.type.name,
+        actionKey = payload.decision.map?.mapCode,
         status = AutomationActionStatus.RUNNING,
         requestKey = "job:${job.id}:step:0",
-        payloadJson = objectMapper.writeValueAsString(decision),
+        payloadJson = objectMapper.writeValueAsString(payload),
         attemptCount = 1,
         createdAt = NOW,
         updatedAt = NOW,
     )
 
     private fun anyAction(): AutomationActionRunEntity =
-        Mockito.any(AutomationActionRunEntity::class.java) ?: action(job(), decision(101L))
+        Mockito.any(AutomationActionRunEntity::class.java)
+            ?: action(job(), executionPayload(decision(101L, NOW)))
 
     private fun module() = AutomationModuleConfigEntity(
         id = 101L,
