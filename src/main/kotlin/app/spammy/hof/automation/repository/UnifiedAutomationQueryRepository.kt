@@ -58,6 +58,7 @@ class UnifiedAutomationQueryRepository(
             .where(
                 automationModuleConfigEntity.id.eq(moduleId),
                 automationModuleConfigEntity.profile.account.id.eq(accountId),
+                automationModuleConfigEntity.profile.mode.eq(UNIFIED_MODE),
             )
             .fetchOne()
             ?: return null

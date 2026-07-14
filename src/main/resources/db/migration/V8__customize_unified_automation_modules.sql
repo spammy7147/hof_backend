@@ -46,6 +46,18 @@ alter table automation_module_configs
     add constraint ck_automation_module_configs_threshold_percent
         check (threshold_percent is null or threshold_percent between 1 and 100);
 
+create table automation_module_legacy_settings (
+    module_config_id bigint,
+    settings_json text not null,
+    constraint pk_automation_module_legacy_settings primary key (module_config_id),
+    constraint fk_automation_module_legacy_settings_config foreign key (module_config_id)
+        references automation_module_configs (id) on delete cascade
+);
+
+insert into automation_module_legacy_settings (module_config_id, settings_json)
+select id, settings_json
+from automation_module_configs;
+
 alter table automation_module_configs
     drop column settings_json;
 
@@ -61,13 +73,19 @@ create table automation_module_maps (
     constraint fk_automation_module_maps_battle_map foreign key (battle_map_id)
         references battle_maps (id),
     constraint fk_automation_module_maps_party_preset foreign key (party_preset_id)
-        references party_presets (id),
+        references party_presets (id) on delete set null,
     constraint uk_automation_module_maps_module_map unique (module_config_id, battle_map_id),
     constraint ck_automation_module_maps_execution_order check (execution_order >= 0)
 );
 
 create index idx_automation_module_maps_module_order
     on automation_module_maps (module_config_id, execution_order, id);
+
+create index idx_automation_module_maps_battle_map
+    on automation_module_maps (battle_map_id, id);
+
+create index idx_automation_module_maps_party_preset
+    on automation_module_maps (party_preset_id, id);
 
 create table automation_module_quests (
     id bigserial,
@@ -96,13 +114,19 @@ create table automation_module_quest_maps (
     constraint fk_automation_module_quest_maps_battle_map foreign key (battle_map_id)
         references battle_maps (id),
     constraint fk_automation_module_quest_maps_party_preset foreign key (party_preset_id)
-        references party_presets (id),
+        references party_presets (id) on delete set null,
     constraint uk_automation_module_quest_maps_quest_map unique (module_quest_id, battle_map_id),
     constraint ck_automation_module_quest_maps_execution_order check (execution_order >= 0)
 );
 
 create index idx_automation_module_quest_maps_quest_order
     on automation_module_quest_maps (module_quest_id, execution_order, id);
+
+create index idx_automation_module_quest_maps_battle_map
+    on automation_module_quest_maps (battle_map_id, id);
+
+create index idx_automation_module_quest_maps_party_preset
+    on automation_module_quest_maps (party_preset_id, id);
 
 alter table automation_jobs
     add column current_module_config_id bigint;
@@ -111,9 +135,15 @@ alter table automation_jobs
     add constraint fk_automation_jobs_current_module_config foreign key (current_module_config_id)
         references automation_module_configs (id) on delete set null;
 
+create index idx_automation_jobs_current_module_config
+    on automation_jobs (current_module_config_id, id);
+
 alter table automation_action_runs
     add column module_config_id bigint;
 
 alter table automation_action_runs
     add constraint fk_automation_action_runs_module_config foreign key (module_config_id)
         references automation_module_configs (id) on delete set null;
+
+create index idx_automation_action_runs_module_config
+    on automation_action_runs (module_config_id, id);

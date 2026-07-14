@@ -21,7 +21,7 @@ internal object FreshSchemaContract {
             }
         }
         assertEquals(
-            setOf("payload_json"),
+            setOf("payload_json", "settings_json"),
             TABLES.values.flatMap { it.columns.keys }.filter { it.endsWith("_json", ignoreCase = true) }.toSet(),
         )
     }
@@ -331,6 +331,11 @@ internal object FreshSchemaContract {
             requiredInstant("created_at"), requiredInstant("updated_at"),
         ),
         table(
+            "automation_module_legacy_settings",
+            requiredBigint("module_config_id"), requiredText("settings_json"),
+            primaryKey = listOf("module_config_id"),
+        ),
+        table(
             "automation_module_maps",
             serialId(), requiredBigint("module_config_id"), requiredBigint("battle_map_id"),
             optionalBigint("party_preset_id"), requiredInteger("execution_order"),
@@ -510,6 +515,10 @@ internal object FreshSchemaContract {
             "automation_profiles.id", DeleteAction.CASCADE,
         ),
         fk(
+            "fk_automation_module_legacy_settings_config", "automation_module_legacy_settings.module_config_id",
+            "automation_module_configs.id", DeleteAction.CASCADE,
+        ),
+        fk(
             "fk_automation_module_maps_config", "automation_module_maps.module_config_id",
             "automation_module_configs.id", DeleteAction.CASCADE,
         ),
@@ -519,7 +528,7 @@ internal object FreshSchemaContract {
         ),
         fk(
             "fk_automation_module_maps_party_preset", "automation_module_maps.party_preset_id",
-            "party_presets.id", DeleteAction.RESTRICT,
+            "party_presets.id", DeleteAction.SET_NULL,
         ),
         fk(
             "fk_automation_module_quests_config", "automation_module_quests.module_config_id",
@@ -535,7 +544,7 @@ internal object FreshSchemaContract {
         ),
         fk(
             "fk_automation_module_quest_maps_party_preset", "automation_module_quest_maps.party_preset_id",
-            "party_presets.id", DeleteAction.RESTRICT,
+            "party_presets.id", DeleteAction.SET_NULL,
         ),
         fk(
             "fk_automation_action_runs_job", "automation_action_runs.job_id",
@@ -612,6 +621,10 @@ internal object FreshSchemaContract {
             "status", "next_run_at", "last_heartbeat_at", "id",
         ),
         index(
+            "automation_jobs", "idx_automation_jobs_current_module_config",
+            "current_module_config_id", "id",
+        ),
+        index(
             "automation_module_configs", "idx_automation_module_configs_profile_priority",
             "profile_id", "priority", "id",
         ),
@@ -619,6 +632,8 @@ internal object FreshSchemaContract {
             "automation_module_maps", "idx_automation_module_maps_module_order",
             "module_config_id", "execution_order", "id",
         ),
+        index("automation_module_maps", "idx_automation_module_maps_battle_map", "battle_map_id", "id"),
+        index("automation_module_maps", "idx_automation_module_maps_party_preset", "party_preset_id", "id"),
         index(
             "automation_module_quests", "idx_automation_module_quests_module_order",
             "module_config_id", "execution_order", "id",
@@ -628,8 +643,20 @@ internal object FreshSchemaContract {
             "module_quest_id", "execution_order", "id",
         ),
         index(
+            "automation_module_quest_maps", "idx_automation_module_quest_maps_battle_map",
+            "battle_map_id", "id",
+        ),
+        index(
+            "automation_module_quest_maps", "idx_automation_module_quest_maps_party_preset",
+            "party_preset_id", "id",
+        ),
+        index(
             "automation_action_runs", "idx_automation_action_runs_job_status_updated",
             "job_id", "status", "updated_at", "id",
+        ),
+        index(
+            "automation_action_runs", "idx_automation_action_runs_module_config",
+            "module_config_id", "id",
         ),
         index(
             "automation_outbox", "idx_automation_outbox_unpublished",

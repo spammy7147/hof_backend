@@ -14,6 +14,8 @@ import app.spammy.hof.automation.entity.AutomationProfileEntity
 import app.spammy.hof.battle.entity.BattleMapEntity
 import app.spammy.hof.battle.repository.BattleMapRepository
 import app.spammy.hof.common.persistence.QueryDslConfig
+import app.spammy.hof.party.entity.PartyPresetEntity
+import app.spammy.hof.party.repository.PartyPresetRepository
 import jakarta.persistence.EntityManager
 import java.time.Instant
 import kotlin.test.Test
@@ -38,6 +40,7 @@ class UnifiedAutomationPersistenceTest {
     @Autowired private lateinit var moduleQuestMapRepository: AutomationModuleQuestMapCommandRepository
     @Autowired private lateinit var actionRunRepository: AutomationActionRunRepository
     @Autowired private lateinit var battleMapRepository: BattleMapRepository
+    @Autowired private lateinit var partyPresetRepository: PartyPresetRepository
     @Autowired private lateinit var queryRepository: UnifiedAutomationQueryRepository
     @Autowired private lateinit var entityManager: EntityManager
 
@@ -187,6 +190,20 @@ class UnifiedAutomationPersistenceTest {
     }
 
     @Test
+    fun findModuleDoesNotReturnAnotherModeForTheSameAccount() {
+        val now = Instant.parse("2026-07-13T02:30:00Z")
+        val account = newAccount("other-mode-module-account", now)
+        val profile = newProfile(account, now, mode = "TIME_BURN")
+        val module = moduleConfigRepository.save(
+            newModule(profile, "기존 시간 소모", priority = 0, thresholdPercent = 50, now = now),
+        )
+        entityManager.flush()
+        entityManager.clear()
+
+        assertNull(queryRepository.findModule(account.id, module.id))
+    }
+
+    @Test
     fun reconstructsQuestMapsInQuestAndMapExecutionOrder() {
         val now = Instant.parse("2026-07-13T03:00:00Z")
         val account = newAccount("module-quest-account", now)
@@ -238,6 +255,56 @@ class UnifiedAutomationPersistenceTest {
         assertEquals(laterQuest.id, aggregate.quests.last().quest.id)
     }
 
+    @Test
+    fun deletingPartyPresetClearsModuleAndQuestMapReferences() {
+        val now = Instant.parse("2026-07-13T04:00:00Z")
+        val account = newAccount("module-preset-delete-account", now)
+        val profile = newProfile(account, now)
+        val module = moduleConfigRepository.save(
+            newModule(profile, "프리셋 삭제 테스트", priority = 0, thresholdPercent = 50, now = now),
+        )
+        val preset = partyPresetRepository.save(
+            PartyPresetEntity(
+                account = account,
+                name = "삭제할 프리셋",
+                createdAt = now,
+                updatedAt = now,
+            ),
+        )
+        val moduleMap = battleMapRepository.save(newBattleMap("preset-module-map", "모듈 프리셋 맵", now))
+        val questMap = battleMapRepository.save(newBattleMap("preset-quest-map", "퀘스트 프리셋 맵", now))
+        moduleMapRepository.save(
+            AutomationModuleMapEntity(
+                moduleConfig = module,
+                battleMap = moduleMap,
+                partyPreset = preset,
+                executionOrder = 0,
+            ),
+        )
+        val quest = moduleQuestRepository.save(
+            AutomationModuleQuestEntity(moduleConfig = module, questCode = "preset-quest", executionOrder = 0),
+        )
+        moduleQuestMapRepository.save(
+            AutomationModuleQuestMapEntity(
+                moduleQuest = quest,
+                battleMap = questMap,
+                partyPreset = preset,
+                executionOrder = 0,
+            ),
+        )
+        entityManager.flush()
+        entityManager.clear()
+
+        entityManager.createNativeQuery("delete from party_presets where id = :presetId")
+            .setParameter("presetId", preset.id)
+            .executeUpdate()
+        entityManager.clear()
+
+        val aggregate = assertNotNull(queryRepository.findModule(account.id, module.id))
+        assertNull(aggregate.maps.single().partyPreset)
+        assertNull(aggregate.quests.single().maps.single().partyPreset)
+    }
+
     private fun newAccount(
         loginId: String,
         now: Instant,
@@ -248,11 +315,12 @@ class UnifiedAutomationPersistenceTest {
     private fun newProfile(
         account: HofAccountEntity,
         now: Instant,
+        mode: String = "UNIFIED",
     ): AutomationProfileEntity = profileRepository.save(
         AutomationProfileEntity(
             account = account,
             name = "통합 자동화",
-            mode = "UNIFIED",
+            mode = mode,
             enabled = true,
             createdAt = now,
             updatedAt = now,

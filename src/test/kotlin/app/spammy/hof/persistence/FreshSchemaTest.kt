@@ -119,6 +119,15 @@ class FreshSchemaTest {
                         "where display_name = 'TIME_BURN' and threshold_percent is null",
                 ),
             )
+            assertEquals(
+                """{"legacyKey":"keep-me"}""",
+                connection.stringValue(
+                    "select legacy.settings_json from automation_module_legacy_settings legacy " +
+                        "join automation_module_configs configs on configs.id = legacy.module_config_id " +
+                        "join automation_profiles profiles on profiles.id = configs.profile_id " +
+                        "where profiles.mode = 'TIME_BURN'",
+                ),
+            )
         }
     }
 
@@ -158,7 +167,12 @@ private fun seedV7AutomationData(connection: Connection) {
         """
         insert into automation_module_configs
             (profile_id, module_type, enabled, priority, settings_json, created_at, updated_at)
-        select id, 'TIME_BURN', true, 0, '{}', current_timestamp, current_timestamp
+        select id, 'TIME_BURN', true, 0,
+               case mode
+                   when 'UNIFIED' then '{"discard":"unified-only"}'
+                   else '{"legacyKey":"keep-me"}'
+               end,
+               current_timestamp, current_timestamp
         from automation_profiles
         """.trimIndent(),
         """
@@ -225,5 +239,13 @@ private fun Connection.count(sql: String): Int =
         statement.executeQuery(sql).use { rows ->
             check(rows.next())
             rows.getInt(1)
+        }
+    }
+
+private fun Connection.stringValue(sql: String): String =
+    createStatement().use { statement ->
+        statement.executeQuery(sql).use { rows ->
+            check(rows.next())
+            rows.getString(1)
         }
     }
