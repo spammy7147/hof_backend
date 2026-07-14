@@ -16,8 +16,12 @@ import app.spammy.hof.automation.repository.UnifiedAutomationQueryRepository
 import app.spammy.hof.battle.entity.AccountBattleMapStateEntity
 import app.spammy.hof.battle.entity.BattleMapEntity
 import app.spammy.hof.battle.repository.BattleMapQueryRepository
+import app.spammy.hof.character.entity.CharacterEntity
+import app.spammy.hof.character.entity.CharacterPatternSlotEntity
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.party.entity.PartyPresetEntity
+import app.spammy.hof.party.entity.PartyPresetMemberEntity
+import app.spammy.hof.party.repository.PartyPresetQueryRepository
 import app.spammy.hof.quest.model.QuestSnapshot
 import app.spammy.hof.quest.model.QuestState
 import app.spammy.hof.quest.service.QuestGatewayService
@@ -37,6 +41,8 @@ class LiveAutomationSnapshotLoaderTest {
     private val keyQuestPolicy = Mockito.mock(KeyQuestPolicy::class.java)
     private val adventureMapPolicy = Mockito.mock(AdventureMapPolicy::class.java)
     private val selectedQuestPolicy = Mockito.mock(SelectedQuestPolicy::class.java)
+    private val partyPresetQueryRepository = Mockito.mock(PartyPresetQueryRepository::class.java)
+    private val readinessEvaluator = AutomationModuleReadinessEvaluator(partyPresetQueryRepository)
     private val loader = LiveAutomationSnapshotLoader(
         questGatewayService = questGatewayService,
         statusService = statusService,
@@ -46,6 +52,7 @@ class LiveAutomationSnapshotLoaderTest {
         adventureMapPolicy = adventureMapPolicy,
         selectedQuestPolicy = selectedQuestPolicy,
         timeProvider = TimeProvider { NOW },
+        readinessEvaluator = readinessEvaluator,
     )
 
     @Test
@@ -122,11 +129,35 @@ class LiveAutomationSnapshotLoaderTest {
             .findStateForExecution(Mockito.anyLong(), Mockito.anyString(), Mockito.anyString())
     }
 
+    @Test
+    fun compatibilityLoaderSkipsAModuleWhoseAssignedCharacterHasNoPattern() {
+        val configured = readyMapModule(
+            type = AutomationModuleType.TIME_BURN,
+            priority = 0,
+            thresholdPercent = 85,
+            mapCode = "missing-pattern-map",
+        )
+        val preset = configured.maps.single().partyPreset!!
+        stubSnapshotInputs(
+            quests = emptyList(),
+            modules = listOf(configured),
+            states = emptyList(),
+            members = listOf(presetMember(preset, withPattern = false)),
+        )
+
+        val snapshot = loader.load(ACCOUNT_ID)
+
+        assertNull(snapshot.timeMap)
+        assertEquals(90, snapshot.timeThresholdPercent)
+        Mockito.verify(partyPresetQueryRepository, Mockito.times(1)).findMembersByPresetIds(setOf(preset.id))
+    }
+
     /** 외부 HOF 조회와 QueryDSL aggregate를 고정해 테스트가 loader의 선택·조립 규칙만 검증하게 한다. */
     private fun stubSnapshotInputs(
         quests: List<QuestSnapshot>,
         modules: List<AutomationModuleAggregate>,
         states: List<AccountBattleMapStateEntity>,
+        members: List<PartyPresetMemberEntity>? = null,
     ) {
         Mockito.`when`(questGatewayService.load(ACCOUNT_ID)).thenReturn(quests)
         Mockito.`when`(statusService.fetch(ACCOUNT_ID)).thenReturn(status())
@@ -134,6 +165,14 @@ class LiveAutomationSnapshotLoaderTest {
         Mockito.`when`(unifiedQueryRepository.findModules(PROFILE_ID)).thenReturn(modules)
         val pairs = states.map { it.battleMap.categoryId to it.battleMap.mapCode }.toSet()
         Mockito.`when`(battleMapQueryRepository.findStatesForExecution(ACCOUNT_ID, pairs)).thenReturn(states)
+        val presets = modules
+            .flatMap { module ->
+                module.maps.mapNotNull { it.partyPreset } +
+                    module.quests.flatMap { quest -> quest.maps.mapNotNull { it.partyPreset } }
+            }
+            .distinctBy { it.id }
+        Mockito.`when`(partyPresetQueryRepository.findMembersByPresetIds(presets.map { it.id }.toSet()))
+            .thenReturn(members ?: presets.map { presetMember(it, withPattern = true) })
     }
 
     private fun readyMapModule(
@@ -247,6 +286,28 @@ class LiveAutomationSnapshotLoaderTest {
         createdAt = NOW,
         updatedAt = NOW,
     )
+
+    private fun presetMember(
+        preset: PartyPresetEntity,
+        withPattern: Boolean,
+    ): PartyPresetMemberEntity {
+        val character = CharacterEntity(
+            id = preset.id * 10,
+            account = account(),
+            hofCharacterId = "character-${preset.id}",
+            name = "캐릭터",
+            job = "직업",
+            updatedAt = NOW,
+        )
+        val pattern = CharacterPatternSlotEntity(
+            id = preset.id * 100,
+            character = character,
+            slotCode = "0",
+            label = "기본",
+            canLoad = true,
+        ).takeIf { withPattern }
+        return PartyPresetMemberEntity(preset, 0, character, pattern)
+    }
 
     private fun profile() = AutomationProfileEntity(
         id = PROFILE_ID,

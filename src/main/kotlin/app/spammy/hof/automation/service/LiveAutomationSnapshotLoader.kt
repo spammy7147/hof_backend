@@ -39,6 +39,7 @@ class LiveAutomationSnapshotLoader(
     private val adventureMapPolicy: AdventureMapPolicy,
     private val selectedQuestPolicy: SelectedQuestPolicy,
     private val timeProvider: TimeProvider,
+    private val readinessEvaluator: AutomationModuleReadinessEvaluator,
 ) : AutomationSnapshotLoader {
     /** 계정의 최신 HOF 상태와 가장 높은 우선순위의 유형별 모듈을 한 실행 판단 스냅샷으로 조립한다. */
     @Transactional(readOnly = true)
@@ -48,11 +49,12 @@ class LiveAutomationSnapshotLoader(
         val profile = unifiedQueryRepository.findProfile(accountId)
             ?: throw AutomationConfigurationException("통합 자동화 설정을 저장해 주세요.")
         val modules = unifiedQueryRepository.findModules(profile.id)
-        val keyModule = modules.firstActiveAndReady(AutomationModuleType.KEY_QUEST)
-        val timeModule = modules.firstActiveAndReady(AutomationModuleType.TIME_BURN)
-        val cooldownModule = modules.firstActiveAndReady(AutomationModuleType.COOLDOWN_ADVENTURE)
-        val dailyModule = modules.firstActiveAndReady(AutomationModuleType.DAILY_ADVENTURE)
-        val otherQuestModule = modules.firstActiveAndReady(AutomationModuleType.OTHER_QUEST)
+        val readiness = readinessEvaluator.evaluate(modules)
+        val keyModule = modules.firstActiveAndReady(AutomationModuleType.KEY_QUEST, readiness)
+        val timeModule = modules.firstActiveAndReady(AutomationModuleType.TIME_BURN, readiness)
+        val cooldownModule = modules.firstActiveAndReady(AutomationModuleType.COOLDOWN_ADVENTURE, readiness)
+        val dailyModule = modules.firstActiveAndReady(AutomationModuleType.DAILY_ADVENTURE, readiness)
+        val otherQuestModule = modules.firstActiveAndReady(AutomationModuleType.OTHER_QUEST, readiness)
         val selectedModules = listOfNotNull(keyModule, timeModule, cooldownModule, dailyModule, otherQuestModule)
         val requestedMapPairs = selectedModules
             .flatMap { module ->
@@ -136,9 +138,10 @@ class LiveAutomationSnapshotLoader(
     /** 같은 유형에서 우선순위가 가장 높은 활성·준비 완료 모듈을 Task 4 전까지 호환 대상으로 선택한다. */
     private fun List<AutomationModuleAggregate>.firstActiveAndReady(
         type: AutomationModuleType,
+        readiness: AutomationModuleReadiness,
     ): AutomationModuleAggregate? =
         asSequence()
-            .filter { it.config.moduleType == type && it.config.enabled && it.isReadyForExecution() }
+            .filter { it.config.moduleType == type && it.config.enabled && readiness.isReady(it) }
             .minWithOrNull(compareBy({ it.config.priority }, { it.config.id }))
 
     private fun stateCandidate(

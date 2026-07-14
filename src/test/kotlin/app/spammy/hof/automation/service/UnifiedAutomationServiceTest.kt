@@ -14,7 +14,6 @@ import app.spammy.hof.automation.entity.AutomationModuleQuestEntity
 import app.spammy.hof.automation.entity.AutomationModuleQuestMapEntity
 import app.spammy.hof.automation.entity.AutomationModuleType
 import app.spammy.hof.automation.entity.AutomationProfileEntity
-import app.spammy.hof.automation.port.AutomationWakeupPort
 import app.spammy.hof.automation.repository.AutomationJobRepository
 import app.spammy.hof.automation.repository.AutomationModuleAggregate
 import app.spammy.hof.automation.repository.AutomationModuleConfigRepository
@@ -26,10 +25,13 @@ import app.spammy.hof.automation.repository.AutomationProfileRepository
 import app.spammy.hof.automation.repository.UnifiedAutomationQueryRepository
 import app.spammy.hof.battle.entity.BattleMapEntity
 import app.spammy.hof.battle.repository.BattleMapQueryRepository
+import app.spammy.hof.character.entity.CharacterEntity
+import app.spammy.hof.character.entity.CharacterPatternSlotEntity
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.party.entity.PartyPresetEntity
+import app.spammy.hof.party.entity.PartyPresetMemberEntity
 import app.spammy.hof.party.repository.PartyPresetQueryRepository
 import java.time.Instant
 import kotlin.test.Test
@@ -52,7 +54,8 @@ class UnifiedAutomationServiceTest {
     private val queryRepository = Mockito.mock(UnifiedAutomationQueryRepository::class.java)
     private val battleMapQueryRepository = Mockito.mock(BattleMapQueryRepository::class.java)
     private val partyPresetQueryRepository = Mockito.mock(PartyPresetQueryRepository::class.java)
-    private val wakeupPort = Mockito.mock(AutomationWakeupPort::class.java)
+    private val readinessEvaluator = AutomationModuleReadinessEvaluator(partyPresetQueryRepository)
+    private val afterCommitWakeupService = Mockito.mock(AutomationAfterCommitWakeupService::class.java)
     private val service = UnifiedAutomationService(
         accountQueryRepository = accountQueryRepository,
         profileRepository = profileRepository,
@@ -65,15 +68,21 @@ class UnifiedAutomationServiceTest {
         battleMapQueryRepository = battleMapQueryRepository,
         partyPresetQueryRepository = partyPresetQueryRepository,
         timeProvider = TimeProvider { NOW },
-        wakeupPort = wakeupPort,
+        afterCommitWakeupService = afterCommitWakeupService,
+        readinessEvaluator = readinessEvaluator,
     )
+
+    init {
+        Mockito.`when`(accountQueryRepository.findByIdForUpdate(ACCOUNT_ID)).thenReturn(account())
+        Mockito.`when`(queryRepository.findProfileForUpdate(ACCOUNT_ID)).thenReturn(profile())
+    }
 
     @Test
     fun getReturnsNoGeneratedModulesForAnEmptyProfile() {
         val account = account()
         val profile = profile(account = account)
-        Mockito.`when`(queryRepository.findProfile(ACCOUNT_ID)).thenReturn(null)
-        Mockito.`when`(accountQueryRepository.findById(ACCOUNT_ID)).thenReturn(account)
+        Mockito.`when`(accountQueryRepository.findByIdForUpdate(ACCOUNT_ID)).thenReturn(account)
+        Mockito.`when`(queryRepository.findProfileForUpdate(ACCOUNT_ID)).thenReturn(null, profile)
         Mockito.`when`(profileRepository.save(anyProfile())).thenReturn(profile)
         Mockito.`when`(queryRepository.findModules(profile.id)).thenReturn(emptyList())
 
@@ -82,6 +91,12 @@ class UnifiedAutomationServiceTest {
         assertEquals(profile.id, response.profileId)
         assertEquals(emptyList(), response.modules)
         Mockito.verify(moduleConfigRepository, Mockito.never()).saveAll(Mockito.anyList())
+        val lockOrder = Mockito.inOrder(accountQueryRepository, queryRepository, profileRepository)
+        lockOrder.verify(accountQueryRepository).findByIdForUpdate(ACCOUNT_ID)
+        lockOrder.verify(queryRepository).findProfileForUpdate(ACCOUNT_ID)
+        lockOrder.verify(profileRepository).save(anyProfile())
+        lockOrder.verify(profileRepository).flush()
+        lockOrder.verify(queryRepository).findProfileForUpdate(ACCOUNT_ID)
     }
 
     @Test
@@ -139,6 +154,7 @@ class UnifiedAutomationServiceTest {
         ).thenReturn(listOf(secondMap, firstMap))
         Mockito.`when`(partyPresetQueryRepository.findOwnedByAccountIdAndIds(ACCOUNT_ID, setOf(preset.id)))
             .thenReturn(listOf(preset))
+        stubExecutablePreset(preset)
 
         val response = service.createModule(ACCOUNT_ID, request)
 
@@ -182,6 +198,7 @@ class UnifiedAutomationServiceTest {
             .thenReturn(listOf(targetMap))
         Mockito.`when`(partyPresetQueryRepository.findOwnedByAccountIdAndIds(ACCOUNT_ID, setOf(preset.id)))
             .thenReturn(listOf(preset))
+        stubExecutablePreset(preset)
         Mockito.`when`(moduleConfigRepository.save(anyModule())).thenAnswer { it.arguments[0] }
         Mockito.`when`(moduleQuestRepository.save(anyQuest())).thenAnswer { invocation ->
             copyQuest(invocation.arguments[0] as AutomationModuleQuestEntity, id = 801L)
@@ -250,7 +267,7 @@ class UnifiedAutomationServiceTest {
         Mockito.verify(moduleConfigRepository).delete(target.config)
         Mockito.verify(moduleConfigRepository).saveAll(listOf(first.config, last.config))
         Mockito.verify(jobRepository, Mockito.never()).delete(running)
-        Mockito.verify(wakeupPort).wake(ACCOUNT_ID, "MODULES_UPDATED")
+        Mockito.verify(afterCommitWakeupService).wake(ACCOUNT_ID, "MODULES_UPDATED")
         Mockito.verify(queryRepository).findProfileForUpdate(ACCOUNT_ID)
     }
 
@@ -329,7 +346,7 @@ class UnifiedAutomationServiceTest {
         assertEquals("설정이 완료되어 자동화를 재개합니다.", waiting.message)
         assertEquals("BATTLE:already-running", waiting.currentAction)
         Mockito.verify(jobRepository).save(waiting)
-        Mockito.verify(wakeupPort).wake(ACCOUNT_ID, "MODULES_UPDATED")
+        Mockito.verify(afterCommitWakeupService).wake(ACCOUNT_ID, "MODULES_UPDATED")
     }
 
     @Test
@@ -359,7 +376,7 @@ class UnifiedAutomationServiceTest {
         assertEquals("RUNNING", waiting.status)
         assertEquals(NOW, waiting.nextRunAt)
         Mockito.verify(jobRepository).save(waiting)
-        Mockito.verify(wakeupPort).wake(ACCOUNT_ID, "MODULES_UPDATED")
+        Mockito.verify(afterCommitWakeupService).wake(ACCOUNT_ID, "MODULES_UPDATED")
     }
 
     @Test
@@ -379,7 +396,7 @@ class UnifiedAutomationServiceTest {
         assertEquals("RUNNING", waiting.status)
         assertEquals(NOW, waiting.nextRunAt)
         Mockito.verify(jobRepository).save(waiting)
-        Mockito.verify(wakeupPort).wake(ACCOUNT_ID, "MODULES_UPDATED")
+        Mockito.verify(afterCommitWakeupService).wake(ACCOUNT_ID, "MODULES_UPDATED")
     }
 
     @Test
@@ -400,7 +417,7 @@ class UnifiedAutomationServiceTest {
         assertEquals("RUNNING", waiting.status)
         assertEquals(NOW, waiting.nextRunAt)
         Mockito.verify(jobRepository).save(waiting)
-        Mockito.verify(wakeupPort).wake(ACCOUNT_ID, "MODULES_UPDATED")
+        Mockito.verify(afterCommitWakeupService).wake(ACCOUNT_ID, "MODULES_UPDATED")
     }
 
     @Test
@@ -423,7 +440,7 @@ class UnifiedAutomationServiceTest {
         assertEquals("WAITING_CONFIG", waiting.status)
         assertEquals(null, waiting.nextRunAt)
         Mockito.verify(jobRepository, Mockito.never()).save(waiting)
-        Mockito.verifyNoInteractions(wakeupPort)
+        Mockito.verifyNoInteractions(afterCommitWakeupService)
     }
 
     @Test
@@ -440,12 +457,12 @@ class UnifiedAutomationServiceTest {
         try {
             service.reorderModules(ACCOUNT_ID, ReorderAutomationModulesRequest(listOf(ready.config.id)))
 
-            Mockito.verifyNoInteractions(wakeupPort)
+            Mockito.verifyNoInteractions(afterCommitWakeupService)
             assertEquals("BATTLE:in-flight", running.currentAction)
             val synchronizations = TransactionSynchronizationManager.getSynchronizations()
             assertEquals(1, synchronizations.size)
             synchronizations.forEach { it.afterCommit() }
-            Mockito.verify(wakeupPort).wake(ACCOUNT_ID, "MODULES_UPDATED")
+            Mockito.verify(afterCommitWakeupService).wake(ACCOUNT_ID, "MODULES_UPDATED")
         } finally {
             TransactionSynchronizationManager.clearSynchronization()
             TransactionSynchronizationManager.setActualTransactionActive(false)
@@ -750,6 +767,51 @@ class UnifiedAutomationServiceTest {
         Mockito.verify(jobRepository, Mockito.never()).save(anyJob())
     }
 
+    @Test
+    fun getReportsNotReadyWhenAPresetHasNoAssignedCharacter() {
+        val profile = profile()
+        val preset = preset(501L)
+        val config = module(profile, id = 501L, type = AutomationModuleType.TIME_BURN)
+        val configured = aggregate(
+            config,
+            maps = listOf(moduleMap(config, preset, "empty-preset-map")),
+        )
+        Mockito.`when`(accountQueryRepository.findByIdForUpdate(ACCOUNT_ID)).thenReturn(profile.account)
+        Mockito.`when`(queryRepository.findProfileForUpdate(ACCOUNT_ID)).thenReturn(profile)
+        Mockito.`when`(queryRepository.findModules(profile.id)).thenReturn(listOf(configured))
+        Mockito.`when`(partyPresetQueryRepository.findMembersByPresetIds(setOf(preset.id))).thenReturn(
+            listOf(presetMember(preset, withCharacter = false, withPattern = false)),
+        )
+
+        val response = service.get(ACCOUNT_ID)
+
+        assertFalse(response.modules.single().ready)
+        Mockito.verify(partyPresetQueryRepository, Mockito.times(1)).findMembersByPresetIds(setOf(preset.id))
+    }
+
+    @Test
+    fun startRejectsWhenAnAssignedCharacterHasNoPattern() {
+        val profile = profile()
+        val preset = preset(502L)
+        val config = module(profile, id = 502L, type = AutomationModuleType.TIME_BURN)
+        val configured = aggregate(
+            config,
+            maps = listOf(moduleMap(config, preset, "missing-pattern-map")),
+        )
+        Mockito.`when`(accountQueryRepository.findByIdForUpdate(ACCOUNT_ID)).thenReturn(profile.account)
+        Mockito.`when`(queryRepository.findProfileForUpdate(ACCOUNT_ID)).thenReturn(profile)
+        Mockito.`when`(queryRepository.findModules(profile.id)).thenReturn(listOf(configured))
+        Mockito.`when`(partyPresetQueryRepository.findMembersByPresetIds(setOf(preset.id))).thenReturn(
+            listOf(presetMember(preset, withCharacter = true, withPattern = false)),
+        )
+
+        val failure = assertFailsWith<ApiException> { service.start(ACCOUNT_ID) }
+
+        assertEquals(ErrorCode.INVALID_REQUEST, failure.errorCode)
+        Mockito.verify(jobRepository, Mockito.never()).save(anyJob())
+        Mockito.verify(partyPresetQueryRepository, Mockito.times(1)).findMembersByPresetIds(setOf(preset.id))
+    }
+
     private fun stubProfileAndCreate(
         profile: AutomationProfileEntity,
         id: Long,
@@ -948,6 +1010,48 @@ class UnifiedAutomationServiceTest {
         createdAt = NOW,
         updatedAt = NOW,
     )
+
+    private fun moduleMap(
+        config: AutomationModuleConfigEntity,
+        preset: PartyPresetEntity,
+        mapCode: String,
+    ) = AutomationModuleMapEntity(
+        moduleConfig = config,
+        battleMap = battleMap("battle_map", mapCode),
+        partyPreset = preset,
+        executionOrder = 0,
+    )
+
+    private fun presetMember(
+        preset: PartyPresetEntity,
+        withCharacter: Boolean,
+        withPattern: Boolean,
+    ): PartyPresetMemberEntity {
+        val character = CharacterEntity(
+            id = preset.id * 10,
+            account = account(),
+            hofCharacterId = "character-${preset.id}",
+            name = "캐릭터",
+            job = "직업",
+            updatedAt = NOW,
+        ).takeIf { withCharacter }
+        val pattern = character?.let {
+            CharacterPatternSlotEntity(
+                id = preset.id * 100,
+                character = it,
+                slotCode = "0",
+                label = "기본",
+                canLoad = true,
+            )
+        }.takeIf { withPattern }
+        return PartyPresetMemberEntity(preset, 0, character, pattern)
+    }
+
+    private fun stubExecutablePreset(preset: PartyPresetEntity) {
+        Mockito.`when`(partyPresetQueryRepository.findMembersByPresetIds(setOf(preset.id))).thenReturn(
+            listOf(presetMember(preset, withCharacter = true, withPattern = true)),
+        )
+    }
 
     private fun mapRequest(
         map: BattleMapEntity,

@@ -18,7 +18,6 @@ import app.spammy.hof.automation.entity.AutomationModuleQuestEntity
 import app.spammy.hof.automation.entity.AutomationModuleQuestMapEntity
 import app.spammy.hof.automation.entity.AutomationModuleType
 import app.spammy.hof.automation.entity.AutomationProfileEntity
-import app.spammy.hof.automation.port.AutomationWakeupPort
 import app.spammy.hof.automation.repository.AutomationJobRepository
 import app.spammy.hof.automation.repository.AutomationModuleAggregate
 import app.spammy.hof.automation.repository.AutomationModuleConfigRepository
@@ -61,7 +60,8 @@ class UnifiedAutomationService(
     private val battleMapQueryRepository: BattleMapQueryRepository,
     private val partyPresetQueryRepository: PartyPresetQueryRepository,
     private val timeProvider: TimeProvider,
-    private val wakeupPort: AutomationWakeupPort,
+    private val afterCommitWakeupService: AutomationAfterCommitWakeupService,
+    private val readinessEvaluator: AutomationModuleReadinessEvaluator,
 ) {
     /**
      * 통합 프로필과 현재 실행 상태를 조회한다.
@@ -71,8 +71,10 @@ class UnifiedAutomationService(
      */
     @Transactional
     fun get(accountId: Long): UnifiedAutomationStatusResponse {
-        val profile = findOrCreateProfile(accountId)
-        return buildStatus(profile, queryRepository.findCurrentJob(accountId), queryRepository.findModules(profile.id))
+        val profile = lockAccountAndFindOrCreateProfile(accountId)
+        val modules = queryRepository.findModules(profile.id)
+        val readiness = readinessEvaluator.evaluate(modules)
+        return buildStatus(profile, queryRepository.findCurrentJob(accountId), modules, readiness)
     }
 
     /**
@@ -94,7 +96,7 @@ class UnifiedAutomationService(
             maps = request.maps,
             quests = request.quests,
         )
-        val profile = lockOrCreateProfile(accountId)
+        val profile = lockAccountAndFindOrCreateProfile(accountId)
         val existingModules = queryRepository.findModules(profile.id)
         if (existingModules.size >= MAX_MODULES) {
             invalid("자동화 모듈은 최대 100개까지 만들 수 있습니다.")
@@ -115,8 +117,9 @@ class UnifiedAutomationService(
         )
         val children = saveChildren(config, settings, references)
         touchProfile(profile, now)
-        reconcileJobAfterModulesChanged(accountId, profile)
-        return AutomationModuleAggregate(config, children.maps, children.quests).toResponse()
+        val aggregate = AutomationModuleAggregate(config, children.maps, children.quests)
+        val mutationState = reconcileJobAfterModulesChanged(accountId, profile, aggregate)
+        return aggregate.toResponse(mutationState.readiness.isReady(aggregate))
     }
 
     /**
@@ -131,7 +134,7 @@ class UnifiedAutomationService(
         moduleId: Long,
         request: UpdateAutomationModuleRequest,
     ): AutomationModuleResponse {
-        lockOrCreateProfile(accountId)
+        lockAccountAndFindOrCreateProfile(accountId)
         val existing = findOwnedModule(accountId, moduleId)
         val settings = normalizeAndValidate(
             moduleType = existing.config.moduleType,
@@ -151,8 +154,9 @@ class UnifiedAutomationService(
         val config = moduleConfigRepository.save(existing.config)
         val children = saveChildren(config, settings, references)
         touchProfile(config.profile, now)
-        reconcileJobAfterModulesChanged(accountId, config.profile)
-        return AutomationModuleAggregate(config, children.maps, children.quests).toResponse()
+        val aggregate = AutomationModuleAggregate(config, children.maps, children.quests)
+        val mutationState = reconcileJobAfterModulesChanged(accountId, config.profile, aggregate)
+        return aggregate.toResponse(mutationState.readiness.isReady(aggregate))
     }
 
     /**
@@ -166,7 +170,7 @@ class UnifiedAutomationService(
         accountId: Long,
         moduleId: Long,
     ) {
-        lockOrCreateProfile(accountId)
+        lockAccountAndFindOrCreateProfile(accountId)
         val target = findOwnedModule(accountId, moduleId)
         val remaining = queryRepository.findModules(target.config.profile.id)
             .filterNot { it.config.id == target.config.id }
@@ -192,7 +196,7 @@ class UnifiedAutomationService(
         accountId: Long,
         request: ReorderAutomationModulesRequest,
     ): UnifiedAutomationStatusResponse {
-        val profile = lockOrCreateProfile(accountId)
+        val profile = lockAccountAndFindOrCreateProfile(accountId)
         val current = queryRepository.findModules(profile.id)
         validateCompleteOrder(current, request.moduleIds)
         val aggregateById = current.associateBy { it.config.id }
@@ -213,15 +217,17 @@ class UnifiedAutomationService(
             profile,
             mutationState.job,
             mutationState.modules,
+            mutationState.readiness,
         )
     }
 
     /** 준비 완료된 활성 모듈이 있을 때만 통합 자동화 job을 시작하거나 재개한다. */
     @Transactional
     fun start(accountId: Long): UnifiedAutomationStatusResponse {
-        val profile = lockOrCreateProfile(accountId)
+        val profile = lockAccountAndFindOrCreateProfile(accountId)
         val modules = queryRepository.findModules(profile.id)
-        if (modules.none { it.config.enabled && it.isReadyForExecution() }) {
+        val readiness = readinessEvaluator.evaluate(modules)
+        if (modules.none { it.config.enabled && readiness.isReady(it) }) {
             invalid("실행할 수 있는 자동화가 없습니다. 사용할 모듈의 맵과 파티 설정을 확인해 주세요.")
         }
         val current = queryRepository.findCurrentJob(accountId)
@@ -234,7 +240,7 @@ class UnifiedAutomationService(
             job.updatedAt = now
         }
         if (job.status == "RUNNING") wakeAfterCommit(accountId, "USER_START")
-        return buildStatus(profile, job, modules)
+        return buildStatus(profile, job, modules, readiness)
     }
 
     /** 실행 중인 통합 자동화를 새 행동을 시작하지 않는 일시정지 상태로 전환한다. */
@@ -276,16 +282,23 @@ class UnifiedAutomationService(
         job.updatedAt = now
         job.nextRunAt = if (target == "RUNNING") now else null
         if (finished) job.finishedAt = now
-        return buildStatus(profile, job, queryRepository.findModules(profile.id))
+        val modules = queryRepository.findModules(profile.id)
+        return buildStatus(profile, job, modules, readinessEvaluator.evaluate(modules))
     }
 
-    /** 계정의 UNIFIED 프로필을 조회하고, 최초 접근일 때만 모듈 없는 부모 프로필을 만든다. */
-    private fun findOrCreateProfile(accountId: Long): AutomationProfileEntity {
-        queryRepository.findProfile(accountId)?.let { return it }
-        val account = accountQueryRepository.findById(accountId)
+    /**
+     * 계정과 통합 프로필을 같은 순서로 잠그고, 최초 접근이면 빈 프로필 하나만 만든다.
+     *
+     * 아직 프로필 행이 없는 요청은 계정 행의 `PESSIMISTIC_WRITE` 잠금에서 직렬화된다. 잠금을 얻은 뒤
+     * 프로필을 재조회하므로 먼저 대기하던 요청이 만든 행을 뒤 요청이 다시 만들지 않는다. 기존 프로필도
+     * account → profile 순서로 잠가 create/update/delete/reorder 사이의 deadlock 가능성을 낮춘다.
+     */
+    private fun lockAccountAndFindOrCreateProfile(accountId: Long): AutomationProfileEntity {
+        val account = accountQueryRepository.findByIdForUpdate(accountId)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
+        queryRepository.findProfileForUpdate(accountId)?.let { return it }
         val now = timeProvider.now()
-        return profileRepository.save(
+        val created = profileRepository.save(
             AutomationProfileEntity(
                 account = account,
                 name = "통합 자동화",
@@ -295,18 +308,6 @@ class UnifiedAutomationService(
                 updatedAt = now,
             ),
         )
-    }
-
-    /**
-     * 설정 변경 전에 통합 프로필의 DB 쓰기 잠금을 획득한다.
-     *
-     * 신규 계정은 부모 프로필을 만든 뒤 flush하고 다시 잠금 조회한다. 일반 단위 테스트처럼 저장소가
-     * 실제 트랜잭션을 제공하지 않는 문맥에서는 방금 만든 프로필을 그대로 사용하지만, 운영 JPA 경로는
-     * 반드시 잠긴 managed entity를 반환한다.
-     */
-    private fun lockOrCreateProfile(accountId: Long): AutomationProfileEntity {
-        queryRepository.findProfileForUpdate(accountId)?.let { return it }
-        val created = findOrCreateProfile(accountId)
         profileRepository.flush()
         return queryRepository.findProfileForUpdate(accountId) ?: created
     }
@@ -557,12 +558,19 @@ class UnifiedAutomationService(
     private fun reconcileJobAfterModulesChanged(
         accountId: Long,
         profile: AutomationProfileEntity,
+        changedModule: AutomationModuleAggregate? = null,
     ): ModuleMutationState {
-        val modules = queryRepository.findModules(profile.id)
+        val persistedModules = queryRepository.findModules(profile.id)
+        val modules = if (changedModule != null && persistedModules.none { it.config.id == changedModule.config.id }) {
+            persistedModules + changedModule
+        } else {
+            persistedModules
+        }
+        val readiness = readinessEvaluator.evaluate(modules)
         val job = queryRepository.findCurrentJob(accountId)
         if (job?.status == "WAITING_CONFIG") {
-            if (modules.none { it.config.enabled && it.isReadyForExecution() }) {
-                return ModuleMutationState(job, modules)
+            if (modules.none { it.config.enabled && readiness.isReady(it) }) {
+                return ModuleMutationState(job, modules, readiness)
             }
             val now = timeProvider.now()
             job.status = "RUNNING"
@@ -572,7 +580,7 @@ class UnifiedAutomationService(
             jobRepository.save(job)
         }
         if (job?.status == "RUNNING") wakeAfterCommit(accountId, "MODULES_UPDATED")
-        return ModuleMutationState(job, modules)
+        return ModuleMutationState(job, modules, readiness)
     }
 
     /**
@@ -588,13 +596,13 @@ class UnifiedAutomationService(
         if (!TransactionSynchronizationManager.isActualTransactionActive() ||
             !TransactionSynchronizationManager.isSynchronizationActive()
         ) {
-            wakeupPort.wake(accountId, reason)
+            afterCommitWakeupService.wake(accountId, reason)
             return
         }
         TransactionSynchronizationManager.registerSynchronization(
             object : TransactionSynchronization {
                 override fun afterCommit() {
-                    wakeupPort.wake(accountId, reason)
+                    afterCommitWakeupService.wake(accountId, reason)
                 }
             },
         )
@@ -630,7 +638,7 @@ class UnifiedAutomationService(
     )
 
     /** aggregate의 정규화 자식 설정을 API 응답으로 변환하고 준비 상태와 요약을 계산한다. */
-    private fun AutomationModuleAggregate.toResponse(): AutomationModuleResponse {
+    private fun AutomationModuleAggregate.toResponse(ready: Boolean): AutomationModuleResponse {
         val mapResponses = maps.sortedWith(compareBy(AutomationModuleMapEntity::executionOrder, AutomationModuleMapEntity::id))
             .map { it.toResponse() }
         val questResponses = quests
@@ -644,7 +652,6 @@ class UnifiedAutomationService(
                         .map { it.toResponse() },
                 )
             }
-        val ready = isReadyForExecution()
         return AutomationModuleResponse(
             id = config.id,
             displayName = config.displayName,
@@ -709,12 +716,13 @@ class UnifiedAutomationService(
         profile: AutomationProfileEntity,
         job: AutomationJobEntity?,
         modules: List<AutomationModuleAggregate>,
+        readiness: AutomationModuleReadiness,
     ) = UnifiedAutomationStatusResponse(
         profileId = profile.id,
         job = job?.toResponse(),
         modules = modules
             .sortedWith(compareBy({ it.config.priority }, { it.config.id }))
-            .map { it.toResponse() },
+            .map { it.toResponse(readiness.isReady(it)) },
         currentTitle = job?.currentAction ?: job?.message,
         nextRunAt = job?.nextRunAt?.toString(),
     )
@@ -765,6 +773,7 @@ class UnifiedAutomationService(
     private data class ModuleMutationState(
         val job: AutomationJobEntity?,
         val modules: List<AutomationModuleAggregate>,
+        val readiness: AutomationModuleReadiness,
     )
 
     private companion object {
