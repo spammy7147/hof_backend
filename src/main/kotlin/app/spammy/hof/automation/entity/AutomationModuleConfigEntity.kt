@@ -11,19 +11,11 @@ import jakarta.persistence.Id
 import jakarta.persistence.JoinColumn
 import jakarta.persistence.ManyToOne
 import jakarta.persistence.Table
-import jakarta.persistence.UniqueConstraint
+import jakarta.persistence.Transient
 import java.time.Instant
 
 @Entity
-@Table(
-    name = "automation_module_configs",
-    uniqueConstraints = [
-        UniqueConstraint(
-            name = "uk_automation_module_configs_profile_module",
-            columnNames = ["profile_id", "module_type"],
-        ),
-    ],
-)
+@Table(name = "automation_module_configs")
 class AutomationModuleConfigEntity(
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -43,12 +35,43 @@ class AutomationModuleConfigEntity(
     @Column(name = "priority", nullable = false)
     var priority: Int,
 
-    @Column(name = "settings_json", nullable = false, columnDefinition = "text")
-    var settingsJson: String,
+    @Column(name = "display_name", nullable = false, length = 50)
+    var displayName: String,
+
+    @Column(name = "threshold_percent")
+    var thresholdPercent: Int?,
 
     @Column(name = "created_at", nullable = false)
     var createdAt: Instant,
 
     @Column(name = "updated_at", nullable = false)
     var updatedAt: Instant,
-)
+) {
+    @Transient
+    @Deprecated("Temporary compatibility for the pre-normalization service; JSON is no longer persisted")
+    var settingsJson: String = "{}"
+
+    @Deprecated("Use normalized module fields and child entities")
+    constructor(
+        id: Long = 0,
+        profile: AutomationProfileEntity,
+        moduleType: AutomationModuleType,
+        enabled: Boolean,
+        priority: Int,
+        settingsJson: String,
+        createdAt: Instant,
+        updatedAt: Instant,
+    ) : this(
+        id = id,
+        profile = profile,
+        moduleType = moduleType,
+        enabled = enabled,
+        priority = priority,
+        displayName = moduleType.name,
+        thresholdPercent = null,
+        createdAt = createdAt,
+        updatedAt = updatedAt,
+    ) {
+        this.settingsJson = settingsJson
+    }
+}
