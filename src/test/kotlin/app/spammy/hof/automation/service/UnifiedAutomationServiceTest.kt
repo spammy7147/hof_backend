@@ -323,6 +323,9 @@ class UnifiedAutomationServiceTest {
         val waiting = job(profile, "WAITING_CONFIG").apply {
             message = "설정이 필요합니다."
             currentAction = "BATTLE:already-running"
+            currentModule = "TIME_BURN"
+            currentStepIndex = 2
+            nextRunAt = NOW.plusSeconds(1_800)
         }
         Mockito.`when`(queryRepository.findProfileForUpdate(ACCOUNT_ID)).thenReturn(profile)
         Mockito.`when`(queryRepository.findModules(profile.id)).thenReturn(emptyList(), listOf(ready))
@@ -344,9 +347,11 @@ class UnifiedAutomationServiceTest {
         )
 
         assertEquals("RUNNING", waiting.status)
-        assertEquals(NOW, waiting.nextRunAt)
+        assertEquals(NOW.plusSeconds(1_800), waiting.nextRunAt)
         assertEquals("설정이 완료되어 자동화를 재개합니다.", waiting.message)
         assertEquals("BATTLE:already-running", waiting.currentAction)
+        assertEquals("TIME_BURN", waiting.currentModule)
+        assertEquals(2, waiting.currentStepIndex)
         Mockito.verify(jobRepository).save(waiting)
         Mockito.verify(afterCommitWakeupService).wake(ACCOUNT_ID, "MODULES_UPDATED")
     }
@@ -471,7 +476,13 @@ class UnifiedAutomationServiceTest {
     fun moduleMutationRegistersWakeAfterCommitAndKeepsRunningActionUntouched() {
         val profile = profile()
         val ready = readyOtherQuestModule(profile, id = 351L)
-        val running = job(profile, "RUNNING").apply { currentAction = "BATTLE:in-flight" }
+        val retryAt = NOW.plusSeconds(3_600)
+        val running = job(profile, "RUNNING").apply {
+            currentAction = "BATTLE:in-flight"
+            currentModule = "TIME_BURN"
+            currentStepIndex = 3
+            nextRunAt = retryAt
+        }
         Mockito.`when`(queryRepository.findProfileForUpdate(ACCOUNT_ID)).thenReturn(profile)
         Mockito.`when`(queryRepository.findModules(profile.id)).thenReturn(listOf(ready))
         Mockito.`when`(queryRepository.findCurrentJob(ACCOUNT_ID)).thenReturn(running)
@@ -483,6 +494,10 @@ class UnifiedAutomationServiceTest {
 
             Mockito.verifyNoInteractions(afterCommitWakeupService)
             assertEquals("BATTLE:in-flight", running.currentAction)
+            assertEquals("TIME_BURN", running.currentModule)
+            assertEquals(3, running.currentStepIndex)
+            assertEquals(retryAt, running.nextRunAt)
+            Mockito.verify(jobRepository, Mockito.never()).save(running)
             val synchronizations = TransactionSynchronizationManager.getSynchronizations()
             assertEquals(1, synchronizations.size)
             synchronizations.forEach { it.afterCommit() }
@@ -491,6 +506,27 @@ class UnifiedAutomationServiceTest {
             TransactionSynchronizationManager.clearSynchronization()
             TransactionSynchronizationManager.setActualTransactionActive(false)
         }
+    }
+
+    @Test
+    fun moduleMutationMakesAnIdleRunningJobImmediatelyRecoverable() {
+        val profile = profile()
+        val ready = readyOtherQuestModule(profile, id = 354L)
+        val running = job(profile, "RUNNING").apply {
+            currentAction = null
+            nextRunAt = NOW.plusSeconds(3_600)
+            updatedAt = NOW.minusSeconds(60)
+        }
+        Mockito.`when`(queryRepository.findProfileForUpdate(ACCOUNT_ID)).thenReturn(profile)
+        Mockito.`when`(queryRepository.findModules(profile.id)).thenReturn(listOf(ready))
+        Mockito.`when`(queryRepository.findCurrentJob(ACCOUNT_ID)).thenReturn(running)
+
+        service.reorderModules(ACCOUNT_ID, ReorderAutomationModulesRequest(listOf(ready.config.id)))
+
+        assertEquals(NOW, running.nextRunAt)
+        assertEquals(NOW, running.updatedAt)
+        Mockito.verify(jobRepository).save(running)
+        Mockito.verify(afterCommitWakeupService).wake(ACCOUNT_ID, "MODULES_UPDATED")
     }
 
     @Test

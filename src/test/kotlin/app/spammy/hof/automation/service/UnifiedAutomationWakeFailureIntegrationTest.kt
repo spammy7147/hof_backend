@@ -3,10 +3,14 @@ package app.spammy.hof.automation.service
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.HofAccountRepository
+import app.spammy.hof.automation.dto.ReorderAutomationModulesRequest
+import app.spammy.hof.automation.entity.AutomationJobEntity
 import app.spammy.hof.automation.entity.AutomationModuleConfigEntity
 import app.spammy.hof.automation.entity.AutomationModuleQuestEntity
 import app.spammy.hof.automation.entity.AutomationModuleType
 import app.spammy.hof.automation.entity.AutomationProfileEntity
+import app.spammy.hof.automation.repository.AutomationJobQueryRepository
+import app.spammy.hof.automation.repository.AutomationJobRepository
 import app.spammy.hof.automation.repository.AutomationModuleConfigRepository
 import app.spammy.hof.automation.repository.AutomationModuleQuestCommandRepository
 import app.spammy.hof.automation.repository.AutomationProfileRepository
@@ -36,6 +40,7 @@ import org.springframework.transaction.support.TransactionTemplate
 @Import(
     QueryDslConfig::class,
     AccountQueryRepository::class,
+    AutomationJobQueryRepository::class,
     UnifiedAutomationQueryRepository::class,
     BattleMapQueryRepository::class,
     PartyPresetQueryRepository::class,
@@ -48,6 +53,8 @@ class UnifiedAutomationWakeFailureIntegrationTest {
     @Autowired private lateinit var profileRepository: AutomationProfileRepository
     @Autowired private lateinit var moduleConfigRepository: AutomationModuleConfigRepository
     @Autowired private lateinit var moduleQuestRepository: AutomationModuleQuestCommandRepository
+    @Autowired private lateinit var jobRepository: AutomationJobRepository
+    @Autowired private lateinit var jobQueryRepository: AutomationJobQueryRepository
     @Autowired private lateinit var queryRepository: UnifiedAutomationQueryRepository
     @Autowired private lateinit var service: UnifiedAutomationService
     @Autowired private lateinit var transactionManager: PlatformTransactionManager
@@ -96,6 +103,76 @@ class UnifiedAutomationWakeFailureIntegrationTest {
         assertEquals(NOW, committedJob.nextRunAt)
     }
 
+    @Test
+    fun moduleChangeMakesAnIdleRunningJobDueEvenWhenWakeDeliveryFails() {
+        val futureRunAt = NOW.plusSeconds(3_600)
+        val configured = TransactionTemplate(transactionManager).execute {
+            val account = accountRepository.save(
+                HofAccountEntity(loginId = "idle-wake-failure", encryptedPassword = "encrypted", createdAt = NOW),
+            )
+            val profile = profileRepository.save(
+                AutomationProfileEntity(
+                    account = account,
+                    name = "통합 자동화",
+                    mode = UnifiedAutomationQueryRepository.UNIFIED_MODE,
+                    enabled = true,
+                    createdAt = NOW,
+                    updatedAt = NOW,
+                ),
+            )
+            val config = moduleConfigRepository.save(
+                AutomationModuleConfigEntity(
+                    profile = profile,
+                    moduleType = AutomationModuleType.OTHER_QUEST,
+                    enabled = true,
+                    priority = 0,
+                    displayName = "일반 퀘스트",
+                    thresholdPercent = null,
+                    createdAt = NOW,
+                    updatedAt = NOW,
+                ),
+            )
+            moduleQuestRepository.save(
+                AutomationModuleQuestEntity(moduleConfig = config, questCode = "1001", executionOrder = 0),
+            )
+            jobRepository.save(
+                AutomationJobEntity(
+                    account = account,
+                    profile = profile,
+                    status = "RUNNING",
+                    currentStepIndex = 0,
+                    message = "다음 실행 대기",
+                    createdAt = NOW,
+                    startedAt = NOW,
+                    updatedAt = NOW,
+                    finishedAt = null,
+                    currentAction = null,
+                    nextRunAt = futureRunAt,
+                    lastHeartbeatAt = NOW,
+                ),
+            )
+            ConfiguredAutomation(account.id, config.id)
+        }
+
+        val response = assertDoesNotThrow {
+            service.reorderModules(
+                configured.accountId,
+                ReorderAutomationModulesRequest(listOf(configured.moduleId)),
+            )
+        }
+        val committedJob = TransactionTemplate(transactionManager).execute {
+            queryRepository.findCurrentJob(configured.accountId)
+        }
+        val recoverableIds = TransactionTemplate(transactionManager).execute {
+            jobQueryRepository.findRecoverable(NOW).map { it.id }
+        }.orEmpty()
+
+        assertEquals("RUNNING", response.job?.status)
+        assertEquals(NOW, assertNotNull(committedJob).nextRunAt)
+        assertEquals(NOW, committedJob.updatedAt)
+        assertEquals(true, committedJob.id in recoverableIds)
+    }
+
     @TestConfiguration(proxyBeanMethods = false)
     class Config {
         @Bean
@@ -112,4 +189,9 @@ class UnifiedAutomationWakeFailureIntegrationTest {
     private companion object {
         val NOW: Instant = Instant.parse("2026-07-14T06:00:00Z")
     }
+
+    private data class ConfiguredAutomation(
+        val accountId: Long,
+        val moduleId: Long,
+    )
 }

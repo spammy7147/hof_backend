@@ -553,8 +553,8 @@ class UnifiedAutomationService(
      * 변경된 모듈 전체를 다시 읽어 설정 대기 job의 재개 여부와 응답 기준 상태를 한 번에 확정한다.
      *
      * 준비된 활성 모듈이 생긴 경우에만 `WAITING_CONFIG`를 `RUNNING`으로 전환한다. 이미 실행 중인
-     * action과 module, step은 유지하며 다음 의사결정 시각만 현재로 당긴다. RUNNING job은 상태를
-     * 수정하지 않고 커밋 뒤 wake만 예약한다.
+     * action과 module, step은 유지한다. 기존 RUNNING job은 action 없는 대기 상태에서만 다음 의사결정
+     * 시각을 현재로 당기며, action 실행·재시도 중이면 기존 nextRunAt까지 그대로 보존한다.
      */
     private fun reconcileJobAfterModulesChanged(
         accountId: Long,
@@ -569,6 +569,7 @@ class UnifiedAutomationService(
         }
         val readiness = readinessEvaluator.evaluate(modules)
         val job = queryRepository.findCurrentJob(accountId)
+        var resumedFromConfig = false
         if (job?.status == "WAITING_CONFIG") {
             if (modules.none { it.config.enabled && readiness.isReady(it) }) {
                 return ModuleMutationState(job, modules, readiness)
@@ -576,6 +577,13 @@ class UnifiedAutomationService(
             val now = timeProvider.now()
             job.status = "RUNNING"
             job.message = "설정이 완료되어 자동화를 재개합니다."
+            if (job.currentAction == null) job.nextRunAt = now
+            job.updatedAt = now
+            jobRepository.save(job)
+            resumedFromConfig = true
+        }
+        if (job?.status == "RUNNING" && job.currentAction == null && !resumedFromConfig) {
+            val now = timeProvider.now()
             job.nextRunAt = now
             job.updatedAt = now
             jobRepository.save(job)
@@ -588,9 +596,10 @@ class UnifiedAutomationService(
      * 설정과 job 변경이 실제 DB에 커밋된 뒤에만 실행기를 깨운다.
      *
      * 트랜잭션 동기화가 활성화된 운영 요청에서는 rollback된 설정을 실행기가 읽지 않도록 afterCommit에
-     * 등록한다. RUNNING 또는 설정 보완으로 재개된 job은 callback 전에 `nextRunAt=now`가 커밋되므로,
-     * wake 전달이 실패해도 [app.spammy.hof.automation.recovery.AutomationRecoveryScheduler]가 due job을
-     * 다시 전달한다. 서비스 단위 테스트나 배치 도구처럼 동기화가 없는 호출도 같은 격리 경계를 쓴다.
+     * 등록한다. 설정 보완으로 action 없이 재개됐거나 action 없이 대기 중인 RUNNING job은 callback 전에
+     * `nextRunAt=now`가 커밋되므로, wake 전달이 실패해도
+     * [app.spammy.hof.automation.recovery.AutomationRecoveryScheduler]가 due job을 다시 전달한다. 실행 또는
+     * 재시도 중인 action은 기존 종료·retry 경로가 다음 결정을 깨우므로 실행 문맥과 nextRunAt을 보존한다.
      */
     private fun wakeAfterCommit(
         accountId: Long,
