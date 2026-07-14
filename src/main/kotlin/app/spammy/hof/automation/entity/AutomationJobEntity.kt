@@ -17,7 +17,8 @@ import java.time.Instant
  * 실제 실행 중인 자동화 작업이 어느 계정의 어느 프로필을 실행하는지와 진행 상태를 저장한다.
  *
  * 프로필 설정을 JSON으로 복제하지 않고 [profile] FK를 유지한다. 실행 시점 스냅샷은 실행 엔진 설계
- * 범위이므로 여기서는 현재 단계와 시작·종료 시각만 구조화된 열로 관리한다.
+ * 범위이므로 여기서는 현재 단계와 시작·종료 시각을 구조화된 열로 관리한다. [currentModuleConfig]는 현재
+ * action이 참조하는 사용자 모듈을 가리키며 action 종료, sleep 또는 설정 대기 전환 때 함께 비운다.
  */
 @Entity
 @Table(name = "automation_jobs")
@@ -57,6 +58,10 @@ class AutomationJobEntity(
 
     @Column(name = "current_module", length = 50)
     var currentModule: String? = null,
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "current_module_config_id")
+    var currentModuleConfig: AutomationModuleConfigEntity? = null,
 
     @Column(name = "current_action", length = 255)
     var currentAction: String? = null,

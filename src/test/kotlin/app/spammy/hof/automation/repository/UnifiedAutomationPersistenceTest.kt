@@ -60,7 +60,7 @@ class UnifiedAutomationPersistenceTest {
                 updatedAt = now,
             ),
         )
-        moduleConfigRepository.save(
+        val module = moduleConfigRepository.save(
             AutomationModuleConfigEntity(
                 profile = profile,
                 moduleType = AutomationModuleType.KEY_QUEST,
@@ -87,11 +87,13 @@ class UnifiedAutomationPersistenceTest {
                 currentAction = "BATTLE:Noble1021",
                 nextRunAt = now.plusSeconds(5),
                 lastHeartbeatAt = now,
+                currentModuleConfig = module,
             ),
         )
         actionRunRepository.save(
             AutomationActionRunEntity(
                 job = job,
+                moduleConfig = module,
                 moduleType = AutomationModuleType.KEY_QUEST,
                 actionType = "BATTLE",
                 actionKey = "Noble1021",
@@ -119,9 +121,66 @@ class UnifiedAutomationPersistenceTest {
         assertEquals("BATTLE:Noble1021", restoredJob.currentAction)
         assertEquals(now.plusSeconds(5), restoredJob.nextRunAt)
         assertEquals(AutomationModuleType.KEY_QUEST, restoredConfig.moduleType)
+        assertEquals(restoredConfig.id, restoredJob.currentModuleConfig?.id)
         assertEquals(AutomationActionStatus.RETRY_WAIT, restoredAction.status)
+        assertEquals(restoredConfig.id, restoredAction.moduleConfig?.id)
         assertEquals("job:${job.id}:step:0", restoredAction.requestKey)
         assertEquals(1, restoredAction.attemptCount)
+    }
+
+    @Test
+    fun deletingModuleClearsJobAndHistoricalActionReferencesWithoutDeletingTheAction() {
+        val now = Instant.parse("2026-07-13T00:15:00Z")
+        val account = newAccount("historical-module-delete", now)
+        val profile = newProfile(account, now)
+        val module = moduleConfigRepository.save(
+            newModule(profile, "삭제될 모듈", priority = 0, thresholdPercent = 90, now = now),
+        )
+        val job = jobRepository.save(
+            AutomationJobEntity(
+                account = account,
+                profile = profile,
+                status = "RUNNING",
+                currentStepIndex = 1,
+                message = null,
+                createdAt = now,
+                startedAt = now,
+                updatedAt = now,
+                finishedAt = null,
+                currentModule = module.moduleType.name,
+                currentAction = null,
+                currentModuleConfig = module,
+            ),
+        )
+        val action = actionRunRepository.save(
+            AutomationActionRunEntity(
+                job = job,
+                moduleConfig = module,
+                moduleType = module.moduleType,
+                actionType = "RUN_BATTLE",
+                actionKey = "history-map",
+                status = AutomationActionStatus.SUCCEEDED,
+                requestKey = "job:${job.id}:step:0",
+                payloadJson = "{\"ok\":true}",
+                attemptCount = 1,
+                createdAt = now,
+                finishedAt = now,
+                updatedAt = now,
+            ),
+        )
+        entityManager.flush()
+        entityManager.clear()
+
+        entityManager.createNativeQuery("delete from automation_module_configs where id = :moduleId")
+            .setParameter("moduleId", module.id)
+            .executeUpdate()
+        entityManager.clear()
+
+        val restoredJob = entityManager.find(AutomationJobEntity::class.java, job.id)
+        val restoredAction = entityManager.find(AutomationActionRunEntity::class.java, action.id)
+        assertNotNull(restoredAction)
+        assertNull(restoredAction.moduleConfig)
+        assertNull(restoredJob.currentModuleConfig)
     }
 
     @Test

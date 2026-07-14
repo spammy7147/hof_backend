@@ -3,6 +3,7 @@ package app.spammy.hof.automation.repository
 import app.spammy.hof.automation.entity.AutomationActionRunEntity
 import app.spammy.hof.automation.entity.QAutomationActionRunEntity.automationActionRunEntity
 import app.spammy.hof.automation.entity.QAutomationJobEntity.automationJobEntity
+import app.spammy.hof.automation.entity.QAutomationModuleConfigEntity.automationModuleConfigEntity
 import com.querydsl.jpa.impl.JPAQueryFactory
 import org.springframework.stereotype.Repository
 
@@ -20,4 +21,5 @@ class AutomationActionRunQueryRepository(
 
     private fun baseQuery() = queryFactory.selectFrom(automationActionRunEntity)
         .join(automationActionRunEntity.job, automationJobEntity).fetchJoin()
+        .leftJoin(automationActionRunEntity.moduleConfig, automationModuleConfigEntity).fetchJoin()
 }

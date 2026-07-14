@@ -4,12 +4,8 @@ import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.automation.entity.AutomationModuleConfigEntity
 import app.spammy.hof.automation.entity.AutomationModuleMapEntity
 import app.spammy.hof.automation.entity.AutomationModuleQuestEntity
-import app.spammy.hof.automation.entity.AutomationModuleQuestMapEntity
 import app.spammy.hof.automation.entity.AutomationModuleType
 import app.spammy.hof.automation.entity.AutomationProfileEntity
-import app.spammy.hof.automation.policy.AdventureMapPolicy
-import app.spammy.hof.automation.policy.KeyQuestPolicy
-import app.spammy.hof.automation.policy.SelectedQuestPolicy
 import app.spammy.hof.automation.repository.AutomationModuleAggregate
 import app.spammy.hof.automation.repository.AutomationModuleQuestAggregate
 import app.spammy.hof.automation.repository.UnifiedAutomationQueryRepository
@@ -30,7 +26,6 @@ import app.spammy.hof.status.service.HofStatusService
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertNull
 import org.mockito.Mockito
 
 class LiveAutomationSnapshotLoaderTest {
@@ -38,9 +33,6 @@ class LiveAutomationSnapshotLoaderTest {
     private val statusService = Mockito.mock(HofStatusService::class.java)
     private val unifiedQueryRepository = Mockito.mock(UnifiedAutomationQueryRepository::class.java)
     private val battleMapQueryRepository = Mockito.mock(BattleMapQueryRepository::class.java)
-    private val keyQuestPolicy = Mockito.mock(KeyQuestPolicy::class.java)
-    private val adventureMapPolicy = Mockito.mock(AdventureMapPolicy::class.java)
-    private val selectedQuestPolicy = Mockito.mock(SelectedQuestPolicy::class.java)
     private val partyPresetQueryRepository = Mockito.mock(PartyPresetQueryRepository::class.java)
     private val readinessEvaluator = AutomationModuleReadinessEvaluator(partyPresetQueryRepository)
     private val loader = LiveAutomationSnapshotLoader(
@@ -48,133 +40,71 @@ class LiveAutomationSnapshotLoaderTest {
         statusService = statusService,
         unifiedQueryRepository = unifiedQueryRepository,
         battleMapQueryRepository = battleMapQueryRepository,
-        keyQuestPolicy = keyQuestPolicy,
-        adventureMapPolicy = adventureMapPolicy,
-        selectedQuestPolicy = selectedQuestPolicy,
         timeProvider = TimeProvider { NOW },
         readinessEvaluator = readinessEvaluator,
     )
 
     @Test
-    fun timeOnlyConfigurationNeverClaimsOrAcceptsAnyQuest() {
-        val time = readyMapModule(AutomationModuleType.TIME_BURN, priority = 0, thresholdPercent = 90, mapCode = "time-map")
-        stubSnapshotInputs(
-            quests = listOf(
-                quest("0563", QuestState.CLAIMABLE),
-                quest("0999", QuestState.AVAILABLE),
-            ),
-            modules = listOf(time),
-            states = listOf(state(time.maps.single().battleMap)),
-        )
-
-        val snapshot = loader.load(ACCOUNT_ID)
-
-        assertNull(snapshot.claimableQuest)
-        assertNull(snapshot.acceptablePriorityQuest)
-        assertNull(snapshot.claimableQuestModuleType)
-        assertNull(snapshot.acceptablePriorityQuestModuleType)
-    }
-
-    @Test
-    fun configuredQuestCandidatesPreserveModuleAndQuestPriorityAndIgnoreUnconfiguredQuests() {
-        val other = questModule(
-            type = AutomationModuleType.OTHER_QUEST,
-            priority = 1,
-            quests = listOf("other-first" to 0, "other-second" to 1),
-        )
-        val key = readyKeyQuestModule(priority = 5, questCode = "0563", mapCode = "key-map")
-        stubSnapshotInputs(
-            quests = listOf(
-                quest("not-configured", QuestState.CLAIMABLE),
-                quest("0563", QuestState.CLAIMABLE),
-                quest("other-second", QuestState.AVAILABLE),
-                quest("other-first", QuestState.CLAIMABLE),
-            ),
-            modules = listOf(key, other),
-            states = listOf(state(key.quests.single().maps.single().battleMap)),
-        )
-
-        val snapshot = loader.load(ACCOUNT_ID)
-
-        assertEquals("other-first", snapshot.claimableQuest?.questId)
-        assertEquals(AutomationModuleType.OTHER_QUEST, snapshot.claimableQuestModuleType)
-        assertEquals("other-second", snapshot.acceptablePriorityQuest?.questId)
-        assertEquals(AutomationModuleType.OTHER_QUEST, snapshot.acceptablePriorityQuestModuleType)
-    }
-
-    @Test
-    fun compatibilityLoaderSelectsFirstActiveAndReadyModuleAndLoadsMapStatesInOneBatch() {
-        val incomplete = aggregate(
-            config(type = AutomationModuleType.TIME_BURN, priority = 0, thresholdPercent = 95),
-        )
-        val complete = readyMapModule(
-            type = AutomationModuleType.TIME_BURN,
-            priority = 1,
-            thresholdPercent = 85,
-            mapCode = "ready-time-map",
-        )
-        val requestedPairs = setOf("battle_map" to "ready-time-map")
+    fun `loads every active ready module in persisted priority order including duplicate types`() {
+        val second = readyMapModule(202L, AutomationModuleType.TIME_BURN, priority = 8, mapCode = "second")
+        val first = readyMapModule(101L, AutomationModuleType.TIME_BURN, priority = 2, mapCode = "first")
         stubSnapshotInputs(
             quests = emptyList(),
-            modules = listOf(incomplete, complete),
-            states = listOf(state(complete.maps.single().battleMap)),
+            modules = listOf(first, second),
+            states = listOf(state(first.maps.single().battleMap), state(second.maps.single().battleMap)),
         )
 
         val snapshot = loader.load(ACCOUNT_ID)
 
-        assertEquals(85, snapshot.timeThresholdPercent)
-        assertEquals("ready-time-map", snapshot.timeMap?.mapCode)
-        Mockito.verify(battleMapQueryRepository).findStatesForExecution(ACCOUNT_ID, requestedPairs)
-        Mockito.verify(battleMapQueryRepository, Mockito.never())
-            .findStateForExecution(Mockito.anyLong(), Mockito.anyString(), Mockito.anyString())
+        assertEquals(listOf(101L, 202L), snapshot.modules.map { it.id })
+        assertEquals(listOf("first", "second"), snapshot.modules.map { it.maps.single().mapCode })
+        assertEquals(90, snapshot.accountStatus.timeCurrent)
+        assertEquals(NOW, snapshot.now)
+        Mockito.verify(battleMapQueryRepository).findStatesForExecution(
+            ACCOUNT_ID,
+            setOf("battle_map" to "first", "battle_map" to "second"),
+        )
     }
 
     @Test
-    fun compatibilityLoaderSkipsAModuleWhoseAssignedCharacterHasNoPattern() {
-        val configured = readyMapModule(
-            type = AutomationModuleType.TIME_BURN,
-            priority = 0,
-            thresholdPercent = 85,
-            mapCode = "missing-pattern-map",
-        )
-        val preset = configured.maps.single().partyPreset!!
+    fun `filters disabled unready and unsupported modules before building the snapshot`() {
+        val disabled = readyMapModule(301L, AutomationModuleType.TIME_BURN, 0, "disabled").also {
+            it.config.enabled = false
+        }
+        val unready = readyMapModule(302L, AutomationModuleType.TIME_BURN, 1, "unready")
+        val unsupported = aggregate(config(303L, AutomationModuleType.UNION, 2, null))
         stubSnapshotInputs(
             quests = emptyList(),
-            modules = listOf(configured),
+            modules = listOf(disabled, unready, unsupported),
             states = emptyList(),
-            members = listOf(presetMember(preset, withPattern = false)),
+            members = listOf(presetMember(unready.maps.single().partyPreset!!, canLoad = false)),
         )
 
         val snapshot = loader.load(ACCOUNT_ID)
 
-        assertNull(snapshot.timeMap)
-        assertEquals(90, snapshot.timeThresholdPercent)
-        Mockito.verify(partyPresetQueryRepository, Mockito.times(1)).findMembersByPresetIds(setOf(preset.id))
+        assertEquals(emptyList(), snapshot.modules)
+        Mockito.verify(battleMapQueryRepository).findStatesForExecution(ACCOUNT_ID, emptySet())
     }
 
     @Test
-    fun compatibilityLoaderSkipsAModuleWhosePatternCannotBeLoaded() {
-        val configured = readyMapModule(
-            type = AutomationModuleType.TIME_BURN,
-            priority = 0,
-            thresholdPercent = 85,
-            mapCode = "unloadable-pattern-map",
+    fun `preserves each quest module configured quest codes without adding global quests`() {
+        val first = questModule(401L, priority = 0, questCodes = listOf("configured-a"))
+        val second = questModule(402L, priority = 1, questCodes = listOf("configured-b"))
+        val quests = listOf(
+            quest("outside", QuestState.CLAIMABLE),
+            quest("configured-a", QuestState.ACTIVE),
+            quest("configured-b", QuestState.AVAILABLE),
         )
-        val preset = configured.maps.single().partyPreset!!
-        stubSnapshotInputs(
-            quests = emptyList(),
-            modules = listOf(configured),
-            states = emptyList(),
-            members = listOf(presetMember(preset, withPattern = true, canLoad = false)),
-        )
+        stubSnapshotInputs(quests, listOf(first, second), emptyList())
 
         val snapshot = loader.load(ACCOUNT_ID)
 
-        assertNull(snapshot.timeMap)
-        assertEquals(90, snapshot.timeThresholdPercent)
+        assertEquals(quests, snapshot.questState)
+        assertEquals(listOf("configured-a"), snapshot.modules[0].quests.map { it.questCode })
+        assertEquals(listOf("configured-b"), snapshot.modules[1].quests.map { it.questCode })
     }
 
-    /** 외부 HOF 조회와 QueryDSL aggregate를 고정해 테스트가 loader의 선택·조립 규칙만 검증하게 한다. */
+    /** 외부 HOF 응답과 QueryDSL aggregate를 고정해 loader의 batch 조립 규칙만 검증한다. */
     private fun stubSnapshotInputs(
         quests: List<QuestSnapshot>,
         modules: List<AutomationModuleAggregate>,
@@ -185,75 +115,48 @@ class LiveAutomationSnapshotLoaderTest {
         Mockito.`when`(statusService.fetch(ACCOUNT_ID)).thenReturn(status())
         Mockito.`when`(unifiedQueryRepository.findProfile(ACCOUNT_ID)).thenReturn(profile())
         Mockito.`when`(unifiedQueryRepository.findModules(PROFILE_ID)).thenReturn(modules)
-        val pairs = states.map { it.battleMap.categoryId to it.battleMap.mapCode }.toSet()
-        Mockito.`when`(battleMapQueryRepository.findStatesForExecution(ACCOUNT_ID, pairs)).thenReturn(states)
-        val presets = modules
+        val requestedPairs = modules
             .flatMap { module ->
-                module.maps.mapNotNull { it.partyPreset } +
-                    module.quests.flatMap { quest -> quest.maps.mapNotNull { it.partyPreset } }
+                module.maps.map { it.battleMap.categoryId to it.battleMap.mapCode } +
+                    module.quests.flatMap { quest -> quest.maps.map { it.battleMap.categoryId to it.battleMap.mapCode } }
             }
-            .distinctBy { it.id }
+            .toSet()
+        Mockito.`when`(battleMapQueryRepository.findStatesForExecution(ACCOUNT_ID, requestedPairs)).thenReturn(states)
+        val presets = modules.flatMap { module ->
+            module.maps.mapNotNull { it.partyPreset } +
+                module.quests.flatMap { quest -> quest.maps.mapNotNull { it.partyPreset } }
+        }.distinctBy { it.id }
         Mockito.`when`(partyPresetQueryRepository.findMembersByPresetIds(presets.map { it.id }.toSet()))
-            .thenReturn(members ?: presets.map { presetMember(it, withPattern = true) })
+            .thenReturn(members ?: presets.map { presetMember(it) })
     }
 
     private fun readyMapModule(
+        id: Long,
         type: AutomationModuleType,
         priority: Int,
-        thresholdPercent: Int?,
         mapCode: String,
     ): AutomationModuleAggregate {
-        val config = config(type, priority, thresholdPercent)
-        val map = battleMap(mapCode)
+        val config = config(id, type, priority, threshold = 90)
         return aggregate(
             config,
             maps = listOf(
                 AutomationModuleMapEntity(
                     moduleConfig = config,
-                    battleMap = map,
-                    partyPreset = preset(),
+                    battleMap = battleMap(mapCode),
+                    partyPreset = preset(id),
                     executionOrder = 0,
                 ),
             ),
         )
     }
 
-    private fun readyKeyQuestModule(
-        priority: Int,
-        questCode: String,
-        mapCode: String,
-    ): AutomationModuleAggregate {
-        val config = config(AutomationModuleType.KEY_QUEST, priority, thresholdPercent = null)
-        val quest = AutomationModuleQuestEntity(moduleConfig = config, questCode = questCode, executionOrder = 0)
+    private fun questModule(id: Long, priority: Int, questCodes: List<String>): AutomationModuleAggregate {
+        val config = config(id, AutomationModuleType.OTHER_QUEST, priority, null)
         return aggregate(
             config,
-            quests = listOf(
+            quests = questCodes.mapIndexed { index, code ->
                 AutomationModuleQuestAggregate(
-                    quest = quest,
-                    maps = listOf(
-                        AutomationModuleQuestMapEntity(
-                            moduleQuest = quest,
-                            battleMap = battleMap(mapCode),
-                            partyPreset = preset(),
-                            executionOrder = 0,
-                        ),
-                    ),
-                ),
-            ),
-        )
-    }
-
-    private fun questModule(
-        type: AutomationModuleType,
-        priority: Int,
-        quests: List<Pair<String, Int>>,
-    ): AutomationModuleAggregate {
-        val config = config(type, priority, thresholdPercent = null)
-        return aggregate(
-            config,
-            quests = quests.map { (code, order) ->
-                AutomationModuleQuestAggregate(
-                    AutomationModuleQuestEntity(moduleConfig = config, questCode = code, executionOrder = order),
+                    AutomationModuleQuestEntity(moduleConfig = config, questCode = code, executionOrder = index),
                     emptyList(),
                 )
             },
@@ -267,17 +170,18 @@ class LiveAutomationSnapshotLoaderTest {
     ) = AutomationModuleAggregate(config, maps, quests)
 
     private fun config(
+        id: Long,
         type: AutomationModuleType,
         priority: Int,
-        thresholdPercent: Int?,
+        threshold: Int?,
     ) = AutomationModuleConfigEntity(
-        id = 100L + priority,
+        id = id,
         profile = profile(),
         moduleType = type,
         enabled = true,
         priority = priority,
         displayName = "$type-$priority",
-        thresholdPercent = thresholdPercent,
+        thresholdPercent = threshold,
         createdAt = NOW,
         updatedAt = NOW,
     )
@@ -301,19 +205,15 @@ class LiveAutomationSnapshotLoaderTest {
         updatedAt = NOW,
     )
 
-    private fun preset() = PartyPresetEntity(
-        id = 301L,
+    private fun preset(id: Long) = PartyPresetEntity(
+        id = 1_000L + id,
         account = account(),
-        name = "테스트 파티",
+        name = "테스트 파티 $id",
         createdAt = NOW,
         updatedAt = NOW,
     )
 
-    private fun presetMember(
-        preset: PartyPresetEntity,
-        withPattern: Boolean,
-        canLoad: Boolean = true,
-    ): PartyPresetMemberEntity {
+    private fun presetMember(preset: PartyPresetEntity, canLoad: Boolean = true): PartyPresetMemberEntity {
         val character = CharacterEntity(
             id = preset.id * 10,
             account = account(),
@@ -328,7 +228,7 @@ class LiveAutomationSnapshotLoaderTest {
             slotCode = "0",
             label = "기본",
             canLoad = canLoad,
-        ).takeIf { withPattern }
+        )
         return PartyPresetMemberEntity(preset, 0, character, pattern)
     }
 

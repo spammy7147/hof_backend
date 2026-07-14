@@ -2,57 +2,94 @@ package app.spammy.hof.automation.service
 
 import app.spammy.hof.automation.entity.AutomationActionRunEntity
 import app.spammy.hof.automation.entity.AutomationActionStatus
-import app.spammy.hof.automation.entity.AutomationModuleType
 import app.spammy.hof.automation.policy.AutomationDecision
 import app.spammy.hof.automation.repository.AutomationActionRunQueryRepository
 import app.spammy.hof.automation.repository.AutomationActionRunRepository
 import app.spammy.hof.automation.repository.AutomationJobQueryRepository
+import app.spammy.hof.automation.repository.UnifiedAutomationQueryRepository
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.push.service.PushOutboxService
 import java.time.Instant
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import tools.jackson.databind.ObjectMapper
-import app.spammy.hof.push.service.PushOutboxService
 
 @Service
 class AutomationCheckpointService(
     private val jobQueryRepository: AutomationJobQueryRepository,
     private val actionRepository: AutomationActionRunRepository,
     private val actionQueryRepository: AutomationActionRunQueryRepository,
+    private val unifiedQueryRepository: UnifiedAutomationQueryRepository,
     private val objectMapper: ObjectMapper,
     private val timeProvider: TimeProvider,
     private val pushOutboxService: PushOutboxService,
 ) {
+    /**
+     * 실행 중 job과 현재 step의 재시도 action을 함께 조회한다.
+     *
+     * 재시도 action은 모듈이 이후 수정·삭제돼도 기존 payload가 실행 계약이므로 JSON에 저장된 decision을
+     * 복원한다. 아직 재시도 시각이 되지 않았거나 같은 step action이 실행 중이면 중복 실행하지 않는다.
+     */
     @Transactional(readOnly = true)
-    fun findRunnable(accountId: Long): RunnableAutomationJob? =
-        jobQueryRepository.findCurrentByAccountIdAndStatuses(accountId, setOf("RUNNING"))?.let { job ->
-            RunnableAutomationJob(job.id, accountId, job.currentStepIndex)
+    fun findRunnable(accountId: Long): RunnableAutomationJob? {
+        val job = jobQueryRepository.findCurrentByAccountIdAndStatuses(accountId, setOf("RUNNING")) ?: return null
+        val requestKey = requestKey(job.id, job.currentStepIndex)
+        val currentAction = actionQueryRepository.findByRequestKey(requestKey)
+        if (currentAction?.status == AutomationActionStatus.RUNNING) return null
+        if (currentAction?.status == AutomationActionStatus.RETRY_WAIT) {
+            val now = timeProvider.now()
+            if (currentAction.nextAttemptAt?.isAfter(now) == true) return null
+            return RunnableAutomationJob(
+                jobId = job.id,
+                accountId = accountId,
+                currentStepIndex = job.currentStepIndex,
+                retryAction = RetryableAutomationAction(
+                    actionId = currentAction.id,
+                    decision = objectMapper.readValue(currentAction.payloadJson, AutomationDecision::class.java),
+                ),
+            )
         }
+        return RunnableAutomationJob(job.id, accountId, job.currentStepIndex)
+    }
 
+    /** 최신 decision의 모듈 소유권을 다시 확인한 뒤 action과 job에 같은 모듈 FK를 기록한다. */
     @Transactional
     fun start(
         runnable: RunnableAutomationJob,
         decision: AutomationDecision,
-    ): Long {
-        val job = jobQueryRepository.findOwnedByAccountIdAndId(runnable.accountId, runnable.jobId)
+    ): Long? {
+        val job = jobQueryRepository.findOwnedByAccountIdAndIdForUpdate(runnable.accountId, runnable.jobId)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "자동화 job을 찾지 못했습니다.")
         if (job.status != "RUNNING") throw ApiException(ErrorCode.INVALID_REQUEST, "실행 가능한 자동화 job이 아닙니다.")
+        val moduleId = decision.moduleConfigId
+            ?: throw ApiException(ErrorCode.INVALID_REQUEST, "실행 결정에 자동화 모듈 ID가 없습니다.")
+        val module = unifiedQueryRepository.findModule(runnable.accountId, moduleId)?.config
+            ?.takeIf { it.profile.id == job.profile.id && it.moduleType == decision.moduleType }
+            ?: return null
         val now = timeProvider.now()
-        val requestKey = "job:${job.id}:step:${job.currentStepIndex}"
-        val action = actionQueryRepository.findByRequestKey(requestKey)?.apply {
+        val requestKey = requestKey(job.id, job.currentStepIndex)
+        val existing = actionQueryRepository.findByRequestKey(requestKey)
+        if (existing?.status in setOf(AutomationActionStatus.RUNNING, AutomationActionStatus.RETRY_WAIT)) return null
+        val action = existing?.apply {
+            moduleConfig = module
+            moduleType = module.moduleType
+            actionType = decision.type.name
+            actionKey = actionKey(decision)
             status = AutomationActionStatus.RUNNING
             attemptCount += 1
             nextAttemptAt = null
             lastError = null
+            payloadJson = objectMapper.writeValueAsString(decision)
             startedAt = now
             finishedAt = null
             updatedAt = now
         } ?: actionRepository.save(
             AutomationActionRunEntity(
                 job = job,
-                moduleType = decision.moduleType ?: AutomationModuleType.NORMAL_MAP,
+                moduleConfig = module,
+                moduleType = module.moduleType,
                 actionType = decision.type.name,
                 actionKey = actionKey(decision),
                 status = AutomationActionStatus.RUNNING,
@@ -65,6 +102,7 @@ class AutomationCheckpointService(
             ),
         )
         job.currentModule = decision.moduleType?.name
+        job.currentModuleConfig = module
         job.currentAction = decision.map?.mapName ?: decision.questId ?: decision.type.name
         job.lastHeartbeatAt = now
         job.nextRunAt = null
@@ -72,6 +110,37 @@ class AutomationCheckpointService(
         return action.id
     }
 
+    /** 저장된 RETRY_WAIT action을 동일 request key와 payload로 다시 RUNNING 상태로 전환한다. */
+    @Transactional
+    fun resumeRetry(
+        runnable: RunnableAutomationJob,
+        retry: RetryableAutomationAction,
+    ): Boolean {
+        val job = jobQueryRepository.findOwnedByAccountIdAndIdForUpdate(runnable.accountId, runnable.jobId)
+            ?: return false
+        val action = actionQueryRepository.findById(retry.actionId) ?: return false
+        val expectedRequestKey = requestKey(runnable.jobId, runnable.currentStepIndex)
+        if (job.status != "RUNNING" || action.job.id != job.id) return false
+        if (action.requestKey != expectedRequestKey || action.status != AutomationActionStatus.RETRY_WAIT) return false
+        val now = timeProvider.now()
+        if (action.nextAttemptAt?.isAfter(now) == true) return false
+        action.status = AutomationActionStatus.RUNNING
+        action.attemptCount += 1
+        action.nextAttemptAt = null
+        action.lastError = null
+        action.startedAt = now
+        action.finishedAt = null
+        action.updatedAt = now
+        job.currentModule = retry.decision.moduleType?.name
+        job.currentModuleConfig = action.moduleConfig
+        job.currentAction = retry.decision.map?.mapName ?: retry.decision.questId ?: retry.decision.type.name
+        job.lastHeartbeatAt = now
+        job.nextRunAt = null
+        job.updatedAt = now
+        return true
+    }
+
+    /** 성공한 action의 결과를 보존하고 step을 증가시킨 뒤 현재 실행 표시를 비운다. */
     @Transactional
     fun succeed(
         actionId: Long,
@@ -84,12 +153,13 @@ class AutomationCheckpointService(
         action.finishedAt = now
         action.updatedAt = now
         action.job.currentStepIndex += 1
-        action.job.currentAction = null
+        clearCurrentAction(action.job)
         action.job.nextRunAt = now
         action.job.lastHeartbeatAt = now
         action.job.updatedAt = now
     }
 
+    /** 실패 유형에 따라 캡차·로그인·설정 대기 또는 지수 backoff 재시도로 전환한다. */
     @Transactional
     fun fail(
         actionId: Long,
@@ -114,6 +184,7 @@ class AutomationCheckpointService(
                 action.job.status = "WAITING_CONFIG"
                 action.job.message = error.message
                 action.job.nextRunAt = null
+                clearCurrentAction(action.job)
                 pushOutboxService.enqueueLoginRequired(action.job.account)
                 null
             } else if (error is AutomationLoginRequiredException) {
@@ -133,6 +204,7 @@ class AutomationCheckpointService(
         }
     }
 
+    /** 실행할 수 없는 설정만 남았을 때 job을 설정 대기로 전환하고 현재 모듈 표시를 비운다. */
     @Transactional
     fun blockForConfig(
         jobId: Long,
@@ -141,18 +213,19 @@ class AutomationCheckpointService(
         val job = jobQueryRepository.findCurrentByAccountIdAndStatusesForJobId(jobId, setOf("RUNNING")) ?: return
         job.status = "WAITING_CONFIG"
         job.message = message
-        job.currentAction = null
+        clearCurrentAction(job)
         job.nextRunAt = null
         job.updatedAt = timeProvider.now()
     }
 
+    /** 실행 가능한 action이 없을 때 다음 재확인 시각을 저장하고 현재 모듈 표시를 비운다. */
     @Transactional
     fun sleep(
         jobId: Long,
         nextRunAt: Instant?,
     ) {
         val job = jobQueryRepository.findCurrentByAccountIdAndStatusesForJobId(jobId, setOf("RUNNING")) ?: return
-        job.currentAction = null
+        clearCurrentAction(job)
         job.message = "다음 작업 대기 중"
         job.nextRunAt = nextRunAt
         job.updatedAt = timeProvider.now()
@@ -162,7 +235,16 @@ class AutomationCheckpointService(
         ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "자동화 action을 찾지 못했습니다.")
 
     private fun actionKey(decision: AutomationDecision): String? =
-        decision.questId ?: decision.map?.mapCode ?: decision.unionTarget?.targetId
+        decision.questId ?: decision.map?.mapCode
+
+    private fun requestKey(jobId: Long, stepIndex: Int): String = "job:$jobId:step:$stepIndex"
+
+    /** 다음 판단으로 넘어가는 상태에서 현재 action 표시와 모듈 FK를 함께 비운다. */
+    private fun clearCurrentAction(job: app.spammy.hof.automation.entity.AutomationJobEntity) {
+        job.currentAction = null
+        job.currentModule = null
+        job.currentModuleConfig = null
+    }
 
     private fun retrySeconds(attempt: Int): Long = minOf(300L, 5L shl minOf(6, (attempt - 1).coerceAtLeast(0)))
 }

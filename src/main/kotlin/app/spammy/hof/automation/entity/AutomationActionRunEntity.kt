@@ -14,6 +14,11 @@ import jakarta.persistence.Table
 import jakarta.persistence.UniqueConstraint
 import java.time.Instant
 
+/**
+ * 자동화의 멱등 request key, 재시도 payload와 실행 당시 모듈 인스턴스를 보존하는 action 기록이다.
+ *
+ * [moduleConfig]는 모듈 삭제 시 DB의 `ON DELETE SET NULL`로 비워지지만 payload와 결과 행은 남는다.
+ */
 @Entity
 @Table(
     name = "automation_action_runs",
@@ -29,6 +34,10 @@ class AutomationActionRunEntity(
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "job_id", nullable = false)
     var job: AutomationJobEntity,
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "module_config_id")
+    var moduleConfig: AutomationModuleConfigEntity? = null,
 
     @Enumerated(EnumType.STRING)
     @Column(name = "module_type", nullable = false, length = 50)
