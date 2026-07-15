@@ -4,6 +4,7 @@ import app.spammy.hof.common.time.TimeProvider
 import org.springframework.http.ResponseEntity
 import org.springframework.http.HttpHeaders
 import org.springframework.web.bind.annotation.ExceptionHandler
+import org.springframework.web.bind.MethodArgumentNotValidException
 import org.springframework.web.bind.annotation.RestControllerAdvice
 
 @RestControllerAdvice
@@ -30,4 +31,14 @@ class GlobalExceptionHandler(
                 ),
             )
     }
+
+    @ExceptionHandler(MethodArgumentNotValidException::class)
+    fun handleValidationException(exception: MethodArgumentNotValidException): ResponseEntity<ErrorResponse> =
+        ResponseEntity.status(ErrorCode.INVALID_REQUEST.status).body(
+            ErrorResponse(
+                code = ErrorCode.INVALID_REQUEST.name,
+                message = exception.bindingResult.fieldErrors.firstOrNull()?.defaultMessage ?: "요청 값을 확인해 주세요.",
+                timestamp = timeProvider.now(),
+            ),
+        )
 }

@@ -160,6 +160,7 @@ class UnifiedAutomationService(
         val entry = requireTypedEntry(accountId, AutomationType.QUEST)
         if (request.quests.size > MAX_SETTING_ITEMS) invalid("퀘스트 설정은 최대 100개까지 저장할 수 있습니다.")
         val normalized = request.quests.map { selection ->
+            if (selection.sourceOrder < 0) invalid("퀘스트 출처 순서는 0 이상이어야 합니다.")
             val questCode = bounded(selection.questCode, MAX_QUEST_CODE_LENGTH, "퀘스트 코드")
             val maps = normalizeQuestMaps(selection.maps)
             selection.copy(questCode = questCode, maps = maps)
@@ -204,6 +205,7 @@ class UnifiedAutomationService(
         if (request.maps.size > MAX_SETTING_ITEMS) invalid("전투 맵 설정은 최대 100개까지 저장할 수 있습니다.")
         val normalized = request.maps.map { map ->
             if (map.dailyTargetCount <= 0) invalid("일일 목표 횟수는 1 이상이어야 합니다.")
+            if (map.executionOrder < 0) invalid("전투 맵 실행 순서는 0 이상이어야 합니다.")
             map.copy(categoryId = bounded(map.categoryId, MAX_CATEGORY_ID_LENGTH, "카테고리"), mapCode = bounded(map.mapCode, MAX_MAP_CODE_LENGTH, "맵 코드"))
         }.sortedWith(compareBy<BattleMapSettingRequest> { it.executionOrder }.thenBy { it.categoryId }.thenBy { it.mapCode })
         rejectDuplicates(normalized.map { it.categoryId to it.mapCode }, "같은 맵을 두 번 설정할 수 없습니다.")
@@ -234,6 +236,7 @@ class UnifiedAutomationService(
         val entry = requireTypedEntry(accountId, AutomationType.ADVENTURE_MAP)
         if (request.maps.size > MAX_SETTING_ITEMS) invalid("모험맵 설정은 최대 100개까지 저장할 수 있습니다.")
         val normalized = request.maps.map { map ->
+            if (map.executionOrder < 0) invalid("모험맵 실행 순서는 0 이상이어야 합니다.")
             map.copy(categoryId = bounded(map.categoryId, MAX_CATEGORY_ID_LENGTH, "카테고리"), mapCode = bounded(map.mapCode, MAX_MAP_CODE_LENGTH, "맵 코드"))
         }.sortedWith(compareBy<AdventureMapSettingRequest> { it.executionOrder }.thenBy { it.categoryId }.thenBy { it.mapCode })
         rejectDuplicates(normalized.map { it.categoryId to it.mapCode }, "같은 맵을 두 번 설정할 수 없습니다.")
@@ -1079,13 +1082,18 @@ class UnifiedAutomationService(
             )
         }
         val runtime = typed.findRuntimeState(accountId)
+        val persistedWarnings = runtime?.warningText.orEmpty().lineSequence()
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .toList()
+        val configWarnings = responses.flatMap(TypedAutomationEntryResponse::warnings)
         return TypedAutomationAggregateResponse(
             entries = responses,
             runtime = TypedAutomationRuntimeResponse(
                 lifecycle = runtime?.lifecycleStatus ?: TypedAutomationLifecycle.STOPPED,
                 stopReason = runtime?.stopReason,
                 nextAttemptAt = runtime?.nextAttemptAt?.toString(),
-                warnings = runtime?.warningText?.takeIf { it.isNotBlank() }?.let(::listOf).orEmpty(),
+                warnings = (persistedWarnings + configWarnings).distinct(),
                 lastError = runtime?.lastError,
             ),
         )
@@ -1135,6 +1143,7 @@ class UnifiedAutomationService(
     private fun normalizeQuestMaps(maps: List<QuestMapSettingRequest>): List<QuestMapSettingRequest> {
         if (maps.size > MAX_SETTING_ITEMS) invalid("퀘스트별 맵은 최대 100개까지 저장할 수 있습니다.")
         val normalized = maps.map { map ->
+            if (map.executionOrder < 0) invalid("퀘스트 맵 실행 순서는 0 이상이어야 합니다.")
             map.copy(
                 missionKey = bounded(map.missionKey, MAX_QUEST_CODE_LENGTH, "미션 키"),
                 categoryId = bounded(map.categoryId, MAX_CATEGORY_ID_LENGTH, "카테고리"),

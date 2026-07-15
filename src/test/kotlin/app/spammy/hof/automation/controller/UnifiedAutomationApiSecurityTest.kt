@@ -22,6 +22,7 @@ import org.springframework.test.context.ActiveProfiles
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 
@@ -66,6 +67,33 @@ class UnifiedAutomationApiSecurityTest(
             .andExpect(jsonPath("$.runtime.lifecycle").value("STOPPED"))
 
         Mockito.verify(service).getTyped(42L)
+    }
+
+    @Test
+    fun authenticatedNegativeTypedOrdersAreRejectedBeforeServiceInvocation() {
+        val token = jwtTokenService.issue(42L).value
+        val invalidRequests = listOf(
+            "/api/automation/unified/quest" to
+                """{"enabled":false,"quests":[{"questCode":"Q-1","enabled":true,"sourceOrder":-1,"maps":[]}]}""",
+            "/api/automation/unified/quest" to
+                """{"enabled":false,"quests":[{"questCode":"Q-1","enabled":true,"sourceOrder":0,"maps":[{"missionKey":"mission","categoryId":"battle_map","mapCode":"gb0","presetMode":"PRIMARY","partyPresetId":null,"executionOrder":-1,"manuallyOverridden":false}]}]}""",
+            "/api/automation/unified/battle-maps" to
+                """{"enabled":false,"maps":[{"categoryId":"battle_map","mapCode":"gb0","dailyTargetCount":1,"presetMode":"PRIMARY","partyPresetId":null,"executionOrder":-1}]}""",
+            "/api/automation/unified/adventure-maps" to
+                """{"enabled":false,"maps":[{"categoryId":"adventure_map","mapCode":"Noble101","presetMode":"PRIMARY","partyPresetId":null,"executionOrder":-1}]}""",
+        )
+        invalidRequests.forEach { (path, body) ->
+            mockMvc.perform(
+                put(path)
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer $token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body),
+            )
+                .andExpect(status().isBadRequest)
+                .andExpect(jsonPath("$.code").value("INVALID_REQUEST"))
+        }
+
+        Mockito.verifyNoInteractions(service)
     }
 
     @TestConfiguration(proxyBeanMethods = false)

@@ -4,6 +4,7 @@ import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.automation.entity.TypedAutomationLifecycle
 import jakarta.validation.Valid
+import jakarta.validation.constraints.Min
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Positive
 import jakarta.validation.constraints.Size
@@ -16,14 +17,14 @@ data class ReorderAutomationEntriesRequest(
 
 data class UpdateQuestAutomationRequest(
     val enabled: Boolean,
-    @field:Valid @field:Size(max = 100) val quests: List<QuestSelectionRequest>,
+    @field:Valid @field:Size(max = 100) val quests: List<@Valid QuestSelectionRequest>,
 )
 
 data class QuestSelectionRequest(
     @field:NotBlank @field:Size(max = 100) val questCode: String,
     val enabled: Boolean,
-    val sourceOrder: Int,
-    @field:Valid @field:Size(max = 100) val maps: List<QuestMapSettingRequest>,
+    @field:Min(0) val sourceOrder: Int,
+    @field:Valid @field:Size(max = 100) val maps: List<@Valid QuestMapSettingRequest>,
 )
 
 data class QuestMapSettingRequest(
@@ -32,13 +33,13 @@ data class QuestMapSettingRequest(
     @field:NotBlank @field:Size(max = 100) val mapCode: String,
     val presetMode: PresetSelectionMode,
     val partyPresetId: Long?,
-    val executionOrder: Int,
+    @field:Min(0) val executionOrder: Int,
     val manuallyOverridden: Boolean,
 )
 
 data class UpdateBattleMapAutomationRequest(
     val enabled: Boolean,
-    @field:Valid @field:Size(max = 100) val maps: List<BattleMapSettingRequest>,
+    @field:Valid @field:Size(max = 100) val maps: List<@Valid BattleMapSettingRequest>,
 )
 
 data class BattleMapSettingRequest(
@@ -47,12 +48,12 @@ data class BattleMapSettingRequest(
     @field:Positive val dailyTargetCount: Int,
     val presetMode: PresetSelectionMode,
     val partyPresetId: Long?,
-    val executionOrder: Int,
+    @field:Min(0) val executionOrder: Int,
 )
 
 data class UpdateAdventureMapAutomationRequest(
     val enabled: Boolean,
-    @field:Valid @field:Size(max = 100) val maps: List<AdventureMapSettingRequest>,
+    @field:Valid @field:Size(max = 100) val maps: List<@Valid AdventureMapSettingRequest>,
 )
 
 data class AdventureMapSettingRequest(
@@ -60,7 +61,7 @@ data class AdventureMapSettingRequest(
     @field:NotBlank @field:Size(max = 100) val mapCode: String,
     val presetMode: PresetSelectionMode,
     val partyPresetId: Long?,
-    val executionOrder: Int,
+    @field:Min(0) val executionOrder: Int,
 )
 
 data class QuestMapSettingResponse(

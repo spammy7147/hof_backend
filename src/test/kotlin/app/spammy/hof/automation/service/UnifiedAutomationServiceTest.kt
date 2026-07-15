@@ -10,7 +10,10 @@ import app.spammy.hof.automation.dto.UpdateAutomationModuleRequest
 import app.spammy.hof.automation.dto.CreateAutomationEntryRequest
 import app.spammy.hof.automation.dto.ReorderAutomationEntriesRequest
 import app.spammy.hof.automation.dto.BattleMapSettingRequest
+import app.spammy.hof.automation.dto.AdventureMapSettingRequest
+import app.spammy.hof.automation.dto.QuestMapSettingRequest
 import app.spammy.hof.automation.dto.QuestSelectionRequest
+import app.spammy.hof.automation.dto.UpdateAdventureMapAutomationRequest
 import app.spammy.hof.automation.dto.UpdateBattleMapAutomationRequest
 import app.spammy.hof.automation.dto.UpdateQuestAutomationRequest
 import app.spammy.hof.automation.entity.PresetSelectionMode
@@ -24,6 +27,8 @@ import app.spammy.hof.automation.entity.AutomationProfileEntity
 import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.entity.BattleAutomationMapEntity
+import app.spammy.hof.automation.entity.TypedAutomationLifecycle
+import app.spammy.hof.automation.entity.TypedAutomationRuntimeStateEntity
 import app.spammy.hof.automation.repository.AutomationJobRepository
 import app.spammy.hof.automation.repository.AutomationModuleAggregate
 import app.spammy.hof.automation.repository.AutomationModuleConfigRepository
@@ -250,6 +255,80 @@ class UnifiedAutomationServiceTest {
 
         assertFalse(response.entries.single().ready)
         assertTrue(response.entries.single().warnings.any { it.contains("전투") || it.contains("파티") })
+    }
+
+    @Test
+    fun typedDirectUpdatesRejectNegativeSourceAndExecutionOrders() {
+        fun assertInvalid(block: () -> Unit) {
+            assertEquals(ErrorCode.INVALID_REQUEST, assertFailsWith<ApiException> { block() }.errorCode)
+        }
+        val account = account()
+        val quest = AutomationEntryEntity(91L, account, AutomationType.QUEST, 0, false, NOW, NOW)
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(quest))
+        assertInvalid {
+            service.updateQuest(
+                ACCOUNT_ID,
+                UpdateQuestAutomationRequest(false, listOf(QuestSelectionRequest("Q-1", true, -1, emptyList()))),
+            )
+        }
+        assertInvalid {
+            service.updateQuest(
+                ACCOUNT_ID,
+                UpdateQuestAutomationRequest(
+                    false,
+                    listOf(
+                        QuestSelectionRequest(
+                            "Q-1", true, 0,
+                            listOf(QuestMapSettingRequest("mission", "battle_map", "gb0", PresetSelectionMode.PRIMARY, null, -1, false)),
+                        ),
+                    ),
+                ),
+            )
+        }
+
+        val battle = AutomationEntryEntity(92L, account, AutomationType.BATTLE_MAP, 0, false, NOW, NOW)
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(battle))
+        assertInvalid {
+            service.updateBattleMaps(
+                ACCOUNT_ID,
+                UpdateBattleMapAutomationRequest(
+                    false, listOf(BattleMapSettingRequest("battle_map", "gb0", 1, PresetSelectionMode.PRIMARY, null, -1)),
+                ),
+            )
+        }
+
+        val adventure = AutomationEntryEntity(93L, account, AutomationType.ADVENTURE_MAP, 0, false, NOW, NOW)
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(adventure))
+        assertInvalid {
+            service.updateAdventureMaps(
+                ACCOUNT_ID,
+                UpdateAdventureMapAutomationRequest(
+                    false, listOf(AdventureMapSettingRequest("adventure_map", "Noble101", PresetSelectionMode.PRIMARY, null, -1)),
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun typedAggregateSplitsPersistedWarningsThenAppendsDistinctConfigWarningsInEntryOrder() {
+        val account = account()
+        val entry = AutomationEntryEntity(92L, account, AutomationType.BATTLE_MAP, 0, true, NOW, NOW)
+        val runtime = TypedAutomationRuntimeStateEntity(
+            ACCOUNT_ID, account, TypedAutomationLifecycle.RUNNING,
+            warningText = " first warning \n\n second warning \n first warning ",
+            createdAt = NOW, updatedAt = NOW,
+        )
+        Mockito.`when`(accountQueryRepository.findById(ACCOUNT_ID)).thenReturn(account)
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(entry))
+        Mockito.`when`(typedQuery.findRuntimeState(ACCOUNT_ID)).thenReturn(runtime)
+        Mockito.`when`(partyPresetQueryRepository.findAllByAccountId(ACCOUNT_ID)).thenReturn(emptyList())
+
+        val response = service.getTyped(ACCOUNT_ID)
+
+        assertEquals(
+            listOf("first warning", "second warning", "전투 맵 설정이 없습니다."),
+            response.runtime.warnings,
+        )
     }
 
     @Test
