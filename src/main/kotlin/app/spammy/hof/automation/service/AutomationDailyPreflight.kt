@@ -6,6 +6,7 @@ import app.spammy.hof.automation.entity.AdventureDailyRefreshEntity
 import app.spammy.hof.automation.repository.AdventureDailyPreflightQueryRepository
 import app.spammy.hof.automation.repository.AdventureDailyPreflightStateCommandRepository
 import app.spammy.hof.automation.repository.AdventureDailyRefreshCommandRepository
+import app.spammy.hof.battle.service.AdventureMapRefreshException
 import app.spammy.hof.battle.service.BattleMapService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
@@ -141,8 +142,8 @@ class AutomationDailyPreflight(
     private fun Throwable.isNetworkFailure(): Boolean {
         var current: Throwable? = this
         while (current != null) {
-            if (current is IOException || current is InterruptedException ||
-                current is ApiException && current.errorCode == ErrorCode.HOF_REQUEST_FAILED
+            if (current is AdventureMapRefreshException.Retryable ||
+                current is IOException || current is InterruptedException
             ) return true
             current = current.cause
         }

@@ -4,6 +4,7 @@ import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.HofAccountRepository
 import app.spammy.hof.automation.repository.AdventureDailyPreflightQueryRepository
+import app.spammy.hof.battle.service.AdventureMapRefreshException
 import app.spammy.hof.battle.service.BattleMapService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
@@ -158,6 +159,24 @@ class AutomationDailyPreflightTest {
     }
 
     @Test
+    fun `generic HOF request failure is fatal rather than assumed retryable`() {
+        val accountId = savedAccount("preflight-generic-request-failure")
+        Mockito.doThrow(ApiException(ErrorCode.HOF_REQUEST_FAILED, "unparseable response"))
+            .`when`(battleMapService).refreshAdventureMaps(accountId)
+
+        assertEquals(
+            AutomationDailyPreflight.Result.Stopped(AutomationDailyPreflight.StopReason.FATAL),
+            service.ensureReady(accountId),
+        )
+        timeProvider.current.set(KOREA_MIDNIGHT_AFTER.plusSeconds(600))
+        assertEquals(
+            AutomationDailyPreflight.Result.Stopped(AutomationDailyPreflight.StopReason.FATAL),
+            service.ensureReady(accountId),
+        )
+        Mockito.verify(battleMapService, Mockito.times(1)).refreshAdventureMaps(accountId)
+    }
+
+    @Test
     fun `concurrent evaluations serialize by account and refresh only once`() {
         val accountId = savedAccount("preflight-concurrent")
         val refreshStarted = CountDownLatch(1)
@@ -208,7 +227,7 @@ class AutomationDailyPreflightTest {
         assertEquals(next, scheduled.nextAttemptAt)
     }
 
-    private fun networkFailure() = ApiException(ErrorCode.HOF_REQUEST_FAILED, "network")
+    private fun networkFailure() = AdventureMapRefreshException.Retryable("transient upstream failure")
 
     @TestConfiguration(proxyBeanMethods = false)
     class Config {

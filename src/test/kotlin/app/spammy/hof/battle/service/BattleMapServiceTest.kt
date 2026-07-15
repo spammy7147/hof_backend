@@ -17,8 +17,6 @@ import app.spammy.hof.battle.repository.BattleMapGroupCommandRepository
 import app.spammy.hof.battle.repository.BattleMapQueryRepository
 import app.spammy.hof.battle.repository.BattleMapRepository
 import app.spammy.hof.battle.repository.UnresolvedBattleMapCommandRepository
-import app.spammy.hof.common.error.ApiException
-import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.persistence.QueryDslConfig
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.client.HofGateway
@@ -26,6 +24,8 @@ import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
 import app.spammy.hof.external.parser.BattleMapParser
+import java.io.IOException
+import java.net.http.HttpTimeoutException
 import java.time.Instant
 import java.util.Base64
 import kotlin.test.Test
@@ -238,11 +238,9 @@ class BattleMapServiceTest {
         val account = savedAccount("battle-map-strict-refresh")
         gateway.defaultBody = "<html><body><h1>Temporary upstream error</h1></body></html>"
 
-        val error = assertFailsWith<ApiException> {
+        assertFailsWith<AdventureMapRefreshException.Fatal> {
             service.refreshAdventureMaps(account.id)
         }
-
-        assertEquals(ErrorCode.HOF_REQUEST_FAILED, error.errorCode)
         assertEquals(
             listOf("http://sic.zerosic.com/ZeroHOF/index.php?sp_hunt"),
             gateway.requests.map { it.url },
@@ -260,12 +258,40 @@ class BattleMapServiceTest {
             setCookies = emptyMap(),
         )
 
-        val error = assertFailsWith<ApiException> {
+        assertFailsWith<AdventureMapRefreshException.Retryable> {
             service.refreshAdventureMaps(account.id)
         }
-
-        assertEquals(ErrorCode.HOF_REQUEST_FAILED, error.errorCode)
         assertTrue(queryRepository.findVisibleStatesByAccountIdAndCategoryId(account.id, ADVENTURE).isEmpty())
+    }
+
+    @Test
+    fun authenticatedAdventureRefreshRejectsClientHttpResponseAsFatal() {
+        val account = savedAccount("battle-map-http-client-error")
+        val url = "http://sic.zerosic.com/ZeroHOF/index.php?sp_hunt"
+        gateway.responsesByUrl[url] = HofHttpResponse(
+            statusCode = 403,
+            finalUrl = url,
+            body = directAdventureHtml(sharedCount = 3, includeStale = false),
+            setCookies = emptyMap(),
+        )
+
+        assertFailsWith<AdventureMapRefreshException.Fatal> {
+            service.refreshAdventureMaps(account.id)
+        }
+        assertTrue(queryRepository.findVisibleStatesByAccountIdAndCategoryId(account.id, ADVENTURE).isEmpty())
+    }
+
+    @Test
+    fun authenticatedAdventureRefreshClassifiesTransportAndTimeoutFailuresAsRetryable() {
+        val account = savedAccount("battle-map-transport-errors")
+
+        listOf(IOException("connection reset"), HttpTimeoutException("timed out")).forEach { failure ->
+            gateway.failure = failure
+
+            assertFailsWith<AdventureMapRefreshException.Retryable> {
+                service.refreshAdventureMaps(account.id)
+            }
+        }
     }
 
     @Test
@@ -406,11 +432,13 @@ class BattleMapServiceTest {
         val cookies = mutableListOf<Map<String, String>>()
         val responsesByUrl = mutableMapOf<String, HofHttpResponse>()
         var defaultBody: String = ""
+        var failure: Exception? = null
 
         override fun execute(
             request: HofRequest,
             cookies: Map<String, String>,
         ): HofHttpResponse {
+            failure?.let { throw it }
             requests += request
             this.cookies += cookies
             return responsesByUrl[request.url] ?: HofHttpResponse(
@@ -426,6 +454,7 @@ class BattleMapServiceTest {
             cookies.clear()
             responsesByUrl.clear()
             defaultBody = ""
+            failure = null
         }
     }
 

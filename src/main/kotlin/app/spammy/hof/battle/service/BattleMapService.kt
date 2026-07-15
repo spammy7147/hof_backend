@@ -10,8 +10,18 @@ import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.parser.BattleMapParser
+import java.io.IOException
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
+
+/** Precise failure contract consumed by the account-wide automation preflight. */
+sealed class AdventureMapRefreshException(
+    message: String,
+    cause: Throwable? = null,
+) : RuntimeException(message, cause) {
+    class Retryable(message: String, cause: Throwable? = null) : AdventureMapRefreshException(message, cause)
+    class Fatal(message: String, cause: Throwable? = null) : AdventureMapRefreshException(message, cause)
+}
 
 @Service
 /**
@@ -43,8 +53,16 @@ class BattleMapService(
      * Performs the authenticated `?sp_hunt` refresh used by the automation daily gate. Unlike the read endpoint,
      * an empty/unparseable page is a failed refresh because no observed account state was synchronized.
      */
-    fun refreshAdventureMaps(accountId: Long): List<BattleMapResponse> =
+    fun refreshAdventureMaps(accountId: Long): List<BattleMapResponse> = try {
         findMaps(accountId, BattleCategoryId.ADVENTURE_MAP.value, requireObservations = true)
+    } catch (error: AdventureMapRefreshException) {
+        throw error
+    } catch (error: Exception) {
+        if (error.isTransportFailure()) {
+            throw AdventureMapRefreshException.Retryable("HOF 모험 맵 요청 중 네트워크 오류가 발생했습니다.", error)
+        }
+        throw AdventureMapRefreshException.Fatal("HOF 모험 맵 새로고침에 실패했습니다.", error)
+    }
 
     private fun findMaps(
         accountId: Long,
@@ -81,7 +99,14 @@ class BattleMapService(
             }
             ?: response
         if (requireObservations && mapPageResponse.statusCode !in 200..299) {
-            throw ApiException(ErrorCode.HOF_REQUEST_FAILED, "HOF 모험 맵 요청에 실패했습니다.")
+            if (mapPageResponse.statusCode in 500..599) {
+                throw AdventureMapRefreshException.Retryable(
+                    "HOF 모험 맵 서버가 일시적으로 응답하지 않습니다. status=${mapPageResponse.statusCode}",
+                )
+            }
+            throw AdventureMapRefreshException.Fatal(
+                "HOF 모험 맵 요청이 거부되었습니다. status=${mapPageResponse.statusCode}",
+            )
         }
         val maps = battleMapParser.parse(
             categoryId = category.value,
@@ -105,7 +130,7 @@ class BattleMapService(
                 mapPageResponse.statusCode,
             )
             if (requireObservations) {
-                throw ApiException(ErrorCode.HOF_REQUEST_FAILED, "HOF 모험 맵 상태를 확인하지 못했습니다.")
+                throw AdventureMapRefreshException.Fatal("HOF 모험 맵 응답에서 상태를 확인하지 못했습니다.")
             }
             return catalogService.findVisibleByCategory(account.id, category.value).map(BattleMapResponse::from)
         }
@@ -134,4 +159,13 @@ class BattleMapService(
         val mapQuery: String,
         val detailPageQuery: String? = null,
     )
+
+    private fun Throwable.isTransportFailure(): Boolean {
+        var current: Throwable? = this
+        while (current != null) {
+            if (current is IOException || current is InterruptedException) return true
+            current = current.cause
+        }
+        return false
+    }
 }
