@@ -52,6 +52,9 @@ class AccountBattleMapStateEntity(
     @Column(name = "cooldown_until")
     var cooldownUntil: Instant? = null,
 
+    @Column(name = "supports_three_battles", nullable = false)
+    var supportsThreeBattles: Boolean = false,
+
     @Column(name = "raw_href", nullable = false, columnDefinition = "text")
     var rawHref: String,
 

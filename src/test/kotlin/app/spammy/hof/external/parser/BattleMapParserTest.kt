@@ -19,6 +19,35 @@ class BattleMapParserTest {
     private val parser = BattleMapParser()
 
     @Test
+    fun detectsThreeBattleCapabilityOnlyFromTheActualSubmitControl() {
+        val threeBattle = parser.parse(
+            categoryId = "battle_map",
+            queryName = "common",
+            html = """
+                <a href="index.php?common=snow22">Map</a>
+                <form method="post"><input type="submit" name="monster_battle_10" value="Battle !"></form>
+            """.trimIndent(),
+        )
+        val singleBattle = parser.parse(
+            categoryId = "battle_map",
+            queryName = "common",
+            html = """
+                <a href="index.php?common=snow22">Map</a>
+                <form method="post"><button type="submit" name="monster_battle">Battle !</button></form>
+            """.trimIndent(),
+        )
+        val unrelatedThree = parser.parse(
+            categoryId = "battle_map",
+            queryName = "common",
+            html = "<a href='index.php?common=snow22'>Map: 3 battles available</a>",
+        )
+
+        assertTrue(threeBattle.single().supportsThreeBattles)
+        assertFalse(singleBattle.single().supportsThreeBattles)
+        assertFalse(unrelatedThree.single().supportsThreeBattles)
+    }
+
+    @Test
     fun parsesBattleMapsFromMatchingLinksAndKeepsDisplayOrder() {
         val maps = parser.parse(
             categoryId = "battle_map",

@@ -25,6 +25,9 @@ class BattleMapParser {
         html: String,
     ): List<HofBattleMap> {
         val document = Jsoup.parse(html, HOF_BASE_URL)
+        val supportsThreeBattles = document
+            .select("input[type=submit][name=monster_battle_10], button[type=submit][name=monster_battle_10]")
+            .isNotEmpty()
         val queryPattern = Regex("""[?&]${Regex.escape(queryName)}=([^&"'#\s]+)""")
         val placeholderQueryNames = placeholderQueryNames(categoryId, queryName)
         val seenCodes = linkedSetOf<String>()
@@ -142,6 +145,7 @@ class BattleMapParser {
                     cooldownRemainingSeconds = cooldownRemaining?.seconds,
                     keyCount = keyCount,
                     requiredTime = parseRequiredTime(contextText),
+                    supportsThreeBattles = supportsThreeBattles,
                     iconUrl = link.selectFirst("img[src]")?.absUrl("src")?.ifBlank { null },
                     rawHref = rawHref,
                 )

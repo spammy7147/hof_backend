@@ -71,7 +71,7 @@ class BattleRunService(
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
         val mapState = battleMapQueryRepository.findStateForExecution(account.id, category.value, mapCode)
             ?: throw ApiException(ErrorCode.INVALID_REQUEST, "해결된 계정 전투 맵 상태가 없습니다.")
-        validateMapState(mapState)
+        validateMapState(mapState, battleCount)
         val cookies = cookieQueryRepository.findValueMapByAccountId(account.id)
         if (cookies.isEmpty()) {
             log.warn("Battle run rejected accountId={} categoryId={} mapCode={} reason=no-cookies", account.id, category.value, mapCode)
@@ -172,12 +172,15 @@ class BattleRunService(
      * 최근 맵 목록 동기화에서 저장한 계정 상태로 전투 가능 여부를 먼저 검증한다.
      * 이 검증을 통과한 뒤의 HOF 패턴 로드와 전투 요청 의미는 기존과 동일하다.
      */
-    private fun validateMapState(state: AccountBattleMapStateEntity) {
+    private fun validateMapState(state: AccountBattleMapStateEntity, battleCount: Int) {
         if (!state.visible) {
             throw ApiException(ErrorCode.INVALID_REQUEST, "현재 계정에서 보이지 않는 전투 맵입니다.")
         }
         if (!state.battleMap.enabled) {
             throw ApiException(ErrorCode.INVALID_REQUEST, "비활성화된 전투 맵입니다.")
+        }
+        if (battleCount == 3 && !state.supportsThreeBattles) {
+            throw ApiException(ErrorCode.INVALID_REQUEST, "이 계정의 현재 맵 페이지에서 3회 전투 기능을 확인하지 못했습니다.")
         }
         if (state.cooldownUntil?.isAfter(timeProvider.now()) == true) {
             throw ApiException(ErrorCode.INVALID_REQUEST, "전투 맵 쿨타임이 남아 있습니다.")

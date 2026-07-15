@@ -134,6 +134,51 @@ class BattleAutomationDailyProgressEntity(
 )
 
 @Entity
+@Table(
+    name = "battle_automation_processed_results",
+    uniqueConstraints = [
+        UniqueConstraint(
+            name = "uk_battle_automation_processed_results_identity",
+            columnNames = ["account_id", "result_identity"],
+        ),
+        UniqueConstraint(
+            name = "uk_battle_automation_processed_results_execution",
+            columnNames = ["account_id", "execution_identity"],
+        ),
+    ],
+)
+class BattleAutomationProcessedResultEntity(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+    @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "account_id", nullable = false)
+    var account: HofAccountEntity,
+    @Column(name = "result_identity", nullable = false, length = 128)
+    var resultIdentity: String,
+    @Column(name = "execution_identity", nullable = false, length = 128)
+    var executionIdentity: String,
+    @Column(name = "action_fingerprint", nullable = false, length = 64)
+    var actionFingerprint: String,
+    @Column(name = "outcome_fingerprint", nullable = false, length = 64)
+    var outcomeFingerprint: String,
+    @Column(name = "victory_count", nullable = false)
+    var victoryCount: Int,
+    @Column(name = "processed_at", nullable = false)
+    var processedAt: Instant,
+) {
+    init {
+        require(resultIdentity.isNotBlank() && resultIdentity.length <= 128)
+        require(executionIdentity.isNotBlank() && executionIdentity.length <= 128)
+        require(actionFingerprint.matches(SHA_256_HEX_PATTERN))
+        require(outcomeFingerprint.matches(SHA_256_HEX_PATTERN))
+        require(victoryCount in 0..3)
+    }
+
+    private companion object {
+        val SHA_256_HEX_PATTERN = Regex("[0-9a-f]{64}")
+    }
+}
+
+@Entity
 @Table(name = "adventure_daily_refresh")
 class AdventureDailyRefreshEntity(
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)

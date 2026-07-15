@@ -267,6 +267,7 @@ class BattleMapCatalogTransactionService(
         state.attemptRemaining = observation.attemptCount
         state.winRemaining = observation.winCount
         state.cooldownUntil = observation.cooldownRemainingSeconds?.let(now::plusSeconds)
+        state.supportsThreeBattles = observation.supportsThreeBattles
         state.rawHref = observation.rawHref
         state.visible = true
         state.lastSeenAt = now
@@ -363,6 +364,7 @@ class BattleMapCatalogTransactionService(
             cooldownRemainingSeconds = remainingSeconds(cooldownUntil, now),
             keyCount = keyCount,
             requiredTime = battleMap.requiredTime,
+            supportsThreeBattles = supportsThreeBattles,
             enabled = battleMap.enabled && visible && !hasZeroDynamicLimit && !activeCooldown,
             resolved = true,
             iconUrl = battleMap.iconUrl,

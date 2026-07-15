@@ -21,5 +21,6 @@ enum class AutomationStopReason {
     AUTHENTICATION,
     CAPTCHA,
     MANUAL_STOP,
+    NETWORK,
     UNKNOWN,
 }

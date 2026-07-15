@@ -3,8 +3,11 @@ package app.spammy.hof.automation.repository
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.entity.QHofAccountEntity.hofAccountEntity
 import app.spammy.hof.automation.entity.AutomationEntryEntity
+import app.spammy.hof.automation.entity.BattleAutomationDailyProgressEntity
+import app.spammy.hof.automation.entity.BattleAutomationProcessedResultEntity
 import app.spammy.hof.automation.entity.QAutomationEntryEntity.automationEntryEntity
 import app.spammy.hof.automation.entity.QBattleAutomationDailyProgressEntity.battleAutomationDailyProgressEntity
+import app.spammy.hof.automation.entity.QBattleAutomationProcessedResultEntity.battleAutomationProcessedResultEntity
 import app.spammy.hof.automation.entity.QQuestAutomationCycleEntity.questAutomationCycleEntity
 import app.spammy.hof.automation.entity.QQuestAutomationProcessedResultEntity.questAutomationProcessedResultEntity
 import app.spammy.hof.automation.entity.QQuestMapExecutionCounterEntity.questMapExecutionCounterEntity
@@ -41,6 +44,38 @@ class TypedAutomationQueryRepository(
             battleAutomationDailyProgressEntity.source.eq(source),
         )
         .fetchOne() ?: 0
+
+    fun findBattleProgress(
+        accountId: Long,
+        progressDate: LocalDate,
+        categoryId: String,
+        mapCode: String,
+        source: String,
+    ): BattleAutomationDailyProgressEntity? = queryFactory.selectFrom(battleAutomationDailyProgressEntity)
+        .where(
+            battleAutomationDailyProgressEntity.account.id.eq(accountId),
+            battleAutomationDailyProgressEntity.progressDate.eq(progressDate),
+            battleAutomationDailyProgressEntity.categoryId.eq(categoryId),
+            battleAutomationDailyProgressEntity.mapCode.eq(mapCode),
+            battleAutomationDailyProgressEntity.source.eq(source),
+        )
+        .fetchOne()
+
+    fun findBattleProcessedResult(accountId: Long, resultIdentity: String): BattleAutomationProcessedResultEntity? =
+        queryFactory.selectFrom(battleAutomationProcessedResultEntity)
+            .where(
+                battleAutomationProcessedResultEntity.account.id.eq(accountId),
+                battleAutomationProcessedResultEntity.resultIdentity.eq(resultIdentity),
+            )
+            .fetchOne()
+
+    fun findBattleProcessedExecution(accountId: Long, executionIdentity: String): BattleAutomationProcessedResultEntity? =
+        queryFactory.selectFrom(battleAutomationProcessedResultEntity)
+            .where(
+                battleAutomationProcessedResultEntity.account.id.eq(accountId),
+                battleAutomationProcessedResultEntity.executionIdentity.eq(executionIdentity),
+            )
+            .fetchOne()
 
     /** Account-row fencing serializes cycle/counter writes across JVMs on H2 and PostgreSQL. */
     fun lockAccount(accountId: Long): HofAccountEntity =

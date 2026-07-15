@@ -279,7 +279,7 @@ internal object FreshSchemaContract {
             "account_battle_map_states",
             serialId(), requiredBigint("account_id"), requiredBigint("battle_map_id"), optionalInteger("key_count"),
             optionalInteger("available_count"), optionalInteger("attempt_remaining"), optionalInteger("win_remaining"),
-            optionalInstant("cooldown_until"), requiredText("raw_href"), requiredBoolean("visible"),
+            optionalInstant("cooldown_until"), requiredBoolean("supports_three_battles"), requiredText("raw_href"), requiredBoolean("visible"),
             requiredInstant("last_seen_at"),
         ),
         table(
@@ -419,6 +419,12 @@ internal object FreshSchemaContract {
             requiredInteger("successful_runs"), requiredInstant("updated_at"),
         ),
         table(
+            "battle_automation_processed_results",
+            serialId(), requiredBigint("account_id"), requiredVarchar("result_identity", 128),
+            requiredVarchar("execution_identity", 128), requiredVarchar("action_fingerprint", 64),
+            requiredVarchar("outcome_fingerprint", 64), requiredInteger("victory_count"), requiredInstant("processed_at"),
+        ),
+        table(
             "adventure_automation_maps",
             serialId(), requiredBigint("automation_entry_id"), requiredVarchar("category_id", 50),
             requiredVarchar("map_code", 100), requiredVarchar("preset_mode", 20),
@@ -548,6 +554,14 @@ internal object FreshSchemaContract {
         key(
             "battle_automation_daily_progress", "uk_battle_automation_daily_progress_identity",
             "account_id", "progress_date", "category_id", "map_code", "source",
+        ),
+        key(
+            "battle_automation_processed_results", "uk_battle_automation_processed_results_identity",
+            "account_id", "result_identity",
+        ),
+        key(
+            "battle_automation_processed_results", "uk_battle_automation_processed_results_execution",
+            "account_id", "execution_identity",
         ),
         key(
             "adventure_automation_maps", "uk_adventure_automation_maps_entry_map",
@@ -695,6 +709,10 @@ internal object FreshSchemaContract {
         ),
         fk(
             "fk_battle_automation_daily_progress_account", "battle_automation_daily_progress.account_id",
+            "hof_accounts.id", DeleteAction.CASCADE,
+        ),
+        fk(
+            "fk_battle_automation_processed_results_account", "battle_automation_processed_results.account_id",
             "hof_accounts.id", DeleteAction.CASCADE,
         ),
         fk(
@@ -851,6 +869,10 @@ internal object FreshSchemaContract {
             "category_id", "map_code", "progress_date", "id",
         ),
         index(
+            "battle_automation_processed_results", "idx_battle_automation_processed_results_execution",
+            "account_id", "execution_identity", "id",
+        ),
+        index(
             "adventure_automation_maps", "idx_adventure_automation_maps_entry_order",
             "automation_entry_id", "execution_order", "id",
         ),
@@ -1002,6 +1024,10 @@ internal object FreshSchemaContract {
         check(
             "battle_automation_daily_progress", "ck_battle_automation_daily_progress_successful_runs",
             "successful_runs >= 0",
+        ),
+        check(
+            "battle_automation_processed_results", "ck_battle_automation_processed_results_victories",
+            "victory_count between 0 and 3",
         ),
         check(
             "adventure_automation_maps", "ck_adventure_automation_maps_preset_mode",

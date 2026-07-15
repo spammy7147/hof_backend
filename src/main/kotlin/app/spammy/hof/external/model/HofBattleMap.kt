@@ -17,6 +17,7 @@ data class HofBattleMap(
     val cooldownRemainingSeconds: Long? = null,
     val keyCount: Int? = null,
     val requiredTime: Int? = null,
+    val supportsThreeBattles: Boolean = false,
     val enabled: Boolean = true,
     val resolved: Boolean = mapCode != null,
     val iconUrl: String? = null,

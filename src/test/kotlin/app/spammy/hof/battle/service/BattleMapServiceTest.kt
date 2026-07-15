@@ -117,6 +117,21 @@ class BattleMapServiceTest {
     }
 
     @Test
+    fun persistsObservedThreeBattleCapabilityAndReturnsItInTheResponse() {
+        val account = savedAccount("battle-map-three-capability")
+        gateway.defaultBody = """
+            <a href="index.php?common=three01">Three-capable map</a>
+            <form method="post"><input type="submit" name="monster_battle_10" value="Battle !"></form>
+        """.trimIndent()
+
+        val response = service.findMaps(account.id, "battle_map").single()
+        val state = queryRepository.findStateForExecution(account.id, "battle_map", "three01")
+
+        assertTrue(response.supportsThreeBattles)
+        assertTrue(requireNotNull(state).supportsThreeBattles)
+    }
+
+    @Test
     fun persistsAmbiguousAndUnknownPlaceholdersAsDisabledUnresolvedRows() {
         val account = savedAccount("battle-map-unresolved")
         val group = savedGroup(ADVENTURE, "미지 지역", 2)

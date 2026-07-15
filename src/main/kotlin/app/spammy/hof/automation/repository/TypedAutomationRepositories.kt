@@ -6,6 +6,7 @@ import app.spammy.hof.automation.entity.AdventureDailyPreflightStateEntity
 import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.BattleAutomationDailyProgressEntity
 import app.spammy.hof.automation.entity.BattleAutomationMapEntity
+import app.spammy.hof.automation.entity.BattleAutomationProcessedResultEntity
 import app.spammy.hof.automation.entity.QuestAutomationMapEntity
 import app.spammy.hof.automation.entity.QuestAutomationCycleEntity
 import app.spammy.hof.automation.entity.QuestAutomationProcessedResultEntity
@@ -28,6 +29,8 @@ interface QuestMapExecutionCounterCommandRepository : CommandRepository<QuestMap
 interface BattleAutomationMapCommandRepository : CommandRepository<BattleAutomationMapEntity, Long>
 
 interface BattleAutomationDailyProgressCommandRepository : CommandRepository<BattleAutomationDailyProgressEntity, Long>
+
+interface BattleAutomationProcessedResultCommandRepository : CommandRepository<BattleAutomationProcessedResultEntity, Long>
 
 interface AdventureAutomationMapCommandRepository : CommandRepository<AdventureAutomationMapEntity, Long>
 
