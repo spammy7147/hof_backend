@@ -30,7 +30,6 @@ data class AdventureMapRunnableState(
     val attemptRemaining: Int? = null,
     val winRemaining: Int? = null,
     val availableCount: Int? = null,
-    val requiresKey: Boolean = false,
     val keyCount: Int? = null,
 )
 
@@ -45,7 +44,11 @@ data class AdventureMapAutomationSnapshot(
     val settings: List<AdventureMapAutomationSetting>,
     val mapStates: List<AdventureMapRunnableState>,
     val presetResolutions: Map<Long, AdventureMapPresetResolution>,
-    val executionIdentity: String,
+    /**
+     * Task 9's loader must provide one fresh identity per enabled setting for every new evaluation/action attempt.
+     * Re-evaluating this same immutable snapshot remains deterministic and therefore returns the same identity.
+     */
+    val executionIdentities: Map<Long, String>,
     val evaluationInstant: Instant,
 )
 
@@ -64,7 +67,24 @@ data class AdventureMapAutomationAction(
 @Service
 class AdventureMapAutomationHandler : AutomationHandler<AdventureMapAutomationSnapshot> {
     override fun evaluate(context: AdventureMapAutomationSnapshot): HandlerEvaluation {
-        val states = context.mapStates.associateBy { it.categoryId to it.mapCode }
+        val stateGroups = context.mapStates.groupBy { it.categoryId to it.mapCode }
+        val duplicateStateIdentities = stateGroups.filterValues { it.size > 1 }.keys
+        val states = stateGroups.mapNotNull { (identity, matches) ->
+            matches.singleOrNull()?.let { identity to it }
+        }.toMap()
+        val duplicateSettingIdentities = context.settings
+            .groupingBy(AdventureMapAutomationSetting::settingIdentity)
+            .eachCount()
+            .filterValues { it > 1 }
+            .keys
+        val duplicateExecutionIdentities = context.settings
+            .asSequence()
+            .filter(AdventureMapAutomationSetting::enabled)
+            .mapNotNull { context.executionIdentities[it.settingIdentity] }
+            .groupingBy { it }
+            .eachCount()
+            .filterValues { it > 1 }
+            .keys
         var firstWarning: HandlerEvaluation.ConfigurationWarning? = null
         val cooldowns = mutableListOf<Instant>()
 
@@ -78,6 +98,25 @@ class AdventureMapAutomationHandler : AutomationHandler<AdventureMapAutomationSn
                     .thenBy(AdventureMapAutomationSetting::settingIdentity),
             )
             .forEach { setting ->
+                if (setting.settingIdentity in duplicateSettingIdentities) {
+                    firstWarning = firstWarning ?: HandlerEvaluation.ConfigurationWarning(
+                        "Adventure setting identity ${setting.settingIdentity} is duplicated.",
+                    )
+                    return@forEach
+                }
+                val executionIdentity = context.executionIdentities[setting.settingIdentity]
+                if (executionIdentity == null || executionIdentity.isBlank() || executionIdentity.length > MAX_EXECUTION_IDENTITY_LENGTH) {
+                    firstWarning = firstWarning ?: HandlerEvaluation.ConfigurationWarning(
+                        "Adventure setting ${setting.settingIdentity} has a missing or invalid execution identity.",
+                    )
+                    return@forEach
+                }
+                if (executionIdentity in duplicateExecutionIdentities) {
+                    firstWarning = firstWarning ?: HandlerEvaluation.ConfigurationWarning(
+                        "Adventure execution identity '$executionIdentity' is reused.",
+                    )
+                    return@forEach
+                }
                 val presetId = setting.resolvePreset(context.presetResolutions[setting.settingIdentity])
                 if (presetId == null) {
                     if (firstWarning == null) {
@@ -88,7 +127,14 @@ class AdventureMapAutomationHandler : AutomationHandler<AdventureMapAutomationSn
                     return@forEach
                 }
 
-                val state = states[setting.categoryId to setting.mapCode]
+                val mapIdentity = setting.categoryId to setting.mapCode
+                if (mapIdentity in duplicateStateIdentities) {
+                    firstWarning = firstWarning ?: HandlerEvaluation.ConfigurationWarning(
+                        "Adventure map ${setting.categoryId}/${setting.mapCode} has duplicate live states.",
+                    )
+                    return@forEach
+                }
+                val state = states[mapIdentity]
                     ?.takeIf { it.isAvailableMap() }
                     ?: return@forEach
                 if (state.hasExhaustedCapacity()) return@forEach
@@ -105,7 +151,7 @@ class AdventureMapAutomationHandler : AutomationHandler<AdventureMapAutomationSn
                         presetMode = setting.preset.mode,
                         presetId = presetId,
                         settingIdentity = setting.settingIdentity,
-                        executionIdentity = context.executionIdentity,
+                        executionIdentity = executionIdentity,
                     ),
                 )
             }
@@ -138,5 +184,9 @@ class AdventureMapAutomationHandler : AutomationHandler<AdventureMapAutomationSn
 
     private fun AdventureMapRunnableState.hasExhaustedCapacity(): Boolean =
         listOf(dailyRemaining, attemptRemaining, winRemaining, availableCount).any { it != null && it <= 0 } ||
-            (requiresKey && (keyCount == null || keyCount <= 0))
+            (keyCount != null && keyCount <= 0)
+
+    private companion object {
+        const val MAX_EXECUTION_IDENTITY_LENGTH = 128
+    }
 }

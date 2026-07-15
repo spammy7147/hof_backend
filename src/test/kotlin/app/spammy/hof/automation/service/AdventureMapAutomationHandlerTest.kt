@@ -11,13 +11,13 @@ class AdventureMapAutomationHandlerTest {
     private val handler = AdventureMapAutomationHandler()
 
     @Test
-    fun `cooldown exhausted and missing key maps are skipped before one runnable battle`() {
+    fun `cooldown exhausted and zero key maps are skipped before one runnable battle`() {
         val snapshot = snapshot(
             settings = listOf(setting(1, "cooldown", 0), setting(2, "exhausted", 1), setting(3, "no-key", 2), setting(4, "ready", 3)),
             states = listOf(
                 state("cooldown", cooldownUntil = LATER),
                 state("exhausted", availableCount = 0),
-                state("no-key", requiresKey = true, keyCount = null),
+                state("no-key", keyCount = 0),
                 state("ready"),
             ),
         )
@@ -27,7 +27,7 @@ class AdventureMapAutomationHandlerTest {
         assertEquals("ready", action.mapCode)
         assertEquals(1, action.battleCount)
         assertEquals(4, action.settingIdentity)
-        assertEquals("execution-1", action.executionIdentity)
+        assertEquals("execution-4", action.executionIdentity)
     }
 
     @Test
@@ -37,8 +37,10 @@ class AdventureMapAutomationHandlerTest {
             states = listOf(state("first"), state("second")),
         )
 
-        assertEquals("first", runnable(handler.evaluate(snapshot)).mapCode)
-        assertEquals("first", runnable(handler.evaluate(snapshot)).mapCode)
+        val firstEvaluation = handler.evaluate(snapshot)
+        val secondEvaluation = handler.evaluate(snapshot)
+        assertEquals("first", runnable(firstEvaluation).mapCode)
+        assertEquals(firstEvaluation, secondEvaluation)
     }
 
     @Test
@@ -64,10 +66,21 @@ class AdventureMapAutomationHandlerTest {
             state("attempt0", attemptRemaining = 0),
             state("win0", winRemaining = 0),
             state("available0", availableCount = 0),
-            state("key0", requiresKey = true, keyCount = 0),
+            state("key0", keyCount = 0),
         )
 
         assertSame(HandlerEvaluation.Skipped, handler.evaluate(snapshot(settings, states)))
+    }
+
+    @Test
+    fun `null and positive key counts remain runnable while any known zero key count is skipped`() {
+        val settings = listOf(setting(1, "zero", 0), setting(2, "positive", 1), setting(3, "unknown", 2))
+
+        assertEquals(
+            "positive",
+            runnable(handler.evaluate(snapshot(settings, listOf(state("zero", keyCount = 0), state("positive", keyCount = 1), state("unknown"))))).mapCode,
+        )
+        assertEquals("unknown", runnable(handler.evaluate(snapshot(listOf(settings[2]), listOf(state("unknown"))))).mapCode)
     }
 
     @Test
@@ -127,20 +140,126 @@ class AdventureMapAutomationHandlerTest {
     }
 
     @Test
+    fun `duplicate live state identity warns deterministically and does not starve later unique map`() {
+        val duplicate = setting(1, "duplicate", 0)
+        val unique = setting(2, "unique", 1)
+        val duplicateStates = listOf(state("duplicate", visible = true), state("duplicate", visible = false))
+
+        val runnable = handler.evaluate(snapshot(listOf(duplicate, unique), duplicateStates + state("unique")))
+        assertEquals("unique", runnable(runnable).mapCode)
+
+        val forward = handler.evaluate(snapshot(listOf(duplicate), duplicateStates))
+        val reversed = handler.evaluate(snapshot(listOf(duplicate), duplicateStates.reversed()))
+        assertEquals(forward, reversed)
+        assertEquals(
+            "Adventure map adventure/duplicate has duplicate live states.",
+            assertIs<HandlerEvaluation.ConfigurationWarning>(forward).message,
+        )
+    }
+
+    @Test
+    fun `duplicate setting identity warns deterministically and does not starve later unique setting`() {
+        val duplicateA = setting(1, "duplicate-a", 0)
+        val duplicateB = setting(1, "duplicate-b", 1)
+        val unique = setting(2, "unique", 2)
+        val states = listOf(state("duplicate-a"), state("duplicate-b"), state("unique"))
+
+        assertEquals("unique", runnable(handler.evaluate(snapshot(listOf(duplicateB, unique, duplicateA), states))).mapCode)
+        val forward = handler.evaluate(snapshot(listOf(duplicateA, duplicateB), states))
+        val reversed = handler.evaluate(snapshot(listOf(duplicateB, duplicateA), states.reversed()))
+        assertEquals(forward, reversed)
+        assertEquals(
+            "Adventure setting identity 1 is duplicated.",
+            assertIs<HandlerEvaluation.ConfigurationWarning>(forward).message,
+        )
+    }
+
+    @Test
+    fun `invalid blank oversized and reused execution identities are warnings while later unique identity runs`() {
+        val settings = listOf(
+            setting(1, "blank", 0),
+            setting(2, "oversized", 1),
+            setting(3, "reused-a", 2),
+            setting(4, "reused-b", 3),
+            setting(5, "unique", 4),
+        )
+        val identities = mapOf(1L to "", 2L to "x".repeat(129), 3L to "reused", 4L to "reused", 5L to "fresh")
+
+        val action = runnable(handler.evaluate(snapshot(settings, settings.map { state(it.mapCode) }, executionIdentities = identities)))
+
+        assertEquals("unique", action.mapCode)
+        assertEquals("fresh", action.executionIdentity)
+        val onlyInvalid = handler.evaluate(snapshot(listOf(settings[0]), listOf(state("blank")), executionIdentities = mapOf(1L to "")))
+        assertEquals(
+            "Adventure setting 1 has a missing or invalid execution identity.",
+            assertIs<HandlerEvaluation.ConfigurationWarning>(onlyInvalid).message,
+        )
+        val oversized = handler.evaluate(
+            snapshot(listOf(settings[1]), listOf(state("oversized")), executionIdentities = mapOf(2L to "x".repeat(129))),
+        )
+        assertEquals(
+            "Adventure setting 2 has a missing or invalid execution identity.",
+            assertIs<HandlerEvaluation.ConfigurationWarning>(oversized).message,
+        )
+        val reusedSettings = listOf(settings[2], settings[3])
+        val reusedStates = listOf(state("reused-a"), state("reused-b"))
+        val reusedIdentities = mapOf(3L to "reused", 4L to "reused")
+        val reusedForward = handler.evaluate(snapshot(reusedSettings, reusedStates, executionIdentities = reusedIdentities))
+        val reusedReversed = handler.evaluate(snapshot(reusedSettings.reversed(), reusedStates.reversed(), executionIdentities = reusedIdentities))
+        assertEquals(reusedForward, reusedReversed)
+        assertEquals(
+            "Adventure execution identity 'reused' is reused.",
+            assertIs<HandlerEvaluation.ConfigurationWarning>(reusedForward).message,
+        )
+    }
+
+    @Test
+    fun `multiple warnings select deterministic first sorted warning regardless input order`() {
+        val later = setting(2, "z-map", 0, category = "z-category")
+        val first = setting(1, "a-map", 0, category = "a-category")
+        val resolutions = mapOf(1L to invalid("first warning"), 2L to invalid("later warning"))
+        val states = listOf(state("z-map", category = "z-category"), state("a-map", category = "a-category"))
+
+        val forward = handler.evaluate(snapshot(listOf(later, first), states, resolutions))
+        val reversed = handler.evaluate(snapshot(listOf(first, later), states.reversed(), resolutions))
+
+        assertEquals(forward, reversed)
+        assertEquals("first warning", assertIs<HandlerEvaluation.ConfigurationWarning>(forward).message)
+    }
+
+    @Test
+    fun `invalid preset warning takes precedence over cooldown unavailable`() {
+        val invalidSetting = setting(1, "invalid", 0)
+        val cooling = setting(2, "cooling", 1)
+        val result = handler.evaluate(
+            snapshot(
+                listOf(invalidSetting, cooling),
+                listOf(state("invalid"), state("cooling", cooldownUntil = LATER)),
+                resolutions = mapOf(1L to invalid("preset warning"), 2L to valid(102)),
+            ),
+        )
+
+        assertEquals("preset warning", assertIs<HandlerEvaluation.ConfigurationWarning>(result).message)
+    }
+
+    @Test
     fun `evaluation does not mutate settings states or snapshot collections`() {
         val mutableSettings = mutableListOf(setting(2, "second", 1), setting(1, "first", 0))
         val mutableStates = mutableListOf(state("second"), state("first"))
         val mutableResolutions = mutableMapOf(2L to valid(20), 1L to valid(10))
-        val snapshot = snapshot(mutableSettings, mutableStates, mutableResolutions)
+        val mutableExecutionIdentities = mutableMapOf(2L to "execution-2", 1L to "execution-1")
+        val snapshot = snapshot(mutableSettings, mutableStates, mutableResolutions, mutableExecutionIdentities)
         val expectedSettings = mutableSettings.toList()
         val expectedStates = mutableStates.toList()
         val expectedResolutions = mutableResolutions.toMap()
+        val expectedExecutionIdentities = mutableExecutionIdentities.toMap()
 
         handler.evaluate(snapshot)
 
         assertEquals(expectedSettings, mutableSettings)
         assertEquals(expectedStates, mutableStates)
         assertEquals(expectedResolutions, mutableResolutions)
+        assertEquals(expectedExecutionIdentities, mutableExecutionIdentities)
     }
 
     private fun runnable(result: HandlerEvaluation): AdventureMapAutomationAction =
@@ -167,7 +286,6 @@ class AdventureMapAutomationHandlerTest {
         attemptRemaining: Int? = null,
         winRemaining: Int? = null,
         availableCount: Int? = null,
-        requiresKey: Boolean = false,
         keyCount: Int? = null,
     ) = AdventureMapRunnableState(
         categoryId = category,
@@ -180,7 +298,6 @@ class AdventureMapAutomationHandlerTest {
         attemptRemaining = attemptRemaining,
         winRemaining = winRemaining,
         availableCount = availableCount,
-        requiresKey = requiresKey,
         keyCount = keyCount,
     )
 
@@ -190,8 +307,9 @@ class AdventureMapAutomationHandlerTest {
         resolutions: Map<Long, AdventureMapPresetResolution> = settings.associate { setting ->
             setting.settingIdentity to valid(setting.preset.configuredPresetId ?: 10)
         },
+        executionIdentities: Map<Long, String> = settings.associate { it.settingIdentity to "execution-${it.settingIdentity}" },
         now: Instant = NOW,
-    ) = AdventureMapAutomationSnapshot(7, settings, states, resolutions, "execution-1", now)
+    ) = AdventureMapAutomationSnapshot(7, settings, states, resolutions, executionIdentities, now)
 
     private fun valid(id: Long) = AdventureMapPresetResolution.Valid(id)
     private fun invalid(message: String) = AdventureMapPresetResolution.Invalid(message)
