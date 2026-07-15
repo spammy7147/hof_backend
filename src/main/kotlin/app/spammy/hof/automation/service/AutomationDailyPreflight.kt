@@ -8,6 +8,7 @@ import app.spammy.hof.automation.repository.AdventureDailyPreflightQueryReposito
 import app.spammy.hof.automation.repository.AdventureDailyPreflightStateCommandRepository
 import app.spammy.hof.automation.repository.AdventureDailyRefreshCommandRepository
 import app.spammy.hof.battle.service.AdventureMapRefreshException
+import app.spammy.hof.battle.service.AdventureMapSnapshot
 import app.spammy.hof.battle.service.BattleMapService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
@@ -54,16 +55,21 @@ class AutomationDailyPreflight(
         if (claim is ClaimDecision.Resolved) return claim.result
         claim as ClaimDecision.Claimed
 
-        val outcome = try {
-            battleMapService.refreshAdventureMaps(accountId)
-            RefreshOutcome.Success
+        val snapshot = try {
+            battleMapService.fetchAdventureMapSnapshot(accountId)
         } catch (error: Exception) {
-            classify(error)
+            val completedAt = timeProvider.now()
+            val completed = CompletedRefresh(classify(error), completedAt, completedAt.koreaDate())
+            return transaction.execute { finalize(accountId, claim, completed, snapshot = null) }
         }
         val completedAt = timeProvider.now()
-        val completed = CompletedRefresh(outcome, completedAt, completedAt.koreaDate())
+        val completed = CompletedRefresh(RefreshOutcome.Success, completedAt, completedAt.koreaDate())
 
-        return transaction.execute { finalize(accountId, claim, completed) }
+        return try {
+            transaction.execute { finalize(accountId, claim, completed, snapshot) }
+        } catch (_: Exception) {
+            transaction.execute { finalizeSynchronizationFailure(accountId, claim) }
+        }
     }
 
     /** Explicit lifecycle seam for the future manual-resume endpoint. */
@@ -123,7 +129,12 @@ class AutomationDailyPreflight(
     }
 
     /** Called in a fresh transaction after the external request/map-sync transaction has completed or rolled back. */
-    private fun finalize(accountId: Long, claim: ClaimDecision.Claimed, completed: CompletedRefresh): Result {
+    private fun finalize(
+        accountId: Long,
+        claim: ClaimDecision.Claimed,
+        completed: CompletedRefresh,
+        snapshot: AdventureMapSnapshot?,
+    ): Result {
         val (account, state) = lockAccountAndState(accountId)
         val lockedAt = timeProvider.now()
         val koreaDate = lockedAt.koreaDate()
@@ -138,13 +149,19 @@ class AutomationDailyPreflight(
             return Result.Busy(lockedAt)
         }
 
-        state.inFlightToken = null
-        state.inFlightUntil = null
         state.updatedAt = lockedAt
         return when (completed.outcome) {
-            RefreshOutcome.Success -> finalizeSuccess(accountId, account, state, koreaDate, completed.completedAt)
+            RefreshOutcome.Success -> finalizeSuccess(
+                accountId,
+                account,
+                state,
+                koreaDate,
+                completed.completedAt,
+                requireNotNull(snapshot),
+            )
             RefreshOutcome.RetryableFailure -> finalizeRetryableFailure(state, completed.completedAt)
             RefreshOutcome.FatalFailure -> {
+                clearClaim(state)
                 state.stopReason = StopReason.FATAL.name
                 state.nextAttemptAt = null
                 stateRepository.save(state)
@@ -159,7 +176,10 @@ class AutomationDailyPreflight(
         state: AdventureDailyPreflightStateEntity,
         koreaDate: LocalDate,
         now: Instant,
+        snapshot: AdventureMapSnapshot,
     ): Result {
+        require(snapshot.accountId == accountId) { "Adventure snapshot account does not match its preflight claim." }
+        battleMapService.synchronizeAdventureMapSnapshot(snapshot)
         if (!queryRepository.hasSuccessfulRefresh(accountId, koreaDate)) {
             refreshRepository.save(
                 AdventureDailyRefreshEntity(account = account, refreshDate = koreaDate, refreshedAt = now),
@@ -168,11 +188,13 @@ class AutomationDailyPreflight(
         }
         state.failedAttempts = 0
         state.nextAttemptAt = null
+        clearClaim(state)
         stateRepository.save(state)
         return Result.Ready
     }
 
     private fun finalizeRetryableFailure(state: AdventureDailyPreflightStateEntity, now: Instant): Result {
+        clearClaim(state)
         state.failedAttempts += 1
         if (state.failedAttempts >= MAX_ATTEMPTS) {
             state.stopReason = StopReason.NETWORK.name
@@ -186,6 +208,27 @@ class AutomationDailyPreflight(
         state.nextAttemptAt = nextAttemptAt
         stateRepository.save(state)
         return Result.RetryScheduled(nextAttemptAt, retryAttempt)
+    }
+
+    /** Runs only after the token-fenced synchronization transaction rolled back. */
+    private fun finalizeSynchronizationFailure(accountId: Long, claim: ClaimDecision.Claimed): Result {
+        val (_, state) = lockAccountAndState(accountId)
+        val now = timeProvider.now()
+        val koreaDate = now.koreaDate()
+        if (state == null || state.inFlightToken != claim.token) {
+            return currentResult(accountId, state, koreaDate, now)
+        }
+        if (koreaDate != claim.refreshDate) {
+            resetForDate(state, koreaDate, now)
+            stateRepository.save(state)
+            return Result.Busy(now)
+        }
+        clearClaim(state)
+        state.stopReason = StopReason.FATAL.name
+        state.nextAttemptAt = null
+        state.updatedAt = now
+        stateRepository.save(state)
+        return Result.Stopped(StopReason.FATAL)
     }
 
     private fun currentResult(
@@ -218,6 +261,11 @@ class AutomationDailyPreflight(
         state.inFlightToken = null
         state.inFlightUntil = null
         state.updatedAt = now
+    }
+
+    private fun clearClaim(state: AdventureDailyPreflightStateEntity) {
+        state.inFlightToken = null
+        state.inFlightUntil = null
     }
 
     private fun classify(error: Exception): RefreshOutcome {

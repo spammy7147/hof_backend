@@ -5,6 +5,7 @@ import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.HofAccountRepository
 import app.spammy.hof.automation.repository.AdventureDailyPreflightQueryRepository
 import app.spammy.hof.battle.service.AdventureMapRefreshException
+import app.spammy.hof.battle.service.AdventureMapSnapshot
 import app.spammy.hof.battle.service.BattleMapService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
@@ -60,6 +61,11 @@ class AutomationDailyPreflightTest {
     @BeforeTest
     fun reset() {
         Mockito.reset(battleMapService)
+        Mockito.doAnswer { invocation ->
+            val accountId = invocation.getArgument<Long>(0)
+            battleMapService.refreshAdventureMaps(accountId)
+            AdventureMapSnapshot(accountId, emptyList())
+        }.`when`(battleMapService).fetchAdventureMapSnapshot(anyLong())
         timeProvider.current.set(KOREA_MIDNIGHT_AFTER)
     }
 
@@ -291,7 +297,7 @@ class AutomationDailyPreflightTest {
             TransactionTemplate(transactionManager).executeWithoutResult {
                 throw IllegalStateException("map sync persistence failed")
             }
-        }.`when`(battleMapService).refreshAdventureMaps(accountId)
+        }.`when`(battleMapService).synchronizeAdventureMapSnapshot(AdventureMapSnapshot(accountId, emptyList()))
 
         assertEquals(
             AutomationDailyPreflight.Result.Stopped(AutomationDailyPreflight.StopReason.FATAL),
@@ -301,7 +307,7 @@ class AutomationDailyPreflightTest {
             AutomationDailyPreflight.Result.Stopped(AutomationDailyPreflight.StopReason.FATAL),
             service.ensureReady(accountId),
         )
-        Mockito.verify(battleMapService, Mockito.times(1)).refreshAdventureMaps(accountId)
+        Mockito.verify(battleMapService, Mockito.times(1)).fetchAdventureMapSnapshot(accountId)
     }
 
     @Test
