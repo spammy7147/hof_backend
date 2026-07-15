@@ -96,6 +96,39 @@ class UnifiedAutomationApiSecurityTest(
         Mockito.verifyNoInteractions(service)
     }
 
+    @Test
+    fun authenticatedDuplicateTypedOrdersAndOversizedQuestMapsAreRejectedBeforeServiceInvocation() {
+        val token = jwtTokenService.issue(42L).value
+        fun questMaps(prefix: String, count: Int) = (0 until count).joinToString(",") { index ->
+            """{"missionKey":"$prefix-m$index","categoryId":"battle_map","mapCode":"$prefix-map$index","presetMode":"PRIMARY","partyPresetId":null,"executionOrder":$index,"manuallyOverridden":false}"""
+        }
+        val firstQuestMaps = questMaps("a", 51)
+        val secondQuestMaps = questMaps("b", 50)
+        val invalidRequests = listOf(
+            "/api/automation/unified/quest" to
+                """{"enabled":false,"quests":[{"questCode":"Q-1","enabled":true,"sourceOrder":0,"maps":[]},{"questCode":"Q-2","enabled":true,"sourceOrder":0,"maps":[]}]}""",
+            "/api/automation/unified/quest" to
+                """{"enabled":false,"quests":[{"questCode":"Q-1","enabled":true,"sourceOrder":0,"maps":[{"missionKey":"m1","categoryId":"battle_map","mapCode":"a","presetMode":"PRIMARY","partyPresetId":null,"executionOrder":0,"manuallyOverridden":false},{"missionKey":"m2","categoryId":"battle_map","mapCode":"b","presetMode":"PRIMARY","partyPresetId":null,"executionOrder":0,"manuallyOverridden":false}]}]}""",
+            "/api/automation/unified/battle-maps" to
+                """{"enabled":false,"maps":[{"categoryId":"battle_map","mapCode":"a","dailyTargetCount":1,"presetMode":"PRIMARY","partyPresetId":null,"executionOrder":0},{"categoryId":"battle_map","mapCode":"b","dailyTargetCount":1,"presetMode":"PRIMARY","partyPresetId":null,"executionOrder":0}]}""",
+            "/api/automation/unified/adventure-maps" to
+                """{"enabled":false,"maps":[{"categoryId":"adventure_map","mapCode":"a","presetMode":"PRIMARY","partyPresetId":null,"executionOrder":0},{"categoryId":"adventure_map","mapCode":"b","presetMode":"PRIMARY","partyPresetId":null,"executionOrder":0}]}""",
+            "/api/automation/unified/quest" to
+                """{"enabled":false,"quests":[{"questCode":"Q-1","enabled":true,"sourceOrder":0,"maps":[$firstQuestMaps]},{"questCode":"Q-2","enabled":true,"sourceOrder":1,"maps":[$secondQuestMaps]}]}""",
+        )
+        invalidRequests.forEach { (path, body) ->
+            mockMvc.perform(
+                put(path)
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer $token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body),
+            )
+                .andExpect(status().isBadRequest)
+                .andExpect(jsonPath("$.code").value("INVALID_REQUEST"))
+        }
+        Mockito.verifyNoInteractions(service)
+    }
+
     @TestConfiguration(proxyBeanMethods = false)
     class Config {
         @Bean("securityUnifiedAutomationService")

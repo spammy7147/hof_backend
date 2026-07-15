@@ -152,7 +152,8 @@ class UnifiedAutomationServiceTest {
         assertEquals(listOf(AutomationType.QUEST), response.entries.map { it.type })
         assertFalse(response.entries.single().enabled)
         assertEquals(0, response.entries.single().priority)
-        assertFalse(response.entries.single().ready)
+        assertTrue(response.entries.single().ready)
+        assertEquals(emptyList(), response.entries.single().warnings)
         Mockito.verify(automationOutbox).enqueue(ACCOUNT_ID, "SETTINGS_UPDATED")
     }
 
@@ -329,6 +330,171 @@ class UnifiedAutomationServiceTest {
             listOf("first warning", "second warning", "전투 맵 설정이 없습니다."),
             response.runtime.warnings,
         )
+    }
+
+    @Test
+    fun questUpdateRejectsMoreThanOneHundredTotalMapRowsBeforeReferenceLookupsOrWrites() {
+        val entry = AutomationEntryEntity(91L, account(), AutomationType.QUEST, 0, false, NOW, NOW)
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(entry))
+        fun maps(prefix: String, count: Int) = (0 until count).map { index ->
+            QuestMapSettingRequest("$prefix-mission-$index", "battle_map", "$prefix-map-$index", PresetSelectionMode.PRIMARY, null, index, false)
+        }
+
+        val error = assertFailsWith<ApiException> {
+            service.updateQuest(
+                ACCOUNT_ID,
+                UpdateQuestAutomationRequest(
+                    false,
+                    listOf(
+                        QuestSelectionRequest("Q-1", true, 0, maps("a", 51)),
+                        QuestSelectionRequest("Q-2", true, 1, maps("b", 50)),
+                    ),
+                ),
+            )
+        }
+
+        assertEquals(ErrorCode.INVALID_REQUEST, error.errorCode)
+        Mockito.verifyNoInteractions(battleMapQueryRepository, questSelectionRepository, questMapRepository)
+    }
+
+    @Test
+    fun typedUpdatesRejectDuplicateSourceAndExecutionOrdersBeforeReferenceLookups() {
+        val account = account()
+        fun questMap(mission: String, order: Int) =
+            QuestMapSettingRequest(mission, "battle_map", mission, PresetSelectionMode.PRIMARY, null, order, false)
+        fun assertInvalid(block: () -> Unit) {
+            assertEquals(ErrorCode.INVALID_REQUEST, assertFailsWith<ApiException> { block() }.errorCode)
+        }
+
+        val quest = AutomationEntryEntity(91L, account, AutomationType.QUEST, 0, false, NOW, NOW)
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(quest))
+        assertInvalid {
+            service.updateQuest(
+                ACCOUNT_ID,
+                UpdateQuestAutomationRequest(
+                    false,
+                    listOf(
+                        QuestSelectionRequest("Q-1", true, 0, emptyList()),
+                        QuestSelectionRequest("Q-2", true, 0, emptyList()),
+                    ),
+                ),
+            )
+        }
+        assertInvalid {
+            service.updateQuest(
+                ACCOUNT_ID,
+                UpdateQuestAutomationRequest(
+                    false,
+                    listOf(QuestSelectionRequest("Q-1", true, 0, listOf(questMap("m1", 0), questMap("m2", 0)))),
+                ),
+            )
+        }
+
+        val battle = AutomationEntryEntity(92L, account, AutomationType.BATTLE_MAP, 0, false, NOW, NOW)
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(battle))
+        assertInvalid {
+            service.updateBattleMaps(
+                ACCOUNT_ID,
+                UpdateBattleMapAutomationRequest(
+                    false,
+                    listOf(
+                        BattleMapSettingRequest("battle_map", "gb0", 1, PresetSelectionMode.PRIMARY, null, 0),
+                        BattleMapSettingRequest("battle_map", "gb1", 1, PresetSelectionMode.PRIMARY, null, 0),
+                    ),
+                ),
+            )
+        }
+
+        val adventure = AutomationEntryEntity(93L, account, AutomationType.ADVENTURE_MAP, 0, false, NOW, NOW)
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(adventure))
+        assertInvalid {
+            service.updateAdventureMaps(
+                ACCOUNT_ID,
+                UpdateAdventureMapAutomationRequest(
+                    false,
+                    listOf(
+                        AdventureMapSettingRequest("adventure_map", "Noble101", PresetSelectionMode.PRIMARY, null, 0),
+                        AdventureMapSettingRequest("adventure_map", "Noble102", PresetSelectionMode.PRIMARY, null, 0),
+                    ),
+                ),
+            )
+        }
+        Mockito.verifyNoInteractions(battleMapQueryRepository)
+    }
+
+    @Test
+    fun repeatedExplicitPresetIsBulkLoadedOnceAndReusedForEverySavedMap() {
+        val account = account()
+        val entry = AutomationEntryEntity(92L, account, AutomationType.BATTLE_MAP, 0, false, NOW, NOW)
+        val first = battleMap("battle_map", "gb0")
+        val second = battleMap("battle_map", "gb1", id = 82L)
+        val preset = preset()
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(entry))
+        Mockito.`when`(battleMapQueryRepository.findMapsByCategoryIdAndMapCodePairs(setOf("battle_map" to "gb0", "battle_map" to "gb1")))
+            .thenReturn(listOf(first, second))
+        Mockito.`when`(partyPresetQueryRepository.findOwnedByAccountIdAndIds(ACCOUNT_ID, setOf(preset.id))).thenReturn(listOf(preset))
+        val savedSettings = mutableListOf<BattleAutomationMapEntity>()
+        Mockito.`when`(battleSettingRepository.save(anyTypedBattleSetting())).thenAnswer { invocation ->
+            (invocation.arguments[0] as BattleAutomationMapEntity).also(savedSettings::add)
+        }
+
+        service.updateBattleMaps(
+            ACCOUNT_ID,
+            UpdateBattleMapAutomationRequest(
+                false,
+                listOf(
+                    BattleMapSettingRequest("battle_map", "gb0", 1, PresetSelectionMode.EXPLICIT, preset.id, 0),
+                    BattleMapSettingRequest("battle_map", "gb1", 1, PresetSelectionMode.EXPLICIT, preset.id, 1),
+                ),
+            ),
+        )
+
+        Mockito.verify(partyPresetQueryRepository, Mockito.times(1))
+            .findOwnedByAccountIdAndIds(ACCOUNT_ID, setOf(preset.id))
+        Mockito.verify(partyPresetQueryRepository, Mockito.never()).findOwnedByAccountIdAndId(ACCOUNT_ID, preset.id)
+        Mockito.verify(battleSettingRepository, Mockito.times(2)).save(anyTypedBattleSetting())
+        assertEquals(listOf(preset.id, preset.id), savedSettings.map { it.partyPreset?.id })
+    }
+
+    @Test
+    fun disabledEmptyEntryIsReadyAndDoesNotAmplifyRuntimeWarnings() {
+        val account = account()
+        val disabled = AutomationEntryEntity(91L, account, AutomationType.QUEST, 0, false, NOW, NOW)
+        val enabled = AutomationEntryEntity(92L, account, AutomationType.BATTLE_MAP, 1, true, NOW, NOW)
+        Mockito.`when`(accountQueryRepository.findById(ACCOUNT_ID)).thenReturn(account)
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(disabled, enabled))
+        Mockito.`when`(partyPresetQueryRepository.findAllByAccountId(ACCOUNT_ID)).thenReturn(emptyList())
+
+        val response = service.getTyped(ACCOUNT_ID)
+
+        assertTrue(response.entries.first().ready)
+        assertEquals(emptyList(), response.entries.first().warnings)
+        assertFalse(response.entries.last().ready)
+        assertEquals(listOf("전투 맵 설정이 없습니다."), response.runtime.warnings)
+    }
+
+    @Test
+    fun disablingEntryClearsStaleRuntimeConfigurationWarningAndErrorBeforeWake() {
+        val account = account()
+        val entry = AutomationEntryEntity(92L, account, AutomationType.BATTLE_MAP, 0, true, NOW, NOW)
+        val runtime = TypedAutomationRuntimeStateEntity(
+            ACCOUNT_ID, account, TypedAutomationLifecycle.RUNNING,
+            warningText = "stale configuration warning", lastError = "stale configuration error",
+            createdAt = NOW, updatedAt = NOW,
+        )
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(entry))
+        Mockito.`when`(typedQuery.lockRuntimeState(ACCOUNT_ID)).thenReturn(runtime)
+        Mockito.`when`(typedQuery.findRuntimeState(ACCOUNT_ID)).thenReturn(runtime)
+        Mockito.`when`(partyPresetQueryRepository.findAllByAccountId(ACCOUNT_ID)).thenReturn(emptyList())
+
+        val response = service.updateBattleMaps(ACCOUNT_ID, UpdateBattleMapAutomationRequest(false, emptyList()))
+
+        assertEquals(TypedAutomationLifecycle.RUNNING, response.runtime.lifecycle)
+        assertEquals(emptyList(), response.runtime.warnings)
+        assertEquals(null, response.runtime.lastError)
+        assertEquals(null, runtime.warningText)
+        assertEquals(null, runtime.lastError)
+        Mockito.verify(automationOutbox).enqueue(ACCOUNT_ID, "SETTINGS_UPDATED")
     }
 
     @Test
@@ -1458,6 +1624,14 @@ class UnifiedAutomationServiceTest {
     private fun anyTypedEntry(): AutomationEntryEntity =
         Mockito.any(AutomationEntryEntity::class.java)
             ?: AutomationEntryEntity(account = account(), type = AutomationType.QUEST, priority = 0, enabled = false, createdAt = NOW, updatedAt = NOW)
+
+    private fun anyTypedBattleSetting(): BattleAutomationMapEntity =
+        Mockito.any(BattleAutomationMapEntity::class.java)
+            ?: BattleAutomationMapEntity(
+                entry = AutomationEntryEntity(account = account(), type = AutomationType.BATTLE_MAP, priority = 0, enabled = false, createdAt = NOW, updatedAt = NOW),
+                categoryId = "battle_map", mapCode = "matcher", dailyTargetCount = 1,
+                presetMode = PresetSelectionMode.PRIMARY, executionOrder = 0,
+            )
 
     private data class InvalidTypeSpecificSettingsCase(
         val label: String,

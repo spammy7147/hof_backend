@@ -159,6 +159,9 @@ class UnifiedAutomationService(
         lockTypedAccount(accountId)
         val entry = requireTypedEntry(accountId, AutomationType.QUEST)
         if (request.quests.size > MAX_SETTING_ITEMS) invalid("퀘스트 설정은 최대 100개까지 저장할 수 있습니다.")
+        if (request.quests.sumOf { it.maps.size } > MAX_SETTING_ITEMS) {
+            invalid("전체 퀘스트 맵은 최대 100개까지 저장할 수 있습니다.")
+        }
         val normalized = request.quests.map { selection ->
             if (selection.sourceOrder < 0) invalid("퀘스트 출처 순서는 0 이상이어야 합니다.")
             val questCode = bounded(selection.questCode, MAX_QUEST_CODE_LENGTH, "퀘스트 코드")
@@ -166,7 +169,8 @@ class UnifiedAutomationService(
             selection.copy(questCode = questCode, maps = maps)
         }
         rejectDuplicates(normalized.map { it.questCode }, "같은 퀘스트를 두 번 설정할 수 없습니다.")
-        validateMapAndPresetReferences(accountId, normalized.flatMap { it.maps }.map(::mapReference))
+        rejectDuplicates(normalized.map { it.sourceOrder }, "퀘스트 출처 순서를 중복해서 사용할 수 없습니다.")
+        val presets = validateMapAndPresetReferences(accountId, normalized.flatMap { it.maps }.map(::mapReference))
         val oldSelections = typedQuery().findQuestSelections(entry.id)
         val oldMaps = typedQuery().findQuestMaps(oldSelections.map { it.id })
         if (oldMaps.isNotEmpty()) typedQuestMaps().deleteAll(oldMaps).also { typedQuestMaps().flush() }
@@ -186,7 +190,7 @@ class UnifiedAutomationService(
                             categoryId = map.categoryId,
                             mapCode = map.mapCode,
                             presetMode = map.presetMode,
-                            partyPreset = map.partyPresetId?.let { partyPresetQueryRepository.findOwnedByAccountIdAndId(accountId, it) },
+                            partyPreset = map.partyPresetId?.let(presets::getValue),
                             executionOrder = executionOrder,
                             manuallyOverridden = map.manuallyOverridden,
                         ),
@@ -208,11 +212,12 @@ class UnifiedAutomationService(
             if (map.executionOrder < 0) invalid("전투 맵 실행 순서는 0 이상이어야 합니다.")
             map.copy(categoryId = bounded(map.categoryId, MAX_CATEGORY_ID_LENGTH, "카테고리"), mapCode = bounded(map.mapCode, MAX_MAP_CODE_LENGTH, "맵 코드"))
         }.sortedWith(compareBy<BattleMapSettingRequest> { it.executionOrder }.thenBy { it.categoryId }.thenBy { it.mapCode })
+        rejectDuplicates(normalized.map { it.executionOrder }, "전투 맵 실행 순서를 중복해서 사용할 수 없습니다.")
         rejectDuplicates(normalized.map { it.categoryId to it.mapCode }, "같은 맵을 두 번 설정할 수 없습니다.")
         if (normalized.any { it.categoryId == app.spammy.hof.battle.model.BattleCategoryId.ADVENTURE_MAP.value }) {
             invalid("모험맵은 전투 맵 자동화에 설정할 수 없습니다.")
         }
-        validateMapAndPresetReferences(accountId, normalized.map(::mapReference))
+        val presets = validateMapAndPresetReferences(accountId, normalized.map(::mapReference))
         val old = typedQuery().findBattleSettings(entry.id)
         if (old.isNotEmpty()) typedBattleMaps().deleteAll(old).also { typedBattleMaps().flush() }
         normalized.forEachIndexed { executionOrder, map ->
@@ -220,7 +225,7 @@ class UnifiedAutomationService(
                 BattleAutomationMapEntity(
                     entry = entry, categoryId = map.categoryId, mapCode = map.mapCode,
                     dailyTargetCount = map.dailyTargetCount, presetMode = map.presetMode,
-                    partyPreset = map.partyPresetId?.let { partyPresetQueryRepository.findOwnedByAccountIdAndId(accountId, it) },
+                    partyPreset = map.partyPresetId?.let(presets::getValue),
                     executionOrder = executionOrder,
                 ),
             )
@@ -239,11 +244,12 @@ class UnifiedAutomationService(
             if (map.executionOrder < 0) invalid("모험맵 실행 순서는 0 이상이어야 합니다.")
             map.copy(categoryId = bounded(map.categoryId, MAX_CATEGORY_ID_LENGTH, "카테고리"), mapCode = bounded(map.mapCode, MAX_MAP_CODE_LENGTH, "맵 코드"))
         }.sortedWith(compareBy<AdventureMapSettingRequest> { it.executionOrder }.thenBy { it.categoryId }.thenBy { it.mapCode })
+        rejectDuplicates(normalized.map { it.executionOrder }, "모험맵 실행 순서를 중복해서 사용할 수 없습니다.")
         rejectDuplicates(normalized.map { it.categoryId to it.mapCode }, "같은 맵을 두 번 설정할 수 없습니다.")
         if (normalized.any { it.categoryId != app.spammy.hof.battle.model.BattleCategoryId.ADVENTURE_MAP.value }) {
             invalid("모험맵 카테고리의 맵만 설정할 수 있습니다.")
         }
-        validateMapAndPresetReferences(accountId, normalized.map(::mapReference))
+        val presets = validateMapAndPresetReferences(accountId, normalized.map(::mapReference))
         val old = typedQuery().findAdventureSettings(entry.id)
         if (old.isNotEmpty()) typedAdventureMaps().deleteAll(old).also { typedAdventureMaps().flush() }
         normalized.forEachIndexed { executionOrder, map ->
@@ -251,7 +257,7 @@ class UnifiedAutomationService(
                 AdventureAutomationMapEntity(
                     entry = entry, categoryId = map.categoryId, mapCode = map.mapCode,
                     presetMode = map.presetMode,
-                    partyPreset = map.partyPresetId?.let { partyPresetQueryRepository.findOwnedByAccountIdAndId(accountId, it) },
+                    partyPreset = map.partyPresetId?.let(presets::getValue),
                     executionOrder = executionOrder,
                 ),
             )
@@ -1108,6 +1114,7 @@ class UnifiedAutomationService(
         primaryPresetId: Long?,
         validPresetIds: Set<Long>,
     ): List<String> {
+        if (!entry.enabled) return emptyList()
         val warnings = linkedSetOf<String>()
         when (entry.type) {
             AutomationType.QUEST -> {
@@ -1150,6 +1157,7 @@ class UnifiedAutomationService(
                 mapCode = bounded(map.mapCode, MAX_MAP_CODE_LENGTH, "맵 코드"),
             )
         }.sortedWith(compareBy<QuestMapSettingRequest> { it.executionOrder }.thenBy { it.missionKey }.thenBy { it.categoryId }.thenBy { it.mapCode })
+        rejectDuplicates(normalized.map { it.executionOrder }, "퀘스트 맵 실행 순서를 중복해서 사용할 수 없습니다.")
         rejectDuplicates(
             normalized.map { listOf(it.missionKey, it.categoryId, it.mapCode) },
             "같은 미션 맵을 두 번 설정할 수 없습니다.",
@@ -1168,7 +1176,11 @@ class UnifiedAutomationService(
     private fun mapReference(map: BattleMapSettingRequest) = TypedMapReference(map.categoryId, map.mapCode, map.presetMode, map.partyPresetId)
     private fun mapReference(map: AdventureMapSettingRequest) = TypedMapReference(map.categoryId, map.mapCode, map.presetMode, map.partyPresetId)
 
-    private fun validateMapAndPresetReferences(accountId: Long, references: List<TypedMapReference>) {
+    private fun validateMapAndPresetReferences(
+        accountId: Long,
+        references: List<TypedMapReference>,
+    ): Map<Long, PartyPresetEntity> {
+        if (references.isEmpty()) return emptyMap()
         references.forEach { reference ->
             when (reference.presetMode) {
                 PresetSelectionMode.PRIMARY -> if (reference.partyPresetId != null) invalid("기본 프리셋 모드에는 프리셋 ID를 지정할 수 없습니다.")
@@ -1180,8 +1192,9 @@ class UnifiedAutomationService(
             .map { it.categoryId to it.mapCode }.toSet()
         if (foundMaps != requestedMaps) invalid("선택한 맵을 찾을 수 없습니다. 맵 목록을 새로고침해 주세요.")
         val requestedPresets = references.mapNotNull { it.partyPresetId }.toSet()
-        val foundPresets = partyPresetQueryRepository.findOwnedByAccountIdAndIds(accountId, requestedPresets).map { it.id }.toSet()
-        if (foundPresets != requestedPresets) invalid("선택한 파티 프리셋을 찾을 수 없습니다.")
+        val foundPresets = partyPresetQueryRepository.findOwnedByAccountIdAndIds(accountId, requestedPresets).associateBy { it.id }
+        if (foundPresets.keys != requestedPresets) invalid("선택한 파티 프리셋을 찾을 수 없습니다.")
+        return foundPresets
     }
 
     private fun bounded(value: String, maxLength: Int, label: String): String {
@@ -1205,6 +1218,11 @@ class UnifiedAutomationService(
         ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
 
     private fun enqueueSettingsWake(accountId: Long) {
+        typedQuery().lockRuntimeState(accountId)?.let { runtime ->
+            runtime.warningText = null
+            runtime.lastError = null
+            runtime.updatedAt = timeProvider.now()
+        }
         typedOutbox().enqueue(accountId, "SETTINGS_UPDATED")
     }
 
