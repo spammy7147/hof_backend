@@ -869,10 +869,6 @@ internal object FreshSchemaContract {
             "category_id", "map_code", "progress_date", "id",
         ),
         index(
-            "battle_automation_processed_results", "idx_battle_automation_processed_results_execution",
-            "account_id", "execution_identity", "id",
-        ),
-        index(
             "adventure_automation_maps", "idx_adventure_automation_maps_entry_order",
             "automation_entry_id", "execution_order", "id",
         ),
@@ -1028,6 +1024,22 @@ internal object FreshSchemaContract {
         check(
             "battle_automation_processed_results", "ck_battle_automation_processed_results_victories",
             "victory_count between 0 and 3",
+        ),
+        check(
+            "battle_automation_processed_results", "ck_battle_automation_processed_results_result_identity",
+            "char_length(trim(result_identity)) between 1 and 128",
+        ),
+        check(
+            "battle_automation_processed_results", "ck_battle_automation_processed_results_execution_identity",
+            "char_length(trim(execution_identity)) between 1 and 128",
+        ),
+        check(
+            "battle_automation_processed_results", "ck_battle_automation_processed_results_action_fingerprint",
+            "char_length(action_fingerprint) = 64",
+        ),
+        check(
+            "battle_automation_processed_results", "ck_battle_automation_processed_results_outcome_fingerprint",
+            "char_length(outcome_fingerprint) = 64",
         ),
         check(
             "adventure_automation_maps", "ck_adventure_automation_maps_preset_mode",

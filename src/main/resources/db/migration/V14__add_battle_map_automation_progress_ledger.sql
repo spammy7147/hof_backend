@@ -15,8 +15,13 @@ create table battle_automation_processed_results (
         references hof_accounts (id) on delete cascade,
     constraint uk_battle_automation_processed_results_identity unique (account_id, result_identity),
     constraint uk_battle_automation_processed_results_execution unique (account_id, execution_identity),
+    constraint ck_battle_automation_processed_results_result_identity
+        check (char_length(trim(result_identity)) between 1 and 128),
+    constraint ck_battle_automation_processed_results_execution_identity
+        check (char_length(trim(execution_identity)) between 1 and 128),
+    constraint ck_battle_automation_processed_results_action_fingerprint
+        check (char_length(action_fingerprint) = 64),
+    constraint ck_battle_automation_processed_results_outcome_fingerprint
+        check (char_length(outcome_fingerprint) = 64),
     constraint ck_battle_automation_processed_results_victories check (victory_count between 0 and 3)
 );
-
-create index idx_battle_automation_processed_results_execution
-    on battle_automation_processed_results (account_id, execution_identity, id);

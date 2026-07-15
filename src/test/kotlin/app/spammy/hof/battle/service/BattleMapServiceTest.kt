@@ -54,6 +54,7 @@ import org.springframework.test.context.ActiveProfiles
     BattleMapCatalogService::class,
     BattleMapCatalogTransactionService::class,
     BattleMapService::class,
+    BattleMapCapabilityObservationService::class,
     BattleMapParser::class,
     HofRequestFactory::class,
     BattleMapServiceTest.TestConfig::class,
@@ -61,6 +62,9 @@ import org.springframework.test.context.ActiveProfiles
 class BattleMapServiceTest {
     @Autowired
     private lateinit var service: BattleMapService
+
+    @Autowired
+    private lateinit var capabilityObservationService: BattleMapCapabilityObservationService
 
     @Autowired
     private lateinit var gateway: FakeHofGateway
@@ -120,8 +124,10 @@ class BattleMapServiceTest {
     fun persistsObservedThreeBattleCapabilityAndReturnsItInTheResponse() {
         val account = savedAccount("battle-map-three-capability")
         gateway.defaultBody = """
-            <a href="index.php?common=three01">Three-capable map</a>
-            <form method="post"><input type="submit" name="monster_battle_10" value="Battle !"></form>
+            <form method="post" action="index.php?common=three01">
+              <a href="index.php?common=three01">Three-capable map</a>
+              <input type="submit" name="monster_battle_10" value="Battle !">
+            </form>
         """.trimIndent()
 
         val response = service.findMaps(account.id, "battle_map").single()
@@ -129,6 +135,42 @@ class BattleMapServiceTest {
 
         assertTrue(response.supportsThreeBattles)
         assertTrue(requireNotNull(state).supportsThreeBattles)
+    }
+
+    @Test
+    fun authoritativeDetailFormCanRefreshCapabilityWithoutGuessingFromAnUnrelatedPage() {
+        val account = savedAccount("battle-map-detail-capability")
+        gateway.defaultBody = """
+            <form action="index.php?common=detail01">
+              <a href="index.php?common=detail01">Detail map</a>
+              <button name="monster_battle">Battle one</button>
+            </form>
+        """.trimIndent()
+        service.findMaps(account.id, "battle_map")
+
+        assertEquals(
+            true,
+            capabilityObservationService.observeAuthenticatedDetail(
+                account.id,
+                "battle_map",
+                "common",
+                "detail01",
+                """
+                    <form action="index.php?common=detail01">
+                      <button name="monster_battle_10">Battle three</button>
+                    </form>
+                """.trimIndent(),
+            ),
+        )
+        assertTrue(requireNotNull(queryRepository.findStateForExecution(account.id, "battle_map", "detail01")).supportsThreeBattles)
+
+        assertNull(
+            capabilityObservationService.observeAuthenticatedDetail(
+                account.id, "battle_map", "common", "detail01",
+                "<form action='index.php?common=other'><button name='monster_battle_10'>Unrelated</button></form>",
+            ),
+        )
+        assertTrue(requireNotNull(queryRepository.findStateForExecution(account.id, "battle_map", "detail01")).supportsThreeBattles)
     }
 
     @Test

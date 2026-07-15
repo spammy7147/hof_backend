@@ -13,6 +13,7 @@ import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneId
 import java.util.HexFormat
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -50,7 +51,6 @@ data class BattleMapProgressIdentity(val categoryId: String, val mapCode: String
 
 data class BattleMapAutomationSnapshot(
     val accountId: Long,
-    val progressDate: LocalDate,
     val settings: List<BattleMapAutomationSetting>,
     val mapStates: List<BattleMapRunnableState>,
     val successfulRuns: Map<BattleMapProgressIdentity, Int>,
@@ -58,7 +58,8 @@ data class BattleMapAutomationSnapshot(
     val availablePresetIds: Set<Long>,
     /** Supplied by the coordinator so retries retain identity without making pure evaluation random. */
     val executionIdentity: String,
-    val now: Instant = Instant.EPOCH,
+    /** Deterministic action-time input; the handler derives the Korea calendar date itself. */
+    val evaluationInstant: Instant,
 )
 
 enum class BattleAutomationActionSource {
@@ -80,14 +81,36 @@ data class BattleMapAutomationAction(
     val source: BattleAutomationActionSource = BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
 ) : PreparedAutomationAction
 
-enum class BattleAutomationRoundOutcome { VICTORY, DEFEAT, NETWORK_FAILURE }
+enum class BattleAutomationRoundOutcome { VICTORY, DEFEAT, DRAW, NETWORK_FAILURE, UNKNOWN }
+
+data class BattleAuthoritativeOutcomeEvidence(
+    val accountId: Long,
+    val executionIdentity: String,
+    val categoryId: String,
+    val mapCode: String,
+    val battleCount: Int,
+    val resultIdentity: String,
+    val outcomes: List<BattleAutomationRoundOutcome>,
+) {
+    val victoryCount: Int get() = outcomes.count { it == BattleAutomationRoundOutcome.VICTORY }
+
+    fun binds(action: BattleMapAutomationAction): Boolean =
+        accountId == action.accountId &&
+            executionIdentity == action.executionIdentity &&
+            categoryId == action.categoryId &&
+            mapCode == action.mapCode &&
+            battleCount == action.battleCount
+
+    fun isCompleteTerminal(): Boolean =
+        battleCount in setOf(1, 3) && outcomes.size == battleCount && outcomes.all {
+            it == BattleAutomationRoundOutcome.VICTORY || it == BattleAutomationRoundOutcome.DEFEAT
+        }
+}
 
 interface BattleMapAutomationProgressStore {
     fun recordResult(
         action: BattleMapAutomationAction,
-        resultIdentity: String,
-        outcomeFingerprint: String,
-        victories: Int,
+        evidence: BattleAuthoritativeOutcomeEvidence,
     )
 }
 
@@ -105,10 +128,13 @@ class JpaBattleMapAutomationProgressStore(
     @Transactional
     override fun recordResult(
         action: BattleMapAutomationAction,
-        resultIdentity: String,
-        outcomeFingerprint: String,
-        victories: Int,
+        evidence: BattleAuthoritativeOutcomeEvidence,
     ) {
+        require(evidence.binds(action)) { "Authoritative battle evidence does not bind the prepared action." }
+        require(evidence.isCompleteTerminal()) { "Authoritative battle evidence must contain every terminal round." }
+        val resultIdentity = evidence.resultIdentity
+        val victories = evidence.victoryCount
+        val outcomeFingerprint = outcomeFingerprint(evidence.outcomes)
         require(resultIdentity.isNotBlank() && resultIdentity.length <= 128)
         require(action.executionIdentity.isNotBlank() && action.executionIdentity.length <= 128)
         require(outcomeFingerprint.matches(Regex("[0-9a-f]{64}")))
@@ -190,6 +216,17 @@ class JpaBattleMapAutomationProgressStore(
         return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(canonical))
     }
 
+    private fun outcomeFingerprint(outcomes: List<BattleAutomationRoundOutcome>): String {
+        val canonical = ByteArrayOutputStream().use { bytes ->
+            DataOutputStream(bytes).use { output ->
+                output.writeInt(outcomes.size)
+                outcomes.forEach { output.writeCanonical(it.name) }
+            }
+            bytes.toByteArray()
+        }
+        return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(canonical))
+    }
+
     private fun DataOutputStream.writeCanonical(value: String) {
         val encoded = value.toByteArray(StandardCharsets.UTF_8)
         writeInt(encoded.size)
@@ -203,18 +240,20 @@ class JpaBattleMapAutomationProgressStore(
 }
 
 fun interface BattleOutcomeReconciler {
-    fun reloadAuthoritativeOutcome(action: BattleMapAutomationAction): BattleOutcomeReconciliation
+    /** Reloads authoritative recent results/state. It must never submit or resend the battle action. */
+    fun reloadRecentAuthoritativeEvidence(action: BattleMapAutomationAction): BattleOutcomeReconciliation
 }
 
 sealed interface BattleOutcomeReconciliation {
-    data class Proven(
-        val resultIdentity: String,
-        val outcomes: List<BattleAutomationRoundOutcome>,
-    ) : BattleOutcomeReconciliation
+    data class Proven(val evidence: BattleAuthoritativeOutcomeEvidence) : BattleOutcomeReconciliation
 
     data class Unproven(val message: String) : BattleOutcomeReconciliation
-    data class Applied(val resultIdentity: String, val victories: Int) : BattleOutcomeReconciliation
-    data class Fatal(val evaluation: HandlerEvaluation.Fatal) : BattleOutcomeReconciliation
+}
+
+sealed interface BattleOutcomeResolution {
+    data class Applied(val resultIdentity: String, val victories: Int) : BattleOutcomeResolution
+    data object Ignored : BattleOutcomeResolution
+    data class Fatal(val evaluation: HandlerEvaluation.Fatal) : BattleOutcomeResolution
 }
 
 /** Pure ordered target selection plus explicit, idempotent result/reconciliation callbacks. */
@@ -227,22 +266,27 @@ class BattleMapAutomationHandler(
         context.settings
             .asSequence()
             .filter(BattleMapAutomationSetting::enabled)
-            .sortedWith(compareBy<BattleMapAutomationSetting> { it.executionOrder })
+            .sortedWith(
+                compareBy<BattleMapAutomationSetting> { it.executionOrder }
+                    .thenBy(BattleMapAutomationSetting::categoryId)
+                    .thenBy(BattleMapAutomationSetting::mapCode),
+            )
             .forEach { setting ->
                 val identity = BattleMapProgressIdentity(setting.categoryId, setting.mapCode)
                 val remaining = setting.dailyTargetCount - (context.successfulRuns[identity] ?: 0)
                 if (remaining <= 0) return@forEach
                 val presetId = setting.preset.resolvePreset(context) ?: return@forEach
-                val state = states[identity]?.takeIf { it.isRunnable(context.now) } ?: return@forEach
+                val state = states[identity]?.takeIf { it.isRunnable(context.evaluationInstant) } ?: return@forEach
                 val battleCount = when {
                     !state.supportsThreeBattles -> 1
                     remaining == 1 -> 1
+                    !state.hasCapacityForThree() -> 1
                     else -> 3
                 }
                 return HandlerEvaluation.Runnable(
                     BattleMapAutomationAction(
                         accountId = context.accountId,
-                        progressDate = context.progressDate,
+                        progressDate = context.evaluationInstant.atZone(KOREA_ZONE).toLocalDate(),
                         categoryId = setting.categoryId,
                         mapCode = setting.mapCode,
                         presetMode = setting.preset.mode,
@@ -256,40 +300,50 @@ class BattleMapAutomationHandler(
     }
 
     fun onBattleCompleted(
-        resultIdentity: String,
         action: BattleMapAutomationAction,
         source: BattleAutomationActionSource,
+        resultIdentity: String,
         outcomes: List<BattleAutomationRoundOutcome>,
-    ) {
-        if (source != BattleAutomationActionSource.BATTLE_MAP_AUTOMATION || action.source != source) return
-        val victories = outcomes.count { it == BattleAutomationRoundOutcome.VICTORY }
-        progressStore.recordResult(action, resultIdentity, outcomeFingerprint(outcomes), victories)
+        reconciler: BattleOutcomeReconciler,
+    ): BattleOutcomeResolution {
+        if (source != BattleAutomationActionSource.BATTLE_MAP_AUTOMATION || action.source != source) {
+            return BattleOutcomeResolution.Ignored
+        }
+        val direct = BattleAuthoritativeOutcomeEvidence(
+            action.accountId,
+            action.executionIdentity,
+            action.categoryId,
+            action.mapCode,
+            action.battleCount,
+            resultIdentity,
+            outcomes,
+        )
+        if (direct.isCompleteTerminal()) return applyEvidence(action, direct)
+
+        return when (val reconciliation = reconciler.reloadRecentAuthoritativeEvidence(action)) {
+            is BattleOutcomeReconciliation.Proven -> {
+                val evidence = reconciliation.evidence
+                if (!evidence.binds(action) || !evidence.isCompleteTerminal()) {
+                    fatalNetwork("Reloaded battle evidence did not exactly match the prepared action and rounds.")
+                } else {
+                    applyEvidence(action, evidence)
+                }
+            }
+            is BattleOutcomeReconciliation.Unproven -> fatalNetwork(reconciliation.message)
+        }
     }
 
-    /** Never resends: authoritative reload either proves one exact result or stops for manual resume. */
-    fun reconcileAmbiguousOutcome(
+    private fun applyEvidence(
         action: BattleMapAutomationAction,
-        reconciler: BattleOutcomeReconciler,
-    ): BattleOutcomeReconciliation = when (val reconciliation = reconciler.reloadAuthoritativeOutcome(action)) {
-        is BattleOutcomeReconciliation.Proven -> {
-            onBattleCompleted(
-                reconciliation.resultIdentity,
-                action,
-                BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
-                reconciliation.outcomes,
-            )
-            BattleOutcomeReconciliation.Applied(
-                reconciliation.resultIdentity,
-                reconciliation.outcomes.count { it == BattleAutomationRoundOutcome.VICTORY },
-            )
-        }
-        is BattleOutcomeReconciliation.Unproven -> BattleOutcomeReconciliation.Fatal(
-            HandlerEvaluation.Fatal(AutomationStopReason.NETWORK, reconciliation.message),
-        )
-        is BattleOutcomeReconciliation.Applied,
-        is BattleOutcomeReconciliation.Fatal,
-        -> reconciliation
+        evidence: BattleAuthoritativeOutcomeEvidence,
+    ): BattleOutcomeResolution.Applied {
+        progressStore.recordResult(action, evidence)
+        return BattleOutcomeResolution.Applied(evidence.resultIdentity, evidence.victoryCount)
     }
+
+    private fun fatalNetwork(message: String) = BattleOutcomeResolution.Fatal(
+        HandlerEvaluation.Fatal(AutomationStopReason.NETWORK, message),
+    )
 
     private fun BattleMapPresetSelection.resolvePreset(context: BattleMapAutomationSnapshot): Long? = when (mode) {
         PresetSelectionMode.PRIMARY -> context.primaryPresetId?.takeIf(context.availablePresetIds::contains)
@@ -300,8 +354,10 @@ class BattleMapAutomationHandler(
         visible && enabled && cooldownUntil?.isAfter(now) != true &&
             listOf(availableCount, attemptRemaining, winRemaining, keyCount).none { it != null && it <= 0 }
 
-    private fun outcomeFingerprint(outcomes: List<BattleAutomationRoundOutcome>): String {
-        val canonical = outcomes.joinToString(separator = "\u0000") { it.name }.toByteArray(StandardCharsets.UTF_8)
-        return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(canonical))
+    private fun BattleMapRunnableState.hasCapacityForThree(): Boolean =
+        listOf(availableCount, attemptRemaining, winRemaining, keyCount).none { it != null && it < 3 }
+
+    private companion object {
+        val KOREA_ZONE: ZoneId = ZoneId.of("Asia/Seoul")
     }
 }

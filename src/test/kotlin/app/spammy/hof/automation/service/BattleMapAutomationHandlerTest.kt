@@ -57,53 +57,119 @@ class BattleMapAutomationHandlerTest {
     }
 
     @Test
-    fun countsOnlyVictoryRoundsForCanonicalBattleMapAutomationResults() {
-        val action = runnable(target = 10, progress = 0, supportsThree = true)
-        listOf(0, 1, 2, 3).forEach { victoryCount ->
-            handler.onBattleCompleted(
-                resultIdentity = "result-$victoryCount",
-                action = action.copy(executionIdentity = "execution-$victoryCount"),
-                source = BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
-                outcomes = List(victoryCount) { BattleAutomationRoundOutcome.VICTORY } +
-                    List(3 - victoryCount) { BattleAutomationRoundOutcome.DEFEAT },
-            )
-        }
-        handler.onBattleCompleted(
-            "network",
-            action.copy(executionIdentity = "network-execution"),
-            BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
-            listOf(BattleAutomationRoundOutcome.NETWORK_FAILURE),
-        )
-        handler.onBattleCompleted(
-            "quest",
-            action.copy(executionIdentity = "quest-execution"),
-            BattleAutomationActionSource.QUEST_AUTOMATION,
-            listOf(BattleAutomationRoundOutcome.VICTORY),
-        )
-        handler.onBattleCompleted(
-            "adventure",
-            action.copy(executionIdentity = "adventure-execution"),
-            BattleAutomationActionSource.ADVENTURE_AUTOMATION,
-            listOf(BattleAutomationRoundOutcome.VICTORY),
-        )
+    fun executionOrderTiesUseStableCategoryAndMapIdentity() {
+        val result = handler.evaluate(snapshot(
+            settings = listOf(setting("z-map", 1, order = 4), setting("a-map", 1, order = 4)),
+            progress = emptyMap(),
+            states = listOf(state("z-map"), state("a-map")),
+        ))
 
-        assertEquals(listOf(0, 1, 2, 3, 0), progressStore.recorded.map { it.victories })
+        assertEquals("a-map", assertIs<BattleMapAutomationAction>(assertIs<HandlerEvaluation.Runnable>(result).action).mapCode)
     }
 
     @Test
-    fun ambiguousOutcomeIsAppliedWhenProvenAndFatalWithoutChangingProgressWhenUnproven() {
+    fun countsZeroThroughThreeVictoriesOnlyFromCompleteTerminalResults() {
         val action = runnable(target = 10, progress = 0, supportsThree = true)
-        val proven = handler.reconcileAmbiguousOutcome(action) {
-            BattleOutcomeReconciliation.Proven("authoritative-result", listOf(BattleAutomationRoundOutcome.VICTORY))
+        listOf(0, 1, 2, 3).forEach { victoryCount ->
+            handler.onBattleCompleted(
+                action = action.copy(executionIdentity = "execution-$victoryCount"),
+                source = BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
+                resultIdentity = "result-$victoryCount",
+                outcomes = List(victoryCount) { BattleAutomationRoundOutcome.VICTORY } +
+                    List(3 - victoryCount) { BattleAutomationRoundOutcome.DEFEAT },
+                reconciler = unprovenReconciler(),
+            )
         }
-        val unproven = handler.reconcileAmbiguousOutcome(action.copy(executionIdentity = "other-execution")) {
-            BattleOutcomeReconciliation.Unproven("No exact recent battle matches the prepared execution.")
+        handler.onBattleCompleted(
+            action.copy(executionIdentity = "quest-execution"),
+            BattleAutomationActionSource.QUEST_AUTOMATION,
+            "quest",
+            listOf(BattleAutomationRoundOutcome.VICTORY),
+            unprovenReconciler(),
+        )
+        handler.onBattleCompleted(
+            action.copy(executionIdentity = "adventure-execution"),
+            BattleAutomationActionSource.ADVENTURE_AUTOMATION,
+            "adventure",
+            listOf(BattleAutomationRoundOutcome.VICTORY),
+            unprovenReconciler(),
+        )
+
+        assertEquals(listOf(0, 1, 2, 3), progressStore.recorded.map { it.evidence.victoryCount })
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = [0, 1, 2, 4])
+    fun incompleteOrExtraRoundArraysNeverWrite(size: Int) {
+        val action = runnable(target = 10, progress = 0, supportsThree = true)
+        val result = handler.onBattleCompleted(
+            action,
+            BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
+            "partial-$size",
+            List(size) { BattleAutomationRoundOutcome.VICTORY },
+            unprovenReconciler(),
+        )
+
+        assertIs<BattleOutcomeResolution.Fatal>(result)
+        assertEquals(emptyList(), progressStore.recorded)
+    }
+
+    @Test
+    fun networkOrUnknownRoundNeverWritesAndLaterProvenCompleteEvidenceRepairsOnce() {
+        val action = runnable(target = 10, progress = 0, supportsThree = true)
+        listOf(
+            BattleAutomationRoundOutcome.DRAW,
+            BattleAutomationRoundOutcome.NETWORK_FAILURE,
+            BattleAutomationRoundOutcome.UNKNOWN,
+        ).forEach { invalid ->
+            val result = handler.onBattleCompleted(
+                action,
+                BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
+                "invalid-${invalid.name}",
+                listOf(BattleAutomationRoundOutcome.VICTORY, invalid, BattleAutomationRoundOutcome.DEFEAT),
+                unprovenReconciler(),
+            )
+            assertIs<BattleOutcomeResolution.Fatal>(result)
         }
 
-        assertIs<BattleOutcomeReconciliation.Applied>(proven)
-        val fatal = assertIs<BattleOutcomeReconciliation.Fatal>(unproven)
-        assertEquals(AutomationStopReason.NETWORK, fatal.evaluation.reason)
-        assertEquals(1, progressStore.recorded.sumOf { it.victories })
+        val evidence = evidence(
+            action,
+            "authoritative-result",
+            listOf(BattleAutomationRoundOutcome.VICTORY, BattleAutomationRoundOutcome.DEFEAT, BattleAutomationRoundOutcome.VICTORY),
+        )
+        val repaired = handler.onBattleCompleted(
+            action,
+            BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
+            "partial-result",
+            listOf(BattleAutomationRoundOutcome.VICTORY),
+        ) { BattleOutcomeReconciliation.Proven(evidence) }
+
+        assertIs<BattleOutcomeResolution.Applied>(repaired)
+        assertEquals(2, progressStore.recorded.single().evidence.victoryCount)
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["account", "execution", "category", "map", "count"])
+    fun mismatchedReconciliationEvidenceIsFatalAndNeverWrites(field: String) {
+        val action = runnable(target = 10, progress = 0, supportsThree = true)
+        val valid = evidence(action, "authoritative", List(3) { BattleAutomationRoundOutcome.VICTORY })
+        val mismatch = when (field) {
+            "account" -> valid.copy(accountId = action.accountId + 1)
+            "execution" -> valid.copy(executionIdentity = "other")
+            "category" -> valid.copy(categoryId = "other")
+            "map" -> valid.copy(mapCode = "other")
+            "count" -> valid.copy(battleCount = 1)
+            else -> error(field)
+        }
+        val result = handler.onBattleCompleted(
+            action,
+            BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
+            "partial",
+            listOf(BattleAutomationRoundOutcome.VICTORY),
+        ) { BattleOutcomeReconciliation.Proven(mismatch) }
+
+        assertEquals(AutomationStopReason.NETWORK, assertIs<BattleOutcomeResolution.Fatal>(result).evaluation.reason)
+        assertEquals(emptyList(), progressStore.recorded)
     }
 
     @Test
@@ -113,6 +179,36 @@ class BattleMapAutomationHandlerTest {
 
         assertIs<HandlerEvaluation.Skipped>(lower)
         assertEquals(3, assertIs<BattleMapAutomationAction>(assertIs<HandlerEvaluation.Runnable>(higher).action).battleCount)
+    }
+
+    @Test
+    fun derivesActionProgressDateAtTheKoreaMidnightBoundary() {
+        val before = handler.evaluate(snapshot(
+            listOf(setting("map", 1)), emptyMap(), listOf(state("map")), Instant.parse("2026-07-15T14:59:59Z"),
+        ))
+        val after = handler.evaluate(snapshot(
+            listOf(setting("map", 1)), emptyMap(), listOf(state("map")), Instant.parse("2026-07-15T15:00:01Z"),
+        ))
+
+        assertEquals("2026-07-15", assertIs<BattleMapAutomationAction>(assertIs<HandlerEvaluation.Runnable>(before).action).progressDate.toString())
+        assertEquals("2026-07-16", assertIs<BattleMapAutomationAction>(assertIs<HandlerEvaluation.Runnable>(after).action).progressDate.toString())
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["available", "attempt", "win", "key"])
+    fun knownCapacityBelowThreeFallsBackToOneBattle(field: String) {
+        val constrained = when (field) {
+            "available" -> state("map", availableCount = 2)
+            "attempt" -> state("map", attemptRemaining = 2)
+            "win" -> state("map", winRemaining = 1)
+            "key" -> state("map", keyCount = 2)
+            else -> error(field)
+        }
+        val action = assertIs<BattleMapAutomationAction>(assertIs<HandlerEvaluation.Runnable>(handler.evaluate(
+            snapshot(listOf(setting("map", 10)), emptyMap(), listOf(constrained)),
+        )).action)
+
+        assertEquals(1, action.battleCount)
     }
 
     private fun runnable(target: Int, progress: Int, supportsThree: Boolean): BattleMapAutomationAction {
@@ -130,15 +226,16 @@ class BattleMapAutomationHandlerTest {
         settings: List<BattleMapAutomationSetting>,
         progress: Map<String, Int>,
         states: List<BattleMapRunnableState>,
+        evaluationInstant: Instant = Instant.parse("2026-07-15T00:00:00Z"),
     ) = BattleMapAutomationSnapshot(
         accountId = 7,
-        progressDate = LocalDate.of(2026, 7, 15),
         settings = settings,
         mapStates = states,
         successfulRuns = progress.mapKeys { (mapCode) -> BattleMapProgressIdentity("battle_map", mapCode) },
         primaryPresetId = 10,
         availablePresetIds = setOf(10L, 20L),
         executionIdentity = "execution-1",
+        evaluationInstant = evaluationInstant,
     )
 
     private fun setting(
@@ -152,7 +249,27 @@ class BattleMapAutomationHandlerTest {
         mapCode: String,
         visible: Boolean = true,
         supportsThree: Boolean = true,
-    ) = BattleMapRunnableState("battle_map", mapCode, visible, enabled = true, supportsThreeBattles = supportsThree)
+        availableCount: Int? = null,
+        attemptRemaining: Int? = null,
+        winRemaining: Int? = null,
+        keyCount: Int? = null,
+    ) = BattleMapRunnableState(
+        "battle_map", mapCode, visible, enabled = true, supportsThreeBattles = supportsThree,
+        availableCount = availableCount, attemptRemaining = attemptRemaining, winRemaining = winRemaining, keyCount = keyCount,
+    )
+
+    private fun evidence(
+        action: BattleMapAutomationAction,
+        resultIdentity: String,
+        outcomes: List<BattleAutomationRoundOutcome>,
+    ) = BattleAuthoritativeOutcomeEvidence(
+        action.accountId, action.executionIdentity, action.categoryId, action.mapCode,
+        action.battleCount, resultIdentity, outcomes,
+    )
+
+    private fun unprovenReconciler() = BattleOutcomeReconciler {
+        BattleOutcomeReconciliation.Unproven("No exact authoritative recent result.")
+    }
 }
 
 @SpringBootTest
@@ -170,18 +287,20 @@ class BattleMapAutomationProgressStorePersistenceTest {
         val action = action(account.id, "execution-1")
         val pool = Executors.newFixedThreadPool(4)
         val futures = List(10) {
-            pool.submit { progressStore.recordResult(action, "same-result", "a".repeat(64), 2) }
+            pool.submit { progressStore.recordResult(action, evidence(action, "same-result", victories = 2)) }
         }
         pool.shutdown()
         check(pool.awaitTermination(20, TimeUnit.SECONDS))
         futures.forEach { it.get() }
         assertEquals(2, queryRepository.findBattleWins(account.id, DATE, "battle_map", "map"))
 
-        progressStore.recordResult(action(account.id, "execution-2"), "different-result", "b".repeat(64), 1)
+        val second = action(account.id, "execution-2")
+        progressStore.recordResult(second, evidence(second, "different-result", victories = 1))
         assertEquals(3, queryRepository.findBattleWins(account.id, DATE, "battle_map", "map"))
 
         assertFailsWith<BattleMapAutomationResultConflictException> {
-            progressStore.recordResult(action(account.id, "conflicting-execution"), "same-result", "c".repeat(64), 3)
+            val conflict = action(account.id, "conflicting-execution")
+            progressStore.recordResult(conflict, evidence(conflict, "same-result", victories = 3))
         }
         assertEquals(3, queryRepository.findBattleWins(account.id, DATE, "battle_map", "map"))
     }
@@ -193,7 +312,7 @@ class BattleMapAutomationProgressStorePersistenceTest {
             HofAccountEntity(loginId = "battle-fingerprint-$field-${System.nanoTime()}", encryptedPassword = "encrypted", createdAt = NOW),
         )
         val original = action(account.id, "semantic-execution")
-        progressStore.recordResult(original, "semantic-result", "d".repeat(64), 1)
+        progressStore.recordResult(original, evidence(original, "semantic-result", victories = 1))
         val changed = when (field) {
             "date" -> original.copy(progressDate = DATE.plusDays(1))
             "category" -> original.copy(categoryId = "other-category")
@@ -207,9 +326,41 @@ class BattleMapAutomationProgressStorePersistenceTest {
         }
 
         assertFailsWith<BattleMapAutomationResultConflictException> {
-            progressStore.recordResult(changed, "semantic-result", "d".repeat(64), 1)
+            progressStore.recordResult(changed, evidence(changed, "semantic-result", victories = 1))
         }
         assertEquals(1, queryRepository.findBattleWins(account.id, DATE, "battle_map", "map"))
+    }
+
+    @Test
+    fun incompleteEvidenceCreatesNoLedgerAndCanLaterBeRepairedWithTheSameIdentities() {
+        val account = accountRepository.save(
+            HofAccountEntity(loginId = "battle-incomplete-${System.nanoTime()}", encryptedPassword = "encrypted", createdAt = NOW),
+        )
+        val action = action(account.id, "repairable-execution")
+        val invalidEvidence = listOf(
+            emptyList(),
+            listOf(BattleAutomationRoundOutcome.VICTORY),
+            listOf(BattleAutomationRoundOutcome.VICTORY, BattleAutomationRoundOutcome.DEFEAT),
+            List(4) { BattleAutomationRoundOutcome.VICTORY },
+            listOf(BattleAutomationRoundOutcome.VICTORY, BattleAutomationRoundOutcome.NETWORK_FAILURE, BattleAutomationRoundOutcome.DEFEAT),
+        )
+        invalidEvidence.forEach { outcomes ->
+            assertFailsWith<IllegalArgumentException> {
+                progressStore.recordResult(
+                    action,
+                    BattleAuthoritativeOutcomeEvidence(
+                        action.accountId, action.executionIdentity, action.categoryId, action.mapCode,
+                        action.battleCount, "repairable-result", outcomes,
+                    ),
+                )
+            }
+        }
+        assertEquals(null, queryRepository.findBattleProcessedResult(account.id, "repairable-result"))
+        assertEquals(0, queryRepository.findBattleWins(account.id, DATE, "battle_map", "map"))
+
+        progressStore.recordResult(action, evidence(action, "repairable-result", victories = 2))
+
+        assertEquals(2, queryRepository.findBattleWins(account.id, DATE, "battle_map", "map"))
     }
 
     private fun action(accountId: Long, executionIdentity: String) = BattleMapAutomationAction(
@@ -223,6 +374,18 @@ class BattleMapAutomationProgressStorePersistenceTest {
         executionIdentity = executionIdentity,
     )
 
+    private fun evidence(action: BattleMapAutomationAction, resultIdentity: String, victories: Int) =
+        BattleAuthoritativeOutcomeEvidence(
+            accountId = action.accountId,
+            executionIdentity = action.executionIdentity,
+            categoryId = action.categoryId,
+            mapCode = action.mapCode,
+            battleCount = action.battleCount,
+            resultIdentity = resultIdentity,
+            outcomes = List(victories) { BattleAutomationRoundOutcome.VICTORY } +
+                List(action.battleCount - victories) { BattleAutomationRoundOutcome.DEFEAT },
+        )
+
     private companion object {
         val NOW: Instant = Instant.parse("2026-07-15T00:00:00Z")
         val DATE: LocalDate = LocalDate.parse("2026-07-15")
@@ -234,17 +397,13 @@ private class RecordingBattleProgressStore : BattleMapAutomationProgressStore {
 
     override fun recordResult(
         action: BattleMapAutomationAction,
-        resultIdentity: String,
-        outcomeFingerprint: String,
-        victories: Int,
+        evidence: BattleAuthoritativeOutcomeEvidence,
     ) {
-        recorded += Recorded(action, resultIdentity, outcomeFingerprint, victories)
+        recorded += Recorded(action, evidence)
     }
 
     data class Recorded(
         val action: BattleMapAutomationAction,
-        val resultIdentity: String,
-        val outcomeFingerprint: String,
-        val victories: Int,
+        val evidence: BattleAuthoritativeOutcomeEvidence,
     )
 }

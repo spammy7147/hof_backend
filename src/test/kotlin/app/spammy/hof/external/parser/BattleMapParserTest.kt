@@ -24,16 +24,20 @@ class BattleMapParserTest {
             categoryId = "battle_map",
             queryName = "common",
             html = """
-                <a href="index.php?common=snow22">Map</a>
-                <form method="post"><input type="submit" name="monster_battle_10" value="Battle !"></form>
+                <form method="post" action="index.php?common=snow22">
+                  <a href="index.php?common=snow22">Map</a>
+                  <input type="submit" name="monster_battle_10" value="Battle !">
+                </form>
             """.trimIndent(),
         )
         val singleBattle = parser.parse(
             categoryId = "battle_map",
             queryName = "common",
             html = """
-                <a href="index.php?common=snow22">Map</a>
-                <form method="post"><button type="submit" name="monster_battle">Battle !</button></form>
+                <form method="post" action="index.php?common=snow22">
+                  <a href="index.php?common=snow22">Map</a>
+                  <button type="submit" name="monster_battle">Battle !</button>
+                </form>
             """.trimIndent(),
         )
         val unrelatedThree = parser.parse(
@@ -45,6 +49,84 @@ class BattleMapParserTest {
         assertTrue(threeBattle.single().supportsThreeBattles)
         assertFalse(singleBattle.single().supportsThreeBattles)
         assertFalse(unrelatedThree.single().supportsThreeBattles)
+    }
+
+    @Test
+    fun scopesThreeBattleCapabilityToEachMapsAssociatedExecutableForm() {
+        val maps = parser.parse(
+            categoryId = "battle_map",
+            queryName = "common",
+            html = """
+                <form id="triple" action="index.php?common=triple">
+                  <a href="index.php?common=triple">Triple map</a>
+                  <button name="monster_battle_10">Battle three</button>
+                </form>
+                <form id="single" action="index.php?common=single">
+                  <a href="index.php?common=single">Single map</a>
+                  <input type="submit" name="monster_battle" value="Battle one">
+                </form>
+                <form id="disabled" action="index.php?common=disabled">
+                  <a href="index.php?common=disabled">Disabled map</a>
+                  <input type="submit" name="monster_battle_10" disabled value="Battle three">
+                </form>
+                <form id="wrong-type" action="index.php?common=wrong">
+                  <a href="index.php?common=wrong">Wrong type map</a>
+                  <button type="button" name="monster_battle_10">Not submit</button>
+                </form>
+                <input type="image" name="monster_battle_10" value="Detached">
+                <button form="single" name="monster_battle_10" disabled>Disabled association</button>
+            """.trimIndent(),
+        )
+
+        assertEquals(
+            mapOf<String?, Boolean>("triple" to true, "single" to false, "disabled" to false, "wrong" to false),
+            maps.associate { it.mapCode to it.supportsThreeBattles },
+        )
+    }
+
+    @Test
+    fun honorsValidExplicitHtmlFormAssociationForTheSameMap() {
+        val map = parser.parse(
+            categoryId = "battle_map",
+            queryName = "common",
+            html = """
+                <form id="map-form" action="index.php?common=associated">
+                  <a href="index.php?common=associated">Associated map</a>
+                </form>
+                <input form="map-form" type="image" name="monster_battle_10" value="Battle three">
+            """.trimIndent(),
+        ).single()
+
+        assertTrue(map.supportsThreeBattles)
+    }
+
+    @Test
+    fun detailCapabilityObservationIsTriStateAndRequiresTheMapsExecutionForm() {
+        val triple = parser.observeThreeBattleCapability(
+            "common", "detail", """
+                <form id="detail-form" action="index.php?common=detail">
+                  <button name="monster_battle_10">Battle three</button>
+                </form>
+            """.trimIndent(),
+        )
+        val single = parser.observeThreeBattleCapability(
+            "common", "detail", """
+                <form action="index.php?common=detail">
+                  <button name="monster_battle">Battle one</button>
+                </form>
+            """.trimIndent(),
+        )
+        val unrelated = parser.observeThreeBattleCapability(
+            "common", "detail", """
+                <form action="index.php?common=other">
+                  <button name="monster_battle_10">Battle three</button>
+                </form>
+            """.trimIndent(),
+        )
+
+        assertEquals(true, triple)
+        assertEquals(false, single)
+        assertNull(unrelated)
     }
 
     @Test
