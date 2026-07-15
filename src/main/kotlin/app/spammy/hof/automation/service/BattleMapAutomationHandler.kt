@@ -7,6 +7,8 @@ import app.spammy.hof.automation.repository.BattleAutomationDailyProgressCommand
 import app.spammy.hof.automation.repository.BattleAutomationProcessedResultCommandRepository
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import app.spammy.hof.common.time.TimeProvider
+import java.io.ByteArrayOutputStream
+import java.io.DataOutputStream
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.time.Instant
@@ -71,7 +73,8 @@ data class BattleMapAutomationAction(
     val progressDate: LocalDate,
     val categoryId: String,
     val mapCode: String,
-    val presetId: Long,
+    val presetMode: PresetSelectionMode,
+    val presetId: Long?,
     val battleCount: Int,
     val executionIdentity: String,
     val source: BattleAutomationActionSource = BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
@@ -110,7 +113,6 @@ class JpaBattleMapAutomationProgressStore(
         require(action.executionIdentity.isNotBlank() && action.executionIdentity.length <= 128)
         require(outcomeFingerprint.matches(Regex("[0-9a-f]{64}")))
         require(victories in 0..action.battleCount)
-        require(action.source == BattleAutomationActionSource.BATTLE_MAP_AUTOMATION)
         val actionFingerprint = actionFingerprint(action)
         val account = queryRepository.lockAccount(action.accountId)
         queryRepository.findBattleProcessedResult(action.accountId, resultIdentity)?.let { prior ->
@@ -131,6 +133,7 @@ class JpaBattleMapAutomationProgressStore(
             ) throw BattleMapAutomationResultConflictException(resultIdentity)
             return
         }
+        require(action.source == BattleAutomationActionSource.BATTLE_MAP_AUTOMATION)
         val now = timeProvider.now()
         processedResultRepository.save(
             BattleAutomationProcessedResultEntity(
@@ -169,15 +172,33 @@ class JpaBattleMapAutomationProgressStore(
     }
 
     private fun actionFingerprint(action: BattleMapAutomationAction): String {
-        val canonical = listOf(
-            action.accountId.toString(),
-            action.progressDate.toString(),
-            action.categoryId,
-            action.mapCode,
-            BATTLE_MAP_PROGRESS_SOURCE,
-            action.executionIdentity,
-        ).joinToString("\u0000").toByteArray(StandardCharsets.UTF_8)
+        val canonical = ByteArrayOutputStream().use { bytes ->
+            DataOutputStream(bytes).use { output ->
+                output.writeCanonical(action.accountId.toString())
+                output.writeCanonical(action.progressDate.toString())
+                output.writeCanonical(action.categoryId)
+                output.writeCanonical(action.mapCode)
+                output.writeCanonical(action.presetMode.name)
+                output.writeNullableCanonical(action.presetId?.toString())
+                output.writeCanonical(action.battleCount.toString())
+                output.writeCanonical(action.source.name)
+                output.writeCanonical(BATTLE_MAP_PROGRESS_SOURCE)
+                output.writeCanonical(action.executionIdentity)
+            }
+            bytes.toByteArray()
+        }
         return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(canonical))
+    }
+
+    private fun DataOutputStream.writeCanonical(value: String) {
+        val encoded = value.toByteArray(StandardCharsets.UTF_8)
+        writeInt(encoded.size)
+        write(encoded)
+    }
+
+    private fun DataOutputStream.writeNullableCanonical(value: String?) {
+        writeBoolean(value != null)
+        if (value != null) writeCanonical(value)
     }
 }
 
@@ -224,6 +245,7 @@ class BattleMapAutomationHandler(
                         progressDate = context.progressDate,
                         categoryId = setting.categoryId,
                         mapCode = setting.mapCode,
+                        presetMode = setting.preset.mode,
                         presetId = presetId,
                         battleCount = battleCount,
                         executionIdentity = context.executionIdentity,

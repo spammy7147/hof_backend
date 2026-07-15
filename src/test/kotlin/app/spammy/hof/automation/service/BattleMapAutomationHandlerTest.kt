@@ -12,6 +12,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.test.context.ActiveProfiles
@@ -184,8 +186,41 @@ class BattleMapAutomationProgressStorePersistenceTest {
         assertEquals(3, queryRepository.findBattleWins(account.id, DATE, "battle_map", "map"))
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = ["date", "category", "map", "preset-mode", "preset-id", "preset-null", "battle-count", "source"])
+    fun replayingAnIdentityWithAnyChangedActionSemanticIsRejected(field: String) {
+        val account = accountRepository.save(
+            HofAccountEntity(loginId = "battle-fingerprint-$field-${System.nanoTime()}", encryptedPassword = "encrypted", createdAt = NOW),
+        )
+        val original = action(account.id, "semantic-execution")
+        progressStore.recordResult(original, "semantic-result", "d".repeat(64), 1)
+        val changed = when (field) {
+            "date" -> original.copy(progressDate = DATE.plusDays(1))
+            "category" -> original.copy(categoryId = "other-category")
+            "map" -> original.copy(mapCode = "other-map")
+            "preset-mode" -> original.copy(presetMode = PresetSelectionMode.EXPLICIT)
+            "preset-id" -> original.copy(presetId = 20)
+            "preset-null" -> original.copy(presetId = null)
+            "battle-count" -> original.copy(battleCount = 1)
+            "source" -> original.copy(source = BattleAutomationActionSource.QUEST_AUTOMATION)
+            else -> error("Unknown field $field")
+        }
+
+        assertFailsWith<BattleMapAutomationResultConflictException> {
+            progressStore.recordResult(changed, "semantic-result", "d".repeat(64), 1)
+        }
+        assertEquals(1, queryRepository.findBattleWins(account.id, DATE, "battle_map", "map"))
+    }
+
     private fun action(accountId: Long, executionIdentity: String) = BattleMapAutomationAction(
-        accountId, DATE, "battle_map", "map", 10, 3, executionIdentity,
+        accountId = accountId,
+        progressDate = DATE,
+        categoryId = "battle_map",
+        mapCode = "map",
+        presetMode = PresetSelectionMode.PRIMARY,
+        presetId = 10,
+        battleCount = 3,
+        executionIdentity = executionIdentity,
     )
 
     private companion object {
