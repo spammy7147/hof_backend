@@ -418,6 +418,11 @@ internal object FreshSchemaContract {
             serialId(), requiredBigint("account_id"), requiredDate("refresh_date"), requiredInstant("refreshed_at"),
         ),
         table(
+            "adventure_daily_preflight_states",
+            serialId(), requiredBigint("account_id"), requiredDate("refresh_date"), requiredInteger("failed_attempts"),
+            optionalInstant("next_attempt_at"), optionalVarchar("stop_reason", 30), requiredInstant("updated_at"),
+        ),
+        table(
             "account_automation_leases",
             requiredBigint("account_id"), requiredVarchar("owner_id", 120), requiredInstant("lease_until"),
             requiredInstant("updated_at"),
@@ -529,6 +534,9 @@ internal object FreshSchemaContract {
             "automation_entry_id", "category_id", "map_code",
         ),
         key("adventure_daily_refresh", "uk_adventure_daily_refresh_account_date", "account_id", "refresh_date"),
+        key(
+            "adventure_daily_preflight_states", "uk_adventure_daily_preflight_states_account", "account_id",
+        ),
         key(
             "device_push_targets", "uk_device_push_targets_account_installation", "account_id", "installation_id",
         ),
@@ -671,6 +679,10 @@ internal object FreshSchemaContract {
         ),
         fk(
             "fk_adventure_daily_refresh_account", "adventure_daily_refresh.account_id",
+            "hof_accounts.id", DeleteAction.CASCADE,
+        ),
+        fk(
+            "fk_adventure_daily_preflight_states_account", "adventure_daily_preflight_states.account_id",
             "hof_accounts.id", DeleteAction.CASCADE,
         ),
         fk(
@@ -821,6 +833,10 @@ internal object FreshSchemaContract {
             "account_id", "refresh_date", "id",
         ),
         index(
+            "adventure_daily_preflight_states", "idx_adventure_daily_preflight_states_next_attempt",
+            "next_attempt_at", "account_id",
+        ),
+        index(
             "account_automation_leases", "idx_account_automation_leases_until",
             "lease_until", "account_id",
         ),
@@ -943,6 +959,10 @@ internal object FreshSchemaContract {
             "case preset_mode when 'PRIMARY' then true when 'EXPLICIT' then true else false end",
         ),
         check("adventure_automation_maps", "ck_adventure_automation_maps_execution_order", "execution_order >= 0"),
+        check(
+            "adventure_daily_preflight_states", "ck_adventure_daily_preflight_states_attempts",
+            "failed_attempts >= 0",
+        ),
         check("battle_log_participants", "ck_battle_log_participants_slot", "slot_index >= 0"),
         check("battle_log_loots", "ck_battle_log_loots_order", "display_order >= 0"),
         check("battle_log_loots", "ck_battle_log_loots_quantity", "quantity > 0"),

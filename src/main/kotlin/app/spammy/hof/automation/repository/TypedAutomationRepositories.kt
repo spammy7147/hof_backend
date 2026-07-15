@@ -2,6 +2,7 @@ package app.spammy.hof.automation.repository
 
 import app.spammy.hof.automation.entity.AdventureAutomationMapEntity
 import app.spammy.hof.automation.entity.AdventureDailyRefreshEntity
+import app.spammy.hof.automation.entity.AdventureDailyPreflightStateEntity
 import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.BattleAutomationDailyProgressEntity
 import app.spammy.hof.automation.entity.BattleAutomationMapEntity
@@ -25,3 +26,5 @@ interface BattleAutomationDailyProgressCommandRepository : CommandRepository<Bat
 interface AdventureAutomationMapCommandRepository : CommandRepository<AdventureAutomationMapEntity, Long>
 
 interface AdventureDailyRefreshCommandRepository : CommandRepository<AdventureDailyRefreshEntity, Long>
+
+interface AdventureDailyPreflightStateCommandRepository : CommandRepository<AdventureDailyPreflightStateEntity, Long>

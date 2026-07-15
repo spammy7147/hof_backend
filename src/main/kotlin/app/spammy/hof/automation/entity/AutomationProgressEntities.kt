@@ -10,6 +10,7 @@ import jakarta.persistence.Id
 import jakarta.persistence.JoinColumn
 import jakarta.persistence.ManyToOne
 import jakarta.persistence.Table
+import jakarta.persistence.OneToOne
 import java.time.Instant
 import java.time.LocalDate
 
@@ -66,4 +67,24 @@ class AdventureDailyRefreshEntity(
     var refreshDate: LocalDate,
     @Column(name = "refreshed_at", nullable = false)
     var refreshedAt: Instant,
+)
+
+/** Account-wide retry/manual-stop state for the adventure daily refresh gate. */
+@Entity
+@Table(name = "adventure_daily_preflight_states")
+class AdventureDailyPreflightStateEntity(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+    @OneToOne(fetch = FetchType.LAZY) @JoinColumn(name = "account_id", nullable = false, unique = true)
+    var account: HofAccountEntity,
+    @Column(name = "refresh_date", nullable = false)
+    var refreshDate: LocalDate,
+    @Column(name = "failed_attempts", nullable = false)
+    var failedAttempts: Int,
+    @Column(name = "next_attempt_at")
+    var nextAttemptAt: Instant?,
+    @Column(name = "stop_reason", length = 30)
+    var stopReason: String?,
+    @Column(name = "updated_at", nullable = false)
+    var updatedAt: Instant,
 )

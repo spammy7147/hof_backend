@@ -58,6 +58,7 @@ class FreshSchemaTest {
                 "7" to "encrypt hof cookie storage",
                 "8" to "customize unified automation modules",
                 "9" to "replace automation with typed handlers",
+                "10" to "add adventure daily preflight state",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -70,6 +71,7 @@ class FreshSchemaTest {
                 .sorted()
         assertEquals(
             listOf(
+                "V10__add_adventure_daily_preflight_state.sql",
                 "V1__initialize_schema.sql",
                 "V2__seed_battle_map_catalog.sql",
                 "V3__add_token_authentication.sql",

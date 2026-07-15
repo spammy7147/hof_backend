@@ -37,6 +37,19 @@ class BattleMapService(
     fun findMaps(
         accountId: Long,
         categoryId: String,
+    ): List<BattleMapResponse> = findMaps(accountId, categoryId, requireObservations = false)
+
+    /**
+     * Performs the authenticated `?sp_hunt` refresh used by the automation daily gate. Unlike the read endpoint,
+     * an empty/unparseable page is a failed refresh because no observed account state was synchronized.
+     */
+    fun refreshAdventureMaps(accountId: Long): List<BattleMapResponse> =
+        findMaps(accountId, BattleCategoryId.ADVENTURE_MAP.value, requireObservations = true)
+
+    private fun findMaps(
+        accountId: Long,
+        categoryId: String,
+        requireObservations: Boolean,
     ): List<BattleMapResponse> {
         val category = BattleCategoryId.fromValue(categoryId)
             ?: throw ApiException(ErrorCode.INVALID_REQUEST, "지원하지 않는 전투 카테고리입니다.")
@@ -67,6 +80,9 @@ class BattleMapService(
                 )
             }
             ?: response
+        if (requireObservations && mapPageResponse.statusCode !in 200..299) {
+            throw ApiException(ErrorCode.HOF_REQUEST_FAILED, "HOF 모험 맵 요청에 실패했습니다.")
+        }
         val maps = battleMapParser.parse(
             categoryId = category.value,
             queryName = source.mapQuery,
@@ -88,6 +104,9 @@ class BattleMapService(
                 category.value,
                 mapPageResponse.statusCode,
             )
+            if (requireObservations) {
+                throw ApiException(ErrorCode.HOF_REQUEST_FAILED, "HOF 모험 맵 상태를 확인하지 못했습니다.")
+            }
             return catalogService.findVisibleByCategory(account.id, category.value).map(BattleMapResponse::from)
         }
 

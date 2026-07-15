@@ -17,6 +17,8 @@ import app.spammy.hof.battle.repository.BattleMapGroupCommandRepository
 import app.spammy.hof.battle.repository.BattleMapQueryRepository
 import app.spammy.hof.battle.repository.BattleMapRepository
 import app.spammy.hof.battle.repository.UnresolvedBattleMapCommandRepository
+import app.spammy.hof.common.error.ApiException
+import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.persistence.QueryDslConfig
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.client.HofGateway
@@ -28,6 +30,7 @@ import java.time.Instant
 import java.util.Base64
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -228,6 +231,41 @@ class BattleMapServiceTest {
             assertEquals(3, preserved.single().availableCount)
             assertTrue(assertNotNull(queryRepository.findStateByAccountIdAndMapId(account.id, catalogMap.id)).visible)
         }
+    }
+
+    @Test
+    fun authenticatedAdventureRefreshRejectsPageWithoutMapObservations() {
+        val account = savedAccount("battle-map-strict-refresh")
+        gateway.defaultBody = "<html><body><h1>Temporary upstream error</h1></body></html>"
+
+        val error = assertFailsWith<ApiException> {
+            service.refreshAdventureMaps(account.id)
+        }
+
+        assertEquals(ErrorCode.HOF_REQUEST_FAILED, error.errorCode)
+        assertEquals(
+            listOf("http://sic.zerosic.com/ZeroHOF/index.php?sp_hunt"),
+            gateway.requests.map { it.url },
+        )
+    }
+
+    @Test
+    fun authenticatedAdventureRefreshRejectsNonSuccessHttpResponse() {
+        val account = savedAccount("battle-map-http-error")
+        val url = "http://sic.zerosic.com/ZeroHOF/index.php?sp_hunt"
+        gateway.responsesByUrl[url] = HofHttpResponse(
+            statusCode = 503,
+            finalUrl = url,
+            body = directAdventureHtml(sharedCount = 3, includeStale = false),
+            setCookies = emptyMap(),
+        )
+
+        val error = assertFailsWith<ApiException> {
+            service.refreshAdventureMaps(account.id)
+        }
+
+        assertEquals(ErrorCode.HOF_REQUEST_FAILED, error.errorCode)
+        assertTrue(queryRepository.findVisibleStatesByAccountIdAndCategoryId(account.id, ADVENTURE).isEmpty())
     }
 
     @Test
