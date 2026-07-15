@@ -118,7 +118,6 @@ class BattleMapAutomationHandlerTest {
     fun networkOrUnknownRoundNeverWritesAndLaterProvenCompleteEvidenceRepairsOnce() {
         val action = runnable(target = 10, progress = 0, supportsThree = true)
         listOf(
-            BattleAutomationRoundOutcome.DRAW,
             BattleAutomationRoundOutcome.NETWORK_FAILURE,
             BattleAutomationRoundOutcome.UNKNOWN,
         ).forEach { invalid ->
@@ -146,6 +145,69 @@ class BattleMapAutomationHandlerTest {
 
         assertIs<BattleOutcomeResolution.Applied>(repaired)
         assertEquals(2, progressStore.recorded.single().evidence.victoryCount)
+    }
+
+    @Test
+    fun drawIsAuthoritativeTerminalAndAddsNoVictoryForOneOrThreeBattleResults() {
+        val one = runnable(target = 1, progress = 0, supportsThree = false)
+        val three = runnable(target = 3, progress = 0, supportsThree = true).copy(executionIdentity = "draw-three")
+
+        assertIs<BattleOutcomeResolution.Applied>(handler.onBattleCompleted(
+            one,
+            BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
+            "draw-one",
+            listOf(BattleAutomationRoundOutcome.DRAW),
+            unprovenReconciler(),
+        ))
+        assertIs<BattleOutcomeResolution.Applied>(handler.onBattleCompleted(
+            three,
+            BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
+            "draw-three",
+            listOf(
+                BattleAutomationRoundOutcome.DRAW,
+                BattleAutomationRoundOutcome.VICTORY,
+                BattleAutomationRoundOutcome.DEFEAT,
+            ),
+            unprovenReconciler(),
+        ))
+
+        assertEquals(listOf(0, 1), progressStore.recorded.map { it.evidence.victoryCount })
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["", " ", "oversized"])
+    fun invalidDirectResultIdentityReturnsControlledFatalWithoutWriting(identityCase: String) {
+        val action = runnable(target = 1, progress = 0, supportsThree = false)
+        val resultIdentity = if (identityCase == "oversized") "x".repeat(129) else identityCase
+
+        val result = handler.onBattleCompleted(
+            action,
+            BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
+            resultIdentity,
+            listOf(BattleAutomationRoundOutcome.VICTORY),
+            unprovenReconciler(),
+        )
+
+        assertEquals(AutomationStopReason.NETWORK, assertIs<BattleOutcomeResolution.Fatal>(result).evaluation.reason)
+        assertEquals(emptyList(), progressStore.recorded)
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["blank", "oversized"])
+    fun invalidProvenResultIdentityReturnsControlledFatalWithoutWriting(identityCase: String) {
+        val action = runnable(target = 3, progress = 0, supportsThree = true)
+        val resultIdentity = if (identityCase == "oversized") "x".repeat(129) else " "
+        val invalidEvidence = evidence(action, resultIdentity, List(3) { BattleAutomationRoundOutcome.VICTORY })
+
+        val result = handler.onBattleCompleted(
+            action,
+            BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
+            "partial",
+            listOf(BattleAutomationRoundOutcome.VICTORY),
+        ) { BattleOutcomeReconciliation.Proven(invalidEvidence) }
+
+        assertEquals(AutomationStopReason.NETWORK, assertIs<BattleOutcomeResolution.Fatal>(result).evaluation.reason)
+        assertEquals(emptyList(), progressStore.recorded)
     }
 
     @ParameterizedTest

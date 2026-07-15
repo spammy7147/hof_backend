@@ -24,7 +24,12 @@ class BattleMapCapabilityObservationService(
         mapCode: String,
         html: String,
     ): Boolean? {
-        val observed = parser.observeThreeBattleCapability(queryName, mapCode, html) ?: return null
+        val observed = parser.observeThreeBattleCapability(
+            queryName = queryName,
+            mapCode = mapCode,
+            html = html,
+            authoritativeCurrentMapCode = mapCode,
+        ) ?: return null
         val state = queryRepository.findStateForExecution(accountId, categoryId, mapCode) ?: return null
         state.supportsThreeBattles = observed
         stateRepository.save(state)

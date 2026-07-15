@@ -267,7 +267,7 @@ class BattleMapCatalogTransactionService(
         state.attemptRemaining = observation.attemptCount
         state.winRemaining = observation.winCount
         state.cooldownUntil = observation.cooldownRemainingSeconds?.let(now::plusSeconds)
-        state.supportsThreeBattles = observation.supportsThreeBattles
+        observation.supportsThreeBattles?.let { state.supportsThreeBattles = it }
         state.rawHref = observation.rawHref
         state.visible = true
         state.lastSeenAt = now

@@ -46,7 +46,7 @@ data class BattleMapResponse(
                 cooldownRemainingSeconds = map.cooldownRemainingSeconds,
                 keyCount = map.keyCount,
                 requiredTime = map.requiredTime,
-                supportsThreeBattles = map.supportsThreeBattles,
+                supportsThreeBattles = map.supportsThreeBattles ?: false,
                 enabled = map.enabled,
                 resolved = map.resolved,
                 iconUrl = map.iconUrl,

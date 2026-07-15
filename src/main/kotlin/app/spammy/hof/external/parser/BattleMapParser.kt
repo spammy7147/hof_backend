@@ -144,7 +144,7 @@ class BattleMapParser {
                     requiredTime = parseRequiredTime(contextText),
                     supportsThreeBattles = mapCode?.let {
                         supportsThreeBattles(link, it, document.select("form"), queryPattern)
-                    } ?: false,
+                    },
                     iconUrl = link.selectFirst("img[src]")?.absUrl("src")?.ifBlank { null },
                     rawHref = rawHref,
                 )
@@ -159,11 +159,17 @@ class BattleMapParser {
         queryName: String,
         mapCode: String,
         html: String,
+        authoritativeCurrentMapCode: String? = null,
     ): Boolean? {
         val document = Jsoup.parse(html, HOF_BASE_URL)
         val queryPattern = Regex("""[?&]${Regex.escape(queryName)}=([^&"'#\s]+)""")
         val executionForm = document.select("form").singleOrNull { form ->
-            parseDirectMapCode(form.attr("action"), queryPattern) == mapCode
+            val action = form.attr("action").trim()
+            if (action.isEmpty()) {
+                authoritativeCurrentMapCode == mapCode
+            } else {
+                parseDirectMapCode(action, queryPattern) == mapCode
+            }
         } ?: return null
         return executionForm.supportsThreeBattleSubmit()
     }
@@ -174,7 +180,7 @@ class BattleMapParser {
         mapCode: String,
         forms: List<Element>,
         queryPattern: Regex,
-    ): Boolean {
+    ): Boolean? {
         val containingForm = mapLink.parents()
             .firstOrNull { it.tagName() == "form" }
             ?.takeIf { form ->
@@ -183,7 +189,7 @@ class BattleMapParser {
             }
         val executionForm = containingForm ?: forms.singleOrNull { form ->
             parseDirectMapCode(form.attr("action"), queryPattern) == mapCode
-        } ?: return false
+        } ?: return null
 
         return executionForm.supportsThreeBattleSubmit()
     }
@@ -199,7 +205,7 @@ class BattleMapParser {
         val type = attr("type").trim().lowercase()
         return when (tagName()) {
             "button" -> type.isBlank() || type == "submit"
-            "input" -> type == "submit" || type == "image"
+            "input" -> type == "submit"
             else -> false
         }
     }

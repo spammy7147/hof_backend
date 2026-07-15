@@ -103,7 +103,9 @@ data class BattleAuthoritativeOutcomeEvidence(
 
     fun isCompleteTerminal(): Boolean =
         battleCount in setOf(1, 3) && outcomes.size == battleCount && outcomes.all {
-            it == BattleAutomationRoundOutcome.VICTORY || it == BattleAutomationRoundOutcome.DEFEAT
+            it == BattleAutomationRoundOutcome.VICTORY ||
+                it == BattleAutomationRoundOutcome.DEFEAT ||
+                it == BattleAutomationRoundOutcome.DRAW
         }
 }
 
@@ -318,12 +320,15 @@ class BattleMapAutomationHandler(
             resultIdentity,
             outcomes,
         )
+        if (!direct.hasValidResultIdentity()) {
+            return fatalNetwork("Battle result identity is missing or exceeds the protocol limit.")
+        }
         if (direct.isCompleteTerminal()) return applyEvidence(action, direct)
 
         return when (val reconciliation = reconciler.reloadRecentAuthoritativeEvidence(action)) {
             is BattleOutcomeReconciliation.Proven -> {
                 val evidence = reconciliation.evidence
-                if (!evidence.binds(action) || !evidence.isCompleteTerminal()) {
+                if (!evidence.hasValidResultIdentity() || !evidence.binds(action) || !evidence.isCompleteTerminal()) {
                     fatalNetwork("Reloaded battle evidence did not exactly match the prepared action and rounds.")
                 } else {
                     applyEvidence(action, evidence)
@@ -345,6 +350,9 @@ class BattleMapAutomationHandler(
         HandlerEvaluation.Fatal(AutomationStopReason.NETWORK, message),
     )
 
+    private fun BattleAuthoritativeOutcomeEvidence.hasValidResultIdentity(): Boolean =
+        resultIdentity.isNotBlank() && resultIdentity.length <= MAX_RESULT_IDENTITY_LENGTH
+
     private fun BattleMapPresetSelection.resolvePreset(context: BattleMapAutomationSnapshot): Long? = when (mode) {
         PresetSelectionMode.PRIMARY -> context.primaryPresetId?.takeIf(context.availablePresetIds::contains)
         PresetSelectionMode.EXPLICIT -> presetId?.takeIf(context.availablePresetIds::contains)
@@ -358,6 +366,7 @@ class BattleMapAutomationHandler(
         listOf(availableCount, attemptRemaining, winRemaining, keyCount).none { it != null && it < 3 }
 
     private companion object {
+        const val MAX_RESULT_IDENTITY_LENGTH = 128
         val KOREA_ZONE: ZoneId = ZoneId.of("Asia/Seoul")
     }
 }

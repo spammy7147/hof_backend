@@ -174,6 +174,35 @@ class BattleMapServiceTest {
     }
 
     @Test
+    fun unknownCategoryRefreshPreservesCapabilityAndAuthoritativeSingleFormClearsIt() {
+        val account = savedAccount("battle-map-tristate-capability")
+        gateway.defaultBody = """
+            <form action="index.php?common=tri01">
+              <a href="index.php?common=tri01">Tri-state map</a>
+              <button name="monster_battle_10">Battle three</button>
+            </form>
+        """.trimIndent()
+        assertTrue(service.findMaps(account.id, "battle_map").single().supportsThreeBattles)
+
+        gateway.defaultBody = "<a href='index.php?common=tri01'>Tri-state map</a>"
+        assertTrue(service.findMaps(account.id, "battle_map").single().supportsThreeBattles)
+        assertTrue(requireNotNull(queryRepository.findStateForExecution(account.id, "battle_map", "tri01")).supportsThreeBattles)
+
+        gateway.defaultBody = """
+            <form action="index.php?common=tri01">
+              <a href="index.php?common=tri01">Tri-state map</a>
+              <button name="monster_battle">Battle one</button>
+            </form>
+        """.trimIndent()
+        assertFalse(service.findMaps(account.id, "battle_map").single().supportsThreeBattles)
+
+        val newAccount = savedAccount("battle-map-tristate-unknown")
+        gateway.defaultBody = "<a href='index.php?common=unknown01'>Unknown map</a>"
+        assertFalse(service.findMaps(newAccount.id, "battle_map").single().supportsThreeBattles)
+        assertFalse(requireNotNull(queryRepository.findStateForExecution(newAccount.id, "battle_map", "unknown01")).supportsThreeBattles)
+    }
+
+    @Test
     fun persistsAmbiguousAndUnknownPlaceholdersAsDisabledUnresolvedRows() {
         val account = savedAccount("battle-map-unresolved")
         val group = savedGroup(ADVENTURE, "미지 지역", 2)
