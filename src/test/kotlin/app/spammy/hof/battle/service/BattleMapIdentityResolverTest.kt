@@ -104,8 +104,12 @@ class BattleMapIdentityResolverTest {
         assertIs<BattleMapAliasResolution.Missing>(resolver.resolveAlias(CATEGORY, "없는 맵"))
 
         val other = map("other-frost", "Other Frost", group)
-        saveAlias(other, "FROST · 서리 숲")
-        assertIs<BattleMapAliasResolution.Ambiguous>(resolver.resolveAlias(CATEGORY, "Frost-서리 숲"))
+        saveAlias(other, "Other - 서리 숲")
+        assertEquals(
+            frost.mapCode,
+            assertIs<BattleMapAliasResolution.Resolved>(resolver.resolveAlias(CATEGORY, "Frost-서리 숲")).mapCode,
+        )
+        assertIs<BattleMapAliasResolution.Ambiguous>(resolver.resolveAlias(CATEGORY, "서리 숲"))
     }
 
     private fun group(

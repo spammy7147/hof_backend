@@ -67,27 +67,44 @@ fun resolveBattleMapAlias(
     target: String,
     candidates: Collection<BattleMapIdentityCandidate>,
 ): BattleMapAliasResolution {
-    val normalizedTargets = questTargetAliases(target)
-    if (normalizedTargets.isEmpty()) return BattleMapAliasResolution.Missing
-    val matches = candidates.filter { candidate ->
+    val normalizedTarget = questTargetNormalize(target)
+    if (normalizedTarget.isBlank()) return BattleMapAliasResolution.Missing
+    val exactMatches = candidates.filter { candidate ->
         sequenceOf(candidate.mapName)
             .plus(candidate.aliases.asSequence())
-            .flatMap { questTargetAliases(it).asSequence() }
-            .any { it in normalizedTargets }
+            .any { questTargetNormalize(it) == normalizedTarget }
     }.distinctBy { it.categoryId to it.mapCode }
-    return when (matches.size) {
+    resolveUnique(exactMatches)?.let { return it }
+    if (exactMatches.size > 1) return BattleMapAliasResolution.Ambiguous
+
+    val derivedTargets = questTargetDerivedAliases(target)
+    val fallbackMatches = candidates.filter { candidate ->
+        sequenceOf(candidate.mapName)
+            .plus(candidate.aliases.asSequence())
+            .flatMap { questTargetDerivedAliases(it).asSequence() }
+            .any { it in derivedTargets }
+    }.distinctBy { it.categoryId to it.mapCode }
+    return resolveUnique(fallbackMatches) ?: when (fallbackMatches.size) {
         0 -> BattleMapAliasResolution.Missing
-        1 -> matches.single().let {
-            BattleMapAliasResolution.Resolved(it.categoryId, it.mapCode, it.mapName)
-        }
         else -> BattleMapAliasResolution.Ambiguous
     }
 }
+
+private fun resolveUnique(matches: List<BattleMapIdentityCandidate>): BattleMapAliasResolution.Resolved? =
+    matches.singleOrNull()?.let {
+        BattleMapAliasResolution.Resolved(it.categoryId, it.mapCode, it.mapName)
+    }
 
 private val questTargetSeparatorPattern = Regex("""\s*[-/·]\s*""")
 
 private fun questTargetAliases(value: String): Set<String> =
     BattleMapIdentityNormalizer.aliasValues(value).mapTo(linkedSetOf(), ::questTargetNormalize)
+
+private fun questTargetDerivedAliases(value: String): Set<String> {
+    val full = questTargetNormalize(value)
+    val derived = questTargetAliases(value).filterTo(linkedSetOf()) { it != full }
+    return derived.ifEmpty { setOf(full) }
+}
 
 private fun questTargetNormalize(value: String): String =
     BattleMapIdentityNormalizer.normalize(value).replace(questTargetSeparatorPattern, " - ")

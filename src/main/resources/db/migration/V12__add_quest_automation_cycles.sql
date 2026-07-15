@@ -9,6 +9,3 @@ create table quest_automation_cycles (
     constraint uk_quest_automation_cycles_account_quest unique (account_id, quest_code),
     constraint ck_quest_automation_cycles_current_cycle check (current_cycle > 0)
 );
-
-create index idx_quest_automation_cycles_account
-    on quest_automation_cycles (account_id, quest_code, id);

@@ -3,6 +3,8 @@ package app.spammy.hof.automation.entity
 import app.spammy.hof.account.entity.HofAccountEntity
 import jakarta.persistence.Column
 import jakarta.persistence.Entity
+import jakarta.persistence.EnumType
+import jakarta.persistence.Enumerated
 import jakarta.persistence.FetchType
 import jakarta.persistence.GeneratedValue
 import jakarta.persistence.GenerationType
@@ -34,6 +36,33 @@ class QuestAutomationCycleEntity(
     var questCode: String,
     @Column(name = "current_cycle", nullable = false)
     var currentCycle: Long,
+)
+
+enum class QuestAutomationResultKind { ACCEPT, BATTLE_VICTORY }
+
+@Entity
+@Table(
+    name = "quest_automation_processed_results",
+    uniqueConstraints = [
+        UniqueConstraint(
+            name = "uk_quest_automation_processed_results_identity",
+            columnNames = ["account_id", "result_kind", "result_identity"],
+        ),
+    ],
+)
+class QuestAutomationProcessedResultEntity(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+    @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "account_id", nullable = false)
+    var account: HofAccountEntity,
+    @Enumerated(EnumType.STRING) @Column(name = "result_kind", nullable = false, length = 30)
+    var resultKind: QuestAutomationResultKind,
+    @Column(name = "result_identity", nullable = false, length = 150)
+    var resultIdentity: String,
+    @Column(name = "result_value", length = 100)
+    var resultValue: String? = null,
+    @Column(name = "processed_at", nullable = false)
+    var processedAt: Instant,
 )
 
 @Entity

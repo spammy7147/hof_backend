@@ -61,6 +61,7 @@ class FreshSchemaTest {
                 "10" to "add adventure daily preflight state",
                 "11" to "lease adventure daily preflight refresh",
                 "12" to "add quest automation cycles",
+                "13" to "deduplicate quest automation results",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -76,6 +77,7 @@ class FreshSchemaTest {
                 "V10__add_adventure_daily_preflight_state.sql",
                 "V11__lease_adventure_daily_preflight_refresh.sql",
                 "V12__add_quest_automation_cycles.sql",
+                "V13__deduplicate_quest_automation_results.sql",
                 "V1__initialize_schema.sql",
                 "V2__seed_battle_map_catalog.sql",
                 "V3__add_token_authentication.sql",

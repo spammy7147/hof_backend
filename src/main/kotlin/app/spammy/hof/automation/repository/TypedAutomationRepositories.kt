@@ -8,6 +8,7 @@ import app.spammy.hof.automation.entity.BattleAutomationDailyProgressEntity
 import app.spammy.hof.automation.entity.BattleAutomationMapEntity
 import app.spammy.hof.automation.entity.QuestAutomationMapEntity
 import app.spammy.hof.automation.entity.QuestAutomationCycleEntity
+import app.spammy.hof.automation.entity.QuestAutomationProcessedResultEntity
 import app.spammy.hof.automation.entity.QuestAutomationSelectionEntity
 import app.spammy.hof.automation.entity.QuestMapExecutionCounterEntity
 import app.spammy.hof.common.persistence.CommandRepository
@@ -19,6 +20,8 @@ interface QuestAutomationSelectionCommandRepository : CommandRepository<QuestAut
 interface QuestAutomationMapCommandRepository : CommandRepository<QuestAutomationMapEntity, Long>
 
 interface QuestAutomationCycleCommandRepository : CommandRepository<QuestAutomationCycleEntity, Long>
+
+interface QuestAutomationProcessedResultCommandRepository : CommandRepository<QuestAutomationProcessedResultEntity, Long>
 
 interface QuestMapExecutionCounterCommandRepository : CommandRepository<QuestMapExecutionCounterEntity, Long>
 
