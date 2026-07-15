@@ -31,6 +31,7 @@ data class QuestPresetSelection(
     val presetId: Long? = null,
     val resolvedPresetId: Long? = presetId,
     val resolutionChecked: Boolean = false,
+    val resolvedParty: ResolvedAutomationParty? = null,
 )
 
 sealed interface QuestAction : PreparedAutomationAction {
@@ -56,6 +57,7 @@ sealed interface QuestAction : PreparedAutomationAction {
         val mapName: String,
         val preset: QuestPresetSelection,
         val battleCount: Int = 1,
+        val resolvedParty: ResolvedAutomationParty? = preset.resolvedParty,
     ) : QuestAction
 }
 
@@ -92,6 +94,8 @@ data class QuestAutomationSnapshot(
     val counters: Map<QuestCounterKey, Int>,
     val mapIdentityCandidates: List<BattleMapIdentityCandidate>,
     val now: Instant,
+    val primaryPresetId: Long? = null,
+    val primaryParty: ResolvedAutomationParty? = null,
 )
 
 interface QuestAutomationProgressStore {
@@ -373,7 +377,16 @@ class QuestAutomationHandler(
                     resolved.categoryId,
                     resolved.mapCode,
                     resolved.mapName,
-                    QuestPresetSelection(PresetSelectionMode.PRIMARY),
+                    if (context.primaryPresetId == null && context.primaryParty == null) {
+                        QuestPresetSelection(PresetSelectionMode.PRIMARY)
+                    } else {
+                        QuestPresetSelection(
+                            PresetSelectionMode.PRIMARY,
+                            resolvedPresetId = context.primaryPresetId,
+                            resolutionChecked = true,
+                            resolvedParty = context.primaryParty,
+                        )
+                    },
                     0,
                     false,
                 )

@@ -32,13 +32,14 @@ class TypedAutomationRuntimeService(
     private val wakeups: AutomationAfterCommitWakeupService,
 ) {
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun start(accountId: Long) {
+    fun start(accountId: Long): Boolean {
         val now = timeProvider.now()
         val state = queryRepository.lockRuntimeState(accountId)
         if (state == null) {
             val account = accountQueryRepository.findByIdForUpdate(accountId) ?: error("Account $accountId does not exist.")
             stateRepository.save(TypedAutomationRuntimeStateEntity(accountId, account, TypedAutomationLifecycle.RUNNING, createdAt = now, updatedAt = now))
         } else {
+            if (state.lifecycleStatus == TypedAutomationLifecycle.STOPPED) return false
             state.lifecycleStatus = TypedAutomationLifecycle.RUNNING
             state.stopReason = null
             state.retryAttempt = 0
@@ -48,11 +49,28 @@ class TypedAutomationRuntimeService(
         TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
             override fun afterCommit() = wakeups.wake(accountId, "TYPED_AUTOMATION_STARTED")
         })
+        return true
     }
 
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun resume(accountId: Long) {
         dailyPreflight.resume(accountId)
-        start(accountId)
+        resumeState(accountId)
+        wakeups.wake(accountId, "TYPED_AUTOMATION_RESUMED")
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun resumeState(accountId: Long) {
+        val state = queryRepository.lockRuntimeState(accountId)
+        if (state == null) {
+            val now = timeProvider.now()
+            val account = accountQueryRepository.findByIdForUpdate(accountId) ?: error("Account $accountId does not exist.")
+            stateRepository.save(TypedAutomationRuntimeStateEntity(accountId, account, TypedAutomationLifecycle.RUNNING, createdAt = now, updatedAt = now))
+            return
+        }
+        val now = timeProvider.now()
+        state.lifecycleStatus = TypedAutomationLifecycle.RUNNING; state.stopReason = null
+        state.retryAttempt = 0; state.nextAttemptAt = null; state.leaseToken = null; state.leaseUntil = null; state.updatedAt = now
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)

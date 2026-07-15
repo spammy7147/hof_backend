@@ -60,6 +60,7 @@ data class BattleMapAutomationSnapshot(
     val executionIdentity: String,
     /** Deterministic action-time input; the handler derives the Korea calendar date itself. */
     val evaluationInstant: Instant,
+    val resolvedParties: Map<Long, ResolvedAutomationParty> = emptyMap(),
 )
 
 enum class BattleAutomationActionSource {
@@ -79,6 +80,7 @@ data class BattleMapAutomationAction(
     val battleCount: Int,
     val executionIdentity: String,
     val source: BattleAutomationActionSource = BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
+    val resolvedParty: ResolvedAutomationParty? = null,
 ) : PreparedAutomationAction
 
 enum class BattleAutomationRoundOutcome { VICTORY, DEFEAT, DRAW, NETWORK_FAILURE, UNKNOWN }
@@ -295,6 +297,7 @@ class BattleMapAutomationHandler(
                         presetId = presetId,
                         battleCount = battleCount,
                         executionIdentity = context.executionIdentity,
+                        resolvedParty = context.resolvedParties[presetId],
                     ),
                 )
             }

@@ -22,7 +22,7 @@ import app.spammy.hof.external.parser.BattleResultParser
 import app.spammy.hof.external.parser.LoginStateParser
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
-import org.springframework.transaction.annotation.Transactional
+import org.springframework.transaction.support.TransactionSynchronizationManager
 
 @Service
 /**
@@ -54,6 +54,9 @@ class BattleRunService(
         accountId: Long,
         request: RunBattleRequest,
     ): BattleResultResponse {
+        check(!TransactionSynchronizationManager.isActualTransactionActive()) {
+            "Battle HTTP submission must not run inside a database transaction."
+        }
         val category = BattleCategoryId.fromValue(request.categoryId)
             ?: throw ApiException(ErrorCode.INVALID_REQUEST, "지원하지 않는 전투 카테고리입니다.")
         val battleType = category.toBattleType()

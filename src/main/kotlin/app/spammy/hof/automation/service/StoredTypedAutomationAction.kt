@@ -2,6 +2,7 @@ package app.spammy.hof.automation.service
 
 import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.quest.model.QuestMissionType
+import app.spammy.hof.battle.dto.RunBattleRequest
 import com.fasterxml.jackson.annotation.JsonSubTypes
 import com.fasterxml.jackson.annotation.JsonTypeInfo
 import java.security.MessageDigest
@@ -42,6 +43,7 @@ sealed interface StoredTypedActionPayload {
         val presetMode: PresetSelectionMode,
         val presetId: Long,
         val battleCount: Int,
+        val battleRequest: RunBattleRequest,
     ) : StoredTypedActionPayload
     data class BattleMap(
         val progressDate: LocalDate,
@@ -50,6 +52,7 @@ sealed interface StoredTypedActionPayload {
         val presetMode: PresetSelectionMode,
         val presetId: Long,
         val battleCount: Int,
+        val battleRequest: RunBattleRequest,
     ) : StoredTypedActionPayload
     data class AdventureMap(
         val categoryId: String,
@@ -58,6 +61,7 @@ sealed interface StoredTypedActionPayload {
         val presetId: Long,
         val battleCount: Int,
         val settingIdentity: Long,
+        val battleRequest: RunBattleRequest,
     ) : StoredTypedActionPayload
 }
 
@@ -81,10 +85,18 @@ class StoredTypedAutomationActionCodec(private val objectMapper: ObjectMapper) {
         when (val payload = action.payload) {
             is StoredTypedActionPayload.QuestClaim -> require(payload.questCode.isNotBlank() && payload.actionNo.isNotBlank())
             is StoredTypedActionPayload.QuestAccept -> require(payload.questCode.isNotBlank() && payload.actionNo.isNotBlank())
-            is StoredTypedActionPayload.QuestBattle -> require(payload.presetId > 0 && payload.battleCount in setOf(1, 3))
-            is StoredTypedActionPayload.BattleMap -> require(payload.presetId > 0 && payload.battleCount in setOf(1, 3))
-            is StoredTypedActionPayload.AdventureMap -> require(payload.presetId > 0 && payload.battleCount == 1)
+            is StoredTypedActionPayload.QuestBattle -> validateBattle(payload.presetId, payload.battleCount, payload.categoryId, payload.mapCode, payload.battleRequest)
+            is StoredTypedActionPayload.BattleMap -> validateBattle(payload.presetId, payload.battleCount, payload.categoryId, payload.mapCode, payload.battleRequest)
+            is StoredTypedActionPayload.AdventureMap -> validateBattle(payload.presetId, payload.battleCount, payload.categoryId, payload.mapCode, payload.battleRequest)
         }
+    }
+
+    private fun validateBattle(presetId: Long, battleCount: Int, categoryId: String, mapCode: String, request: RunBattleRequest) {
+        require(presetId > 0 && battleCount in setOf(1, 3))
+        require(request.categoryId == categoryId && request.mapCode == mapCode && request.resolvedBattleCount() == battleCount)
+        require(request.characterIds.isNotEmpty() && request.characterIds.size <= 5)
+        require(request.patternLoads.size == request.characterIds.size)
+        require(request.patternLoads.map { it.characterId } == request.characterIds)
     }
 
     companion object { const val SCHEMA_VERSION = 1 }

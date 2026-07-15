@@ -25,6 +25,19 @@ class TypedAutomationRuntimeServiceTest {
     private val account = HofAccountEntity(7, "login", "encrypted", now)
 
     @Test
+    fun `start cannot clear stopped state and explicit resume state can`() {
+        val state = state().apply { lifecycleStatus = TypedAutomationLifecycle.STOPPED; stopReason = AutomationStopReason.NETWORK.name }
+        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
+
+        assertEquals(false, service.start(7))
+        assertEquals(TypedAutomationLifecycle.STOPPED, state.lifecycleStatus)
+
+        service.resumeState(7)
+        assertEquals(TypedAutomationLifecycle.RUNNING, state.lifecycleStatus)
+        assertEquals(null, state.stopReason)
+    }
+
+    @Test
     fun `safe failures schedule exact retries then stop network on fourth`() {
         val state = state().apply { leaseToken = "token"; leaseUntil = now.plusSeconds(300) }
         Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)

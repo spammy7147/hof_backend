@@ -109,12 +109,13 @@ class TypedAutomationQueryRepository(
         progressDate: LocalDate,
         source: String,
         mapCode: String,
+        categoryId: String = BATTLE_MAP_CATEGORY,
     ): Int = queryFactory.select(battleAutomationDailyProgressEntity.successfulRuns)
         .from(battleAutomationDailyProgressEntity)
         .where(
             battleAutomationDailyProgressEntity.account.id.eq(accountId),
             battleAutomationDailyProgressEntity.progressDate.eq(progressDate),
-            battleAutomationDailyProgressEntity.categoryId.eq(BATTLE_MAP_CATEGORY),
+            battleAutomationDailyProgressEntity.categoryId.eq(categoryId),
             battleAutomationDailyProgressEntity.mapCode.eq(mapCode),
             battleAutomationDailyProgressEntity.source.eq(source),
         )

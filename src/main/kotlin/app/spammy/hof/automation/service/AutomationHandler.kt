@@ -1,6 +1,11 @@
 package app.spammy.hof.automation.service
 
 import java.time.Instant
+import app.spammy.hof.battle.dto.BattlePatternLoadRequest
+
+data class ResolvedAutomationParty(val characterIds: List<String>, val patternLoads: List<BattlePatternLoadRequest>) {
+    init { require(characterIds.isNotEmpty() && characterIds.size <= 5); require(patternLoads.size == characterIds.size) }
+}
 
 /** A typed, side-effect-free handler decision consumed by the future coordinator. */
 fun interface AutomationHandler<C> {
@@ -22,5 +27,6 @@ enum class AutomationStopReason {
     CAPTCHA,
     MANUAL_STOP,
     NETWORK,
+    FATAL,
     UNKNOWN,
 }

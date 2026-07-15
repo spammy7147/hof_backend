@@ -27,6 +27,7 @@ import app.spammy.hof.automation.repository.AutomationModuleQuestCommandReposito
 import app.spammy.hof.automation.repository.AutomationModuleQuestMapCommandRepository
 import app.spammy.hof.automation.repository.AutomationProfileRepository
 import app.spammy.hof.automation.repository.UnifiedAutomationQueryRepository
+import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import app.spammy.hof.battle.entity.BattleMapEntity
 import app.spammy.hof.battle.repository.BattleMapQueryRepository
 import app.spammy.hof.common.error.ApiException
@@ -63,6 +64,8 @@ class UnifiedAutomationService(
     private val timeProvider: TimeProvider,
     private val afterCommitWakeupService: AutomationAfterCommitWakeupService,
     private val readinessEvaluator: AutomationModuleReadinessEvaluator,
+    private val typedRuntimeService: TypedAutomationRuntimeService? = null,
+    private val typedAutomationQueryRepository: TypedAutomationQueryRepository? = null,
 ) {
     /**
      * 통합 프로필과 현재 실행 상태를 조회한다.
@@ -225,10 +228,16 @@ class UnifiedAutomationService(
     /** 준비 완료된 활성 모듈이 있을 때만 통합 자동화 job을 시작하거나 재개한다. */
     @Transactional
     fun start(accountId: Long): UnifiedAutomationStatusResponse {
+        if (typedAutomationQueryRepository?.findRuntimeState(accountId)?.lifecycleStatus ==
+            app.spammy.hof.automation.entity.TypedAutomationLifecycle.STOPPED
+        ) {
+            invalid("중지된 자동화는 명시적으로 재개해 주세요.")
+        }
         val profile = lockAccountAndFindOrCreateProfile(accountId)
         val modules = queryRepository.findModules(profile.id)
         val readiness = readinessEvaluator.evaluate(modules)
-        if (modules.none { it.config.enabled && readiness.isReady(it) }) {
+        val hasTypedEntries = typedAutomationQueryRepository?.findEntries(accountId)?.any { it.enabled } == true
+        if (modules.none { it.config.enabled && readiness.isReady(it) } && !hasTypedEntries) {
             invalid("실행할 수 있는 자동화가 없습니다. 사용할 모듈의 맵과 파티 설정을 확인해 주세요.")
         }
         val current = queryRepository.findCurrentJob(accountId)
@@ -240,26 +249,34 @@ class UnifiedAutomationService(
             job.nextRunAt = now
             job.updatedAt = now
         }
-        if (job.status == "RUNNING") wakeAfterCommit(accountId, "USER_START")
+        if (job.status == "RUNNING") {
+            wakeAfterCommit(accountId, "USER_START")
+            typedAfterCommit { typedRuntimeService?.start(accountId) }
+        }
         return buildStatus(profile, job, modules, readiness)
     }
 
     /** 실행 중인 통합 자동화를 새 행동을 시작하지 않는 일시정지 상태로 전환한다. */
     @Transactional
     fun pause(accountId: Long): UnifiedAutomationStatusResponse =
-        transition(accountId, setOf("PENDING", "RUNNING"), "PAUSED", finished = false)
+        transition(accountId, setOf("PENDING", "RUNNING"), "PAUSED", finished = false).also {
+            typedAfterCommit { typedRuntimeService?.pause(accountId) }
+        }
 
     /** 사용자가 일시정지한 통합 자동화를 다음 의사결정부터 재개한다. */
     @Transactional
     fun resume(accountId: Long): UnifiedAutomationStatusResponse =
         transition(accountId, setOf("PAUSED"), "RUNNING", finished = false).also {
             wakeAfterCommit(accountId, "USER_RESUME")
+            typedAfterCommit { typedRuntimeService?.resume(accountId) }
         }
 
     /** 활성 상태의 통합 자동화를 종료하고 더 이상 다음 행동을 예약하지 않게 한다. */
     @Transactional
     fun stop(accountId: Long): UnifiedAutomationStatusResponse =
-        transition(accountId, UnifiedAutomationQueryRepository.ACTIVE_STATUSES, "CANCELLED", finished = true)
+        transition(accountId, UnifiedAutomationQueryRepository.ACTIVE_STATUSES, "CANCELLED", finished = true).also {
+            typedAfterCommit { typedRuntimeService?.stop(accountId, AutomationStopReason.MANUAL_STOP) }
+        }
 
     /** 상태 전이의 허용 집합과 종료 시각 처리를 한 곳에서 적용한다. */
     private fun transition(
@@ -618,6 +635,15 @@ class UnifiedAutomationService(
                 }
             },
         )
+    }
+
+    private fun typedAfterCommit(action: () -> Unit) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive() || !TransactionSynchronizationManager.isSynchronizationActive()) {
+            action(); return
+        }
+        TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
+            override fun afterCommit() = action()
+        })
     }
 
     /** 이미 커밋된 API 결과를 wake 전달 실패로 실패 처리하지 않고 복구 스케줄러에 재시도를 맡긴다. */

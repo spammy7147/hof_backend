@@ -40,6 +40,10 @@ class UnifiedAutomationRunnerTest {
         val action = BattleMapAutomationAction(
             7, java.time.LocalDate.parse("2026-07-16"), "battle_map", "gb0",
             app.spammy.hof.automation.entity.PresetSelectionMode.PRIMARY, 301, 1, "execution-1",
+            resolvedParty = ResolvedAutomationParty(
+                listOf("character-1"),
+                listOf(app.spammy.hof.battle.dto.BattlePatternLoadRequest("character-1", 1)),
+            ),
         )
         val row = Mockito.mock(app.spammy.hof.automation.entity.TypedAutomationActionRunEntity::class.java)
         Mockito.`when`(row.id).thenReturn(88L)

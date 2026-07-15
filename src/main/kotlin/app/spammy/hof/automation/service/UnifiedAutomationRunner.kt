@@ -90,7 +90,13 @@ class UnifiedAutomationRunner(
             is AutomationDailyPreflight.Result.Busy -> { wakeupPort.schedule(accountId, preflight.retryAt, "DAILY_PREFLIGHT_BUSY"); return }
             is AutomationDailyPreflight.Result.RetryScheduled -> { wakeupPort.schedule(accountId, preflight.nextAttemptAt, "DAILY_PREFLIGHT_RETRY"); return }
             is AutomationDailyPreflight.Result.Stopped -> {
-                runtime.stop(accountId, AutomationStopReason.NETWORK)
+                runtime.stop(
+                    accountId,
+                    when (preflight.reason) {
+                        AutomationDailyPreflight.StopReason.NETWORK -> AutomationStopReason.NETWORK
+                        AutomationDailyPreflight.StopReason.FATAL -> AutomationStopReason.FATAL
+                    },
+                )
                 return
             }
         }
@@ -146,18 +152,25 @@ class UnifiedAutomationRunner(
                 action.questCode, action.questCycle, action.missionKey, action.missionType,
                 action.categoryId, action.mapCode, action.preset.mode,
                 action.preset.resolvedPresetId ?: action.preset.presetId ?: throw AutomationConfigurationException(), action.battleCount,
+                action.resolvedParty.toRequest(action.categoryId, action.mapCode, action.battleCount),
             )
             is BattleMapAutomationAction -> StoredTypedActionPayload.BattleMap(
                 action.progressDate, action.categoryId, action.mapCode, action.presetMode,
                 action.presetId ?: throw AutomationConfigurationException(), action.battleCount,
+                action.resolvedParty.toRequest(action.categoryId, action.mapCode, action.battleCount),
             )
             is AdventureMapAutomationAction -> StoredTypedActionPayload.AdventureMap(
                 action.categoryId, action.mapCode, action.presetMode, action.presetId,
                 action.battleCount, action.settingIdentity,
+                action.resolvedParty.toRequest(action.categoryId, action.mapCode, action.battleCount),
             )
         }
         return StoredTypedAutomationActionV1(entryId, executionId, payload)
     }
+
+    private fun ResolvedAutomationParty?.toRequest(categoryId: String, mapCode: String, battleCount: Int) =
+        this?.let { app.spammy.hof.battle.dto.RunBattleRequest(categoryId, mapCode, it.characterIds, it.patternLoads, battleCount) }
+            ?: throw AutomationConfigurationException("The prepared party is missing.")
 
     /** checkpoint가 저장한 단일 prepared payload만 실행하고 다음 판단은 별도 wakeup에 맡긴다. */
     private fun executeOne(

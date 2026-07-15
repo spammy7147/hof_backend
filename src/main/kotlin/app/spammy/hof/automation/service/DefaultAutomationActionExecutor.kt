@@ -78,7 +78,8 @@ class DefaultAutomationActionExecutor(
                     questHandler?.onAcceptSucceeded(accountId, action.executionIdentity, QuestAction.Accept(payload.questCode, payload.actionNo))
                 }
                 is StoredTypedActionPayload.QuestBattle -> {
-                    val result = runTypedBattle(accountId, payload.categoryId, payload.mapCode, payload.presetId, payload.battleCount)
+                    val result = runTypedBattle(accountId, payload.battleRequest)
+                    requireExactTerminal(accountId, action.executionIdentity, payload.battleRequest, result, BattleAutomationActionSource.QUEST_AUTOMATION)
                     val questAction = QuestAction.Battle(
                         payload.questCode, payload.questCycle, payload.missionKey, payload.missionType,
                         payload.categoryId, payload.mapCode, payload.mapCode,
@@ -90,7 +91,7 @@ class DefaultAutomationActionExecutor(
                     )
                 }
                 is StoredTypedActionPayload.BattleMap -> {
-                    val result = runTypedBattle(accountId, payload.categoryId, payload.mapCode, payload.presetId, payload.battleCount)
+                    val result = runTypedBattle(accountId, payload.battleRequest)
                     val prepared = BattleMapAutomationAction(
                         accountId, payload.progressDate, payload.categoryId, payload.mapCode, payload.presetMode,
                         payload.presetId, payload.battleCount, action.executionIdentity,
@@ -104,25 +105,39 @@ class DefaultAutomationActionExecutor(
                     )
                     if (resolution is BattleOutcomeResolution.Fatal) throw AmbiguousAutomationSubmissionException(resolution.evaluation.message)
                 }
-                is StoredTypedActionPayload.AdventureMap -> runTypedBattle(
-                    accountId, payload.categoryId, payload.mapCode, payload.presetId, payload.battleCount,
-                )
+                is StoredTypedActionPayload.AdventureMap -> {
+                    val result = runTypedBattle(accountId, payload.battleRequest)
+                    requireExactTerminal(accountId, action.executionIdentity, payload.battleRequest, result, BattleAutomationActionSource.ADVENTURE_AUTOMATION)
+                }
         }
     }
 
-    private fun runTypedBattle(accountId: Long, categoryId: String, mapCode: String, presetId: Long, battleCount: Int) =
+    private fun runTypedBattle(accountId: Long, request: RunBattleRequest) =
         try {
-            val party = resolvePreset(accountId, presetId)
-            battleRunService.runBattle(
-                accountId,
-                RunBattleRequest(
-                    categoryId, mapCode, party.slots.map { it.first },
-                    party.slots.map { BattlePatternLoadRequest(it.first, it.second) }, battleCount,
-                ),
-            )
+            battleRunService.runBattle(accountId, request)
         } catch (error: Exception) {
             throw AmbiguousAutomationSubmissionException("Battle submission outcome is not provable; it will not be resent.", error)
         }
+
+    private fun requireExactTerminal(
+        accountId: Long,
+        executionIdentity: String,
+        request: RunBattleRequest,
+        result: app.spammy.hof.battle.dto.BattleResultResponse,
+        source: BattleAutomationActionSource,
+    ) {
+        val outcomes = result.rounds.mapNotNull { runCatching { BattleAutomationRoundOutcome.valueOf(it.outcome) }.getOrNull() }
+        if (outcomes.size == request.resolvedBattleCount() && outcomes.all {
+                it == BattleAutomationRoundOutcome.VICTORY || it == BattleAutomationRoundOutcome.DEFEAT || it == BattleAutomationRoundOutcome.DRAW
+            }) return
+        val probe = BattleMapAutomationAction(
+            accountId, java.time.LocalDate.now(), request.categoryId, request.mapCode,
+            app.spammy.hof.automation.entity.PresetSelectionMode.EXPLICIT, null,
+            request.resolvedBattleCount(), executionIdentity, source,
+        )
+        battleOutcomeReconciler?.reloadRecentAuthoritativeEvidence(probe)
+        throw AmbiguousAutomationSubmissionException("Battle response did not prove every requested terminal round.")
+    }
 
     private fun requireActionNo(decision: AutomationDecision): String = decision.actionNo
         ?: throw AutomationConfigurationException("퀘스트 처리 링크를 다시 불러와 주세요.")
