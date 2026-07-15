@@ -36,10 +36,11 @@ class QuestPageParserTest {
     @Test
     fun preservesOriginalQuestAndMissionOrderWithStableKeys() {
         assertEquals(
-            listOf("0571", "0563", "0800", "0801", "0171", "0999"),
+            listOf("0571", "0563", "0800", "0801", "0810", "WRP1", "0171", "FORM", "0999", "0351"),
             quests.map { it.questId },
         )
-        assertEquals((0..5).toList(), quests.map { it.sourceOrder })
+        assertEquals((0..9).toList(), quests.map { it.sourceOrder })
+        assertTrue(quests.none { it.questId == "NAV0" })
         assertNotEquals("0571:0", quests.first().missions.single().key)
     }
 
@@ -118,7 +119,7 @@ class QuestPageParserTest {
     }
 
     @Test
-    fun identicalSemanticMissionsReceiveDeterministicDuplicateSuffixes() {
+    fun indistinguishableMissionsShareOnePersistedOverrideIdentity() {
         val missions = parser.parse(
             questWithMissions(
                 """
@@ -129,8 +130,95 @@ class QuestPageParserTest {
         ).single().missions
 
         assertEquals(2, missions.size)
-        assertNotEquals(missions[0].key, missions[1].key)
-        assertTrue(missions[1].key.startsWith(missions[0].key))
+        assertEquals(missions[0].key, missions[1].key)
+    }
+
+    @Test
+    fun semanticKeysIncludeRequiredCountAndStableQualifiersButExcludeCurrentProgress() {
+        val originalKeysByCurrent = parser.parse(
+            questWithMissions(
+                """
+                미션 : 몬스터 처치( Killer Maid ) - 서관 - [ 1 / 20 ]<br>
+                미션 : 몬스터 처치( Killer Maid ) - 서관 - [ 2 / 30 ]<br>
+                미션 : 몬스터 처치( Killer Maid ) - 야간 - [ 3 / 30 ]
+                """.trimIndent(),
+            ),
+        ).single().missions.associate { it.progress!!.current to it.key }
+        val changedMissions = parser.parse(
+            questWithMissions(
+                """
+                미션 : 아이템 전달( Silver Key ) - [ 0 / 1 ]<br>
+                미션 : 몬스터 처치( Killer Maid ) - 야간 - [ 3 / 30 ]<br>
+                미션 : 몬스터 처치( Killer Maid ) - 서관 - [ 1 / 20 ]<br>
+                미션 : 몬스터 처치( Killer Maid ) - 서관 - [ 2 / 30 ]
+                """.trimIndent(),
+            ),
+        ).single().missions
+        val changedKeysByCurrent = changedMissions
+            .filter { it.type == QuestMissionType.MONSTER_KILL }
+            .associate { it.progress!!.current to it.key }
+
+        assertEquals(3, originalKeysByCurrent.values.toSet().size)
+        assertEquals(originalKeysByCurrent, changedKeysByCurrent)
+    }
+
+    @Test
+    fun waitingCurrentOccurrenceBeatsCompletedHistory() {
+        val parsed = parser.parse(
+            """
+            <div id="contents">
+              <h4>완료한 퀘스트</h4>
+              <table><tr><td class="td7s">[DUPW] 과거 완료</td></tr></table>
+              <h4>대기중인 퀘스트</h4>
+              <table><tr><td class="td7s">[DUPW] 현재 대기</td></tr></table>
+            </div>
+            """.trimIndent(),
+        ).single()
+
+        assertEquals(QuestSection.WAITING, parsed.section)
+        assertEquals(QuestState.UNAVAILABLE, parsed.state)
+        assertEquals(1, parsed.sourceOrder)
+    }
+
+    @Test
+    fun scopesQuestCandidatesToContentsAndUsesSanitizedFullPageFixture() {
+        val html = checkNotNull(
+            javaClass.classLoader.getResource("fixtures/quest/quest-sections-and-missions.html"),
+        ).readText()
+        val parsed = parser.parse(html)
+
+        assertTrue(html.contains("SANITIZED_AUTHENTICATED_PAGE_SHAPE"))
+        assertFalse(Regex("\\d{12,}").containsMatchIn(html))
+        assertFalse(html.contains("PHPSESSID", ignoreCase = true))
+        assertTrue(parsed.none { it.questId == "NAV0" })
+        assertEquals("0571", parsed.first().questId)
+        assertEquals(0, parsed.first().sourceOrder)
+        assertEquals(QuestSection.WAITING, parsed.single { it.questId == "0999" }.section)
+        assertEquals(QuestSection.COMPLETED, parsed.single { it.questId == "0351" }.section)
+        assertEquals(3, parsed.single { it.questId == "0810" }.missions.size)
+    }
+
+    @Test
+    fun decodesOnlyUrlParametersAndSurvivesMalformedEncoding() {
+        val parsed = parser.parse(
+            """
+            <div id="contents">
+              <h4>수락 가능 퀘스트</h4>
+              <table>
+                <tr>
+                  <td class="td7s">[FORM] 폼 값</td>
+                  <td><form><input name="no" value="raw+value%ZZ"><button name="get">수락</button></form></td>
+                </tr>
+                <tr><td class="td7s">[URL1] URL 값</td><td><a href="?action=get&amp;no=quest%2Bkey+space">수락</a></td></tr>
+                <tr><td class="td7s">[URL2] 잘못된 URL 값</td><td><a href="?action=get&amp;no=bad%ZZ">수락</a></td></tr>
+              </table>
+            </div>
+            """.trimIndent(),
+        ).associateBy { it.questId }
+
+        assertEquals("raw+value%ZZ", parsed.getValue("FORM").actionNo)
+        assertEquals("quest+key space", parsed.getValue("URL1").actionNo)
+        assertEquals("bad%ZZ", parsed.getValue("URL2").actionNo)
     }
 
     @Test
