@@ -144,8 +144,11 @@ class UnifiedAutomationServiceTest {
             id = 91L, account = account, type = AutomationType.QUEST, priority = 0, enabled = false,
             createdAt = NOW, updatedAt = NOW,
         )
+        val runtime = stoppedNetworkRuntime(account)
         Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(emptyList(), listOf(persisted))
         Mockito.`when`(entryRepository.save(anyTypedEntry())).thenReturn(persisted)
+        Mockito.`when`(typedQuery.lockRuntimeState(ACCOUNT_ID)).thenReturn(runtime)
+        Mockito.`when`(typedQuery.findRuntimeState(ACCOUNT_ID)).thenReturn(runtime)
 
         val response = service.createEntry(ACCOUNT_ID, CreateAutomationEntryRequest(AutomationType.QUEST))
 
@@ -154,6 +157,7 @@ class UnifiedAutomationServiceTest {
         assertEquals(0, response.entries.single().priority)
         assertTrue(response.entries.single().ready)
         assertEquals(emptyList(), response.entries.single().warnings)
+        assertPreservedFailureDiagnostic(response, runtime)
         Mockito.verify(automationOutbox).enqueue(ACCOUNT_ID, "SETTINGS_UPDATED")
     }
 
@@ -190,6 +194,43 @@ class UnifiedAutomationServiceTest {
         assertFailsWith<ApiException> {
             service.reorderEntries(ACCOUNT_ID, ReorderAutomationEntriesRequest(listOf(91L, 999L)))
         }
+    }
+
+    @Test
+    fun deleteTypedEntryClearsOnlyConfigurationWarningBeforeDurableWake() {
+        val account = account()
+        val target = AutomationEntryEntity(91L, account, AutomationType.QUEST, 0, false, NOW, NOW)
+        val remaining = AutomationEntryEntity(92L, account, AutomationType.BATTLE_MAP, 1, false, NOW, NOW)
+        val runtime = stoppedNetworkRuntime(account)
+        Mockito.`when`(typedQuery.findEntry(ACCOUNT_ID, target.id)).thenReturn(target)
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(remaining))
+        Mockito.`when`(typedQuery.lockRuntimeState(ACCOUNT_ID)).thenReturn(runtime)
+        Mockito.`when`(typedQuery.findRuntimeState(ACCOUNT_ID)).thenReturn(runtime)
+        Mockito.`when`(partyPresetQueryRepository.findAllByAccountId(ACCOUNT_ID)).thenReturn(emptyList())
+
+        val response = service.deleteEntry(ACCOUNT_ID, target.id)
+
+        assertEquals(listOf(remaining.id), response.entries.map { it.id })
+        assertPreservedFailureDiagnostic(response, runtime)
+        Mockito.verify(automationOutbox).enqueue(ACCOUNT_ID, "SETTINGS_UPDATED")
+    }
+
+    @Test
+    fun reorderTypedEntriesClearsOnlyConfigurationWarningBeforeDurableWake() {
+        val account = account()
+        val first = AutomationEntryEntity(91L, account, AutomationType.QUEST, 0, false, NOW, NOW)
+        val second = AutomationEntryEntity(92L, account, AutomationType.BATTLE_MAP, 1, false, NOW, NOW)
+        val runtime = stoppedNetworkRuntime(account)
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(first, second))
+        Mockito.`when`(typedQuery.lockRuntimeState(ACCOUNT_ID)).thenReturn(runtime)
+        Mockito.`when`(typedQuery.findRuntimeState(ACCOUNT_ID)).thenReturn(runtime)
+        Mockito.`when`(partyPresetQueryRepository.findAllByAccountId(ACCOUNT_ID)).thenReturn(emptyList())
+
+        val response = service.reorderEntries(ACCOUNT_ID, ReorderAutomationEntriesRequest(listOf(second.id, first.id)))
+
+        assertEquals(listOf(second.id, first.id), response.entries.sortedBy { it.priority }.map { it.id })
+        assertPreservedFailureDiagnostic(response, runtime)
+        Mockito.verify(automationOutbox).enqueue(ACCOUNT_ID, "SETTINGS_UPDATED")
     }
 
     @Test
@@ -474,14 +515,10 @@ class UnifiedAutomationServiceTest {
     }
 
     @Test
-    fun disablingEntryClearsStaleRuntimeConfigurationWarningAndErrorBeforeWake() {
+    fun settingsUpdateClearsOnlyConfigurationWarningBeforeDurableWake() {
         val account = account()
         val entry = AutomationEntryEntity(92L, account, AutomationType.BATTLE_MAP, 0, true, NOW, NOW)
-        val runtime = TypedAutomationRuntimeStateEntity(
-            ACCOUNT_ID, account, TypedAutomationLifecycle.RUNNING,
-            warningText = "stale configuration warning", lastError = "stale configuration error",
-            createdAt = NOW, updatedAt = NOW,
-        )
+        val runtime = stoppedNetworkRuntime(account)
         Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(entry))
         Mockito.`when`(typedQuery.lockRuntimeState(ACCOUNT_ID)).thenReturn(runtime)
         Mockito.`when`(typedQuery.findRuntimeState(ACCOUNT_ID)).thenReturn(runtime)
@@ -489,11 +526,7 @@ class UnifiedAutomationServiceTest {
 
         val response = service.updateBattleMaps(ACCOUNT_ID, UpdateBattleMapAutomationRequest(false, emptyList()))
 
-        assertEquals(TypedAutomationLifecycle.RUNNING, response.runtime.lifecycle)
-        assertEquals(emptyList(), response.runtime.warnings)
-        assertEquals(null, response.runtime.lastError)
-        assertEquals(null, runtime.warningText)
-        assertEquals(null, runtime.lastError)
+        assertPreservedFailureDiagnostic(response, runtime)
         Mockito.verify(automationOutbox).enqueue(ACCOUNT_ID, "SETTINGS_UPDATED")
     }
 
@@ -1632,6 +1665,26 @@ class UnifiedAutomationServiceTest {
                 categoryId = "battle_map", mapCode = "matcher", dailyTargetCount = 1,
                 presetMode = PresetSelectionMode.PRIMARY, executionOrder = 0,
             )
+
+    private fun stoppedNetworkRuntime(account: HofAccountEntity) = TypedAutomationRuntimeStateEntity(
+        ACCOUNT_ID, account, TypedAutomationLifecycle.STOPPED,
+        stopReason = AutomationStopReason.NETWORK.name,
+        warningText = "stale configuration warning",
+        lastError = "network retry diagnostic",
+        createdAt = NOW, updatedAt = NOW,
+    )
+
+    private fun assertPreservedFailureDiagnostic(
+        response: app.spammy.hof.automation.dto.TypedAutomationAggregateResponse,
+        runtime: TypedAutomationRuntimeStateEntity,
+    ) {
+        assertEquals(TypedAutomationLifecycle.STOPPED, response.runtime.lifecycle)
+        assertEquals(AutomationStopReason.NETWORK.name, response.runtime.stopReason)
+        assertEquals(emptyList(), response.runtime.warnings)
+        assertEquals("network retry diagnostic", response.runtime.lastError)
+        assertEquals(null, runtime.warningText)
+        assertEquals("network retry diagnostic", runtime.lastError)
+    }
 
     private data class InvalidTypeSpecificSettingsCase(
         val label: String,

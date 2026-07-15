@@ -1220,7 +1220,6 @@ class UnifiedAutomationService(
     private fun enqueueSettingsWake(accountId: Long) {
         typedQuery().lockRuntimeState(accountId)?.let { runtime ->
             runtime.warningText = null
-            runtime.lastError = null
             runtime.updatedAt = timeProvider.now()
         }
         typedOutbox().enqueue(accountId, "SETTINGS_UPDATED")
