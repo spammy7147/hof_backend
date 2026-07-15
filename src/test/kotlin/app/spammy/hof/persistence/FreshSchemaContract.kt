@@ -447,6 +447,22 @@ internal object FreshSchemaContract {
             primaryKey = listOf("account_id"),
         ),
         table(
+            "typed_automation_runtime_states",
+            requiredBigint("account_id"), requiredVarchar("lifecycle_status", 20), optionalVarchar("stop_reason", 30),
+            requiredInteger("retry_attempt"), optionalInstant("next_attempt_at"), optionalVarchar("lease_token", 128),
+            optionalInstant("lease_until"), requiredInstant("created_at"), requiredInstant("updated_at"), requiredBigint("version"),
+            primaryKey = listOf("account_id"),
+        ),
+        table(
+            "typed_automation_action_runs",
+            serialId(), requiredBigint("account_id"), requiredBigint("automation_entry_id"),
+            requiredVarchar("execution_identity", 128), requiredVarchar("action_kind", 30), requiredInteger("schema_version"),
+            requiredText("payload_json"), requiredVarchar("action_fingerprint", 64), requiredVarchar("status", 20),
+            requiredInteger("retry_attempt"), optionalInstant("next_attempt_at"), requiredVarchar("lease_token", 128),
+            optionalText("last_error"), requiredInstant("created_at"), optionalInstant("submitted_at"),
+            optionalInstant("finished_at"), requiredInstant("updated_at"),
+        ),
+        table(
             "device_push_targets",
             serialId(), requiredBigint("account_id"), requiredVarchar("platform", 20),
             requiredVarchar("target_type", 20), requiredVarchar("installation_id", 160), requiredText("target_value"),
@@ -579,6 +595,7 @@ internal object FreshSchemaContract {
             "battle_log_loots", "uk_battle_log_loots_log_display_order", "battle_log_id", "display_order",
         ),
         key("captcha_form_fields", "uk_captcha_form_fields_challenge_name", "challenge_id", "field_name"),
+        key("typed_automation_action_runs", "uk_typed_action_execution", "account_id", "execution_identity"),
     )
 
     private val FOREIGN_KEYS = listOf(
@@ -751,6 +768,9 @@ internal object FreshSchemaContract {
         ),
         fk("fk_battle_log_loots_log", "battle_log_loots.battle_log_id", "battle_logs.id", DeleteAction.CASCADE),
         fk("fk_captcha_challenges_account", "captcha_challenges.account_id", "hof_accounts.id", DeleteAction.CASCADE),
+        fk("fk_typed_runtime_account", "typed_automation_runtime_states.account_id", "hof_accounts.id", DeleteAction.CASCADE),
+        fk("fk_typed_action_account", "typed_automation_action_runs.account_id", "hof_accounts.id", DeleteAction.CASCADE),
+        fk("fk_typed_action_entry", "typed_automation_action_runs.automation_entry_id", "automation_entries.id", DeleteAction.CASCADE),
         fk(
             "fk_captcha_challenges_automation_action", "captcha_challenges.automation_action_run_id",
             "automation_action_runs.id", DeleteAction.SET_NULL,
@@ -910,10 +930,19 @@ internal object FreshSchemaContract {
             "captcha_challenges", "idx_captcha_challenges_automation_action", "automation_action_run_id",
         ),
         index("captcha_form_fields", "idx_captcha_form_fields_challenge_order", "challenge_id", "field_order", "id"),
+        index("typed_automation_action_runs", "idx_typed_action_account_status", "account_id", "status", "updated_at", "id"),
     )
 
     private val CHECKS = listOf(
         check("characters", "ck_characters_pattern_slot_count", "pattern_slot_count >= 0"),
+        check("typed_automation_runtime_states", "ck_typed_runtime_lifecycle", "lifecycle_status in ('RUNNING','PAUSED','STOPPED')"),
+        check("typed_automation_runtime_states", "ck_typed_runtime_stop", "(lifecycle_status = 'STOPPED' and stop_reason is not null) or (lifecycle_status <> 'STOPPED' and stop_reason is null)"),
+        check("typed_automation_runtime_states", "ck_typed_runtime_retry", "retry_attempt >= 0"),
+        check("typed_automation_runtime_states", "ck_typed_runtime_lease", "(lease_token is null and lease_until is null) or (lease_token is not null and lease_until is not null)"),
+        check("typed_automation_action_runs", "ck_typed_action_status", "status in ('PREPARED','SUBMITTING','SUCCEEDED','FAILED','AMBIGUOUS')"),
+        check("typed_automation_action_runs", "ck_typed_action_schema", "schema_version > 0"),
+        check("typed_automation_action_runs", "ck_typed_action_retry", "retry_attempt >= 0"),
+        check("typed_automation_action_runs", "ck_typed_action_fingerprint", "char_length(action_fingerprint) = 64"),
         check("character_status_lines", "ck_character_status_lines_order", "line_order >= 0"),
         check("character_action_patterns", "ck_character_action_patterns_row", "row_index >= 0"),
         check("character_position_choices", "ck_character_position_choices_order", "choice_order >= 0"),

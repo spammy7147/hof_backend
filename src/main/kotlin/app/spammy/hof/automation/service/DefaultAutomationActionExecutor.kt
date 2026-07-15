@@ -8,6 +8,8 @@ import app.spammy.hof.battle.service.BattleRunService
 import app.spammy.hof.character.repository.CharacterQueryRepository
 import app.spammy.hof.party.repository.PartyPresetQueryRepository
 import app.spammy.hof.quest.service.QuestGatewayService
+import app.spammy.hof.external.model.HofBattleOutcome
+import java.time.Instant
 import org.springframework.stereotype.Service
 import tools.jackson.databind.ObjectMapper
 
@@ -19,7 +21,10 @@ class DefaultAutomationActionExecutor(
     private val partyPresetQueryRepository: PartyPresetQueryRepository,
     private val objectMapper: ObjectMapper,
     private val sessionRecoveryExecutor: HofSessionRecoveryExecutor,
-) : AutomationActionExecutor {
+    private val questHandler: QuestAutomationHandler? = null,
+    private val battleHandler: BattleMapAutomationHandler? = null,
+    private val battleOutcomeReconciler: BattleOutcomeReconciler? = null,
+) : AutomationActionExecutor, TypedAutomationActionExecutor {
     /** 프리셋과 열쇠 퀘스트 blueprint를 실제 캐릭터 ID·패턴 슬롯 요청으로 해석한다. */
     override fun prepare(
         accountId: Long,
@@ -62,6 +67,62 @@ class DefaultAutomationActionExecutor(
         AutomationDecisionType.SLEEP,
         -> throw IllegalArgumentException("${payload.decision.type} 결정은 외부 action으로 실행할 수 없습니다.")
     } }
+
+    override fun execute(accountId: Long, action: StoredTypedAutomationActionV1) {
+        // The durable runner has already marked this action SUBMITTING. Session recovery may repeat its lambda,
+        // which is unsafe for a POST whose outcome is ambiguous, so typed actions are deliberately invoked once.
+        when (val payload = action.payload) {
+                is StoredTypedActionPayload.QuestClaim -> questGatewayService.claim(accountId, payload.actionNo)
+                is StoredTypedActionPayload.QuestAccept -> {
+                    questGatewayService.accept(accountId, payload.actionNo)
+                    questHandler?.onAcceptSucceeded(accountId, action.executionIdentity, QuestAction.Accept(payload.questCode, payload.actionNo))
+                }
+                is StoredTypedActionPayload.QuestBattle -> {
+                    val result = runTypedBattle(accountId, payload.categoryId, payload.mapCode, payload.presetId, payload.battleCount)
+                    val questAction = QuestAction.Battle(
+                        payload.questCode, payload.questCycle, payload.missionKey, payload.missionType,
+                        payload.categoryId, payload.mapCode, payload.mapCode,
+                        QuestPresetSelection(payload.presetMode, payload.presetId), payload.battleCount,
+                    )
+                    questHandler?.onBattleCompleted(
+                        accountId, action.executionIdentity, questAction,
+                        if (result.rounds.all { it.outcome == HofBattleOutcome.VICTORY.name }) QuestBattleOutcome.VICTORY else QuestBattleOutcome.DEFEAT,
+                    )
+                }
+                is StoredTypedActionPayload.BattleMap -> {
+                    val result = runTypedBattle(accountId, payload.categoryId, payload.mapCode, payload.presetId, payload.battleCount)
+                    val prepared = BattleMapAutomationAction(
+                        accountId, payload.progressDate, payload.categoryId, payload.mapCode, payload.presetMode,
+                        payload.presetId, payload.battleCount, action.executionIdentity,
+                    )
+                    val outcomes = result.rounds.map { round ->
+                        runCatching { BattleAutomationRoundOutcome.valueOf(round.outcome) }.getOrDefault(BattleAutomationRoundOutcome.UNKNOWN)
+                    }
+                    val resolution = battleHandler?.onBattleCompleted(
+                        prepared, BattleAutomationActionSource.BATTLE_MAP_AUTOMATION, action.executionIdentity,
+                        outcomes, battleOutcomeReconciler ?: ConservativeBattleOutcomeReconciler(),
+                    )
+                    if (resolution is BattleOutcomeResolution.Fatal) throw AmbiguousAutomationSubmissionException(resolution.evaluation.message)
+                }
+                is StoredTypedActionPayload.AdventureMap -> runTypedBattle(
+                    accountId, payload.categoryId, payload.mapCode, payload.presetId, payload.battleCount,
+                )
+        }
+    }
+
+    private fun runTypedBattle(accountId: Long, categoryId: String, mapCode: String, presetId: Long, battleCount: Int) =
+        try {
+            val party = resolvePreset(accountId, presetId)
+            battleRunService.runBattle(
+                accountId,
+                RunBattleRequest(
+                    categoryId, mapCode, party.slots.map { it.first },
+                    party.slots.map { BattlePatternLoadRequest(it.first, it.second) }, battleCount,
+                ),
+            )
+        } catch (error: Exception) {
+            throw AmbiguousAutomationSubmissionException("Battle submission outcome is not provable; it will not be resent.", error)
+        }
 
     private fun requireActionNo(decision: AutomationDecision): String = decision.actionNo
         ?: throw AutomationConfigurationException("퀘스트 처리 링크를 다시 불러와 주세요.")

@@ -50,7 +50,6 @@ class BattleRunService(
      *
      * 캡차/통행증 화면이 감지되면 결과 파싱을 하지 않고 CAPTCHA_REQUIRED 예외를 던져 앱의 전역 모달을 열게 한다.
      */
-    @Transactional(readOnly = true)
     fun runBattle(
         accountId: Long,
         request: RunBattleRequest,

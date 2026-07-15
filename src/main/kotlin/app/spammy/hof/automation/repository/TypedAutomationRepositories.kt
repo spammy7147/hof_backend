@@ -12,6 +12,8 @@ import app.spammy.hof.automation.entity.QuestAutomationCycleEntity
 import app.spammy.hof.automation.entity.QuestAutomationProcessedResultEntity
 import app.spammy.hof.automation.entity.QuestAutomationSelectionEntity
 import app.spammy.hof.automation.entity.QuestMapExecutionCounterEntity
+import app.spammy.hof.automation.entity.TypedAutomationActionRunEntity
+import app.spammy.hof.automation.entity.TypedAutomationRuntimeStateEntity
 import app.spammy.hof.common.persistence.CommandRepository
 
 interface AutomationEntryCommandRepository : CommandRepository<AutomationEntryEntity, Long>
@@ -37,3 +39,7 @@ interface AdventureAutomationMapCommandRepository : CommandRepository<AdventureA
 interface AdventureDailyRefreshCommandRepository : CommandRepository<AdventureDailyRefreshEntity, Long>
 
 interface AdventureDailyPreflightStateCommandRepository : CommandRepository<AdventureDailyPreflightStateEntity, Long>
+
+interface TypedAutomationRuntimeStateCommandRepository : CommandRepository<TypedAutomationRuntimeStateEntity, Long>
+
+interface TypedAutomationActionRunCommandRepository : CommandRepository<TypedAutomationActionRunEntity, Long>

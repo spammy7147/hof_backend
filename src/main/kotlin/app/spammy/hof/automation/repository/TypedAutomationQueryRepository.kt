@@ -11,18 +11,93 @@ import app.spammy.hof.automation.entity.QBattleAutomationProcessedResultEntity.b
 import app.spammy.hof.automation.entity.QQuestAutomationCycleEntity.questAutomationCycleEntity
 import app.spammy.hof.automation.entity.QQuestAutomationProcessedResultEntity.questAutomationProcessedResultEntity
 import app.spammy.hof.automation.entity.QQuestMapExecutionCounterEntity.questMapExecutionCounterEntity
+import app.spammy.hof.automation.entity.QTypedAutomationActionRunEntity.typedAutomationActionRunEntity
+import app.spammy.hof.automation.entity.QTypedAutomationRuntimeStateEntity.typedAutomationRuntimeStateEntity
+import app.spammy.hof.automation.entity.QQuestAutomationSelectionEntity.questAutomationSelectionEntity
+import app.spammy.hof.automation.entity.QQuestAutomationMapEntity.questAutomationMapEntity
+import app.spammy.hof.automation.entity.QBattleAutomationMapEntity.battleAutomationMapEntity
+import app.spammy.hof.automation.entity.QAdventureAutomationMapEntity.adventureAutomationMapEntity
+import app.spammy.hof.party.entity.QPartyPresetEntity.partyPresetEntity
 import app.spammy.hof.automation.entity.QuestAutomationCycleEntity
 import app.spammy.hof.automation.entity.QuestAutomationProcessedResultEntity
 import app.spammy.hof.automation.entity.QuestMapExecutionCounterEntity
+import app.spammy.hof.automation.entity.TypedAutomationActionRunEntity
+import app.spammy.hof.automation.entity.TypedAutomationRuntimeStateEntity
+import app.spammy.hof.automation.entity.TypedAutomationActionStatus
+import app.spammy.hof.automation.entity.QuestAutomationSelectionEntity
+import app.spammy.hof.automation.entity.QuestAutomationMapEntity
+import app.spammy.hof.automation.entity.BattleAutomationMapEntity
+import app.spammy.hof.automation.entity.AdventureAutomationMapEntity
 import com.querydsl.jpa.impl.JPAQueryFactory
 import jakarta.persistence.LockModeType
 import java.time.LocalDate
+import java.time.Instant
 import org.springframework.stereotype.Repository
 
 @Repository
 class TypedAutomationQueryRepository(
     private val queryFactory: JPAQueryFactory,
 ) {
+    fun findRuntimeState(accountId: Long): TypedAutomationRuntimeStateEntity? =
+        queryFactory.selectFrom(typedAutomationRuntimeStateEntity)
+            .where(typedAutomationRuntimeStateEntity.accountId.eq(accountId)).fetchOne()
+
+    fun findRecoverableRuntimeAccountIds(now: Instant): List<Long> =
+        queryFactory.select(typedAutomationRuntimeStateEntity.accountId)
+            .from(typedAutomationRuntimeStateEntity)
+            .where(
+                typedAutomationRuntimeStateEntity.lifecycleStatus.eq(app.spammy.hof.automation.entity.TypedAutomationLifecycle.RUNNING),
+                typedAutomationRuntimeStateEntity.nextAttemptAt.isNull.or(typedAutomationRuntimeStateEntity.nextAttemptAt.loe(now)),
+                typedAutomationRuntimeStateEntity.leaseUntil.isNull.or(typedAutomationRuntimeStateEntity.leaseUntil.loe(now)),
+            )
+            .orderBy(typedAutomationRuntimeStateEntity.accountId.asc()).fetch()
+
+    fun lockRuntimeState(accountId: Long): TypedAutomationRuntimeStateEntity? =
+        queryFactory.selectFrom(typedAutomationRuntimeStateEntity)
+            .where(typedAutomationRuntimeStateEntity.accountId.eq(accountId))
+            .setLockMode(LockModeType.PESSIMISTIC_WRITE).fetchOne()
+
+    fun findActiveTypedAction(accountId: Long): TypedAutomationActionRunEntity? =
+        queryFactory.selectFrom(typedAutomationActionRunEntity)
+            .where(
+                typedAutomationActionRunEntity.account.id.eq(accountId),
+                typedAutomationActionRunEntity.status.`in`(TypedAutomationActionStatus.PREPARED, TypedAutomationActionStatus.SUBMITTING),
+            )
+            .orderBy(typedAutomationActionRunEntity.id.desc()).fetchFirst()
+
+    fun lockTypedAction(actionId: Long): TypedAutomationActionRunEntity? =
+        queryFactory.selectFrom(typedAutomationActionRunEntity)
+            .where(typedAutomationActionRunEntity.id.eq(actionId))
+            .setLockMode(LockModeType.PESSIMISTIC_WRITE).fetchOne()
+
+    fun findEntry(accountId: Long, entryId: Long): AutomationEntryEntity? =
+        queryFactory.selectFrom(automationEntryEntity)
+            .where(automationEntryEntity.account.id.eq(accountId), automationEntryEntity.id.eq(entryId)).fetchOne()
+
+    fun findQuestSelections(entryId: Long): List<QuestAutomationSelectionEntity> =
+        queryFactory.selectFrom(questAutomationSelectionEntity)
+            .where(questAutomationSelectionEntity.entry.id.eq(entryId))
+            .orderBy(questAutomationSelectionEntity.sourceOrder.asc(), questAutomationSelectionEntity.id.asc()).fetch()
+
+    fun findQuestMaps(selectionIds: Collection<Long>): List<QuestAutomationMapEntity> {
+        if (selectionIds.isEmpty()) return emptyList()
+        return queryFactory.selectFrom(questAutomationMapEntity)
+            .leftJoin(questAutomationMapEntity.partyPreset, partyPresetEntity).fetchJoin()
+            .where(questAutomationMapEntity.questSelection.id.`in`(selectionIds))
+            .orderBy(questAutomationMapEntity.executionOrder.asc(), questAutomationMapEntity.id.asc()).fetch()
+    }
+
+    fun findBattleSettings(entryId: Long): List<BattleAutomationMapEntity> =
+        queryFactory.selectFrom(battleAutomationMapEntity)
+            .leftJoin(battleAutomationMapEntity.partyPreset, partyPresetEntity).fetchJoin()
+            .where(battleAutomationMapEntity.entry.id.eq(entryId))
+            .orderBy(battleAutomationMapEntity.executionOrder.asc(), battleAutomationMapEntity.id.asc()).fetch()
+
+    fun findAdventureSettings(entryId: Long): List<AdventureAutomationMapEntity> =
+        queryFactory.selectFrom(adventureAutomationMapEntity)
+            .leftJoin(adventureAutomationMapEntity.partyPreset, partyPresetEntity).fetchJoin()
+            .where(adventureAutomationMapEntity.entry.id.eq(entryId))
+            .orderBy(adventureAutomationMapEntity.executionOrder.asc(), adventureAutomationMapEntity.id.asc()).fetch()
     fun findEntries(accountId: Long): List<AutomationEntryEntity> =
         queryFactory.selectFrom(automationEntryEntity)
             .where(automationEntryEntity.account.id.eq(accountId))

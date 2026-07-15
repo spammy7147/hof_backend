@@ -5,6 +5,8 @@ import app.spammy.hof.automation.policy.AutomationDecisionType
 import app.spammy.hof.automation.port.AutomationWakeupPort
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
+import org.springframework.transaction.support.TransactionSynchronizationManager
+import java.util.UUID
 
 /** 최신 스냅샷 결정 또는 저장된 prepared payload 중 action 하나만 실행하는 통합 자동화 루프다. */
 @Service
@@ -14,11 +16,22 @@ class UnifiedAutomationRunner(
     private val decisionPolicy: AutomationDecisionPolicy,
     private val actionExecutor: AutomationActionExecutor,
     private val wakeupPort: AutomationWakeupPort,
+    private val dailyPreflight: AutomationDailyPreflight? = null,
+    private val typedRuntime: TypedAutomationRuntimeService? = null,
+    private val typedSnapshotLoader: TypedAutomationSnapshotLoader? = null,
+    private val coordinator: AutomationCoordinator? = null,
+    private val typedActionExecutor: TypedAutomationActionExecutor? = null,
+    private val afterCommitWakeups: AutomationAfterCommitWakeupService? = null,
+    private val typedCodec: StoredTypedAutomationActionCodec? = null,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
     /** 한 wakeup에서 최대 action 하나만 실행하고 후속 판단은 새 wakeup과 새 스냅샷에 맡긴다. */
     fun runOne(accountId: Long) {
+        if (listOf(dailyPreflight, typedRuntime, typedSnapshotLoader, coordinator, typedActionExecutor, afterCommitWakeups, typedCodec).all { it != null }) {
+            runTyped(accountId)
+            return
+        }
         val runnable = checkpointService.findRunnable(accountId) ?: return
         runnable.retryAction?.let { retry ->
             val payload = if (retry.requiresPreparation) {
@@ -65,6 +78,85 @@ class UnifiedAutomationRunner(
                 }
             }
         }
+    }
+
+    private fun runTyped(accountId: Long) {
+        val runtime = typedRuntime!!
+        check(!TransactionSynchronizationManager.isActualTransactionActive()) {
+            "Typed automation runner must not be called with an active transaction."
+        }
+        when (val preflight = dailyPreflight!!.ensureReady(accountId)) {
+            AutomationDailyPreflight.Result.Ready -> Unit
+            is AutomationDailyPreflight.Result.Busy -> { wakeupPort.schedule(accountId, preflight.retryAt, "DAILY_PREFLIGHT_BUSY"); return }
+            is AutomationDailyPreflight.Result.RetryScheduled -> { wakeupPort.schedule(accountId, preflight.nextAttemptAt, "DAILY_PREFLIGHT_RETRY"); return }
+            is AutomationDailyPreflight.Result.Stopped -> {
+                runtime.stop(accountId, AutomationStopReason.NETWORK)
+                return
+            }
+        }
+        val claim = runtime.claim(accountId)
+        if (claim !is TypedRuntimeClaim.Acquired) return
+        val token = claim.token
+        val stored = claim.preparedAction?.let {
+            runCatching { typedCodec!!.decode(it.schemaVersion, it.payloadJson) }.getOrElse { error ->
+                runtime.stop(accountId, token, it.id, AutomationStopReason.UNKNOWN, error.message ?: "Invalid action payload")
+                return
+            }
+        } ?: run {
+            val decision = try {
+                coordinator!!.coordinate(typedSnapshotLoader!!.loadTyped(accountId))
+            } catch (error: SafeRetryableAutomationException) {
+                runtime.scheduleSafeRetry(accountId, token, error.message ?: "Safe snapshot retry")?.let {
+                    wakeupPort.schedule(accountId, it, "TYPED_SAFE_RETRY")
+                }
+                return
+            }
+            when (decision) {
+                is AutomationCoordination.Runnable -> toStored(decision.entryId, decision.action)
+                is AutomationCoordination.Fatal -> { runtime.stop(accountId, token, null, decision.reason, decision.message); return }
+                is AutomationCoordination.Unavailable -> {
+                    runtime.release(accountId, token, decision.nextRunAt)
+                    wakeupPort.schedule(accountId, decision.nextRunAt, "TYPED_UNAVAILABLE")
+                    return
+                }
+                is AutomationCoordination.Idle -> { runtime.release(accountId, token); return }
+            }
+        }
+        val row = claim.preparedAction ?: runtime.prepare(accountId, token, stored) ?: return
+        if (!runtime.markSubmitting(accountId, token, row.id)) return
+        try {
+            typedActionExecutor!!.execute(accountId, stored)
+            if (runtime.succeed(accountId, token, row.id)) afterCommitWakeups!!.wake(accountId, "TYPED_ACTION_COMPLETED")
+        } catch (error: Throwable) {
+            log.warn("Typed automation action stopped accountId={} actionId={} errorType={}", accountId, row.id, error.javaClass.name)
+            runtime.stop(accountId, token, row.id, AutomationStopReason.NETWORK, error.message ?: error.javaClass.simpleName)
+        }
+    }
+
+    private fun toStored(entryId: Long, action: PreparedAutomationAction): StoredTypedAutomationActionV1 {
+        val executionId = when (action) {
+            is BattleMapAutomationAction -> action.executionIdentity
+            is AdventureMapAutomationAction -> action.executionIdentity
+            else -> UUID.randomUUID().toString()
+        }
+        val payload = when (action) {
+            is QuestAction.Claim -> StoredTypedActionPayload.QuestClaim(action.questCode, action.actionNo)
+            is QuestAction.Accept -> StoredTypedActionPayload.QuestAccept(action.questCode, action.actionNo)
+            is QuestAction.Battle -> StoredTypedActionPayload.QuestBattle(
+                action.questCode, action.questCycle, action.missionKey, action.missionType,
+                action.categoryId, action.mapCode, action.preset.mode,
+                action.preset.resolvedPresetId ?: action.preset.presetId ?: throw AutomationConfigurationException(), action.battleCount,
+            )
+            is BattleMapAutomationAction -> StoredTypedActionPayload.BattleMap(
+                action.progressDate, action.categoryId, action.mapCode, action.presetMode,
+                action.presetId ?: throw AutomationConfigurationException(), action.battleCount,
+            )
+            is AdventureMapAutomationAction -> StoredTypedActionPayload.AdventureMap(
+                action.categoryId, action.mapCode, action.presetMode, action.presetId,
+                action.battleCount, action.settingIdentity,
+            )
+        }
+        return StoredTypedAutomationActionV1(entryId, executionId, payload)
     }
 
     /** checkpoint가 저장한 단일 prepared payload만 실행하고 다음 판단은 별도 wakeup에 맡긴다. */

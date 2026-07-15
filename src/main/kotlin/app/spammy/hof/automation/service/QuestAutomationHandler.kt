@@ -29,6 +29,8 @@ import org.springframework.transaction.annotation.Transactional
 data class QuestPresetSelection(
     val mode: PresetSelectionMode,
     val presetId: Long? = null,
+    val resolvedPresetId: Long? = presetId,
+    val resolutionChecked: Boolean = false,
 )
 
 sealed interface QuestAction : PreparedAutomationAction {
@@ -436,7 +438,10 @@ class QuestAutomationHandler(
             (keyCount == null || keyCount > 0)
 
     private fun QuestAutomationMapSelection.hasValidPreset(): Boolean =
-        (preset.mode == PresetSelectionMode.EXPLICIT) == (preset.presetId != null)
+        when (preset.mode) {
+            PresetSelectionMode.EXPLICIT -> preset.presetId != null && (!preset.resolutionChecked || preset.resolvedPresetId == preset.presetId)
+            PresetSelectionMode.PRIMARY -> preset.presetId == null && (!preset.resolutionChecked || preset.resolvedPresetId != null)
+        }
 
     private companion object {
         const val INITIAL_CYCLE = "0"

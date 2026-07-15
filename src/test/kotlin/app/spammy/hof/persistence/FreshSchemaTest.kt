@@ -63,6 +63,7 @@ class FreshSchemaTest {
                 "12" to "add quest automation cycles",
                 "13" to "deduplicate quest automation results",
                 "14" to "add battle map automation progress ledger",
+                "15" to "add typed automation runtime",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -80,6 +81,7 @@ class FreshSchemaTest {
                 "V12__add_quest_automation_cycles.sql",
                 "V13__deduplicate_quest_automation_results.sql",
                 "V14__add_battle_map_automation_progress_ledger.sql",
+                "V15__add_typed_automation_runtime.sql",
                 "V1__initialize_schema.sql",
                 "V2__seed_battle_map_catalog.sql",
                 "V3__add_token_authentication.sql",

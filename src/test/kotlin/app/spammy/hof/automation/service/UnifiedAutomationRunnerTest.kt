@@ -13,6 +13,7 @@ import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertTrue
 import org.mockito.Mockito
+import tools.jackson.module.kotlin.jacksonObjectMapper
 
 class UnifiedAutomationRunnerTest {
     private val checkpoint = Mockito.mock(AutomationCheckpointService::class.java)
@@ -21,6 +22,41 @@ class UnifiedAutomationRunnerTest {
     private val executor = Mockito.mock(AutomationActionExecutor::class.java)
     private val wakeup = Mockito.mock(AutomationWakeupPort::class.java)
     private val runner = UnifiedAutomationRunner(checkpoint, snapshotLoader, decisionPolicy, executor, wakeup)
+
+    @Test
+    fun `typed runner persists submits and checkpoints one action then wakes a fresh evaluation`() {
+        val preflight = Mockito.mock(AutomationDailyPreflight::class.java)
+        val runtime = Mockito.mock(TypedAutomationRuntimeService::class.java)
+        val typedLoader = Mockito.mock(TypedAutomationSnapshotLoader::class.java)
+        val typedCoordinator = Mockito.mock(AutomationCoordinator::class.java)
+        val typedExecutor = Mockito.mock(TypedAutomationActionExecutor::class.java)
+        val afterCommit = Mockito.mock(AutomationAfterCommitWakeupService::class.java)
+        val codec = StoredTypedAutomationActionCodec(jacksonObjectMapper())
+        val typedRunner = UnifiedAutomationRunner(
+            checkpoint, snapshotLoader, decisionPolicy, executor, wakeup,
+            preflight, runtime, typedLoader, typedCoordinator, typedExecutor, afterCommit, codec,
+        )
+        val snapshot = AutomationCoordinatorSnapshot(emptyList())
+        val action = BattleMapAutomationAction(
+            7, java.time.LocalDate.parse("2026-07-16"), "battle_map", "gb0",
+            app.spammy.hof.automation.entity.PresetSelectionMode.PRIMARY, 301, 1, "execution-1",
+        )
+        val row = Mockito.mock(app.spammy.hof.automation.entity.TypedAutomationActionRunEntity::class.java)
+        Mockito.`when`(row.id).thenReturn(88L)
+        Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
+        Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token"))
+        Mockito.`when`(typedLoader.loadTyped(7)).thenReturn(snapshot)
+        Mockito.`when`(typedCoordinator.coordinate(snapshot)).thenReturn(AutomationCoordination.Runnable(12, action, emptyList()))
+        Mockito.`when`(runtime.prepare(Mockito.eq(7L), eqString("token"), anyStoredAction())).thenReturn(row)
+        Mockito.`when`(runtime.markSubmitting(7, "token", 88L)).thenReturn(true)
+        Mockito.`when`(runtime.succeed(7, "token", 88L)).thenReturn(true)
+
+        typedRunner.runOne(7)
+
+        Mockito.verify(typedExecutor, Mockito.times(1)).execute(Mockito.eq(7L), anyStoredAction())
+        Mockito.verify(runtime).succeed(7, "token", 88L)
+        Mockito.verify(afterCommit).wake(7, "TYPED_ACTION_COMPLETED")
+    }
 
     @Test
     fun `checkpoints exactly one action then wakes a fresh evaluation`() {
@@ -272,4 +308,10 @@ class UnifiedAutomationRunnerTest {
     private fun anyRetry(): RetryableAutomationAction =
         Mockito.any(RetryableAutomationAction::class.java)
             ?: RetryableAutomationAction(999L, payload(battleDecision(999L, "any")))
+
+    private fun anyStoredAction(): StoredTypedAutomationActionV1 =
+        Mockito.any(StoredTypedAutomationActionV1::class.java)
+            ?: StoredTypedAutomationActionV1(1, "any", StoredTypedActionPayload.QuestClaim("q", "a"))
+
+    private fun eqString(value: String): String = Mockito.eq(value) ?: value
 }
