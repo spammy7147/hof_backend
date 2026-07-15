@@ -1,0 +1,27 @@
+package app.spammy.hof.automation.repository
+
+import app.spammy.hof.automation.entity.AdventureAutomationMapEntity
+import app.spammy.hof.automation.entity.AdventureDailyRefreshEntity
+import app.spammy.hof.automation.entity.AutomationEntryEntity
+import app.spammy.hof.automation.entity.BattleAutomationDailyProgressEntity
+import app.spammy.hof.automation.entity.BattleAutomationMapEntity
+import app.spammy.hof.automation.entity.QuestAutomationMapEntity
+import app.spammy.hof.automation.entity.QuestAutomationSelectionEntity
+import app.spammy.hof.automation.entity.QuestMapExecutionCounterEntity
+import app.spammy.hof.common.persistence.CommandRepository
+
+interface AutomationEntryCommandRepository : CommandRepository<AutomationEntryEntity, Long>
+
+interface QuestAutomationSelectionCommandRepository : CommandRepository<QuestAutomationSelectionEntity, Long>
+
+interface QuestAutomationMapCommandRepository : CommandRepository<QuestAutomationMapEntity, Long>
+
+interface QuestMapExecutionCounterCommandRepository : CommandRepository<QuestMapExecutionCounterEntity, Long>
+
+interface BattleAutomationMapCommandRepository : CommandRepository<BattleAutomationMapEntity, Long>
+
+interface BattleAutomationDailyProgressCommandRepository : CommandRepository<BattleAutomationDailyProgressEntity, Long>
+
+interface AdventureAutomationMapCommandRepository : CommandRepository<AdventureAutomationMapEntity, Long>
+
+interface AdventureDailyRefreshCommandRepository : CommandRepository<AdventureDailyRefreshEntity, Long>

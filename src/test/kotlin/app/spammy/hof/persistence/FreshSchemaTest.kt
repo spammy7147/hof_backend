@@ -57,6 +57,7 @@ class FreshSchemaTest {
                 "6" to "add push and captcha resume",
                 "7" to "encrypt hof cookie storage",
                 "8" to "customize unified automation modules",
+                "9" to "replace automation with typed handlers",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -77,14 +78,16 @@ class FreshSchemaTest {
                 "V6__add_push_and_captcha_resume.sql",
                 "V7__encrypt_hof_cookie_storage.sql",
                 "V8__customize_unified_automation_modules.sql",
+                "V9__replace_automation_with_typed_handlers.sql",
             ),
             migrationNames,
         )
     }
 
     @Test
-    fun v8ResetsOnlyUnifiedAutomationData() {
-        val upgradeDatabase = "v8_upgrade_${UUID.randomUUID().toString().replace("-", "")}"
+    fun v9ResetsLegacyAutomationData() {
+        val suffix = UUID.randomUUID().toString().replace("-", "")
+        val upgradeDatabase = "v9_upgrade_$suffix"
         val upgradeUrl =
             "jdbc:h2:mem:$upgradeDatabase;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;" +
                 "DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1"
@@ -98,7 +101,7 @@ class FreshSchemaTest {
 
         DriverManager.getConnection(upgradeUrl, "sa", "").use { connection ->
             assertEquals(2, connection.count("select count(*) from hof_accounts"))
-            assertEquals(2, connection.count("select count(*) from automation_profiles"))
+            assertEquals(0, connection.count("select count(*) from automation_profiles"))
             assertEquals(1, connection.count("select count(*) from characters"))
             assertEquals(1, connection.count("select count(*) from party_presets"))
             assertEquals(1, connection.count("select count(*) from battle_logs"))
@@ -108,26 +111,10 @@ class FreshSchemaTest {
             assertEquals(0, connection.automationCount("automation_module_configs", "UNIFIED"))
             assertEquals(0, connection.actionRunCount("UNIFIED"))
 
-            assertEquals(1, connection.automationCount("automation_jobs", "TIME_BURN"))
-            assertEquals(1, connection.automationCount("automation_profile_maps", "TIME_BURN"))
-            assertEquals(1, connection.automationCount("automation_module_configs", "TIME_BURN"))
-            assertEquals(1, connection.actionRunCount("TIME_BURN"))
-            assertEquals(
-                1,
-                connection.count(
-                    "select count(*) from automation_module_configs " +
-                        "where display_name = 'TIME_BURN' and threshold_percent is null",
-                ),
-            )
-            assertEquals(
-                """{"legacyKey":"keep-me"}""",
-                connection.stringValue(
-                    "select legacy.settings_json from automation_module_legacy_settings legacy " +
-                        "join automation_module_configs configs on configs.id = legacy.module_config_id " +
-                        "join automation_profiles profiles on profiles.id = configs.profile_id " +
-                        "where profiles.mode = 'TIME_BURN'",
-                ),
-            )
+            assertEquals(0, connection.automationCount("automation_jobs", "TIME_BURN"))
+            assertEquals(0, connection.automationCount("automation_profile_maps", "TIME_BURN"))
+            assertEquals(0, connection.automationCount("automation_module_configs", "TIME_BURN"))
+            assertEquals(0, connection.actionRunCount("TIME_BURN"))
         }
     }
 
