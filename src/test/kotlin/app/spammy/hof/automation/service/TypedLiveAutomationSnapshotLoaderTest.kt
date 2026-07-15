@@ -21,6 +21,10 @@ import app.spammy.hof.character.entity.*
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
+import kotlin.test.assertFailsWith
+import org.springframework.jdbc.datasource.DataSourceTransactionManager
+import org.springframework.jdbc.datasource.DriverManagerDataSource
+import org.springframework.transaction.support.TransactionSynchronizationManager
 
 class TypedLiveAutomationSnapshotLoaderTest {
     @Test
@@ -52,7 +56,7 @@ class TypedLiveAutomationSnapshotLoaderTest {
         Mockito.`when`(quest.load(7)).thenReturn(emptyList())
         Mockito.`when`(mapQuery.findAllStatesForExecution(7)).thenReturn(emptyList())
         Mockito.`when`(presets.findAllByAccountId(7)).thenReturn(listOf(primaryA, primaryB, explicitX))
-        Mockito.`when`(presets.findPrimaryByAccountId(7)).thenReturn(primaryA, primaryB)
+        Mockito.`when`(presets.findPrimaryByAccountId(7)).thenReturn(primaryA, primaryA, primaryB, primaryB)
         Mockito.`when`(presets.findMembersByPresetIds(listOf(101L, 102L, 103L))).thenReturn(
             members(primaryA, "A", account, now) + members(primaryB, "B", account, now) + members(explicitX, "X", account, now),
         )
@@ -78,6 +82,79 @@ class TypedLiveAutomationSnapshotLoaderTest {
         assertEquals(firstAdventure.executionIdentities.getValue(23), firstAdventure.executionIdentities.getValue(23))
         assertNotEquals(firstAdventure.executionIdentities.getValue(23), secondAdventure.executionIdentities.getValue(23))
         assertTrue(secondAdventure.executionIdentities.getValue(23).length <= 128)
+    }
+
+    @Test
+    fun `category change during blocking GET rejects mixed snapshot and next load refreshes new category without transaction`() {
+        val now = Instant.parse("2026-07-16T00:00:00Z")
+        val account = HofAccountEntity(7, "login-category", "encrypted", now)
+        val entry = AutomationEntryEntity(11, account, AutomationType.BATTLE_MAP, 0, true, now, now)
+        val typed = Mockito.mock(TypedAutomationQueryRepository::class.java)
+        val mapQuery = Mockito.mock(BattleMapQueryRepository::class.java)
+        val mapService = Mockito.mock(BattleMapService::class.java)
+        val presets = Mockito.mock(PartyPresetQueryRepository::class.java)
+        val quest = Mockito.mock(QuestGatewayService::class.java)
+        val identities = Mockito.mock(BattleMapIdentityResolver::class.java)
+        val database = DriverManagerDataSource("jdbc:h2:mem:typed_config_${System.nanoTime()};DB_CLOSE_DELAY=-1", "sa", "")
+        val loader = TypedLiveAutomationSnapshotLoader(
+            quest, typed, mapQuery, presets, identities, mapService, TimeProvider { now },
+            HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
+            DataSourceTransactionManager(database),
+        )
+        val categoryA = BattleAutomationMapEntity(21, entry, "category-a", "map", 1, PresetSelectionMode.PRIMARY, null, 0)
+        val categoryB = BattleAutomationMapEntity(21, entry, "category-b", "map", 1, PresetSelectionMode.PRIMARY, null, 0)
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(entry))
+        Mockito.`when`(typed.findBattleSettings(11)).thenReturn(listOf(categoryA), listOf(categoryB), listOf(categoryB), listOf(categoryB))
+        Mockito.`when`(presets.findAllByAccountId(7)).thenReturn(emptyList())
+        Mockito.`when`(presets.findMembersByPresetIds(emptyList())).thenReturn(emptyList())
+        Mockito.`when`(quest.load(7)).thenReturn(emptyList())
+        Mockito.`when`(mapQuery.findAllStatesForExecution(7)).thenReturn(emptyList())
+        Mockito.`when`(mapService.findMaps(Mockito.eq(7L), Mockito.anyString() ?: "")).thenAnswer {
+            assertEquals(false, TransactionSynchronizationManager.isActualTransactionActive())
+            emptyList<Any>()
+        }
+
+        assertFailsWith<TypedAutomationConfigurationChangedException> { loader.loadTyped(7) }
+        val refreshed = loader.loadTyped(7)
+
+        assertEquals("category-b", requireNotNull(refreshed.entries.single().battle).settings.single().categoryId)
+        Mockito.verify(mapService).findMaps(7, "category-a")
+        Mockito.verify(mapService).findMaps(7, "category-b")
+        database.connection.use { it.createStatement().execute("shutdown") }
+    }
+
+    @Test
+    fun `primary change during blocking GET rejects old party and next load uses new primary`() {
+        val now = Instant.parse("2026-07-16T00:00:00Z")
+        val account = HofAccountEntity(7, "login-primary", "encrypted", now)
+        val primaryA = preset(101, account, "A", now)
+        val primaryB = preset(102, account, "B", now)
+        val entry = AutomationEntryEntity(10, account, AutomationType.QUEST, 0, true, now, now)
+        val selection = QuestAutomationSelectionEntity(20, entry, "q", true, 0)
+        val typed = Mockito.mock(TypedAutomationQueryRepository::class.java)
+        val mapQuery = Mockito.mock(BattleMapQueryRepository::class.java)
+        val mapService = Mockito.mock(BattleMapService::class.java)
+        val presets = Mockito.mock(PartyPresetQueryRepository::class.java)
+        val quest = Mockito.mock(QuestGatewayService::class.java)
+        val identities = Mockito.mock(BattleMapIdentityResolver::class.java)
+        val loader = TypedLiveAutomationSnapshotLoader(
+            quest, typed, mapQuery, presets, identities, mapService, TimeProvider { now },
+            HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
+        )
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(entry))
+        Mockito.`when`(typed.findQuestSelections(10)).thenReturn(listOf(selection))
+        Mockito.`when`(typed.findQuestMaps(listOf(20))).thenReturn(listOf(QuestAutomationMapEntity(21, selection, "m", "battle_map", "map", PresetSelectionMode.PRIMARY, null, 0, true)))
+        Mockito.`when`(presets.findAllByAccountId(7)).thenReturn(listOf(primaryA, primaryB))
+        Mockito.`when`(presets.findMembersByPresetIds(listOf(101L, 102L))).thenReturn(members(primaryA, "A", account, now) + members(primaryB, "B", account, now))
+        Mockito.`when`(presets.findPrimaryByAccountId(7)).thenReturn(primaryA, primaryB, primaryB, primaryB)
+        Mockito.`when`(quest.load(7)).thenReturn(emptyList())
+        Mockito.`when`(mapQuery.findAllStatesForExecution(7)).thenReturn(emptyList())
+
+        assertFailsWith<TypedAutomationConfigurationChangedException> { loader.loadTyped(7) }
+        val refreshed = loader.loadTyped(7)
+
+        val party = requireNotNull(refreshed.entries.single().quest).selections.single().maps.single().preset.resolvedParty
+        assertEquals((0..4).map { "B-$it" }, party?.characterIds)
     }
 
     @Test

@@ -1,52 +1,27 @@
 package app.spammy.hof.automation.recovery
 
-import app.spammy.hof.account.entity.HofAccountEntity
-import app.spammy.hof.automation.entity.AutomationJobEntity
-import app.spammy.hof.automation.entity.AutomationProfileEntity
 import app.spammy.hof.automation.port.AutomationWakeupPort
-import app.spammy.hof.automation.repository.AutomationJobQueryRepository
-import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import app.spammy.hof.common.time.TimeProvider
 import java.time.Instant
 import kotlin.test.Test
 import org.mockito.Mockito
 
 class AutomationRecoverySchedulerTest {
-    private val query = Mockito.mock(AutomationJobQueryRepository::class.java)
+    private val query = Mockito.mock(AutomationRecoveryDueAccountQuery::class.java)
     private val wakeup = Mockito.mock(AutomationWakeupPort::class.java)
     private val now = Instant.parse("2026-07-13T00:00:00Z")
-    private val typedQuery = Mockito.mock(TypedAutomationQueryRepository::class.java)
-    private val scheduler = AutomationRecoveryScheduler(query, wakeup, TimeProvider { now }, typedQuery)
+    private val scheduler = AutomationRecoveryScheduler(query, wakeup, TimeProvider { now })
 
     @Test
     fun onlyRowsReturnedByTheExplicitRecoverableQueryAreWoken() {
-        val first = job(1L)
-        val second = job(2L)
-        Mockito.`when`(query.findRecoverable(now)).thenReturn(listOf(first, second))
-        Mockito.`when`(typedQuery.findRecoverableRuntimeAccountIds(now)).thenReturn(listOf(3L))
+        Mockito.`when`(query.findDueAccountIds(now)).thenReturn(listOf(1L, 2L, 3L))
 
         scheduler.enqueueDue("STARTUP_RECOVERY")
 
         Mockito.verify(wakeup).wake(1L, "STARTUP_RECOVERY")
         Mockito.verify(wakeup).wake(2L, "STARTUP_RECOVERY")
-        Mockito.verify(wakeup).wake(3L, "TYPED_STARTUP_RECOVERY")
+        Mockito.verify(wakeup).wake(3L, "STARTUP_RECOVERY")
         Mockito.verifyNoMoreInteractions(wakeup)
     }
 
-    private fun job(accountId: Long): AutomationJobEntity {
-        val account = HofAccountEntity(accountId, "account-$accountId", "encrypted", now)
-        val profile = AutomationProfileEntity(accountId, account, "통합 자동화", "UNIFIED", true, now, now)
-        return AutomationJobEntity(
-            id = accountId,
-            account = account,
-            profile = profile,
-            status = "RUNNING",
-            currentStepIndex = 0,
-            message = null,
-            createdAt = now,
-            startedAt = now,
-            updatedAt = now,
-            finishedAt = null,
-        )
-    }
 }

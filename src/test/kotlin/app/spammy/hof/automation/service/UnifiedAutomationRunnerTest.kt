@@ -1,6 +1,8 @@
 package app.spammy.hof.automation.service
 
 import app.spammy.hof.automation.entity.AutomationModuleType
+import app.spammy.hof.automation.entity.*
+import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.automation.policy.AutomationDecision
 import app.spammy.hof.automation.policy.AutomationDecisionPolicy
 import app.spammy.hof.automation.policy.AutomationDecisionType
@@ -32,9 +34,10 @@ class UnifiedAutomationRunnerTest {
         val typedExecutor = Mockito.mock(TypedAutomationActionExecutor::class.java)
         val afterCommit = Mockito.mock(AutomationAfterCommitWakeupService::class.java)
         val codec = StoredTypedAutomationActionCodec(jacksonObjectMapper())
+        val engineSelector = Mockito.mock(TypedAutomationEngineSelector::class.java)
         val typedRunner = UnifiedAutomationRunner(
             checkpoint, snapshotLoader, decisionPolicy, executor, wakeup,
-            preflight, runtime, typedLoader, typedCoordinator, typedExecutor, afterCommit, codec,
+            preflight, runtime, typedLoader, typedCoordinator, typedExecutor, afterCommit, codec, engineSelector,
         )
         val snapshot = AutomationCoordinatorSnapshot(emptyList())
         val action = BattleMapAutomationAction(
@@ -47,6 +50,7 @@ class UnifiedAutomationRunnerTest {
         )
         val row = Mockito.mock(app.spammy.hof.automation.entity.TypedAutomationActionRunEntity::class.java)
         Mockito.`when`(row.id).thenReturn(88L)
+        Mockito.`when`(engineSelector.usesTypedEngine(7)).thenReturn(true)
         Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
         Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token"))
         Mockito.`when`(typedLoader.loadTyped(7)).thenReturn(snapshot)
@@ -58,8 +62,172 @@ class UnifiedAutomationRunnerTest {
         typedRunner.runOne(7)
 
         Mockito.verify(typedExecutor, Mockito.times(1)).execute(Mockito.eq(7L), anyStoredAction())
+        Mockito.verify(runtime).recordWarnings(7, "token", emptyList())
         Mockito.verify(runtime).succeed(7, "token", 88L)
         Mockito.verify(afterCommit).wake(7, "TYPED_ACTION_COMPLETED")
+        Mockito.verifyNoInteractions(checkpoint)
+    }
+
+    @Test
+    fun `prepare and submitting races explicitly release each claimed token`() {
+        val preflight = Mockito.mock(AutomationDailyPreflight::class.java)
+        val runtime = Mockito.mock(TypedAutomationRuntimeService::class.java)
+        val loader = Mockito.mock(TypedAutomationSnapshotLoader::class.java)
+        val coordinator = Mockito.mock(AutomationCoordinator::class.java)
+        val typedExecutor = Mockito.mock(TypedAutomationActionExecutor::class.java)
+        val selector = Mockito.mock(TypedAutomationEngineSelector::class.java)
+        val snapshot = AutomationCoordinatorSnapshot(emptyList())
+        val action = QuestAction.Claim("quest", "claim")
+        val row = Mockito.mock(TypedAutomationActionRunEntity::class.java)
+        Mockito.`when`(row.id).thenReturn(88L)
+        val typedRunner = UnifiedAutomationRunner(
+            checkpoint, snapshotLoader, decisionPolicy, executor, wakeup, preflight, runtime, loader,
+            coordinator, typedExecutor, Mockito.mock(AutomationAfterCommitWakeupService::class.java),
+            StoredTypedAutomationActionCodec(jacksonObjectMapper()), selector,
+        )
+        Mockito.`when`(selector.usesTypedEngine(7)).thenReturn(true)
+        Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
+        Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("prepare-token"), TypedRuntimeClaim.Acquired("submit-token"))
+        Mockito.`when`(loader.loadTyped(7)).thenReturn(snapshot)
+        Mockito.`when`(coordinator.coordinate(snapshot)).thenReturn(AutomationCoordination.Runnable(12, action, listOf("warning")))
+        Mockito.`when`(runtime.prepare(Mockito.eq(7L), eqString("prepare-token"), anyStoredAction())).thenReturn(null)
+        Mockito.`when`(runtime.prepare(Mockito.eq(7L), eqString("submit-token"), anyStoredAction())).thenReturn(row)
+        Mockito.`when`(runtime.markSubmitting(7, "submit-token", 88)).thenReturn(false)
+
+        typedRunner.runOne(7)
+        typedRunner.runOne(7)
+
+        Mockito.verify(runtime).release(7, "prepare-token")
+        Mockito.verify(runtime).release(7, "submit-token")
+        Mockito.verify(typedExecutor, Mockito.never()).execute(Mockito.eq(7L), anyStoredAction())
+    }
+
+    @Test
+    fun `configuration change releases lease and requests immediate durable reload`() {
+        val preflight = Mockito.mock(AutomationDailyPreflight::class.java)
+        val runtime = Mockito.mock(TypedAutomationRuntimeService::class.java)
+        val loader = Mockito.mock(TypedAutomationSnapshotLoader::class.java)
+        val selector = Mockito.mock(TypedAutomationEngineSelector::class.java)
+        val typedRunner = UnifiedAutomationRunner(
+            checkpoint, snapshotLoader, decisionPolicy, executor, wakeup, preflight, runtime, loader,
+            Mockito.mock(AutomationCoordinator::class.java), Mockito.mock(TypedAutomationActionExecutor::class.java),
+            Mockito.mock(AutomationAfterCommitWakeupService::class.java), StoredTypedAutomationActionCodec(jacksonObjectMapper()), selector,
+        )
+        Mockito.`when`(selector.usesTypedEngine(7)).thenReturn(true)
+        Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
+        Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token"))
+        Mockito.`when`(loader.loadTyped(7)).thenThrow(TypedAutomationConfigurationChangedException())
+
+        typedRunner.runOne(7)
+
+        Mockito.verify(runtime).release(7, "token")
+        Mockito.verify(wakeup).wake(7, "TYPED_CONFIG_RELOAD")
+    }
+
+    @Test
+    fun `production dependencies still execute legacy runner for a legacy-only account`() {
+        val preflight = Mockito.mock(AutomationDailyPreflight::class.java)
+        val runtime = Mockito.mock(TypedAutomationRuntimeService::class.java)
+        val typedLoader = Mockito.mock(TypedAutomationSnapshotLoader::class.java)
+        val typedCoordinator = Mockito.mock(AutomationCoordinator::class.java)
+        val typedExecutor = Mockito.mock(TypedAutomationActionExecutor::class.java)
+        val afterCommit = Mockito.mock(AutomationAfterCommitWakeupService::class.java)
+        val engineSelector = Mockito.mock(TypedAutomationEngineSelector::class.java)
+        val productionRunner = UnifiedAutomationRunner(
+            checkpoint, snapshotLoader, decisionPolicy, executor, wakeup,
+            preflight, runtime, typedLoader, typedCoordinator, typedExecutor, afterCommit,
+            StoredTypedAutomationActionCodec(jacksonObjectMapper()), engineSelector,
+        )
+        val runnable = RunnableAutomationJob(11, 7, 0)
+        val snapshot = Mockito.mock(AutomationSnapshot::class.java)
+        val decision = AutomationDecision(AutomationDecisionType.SLEEP, AutomationModuleType.TIME_BURN, nextRunAt = null)
+        Mockito.`when`(engineSelector.usesTypedEngine(7)).thenReturn(false)
+        Mockito.`when`(checkpoint.findRunnable(7)).thenReturn(runnable)
+        Mockito.`when`(snapshotLoader.load(7)).thenReturn(snapshot)
+        Mockito.`when`(decisionPolicy.decide(snapshot)).thenReturn(decision)
+
+        productionRunner.runOne(7)
+
+        Mockito.verify(checkpoint).sleep(11, null)
+        Mockito.verifyNoInteractions(preflight, runtime, typedLoader, typedCoordinator, typedExecutor)
+    }
+
+    @Test
+    fun `typed configuration wins even before runtime is started and never falls through to legacy`() {
+        val preflight = Mockito.mock(AutomationDailyPreflight::class.java)
+        val runtime = Mockito.mock(TypedAutomationRuntimeService::class.java)
+        val typedLoader = Mockito.mock(TypedAutomationSnapshotLoader::class.java)
+        val typedCoordinator = Mockito.mock(AutomationCoordinator::class.java)
+        val typedExecutor = Mockito.mock(TypedAutomationActionExecutor::class.java)
+        val afterCommit = Mockito.mock(AutomationAfterCommitWakeupService::class.java)
+        val engineSelector = Mockito.mock(TypedAutomationEngineSelector::class.java)
+        val productionRunner = UnifiedAutomationRunner(
+            checkpoint, snapshotLoader, decisionPolicy, executor, wakeup,
+            preflight, runtime, typedLoader, typedCoordinator, typedExecutor, afterCommit,
+            StoredTypedAutomationActionCodec(jacksonObjectMapper()), engineSelector,
+        )
+        Mockito.`when`(engineSelector.usesTypedEngine(7)).thenReturn(true)
+        Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
+        Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Inactive)
+
+        productionRunner.runOne(7)
+
+        Mockito.verify(runtime).claim(7)
+        Mockito.verifyNoInteractions(checkpoint, snapshotLoader, decisionPolicy, executor)
+    }
+
+    @Test
+    fun `tampered stored envelopes stop fatally before submitting or posting`() {
+        val codec = StoredTypedAutomationActionCodec(jacksonObjectMapper())
+        val stored = StoredTypedAutomationActionV1(12, "execution-1", StoredTypedActionPayload.QuestClaim("quest", "claim"))
+        val encoded = codec.encode(stored)
+        data class Corruption(
+            val name: String,
+            val accountId: Long = 7,
+            val entryId: Long = 12,
+            val execution: String = "execution-1",
+            val kind: String = "QUEST_CLAIM",
+            val schema: Int = 1,
+            val json: String = encoded.json,
+            val fingerprint: String = encoded.fingerprint,
+        )
+        val changedPayload = codec.encode(stored.copy(payload = StoredTypedActionPayload.QuestClaim("tampered", "claim"))).json
+        val cases = listOf(
+            Corruption("payload", json = changedPayload),
+            Corruption("fingerprint", fingerprint = "0".repeat(64)),
+            Corruption("kind", kind = "QUEST_ACCEPT"),
+            Corruption("account", accountId = 8),
+            Corruption("entry", entryId = 13),
+            Corruption("execution", execution = "different"),
+            Corruption("schema", schema = 99),
+        )
+        cases.forEach { corruption ->
+            val preflight = Mockito.mock(AutomationDailyPreflight::class.java)
+            val runtime = Mockito.mock(TypedAutomationRuntimeService::class.java)
+            val typedLoader = Mockito.mock(TypedAutomationSnapshotLoader::class.java)
+            val typedCoordinator = Mockito.mock(AutomationCoordinator::class.java)
+            val typedExecutor = Mockito.mock(TypedAutomationActionExecutor::class.java)
+            val selector = Mockito.mock(TypedAutomationEngineSelector::class.java)
+            val owner = HofAccountEntity(corruption.accountId, "login-${corruption.name}", "encrypted", Instant.EPOCH)
+            val entry = AutomationEntryEntity(corruption.entryId, owner, AutomationType.QUEST, 0, true, Instant.EPOCH, Instant.EPOCH)
+            val row = TypedAutomationActionRunEntity(
+                88, owner, entry, corruption.execution, corruption.kind, corruption.schema, corruption.json,
+                corruption.fingerprint, TypedAutomationActionStatus.PREPARED, leaseToken = "token",
+                createdAt = Instant.EPOCH, updatedAt = Instant.EPOCH,
+            )
+            val typedRunner = UnifiedAutomationRunner(
+                checkpoint, snapshotLoader, decisionPolicy, executor, wakeup, preflight, runtime,
+                typedLoader, typedCoordinator, typedExecutor, Mockito.mock(AutomationAfterCommitWakeupService::class.java), codec, selector,
+            )
+            Mockito.`when`(selector.usesTypedEngine(7)).thenReturn(true)
+            Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
+            Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token", row))
+
+            typedRunner.runOne(7)
+
+            Mockito.verify(runtime).stop(7, "token", 88, AutomationStopReason.FATAL, "Stored typed action integrity check failed.")
+            Mockito.verifyNoInteractions(typedExecutor)
+        }
     }
 
     @Test

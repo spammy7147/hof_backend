@@ -10,6 +10,7 @@ import java.time.LocalDate
 import java.util.HexFormat
 import org.springframework.stereotype.Component
 import tools.jackson.databind.ObjectMapper
+import app.spammy.hof.automation.entity.TypedAutomationActionRunEntity
 
 data class StoredTypedAutomationActionV1(
     val entryId: Long,
@@ -81,6 +82,18 @@ class StoredTypedAutomationActionCodec(private val objectMapper: ObjectMapper) {
         return objectMapper.readValue(json, StoredTypedAutomationActionV1::class.java).also(::validate)
     }
 
+    /** Verifies every duplicated persistence discriminator before a stored request may be submitted. */
+    fun verifyPersisted(row: TypedAutomationActionRunEntity, expectedAccountId: Long): StoredTypedAutomationActionV1 {
+        val decoded = decode(row.schemaVersion, row.payloadJson)
+        val canonical = encode(decoded)
+        require(canonical.fingerprint == row.actionFingerprint) { "Stored action fingerprint mismatch." }
+        require(row.actionKind == decoded.payload.kind()) { "Stored action kind mismatch." }
+        require(row.account.id == expectedAccountId && row.entry.account.id == expectedAccountId) { "Stored action account mismatch." }
+        require(row.entry.id == decoded.entryId) { "Stored action entry mismatch." }
+        require(row.executionIdentity == decoded.executionIdentity) { "Stored action execution mismatch." }
+        return decoded
+    }
+
     private fun validate(action: StoredTypedAutomationActionV1) {
         when (val payload = action.payload) {
             is StoredTypedActionPayload.QuestClaim -> require(payload.questCode.isNotBlank() && payload.actionNo.isNotBlank())
@@ -103,4 +116,12 @@ class StoredTypedAutomationActionCodec(private val objectMapper: ObjectMapper) {
     }
 
     companion object { const val SCHEMA_VERSION = 1 }
+}
+
+internal fun StoredTypedActionPayload.kind(): String = when (this) {
+    is StoredTypedActionPayload.QuestClaim -> "QUEST_CLAIM"
+    is StoredTypedActionPayload.QuestAccept -> "QUEST_ACCEPT"
+    is StoredTypedActionPayload.QuestBattle -> "QUEST_BATTLE"
+    is StoredTypedActionPayload.BattleMap -> "BATTLE_MAP"
+    is StoredTypedActionPayload.AdventureMap -> "ADVENTURE_MAP"
 }

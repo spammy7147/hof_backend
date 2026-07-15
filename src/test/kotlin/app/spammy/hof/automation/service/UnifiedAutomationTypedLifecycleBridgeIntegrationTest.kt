@@ -2,59 +2,147 @@ package app.spammy.hof.automation.service
 
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.repository.AccountQueryRepository
+import app.spammy.hof.account.repository.HofAccountRepository
 import app.spammy.hof.automation.entity.*
+import app.spammy.hof.automation.outbox.AutomationOutboxQueryRepository
+import app.spammy.hof.automation.outbox.AutomationOutboxService
 import app.spammy.hof.automation.repository.*
-import app.spammy.hof.battle.repository.BattleMapQueryRepository
+import app.spammy.hof.common.persistence.QueryDslConfig
 import app.spammy.hof.common.time.TimeProvider
-import app.spammy.hof.party.repository.PartyPresetQueryRepository
 import java.time.Instant
+import java.time.LocalDate
+import jakarta.persistence.EntityManager
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import org.mockito.Mockito
-import org.springframework.jdbc.datasource.DataSourceTransactionManager
-import org.springframework.jdbc.datasource.DriverManagerDataSource
+import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
+import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
+import org.springframework.boot.test.context.TestConfiguration
+import org.springframework.context.annotation.Bean
+import org.springframework.context.annotation.Import
+import org.springframework.transaction.PlatformTransactionManager
+import org.springframework.transaction.annotation.Propagation
+import org.springframework.transaction.annotation.Transactional
 import org.springframework.transaction.support.TransactionTemplate
+import org.springframework.test.context.ActiveProfiles
+import tools.jackson.databind.ObjectMapper
+import tools.jackson.module.kotlin.jacksonObjectMapper
 
+@DataJpaTest
+@ActiveProfiles("test")
+@Transactional(propagation = Propagation.NOT_SUPPORTED)
+@Import(
+    QueryDslConfig::class,
+    AccountQueryRepository::class,
+    TypedAutomationQueryRepository::class,
+    UnifiedAutomationQueryRepository::class,
+    AdventureDailyPreflightQueryRepository::class,
+    AutomationOutboxQueryRepository::class,
+    AutomationOutboxService::class,
+    TypedAutomationLifecycleBridge::class,
+    UnifiedAutomationTypedLifecycleBridgeIntegrationTest.Config::class,
+)
 class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
-    @Test
-    fun `typed stopped resumes after commit while legacy running remains running and rollback emits nothing`() {
-        val now = Instant.parse("2026-07-16T00:00:00Z")
-        val account = HofAccountEntity(7, "login", "encrypted", now)
-        val profile = AutomationProfileEntity(8, account, "unified", "UNIFIED", true, now, now)
-        val job = AutomationJobEntity(9, account, profile, "RUNNING", 0, null, now, now, now, null)
-        val typedState = TypedAutomationRuntimeStateEntity(7, account, TypedAutomationLifecycle.STOPPED, AutomationStopReason.NETWORK.name, createdAt = now, updatedAt = now)
-        val legacyQuery = Mockito.mock(UnifiedAutomationQueryRepository::class.java)
-        val typedQuery = Mockito.mock(TypedAutomationQueryRepository::class.java)
-        val typedRuntime = Mockito.mock(TypedAutomationRuntimeService::class.java)
-        Mockito.`when`(typedQuery.findRuntimeState(7)).thenReturn(typedState)
-        Mockito.`when`(legacyQuery.findCurrentJob(7)).thenReturn(job)
-        Mockito.`when`(legacyQuery.findProfile(7)).thenReturn(profile)
-        Mockito.`when`(legacyQuery.findModules(8)).thenReturn(emptyList())
-        val service = UnifiedAutomationService(
-            Mockito.mock(AccountQueryRepository::class.java), Mockito.mock(AutomationProfileRepository::class.java),
-            Mockito.mock(AutomationModuleConfigRepository::class.java), Mockito.mock(AutomationModuleMapCommandRepository::class.java),
-            Mockito.mock(AutomationModuleQuestCommandRepository::class.java), Mockito.mock(AutomationModuleQuestMapCommandRepository::class.java),
-            Mockito.mock(AutomationJobRepository::class.java), legacyQuery, Mockito.mock(BattleMapQueryRepository::class.java),
-            Mockito.mock(PartyPresetQueryRepository::class.java), TimeProvider { now },
-            Mockito.mock(AutomationAfterCommitWakeupService::class.java),
-            AutomationModuleReadinessEvaluator(Mockito.mock(PartyPresetQueryRepository::class.java)), typedRuntime, typedQuery,
-        )
-        val database = DriverManagerDataSource("jdbc:h2:mem:lifecycle_${System.nanoTime()};DB_CLOSE_DELAY=-1", "sa", "")
-        val transactions = TransactionTemplate(DataSourceTransactionManager(database))
-        try {
-            transactions.executeWithoutResult {
-                assertEquals("RUNNING", service.resume(7).job?.status)
-                Mockito.verifyNoInteractions(typedRuntime)
-            }
-            Mockito.verify(typedRuntime, Mockito.times(1)).resume(7)
+    @Autowired private lateinit var accounts: HofAccountRepository
+    @Autowired private lateinit var profiles: AutomationProfileRepository
+    @Autowired private lateinit var jobs: AutomationJobRepository
+    @Autowired private lateinit var preflightStates: AdventureDailyPreflightStateCommandRepository
+    @Autowired private lateinit var unifiedQuery: UnifiedAutomationQueryRepository
+    @Autowired private lateinit var typedQuery: TypedAutomationQueryRepository
+    @Autowired private lateinit var preflightQuery: AdventureDailyPreflightQueryRepository
+    @Autowired private lateinit var outboxQuery: AutomationOutboxQueryRepository
+    @Autowired private lateinit var bridge: TypedAutomationLifecycleBridge
+    @Autowired private lateinit var transactionManager: PlatformTransactionManager
+    @Autowired private lateinit var entityManager: EntityManager
 
-            transactions.executeWithoutResult { status ->
-                service.resume(7)
-                status.setRollbackOnly()
-            }
-            Mockito.verify(typedRuntime, Mockito.times(1)).resume(7)
-        } finally {
-            database.connection.use { it.createStatement().execute("shutdown") }
+    @Test
+    fun `resume atomically updates legacy typed and preflight state and persists durable wake`() {
+        val accountId = seed("commit")
+
+        TransactionTemplate(transactionManager).executeWithoutResult {
+            val job = requireNotNull(unifiedQuery.findCurrentJob(accountId))
+            job.status = "RUNNING"
+            job.updatedAt = NOW
+            jobs.save(job)
+            bridge.resume(accountId, "USER_RESUME")
         }
+
+        assertEquals("RUNNING", unifiedQuery.findCurrentJob(accountId)?.status)
+        val typed = requireNotNull(typedQuery.findRuntimeState(accountId))
+        assertEquals(TypedAutomationLifecycle.RUNNING, typed.lifecycleStatus)
+        assertNull(typed.stopReason)
+        assertNull(typed.leaseToken)
+        val preflight = requireNotNull(preflightQuery.findState(accountId))
+        assertEquals(0, preflight.failedAttempts)
+        assertNull(preflight.stopReason)
+        assertNull(preflight.inFlightToken)
+        val events = outboxQuery.findUnpublished(NOW.plusSeconds(1)).filter { it.account.id == accountId }
+        assertEquals(1, events.size)
+        assertTrue(events.single().payload.contains("\"reason\":\"USER_RESUME\""))
     }
+
+    @Test
+    fun `rollback changes no lifecycle state and emits no wake without any in-memory callback`() {
+        val accountId = seed("rollback")
+
+        assertFailsWith<ForcedRollback> {
+            TransactionTemplate(transactionManager).executeWithoutResult {
+                val job = requireNotNull(unifiedQuery.findCurrentJob(accountId))
+                job.status = "RUNNING"
+                jobs.save(job)
+                bridge.resume(accountId, "USER_RESUME")
+                throw ForcedRollback()
+            }
+        }
+
+        assertEquals("PAUSED", unifiedQuery.findCurrentJob(accountId)?.status)
+        val typed = requireNotNull(typedQuery.findRuntimeState(accountId))
+        assertEquals(TypedAutomationLifecycle.STOPPED, typed.lifecycleStatus)
+        assertEquals(AutomationStopReason.NETWORK.name, typed.stopReason)
+        val preflight = requireNotNull(preflightQuery.findState(accountId))
+        assertEquals(3, preflight.failedAttempts)
+        assertEquals("NETWORK", preflight.stopReason)
+        assertEquals("preflight-token", preflight.inFlightToken)
+        assertEquals(emptyList(), outboxQuery.findUnpublished(NOW.plusSeconds(1)).filter { it.account.id == accountId })
+    }
+
+    @Test
+    fun `start and pause cannot clear a stopped typed runtime`() {
+        val accountId = seed("stopped-invariant")
+
+        val started = TransactionTemplate(transactionManager).execute { bridge.start(accountId, "USER_START") }
+        TransactionTemplate(transactionManager).executeWithoutResult { bridge.pause(accountId, "USER_PAUSE") }
+
+        assertFalse(requireNotNull(started))
+        val state = requireNotNull(typedQuery.findRuntimeState(accountId))
+        assertEquals(TypedAutomationLifecycle.STOPPED, state.lifecycleStatus)
+        assertEquals(AutomationStopReason.NETWORK.name, state.stopReason)
+        val events = outboxQuery.findUnpublished(NOW.plusSeconds(1)).filter { it.account.id == accountId }
+        assertEquals(1, events.size)
+    }
+
+    private fun seed(suffix: String): Long = TransactionTemplate(transactionManager).execute {
+        val account = accounts.save(HofAccountEntity(loginId = "lifecycle-$suffix", encryptedPassword = "encrypted", createdAt = NOW))
+        val profile = profiles.save(AutomationProfileEntity(account = account, name = "unified", mode = "UNIFIED", enabled = true, createdAt = NOW, updatedAt = NOW))
+        jobs.save(AutomationJobEntity(account = account, profile = profile, status = "PAUSED", currentStepIndex = 0, message = null, createdAt = NOW, startedAt = NOW, updatedAt = NOW, finishedAt = null))
+        entityManager.flush()
+        entityManager.createNativeQuery(
+            "insert into typed_automation_runtime_states (account_id,lifecycle_status,stop_reason,retry_attempt,created_at,updated_at,version) values (?1,'STOPPED','NETWORK',0,?2,?2,0)",
+        ).setParameter(1, account.id).setParameter(2, NOW).executeUpdate()
+        preflightStates.save(AdventureDailyPreflightStateEntity(account = account, refreshDate = LocalDate.parse("2026-07-16"), failedAttempts = 3, nextAttemptAt = NOW.plusSeconds(30), stopReason = "NETWORK", inFlightToken = "preflight-token", inFlightUntil = NOW.plusSeconds(300), updatedAt = NOW))
+        account.id
+    }
+
+    private class ForcedRollback : RuntimeException()
+
+    @TestConfiguration(proxyBeanMethods = false)
+    class Config {
+        @Bean fun objectMapper(): ObjectMapper = jacksonObjectMapper()
+        @Bean fun timeProvider(): TimeProvider = TimeProvider { NOW }
+    }
+
+    private companion object { val NOW: Instant = Instant.parse("2026-07-16T00:00:00Z") }
 }

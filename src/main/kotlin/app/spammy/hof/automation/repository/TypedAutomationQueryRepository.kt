@@ -38,6 +38,13 @@ import org.springframework.stereotype.Repository
 class TypedAutomationQueryRepository(
     private val queryFactory: JPAQueryFactory,
 ) {
+    /** A persisted typed runtime or any typed entry permanently selects the typed engine for this account. */
+    fun hasTypedAutomation(accountId: Long): Boolean =
+        queryFactory.selectOne().from(typedAutomationRuntimeStateEntity)
+            .where(typedAutomationRuntimeStateEntity.accountId.eq(accountId)).fetchFirst() != null ||
+            queryFactory.selectOne().from(automationEntryEntity)
+                .where(automationEntryEntity.account.id.eq(accountId)).fetchFirst() != null
+
     fun findRuntimeState(accountId: Long): TypedAutomationRuntimeStateEntity? =
         queryFactory.selectFrom(typedAutomationRuntimeStateEntity)
             .where(typedAutomationRuntimeStateEntity.accountId.eq(accountId)).fetchOne()
@@ -47,8 +54,13 @@ class TypedAutomationQueryRepository(
             .from(typedAutomationRuntimeStateEntity)
             .where(
                 typedAutomationRuntimeStateEntity.lifecycleStatus.eq(app.spammy.hof.automation.entity.TypedAutomationLifecycle.RUNNING),
-                typedAutomationRuntimeStateEntity.nextAttemptAt.isNull.or(typedAutomationRuntimeStateEntity.nextAttemptAt.loe(now)),
-                typedAutomationRuntimeStateEntity.leaseUntil.isNull.or(typedAutomationRuntimeStateEntity.leaseUntil.loe(now)),
+                typedAutomationRuntimeStateEntity.nextAttemptAt.isNotNull
+                    .and(typedAutomationRuntimeStateEntity.nextAttemptAt.loe(now))
+                    .and(typedAutomationRuntimeStateEntity.leaseToken.isNull)
+                    .or(
+                        typedAutomationRuntimeStateEntity.leaseUntil.isNotNull
+                            .and(typedAutomationRuntimeStateEntity.leaseUntil.loe(now)),
+                    ),
             )
             .orderBy(typedAutomationRuntimeStateEntity.accountId.asc()).fetch()
 
@@ -167,6 +179,32 @@ class TypedAutomationQueryRepository(
                 questAutomationCycleEntity.questCode.eq(questCode),
             )
             .fetchOne()
+
+    fun findQuestCycles(accountId: Long, questCodes: Collection<String>): List<QuestAutomationCycleEntity> {
+        if (questCodes.isEmpty()) return emptyList()
+        return queryFactory.selectFrom(questAutomationCycleEntity)
+            .where(
+                questAutomationCycleEntity.account.id.eq(accountId),
+                questAutomationCycleEntity.questCode.`in`(questCodes.toSet()),
+            ).fetch()
+    }
+
+    fun findQuestMapCounters(accountId: Long, questCodes: Collection<String>): List<QuestMapExecutionCounterEntity> {
+        if (questCodes.isEmpty()) return emptyList()
+        return queryFactory.selectFrom(questMapExecutionCounterEntity)
+            .where(
+                questMapExecutionCounterEntity.account.id.eq(accountId),
+                questMapExecutionCounterEntity.questCode.`in`(questCodes.toSet()),
+            ).fetch()
+    }
+
+    fun findBattleProgressRows(accountId: Long, progressDate: LocalDate, source: String): List<BattleAutomationDailyProgressEntity> =
+        queryFactory.selectFrom(battleAutomationDailyProgressEntity)
+            .where(
+                battleAutomationDailyProgressEntity.account.id.eq(accountId),
+                battleAutomationDailyProgressEntity.progressDate.eq(progressDate),
+                battleAutomationDailyProgressEntity.source.eq(source),
+            ).fetch()
 
     fun findQuestProcessedResult(
         accountId: Long,

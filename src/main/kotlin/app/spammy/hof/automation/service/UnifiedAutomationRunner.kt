@@ -3,10 +3,19 @@ package app.spammy.hof.automation.service
 import app.spammy.hof.automation.policy.AutomationDecisionPolicy
 import app.spammy.hof.automation.policy.AutomationDecisionType
 import app.spammy.hof.automation.port.AutomationWakeupPort
+import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.springframework.transaction.support.TransactionSynchronizationManager
 import java.util.UUID
+
+@Service
+class TypedAutomationEngineSelector(
+    private val queryRepository: TypedAutomationQueryRepository,
+) {
+    /** Mixed legacy/typed persistence intentionally resolves to typed; bean availability is irrelevant. */
+    fun usesTypedEngine(accountId: Long): Boolean = queryRepository.hasTypedAutomation(accountId)
+}
 
 /** 최신 스냅샷 결정 또는 저장된 prepared payload 중 action 하나만 실행하는 통합 자동화 루프다. */
 @Service
@@ -23,12 +32,16 @@ class UnifiedAutomationRunner(
     private val typedActionExecutor: TypedAutomationActionExecutor? = null,
     private val afterCommitWakeups: AutomationAfterCommitWakeupService? = null,
     private val typedCodec: StoredTypedAutomationActionCodec? = null,
+    private val typedEngineSelector: TypedAutomationEngineSelector? = null,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
     /** 한 wakeup에서 최대 action 하나만 실행하고 후속 판단은 새 wakeup과 새 스냅샷에 맡긴다. */
     fun runOne(accountId: Long) {
-        if (listOf(dailyPreflight, typedRuntime, typedSnapshotLoader, coordinator, typedActionExecutor, afterCommitWakeups, typedCodec).all { it != null }) {
+        if (typedEngineSelector?.usesTypedEngine(accountId) == true) {
+            check(listOf(dailyPreflight, typedRuntime, typedSnapshotLoader, coordinator, typedActionExecutor, afterCommitWakeups, typedCodec).all { it != null }) {
+                "Typed automation dependencies are incomplete."
+            }
             runTyped(accountId)
             return
         }
@@ -104,13 +117,18 @@ class UnifiedAutomationRunner(
         if (claim !is TypedRuntimeClaim.Acquired) return
         val token = claim.token
         val stored = claim.preparedAction?.let {
-            runCatching { typedCodec!!.decode(it.schemaVersion, it.payloadJson) }.getOrElse { error ->
-                runtime.stop(accountId, token, it.id, AutomationStopReason.UNKNOWN, error.message ?: "Invalid action payload")
+            runCatching { typedCodec!!.verifyPersisted(it, accountId) }.getOrElse { error ->
+                log.warn("Stored typed action integrity failure accountId={} actionId={} errorType={}", accountId, it.id, error.javaClass.name)
+                runtime.stop(accountId, token, it.id, AutomationStopReason.FATAL, "Stored typed action integrity check failed.")
                 return
             }
         } ?: run {
             val decision = try {
                 coordinator!!.coordinate(typedSnapshotLoader!!.loadTyped(accountId))
+            } catch (_: TypedAutomationConfigurationChangedException) {
+                runtime.release(accountId, token)
+                wakeupPort.wake(accountId, "TYPED_CONFIG_RELOAD")
+                return
             } catch (error: SafeRetryableAutomationException) {
                 runtime.scheduleSafeRetry(accountId, token, error.message ?: "Safe snapshot retry")?.let {
                     wakeupPort.schedule(accountId, it, "TYPED_SAFE_RETRY")
@@ -121,18 +139,41 @@ class UnifiedAutomationRunner(
                 return
             }
             when (decision) {
-                is AutomationCoordination.Runnable -> toStored(decision.entryId, decision.action)
-                is AutomationCoordination.Fatal -> { runtime.stop(accountId, token, null, decision.reason, decision.message); return }
+                is AutomationCoordination.Runnable -> {
+                    runtime.recordWarnings(accountId, token, decision.warnings)
+                    toStored(decision.entryId, decision.action)
+                }
+                is AutomationCoordination.Fatal -> {
+                    runtime.recordWarnings(accountId, token, decision.warnings)
+                    runtime.stop(accountId, token, null, decision.reason, decision.message)
+                    return
+                }
                 is AutomationCoordination.Unavailable -> {
-                    runtime.release(accountId, token, decision.nextRunAt)
+                    runtime.releaseWithDiagnostics(accountId, token, decision.nextRunAt, decision.warnings)
                     wakeupPort.schedule(accountId, decision.nextRunAt, "TYPED_UNAVAILABLE")
                     return
                 }
-                is AutomationCoordination.Idle -> { runtime.release(accountId, token); return }
+                is AutomationCoordination.Idle -> {
+                    if (decision.warnings.isEmpty()) {
+                        runtime.releaseWithDiagnostics(accountId, token, null, emptyList())
+                    } else {
+                        runtime.deferForConfiguration(accountId, token, decision.warnings)?.let {
+                            wakeupPort.schedule(accountId, it, "TYPED_CONFIG_RECHECK")
+                        }
+                    }
+                    return
+                }
             }
         }
-        val row = claim.preparedAction ?: runtime.prepare(accountId, token, stored) ?: return
-        if (!runtime.markSubmitting(accountId, token, row.id)) return
+        val row = claim.preparedAction ?: runtime.prepare(accountId, token, stored) ?: run {
+            runtime.release(accountId, token)
+            wakeupPort.wake(accountId, "TYPED_CONFIG_RELOAD")
+            return
+        }
+        if (!runtime.markSubmitting(accountId, token, row.id)) {
+            runtime.release(accountId, token)
+            return
+        }
         try {
             typedActionExecutor!!.execute(accountId, stored)
             if (runtime.succeed(accountId, token, row.id)) afterCommitWakeups!!.wake(accountId, "TYPED_ACTION_COMPLETED")

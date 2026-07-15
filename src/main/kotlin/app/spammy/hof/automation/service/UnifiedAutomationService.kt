@@ -64,8 +64,8 @@ class UnifiedAutomationService(
     private val timeProvider: TimeProvider,
     private val afterCommitWakeupService: AutomationAfterCommitWakeupService,
     private val readinessEvaluator: AutomationModuleReadinessEvaluator,
-    private val typedRuntimeService: TypedAutomationRuntimeService? = null,
     private val typedAutomationQueryRepository: TypedAutomationQueryRepository? = null,
+    private val typedLifecycleBridge: TypedAutomationLifecycleBridge? = null,
 ) {
     /**
      * 통합 프로필과 현재 실행 상태를 조회한다.
@@ -228,12 +228,12 @@ class UnifiedAutomationService(
     /** 준비 완료된 활성 모듈이 있을 때만 통합 자동화 job을 시작하거나 재개한다. */
     @Transactional
     fun start(accountId: Long): UnifiedAutomationStatusResponse {
+        val profile = lockAccountAndFindOrCreateProfile(accountId)
         if (typedAutomationQueryRepository?.findRuntimeState(accountId)?.lifecycleStatus ==
             app.spammy.hof.automation.entity.TypedAutomationLifecycle.STOPPED
         ) {
             invalid("중지된 자동화는 명시적으로 재개해 주세요.")
         }
-        val profile = lockAccountAndFindOrCreateProfile(accountId)
         val modules = queryRepository.findModules(profile.id)
         val readiness = readinessEvaluator.evaluate(modules)
         val hasTypedEntries = typedAutomationQueryRepository?.findEntries(accountId)?.any { it.enabled } == true
@@ -250,8 +250,8 @@ class UnifiedAutomationService(
             job.updatedAt = now
         }
         if (job.status == "RUNNING") {
-            wakeAfterCommit(accountId, "USER_START")
-            typedAfterCommit { typedRuntimeService?.start(accountId) }
+            if (typedLifecycleBridge != null) typedLifecycleBridge.start(accountId, "USER_START")
+            else wakeAfterCommit(accountId, "USER_START")
         }
         return buildStatus(profile, job, modules, readiness)
     }
@@ -260,7 +260,7 @@ class UnifiedAutomationService(
     @Transactional
     fun pause(accountId: Long): UnifiedAutomationStatusResponse =
         transition(accountId, setOf("PENDING", "RUNNING"), "PAUSED", finished = false).also {
-            typedAfterCommit { typedRuntimeService?.pause(accountId) }
+            if (typedLifecycleBridge != null) typedLifecycleBridge.pause(accountId, "USER_PAUSE")
         }
 
     /** 사용자가 일시정지한 통합 자동화를 다음 의사결정부터 재개한다. */
@@ -273,13 +273,13 @@ class UnifiedAutomationService(
             val profile = queryRepository.findProfile(accountId)
                 ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "통합 자동화 설정을 찾지 못했습니다.")
             val modules = queryRepository.findModules(profile.id)
-            wakeAfterCommit(accountId, "USER_RESUME")
-            typedAfterCommit { typedRuntimeService?.resume(accountId) }
+            if (typedLifecycleBridge != null) typedLifecycleBridge.resume(accountId, "USER_RESUME")
+            else wakeAfterCommit(accountId, "USER_RESUME")
             return buildStatus(profile, existing, modules, readinessEvaluator.evaluate(modules))
         }
         return transition(accountId, setOf("PAUSED"), "RUNNING", finished = false).also {
-            wakeAfterCommit(accountId, "USER_RESUME")
-            typedAfterCommit { typedRuntimeService?.resume(accountId) }
+            if (typedLifecycleBridge != null) typedLifecycleBridge.resume(accountId, "USER_RESUME")
+            else wakeAfterCommit(accountId, "USER_RESUME")
         }
     }
 
@@ -287,7 +287,7 @@ class UnifiedAutomationService(
     @Transactional
     fun stop(accountId: Long): UnifiedAutomationStatusResponse =
         transition(accountId, UnifiedAutomationQueryRepository.ACTIVE_STATUSES, "CANCELLED", finished = true).also {
-            typedAfterCommit { typedRuntimeService?.stop(accountId, AutomationStopReason.MANUAL_STOP) }
+            if (typedLifecycleBridge != null) typedLifecycleBridge.stop(accountId, AutomationStopReason.MANUAL_STOP, "USER_STOP")
         }
 
     /** 상태 전이의 허용 집합과 종료 시각 처리를 한 곳에서 적용한다. */
@@ -297,6 +297,8 @@ class UnifiedAutomationService(
         target: String,
         finished: Boolean,
     ): UnifiedAutomationStatusResponse {
+        accountQueryRepository.findByIdForUpdate(accountId)
+            ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
         val profile = queryRepository.findProfile(accountId)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "통합 자동화 설정을 찾지 못했습니다.")
         val job = queryRepository.findCurrentJob(accountId)
@@ -647,15 +649,6 @@ class UnifiedAutomationService(
                 }
             },
         )
-    }
-
-    private fun typedAfterCommit(action: () -> Unit) {
-        if (!TransactionSynchronizationManager.isActualTransactionActive() || !TransactionSynchronizationManager.isSynchronizationActive()) {
-            action(); return
-        }
-        TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
-            override fun afterCommit() = action()
-        })
     }
 
     /** 이미 커밋된 API 결과를 wake 전달 실패로 실패 처리하지 않고 복구 스케줄러에 재시도를 맡긴다. */

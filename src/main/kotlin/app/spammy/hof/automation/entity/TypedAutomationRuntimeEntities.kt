@@ -18,9 +18,12 @@ class TypedAutomationRuntimeStateEntity(
     @Column(name = "next_attempt_at") var nextAttemptAt: Instant? = null,
     @Column(name = "lease_token") var leaseToken: String? = null,
     @Column(name = "lease_until") var leaseUntil: Instant? = null,
+    @Column(name = "warning_text", columnDefinition = "text") var warningText: String? = null,
+    @Column(name = "last_error", columnDefinition = "text") var lastError: String? = null,
     @Column(name = "created_at") val createdAt: Instant,
     @Column(name = "updated_at") var updatedAt: Instant,
-    @Version @Column(name = "version") var version: Long = 0,
+    // Nullable version lets Spring Data identify a new @MapsId row and persist it instead of merging it.
+    @Version @Column(name = "version") var version: Long? = null,
 )
 
 @Entity

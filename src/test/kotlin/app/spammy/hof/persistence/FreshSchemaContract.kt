@@ -450,7 +450,8 @@ internal object FreshSchemaContract {
             "typed_automation_runtime_states",
             requiredBigint("account_id"), requiredVarchar("lifecycle_status", 20), optionalVarchar("stop_reason", 30),
             requiredInteger("retry_attempt"), optionalInstant("next_attempt_at"), optionalVarchar("lease_token", 128),
-            optionalInstant("lease_until"), requiredInstant("created_at"), requiredInstant("updated_at"), requiredBigint("version"),
+            optionalInstant("lease_until"), optionalText("warning_text"), optionalText("last_error"),
+            requiredInstant("created_at"), requiredInstant("updated_at"), requiredBigint("version"),
             primaryKey = listOf("account_id"),
         ),
         table(
@@ -935,7 +936,7 @@ internal object FreshSchemaContract {
 
     private val CHECKS = listOf(
         check("characters", "ck_characters_pattern_slot_count", "pattern_slot_count >= 0"),
-        check("typed_automation_runtime_states", "ck_typed_runtime_lifecycle", "lifecycle_status in ('RUNNING','PAUSED','STOPPED')"),
+        check("typed_automation_runtime_states", "ck_typed_runtime_lifecycle", "locate(',' || lifecycle_status || ',', ',RUNNING,PAUSED,STOPPED,') > 0"),
         check("typed_automation_runtime_states", "ck_typed_runtime_stop", "(lifecycle_status = 'STOPPED' and stop_reason is not null) or (lifecycle_status <> 'STOPPED' and stop_reason is null)"),
         check("typed_automation_runtime_states", "ck_typed_runtime_retry", "retry_attempt >= 0"),
         check("typed_automation_runtime_states", "ck_typed_runtime_lease", "(lease_token is null and lease_until is null) or (lease_token is not null and lease_until is not null)"),
