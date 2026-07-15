@@ -420,7 +420,8 @@ internal object FreshSchemaContract {
         table(
             "adventure_daily_preflight_states",
             serialId(), requiredBigint("account_id"), requiredDate("refresh_date"), requiredInteger("failed_attempts"),
-            optionalInstant("next_attempt_at"), optionalVarchar("stop_reason", 30), requiredInstant("updated_at"),
+            optionalInstant("next_attempt_at"), optionalVarchar("stop_reason", 30),
+            optionalVarchar("in_flight_token", 36), optionalInstant("in_flight_until"), requiredInstant("updated_at"),
         ),
         table(
             "account_automation_leases",
@@ -837,6 +838,10 @@ internal object FreshSchemaContract {
             "next_attempt_at", "account_id",
         ),
         index(
+            "adventure_daily_preflight_states", "idx_adventure_daily_preflight_states_in_flight",
+            "in_flight_until", "account_id",
+        ),
+        index(
             "account_automation_leases", "idx_account_automation_leases_until",
             "lease_until", "account_id",
         ),
@@ -962,6 +967,11 @@ internal object FreshSchemaContract {
         check(
             "adventure_daily_preflight_states", "ck_adventure_daily_preflight_states_attempts",
             "failed_attempts >= 0",
+        ),
+        check(
+            "adventure_daily_preflight_states", "ck_adventure_daily_preflight_states_in_flight",
+            "case when in_flight_token is null and in_flight_until is null then true " +
+                "when in_flight_token is not null and in_flight_until is not null then true else false end",
         ),
         check("battle_log_participants", "ck_battle_log_participants_slot", "slot_index >= 0"),
         check("battle_log_loots", "ck_battle_log_loots_order", "display_order >= 0"),

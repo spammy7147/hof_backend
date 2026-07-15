@@ -16,11 +16,14 @@ import java.time.Instant
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
 import org.mockito.ArgumentMatchers.anyLong
 import org.mockito.ArgumentMatchers.anyString
 import org.mockito.Mockito
@@ -49,6 +52,7 @@ class AutomationDailyPreflightTest {
     @Autowired private lateinit var service: AutomationDailyPreflight
     @Autowired private lateinit var battleMapService: BattleMapService
     @Autowired private lateinit var accountRepository: HofAccountRepository
+    @Autowired private lateinit var accountQueryRepository: AccountQueryRepository
     @Autowired private lateinit var transactionManager: PlatformTransactionManager
     @Autowired private lateinit var entityManager: EntityManager
     @Autowired private lateinit var timeProvider: MutableTimeProvider
@@ -110,6 +114,81 @@ class AutomationDailyPreflightTest {
 
         assertRetry(service.ensureReady(accountId), 1, KOREA_MIDNIGHT_AFTER.plusSeconds(10))
         assertEquals(emptyList(), refreshDates(accountId))
+    }
+
+    @Test
+    fun `retry backoff starts from failure completion time`() {
+        val accountId = savedAccount("preflight-completion-backoff")
+        val completedAt = KOREA_MIDNIGHT_AFTER.plusSeconds(120)
+        Mockito.doAnswer {
+            timeProvider.current.set(completedAt)
+            throw networkFailure()
+        }.`when`(battleMapService).refreshAdventureMaps(accountId)
+
+        assertRetry(service.ensureReady(accountId), 1, completedAt.plusSeconds(10))
+    }
+
+    @Test
+    fun `retry backoff remains based on completion while finalize waits for account lock`() {
+        val accountId = savedAccount("preflight-finalize-lock-backoff")
+        val requestStarted = CountDownLatch(1)
+        val releaseRequest = CountDownLatch(1)
+        val finalizeLockHeld = CountDownLatch(1)
+        val releaseFinalizeLock = CountDownLatch(1)
+        val completionTimeRead = CountDownLatch(1)
+        val completedAt = KOREA_MIDNIGHT_AFTER.plusSeconds(120)
+        Mockito.doAnswer {
+            requestStarted.countDown()
+            check(releaseRequest.await(10, TimeUnit.SECONDS))
+            timeProvider.current.set(completedAt)
+            throw networkFailure()
+        }.`when`(battleMapService).refreshAdventureMaps(accountId)
+        val executor = Executors.newFixedThreadPool(2)
+
+        try {
+            val preflight = executor.submit<AutomationDailyPreflight.Result> { service.ensureReady(accountId) }
+            check(requestStarted.await(10, TimeUnit.SECONDS))
+            val lockHolder = executor.submit {
+                TransactionTemplate(transactionManager).executeWithoutResult {
+                    accountQueryRepository.findByIdForUpdate(accountId)
+                    finalizeLockHeld.countDown()
+                    check(releaseFinalizeLock.await(10, TimeUnit.SECONDS))
+                }
+            }
+            check(finalizeLockHeld.await(10, TimeUnit.SECONDS))
+            timeProvider.nextReadSignal.set(completionTimeRead)
+            releaseRequest.countDown()
+            assertTrue(completionTimeRead.await(10, TimeUnit.SECONDS))
+            timeProvider.current.set(completedAt.plusSeconds(100))
+            releaseFinalizeLock.countDown()
+
+            assertRetry(preflight.get(10, TimeUnit.SECONDS), 1, completedAt.plusSeconds(10))
+            lockHolder.get(10, TimeUnit.SECONDS)
+        } finally {
+            releaseRequest.countDown()
+            releaseFinalizeLock.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `request crossing Korea midnight does not mark either date and next call refreshes new day`() {
+        val accountId = savedAccount("preflight-request-midnight")
+        val beforeMidnight = Instant.parse("2026-07-14T14:59:59Z")
+        val afterMidnight = Instant.parse("2026-07-14T15:00:01Z")
+        timeProvider.current.set(beforeMidnight)
+        Mockito.doAnswer {
+            timeProvider.current.set(afterMidnight)
+            emptyList<Any>()
+        }.`when`(battleMapService).refreshAdventureMaps(accountId)
+
+        val crossed = assertIs<AutomationDailyPreflight.Result.Busy>(service.ensureReady(accountId))
+        assertEquals(afterMidnight, crossed.retryAt)
+        assertEquals(emptyList(), refreshDates(accountId))
+
+        assertIs<AutomationDailyPreflight.Result.Ready>(service.ensureReady(accountId))
+        Mockito.verify(battleMapService, Mockito.times(2)).refreshAdventureMaps(accountId)
+        assertEquals(listOf("2026-07-15"), refreshDates(accountId))
     }
 
     @Test
@@ -177,7 +256,93 @@ class AutomationDailyPreflightTest {
     }
 
     @Test
-    fun `concurrent evaluations serialize by account and refresh only once`() {
+    fun `fatal typed failure takes precedence over nested IO cause`() {
+        val accountId = savedAccount("preflight-fatal-wrapped-io")
+        Mockito.doThrow(AdventureMapRefreshException.Fatal("fatal parse", IOException("nested")))
+            .`when`(battleMapService).refreshAdventureMaps(accountId)
+
+        assertEquals(
+            AutomationDailyPreflight.Result.Stopped(AutomationDailyPreflight.StopReason.FATAL),
+            service.ensureReady(accountId),
+        )
+    }
+
+    @Test
+    fun `interruption restores interrupt flag and stops without network retry`() {
+        val accountId = savedAccount("preflight-interrupted")
+        Mockito.doAnswer { throw InterruptedException("cancelled") }
+            .`when`(battleMapService).refreshAdventureMaps(accountId)
+
+        try {
+            assertEquals(
+                AutomationDailyPreflight.Result.Stopped(AutomationDailyPreflight.StopReason.FATAL),
+                service.ensureReady(accountId),
+            )
+            assertEquals(true, Thread.currentThread().isInterrupted)
+        } finally {
+            Thread.interrupted()
+        }
+    }
+
+    @Test
+    fun `refresh transaction rollback still persists fatal stop in separate finalize transaction`() {
+        val accountId = savedAccount("preflight-refresh-rollback")
+        Mockito.doAnswer {
+            TransactionTemplate(transactionManager).executeWithoutResult {
+                throw IllegalStateException("map sync persistence failed")
+            }
+        }.`when`(battleMapService).refreshAdventureMaps(accountId)
+
+        assertEquals(
+            AutomationDailyPreflight.Result.Stopped(AutomationDailyPreflight.StopReason.FATAL),
+            service.ensureReady(accountId),
+        )
+        assertEquals(
+            AutomationDailyPreflight.Result.Stopped(AutomationDailyPreflight.StopReason.FATAL),
+            service.ensureReady(accountId),
+        )
+        Mockito.verify(battleMapService, Mockito.times(1)).refreshAdventureMaps(accountId)
+    }
+
+    @Test
+    fun `claim time is captured after waiting for account lock across Korea midnight`() {
+        val accountId = savedAccount("preflight-lock-midnight")
+        timeProvider.current.set(Instant.parse("2026-07-14T14:59:59Z"))
+        val lockHeld = CountDownLatch(1)
+        val releaseLock = CountDownLatch(1)
+        val workerStarted = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
+
+        try {
+            val holder = executor.submit {
+                TransactionTemplate(transactionManager).executeWithoutResult {
+                    accountQueryRepository.findByIdForUpdate(accountId)
+                    lockHeld.countDown()
+                    check(releaseLock.await(10, TimeUnit.SECONDS))
+                }
+            }
+            check(lockHeld.await(10, TimeUnit.SECONDS))
+            val worker = executor.submit<AutomationDailyPreflight.Result> {
+                workerStarted.countDown()
+                service.ensureReady(accountId)
+            }
+            check(workerStarted.await(10, TimeUnit.SECONDS))
+            assertFalse(worker.isDone)
+
+            timeProvider.current.set(Instant.parse("2026-07-14T15:00:01Z"))
+            releaseLock.countDown()
+
+            assertIs<AutomationDailyPreflight.Result.Ready>(worker.get(10, TimeUnit.SECONDS))
+            holder.get(10, TimeUnit.SECONDS)
+            assertEquals(listOf("2026-07-15"), refreshDates(accountId))
+        } finally {
+            releaseLock.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `concurrent evaluation observes durable busy claim while first network call is in flight`() {
         val accountId = savedAccount("preflight-concurrent")
         val refreshStarted = CountDownLatch(1)
         val releaseRefresh = CountDownLatch(1)
@@ -197,14 +362,47 @@ class AutomationDailyPreflightTest {
                 service.ensureReady(accountId)
             }
             check(secondStarted.await(10, TimeUnit.SECONDS))
-            releaseRefresh.countDown()
-
-            assertIs<AutomationDailyPreflight.Result.Ready>(first.get(10, TimeUnit.SECONDS))
-            assertIs<AutomationDailyPreflight.Result.Ready>(second.get(10, TimeUnit.SECONDS))
+            val busy = assertIs<AutomationDailyPreflight.Result.Busy>(second.get(10, TimeUnit.SECONDS))
+            assertEquals(KOREA_MIDNIGHT_AFTER.plusSeconds(45), busy.retryAt)
+            assertFalse(first.isDone)
             Mockito.verify(battleMapService, Mockito.times(1)).refreshAdventureMaps(accountId)
+
+            releaseRefresh.countDown()
+            assertIs<AutomationDailyPreflight.Result.Ready>(first.get(10, TimeUnit.SECONDS))
             assertEquals(listOf("2026-07-15"), refreshDates(accountId))
         } finally {
             releaseRefresh.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `expired claim is reclaimed and stale worker cannot overwrite new success`() {
+        val accountId = savedAccount("preflight-expired-claim")
+        val firstStarted = CountDownLatch(1)
+        val releaseFirst = CountDownLatch(1)
+        val calls = AtomicInteger()
+        Mockito.doAnswer {
+            if (calls.incrementAndGet() == 1) {
+                firstStarted.countDown()
+                check(releaseFirst.await(10, TimeUnit.SECONDS))
+            }
+            emptyList<Any>()
+        }.`when`(battleMapService).refreshAdventureMaps(accountId)
+        val executor = Executors.newSingleThreadExecutor()
+
+        try {
+            val stale = executor.submit<AutomationDailyPreflight.Result> { service.ensureReady(accountId) }
+            check(firstStarted.await(10, TimeUnit.SECONDS))
+            timeProvider.current.set(KOREA_MIDNIGHT_AFTER.plusSeconds(46))
+
+            assertIs<AutomationDailyPreflight.Result.Ready>(service.ensureReady(accountId))
+            releaseFirst.countDown()
+            assertIs<AutomationDailyPreflight.Result.Ready>(stale.get(10, TimeUnit.SECONDS))
+            assertEquals(2, calls.get())
+            assertEquals(listOf("2026-07-15"), refreshDates(accountId))
+        } finally {
+            releaseFirst.countDown()
             executor.shutdownNow()
         }
     }
@@ -237,7 +435,8 @@ class AutomationDailyPreflightTest {
 
     class MutableTimeProvider(initial: Instant) : TimeProvider {
         val current = AtomicReference(initial)
-        override fun now(): Instant = current.get()
+        val nextReadSignal = AtomicReference<CountDownLatch?>()
+        override fun now(): Instant = current.get().also { nextReadSignal.getAndSet(null)?.countDown() }
     }
 
     private companion object {

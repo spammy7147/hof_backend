@@ -55,10 +55,14 @@ class BattleMapService(
      */
     fun refreshAdventureMaps(accountId: Long): List<BattleMapResponse> = try {
         findMaps(accountId, BattleCategoryId.ADVENTURE_MAP.value, requireObservations = true)
-    } catch (error: AdventureMapRefreshException) {
-        throw error
     } catch (error: Exception) {
-        if (error.isTransportFailure()) {
+        if (error.hasInterruption()) {
+            Thread.currentThread().interrupt()
+            if (error is AdventureMapRefreshException.Fatal) throw error
+            throw AdventureMapRefreshException.Fatal("HOF 모험 맵 요청이 중단되었습니다.", error)
+        }
+        error.nearestTypedFailure()?.let { throw it }
+        if (error.hasTransportFailure()) {
             throw AdventureMapRefreshException.Retryable("HOF 모험 맵 요청 중 네트워크 오류가 발생했습니다.", error)
         }
         throw AdventureMapRefreshException.Fatal("HOF 모험 맵 새로고침에 실패했습니다.", error)
@@ -160,12 +164,12 @@ class BattleMapService(
         val detailPageQuery: String? = null,
     )
 
-    private fun Throwable.isTransportFailure(): Boolean {
-        var current: Throwable? = this
-        while (current != null) {
-            if (current is IOException || current is InterruptedException) return true
-            current = current.cause
-        }
-        return false
-    }
+    private fun Throwable.causes(): Sequence<Throwable> = generateSequence(this) { it.cause }
+
+    private fun Throwable.hasInterruption(): Boolean = causes().any { it is InterruptedException }
+
+    private fun Throwable.nearestTypedFailure(): AdventureMapRefreshException? =
+        causes().filterIsInstance<AdventureMapRefreshException>().firstOrNull()
+
+    private fun Throwable.hasTransportFailure(): Boolean = causes().any { it is IOException }
 }

@@ -295,6 +295,34 @@ class BattleMapServiceTest {
     }
 
     @Test
+    fun authenticatedAdventureRefreshPreservesNearestFatalTypeOverNestedTransportCause() {
+        val account = savedAccount("battle-map-fatal-wrapped-transport")
+        val fatal = AdventureMapRefreshException.Fatal("fatal parse", IOException("nested transport"))
+        gateway.failure = fatal
+
+        val actual = assertFailsWith<AdventureMapRefreshException.Fatal> {
+            service.refreshAdventureMaps(account.id)
+        }
+
+        assertEquals(fatal, actual)
+    }
+
+    @Test
+    fun authenticatedAdventureRefreshRestoresInterruptAndDoesNotClassifyCancellationAsRetryable() {
+        val account = savedAccount("battle-map-interrupted")
+        gateway.failure = InterruptedException("cancelled")
+
+        try {
+            assertFailsWith<AdventureMapRefreshException.Fatal> {
+                service.refreshAdventureMaps(account.id)
+            }
+            assertTrue(Thread.currentThread().isInterrupted)
+        } finally {
+            Thread.interrupted()
+        }
+    }
+
+    @Test
     fun fetchesScenarioOceanDetailPageBeforeSynchronizingMaps() {
         val account = savedAccount("battle-map-scenario")
         gateway.responsesByUrl["http://sic.zerosic.com/ZeroHOF/index.php?raid_hunt"] = HofHttpResponse(
