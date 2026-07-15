@@ -2,6 +2,7 @@ package app.spammy.hof.automation.service
 
 import app.spammy.hof.automation.entity.*
 import app.spammy.hof.automation.repository.*
+import app.spammy.hof.automation.outbox.AutomationOutboxService
 import app.spammy.hof.common.time.TimeProvider
 import java.time.Duration
 import java.time.Instant
@@ -24,6 +25,7 @@ class TypedAutomationRuntimeService(
     private val codec: StoredTypedAutomationActionCodec,
     private val timeProvider: TimeProvider,
     private val lifecycleBridge: TypedAutomationLifecycleBridge,
+    private val outbox: AutomationOutboxService,
 ) {
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun start(accountId: Long): Boolean {
@@ -103,6 +105,13 @@ class TypedAutomationRuntimeService(
     fun succeed(accountId: Long, token: String, actionId: Long): Boolean = finish(accountId, token, actionId, TypedAutomationActionStatus.SUCCEEDED, null)
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun succeedAndEnqueueWake(accountId: Long, token: String, actionId: Long, reason: String): Boolean {
+        val succeeded = finish(accountId, token, actionId, TypedAutomationActionStatus.SUCCEEDED, null)
+        if (succeeded) outbox.enqueue(accountId, reason)
+        return succeeded
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun stop(accountId: Long, token: String, actionId: Long?, reason: AutomationStopReason, message: String): Boolean {
         val state = fencedState(accountId, token) ?: return false
         val now = timeProvider.now()
@@ -131,11 +140,22 @@ class TypedAutomationRuntimeService(
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun release(accountId: Long, token: String, nextRunAt: Instant? = null): Boolean {
-        return releaseWithDiagnostics(accountId, token, nextRunAt, emptyList())
+        return releaseCore(accountId, token, nextRunAt, emptyList())
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun releaseWithDiagnostics(accountId: Long, token: String, nextRunAt: Instant?, warnings: List<String>): Boolean {
+        return releaseCore(accountId, token, nextRunAt, warnings)
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun releaseAndEnqueueWake(accountId: Long, token: String, reason: String): Boolean {
+        val released = releaseCore(accountId, token, null, emptyList())
+        if (released) outbox.enqueue(accountId, reason)
+        return released
+    }
+
+    private fun releaseCore(accountId: Long, token: String, nextRunAt: Instant?, warnings: List<String>): Boolean {
         val state = fencedState(accountId, token) ?: return false
         state.leaseToken = null; state.leaseUntil = null; state.nextAttemptAt = nextRunAt; state.updatedAt = timeProvider.now()
         state.warningText = warnings.takeIf { it.isNotEmpty() }?.joinToString("\n") { sanitizeDiagnostic(it) }

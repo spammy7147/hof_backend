@@ -21,6 +21,7 @@ class TypedAutomationRuntimeServiceTest {
         Mockito.mock(TypedAutomationActionRunCommandRepository::class.java),
         StoredTypedAutomationActionCodec(jacksonObjectMapper()), TimeProvider { now },
         Mockito.mock(TypedAutomationLifecycleBridge::class.java),
+        Mockito.mock(app.spammy.hof.automation.outbox.AutomationOutboxService::class.java),
     )
     private val account = HofAccountEntity(7, "login", "encrypted", now)
 

@@ -6,3 +6,7 @@ alter table typed_automation_runtime_states add column last_error text;
 alter table typed_automation_runtime_states drop constraint ck_typed_runtime_lifecycle;
 alter table typed_automation_runtime_states add constraint ck_typed_runtime_lifecycle
     check (position(',' || lifecycle_status || ',' in ',RUNNING,PAUSED,STOPPED,') > 0);
+
+alter table typed_automation_action_runs drop constraint ck_typed_action_status;
+alter table typed_automation_action_runs add constraint ck_typed_action_status
+    check (position(',' || status || ',' in ',PREPARED,SUBMITTING,SUCCEEDED,FAILED,AMBIGUOUS,') > 0);

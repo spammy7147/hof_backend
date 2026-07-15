@@ -30,7 +30,6 @@ class UnifiedAutomationRunner(
     private val typedSnapshotLoader: TypedAutomationSnapshotLoader? = null,
     private val coordinator: AutomationCoordinator? = null,
     private val typedActionExecutor: TypedAutomationActionExecutor? = null,
-    private val afterCommitWakeups: AutomationAfterCommitWakeupService? = null,
     private val typedCodec: StoredTypedAutomationActionCodec? = null,
     private val typedEngineSelector: TypedAutomationEngineSelector? = null,
 ) {
@@ -39,7 +38,7 @@ class UnifiedAutomationRunner(
     /** 한 wakeup에서 최대 action 하나만 실행하고 후속 판단은 새 wakeup과 새 스냅샷에 맡긴다. */
     fun runOne(accountId: Long) {
         if (typedEngineSelector?.usesTypedEngine(accountId) == true) {
-            check(listOf(dailyPreflight, typedRuntime, typedSnapshotLoader, coordinator, typedActionExecutor, afterCommitWakeups, typedCodec).all { it != null }) {
+            check(listOf(dailyPreflight, typedRuntime, typedSnapshotLoader, coordinator, typedActionExecutor, typedCodec).all { it != null }) {
                 "Typed automation dependencies are incomplete."
             }
             runTyped(accountId)
@@ -126,8 +125,7 @@ class UnifiedAutomationRunner(
             val decision = try {
                 coordinator!!.coordinate(typedSnapshotLoader!!.loadTyped(accountId))
             } catch (_: TypedAutomationConfigurationChangedException) {
-                runtime.release(accountId, token)
-                wakeupPort.wake(accountId, "TYPED_CONFIG_RELOAD")
+                runtime.releaseAndEnqueueWake(accountId, token, "TYPED_CONFIG_RELOAD")
                 return
             } catch (error: SafeRetryableAutomationException) {
                 runtime.scheduleSafeRetry(accountId, token, error.message ?: "Safe snapshot retry")?.let {
@@ -166,17 +164,16 @@ class UnifiedAutomationRunner(
             }
         }
         val row = claim.preparedAction ?: runtime.prepare(accountId, token, stored) ?: run {
-            runtime.release(accountId, token)
-            wakeupPort.wake(accountId, "TYPED_CONFIG_RELOAD")
+            runtime.releaseAndEnqueueWake(accountId, token, "TYPED_CONFIG_RELOAD")
             return
         }
         if (!runtime.markSubmitting(accountId, token, row.id)) {
-            runtime.release(accountId, token)
+            runtime.releaseAndEnqueueWake(accountId, token, "TYPED_CONFIG_RELOAD")
             return
         }
         try {
             typedActionExecutor!!.execute(accountId, stored)
-            if (runtime.succeed(accountId, token, row.id)) afterCommitWakeups!!.wake(accountId, "TYPED_ACTION_COMPLETED")
+            runtime.succeedAndEnqueueWake(accountId, token, row.id, "TYPED_ACTION_COMPLETED")
         } catch (error: Throwable) {
             log.warn("Typed automation action stopped accountId={} actionId={} errorType={}", accountId, row.id, error.javaClass.name)
             runtime.stop(accountId, token, row.id, AutomationStopReason.NETWORK, error.message ?: error.javaClass.simpleName)

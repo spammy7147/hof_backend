@@ -49,10 +49,10 @@ class TypedLiveAutomationSnapshotLoaderTest {
             HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
         )
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(questEntry, battleEntry, adventureEntry))
-        Mockito.`when`(typed.findQuestSelections(10)).thenReturn(listOf(selection))
+        Mockito.`when`(typed.findQuestSelectionsByEntryIds(listOf(10))).thenReturn(listOf(selection))
         Mockito.`when`(typed.findQuestMaps(listOf(20))).thenReturn(listOf(QuestAutomationMapEntity(21, selection, "m", "battle_map", "qmap", PresetSelectionMode.PRIMARY, null, 0, true)))
-        Mockito.`when`(typed.findBattleSettings(11)).thenReturn(listOf(BattleAutomationMapEntity(22, battleEntry, "battle_map", "bmap", 1, PresetSelectionMode.PRIMARY, null, 0)))
-        Mockito.`when`(typed.findAdventureSettings(12)).thenReturn(listOf(AdventureAutomationMapEntity(23, adventureEntry, "adventure_map", "amap", PresetSelectionMode.EXPLICIT, explicitX, 0)))
+        Mockito.`when`(typed.findBattleSettingsByEntryIds(listOf(11))).thenReturn(listOf(BattleAutomationMapEntity(22, battleEntry, "battle_map", "bmap", 1, PresetSelectionMode.PRIMARY, null, 0)))
+        Mockito.`when`(typed.findAdventureSettingsByEntryIds(listOf(12))).thenReturn(listOf(AdventureAutomationMapEntity(23, adventureEntry, "adventure_map", "amap", PresetSelectionMode.EXPLICIT, explicitX, 0)))
         Mockito.`when`(quest.load(7)).thenReturn(emptyList())
         Mockito.`when`(mapQuery.findAllStatesForExecution(7)).thenReturn(emptyList())
         Mockito.`when`(presets.findAllByAccountId(7)).thenReturn(listOf(primaryA, primaryB, explicitX))
@@ -104,7 +104,7 @@ class TypedLiveAutomationSnapshotLoaderTest {
         val categoryA = BattleAutomationMapEntity(21, entry, "category-a", "map", 1, PresetSelectionMode.PRIMARY, null, 0)
         val categoryB = BattleAutomationMapEntity(21, entry, "category-b", "map", 1, PresetSelectionMode.PRIMARY, null, 0)
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(entry))
-        Mockito.`when`(typed.findBattleSettings(11)).thenReturn(listOf(categoryA), listOf(categoryB), listOf(categoryB), listOf(categoryB))
+        Mockito.`when`(typed.findBattleSettingsByEntryIds(listOf(11))).thenReturn(listOf(categoryA), listOf(categoryB), listOf(categoryB), listOf(categoryB))
         Mockito.`when`(presets.findAllByAccountId(7)).thenReturn(emptyList())
         Mockito.`when`(presets.findMembersByPresetIds(emptyList())).thenReturn(emptyList())
         Mockito.`when`(quest.load(7)).thenReturn(emptyList())
@@ -142,7 +142,7 @@ class TypedLiveAutomationSnapshotLoaderTest {
             HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
         )
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(entry))
-        Mockito.`when`(typed.findQuestSelections(10)).thenReturn(listOf(selection))
+        Mockito.`when`(typed.findQuestSelectionsByEntryIds(listOf(10))).thenReturn(listOf(selection))
         Mockito.`when`(typed.findQuestMaps(listOf(20))).thenReturn(listOf(QuestAutomationMapEntity(21, selection, "m", "battle_map", "map", PresetSelectionMode.PRIMARY, null, 0, true)))
         Mockito.`when`(presets.findAllByAccountId(7)).thenReturn(listOf(primaryA, primaryB))
         Mockito.`when`(presets.findMembersByPresetIds(listOf(101L, 102L))).thenReturn(members(primaryA, "A", account, now) + members(primaryB, "B", account, now))
@@ -172,7 +172,7 @@ class TypedLiveAutomationSnapshotLoaderTest {
             HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
         )
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(AutomationEntryEntity(10, account, AutomationType.QUEST, 0, true, now, now)))
-        Mockito.`when`(typed.findQuestSelections(10)).thenReturn(emptyList())
+        Mockito.`when`(typed.findQuestSelectionsByEntryIds(listOf(10))).thenReturn(emptyList())
         Mockito.`when`(typed.findQuestMaps(emptyList())).thenReturn(emptyList())
         Mockito.`when`(quest.load(7)).thenReturn(emptyList())
         Mockito.`when`(mapQuery.findAllStatesForExecution(7)).thenReturn(emptyList())
@@ -183,6 +183,38 @@ class TypedLiveAutomationSnapshotLoaderTest {
 
         Mockito.verify(mapService).findMaps(7, "battle_map")
         Mockito.verify(mapService).findMaps(7, "adventure_map")
+    }
+
+    @Test
+    fun `configuration materialization uses bounded batch queries for many quest selections`() {
+        val now = Instant.parse("2026-07-16T00:00:00Z")
+        val account = HofAccountEntity(7, "login-batch", "encrypted", now)
+        val entry = AutomationEntryEntity(10, account, AutomationType.QUEST, 0, true, now, now)
+        val selections = (1L..50L).map { id -> QuestAutomationSelectionEntity(id, entry, "quest-$id", true, id.toInt()) }
+        val typed = Mockito.mock(TypedAutomationQueryRepository::class.java)
+        val mapQuery = Mockito.mock(BattleMapQueryRepository::class.java)
+        val mapService = Mockito.mock(BattleMapService::class.java)
+        val presets = Mockito.mock(PartyPresetQueryRepository::class.java)
+        val quest = Mockito.mock(QuestGatewayService::class.java)
+        val loader = TypedLiveAutomationSnapshotLoader(
+            quest, typed, mapQuery, presets, Mockito.mock(BattleMapIdentityResolver::class.java), mapService,
+            TimeProvider { now }, HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
+        )
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(entry))
+        Mockito.`when`(typed.findQuestSelectionsByEntryIds(listOf(10))).thenReturn(selections)
+        Mockito.`when`(typed.findQuestMaps(selections.map { it.id })).thenReturn(emptyList())
+        Mockito.`when`(presets.findAllByAccountId(7)).thenReturn(emptyList())
+        Mockito.`when`(presets.findMembersByPresetIds(emptyList())).thenReturn(emptyList())
+        Mockito.`when`(quest.load(7)).thenReturn(emptyList())
+        Mockito.`when`(mapQuery.findAllStatesForExecution(7)).thenReturn(emptyList())
+
+        loader.loadTyped(7)
+
+        Mockito.verify(typed, Mockito.times(2)).findQuestSelectionsByEntryIds(listOf(10))
+        Mockito.verify(typed, Mockito.times(2)).findQuestMaps(selections.map { it.id })
+        Mockito.verify(typed, Mockito.never()).findQuestSelections(Mockito.anyLong())
+        Mockito.verify(typed, Mockito.never()).findBattleSettings(Mockito.anyLong())
+        Mockito.verify(typed, Mockito.never()).findAdventureSettings(Mockito.anyLong())
     }
 
     private fun preset(id: Long, account: HofAccountEntity, name: String, now: Instant) = PartyPresetEntity(id, account, name, now, now)

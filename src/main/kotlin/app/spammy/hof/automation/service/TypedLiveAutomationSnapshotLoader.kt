@@ -88,10 +88,18 @@ class TypedLiveAutomationSnapshotLoader(
             )
         }
         val primary = presets.findPrimaryByAccountId(accountId)?.id?.takeIf { it in validPresetIds }
-        val entries = typed.findEntries(accountId).sortedWith(compareBy<AutomationEntryEntity> { it.priority }.thenBy { it.id }).map { entry ->
+        val entryRows = typed.findEntries(accountId).sortedWith(compareBy<AutomationEntryEntity> { it.priority }.thenBy { it.id })
+        val questEntryIds = entryRows.filter { it.type == AutomationType.QUEST }.map { it.id }
+        val battleEntryIds = entryRows.filter { it.type == AutomationType.BATTLE_MAP }.map { it.id }
+        val adventureEntryIds = entryRows.filter { it.type == AutomationType.ADVENTURE_MAP }.map { it.id }
+        val questSelections = typed.findQuestSelectionsByEntryIds(questEntryIds)
+        val selectionsByEntry = questSelections.groupBy { it.entry.id }
+        val mapsBySelection = typed.findQuestMaps(questSelections.map { it.id }).groupBy { it.questSelection.id }
+        val battleByEntry = typed.findBattleSettingsByEntryIds(battleEntryIds).groupBy { it.entry.id }
+        val adventureByEntry = typed.findAdventureSettingsByEntryIds(adventureEntryIds).groupBy { it.entry.id }
+        val entries = entryRows.map { entry ->
             val quest = if (entry.type == AutomationType.QUEST) {
-                val selections = typed.findQuestSelections(entry.id)
-                val mapsBySelection = typed.findQuestMaps(selections.map { it.id }).groupBy { it.questSelection.id }
+                val selections = selectionsByEntry[entry.id].orEmpty()
                 selections.map { selection ->
                     DetachedQuestSelection(selection.questCode, selection.enabled, selection.sourceOrder,
                         mapsBySelection[selection.id].orEmpty().map { map ->
@@ -99,10 +107,10 @@ class TypedLiveAutomationSnapshotLoader(
                         })
                 }
             } else emptyList()
-            val battle = if (entry.type == AutomationType.BATTLE_MAP) typed.findBattleSettings(entry.id).map {
+            val battle = if (entry.type == AutomationType.BATTLE_MAP) battleByEntry[entry.id].orEmpty().map {
                 DetachedBattleSetting(it.categoryId, it.mapCode, it.dailyTargetCount, it.presetMode, it.partyPreset?.id, it.executionOrder)
             } else emptyList()
-            val adventure = if (entry.type == AutomationType.ADVENTURE_MAP) typed.findAdventureSettings(entry.id).map {
+            val adventure = if (entry.type == AutomationType.ADVENTURE_MAP) adventureByEntry[entry.id].orEmpty().map {
                 DetachedAdventureSetting(it.id, it.categoryId, it.mapCode, it.presetMode, it.partyPreset?.id, it.executionOrder)
             } else emptyList()
             DetachedEntry(entry.id, entry.type, entry.priority, entry.enabled, quest, battle, adventure)

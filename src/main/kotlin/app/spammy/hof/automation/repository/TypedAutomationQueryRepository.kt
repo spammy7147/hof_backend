@@ -2,10 +2,12 @@ package app.spammy.hof.automation.repository
 
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.entity.QHofAccountEntity.hofAccountEntity
+import app.spammy.hof.account.entity.QHofAccountEntity
 import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.BattleAutomationDailyProgressEntity
 import app.spammy.hof.automation.entity.BattleAutomationProcessedResultEntity
 import app.spammy.hof.automation.entity.QAutomationEntryEntity.automationEntryEntity
+import app.spammy.hof.automation.entity.QAutomationEntryEntity
 import app.spammy.hof.automation.entity.QBattleAutomationDailyProgressEntity.battleAutomationDailyProgressEntity
 import app.spammy.hof.automation.entity.QBattleAutomationProcessedResultEntity.battleAutomationProcessedResultEntity
 import app.spammy.hof.automation.entity.QQuestAutomationCycleEntity.questAutomationCycleEntity
@@ -38,6 +40,9 @@ import org.springframework.stereotype.Repository
 class TypedAutomationQueryRepository(
     private val queryFactory: JPAQueryFactory,
 ) {
+    private val actionAccount = QHofAccountEntity("typedActionAccount")
+    private val actionEntryAccount = QHofAccountEntity("typedActionEntryAccount")
+    private val actionEntry = QAutomationEntryEntity("typedActionEntry")
     /** A persisted typed runtime or any typed entry permanently selects the typed engine for this account. */
     fun hasTypedAutomation(accountId: Long): Boolean =
         queryFactory.selectOne().from(typedAutomationRuntimeStateEntity)
@@ -71,6 +76,9 @@ class TypedAutomationQueryRepository(
 
     fun findActiveTypedAction(accountId: Long): TypedAutomationActionRunEntity? =
         queryFactory.selectFrom(typedAutomationActionRunEntity)
+            .join(typedAutomationActionRunEntity.account, actionAccount).fetchJoin()
+            .join(typedAutomationActionRunEntity.entry, actionEntry).fetchJoin()
+            .join(actionEntry.account, actionEntryAccount).fetchJoin()
             .where(
                 typedAutomationActionRunEntity.account.id.eq(accountId),
                 typedAutomationActionRunEntity.status.`in`(TypedAutomationActionStatus.PREPARED, TypedAutomationActionStatus.SUBMITTING),
@@ -79,6 +87,9 @@ class TypedAutomationQueryRepository(
 
     fun lockTypedAction(actionId: Long): TypedAutomationActionRunEntity? =
         queryFactory.selectFrom(typedAutomationActionRunEntity)
+            .join(typedAutomationActionRunEntity.account, actionAccount).fetchJoin()
+            .join(typedAutomationActionRunEntity.entry, actionEntry).fetchJoin()
+            .join(actionEntry.account, actionEntryAccount).fetchJoin()
             .where(typedAutomationActionRunEntity.id.eq(actionId))
             .setLockMode(LockModeType.PESSIMISTIC_WRITE).fetchOne()
 
@@ -90,6 +101,17 @@ class TypedAutomationQueryRepository(
         queryFactory.selectFrom(questAutomationSelectionEntity)
             .where(questAutomationSelectionEntity.entry.id.eq(entryId))
             .orderBy(questAutomationSelectionEntity.sourceOrder.asc(), questAutomationSelectionEntity.id.asc()).fetch()
+
+    fun findQuestSelectionsByEntryIds(entryIds: Collection<Long>): List<QuestAutomationSelectionEntity> {
+        if (entryIds.isEmpty()) return emptyList()
+        return queryFactory.selectFrom(questAutomationSelectionEntity)
+            .where(questAutomationSelectionEntity.entry.id.`in`(entryIds.toSet()))
+            .orderBy(
+                questAutomationSelectionEntity.entry.id.asc(),
+                questAutomationSelectionEntity.sourceOrder.asc(),
+                questAutomationSelectionEntity.id.asc(),
+            ).fetch()
+    }
 
     fun findQuestMaps(selectionIds: Collection<Long>): List<QuestAutomationMapEntity> {
         if (selectionIds.isEmpty()) return emptyList()
@@ -105,11 +127,26 @@ class TypedAutomationQueryRepository(
             .where(battleAutomationMapEntity.entry.id.eq(entryId))
             .orderBy(battleAutomationMapEntity.executionOrder.asc(), battleAutomationMapEntity.id.asc()).fetch()
 
+    fun findBattleSettingsByEntryIds(entryIds: Collection<Long>): List<BattleAutomationMapEntity> {
+        if (entryIds.isEmpty()) return emptyList()
+        return queryFactory.selectFrom(battleAutomationMapEntity)
+            .leftJoin(battleAutomationMapEntity.partyPreset, partyPresetEntity).fetchJoin()
+            .where(battleAutomationMapEntity.entry.id.`in`(entryIds.toSet()))
+            .orderBy(battleAutomationMapEntity.entry.id.asc(), battleAutomationMapEntity.executionOrder.asc(), battleAutomationMapEntity.id.asc()).fetch()
+    }
+
     fun findAdventureSettings(entryId: Long): List<AdventureAutomationMapEntity> =
         queryFactory.selectFrom(adventureAutomationMapEntity)
             .leftJoin(adventureAutomationMapEntity.partyPreset, partyPresetEntity).fetchJoin()
             .where(adventureAutomationMapEntity.entry.id.eq(entryId))
             .orderBy(adventureAutomationMapEntity.executionOrder.asc(), adventureAutomationMapEntity.id.asc()).fetch()
+    fun findAdventureSettingsByEntryIds(entryIds: Collection<Long>): List<AdventureAutomationMapEntity> {
+        if (entryIds.isEmpty()) return emptyList()
+        return queryFactory.selectFrom(adventureAutomationMapEntity)
+            .leftJoin(adventureAutomationMapEntity.partyPreset, partyPresetEntity).fetchJoin()
+            .where(adventureAutomationMapEntity.entry.id.`in`(entryIds.toSet()))
+            .orderBy(adventureAutomationMapEntity.entry.id.asc(), adventureAutomationMapEntity.executionOrder.asc(), adventureAutomationMapEntity.id.asc()).fetch()
+    }
     fun findEntries(accountId: Long): List<AutomationEntryEntity> =
         queryFactory.selectFrom(automationEntryEntity)
             .where(automationEntryEntity.account.id.eq(accountId))

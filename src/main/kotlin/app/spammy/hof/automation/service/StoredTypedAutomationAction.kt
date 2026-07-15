@@ -8,6 +8,7 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo
 import java.security.MessageDigest
 import java.time.LocalDate
 import java.util.HexFormat
+import java.nio.charset.StandardCharsets
 import org.springframework.stereotype.Component
 import tools.jackson.databind.ObjectMapper
 import app.spammy.hof.automation.entity.TypedAutomationActionRunEntity
@@ -73,7 +74,7 @@ class StoredTypedAutomationActionCodec(private val objectMapper: ObjectMapper) {
     fun encode(action: StoredTypedAutomationActionV1): EncodedTypedAutomationAction {
         validate(action)
         val json = objectMapper.writeValueAsString(action)
-        val fingerprint = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(json.toByteArray()))
+        val fingerprint = fingerprint(json)
         return EncodedTypedAutomationAction(json, fingerprint)
     }
 
@@ -84,15 +85,18 @@ class StoredTypedAutomationActionCodec(private val objectMapper: ObjectMapper) {
 
     /** Verifies every duplicated persistence discriminator before a stored request may be submitted. */
     fun verifyPersisted(row: TypedAutomationActionRunEntity, expectedAccountId: Long): StoredTypedAutomationActionV1 {
+        require(fingerprint(row.payloadJson) == row.actionFingerprint) { "Stored action fingerprint mismatch." }
         val decoded = decode(row.schemaVersion, row.payloadJson)
-        val canonical = encode(decoded)
-        require(canonical.fingerprint == row.actionFingerprint) { "Stored action fingerprint mismatch." }
         require(row.actionKind == decoded.payload.kind()) { "Stored action kind mismatch." }
         require(row.account.id == expectedAccountId && row.entry.account.id == expectedAccountId) { "Stored action account mismatch." }
         require(row.entry.id == decoded.entryId) { "Stored action entry mismatch." }
         require(row.executionIdentity == decoded.executionIdentity) { "Stored action execution mismatch." }
         return decoded
     }
+
+    private fun fingerprint(json: String): String = HexFormat.of().formatHex(
+        MessageDigest.getInstance("SHA-256").digest(json.toByteArray(StandardCharsets.UTF_8)),
+    )
 
     private fun validate(action: StoredTypedAutomationActionV1) {
         when (val payload = action.payload) {

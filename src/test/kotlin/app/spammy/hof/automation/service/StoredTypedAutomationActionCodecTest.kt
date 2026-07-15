@@ -8,6 +8,11 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
 import tools.jackson.module.kotlin.jacksonObjectMapper
 import app.spammy.hof.battle.dto.RunBattleRequest
+import app.spammy.hof.account.entity.HofAccountEntity
+import app.spammy.hof.automation.entity.*
+import java.time.Instant
+import tools.jackson.databind.SerializationFeature
+import tools.jackson.module.kotlin.jacksonMapperBuilder
 
 class StoredTypedAutomationActionCodecTest {
     private val codec = StoredTypedAutomationActionCodec(jacksonObjectMapper())
@@ -35,5 +40,21 @@ class StoredTypedAutomationActionCodecTest {
     @Test
     fun `rejects unknown schema versions`() {
         assertFailsWith<IllegalArgumentException> { codec.decode(2, "{}") }
+    }
+
+    @Test
+    fun `verifies original payload bytes even when verifier serialization settings differ`() {
+        val action = StoredTypedAutomationActionV1(12, "execution", StoredTypedActionPayload.QuestClaim("quest", "claim"))
+        val encoded = codec.encode(action)
+        val account = HofAccountEntity(7, "login", "encrypted", Instant.EPOCH)
+        val entry = AutomationEntryEntity(12, account, AutomationType.QUEST, 0, true, Instant.EPOCH, Instant.EPOCH)
+        val row = TypedAutomationActionRunEntity(
+            1, account, entry, action.executionIdentity, "QUEST_CLAIM", 1, encoded.json, encoded.fingerprint,
+            TypedAutomationActionStatus.PREPARED, leaseToken = "token", createdAt = Instant.EPOCH, updatedAt = Instant.EPOCH,
+        )
+        val alternateMapper = jacksonMapperBuilder().enable(SerializationFeature.INDENT_OUTPUT).build()
+        assertNotEquals(encoded.json, alternateMapper.writeValueAsString(action))
+
+        assertEquals(action, StoredTypedAutomationActionCodec(alternateMapper).verifyPersisted(row, 7))
     }
 }
