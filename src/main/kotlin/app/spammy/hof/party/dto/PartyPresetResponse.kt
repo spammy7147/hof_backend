@@ -41,6 +41,7 @@ data class PartyPresetResponse(
     val id: Long,
     val accountId: Long,
     val name: String,
+    val isPrimary: Boolean,
     val members: List<PartyPresetMemberResponse>,
     val createdAt: String,
     val updatedAt: String,

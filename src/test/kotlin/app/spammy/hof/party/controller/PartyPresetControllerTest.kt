@@ -45,6 +45,7 @@ class PartyPresetControllerTest {
         val deleted = controller.delete(accountId = 1L, presetId = 3L)
 
         assertEquals("고블린 범용 파티", created.name)
+        assertEquals(false, created.isPrimary)
         assertEquals(listOf("char-1", "char-2", null, null, null), created.members.map { it.characterId })
         assertEquals(listOf(0, 1, null, null, null), created.members.map { it.patternSlot })
         assertEquals("모험 기본 파티", updated.name)
@@ -52,11 +53,26 @@ class PartyPresetControllerTest {
         Mockito.verify(presetService).delete(accountId = 1L, presetId = 3L)
     }
 
-    private fun preset(name: String = "고블린 범용 파티"): PartyPresetResponse =
+    @Test
+    fun makePrimaryDelegatesToServiceAndReturnsPrimaryState() {
+        Mockito.`when`(presetService.makePrimary(accountId = 1L, presetId = 3L))
+            .thenReturn(preset(isPrimary = true))
+
+        val response = controller.makePrimary(accountId = 1L, presetId = 3L)
+
+        assertEquals(true, response.isPrimary)
+        Mockito.verify(presetService).makePrimary(accountId = 1L, presetId = 3L)
+    }
+
+    private fun preset(
+        name: String = "고블린 범용 파티",
+        isPrimary: Boolean = false,
+    ): PartyPresetResponse =
         PartyPresetResponse(
             id = 3L,
             accountId = 1L,
             name = name,
+            isPrimary = isPrimary,
             members = listOf(
                 PartyPresetMemberResponse(slotIndex = 0, characterId = "char-1", patternSlot = 0),
                 PartyPresetMemberResponse(slotIndex = 1, characterId = "char-2", patternSlot = 1),

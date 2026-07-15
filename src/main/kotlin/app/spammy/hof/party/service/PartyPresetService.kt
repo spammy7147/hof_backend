@@ -101,6 +101,31 @@ class PartyPresetService(
     }
 
     /**
+     * 계정 row를 잠가 기본 프리셋이 없는 경우까지 계정 단위로 직렬화한 뒤 기본 상태를 교체한다.
+     *
+     * 기존 marker 해제를 먼저 flush하여 `(account_id, primary_marker)` unique key가 새 기본 marker와
+     * 일시적으로 충돌하지 않게 한다.
+     */
+    @Transactional
+    fun makePrimary(
+        accountId: Long,
+        presetId: Long,
+    ): PartyPresetResponse {
+        accountQueryRepository.findByIdForUpdate(accountId)
+            ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
+        val selected = findOwnedPreset(accountId = accountId, presetId = presetId)
+        val previous = presetQueryRepository.findPrimaryByAccountIdForUpdate(accountId)
+        if (previous != null && previous.id != selected.id) {
+            previous.clearPrimary()
+            presetRepository.flush()
+        }
+        selected.markPrimary()
+        selected.updatedAt = timeProvider.now()
+        val members = presetQueryRepository.findMembersByPresetIds(listOf(selected.id))
+        return selected.toResponse(members)
+    }
+
+    /**
      * FK cascade에만 의존하지 않고 자식 삭제를 먼저 flush한 뒤 부모를 삭제한다.
      */
     @Transactional
@@ -222,6 +247,7 @@ class PartyPresetService(
             id = id,
             accountId = account.id,
             name = name,
+            isPrimary = isPrimary,
             members = members
                 .sortedBy { member -> member.slotIndex }
                 .map { member -> member.toResponse() },
