@@ -133,7 +133,7 @@ create table battle_automation_maps (
     constraint fk_battle_automation_maps_party_preset foreign key (party_preset_id)
         references party_presets (id) on delete set null,
     constraint uk_battle_automation_maps_entry_map unique (automation_entry_id, category_id, map_code),
-    constraint ck_battle_automation_maps_daily_target check (daily_target_count >= 0),
+    constraint ck_battle_automation_maps_daily_target check (daily_target_count > 0),
     constraint ck_battle_automation_maps_preset_mode
         check (case preset_mode when 'PRIMARY' then true when 'EXPLICIT' then true else false end),
     constraint ck_battle_automation_maps_execution_order check (execution_order >= 0)

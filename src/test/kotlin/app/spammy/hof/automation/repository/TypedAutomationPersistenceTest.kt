@@ -5,6 +5,8 @@ import app.spammy.hof.account.repository.HofAccountRepository
 import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.entity.BattleAutomationDailyProgressEntity
+import app.spammy.hof.automation.entity.BattleAutomationMapEntity
+import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.common.persistence.QueryDslConfig
 import jakarta.persistence.EntityManager
 import java.time.Instant
@@ -24,6 +26,7 @@ import org.springframework.test.context.ActiveProfiles
 class TypedAutomationPersistenceTest {
     @Autowired private lateinit var accountRepository: HofAccountRepository
     @Autowired private lateinit var entryRepository: AutomationEntryCommandRepository
+    @Autowired private lateinit var battleMapRepository: BattleAutomationMapCommandRepository
     @Autowired private lateinit var battleProgressRepository: BattleAutomationDailyProgressCommandRepository
     @Autowired private lateinit var queryRepository: TypedAutomationQueryRepository
     @Autowired private lateinit var entityManager: EntityManager
@@ -97,6 +100,27 @@ class TypedAutomationPersistenceTest {
                 mapCode = "gb0",
             ),
         )
+    }
+
+    @Test
+    fun rejectsZeroDailyTargetForBattleAutomationMap() {
+        val now = Instant.parse("2026-07-15T00:00:00Z")
+        val account = newAccount("typed-zero-target", now)
+        val entry = entryRepository.save(newEntry(account, AutomationType.BATTLE_MAP, priority = 0, now))
+
+        assertFailsWith<DataIntegrityViolationException> {
+            battleMapRepository.save(
+                BattleAutomationMapEntity(
+                    entry = entry,
+                    categoryId = "battle_map",
+                    mapCode = "gb0",
+                    dailyTargetCount = 0,
+                    presetMode = PresetSelectionMode.PRIMARY,
+                    executionOrder = 0,
+                ),
+            )
+            battleMapRepository.flush()
+        }
     }
 
     private fun newAccount(loginId: String, now: Instant): HofAccountEntity =

@@ -928,7 +928,7 @@ internal object FreshSchemaContract {
             "quest_map_execution_counters", "ck_quest_map_execution_counters_successful_runs",
             "successful_runs >= 0",
         ),
-        check("battle_automation_maps", "ck_battle_automation_maps_daily_target", "daily_target_count >= 0"),
+        check("battle_automation_maps", "ck_battle_automation_maps_daily_target", "daily_target_count > 0"),
         check(
             "battle_automation_maps", "ck_battle_automation_maps_preset_mode",
             "case preset_mode when 'PRIMARY' then true when 'EXPLICIT' then true else false end",
