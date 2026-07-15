@@ -10,7 +10,6 @@ import app.spammy.hof.automation.entity.QQuestAutomationProcessedResultEntity.qu
 import app.spammy.hof.automation.entity.QQuestMapExecutionCounterEntity.questMapExecutionCounterEntity
 import app.spammy.hof.automation.entity.QuestAutomationCycleEntity
 import app.spammy.hof.automation.entity.QuestAutomationProcessedResultEntity
-import app.spammy.hof.automation.entity.QuestAutomationResultKind
 import app.spammy.hof.automation.entity.QuestMapExecutionCounterEntity
 import com.querydsl.jpa.impl.JPAQueryFactory
 import jakarta.persistence.LockModeType
@@ -60,13 +59,11 @@ class TypedAutomationQueryRepository(
 
     fun findQuestProcessedResult(
         accountId: Long,
-        kind: QuestAutomationResultKind,
         resultIdentity: String,
     ): QuestAutomationProcessedResultEntity? =
         queryFactory.selectFrom(questAutomationProcessedResultEntity)
             .where(
                 questAutomationProcessedResultEntity.account.id.eq(accountId),
-                questAutomationProcessedResultEntity.resultKind.eq(kind),
                 questAutomationProcessedResultEntity.resultIdentity.eq(resultIdentity),
             )
             .fetchOne()

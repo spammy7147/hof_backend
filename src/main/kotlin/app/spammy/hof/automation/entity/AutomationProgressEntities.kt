@@ -46,7 +46,7 @@ enum class QuestAutomationResultKind { ACCEPT, BATTLE_VICTORY }
     uniqueConstraints = [
         UniqueConstraint(
             name = "uk_quest_automation_processed_results_identity",
-            columnNames = ["account_id", "result_kind", "result_identity"],
+            columnNames = ["account_id", "result_identity"],
         ),
     ],
 )
@@ -57,13 +57,39 @@ class QuestAutomationProcessedResultEntity(
     var account: HofAccountEntity,
     @Enumerated(EnumType.STRING) @Column(name = "result_kind", nullable = false, length = 30)
     var resultKind: QuestAutomationResultKind,
-    @Column(name = "result_identity", nullable = false, length = 150)
+    @Column(name = "result_identity", nullable = false, length = 128)
     var resultIdentity: String,
+    @Column(name = "action_fingerprint", nullable = false, length = 64)
+    var actionFingerprint: String,
     @Column(name = "result_value", length = 100)
     var resultValue: String? = null,
     @Column(name = "processed_at", nullable = false)
     var processedAt: Instant,
-)
+) {
+    init {
+        require(resultIdentity.isNotBlank()) { "Quest result identity must not be blank." }
+        require(resultIdentity.length <= MAX_RESULT_IDENTITY_LENGTH) {
+            "Quest result identity must be at most $MAX_RESULT_IDENTITY_LENGTH characters."
+        }
+        require(actionFingerprint.matches(SHA_256_HEX_PATTERN)) {
+            "Quest action fingerprint must be a lowercase SHA-256 hex value."
+        }
+        when (resultKind) {
+            QuestAutomationResultKind.ACCEPT -> require(resultValue?.toLongOrNull()?.let { it > 0 } == true) {
+                "An accepted quest result must store its positive cycle."
+            }
+            QuestAutomationResultKind.BATTLE_VICTORY -> require(resultValue == null) {
+                "A battle victory result must not store a result value."
+            }
+        }
+    }
+
+    companion object {
+        /** Bounded for the DB unique key while accommodating UUIDs and coordinator execution tokens. */
+        const val MAX_RESULT_IDENTITY_LENGTH = 128
+        private val SHA_256_HEX_PATTERN = Regex("[0-9a-f]{64}")
+    }
+}
 
 @Entity
 @Table(name = "quest_map_execution_counters")

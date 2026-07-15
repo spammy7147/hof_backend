@@ -17,7 +17,12 @@ import app.spammy.hof.quest.model.QuestMission
 import app.spammy.hof.quest.model.QuestMissionType
 import app.spammy.hof.quest.model.QuestSnapshot
 import app.spammy.hof.quest.model.QuestState
+import java.io.ByteArrayOutputStream
+import java.io.DataOutputStream
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import java.time.Instant
+import java.util.HexFormat
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 
@@ -92,6 +97,10 @@ interface QuestAutomationProgressStore {
     fun recordVictory(accountId: Long, resultId: String, action: QuestAction.Battle)
 }
 
+class QuestAutomationResultConflictException(resultId: String) : IllegalStateException(
+    "Quest result identity '$resultId' is already bound to a different action.",
+)
+
 /** Writes only quest cycle/counter tables; the account lock makes read-modify-write increments atomic. */
 @Service
 class JpaQuestAutomationProgressStore(
@@ -102,8 +111,11 @@ class JpaQuestAutomationProgressStore(
 ) : QuestAutomationProgressStore {
     @Transactional
     override fun startNewCycle(accountId: Long, resultId: String, questCode: String): String {
+        validateResultIdentity(resultId)
+        val fingerprint = actionFingerprint(QuestAutomationResultKind.ACCEPT, listOf(questCode))
         val account = queryRepository.lockAccount(accountId)
-        queryRepository.findQuestProcessedResult(accountId, QuestAutomationResultKind.ACCEPT, resultId)?.let {
+        queryRepository.findQuestProcessedResult(accountId, resultId)?.let {
+            it.requireReplayMatches(resultId, QuestAutomationResultKind.ACCEPT, fingerprint)
             return requireNotNull(it.resultValue) { "Processed accept result $resultId has no cycle value." }
         }
         val cycle = queryRepository.findQuestCycle(accountId, questCode)
@@ -120,6 +132,7 @@ class JpaQuestAutomationProgressStore(
                 account = account,
                 resultKind = QuestAutomationResultKind.ACCEPT,
                 resultIdentity = resultId,
+                actionFingerprint = fingerprint,
                 resultValue = resultValue,
                 processedAt = Instant.now(),
             ),
@@ -129,13 +142,20 @@ class JpaQuestAutomationProgressStore(
 
     @Transactional
     override fun recordVictory(accountId: Long, resultId: String, action: QuestAction.Battle) {
+        validateResultIdentity(resultId)
+        val fingerprint = actionFingerprint(
+            QuestAutomationResultKind.BATTLE_VICTORY,
+            listOf(
+                action.questCode,
+                action.questCycle,
+                action.missionKey,
+                action.categoryId,
+                action.mapCode,
+            ),
+        )
         val account = queryRepository.lockAccount(accountId)
-        if (queryRepository.findQuestProcessedResult(
-                accountId,
-                QuestAutomationResultKind.BATTLE_VICTORY,
-                resultId,
-            ) != null
-        ) {
+        queryRepository.findQuestProcessedResult(accountId, resultId)?.let {
+            it.requireReplayMatches(resultId, QuestAutomationResultKind.BATTLE_VICTORY, fingerprint)
             return
         }
         processedResultRepository.save(
@@ -143,6 +163,7 @@ class JpaQuestAutomationProgressStore(
                 account = account,
                 resultKind = QuestAutomationResultKind.BATTLE_VICTORY,
                 resultIdentity = resultId,
+                actionFingerprint = fingerprint,
                 processedAt = Instant.now(),
             ),
         )
@@ -169,6 +190,39 @@ class JpaQuestAutomationProgressStore(
         } else {
             counter.successfulRuns += 1
         }
+    }
+
+    private fun validateResultIdentity(resultId: String) {
+        require(resultId.isNotBlank()) { "Quest result identity must not be blank." }
+        require(resultId.length <= QuestAutomationProcessedResultEntity.MAX_RESULT_IDENTITY_LENGTH) {
+            "Quest result identity must be at most ${QuestAutomationProcessedResultEntity.MAX_RESULT_IDENTITY_LENGTH} characters."
+        }
+    }
+
+    private fun QuestAutomationProcessedResultEntity.requireReplayMatches(
+        resultId: String,
+        expectedKind: QuestAutomationResultKind,
+        expectedFingerprint: String,
+    ) {
+        if (resultKind != expectedKind || actionFingerprint != expectedFingerprint) {
+            throw QuestAutomationResultConflictException(resultId)
+        }
+    }
+
+    private fun actionFingerprint(kind: QuestAutomationResultKind, actionFields: List<String>): String {
+        val canonical = ByteArrayOutputStream().use { bytes ->
+            DataOutputStream(bytes).use { output ->
+                val fields = listOf(kind.name) + actionFields
+                output.writeInt(fields.size)
+                fields.forEach { field ->
+                    val encoded = field.toByteArray(StandardCharsets.UTF_8)
+                    output.writeInt(encoded.size)
+                    output.write(encoded)
+                }
+            }
+            bytes.toByteArray()
+        }
+        return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(canonical))
     }
 }
 

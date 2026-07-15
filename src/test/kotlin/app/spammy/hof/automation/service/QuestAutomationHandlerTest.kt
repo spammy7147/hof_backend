@@ -19,6 +19,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
@@ -400,9 +401,12 @@ class QuestAutomationProgressStorePersistenceTest {
         )
 
         val pool = Executors.newFixedThreadPool(4)
-        repeat(12) { pool.submit { progressStore.recordVictory(account.id, "duplicate-victory", action) } }
+        val futures = List(12) {
+            pool.submit { progressStore.recordVictory(account.id, "duplicate-victory", action) }
+        }
         pool.shutdown()
         check(pool.awaitTermination(20, TimeUnit.SECONDS))
+        futures.forEach { it.get() }
 
         assertEquals(1, queryRepository.findQuestMapWins(account.id, "q", "2", "kill", "battle_map", "chosen"))
         assertEquals(23, queryRepository.findBattleWins(account.id, LocalDate.parse("2026-07-15"), "battle_map", "chosen"))
@@ -423,6 +427,62 @@ class QuestAutomationProgressStorePersistenceTest {
         assertEquals(setOf("1"), futures.map { it.get() }.toSet())
         assertEquals(1L, queryRepository.findQuestCycle(account.id, "repeat-q")?.currentCycle)
     }
+
+    @Test
+    fun rejectsBlankAndOversizedResultIdentitiesBeforeMutation() {
+        val account = accountRepository.save(
+            HofAccountEntity(loginId = "quest-invalid-id-${System.nanoTime()}", encryptedPassword = "encrypted", createdAt = NOW),
+        )
+
+        assertFailsWith<IllegalArgumentException> { progressStore.startNewCycle(account.id, "  ", "q") }
+        assertFailsWith<IllegalArgumentException> {
+            progressStore.startNewCycle(account.id, "x".repeat(129), "q")
+        }
+        assertEquals(null, queryRepository.findQuestCycle(account.id, "q"))
+    }
+
+    @Test
+    fun sameResultIdentityCannotBeReusedForAnotherAcceptQuest() {
+        val account = accountRepository.save(
+            HofAccountEntity(loginId = "quest-accept-conflict-${System.nanoTime()}", encryptedPassword = "encrypted", createdAt = NOW),
+        )
+        assertEquals("1", progressStore.startNewCycle(account.id, "shared-result", "first-q"))
+
+        assertFailsWith<QuestAutomationResultConflictException> {
+            progressStore.startNewCycle(account.id, "shared-result", "second-q")
+        }
+
+        assertEquals(1L, queryRepository.findQuestCycle(account.id, "first-q")?.currentCycle)
+        assertEquals(null, queryRepository.findQuestCycle(account.id, "second-q"))
+    }
+
+    @Test
+    fun sameResultIdentityCannotBeReusedForAnotherBattlePayloadOrKind() {
+        val account = accountRepository.save(
+            HofAccountEntity(loginId = "quest-battle-conflict-${System.nanoTime()}", encryptedPassword = "encrypted", createdAt = NOW),
+        )
+        val first = battleAction(cycle = "1", mapCode = "first-map")
+        progressStore.recordVictory(account.id, "battle-result", first)
+
+        assertFailsWith<QuestAutomationResultConflictException> {
+            progressStore.recordVictory(account.id, "battle-result", battleAction(cycle = "2", mapCode = "first-map"))
+        }
+        assertFailsWith<QuestAutomationResultConflictException> {
+            progressStore.recordVictory(account.id, "battle-result", battleAction(cycle = "1", mapCode = "second-map"))
+        }
+        assertFailsWith<QuestAutomationResultConflictException> {
+            progressStore.startNewCycle(account.id, "battle-result", "q")
+        }
+
+        assertEquals(1, queryRepository.findQuestMapWins(account.id, "q", "1", "kill", "battle_map", "first-map"))
+        assertEquals(0, queryRepository.findQuestMapWins(account.id, "q", "2", "kill", "battle_map", "second-map"))
+        assertEquals(null, queryRepository.findQuestCycle(account.id, "q"))
+    }
+
+    private fun battleAction(cycle: String, mapCode: String) = QuestAction.Battle(
+        "q", cycle, "kill", QuestMissionType.MONSTER_KILL, "battle_map", mapCode, mapCode,
+        QuestPresetSelection(PresetSelectionMode.PRIMARY), 1,
+    )
 
     private companion object {
         val NOW: Instant = Instant.parse("2026-07-15T00:00:00Z")

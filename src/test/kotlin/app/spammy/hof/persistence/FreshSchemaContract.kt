@@ -396,8 +396,8 @@ internal object FreshSchemaContract {
         table(
             "quest_automation_processed_results",
             serialId(), requiredBigint("account_id"), requiredVarchar("result_kind", 30),
-            requiredVarchar("result_identity", 150), optionalVarchar("result_value", 100),
-            requiredInstant("processed_at"),
+            requiredVarchar("result_identity", 128), requiredVarchar("action_fingerprint", 64),
+            optionalVarchar("result_value", 100), requiredInstant("processed_at"),
         ),
         table(
             "quest_map_execution_counters",
@@ -535,7 +535,7 @@ internal object FreshSchemaContract {
         ),
         key(
             "quest_automation_processed_results", "uk_quest_automation_processed_results_identity",
-            "account_id", "result_kind", "result_identity",
+            "account_id", "result_identity",
         ),
         key(
             "quest_map_execution_counters", "uk_quest_map_execution_counters_identity",
@@ -977,8 +977,17 @@ internal object FreshSchemaContract {
             "current_cycle > cast(0 as bigint)",
         ),
         check(
-            "quest_automation_processed_results", "ck_quest_automation_processed_results_kind",
-            "case result_kind when 'ACCEPT' then true when 'BATTLE_VICTORY' then true else false end",
+            "quest_automation_processed_results", "ck_quest_automation_processed_results_identity",
+            "char_length(trim(result_identity)) between 1 and 128",
+        ),
+        check(
+            "quest_automation_processed_results", "ck_quest_automation_processed_results_fingerprint",
+            "char_length(action_fingerprint) = 64",
+        ),
+        check(
+            "quest_automation_processed_results", "ck_quest_automation_processed_results_kind_value",
+            "case result_kind when 'ACCEPT' then result_value is not null and cast(result_value as bigint) > 0 " +
+                "when 'BATTLE_VICTORY' then result_value is null else false end",
         ),
         check(
             "quest_map_execution_counters", "ck_quest_map_execution_counters_successful_runs",
