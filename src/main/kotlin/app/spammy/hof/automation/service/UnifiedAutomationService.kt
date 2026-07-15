@@ -11,6 +11,21 @@ import app.spammy.hof.automation.dto.CreateAutomationModuleRequest
 import app.spammy.hof.automation.dto.ReorderAutomationModulesRequest
 import app.spammy.hof.automation.dto.UnifiedAutomationStatusResponse
 import app.spammy.hof.automation.dto.UpdateAutomationModuleRequest
+import app.spammy.hof.automation.dto.*
+import app.spammy.hof.automation.entity.AdventureAutomationMapEntity
+import app.spammy.hof.automation.entity.AutomationEntryEntity
+import app.spammy.hof.automation.entity.AutomationType
+import app.spammy.hof.automation.entity.BattleAutomationMapEntity
+import app.spammy.hof.automation.entity.PresetSelectionMode
+import app.spammy.hof.automation.entity.QuestAutomationMapEntity
+import app.spammy.hof.automation.entity.QuestAutomationSelectionEntity
+import app.spammy.hof.automation.entity.TypedAutomationLifecycle
+import app.spammy.hof.automation.outbox.AutomationOutboxService
+import app.spammy.hof.automation.repository.AdventureAutomationMapCommandRepository
+import app.spammy.hof.automation.repository.AutomationEntryCommandRepository
+import app.spammy.hof.automation.repository.BattleAutomationMapCommandRepository
+import app.spammy.hof.automation.repository.QuestAutomationMapCommandRepository
+import app.spammy.hof.automation.repository.QuestAutomationSelectionCommandRepository
 import app.spammy.hof.automation.entity.AutomationJobEntity
 import app.spammy.hof.automation.entity.AutomationModuleConfigEntity
 import app.spammy.hof.automation.entity.AutomationModuleMapEntity
@@ -66,7 +81,215 @@ class UnifiedAutomationService(
     private val readinessEvaluator: AutomationModuleReadinessEvaluator,
     private val typedAutomationQueryRepository: TypedAutomationQueryRepository? = null,
     private val typedLifecycleBridge: TypedAutomationLifecycleBridge? = null,
+    private val typedEntryRepository: AutomationEntryCommandRepository? = null,
+    private val typedQuestSelectionRepository: QuestAutomationSelectionCommandRepository? = null,
+    private val typedQuestMapRepository: QuestAutomationMapCommandRepository? = null,
+    private val typedBattleMapRepository: BattleAutomationMapCommandRepository? = null,
+    private val typedAdventureMapRepository: AdventureAutomationMapCommandRepository? = null,
+    private val automationOutboxService: AutomationOutboxService? = null,
 ) {
+    @Transactional(readOnly = true)
+    fun getTyped(accountId: Long): TypedAutomationAggregateResponse {
+        accountQueryRepository.findById(accountId)
+            ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
+        return buildTypedAggregate(accountId)
+    }
+
+    @Transactional
+    fun createEntry(accountId: Long, request: CreateAutomationEntryRequest): TypedAutomationAggregateResponse {
+        val account = lockTypedAccount(accountId)
+        val current = typedQuery().findEntries(accountId)
+        if (current.any { it.type == request.type }) invalid("해당 자동화 유형은 이미 존재합니다.")
+        val now = timeProvider.now()
+        try {
+            typedEntries().save(
+                AutomationEntryEntity(
+                    account = account,
+                    type = request.type,
+                    priority = current.size,
+                    enabled = false,
+                    createdAt = now,
+                    updatedAt = now,
+                ),
+            )
+            typedEntries().flush()
+        } catch (error: org.springframework.dao.DataIntegrityViolationException) {
+            invalid("해당 자동화 유형은 이미 존재합니다.", error)
+        }
+        enqueueSettingsWake(accountId)
+        return buildTypedAggregate(accountId)
+    }
+
+    @Transactional
+    fun deleteEntry(accountId: Long, entryId: Long): TypedAutomationAggregateResponse {
+        lockTypedAccount(accountId)
+        val target = typedQuery().findEntry(accountId, entryId)
+            ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "자동화 항목을 찾지 못했습니다.")
+        typedEntries().delete(target)
+        typedEntries().flush()
+        val now = timeProvider.now()
+        typedQuery().findEntries(accountId).forEachIndexed { index, entry ->
+            entry.priority = index
+            entry.updatedAt = now
+        }
+        enqueueSettingsWake(accountId)
+        return buildTypedAggregate(accountId)
+    }
+
+    @Transactional
+    fun reorderEntries(accountId: Long, request: ReorderAutomationEntriesRequest): TypedAutomationAggregateResponse {
+        lockTypedAccount(accountId)
+        val current = typedQuery().findEntries(accountId)
+        val requested = request.entryIds
+        if (requested.size != requested.toSet().size) invalid("자동화 순서에 같은 항목이 중복되었습니다.")
+        if (requested.size != current.size || requested.toSet() != current.map { it.id }.toSet()) {
+            invalid("자동화 목록이 변경되었습니다. 목록을 새로고침한 뒤 다시 시도해 주세요.")
+        }
+        val byId = current.associateBy { it.id }
+        val now = timeProvider.now()
+        requested.forEachIndexed { index, id ->
+            byId.getValue(id).also { it.priority = index; it.updatedAt = now }
+        }
+        enqueueSettingsWake(accountId)
+        return buildTypedAggregate(accountId)
+    }
+
+    @Transactional
+    fun updateQuest(accountId: Long, request: UpdateQuestAutomationRequest): TypedAutomationAggregateResponse {
+        lockTypedAccount(accountId)
+        val entry = requireTypedEntry(accountId, AutomationType.QUEST)
+        if (request.quests.size > MAX_SETTING_ITEMS) invalid("퀘스트 설정은 최대 100개까지 저장할 수 있습니다.")
+        val normalized = request.quests.map { selection ->
+            val questCode = bounded(selection.questCode, MAX_QUEST_CODE_LENGTH, "퀘스트 코드")
+            val maps = normalizeQuestMaps(selection.maps)
+            selection.copy(questCode = questCode, maps = maps)
+        }
+        rejectDuplicates(normalized.map { it.questCode }, "같은 퀘스트를 두 번 설정할 수 없습니다.")
+        validateMapAndPresetReferences(accountId, normalized.flatMap { it.maps }.map(::mapReference))
+        val oldSelections = typedQuery().findQuestSelections(entry.id)
+        val oldMaps = typedQuery().findQuestMaps(oldSelections.map { it.id })
+        if (oldMaps.isNotEmpty()) typedQuestMaps().deleteAll(oldMaps).also { typedQuestMaps().flush() }
+        if (oldSelections.isNotEmpty()) typedQuestSelections().deleteAll(oldSelections).also { typedQuestSelections().flush() }
+        normalized.sortedWith(compareBy<QuestSelectionRequest> { it.sourceOrder }.thenBy { it.questCode })
+            .forEachIndexed { sourceOrder, selection ->
+                val row = typedQuestSelections().save(
+                    QuestAutomationSelectionEntity(
+                        entry = entry, questCode = selection.questCode, enabled = selection.enabled, sourceOrder = sourceOrder,
+                    ),
+                )
+                selection.maps.forEachIndexed { executionOrder, map ->
+                    typedQuestMaps().save(
+                        QuestAutomationMapEntity(
+                            questSelection = row,
+                            missionKey = map.missionKey,
+                            categoryId = map.categoryId,
+                            mapCode = map.mapCode,
+                            presetMode = map.presetMode,
+                            partyPreset = map.partyPresetId?.let { partyPresetQueryRepository.findOwnedByAccountIdAndId(accountId, it) },
+                            executionOrder = executionOrder,
+                            manuallyOverridden = map.manuallyOverridden,
+                        ),
+                    )
+                }
+            }
+        updateTypedEntry(entry, request.enabled)
+        enqueueSettingsWake(accountId)
+        return buildTypedAggregate(accountId)
+    }
+
+    @Transactional
+    fun updateBattleMaps(accountId: Long, request: UpdateBattleMapAutomationRequest): TypedAutomationAggregateResponse {
+        lockTypedAccount(accountId)
+        val entry = requireTypedEntry(accountId, AutomationType.BATTLE_MAP)
+        if (request.maps.size > MAX_SETTING_ITEMS) invalid("전투 맵 설정은 최대 100개까지 저장할 수 있습니다.")
+        val normalized = request.maps.map { map ->
+            if (map.dailyTargetCount <= 0) invalid("일일 목표 횟수는 1 이상이어야 합니다.")
+            map.copy(categoryId = bounded(map.categoryId, MAX_CATEGORY_ID_LENGTH, "카테고리"), mapCode = bounded(map.mapCode, MAX_MAP_CODE_LENGTH, "맵 코드"))
+        }.sortedWith(compareBy<BattleMapSettingRequest> { it.executionOrder }.thenBy { it.categoryId }.thenBy { it.mapCode })
+        rejectDuplicates(normalized.map { it.categoryId to it.mapCode }, "같은 맵을 두 번 설정할 수 없습니다.")
+        if (normalized.any { it.categoryId == app.spammy.hof.battle.model.BattleCategoryId.ADVENTURE_MAP.value }) {
+            invalid("모험맵은 전투 맵 자동화에 설정할 수 없습니다.")
+        }
+        validateMapAndPresetReferences(accountId, normalized.map(::mapReference))
+        val old = typedQuery().findBattleSettings(entry.id)
+        if (old.isNotEmpty()) typedBattleMaps().deleteAll(old).also { typedBattleMaps().flush() }
+        normalized.forEachIndexed { executionOrder, map ->
+            typedBattleMaps().save(
+                BattleAutomationMapEntity(
+                    entry = entry, categoryId = map.categoryId, mapCode = map.mapCode,
+                    dailyTargetCount = map.dailyTargetCount, presetMode = map.presetMode,
+                    partyPreset = map.partyPresetId?.let { partyPresetQueryRepository.findOwnedByAccountIdAndId(accountId, it) },
+                    executionOrder = executionOrder,
+                ),
+            )
+        }
+        updateTypedEntry(entry, request.enabled)
+        enqueueSettingsWake(accountId)
+        return buildTypedAggregate(accountId)
+    }
+
+    @Transactional
+    fun updateAdventureMaps(accountId: Long, request: UpdateAdventureMapAutomationRequest): TypedAutomationAggregateResponse {
+        lockTypedAccount(accountId)
+        val entry = requireTypedEntry(accountId, AutomationType.ADVENTURE_MAP)
+        if (request.maps.size > MAX_SETTING_ITEMS) invalid("모험맵 설정은 최대 100개까지 저장할 수 있습니다.")
+        val normalized = request.maps.map { map ->
+            map.copy(categoryId = bounded(map.categoryId, MAX_CATEGORY_ID_LENGTH, "카테고리"), mapCode = bounded(map.mapCode, MAX_MAP_CODE_LENGTH, "맵 코드"))
+        }.sortedWith(compareBy<AdventureMapSettingRequest> { it.executionOrder }.thenBy { it.categoryId }.thenBy { it.mapCode })
+        rejectDuplicates(normalized.map { it.categoryId to it.mapCode }, "같은 맵을 두 번 설정할 수 없습니다.")
+        if (normalized.any { it.categoryId != app.spammy.hof.battle.model.BattleCategoryId.ADVENTURE_MAP.value }) {
+            invalid("모험맵 카테고리의 맵만 설정할 수 있습니다.")
+        }
+        validateMapAndPresetReferences(accountId, normalized.map(::mapReference))
+        val old = typedQuery().findAdventureSettings(entry.id)
+        if (old.isNotEmpty()) typedAdventureMaps().deleteAll(old).also { typedAdventureMaps().flush() }
+        normalized.forEachIndexed { executionOrder, map ->
+            typedAdventureMaps().save(
+                AdventureAutomationMapEntity(
+                    entry = entry, categoryId = map.categoryId, mapCode = map.mapCode,
+                    presetMode = map.presetMode,
+                    partyPreset = map.partyPresetId?.let { partyPresetQueryRepository.findOwnedByAccountIdAndId(accountId, it) },
+                    executionOrder = executionOrder,
+                ),
+            )
+        }
+        updateTypedEntry(entry, request.enabled)
+        enqueueSettingsWake(accountId)
+        return buildTypedAggregate(accountId)
+    }
+
+    @Transactional
+    fun startTyped(accountId: Long): TypedAutomationAggregateResponse {
+        lockTypedAccount(accountId)
+        if (typedQuery().findEntries(accountId).none { it.enabled }) invalid("활성화된 자동화 항목이 없습니다.")
+        if (typedQuery().findRuntimeState(accountId)?.lifecycleStatus == TypedAutomationLifecycle.STOPPED) {
+            invalid("중지된 자동화는 명시적으로 재개해 주세요.")
+        }
+        typedBridge().start(accountId, "USER_START")
+        return buildTypedAggregate(accountId)
+    }
+
+    @Transactional
+    fun pauseTyped(accountId: Long): TypedAutomationAggregateResponse {
+        lockTypedAccount(accountId)
+        typedBridge().pause(accountId, "USER_PAUSE")
+        return buildTypedAggregate(accountId)
+    }
+
+    @Transactional
+    fun resumeTyped(accountId: Long): TypedAutomationAggregateResponse {
+        lockTypedAccount(accountId)
+        if (typedQuery().findEntries(accountId).none { it.enabled }) invalid("활성화된 자동화 항목이 없습니다.")
+        typedBridge().resume(accountId, "USER_RESUME")
+        return buildTypedAggregate(accountId)
+    }
+
+    @Transactional
+    fun stopTyped(accountId: Long): TypedAutomationAggregateResponse {
+        lockTypedAccount(accountId)
+        typedBridge().stop(accountId, AutomationStopReason.MANUAL_STOP, "USER_STOP")
+        return buildTypedAggregate(accountId)
+    }
     /**
      * 통합 프로필과 현재 실행 상태를 조회한다.
      *
@@ -803,6 +1026,188 @@ class UnifiedAutomationService(
     private fun ResolvedReferences.battleMap(request: AutomationModuleMapRequest): BattleMapEntity =
         battleMaps.getValue(request.categoryId to request.mapCode)
 
+    private fun buildTypedAggregate(accountId: Long): TypedAutomationAggregateResponse {
+        val typed = typedQuery()
+        val entries = typed.findEntries(accountId)
+        val presets = partyPresetQueryRepository.findAllByAccountId(accountId)
+        val presetMembers = partyPresetQueryRepository.findMembersByPresetIds(presets.map { it.id })
+        val validPresetIds = presetMembers.groupBy { it.preset.id }.filterValues { members ->
+            members.isNotEmpty() && members.all { member ->
+                member.character?.hofCharacterId != null &&
+                    member.patternSlot?.canLoad == true &&
+                    member.patternSlot?.slotCode?.toIntOrNull() != null
+            }
+        }.keys
+        val primaryPresetId = presets.singleOrNull { it.isPrimary }?.id
+        val responses = entries.map { entry ->
+            val quests = if (entry.type == AutomationType.QUEST) typed.findQuestSelections(entry.id) else emptyList()
+            val questMaps = typed.findQuestMaps(quests.map { it.id }).groupBy { it.questSelection.id }
+            val battle = if (entry.type == AutomationType.BATTLE_MAP) typed.findBattleSettings(entry.id) else emptyList()
+            val adventure = if (entry.type == AutomationType.ADVENTURE_MAP) typed.findAdventureSettings(entry.id) else emptyList()
+            val warnings = typedWarnings(entry, quests, questMaps, battle, adventure, primaryPresetId, validPresetIds)
+            TypedAutomationEntryResponse(
+                id = entry.id,
+                type = entry.type,
+                enabled = entry.enabled,
+                priority = entry.priority,
+                ready = warnings.isEmpty(),
+                warnings = warnings,
+                quests = quests.map { selection ->
+                    QuestSelectionResponse(
+                        selection.questCode,
+                        selection.enabled,
+                        selection.sourceOrder,
+                        questMaps[selection.id].orEmpty().map { map ->
+                            QuestMapSettingResponse(
+                                map.missionKey, map.categoryId, map.mapCode, map.presetMode,
+                                map.partyPreset?.id, map.executionOrder, map.manuallyOverridden,
+                            )
+                        },
+                    )
+                },
+                battleMaps = battle.map { map ->
+                    BattleMapSettingResponse(
+                        map.categoryId, map.mapCode, map.dailyTargetCount, map.presetMode,
+                        map.partyPreset?.id, map.executionOrder,
+                    )
+                },
+                adventureMaps = adventure.map { map ->
+                    AdventureMapSettingResponse(
+                        map.categoryId, map.mapCode, map.presetMode, map.partyPreset?.id, map.executionOrder,
+                    )
+                },
+            )
+        }
+        val runtime = typed.findRuntimeState(accountId)
+        return TypedAutomationAggregateResponse(
+            entries = responses,
+            runtime = TypedAutomationRuntimeResponse(
+                lifecycle = runtime?.lifecycleStatus ?: TypedAutomationLifecycle.STOPPED,
+                stopReason = runtime?.stopReason,
+                nextAttemptAt = runtime?.nextAttemptAt?.toString(),
+                warnings = runtime?.warningText?.takeIf { it.isNotBlank() }?.let(::listOf).orEmpty(),
+                lastError = runtime?.lastError,
+            ),
+        )
+    }
+
+    private fun typedWarnings(
+        entry: AutomationEntryEntity,
+        quests: List<QuestAutomationSelectionEntity>,
+        questMaps: Map<Long, List<QuestAutomationMapEntity>>,
+        battle: List<BattleAutomationMapEntity>,
+        adventure: List<AdventureAutomationMapEntity>,
+        primaryPresetId: Long?,
+        validPresetIds: Set<Long>,
+    ): List<String> {
+        val warnings = linkedSetOf<String>()
+        when (entry.type) {
+            AutomationType.QUEST -> {
+                if (quests.none { it.enabled }) warnings += "활성화된 퀘스트가 없습니다."
+                quests.filter { it.enabled }.forEach { selection ->
+                    val maps = questMaps[selection.id].orEmpty()
+                    if (maps.isEmpty()) warnings += "${selection.questCode} 퀘스트의 전투 맵 설정이 없습니다."
+                    maps.forEach { map -> presetWarning(map.presetMode, map.partyPreset?.id, primaryPresetId, validPresetIds)?.let(warnings::add) }
+                }
+            }
+            AutomationType.BATTLE_MAP -> {
+                if (battle.isEmpty()) warnings += "전투 맵 설정이 없습니다."
+                battle.forEach { map -> presetWarning(map.presetMode, map.partyPreset?.id, primaryPresetId, validPresetIds)?.let(warnings::add) }
+            }
+            AutomationType.ADVENTURE_MAP -> {
+                if (adventure.isEmpty()) warnings += "모험맵 설정이 없습니다."
+                adventure.forEach { map -> presetWarning(map.presetMode, map.partyPreset?.id, primaryPresetId, validPresetIds)?.let(warnings::add) }
+            }
+        }
+        return warnings.toList()
+    }
+
+    private fun presetWarning(
+        mode: PresetSelectionMode,
+        presetId: Long?,
+        primaryPresetId: Long?,
+        validPresetIds: Set<Long>,
+    ): String? = when (mode) {
+        PresetSelectionMode.PRIMARY -> if (primaryPresetId !in validPresetIds) "기본 파티의 전투 설정을 완료해 주세요." else null
+        PresetSelectionMode.EXPLICIT -> if (presetId !in validPresetIds) "선택한 파티의 전투 설정을 확인해 주세요." else null
+    }
+
+    private fun normalizeQuestMaps(maps: List<QuestMapSettingRequest>): List<QuestMapSettingRequest> {
+        if (maps.size > MAX_SETTING_ITEMS) invalid("퀘스트별 맵은 최대 100개까지 저장할 수 있습니다.")
+        val normalized = maps.map { map ->
+            map.copy(
+                missionKey = bounded(map.missionKey, MAX_QUEST_CODE_LENGTH, "미션 키"),
+                categoryId = bounded(map.categoryId, MAX_CATEGORY_ID_LENGTH, "카테고리"),
+                mapCode = bounded(map.mapCode, MAX_MAP_CODE_LENGTH, "맵 코드"),
+            )
+        }.sortedWith(compareBy<QuestMapSettingRequest> { it.executionOrder }.thenBy { it.missionKey }.thenBy { it.categoryId }.thenBy { it.mapCode })
+        rejectDuplicates(
+            normalized.map { listOf(it.missionKey, it.categoryId, it.mapCode) },
+            "같은 미션 맵을 두 번 설정할 수 없습니다.",
+        )
+        return normalized
+    }
+
+    private data class TypedMapReference(
+        val categoryId: String,
+        val mapCode: String,
+        val presetMode: PresetSelectionMode,
+        val partyPresetId: Long?,
+    )
+
+    private fun mapReference(map: QuestMapSettingRequest) = TypedMapReference(map.categoryId, map.mapCode, map.presetMode, map.partyPresetId)
+    private fun mapReference(map: BattleMapSettingRequest) = TypedMapReference(map.categoryId, map.mapCode, map.presetMode, map.partyPresetId)
+    private fun mapReference(map: AdventureMapSettingRequest) = TypedMapReference(map.categoryId, map.mapCode, map.presetMode, map.partyPresetId)
+
+    private fun validateMapAndPresetReferences(accountId: Long, references: List<TypedMapReference>) {
+        references.forEach { reference ->
+            when (reference.presetMode) {
+                PresetSelectionMode.PRIMARY -> if (reference.partyPresetId != null) invalid("기본 프리셋 모드에는 프리셋 ID를 지정할 수 없습니다.")
+                PresetSelectionMode.EXPLICIT -> if (reference.partyPresetId == null) invalid("명시적 프리셋 모드에는 프리셋 ID가 필요합니다.")
+            }
+        }
+        val requestedMaps = references.map { it.categoryId to it.mapCode }.toSet()
+        val foundMaps = battleMapQueryRepository.findMapsByCategoryIdAndMapCodePairs(requestedMaps)
+            .map { it.categoryId to it.mapCode }.toSet()
+        if (foundMaps != requestedMaps) invalid("선택한 맵을 찾을 수 없습니다. 맵 목록을 새로고침해 주세요.")
+        val requestedPresets = references.mapNotNull { it.partyPresetId }.toSet()
+        val foundPresets = partyPresetQueryRepository.findOwnedByAccountIdAndIds(accountId, requestedPresets).map { it.id }.toSet()
+        if (foundPresets != requestedPresets) invalid("선택한 파티 프리셋을 찾을 수 없습니다.")
+    }
+
+    private fun bounded(value: String, maxLength: Int, label: String): String {
+        val normalized = value.trim()
+        if (normalized.isEmpty()) invalid("$label 값이 비어 있습니다.")
+        if (normalized.length > maxLength) invalid("$label 값이 허용 길이를 초과했습니다.")
+        return normalized
+    }
+
+    private fun updateTypedEntry(entry: AutomationEntryEntity, enabled: Boolean) {
+        entry.enabled = enabled
+        entry.updatedAt = timeProvider.now()
+        typedEntries().save(entry)
+    }
+
+    private fun requireTypedEntry(accountId: Long, type: AutomationType): AutomationEntryEntity =
+        typedQuery().findEntries(accountId).singleOrNull { it.type == type }
+            ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "${type.name} 자동화 항목을 찾지 못했습니다.")
+
+    private fun lockTypedAccount(accountId: Long) = accountQueryRepository.findByIdForUpdate(accountId)
+        ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
+
+    private fun enqueueSettingsWake(accountId: Long) {
+        typedOutbox().enqueue(accountId, "SETTINGS_UPDATED")
+    }
+
+    private fun typedQuery() = requireNotNull(typedAutomationQueryRepository) { "Typed automation query repository is required." }
+    private fun typedBridge() = requireNotNull(typedLifecycleBridge) { "Typed automation lifecycle bridge is required." }
+    private fun typedEntries() = requireNotNull(typedEntryRepository) { "Typed automation entry repository is required." }
+    private fun typedQuestSelections() = requireNotNull(typedQuestSelectionRepository) { "Typed quest selection repository is required." }
+    private fun typedQuestMaps() = requireNotNull(typedQuestMapRepository) { "Typed quest map repository is required." }
+    private fun typedBattleMaps() = requireNotNull(typedBattleMapRepository) { "Typed battle map repository is required." }
+    private fun typedAdventureMaps() = requireNotNull(typedAdventureMapRepository) { "Typed adventure map repository is required." }
+    private fun typedOutbox() = requireNotNull(automationOutboxService) { "Automation outbox service is required." }
+
     private fun <T> rejectDuplicates(
         values: List<T>,
         message: String,
@@ -811,6 +1216,7 @@ class UnifiedAutomationService(
     }
 
     private fun invalid(message: String): Nothing = throw ApiException(ErrorCode.INVALID_REQUEST, message)
+    private fun invalid(message: String, cause: Throwable): Nothing = throw ApiException(ErrorCode.INVALID_REQUEST, message, cause)
 
     private data class NormalizedSettings(
         val displayName: String,

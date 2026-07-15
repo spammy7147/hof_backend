@@ -31,7 +31,7 @@ class TypedAutomationRuntimeStateEntity(
 class TypedAutomationActionRunEntity(
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY) val id: Long = 0,
     @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "account_id") val account: HofAccountEntity,
-    @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "automation_entry_id") val entry: AutomationEntryEntity,
+    @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "automation_entry_id") val entry: AutomationEntryEntity?,
     @Column(name = "execution_identity") val executionIdentity: String,
     @Column(name = "action_kind") val actionKind: String,
     @Column(name = "schema_version") val schemaVersion: Int,

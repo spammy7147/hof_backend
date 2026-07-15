@@ -172,6 +172,62 @@ class TypedAutomationPersistenceTest {
         assertEquals(stored, codec.verifyPersisted(prepared, account.id))
     }
 
+    @Test
+    fun deletingEntryKeepsSubmittingActionClaimableAndStoredEntryIdentityVerifiable() {
+        val now = Instant.parse("2026-07-16T00:00:00Z")
+        val account = newAccount("typed-delete-active", now)
+        val entry = entryRepository.save(newEntry(account, AutomationType.QUEST, 0, now))
+        val codec = StoredTypedAutomationActionCodec(jacksonObjectMapper())
+        val stored = StoredTypedAutomationActionV1(entry.id, "delete-active", StoredTypedActionPayload.QuestClaim("quest", "claim"))
+        val encoded = codec.encode(stored)
+        val actionId = actionRepository.save(
+            TypedAutomationActionRunEntity(
+                account = account, entry = entry, executionIdentity = stored.executionIdentity,
+                actionKind = "QUEST_CLAIM", schemaVersion = 1, payloadJson = encoded.json,
+                actionFingerprint = encoded.fingerprint, status = TypedAutomationActionStatus.SUBMITTING,
+                leaseToken = "token", createdAt = now, updatedAt = now,
+            ),
+        ).id
+        entityManager.flush()
+        entityManager.clear()
+
+        entryRepository.delete(requireNotNull(queryRepository.findEntry(account.id, entry.id)))
+        entityManager.flush()
+        entityManager.clear()
+
+        val action = requireNotNull(queryRepository.findActiveTypedAction(account.id))
+        assertEquals(actionId, action.id)
+        assertEquals(null, action.entry)
+        assertEquals(stored, codec.verifyPersisted(action, account.id))
+    }
+
+    @Test
+    fun deletingAndRecreatingBattleEntryDoesNotResetSameDayProgress() {
+        val now = Instant.parse("2026-07-16T00:00:00Z")
+        val account = newAccount("typed-progress-recreate", now)
+        val original = entryRepository.save(newEntry(account, AutomationType.BATTLE_MAP, 0, now))
+        battleProgressRepository.save(
+            BattleAutomationDailyProgressEntity(
+                account = account, progressDate = LocalDate.parse("2026-07-16"), categoryId = "battle_map",
+                mapCode = "gb0", source = "battle_map", successfulRuns = 4, updatedAt = now,
+            ),
+        )
+        entityManager.flush()
+
+        entryRepository.delete(original)
+        entityManager.flush()
+        entryRepository.save(newEntry(account, AutomationType.BATTLE_MAP, 0, now.plusSeconds(1)))
+        entityManager.flush()
+        entityManager.clear()
+
+        assertEquals(
+            4,
+            queryRepository.findBattleWins(
+                account.id, LocalDate.parse("2026-07-16"), "battle_map", "gb0",
+            ),
+        )
+    }
+
     private fun newAccount(loginId: String, now: Instant): HofAccountEntity =
         accountRepository.save(
             HofAccountEntity(loginId = loginId, encryptedPassword = "encrypted", createdAt = now),

@@ -65,6 +65,7 @@ class FreshSchemaTest {
                 "14" to "add battle map automation progress ledger",
                 "15" to "add typed automation runtime",
                 "16" to "harden typed automation runtime",
+                "17" to "retain typed actions when entry deleted",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -84,6 +85,7 @@ class FreshSchemaTest {
                 "V14__add_battle_map_automation_progress_ledger.sql",
                 "V15__add_typed_automation_runtime.sql",
                 "V16__harden_typed_automation_runtime.sql",
+                "V17__retain_typed_actions_when_entry_deleted.sql",
                 "V1__initialize_schema.sql",
                 "V2__seed_battle_map_catalog.sql",
                 "V3__add_token_authentication.sql",

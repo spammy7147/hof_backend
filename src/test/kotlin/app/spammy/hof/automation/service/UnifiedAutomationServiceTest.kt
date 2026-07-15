@@ -7,6 +7,13 @@ import app.spammy.hof.automation.dto.AutomationModuleQuestRequest
 import app.spammy.hof.automation.dto.CreateAutomationModuleRequest
 import app.spammy.hof.automation.dto.ReorderAutomationModulesRequest
 import app.spammy.hof.automation.dto.UpdateAutomationModuleRequest
+import app.spammy.hof.automation.dto.CreateAutomationEntryRequest
+import app.spammy.hof.automation.dto.ReorderAutomationEntriesRequest
+import app.spammy.hof.automation.dto.BattleMapSettingRequest
+import app.spammy.hof.automation.dto.QuestSelectionRequest
+import app.spammy.hof.automation.dto.UpdateBattleMapAutomationRequest
+import app.spammy.hof.automation.dto.UpdateQuestAutomationRequest
+import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.automation.entity.AutomationJobEntity
 import app.spammy.hof.automation.entity.AutomationModuleConfigEntity
 import app.spammy.hof.automation.entity.AutomationModuleMapEntity
@@ -14,6 +21,9 @@ import app.spammy.hof.automation.entity.AutomationModuleQuestEntity
 import app.spammy.hof.automation.entity.AutomationModuleQuestMapEntity
 import app.spammy.hof.automation.entity.AutomationModuleType
 import app.spammy.hof.automation.entity.AutomationProfileEntity
+import app.spammy.hof.automation.entity.AutomationEntryEntity
+import app.spammy.hof.automation.entity.AutomationType
+import app.spammy.hof.automation.entity.BattleAutomationMapEntity
 import app.spammy.hof.automation.repository.AutomationJobRepository
 import app.spammy.hof.automation.repository.AutomationModuleAggregate
 import app.spammy.hof.automation.repository.AutomationModuleConfigRepository
@@ -23,6 +33,13 @@ import app.spammy.hof.automation.repository.AutomationModuleQuestCommandReposito
 import app.spammy.hof.automation.repository.AutomationModuleQuestMapCommandRepository
 import app.spammy.hof.automation.repository.AutomationProfileRepository
 import app.spammy.hof.automation.repository.UnifiedAutomationQueryRepository
+import app.spammy.hof.automation.repository.AutomationEntryCommandRepository
+import app.spammy.hof.automation.repository.QuestAutomationSelectionCommandRepository
+import app.spammy.hof.automation.repository.QuestAutomationMapCommandRepository
+import app.spammy.hof.automation.repository.BattleAutomationMapCommandRepository
+import app.spammy.hof.automation.repository.AdventureAutomationMapCommandRepository
+import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
+import app.spammy.hof.automation.outbox.AutomationOutboxService
 import app.spammy.hof.battle.entity.BattleMapEntity
 import app.spammy.hof.battle.repository.BattleMapQueryRepository
 import app.spammy.hof.character.entity.CharacterEntity
@@ -58,6 +75,13 @@ class UnifiedAutomationServiceTest {
     private val partyPresetQueryRepository = Mockito.mock(PartyPresetQueryRepository::class.java)
     private val readinessEvaluator = AutomationModuleReadinessEvaluator(partyPresetQueryRepository)
     private val afterCommitWakeupService = Mockito.mock(AutomationAfterCommitWakeupService::class.java)
+    private val typedQuery = Mockito.mock(TypedAutomationQueryRepository::class.java)
+    private val entryRepository = Mockito.mock(AutomationEntryCommandRepository::class.java)
+    private val questSelectionRepository = Mockito.mock(QuestAutomationSelectionCommandRepository::class.java)
+    private val questMapRepository = Mockito.mock(QuestAutomationMapCommandRepository::class.java)
+    private val battleSettingRepository = Mockito.mock(BattleAutomationMapCommandRepository::class.java)
+    private val adventureSettingRepository = Mockito.mock(AdventureAutomationMapCommandRepository::class.java)
+    private val automationOutbox = Mockito.mock(AutomationOutboxService::class.java)
     private val service = UnifiedAutomationService(
         accountQueryRepository = accountQueryRepository,
         profileRepository = profileRepository,
@@ -72,6 +96,13 @@ class UnifiedAutomationServiceTest {
         timeProvider = TimeProvider { NOW },
         afterCommitWakeupService = afterCommitWakeupService,
         readinessEvaluator = readinessEvaluator,
+        typedEntryRepository = entryRepository,
+        typedQuestSelectionRepository = questSelectionRepository,
+        typedQuestMapRepository = questMapRepository,
+        typedBattleMapRepository = battleSettingRepository,
+        typedAdventureMapRepository = adventureSettingRepository,
+        automationOutboxService = automationOutbox,
+        typedAutomationQueryRepository = typedQuery,
     )
 
     init {
@@ -99,6 +130,126 @@ class UnifiedAutomationServiceTest {
         lockOrder.verify(profileRepository).save(anyProfile())
         lockOrder.verify(profileRepository).flush()
         lockOrder.verify(queryRepository).findProfileForUpdate(ACCOUNT_ID)
+    }
+
+    @Test
+    fun createTypedEntryIsDisabledEmptyLastAndEmitsDurableWake() {
+        val account = account()
+        val persisted = AutomationEntryEntity(
+            id = 91L, account = account, type = AutomationType.QUEST, priority = 0, enabled = false,
+            createdAt = NOW, updatedAt = NOW,
+        )
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(emptyList(), listOf(persisted))
+        Mockito.`when`(entryRepository.save(anyTypedEntry())).thenReturn(persisted)
+
+        val response = service.createEntry(ACCOUNT_ID, CreateAutomationEntryRequest(AutomationType.QUEST))
+
+        assertEquals(listOf(AutomationType.QUEST), response.entries.map { it.type })
+        assertFalse(response.entries.single().enabled)
+        assertEquals(0, response.entries.single().priority)
+        assertFalse(response.entries.single().ready)
+        Mockito.verify(automationOutbox).enqueue(ACCOUNT_ID, "SETTINGS_UPDATED")
+    }
+
+    @Test
+    fun createTypedEntryRejectsExistingSingletonType() {
+        val existing = AutomationEntryEntity(
+            id = 91L, account = account(), type = AutomationType.QUEST, priority = 0, enabled = false,
+            createdAt = NOW, updatedAt = NOW,
+        )
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(existing))
+
+        val error = assertFailsWith<ApiException> {
+            service.createEntry(ACCOUNT_ID, CreateAutomationEntryRequest(AutomationType.QUEST))
+        }
+
+        assertEquals(ErrorCode.INVALID_REQUEST, error.errorCode)
+        Mockito.verify(entryRepository, Mockito.never()).save(anyTypedEntry())
+    }
+
+    @Test
+    fun reorderTypedEntriesRequiresEveryOwnedIdExactlyOnce() {
+        val rows = listOf(
+            AutomationEntryEntity(91L, account(), AutomationType.QUEST, 0, false, NOW, NOW),
+            AutomationEntryEntity(92L, account(), AutomationType.BATTLE_MAP, 1, false, NOW, NOW),
+        )
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(rows)
+
+        assertFailsWith<ApiException> {
+            service.reorderEntries(ACCOUNT_ID, ReorderAutomationEntriesRequest(listOf(91L, 91L)))
+        }
+        assertFailsWith<ApiException> {
+            service.reorderEntries(ACCOUNT_ID, ReorderAutomationEntriesRequest(listOf(91L)))
+        }
+        assertFailsWith<ApiException> {
+            service.reorderEntries(ACCOUNT_ID, ReorderAutomationEntriesRequest(listOf(91L, 999L)))
+        }
+    }
+
+    @Test
+    fun typedUpdatesRejectDuplicateQuestsAndAdventureOnlyBattleMaps() {
+        val quest = AutomationEntryEntity(91L, account(), AutomationType.QUEST, 0, false, NOW, NOW)
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(quest))
+        assertFailsWith<ApiException> {
+            service.updateQuest(
+                ACCOUNT_ID,
+                UpdateQuestAutomationRequest(
+                    enabled = false,
+                    quests = listOf(
+                        QuestSelectionRequest(" Q-1 ", true, 0, emptyList()),
+                        QuestSelectionRequest("Q-1", true, 1, emptyList()),
+                    ),
+                ),
+            )
+        }
+
+        val battle = AutomationEntryEntity(92L, account(), AutomationType.BATTLE_MAP, 0, false, NOW, NOW)
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(battle))
+        assertFailsWith<ApiException> {
+            service.updateBattleMaps(
+                ACCOUNT_ID,
+                UpdateBattleMapAutomationRequest(
+                    enabled = false,
+                    maps = listOf(
+                        BattleMapSettingRequest("adventure_map", "Noble101", 1, PresetSelectionMode.PRIMARY, null, 0),
+                    ),
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun typedUpdateHidesForeignEntryAsNotFound() {
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(emptyList())
+
+        val error = assertFailsWith<ApiException> {
+            service.updateBattleMaps(ACCOUNT_ID, UpdateBattleMapAutomationRequest(false, emptyList()))
+        }
+
+        assertEquals(ErrorCode.RESOURCE_NOT_FOUND, error.errorCode)
+        Mockito.verifyNoInteractions(battleSettingRepository)
+    }
+
+    @Test
+    fun typedAggregateWarnsWhenPrimaryPresetHasNoRunnableCombatMapping() {
+        val account = account()
+        val entry = AutomationEntryEntity(92L, account, AutomationType.BATTLE_MAP, 0, true, NOW, NOW)
+        val primary = preset()
+        val setting = BattleAutomationMapEntity(
+            id = 71L, entry = entry, categoryId = "battle_map", mapCode = "gb0",
+            dailyTargetCount = 3, presetMode = PresetSelectionMode.PRIMARY, executionOrder = 0,
+        )
+        Mockito.`when`(accountQueryRepository.findById(ACCOUNT_ID)).thenReturn(account)
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(entry))
+        Mockito.`when`(typedQuery.findBattleSettings(entry.id)).thenReturn(listOf(setting))
+        Mockito.`when`(partyPresetQueryRepository.findAllByAccountId(ACCOUNT_ID)).thenReturn(listOf(primary))
+        Mockito.`when`(partyPresetQueryRepository.findPrimaryByAccountId(ACCOUNT_ID)).thenReturn(primary)
+        Mockito.`when`(partyPresetQueryRepository.findMembersByPresetIds(listOf(primary.id))).thenReturn(emptyList())
+
+        val response = service.getTyped(ACCOUNT_ID)
+
+        assertFalse(response.entries.single().ready)
+        assertTrue(response.entries.single().warnings.any { it.contains("전투") || it.contains("파티") })
     }
 
     @Test
@@ -1224,6 +1375,10 @@ class UnifiedAutomationServiceTest {
 
     private fun anyJob(): AutomationJobEntity =
         Mockito.any(AutomationJobEntity::class.java) ?: job(profile(), "RUNNING")
+
+    private fun anyTypedEntry(): AutomationEntryEntity =
+        Mockito.any(AutomationEntryEntity::class.java)
+            ?: AutomationEntryEntity(account = account(), type = AutomationType.QUEST, priority = 0, enabled = false, createdAt = NOW, updatedAt = NOW)
 
     private data class InvalidTypeSpecificSettingsCase(
         val label: String,

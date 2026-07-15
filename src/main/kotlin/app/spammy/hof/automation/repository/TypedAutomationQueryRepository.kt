@@ -77,8 +77,8 @@ class TypedAutomationQueryRepository(
     fun findActiveTypedAction(accountId: Long): TypedAutomationActionRunEntity? =
         queryFactory.selectFrom(typedAutomationActionRunEntity)
             .join(typedAutomationActionRunEntity.account, actionAccount).fetchJoin()
-            .join(typedAutomationActionRunEntity.entry, actionEntry).fetchJoin()
-            .join(actionEntry.account, actionEntryAccount).fetchJoin()
+            .leftJoin(typedAutomationActionRunEntity.entry, actionEntry).fetchJoin()
+            .leftJoin(actionEntry.account, actionEntryAccount).fetchJoin()
             .where(
                 typedAutomationActionRunEntity.account.id.eq(accountId),
                 typedAutomationActionRunEntity.status.`in`(TypedAutomationActionStatus.PREPARED, TypedAutomationActionStatus.SUBMITTING),
@@ -88,8 +88,8 @@ class TypedAutomationQueryRepository(
     fun lockTypedAction(actionId: Long): TypedAutomationActionRunEntity? =
         queryFactory.selectFrom(typedAutomationActionRunEntity)
             .join(typedAutomationActionRunEntity.account, actionAccount).fetchJoin()
-            .join(typedAutomationActionRunEntity.entry, actionEntry).fetchJoin()
-            .join(actionEntry.account, actionEntryAccount).fetchJoin()
+            .leftJoin(typedAutomationActionRunEntity.entry, actionEntry).fetchJoin()
+            .leftJoin(actionEntry.account, actionEntryAccount).fetchJoin()
             .where(typedAutomationActionRunEntity.id.eq(actionId))
             .setLockMode(LockModeType.PESSIMISTIC_WRITE).fetchOne()
 

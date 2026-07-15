@@ -456,7 +456,7 @@ internal object FreshSchemaContract {
         ),
         table(
             "typed_automation_action_runs",
-            serialId(), requiredBigint("account_id"), requiredBigint("automation_entry_id"),
+            serialId(), requiredBigint("account_id"), optionalBigint("automation_entry_id"),
             requiredVarchar("execution_identity", 128), requiredVarchar("action_kind", 30), requiredInteger("schema_version"),
             requiredText("payload_json"), requiredVarchar("action_fingerprint", 64), requiredVarchar("status", 20),
             requiredInteger("retry_attempt"), optionalInstant("next_attempt_at"), requiredVarchar("lease_token", 128),
@@ -771,7 +771,7 @@ internal object FreshSchemaContract {
         fk("fk_captcha_challenges_account", "captcha_challenges.account_id", "hof_accounts.id", DeleteAction.CASCADE),
         fk("fk_typed_runtime_account", "typed_automation_runtime_states.account_id", "hof_accounts.id", DeleteAction.CASCADE),
         fk("fk_typed_action_account", "typed_automation_action_runs.account_id", "hof_accounts.id", DeleteAction.CASCADE),
-        fk("fk_typed_action_entry", "typed_automation_action_runs.automation_entry_id", "automation_entries.id", DeleteAction.CASCADE),
+        fk("fk_typed_action_entry", "typed_automation_action_runs.automation_entry_id", "automation_entries.id", DeleteAction.SET_NULL),
         fk(
             "fk_captcha_challenges_automation_action", "captcha_challenges.automation_action_run_id",
             "automation_action_runs.id", DeleteAction.SET_NULL,

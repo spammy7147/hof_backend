@@ -88,8 +88,11 @@ class StoredTypedAutomationActionCodec(private val objectMapper: ObjectMapper) {
         require(fingerprint(row.payloadJson) == row.actionFingerprint) { "Stored action fingerprint mismatch." }
         val decoded = decode(row.schemaVersion, row.payloadJson)
         require(row.actionKind == decoded.payload.kind()) { "Stored action kind mismatch." }
-        require(row.account.id == expectedAccountId && row.entry.account.id == expectedAccountId) { "Stored action account mismatch." }
-        require(row.entry.id == decoded.entryId) { "Stored action entry mismatch." }
+        require(row.account.id == expectedAccountId) { "Stored action account mismatch." }
+        row.entry?.let { entry ->
+            require(entry.account.id == expectedAccountId) { "Stored action account mismatch." }
+            require(entry.id == decoded.entryId) { "Stored action entry mismatch." }
+        }
         require(row.executionIdentity == decoded.executionIdentity) { "Stored action execution mismatch." }
         return decoded
     }
