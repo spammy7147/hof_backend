@@ -42,7 +42,7 @@ class BattleMapCatalogService(
         categoryId: String,
         observations: List<HofBattleMap>,
     ): List<HofBattleMap> =
-        SYNCHRONIZATION_LOCK.withLock {
+        withSynchronizationFence {
             transactionService.synchronizeCategory(account, categoryId, observations)
         }
 
@@ -53,8 +53,11 @@ class BattleMapCatalogService(
     ): List<HofBattleMap> =
         transactionService.findVisibleByCategory(accountId, categoryId)
 
-    private companion object {
-        val SYNCHRONIZATION_LOCK = ReentrantLock(true)
+    companion object {
+        private val SYNCHRONIZATION_LOCK = ReentrantLock(true)
+
+        /** One global order: acquire this reentrant JVM fence before beginning any catalog-writing DB transaction. */
+        fun <T> withSynchronizationFence(block: () -> T): T = SYNCHRONIZATION_LOCK.withLock(block)
     }
 }
 

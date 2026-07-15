@@ -10,6 +10,7 @@ import app.spammy.hof.automation.repository.AdventureDailyRefreshCommandReposito
 import app.spammy.hof.battle.service.AdventureMapRefreshException
 import app.spammy.hof.battle.service.AdventureMapSnapshot
 import app.spammy.hof.battle.service.BattleMapService
+import app.spammy.hof.battle.service.BattleMapCatalogService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
@@ -21,6 +22,7 @@ import java.time.ZoneId
 import java.util.UUID
 import org.springframework.stereotype.Service
 import org.springframework.transaction.PlatformTransactionManager
+import org.springframework.transaction.TransactionDefinition
 import org.springframework.transaction.support.TransactionTemplate
 
 /**
@@ -39,7 +41,12 @@ class AutomationDailyPreflight(
     private val timeProvider: TimeProvider,
     transactionManager: PlatformTransactionManager,
 ) {
-    private val transaction = TransactionTemplate(transactionManager)
+    private val orchestration = TransactionTemplate(transactionManager).apply {
+        propagationBehavior = TransactionDefinition.PROPAGATION_NOT_SUPPORTED
+    }
+    private val persistence = TransactionTemplate(transactionManager).apply {
+        propagationBehavior = TransactionDefinition.PROPAGATION_REQUIRES_NEW
+    }
 
     sealed interface Result {
         data object Ready : Result
@@ -50,8 +57,10 @@ class AutomationDailyPreflight(
 
     enum class StopReason { NETWORK, FATAL }
 
-    fun ensureReady(accountId: Long): Result {
-        val claim = transaction.execute { claim(accountId) }
+    fun ensureReady(accountId: Long): Result = orchestration.execute { orchestrate(accountId) }
+
+    private fun orchestrate(accountId: Long): Result {
+        val claim = persistence.execute { claim(accountId) }
         if (claim is ClaimDecision.Resolved) return claim.result
         claim as ClaimDecision.Claimed
 
@@ -60,21 +69,23 @@ class AutomationDailyPreflight(
         } catch (error: Exception) {
             val completedAt = timeProvider.now()
             val completed = CompletedRefresh(classify(error), completedAt, completedAt.koreaDate())
-            return transaction.execute { finalize(accountId, claim, completed, snapshot = null) }
+            return persistence.execute { finalize(accountId, claim, completed, snapshot = null) }
         }
         val completedAt = timeProvider.now()
         val completed = CompletedRefresh(RefreshOutcome.Success, completedAt, completedAt.koreaDate())
 
         return try {
-            transaction.execute { finalize(accountId, claim, completed, snapshot) }
+            BattleMapCatalogService.withSynchronizationFence {
+                persistence.execute { finalize(accountId, claim, completed, snapshot) }
+            }
         } catch (_: Exception) {
-            transaction.execute { finalizeSynchronizationFailure(accountId, claim) }
+            persistence.execute { finalizeSynchronizationFailure(accountId, claim) }
         }
     }
 
     /** Explicit lifecycle seam for the future manual-resume endpoint. */
     fun resume(accountId: Long) {
-        transaction.executeWithoutResult {
+        persistence.executeWithoutResult {
             val state = lockAccountAndState(accountId).second ?: return@executeWithoutResult
             state.failedAttempts = 0
             state.nextAttemptAt = null

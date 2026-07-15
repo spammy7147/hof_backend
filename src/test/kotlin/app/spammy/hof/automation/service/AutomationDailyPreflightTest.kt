@@ -7,6 +7,7 @@ import app.spammy.hof.automation.repository.AdventureDailyPreflightQueryReposito
 import app.spammy.hof.battle.service.AdventureMapRefreshException
 import app.spammy.hof.battle.service.AdventureMapSnapshot
 import app.spammy.hof.battle.service.BattleMapService
+import app.spammy.hof.battle.service.BattleMapCatalogService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.persistence.QueryDslConfig
@@ -413,6 +414,76 @@ class AutomationDailyPreflightTest {
         }
     }
 
+    @Test
+    fun `ambient transaction is suspended while claim commits and fatal finalize survives outer rollback`() {
+        val accountId = savedAccount("preflight-ambient-transaction")
+        val fetchStarted = CountDownLatch(1)
+        val releaseFetch = CountDownLatch(1)
+        Mockito.doAnswer {
+            fetchStarted.countDown()
+            check(releaseFetch.await(10, TimeUnit.SECONDS))
+            emptyList<Any>()
+        }.`when`(battleMapService).refreshAdventureMaps(accountId)
+        Mockito.doThrow(IllegalStateException("sync failed"))
+            .`when`(battleMapService).synchronizeAdventureMapSnapshot(AdventureMapSnapshot(accountId, emptyList()))
+        val executor = Executors.newSingleThreadExecutor()
+
+        try {
+            val result = executor.submit<AutomationDailyPreflight.Result> {
+                TransactionTemplate(transactionManager).execute { outer ->
+                    val preflight = service.ensureReady(accountId)
+                    outer.setRollbackOnly()
+                    preflight
+                }
+            }
+            check(fetchStarted.await(10, TimeUnit.SECONDS))
+            assertEquals(1L, preflightStateCount(accountId))
+
+            releaseFetch.countDown()
+            assertEquals(
+                AutomationDailyPreflight.Result.Stopped(AutomationDailyPreflight.StopReason.FATAL),
+                result.get(10, TimeUnit.SECONDS),
+            )
+            assertEquals("FATAL", preflightStopReason(accountId))
+        } finally {
+            releaseFetch.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `success finalize waits for global catalog fence before taking account lock`() {
+        val accountId = savedAccount("preflight-lock-order")
+        val fenceHeld = CountDownLatch(1)
+        val releaseFence = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(3)
+
+        try {
+            val holder = executor.submit {
+                BattleMapCatalogService.withSynchronizationFence {
+                    fenceHeld.countDown()
+                    check(releaseFence.await(10, TimeUnit.SECONDS))
+                }
+            }
+            check(fenceHeld.await(10, TimeUnit.SECONDS))
+            val preflight = executor.submit<AutomationDailyPreflight.Result> { service.ensureReady(accountId) }
+            val opposingAccountLock = executor.submit {
+                TransactionTemplate(transactionManager).executeWithoutResult {
+                    accountQueryRepository.findByIdForUpdate(accountId)
+                }
+            }
+
+            opposingAccountLock.get(3, TimeUnit.SECONDS)
+            assertFalse(preflight.isDone)
+            releaseFence.countDown()
+            assertIs<AutomationDailyPreflight.Result.Ready>(preflight.get(10, TimeUnit.SECONDS))
+            holder.get(10, TimeUnit.SECONDS)
+        } finally {
+            releaseFence.countDown()
+            executor.shutdownNow()
+        }
+    }
+
     private fun savedAccount(loginId: String): Long = TransactionTemplate(transactionManager).execute {
         accountRepository.save(
             HofAccountEntity(loginId = loginId, encryptedPassword = "encrypted", createdAt = KOREA_MIDNIGHT_AFTER),
@@ -423,6 +494,18 @@ class AutomationDailyPreflightTest {
         entityManager.createNativeQuery(
             "select refresh_date from adventure_daily_refresh where account_id = :accountId order by refresh_date",
         ).setParameter("accountId", accountId).resultList.map { it.toString() }
+    }
+
+    private fun preflightStateCount(accountId: Long): Long = TransactionTemplate(transactionManager).execute {
+        (entityManager.createNativeQuery(
+            "select count(*) from adventure_daily_preflight_states where account_id = :accountId",
+        ).setParameter("accountId", accountId).singleResult as Number).toLong()
+    }
+
+    private fun preflightStopReason(accountId: Long): String? = TransactionTemplate(transactionManager).execute {
+        entityManager.createNativeQuery(
+            "select stop_reason from adventure_daily_preflight_states where account_id = :accountId",
+        ).setParameter("accountId", accountId).singleResult as String?
     }
 
     private fun assertRetry(result: AutomationDailyPreflight.Result, retryAttempt: Int, next: Instant) {
