@@ -24,6 +24,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import org.mockito.ArgumentMatchers.anyLong
@@ -415,40 +416,32 @@ class AutomationDailyPreflightTest {
     }
 
     @Test
-    fun `ambient transaction is suspended while claim commits and fatal finalize survives outer rollback`() {
-        val accountId = savedAccount("preflight-ambient-transaction")
-        val fetchStarted = CountDownLatch(1)
-        val releaseFetch = CountDownLatch(1)
-        Mockito.doAnswer {
-            fetchStarted.countDown()
-            check(releaseFetch.await(10, TimeUnit.SECONDS))
-            emptyList<Any>()
-        }.`when`(battleMapService).refreshAdventureMaps(accountId)
-        Mockito.doThrow(IllegalStateException("sync failed"))
-            .`when`(battleMapService).synchronizeAdventureMapSnapshot(AdventureMapSnapshot(accountId, emptyList()))
-        val executor = Executors.newSingleThreadExecutor()
+    fun `clean ambient transaction is rejected before claim or network`() {
+        val accountId = savedAccount("preflight-clean-ambient")
 
-        try {
-            val result = executor.submit<AutomationDailyPreflight.Result> {
-                TransactionTemplate(transactionManager).execute { outer ->
-                    val preflight = service.ensureReady(accountId)
-                    outer.setRollbackOnly()
-                    preflight
-                }
+        val error = assertFailsWith<IllegalStateException> {
+            TransactionTemplate(transactionManager).executeWithoutResult {
+                service.ensureReady(accountId)
             }
-            check(fetchStarted.await(10, TimeUnit.SECONDS))
-            assertEquals(1L, preflightStateCount(accountId))
-
-            releaseFetch.countDown()
-            assertEquals(
-                AutomationDailyPreflight.Result.Stopped(AutomationDailyPreflight.StopReason.FATAL),
-                result.get(10, TimeUnit.SECONDS),
-            )
-            assertEquals("FATAL", preflightStopReason(accountId))
-        } finally {
-            releaseFetch.countDown()
-            executor.shutdownNow()
         }
+
+        assertEquals(AutomationDailyPreflight.TRANSACTIONAL_CALLER_MESSAGE, error.message)
+        Mockito.verify(battleMapService, Mockito.never()).fetchAdventureMapSnapshot(accountId)
+        assertEquals(0L, preflightStateCount(accountId))
+    }
+
+    @Test
+    fun `ambient transaction already holding account row is rejected immediately without mutation`() {
+        val accountId = savedAccount("preflight-locked-ambient")
+
+        TransactionTemplate(transactionManager).executeWithoutResult {
+            accountQueryRepository.findByIdForUpdate(accountId)
+            val error = assertFailsWith<IllegalStateException> { service.ensureReady(accountId) }
+            assertEquals(AutomationDailyPreflight.TRANSACTIONAL_CALLER_MESSAGE, error.message)
+        }
+
+        Mockito.verify(battleMapService, Mockito.never()).fetchAdventureMapSnapshot(accountId)
+        assertEquals(0L, preflightStateCount(accountId))
     }
 
     @Test

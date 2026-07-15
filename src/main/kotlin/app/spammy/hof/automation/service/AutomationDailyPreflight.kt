@@ -23,13 +23,15 @@ import java.util.UUID
 import org.springframework.stereotype.Service
 import org.springframework.transaction.PlatformTransactionManager
 import org.springframework.transaction.TransactionDefinition
+import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.transaction.support.TransactionTemplate
 
 /**
  * Account-wide gate that Task 9 must call before evaluating any automation handler.
  *
- * The database is touched only in short claim/finalize transactions. The HOF request and map synchronization run after
- * the durable claim commits, so no account lock or database connection is held across network I/O.
+ * Task 9 must call [ensureReady] before opening its coordinator transaction. Transactional callers are rejected rather
+ * than suspended, ensuring no caller-owned connection or row lock survives across the HOF request. The database is
+ * touched only in short, independent claim/finalize transactions.
  */
 @Service
 class AutomationDailyPreflight(
@@ -41,9 +43,6 @@ class AutomationDailyPreflight(
     private val timeProvider: TimeProvider,
     transactionManager: PlatformTransactionManager,
 ) {
-    private val orchestration = TransactionTemplate(transactionManager).apply {
-        propagationBehavior = TransactionDefinition.PROPAGATION_NOT_SUPPORTED
-    }
     private val persistence = TransactionTemplate(transactionManager).apply {
         propagationBehavior = TransactionDefinition.PROPAGATION_REQUIRES_NEW
     }
@@ -57,7 +56,10 @@ class AutomationDailyPreflight(
 
     enum class StopReason { NETWORK, FATAL }
 
-    fun ensureReady(accountId: Long): Result = orchestration.execute { orchestrate(accountId) }
+    fun ensureReady(accountId: Long): Result {
+        check(!TransactionSynchronizationManager.isActualTransactionActive()) { TRANSACTIONAL_CALLER_MESSAGE }
+        return orchestrate(accountId)
+    }
 
     private fun orchestrate(accountId: Long): Result {
         val claim = persistence.execute { claim(accountId) }
@@ -313,14 +315,16 @@ class AutomationDailyPreflight(
 
     private enum class RefreshOutcome { Success, RetryableFailure, FatalFailure }
 
-    private companion object {
-        val KOREA_ZONE: ZoneId = ZoneId.of("Asia/Seoul")
-        val IN_FLIGHT_LEASE: Duration = Duration.ofSeconds(45)
-        val RETRY_DELAYS: List<Duration> = listOf(
+    companion object {
+        const val TRANSACTIONAL_CALLER_MESSAGE =
+            "Automation daily preflight must run before the coordinator opens a transaction."
+        private val KOREA_ZONE: ZoneId = ZoneId.of("Asia/Seoul")
+        private val IN_FLIGHT_LEASE: Duration = Duration.ofSeconds(45)
+        private val RETRY_DELAYS: List<Duration> = listOf(
             Duration.ofSeconds(10),
             Duration.ofSeconds(30),
             Duration.ofSeconds(60),
         )
-        const val MAX_ATTEMPTS = 4
+        private const val MAX_ATTEMPTS = 4
     }
 }
