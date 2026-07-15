@@ -1,6 +1,7 @@
 package app.spammy.hof.automation.service
 
 import app.spammy.hof.account.service.HofAccountService
+import app.spammy.hof.account.service.HofSessionRecoveryService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import kotlin.test.Test
@@ -10,7 +11,7 @@ import org.mockito.Mockito
 
 class HofSessionRecoveryExecutorTest {
     private val accountService = Mockito.mock(HofAccountService::class.java)
-    private val executor = HofSessionRecoveryExecutor(accountService)
+    private val executor = HofSessionRecoveryExecutor(HofSessionRecoveryService(accountService))
 
     @Test
     fun expiredActionReauthenticatesAndRetriesExactlyOnce() {

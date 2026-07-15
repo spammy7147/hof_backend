@@ -20,26 +20,54 @@ class DefaultAutomationActionExecutor(
     private val objectMapper: ObjectMapper,
     private val sessionRecoveryExecutor: HofSessionRecoveryExecutor,
 ) : AutomationActionExecutor {
-    override fun execute(
+    /** 프리셋과 열쇠 퀘스트 blueprint를 실제 캐릭터 ID·패턴 슬롯 요청으로 해석한다. */
+    override fun prepare(
         accountId: Long,
         decision: AutomationDecision,
-    ): String = sessionRecoveryExecutor.execute(accountId) { when (decision.type) {
-        AutomationDecisionType.ACCEPT_QUEST -> objectMapper.writeValueAsString(
-            questGatewayService.accept(accountId, requireActionNo(decision)),
+    ): AutomationExecutionPayload = when (decision.type) {
+        AutomationDecisionType.ACCEPT_QUEST,
+        AutomationDecisionType.CLAIM_QUEST,
+        -> AutomationExecutionPayload(
+            decision = decision,
+            resolvedActionNo = requireActionNo(decision),
         )
-        AutomationDecisionType.CLAIM_QUEST -> objectMapper.writeValueAsString(
-            questGatewayService.claim(accountId, requireActionNo(decision)),
-        )
-        AutomationDecisionType.RUN_BATTLE -> objectMapper.writeValueAsString(
-            battleRunService.runBattle(accountId, battleRequest(accountId, decision)),
+        AutomationDecisionType.RUN_BATTLE -> AutomationExecutionPayload(
+            decision = decision,
+            resolvedBattleRequest = battleRequest(accountId, decision),
         )
         AutomationDecisionType.WAITING_CONFIG,
         AutomationDecisionType.SLEEP,
-        -> throw IllegalArgumentException("${decision.type} 결정은 외부 action으로 실행할 수 없습니다.")
+        -> throw IllegalArgumentException("${decision.type} 결정은 외부 action으로 준비할 수 없습니다.")
+    }
+
+    /** 준비 단계에서 저장한 exact request만 사용하며 프리셋·캐릭터 저장소를 다시 조회하지 않는다. */
+    override fun execute(
+        accountId: Long,
+        payload: AutomationExecutionPayload,
+    ): String = sessionRecoveryExecutor.execute(accountId) { when (payload.decision.type) {
+        AutomationDecisionType.ACCEPT_QUEST -> objectMapper.writeValueAsString(
+            questGatewayService.accept(accountId, requirePreparedActionNo(payload)),
+        )
+        AutomationDecisionType.CLAIM_QUEST -> objectMapper.writeValueAsString(
+            questGatewayService.claim(accountId, requirePreparedActionNo(payload)),
+        )
+        AutomationDecisionType.RUN_BATTLE -> objectMapper.writeValueAsString(
+            battleRunService.runBattle(
+                accountId,
+                payload.resolvedBattleRequest
+                    ?: throw AutomationConfigurationException("저장된 전투 실행 정보가 없습니다."),
+            ),
+        )
+        AutomationDecisionType.WAITING_CONFIG,
+        AutomationDecisionType.SLEEP,
+        -> throw IllegalArgumentException("${payload.decision.type} 결정은 외부 action으로 실행할 수 없습니다.")
     } }
 
     private fun requireActionNo(decision: AutomationDecision): String = decision.actionNo
         ?: throw AutomationConfigurationException("퀘스트 처리 링크를 다시 불러와 주세요.")
+
+    private fun requirePreparedActionNo(payload: AutomationExecutionPayload): String = payload.resolvedActionNo
+        ?: throw AutomationConfigurationException("저장된 퀘스트 처리 정보가 없습니다.")
 
     private fun battleRequest(
         accountId: Long,
@@ -82,6 +110,9 @@ class DefaultAutomationActionExecutor(
                 val character = member.character ?: return@mapNotNull null
                 val pattern = member.patternSlot?.slotCode?.toIntOrNull()
                     ?: throw AutomationConfigurationException("파티의 저장 패턴을 다시 선택해 주세요.")
+                if (member.patternSlot?.canLoad != true) {
+                    throw AutomationConfigurationException("파티의 저장 패턴을 다시 선택해 주세요.")
+                }
                 character.hofCharacterId to pattern
             }
         if (slots.isEmpty()) throw AutomationConfigurationException()

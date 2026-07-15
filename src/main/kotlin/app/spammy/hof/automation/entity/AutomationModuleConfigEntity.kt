@@ -11,19 +11,10 @@ import jakarta.persistence.Id
 import jakarta.persistence.JoinColumn
 import jakarta.persistence.ManyToOne
 import jakarta.persistence.Table
-import jakarta.persistence.UniqueConstraint
 import java.time.Instant
 
 @Entity
-@Table(
-    name = "automation_module_configs",
-    uniqueConstraints = [
-        UniqueConstraint(
-            name = "uk_automation_module_configs_profile_module",
-            columnNames = ["profile_id", "module_type"],
-        ),
-    ],
-)
+@Table(name = "automation_module_configs")
 class AutomationModuleConfigEntity(
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -43,8 +34,11 @@ class AutomationModuleConfigEntity(
     @Column(name = "priority", nullable = false)
     var priority: Int,
 
-    @Column(name = "settings_json", nullable = false, columnDefinition = "text")
-    var settingsJson: String,
+    @Column(name = "display_name", nullable = false, length = 50)
+    var displayName: String,
+
+    @Column(name = "threshold_percent")
+    var thresholdPercent: Int?,
 
     @Column(name = "created_at", nullable = false)
     var createdAt: Instant,

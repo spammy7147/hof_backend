@@ -30,7 +30,7 @@ dependencies {
 	implementation("org.springframework.boot:spring-boot-starter-oauth2-resource-server")
 	implementation("org.springframework.boot:spring-boot-starter-validation")
 	implementation("org.springframework.boot:spring-boot-starter-webmvc")
-	implementation("org.springframework.kafka:spring-kafka")
+	implementation("org.springframework.boot:spring-boot-starter-kafka")
 	implementation("org.flywaydb:flyway-database-postgresql")
 	implementation("org.jsoup:jsoup:1.22.2")
 	implementation("org.jetbrains.kotlin:kotlin-reflect")

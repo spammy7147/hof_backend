@@ -50,12 +50,15 @@ class AccountQueryRepositoryTest {
         entityManager.clear()
 
         val foundById = assertNotNull(accountQueryRepository.findById(saved.id))
+        val foundByIdForUpdate = assertNotNull(accountQueryRepository.findByIdForUpdate(saved.id))
         val foundByLoginId = assertNotNull(accountQueryRepository.findByLoginId("query-user"))
 
         assertEquals(saved.id, foundById.id)
+        assertEquals(saved.id, foundByIdForUpdate.id)
         assertEquals("query-user", foundById.loginId)
         assertEquals(saved.id, foundByLoginId.id)
         assertNull(accountQueryRepository.findById(Long.MAX_VALUE))
+        assertNull(accountQueryRepository.findByIdForUpdate(Long.MAX_VALUE))
         assertNull(accountQueryRepository.findByLoginId("missing-user"))
     }
 

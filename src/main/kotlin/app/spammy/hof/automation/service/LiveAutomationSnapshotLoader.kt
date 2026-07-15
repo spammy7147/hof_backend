@@ -1,155 +1,130 @@
 package app.spammy.hof.automation.service
 
-import app.spammy.hof.automation.dto.KeyQuestSettingsRequest
-import app.spammy.hof.automation.dto.NormalQuestSettingsRequest
-import app.spammy.hof.automation.dto.TimeSettingsRequest
-import app.spammy.hof.automation.dto.ToggleModuleRequest
 import app.spammy.hof.automation.entity.AutomationModuleType
-import app.spammy.hof.automation.policy.AdventureCandidate
-import app.spammy.hof.automation.policy.AdventureMapPolicy
-import app.spammy.hof.automation.policy.AutomationMapCandidate
+import app.spammy.hof.automation.policy.AutomationAccountStatus
+import app.spammy.hof.automation.policy.AutomationMapState
+import app.spammy.hof.automation.policy.AutomationModuleSnapshot
 import app.spammy.hof.automation.policy.AutomationSnapshot
-import app.spammy.hof.automation.policy.KeyQuestDefaultCatalog
-import app.spammy.hof.automation.policy.KeyQuestMapCandidate
-import app.spammy.hof.automation.policy.KeyQuestPolicy
-import app.spammy.hof.automation.policy.QuestExecutionConfig
-import app.spammy.hof.automation.policy.SelectedQuestPolicy
+import app.spammy.hof.automation.policy.ConfiguredAutomationMap
+import app.spammy.hof.automation.policy.ConfiguredAutomationQuest
+import app.spammy.hof.automation.repository.AutomationModuleAggregate
 import app.spammy.hof.automation.repository.UnifiedAutomationQueryRepository
 import app.spammy.hof.battle.entity.AccountBattleMapStateEntity
 import app.spammy.hof.battle.repository.BattleMapQueryRepository
 import app.spammy.hof.common.time.TimeProvider
-import app.spammy.hof.quest.model.QuestState
 import app.spammy.hof.quest.service.QuestGatewayService
 import app.spammy.hof.status.service.HofStatusService
-import java.time.Instant
 import org.springframework.stereotype.Component
 import org.springframework.transaction.annotation.Transactional
-import tools.jackson.databind.ObjectMapper
 
+/**
+ * 최신 HOF 상태와 정규화된 자동화 설정을 한 번의 정책 판단용 불변 스냅샷으로 조립한다.
+ *
+ * 활성화되고 실제 프리셋까지 준비된 모듈을 `priority`, `id` 순서로 모두 유지한다. 동일 유형을 하나로
+ * 합치거나 첫 항목만 선택하지 않으며, 모든 모듈의 맵 상태는 QueryDSL batch 조회 한 번으로 가져온다.
+ */
 @Component
 class LiveAutomationSnapshotLoader(
     private val questGatewayService: QuestGatewayService,
     private val statusService: HofStatusService,
     private val unifiedQueryRepository: UnifiedAutomationQueryRepository,
     private val battleMapQueryRepository: BattleMapQueryRepository,
-    private val keyQuestPolicy: KeyQuestPolicy,
-    private val adventureMapPolicy: AdventureMapPolicy,
-    private val selectedQuestPolicy: SelectedQuestPolicy,
-    private val objectMapper: ObjectMapper,
     private val timeProvider: TimeProvider,
+    private val readinessEvaluator: AutomationModuleReadinessEvaluator,
 ) : AutomationSnapshotLoader {
+    /** 계정의 실행 가능한 사용자 모듈과 가변 HOF 상태를 우선순위를 보존해 조립한다. */
     @Transactional(readOnly = true)
     override fun load(accountId: Long): AutomationSnapshot {
         val quests = questGatewayService.load(accountId)
         val status = statusService.fetch(accountId)
         val profile = unifiedQueryRepository.findProfile(accountId)
             ?: throw AutomationConfigurationException("통합 자동화 설정을 저장해 주세요.")
-        val configs = unifiedQueryRepository.findConfigs(profile.id).associateBy { it.moduleType }
-        val keySettings = configs[AutomationModuleType.KEY_QUEST]
-            ?.let { objectMapper.readValue(it.settingsJson, KeyQuestSettingsRequest::class.java) }
-            ?: KeyQuestSettingsRequest()
-        val timeSettings = configs[AutomationModuleType.TIME_BURN]
-            ?.let { objectMapper.readValue(it.settingsJson, TimeSettingsRequest::class.java) }
-            ?: TimeSettingsRequest()
-        val cooldownSettings = configs[AutomationModuleType.COOLDOWN_ADVENTURE]
-            ?.let { objectMapper.readValue(it.settingsJson, ToggleModuleRequest::class.java) }
-            ?: ToggleModuleRequest()
-        val dailySettings = configs[AutomationModuleType.DAILY_ADVENTURE]
-            ?.let { objectMapper.readValue(it.settingsJson, ToggleModuleRequest::class.java) }
-            ?: ToggleModuleRequest()
-        val normalSettings = configs[AutomationModuleType.OTHER_QUEST]
-            ?.let { objectMapper.readValue(it.settingsJson, NormalQuestSettingsRequest::class.java) }
-            ?: NormalQuestSettingsRequest()
-        val keyConfigs = keySettings.quests.associate { quest ->
-            quest.questId to QuestExecutionConfig(
-                quest.maps.map { selected ->
-                    val state = battleMapQueryRepository.findStateForExecution(
-                        accountId,
-                        selected.categoryId,
-                        selected.mapCode,
-                    )
-                    KeyQuestMapCandidate(
-                        mapCode = selected.mapCode,
-                        mapName = state?.battleMap?.name
-                            ?: KeyQuestDefaultCatalog.defaults[quest.questId]?.mapNames?.get(selected.mapCode)
-                            ?: selected.mapCode,
-                        keyCount = state?.keyCount,
-                        executionOrder = selected.executionOrder,
-                        partyPresetId = selected.partyPresetId,
-                        categoryId = selected.categoryId,
-                    )
-                },
-            )
-        }
-        val now = timeProvider.now()
-        val cooldownCandidates = cooldownSettings.maps.mapNotNull { map -> stateCandidate(accountId, map) }
-        val dailyCandidates = dailySettings.maps.mapNotNull { map -> stateCandidate(accountId, map) }
-        val readyCooldown = if (cooldownSettings.enabled) adventureMapPolicy.selectCooldown(cooldownCandidates, now) else null
-        val readyDaily = if (dailySettings.enabled) adventureMapPolicy.selectDaily(dailyCandidates) else null
-        val earliestCooldown = cooldownCandidates.mapNotNull(AdventureCandidate::cooldownUntil).filter { it.isAfter(now) }.minOrNull()
+        val aggregates = unifiedQueryRepository.findModules(profile.id)
+        val readiness = readinessEvaluator.evaluate(aggregates)
+        val executable = aggregates
+            .asSequence()
+            .filter { it.config.enabled && readiness.isReady(it) }
+            .filter { it.config.moduleType in SUPPORTED_TYPES }
+            .sortedWith(compareBy<AutomationModuleAggregate> { it.config.priority }.thenBy { it.config.id })
+            .toList()
+        val requestedMapPairs = executable
+            .flatMap { module ->
+                module.maps.map { it.battleMap.categoryId to it.battleMap.mapCode } +
+                    module.quests.flatMap { quest ->
+                        quest.maps.map { it.battleMap.categoryId to it.battleMap.mapCode }
+                    }
+            }
+            .toSet()
+        val states = battleMapQueryRepository.findStatesForExecution(accountId, requestedMapPairs)
 
         return AutomationSnapshot(
-            claimableQuest = quests.firstOrNull { it.state == QuestState.CLAIMABLE },
-            acceptablePriorityQuest = KeyQuestDefaultCatalog.priorityQuestIds
-                .asSequence()
-                .mapNotNull { id -> quests.firstOrNull { it.questId == id && it.state == QuestState.AVAILABLE } }
-                .firstOrNull(),
-            priorityQuestDecision = if (keySettings.enabled) keyQuestPolicy.decide(quests, keyConfigs) else null,
-            timeCurrent = status.timeCurrent ?: 0,
-            timeMax = status.timeMax ?: 0,
-            timeThresholdPercent = timeSettings.thresholdPercent,
-            timeMap = if (timeSettings.enabled) timeSettings.maps
-                .sortedBy { it.executionOrder }
-                .firstNotNullOfOrNull { map -> stateMap(accountId, map) } else null,
-            unionTarget = null,
-            readyCooldownMap = readyCooldown?.toMapCandidate(cooldownSettings),
-            readyDailyMap = readyDaily?.toMapCandidate(dailySettings),
-            normalQuestDecision = if (normalSettings.enabled) {
-                selectedQuestPolicy.decide(quests, normalSettings.questIds.toSet())
-            } else null,
-            earliestNextRunAt = earliestCooldown ?: now.plusSeconds(DEFAULT_RECHECK_SECONDS),
+            accountId = accountId,
+            modules = executable.map { it.toSnapshot() },
+            accountStatus = AutomationAccountStatus(
+                timeCurrent = status.timeCurrent ?: 0,
+                timeMax = status.timeMax ?: 0,
+            ),
+            questState = quests,
+            mapStates = states.map { it.toSnapshot() },
+            now = timeProvider.now(),
         )
     }
 
-    private fun stateCandidate(
-        accountId: Long,
-        map: app.spammy.hof.automation.dto.ModuleMapRequest,
-    ): AdventureCandidate? {
-        val state = battleMapQueryRepository.findStateForExecution(accountId, map.categoryId, map.mapCode) ?: return null
-        return AdventureCandidate(
-            mapCode = map.mapCode,
-            mapName = state.battleMap.name,
-            executionOrder = map.executionOrder,
-            visible = state.visible,
-            enabled = state.battleMap.enabled,
-            cooldownUntil = state.cooldownUntil,
-            winRemaining = state.winRemaining,
-            attemptRemaining = state.attemptRemaining,
-            availableCount = state.availableCount,
+    /** 한 aggregate의 맵과 퀘스트를 다른 모듈과 공유하지 않는 값 객체로 복사한다. */
+    private fun AutomationModuleAggregate.toSnapshot(): AutomationModuleSnapshot =
+        AutomationModuleSnapshot(
+            id = config.id,
+            type = config.moduleType,
+            priority = config.priority,
+            configRevision = config.updatedAt,
+            thresholdPercent = config.thresholdPercent,
+            maps = maps.map { selected ->
+                ConfiguredAutomationMap(
+                    categoryId = selected.battleMap.categoryId,
+                    mapCode = selected.battleMap.mapCode,
+                    mapName = selected.battleMap.name,
+                    partyPresetId = selected.partyPreset?.id,
+                    executionOrder = selected.executionOrder,
+                )
+            },
+            quests = quests.map { selectedQuest ->
+                ConfiguredAutomationQuest(
+                    questCode = selectedQuest.quest.questCode,
+                    executionOrder = selectedQuest.quest.executionOrder,
+                    maps = selectedQuest.maps.map { selectedMap ->
+                        ConfiguredAutomationMap(
+                            categoryId = selectedMap.battleMap.categoryId,
+                            mapCode = selectedMap.battleMap.mapCode,
+                            mapName = selectedMap.battleMap.name,
+                            partyPresetId = selectedMap.partyPreset?.id,
+                            executionOrder = selectedMap.executionOrder,
+                        )
+                    },
+                )
+            },
         )
-    }
 
-    private fun stateMap(
-        accountId: Long,
-        map: app.spammy.hof.automation.dto.ModuleMapRequest,
-    ): AutomationMapCandidate? {
-        val state = battleMapQueryRepository.findStateForExecution(accountId, map.categoryId, map.mapCode)
-            ?.takeIf(AccountBattleMapStateEntity::visible) ?: return null
-        return AutomationMapCandidate(
-            map.mapCode,
-            state.battleMap.name,
-            map.executionOrder,
-            map.partyPresetId,
-            map.categoryId,
+    private fun AccountBattleMapStateEntity.toSnapshot(): AutomationMapState =
+        AutomationMapState(
+            categoryId = battleMap.categoryId,
+            mapCode = battleMap.mapCode,
+            mapName = battleMap.name,
+            visible = visible,
+            enabled = battleMap.enabled,
+            cooldownUntil = cooldownUntil,
+            winRemaining = winRemaining,
+            attemptRemaining = attemptRemaining,
+            availableCount = availableCount,
+            keyCount = keyCount,
         )
-    }
-
-    private fun AdventureCandidate.toMapCandidate(settings: ToggleModuleRequest): AutomationMapCandidate {
-        val selected = settings.maps.first { it.mapCode == mapCode }
-        return AutomationMapCandidate(mapCode, mapName, executionOrder, selected.partyPresetId, selected.categoryId)
-    }
 
     private companion object {
-        const val DEFAULT_RECHECK_SECONDS = 30L
+        val SUPPORTED_TYPES = setOf(
+            AutomationModuleType.KEY_QUEST,
+            AutomationModuleType.TIME_BURN,
+            AutomationModuleType.COOLDOWN_ADVENTURE,
+            AutomationModuleType.DAILY_ADVENTURE,
+            AutomationModuleType.OTHER_QUEST,
+        )
     }
 }

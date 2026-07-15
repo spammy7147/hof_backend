@@ -13,6 +13,7 @@ data class AdventureCandidate(
     val winRemaining: Int?,
     val attemptRemaining: Int?,
     val availableCount: Int?,
+    val categoryId: String = "battle_map",
 )
 
 @Component

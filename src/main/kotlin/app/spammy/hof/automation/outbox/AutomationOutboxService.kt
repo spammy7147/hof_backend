@@ -28,7 +28,7 @@ class AutomationOutboxService(
     fun enqueue(
         accountId: Long,
         reason: String,
-        availableAt: Instant = timeProvider.now(),
+        availableAt: Instant? = null,
     ): AutomationOutboxEntity {
         val account = accountQueryRepository.findById(accountId)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
@@ -42,7 +42,8 @@ class AutomationOutboxService(
                 eventKey = accountId.toString(),
                 payload = objectMapper.writeValueAsString(event),
                 createdAt = now,
-                availableAt = availableAt,
+                // Kotlin 기본 인자에서 빈 필드를 읽으면 CGLIB 프록시 경로에서 NPE가 날 수 있어 본문에서 계산한다.
+                availableAt = availableAt ?: now,
             ),
         )
     }

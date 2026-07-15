@@ -3,7 +3,9 @@ package app.spammy.hof.automation.repository
 import app.spammy.hof.automation.entity.AutomationJobEntity
 import app.spammy.hof.automation.entity.QAutomationJobEntity.automationJobEntity
 import app.spammy.hof.automation.entity.QAutomationProfileEntity.automationProfileEntity
+import app.spammy.hof.automation.entity.QAutomationModuleConfigEntity.automationModuleConfigEntity
 import com.querydsl.jpa.impl.JPAQueryFactory
+import jakarta.persistence.LockModeType
 import org.springframework.stereotype.Repository
 import java.time.Instant
 
@@ -22,6 +24,21 @@ class AutomationJobQueryRepository(
                 automationJobEntity.id.eq(jobId),
                 automationJobEntity.account.id.eq(accountId),
             )
+            .fetchOne()
+
+    /** 동일 step의 action 생성과 request key 재사용을 계정 job 단위로 직렬화한다. */
+    fun findOwnedByAccountIdAndIdForUpdate(
+        accountId: Long,
+        jobId: Long,
+    ): AutomationJobEntity? =
+        queryFactory
+            .selectFrom(automationJobEntity)
+            .join(automationJobEntity.profile, automationProfileEntity).fetchJoin()
+            .where(
+                automationJobEntity.id.eq(jobId),
+                automationJobEntity.account.id.eq(accountId),
+            )
+            .setLockMode(LockModeType.PESSIMISTIC_WRITE)
             .fetchOne()
 
     fun findCurrentByAccountIdAndStatusesForJobId(
@@ -108,4 +125,5 @@ class AutomationJobQueryRepository(
         queryFactory
             .selectFrom(automationJobEntity)
             .join(automationJobEntity.profile, automationProfileEntity).fetchJoin()
+            .leftJoin(automationJobEntity.currentModuleConfig, automationModuleConfigEntity).fetchJoin()
 }

@@ -6,70 +6,191 @@ import app.spammy.hof.quest.model.QuestState
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 
 class AutomationDecisionPolicyTest {
-    private val policy = AutomationDecisionPolicy()
+    private val policy = AutomationDecisionPolicy(
+        keyQuestPolicy = KeyQuestPolicy(EastMansionMapPolicy()),
+        adventureMapPolicy = AdventureMapPolicy(),
+        selectedQuestPolicy = SelectedQuestPolicy(),
+    )
 
     @Test
-    fun appliesTheApprovedPriorityOrder() {
-        val keyBattle = QuestDecision.Battle(
-            "0563",
-            KeyQuestMapCandidate("Noble102", "저택 동관(복도)", null, 0),
-            null,
-        )
-        val base = snapshot(
-            priorityQuestDecision = keyBattle,
-            timeCurrent = 96,
-            union = UnionCandidate("union", 500),
-            cooldown = map("cooldown"),
+    fun `returns the first runnable decision in persisted module order`() {
+        val snapshot = snapshot(
+            modules = listOf(
+                module(41, AutomationModuleType.DAILY_ADVENTURE, 0, maps = listOf(map("daily"))),
+                module(42, AutomationModuleType.TIME_BURN, 1, threshold = 90, maps = listOf(map("time"))),
+            ),
+            states = listOf(state("daily"), state("time")),
+            timeCurrent = 100,
         )
 
-        assertEquals(AutomationModuleType.KEY_QUEST, policy.decide(base).moduleType)
-        assertEquals(AutomationModuleType.TIME_BURN, policy.decide(base.copy(priorityQuestDecision = null)).moduleType)
-        assertEquals(
-            AutomationModuleType.UNION,
-            policy.decide(base.copy(priorityQuestDecision = null, timeCurrent = 90)).moduleType,
-        )
-        assertEquals(
-            AutomationModuleType.COOLDOWN_ADVENTURE,
-            policy.decide(base.copy(priorityQuestDecision = null, timeCurrent = 90, unionTarget = UnionCandidate("dead", 0))).moduleType,
-        )
+        val decision = policy.decide(snapshot)
+
+        assertEquals(41L, decision.moduleConfigId)
+        assertEquals("daily", decision.map?.mapCode)
     }
 
     @Test
-    fun allClaimableQuestsWinBeforePriorityAcceptanceAndExactThresholdSleeps() {
-        val claim = quest("0999", QuestState.CLAIMABLE)
-        val accept = quest("0563", QuestState.AVAILABLE)
-        assertEquals(AutomationDecisionType.CLAIM_QUEST, policy.decide(snapshot(claimable = claim, acceptable = accept)).type)
+    fun `skips an unavailable module and evaluates the next module`() {
+        val snapshot = snapshot(
+            modules = listOf(
+                module(51, AutomationModuleType.TIME_BURN, 0, threshold = 95, maps = listOf(map("time"))),
+                module(52, AutomationModuleType.DAILY_ADVENTURE, 1, maps = listOf(map("daily"))),
+            ),
+            states = listOf(state("time"), state("daily")),
+            timeCurrent = 90,
+        )
 
-        val sleep = policy.decide(snapshot(timeCurrent = 90, next = Instant.parse("2026-07-14T00:00:00Z")))
-        assertEquals(AutomationDecisionType.SLEEP, sleep.type)
-        assertEquals(Instant.parse("2026-07-14T00:00:00Z"), sleep.nextRunAt)
+        val decision = policy.decide(snapshot)
+
+        assertEquals(52L, decision.moduleConfigId)
+        assertEquals("daily", decision.map?.mapCode)
+    }
+
+    @Test
+    fun `evaluates two instances of the same type with independent maps`() {
+        val snapshot = snapshot(
+            modules = listOf(
+                module(61, AutomationModuleType.TIME_BURN, 0, threshold = 80, maps = listOf(map("hidden"))),
+                module(62, AutomationModuleType.TIME_BURN, 1, threshold = 80, maps = listOf(map("visible"))),
+            ),
+            states = listOf(state("hidden", visible = false), state("visible")),
+            timeCurrent = 80,
+        )
+
+        val decision = policy.decide(snapshot)
+
+        assertEquals(62L, decision.moduleConfigId)
+        assertEquals("visible", decision.map?.mapCode)
+    }
+
+    @Test
+    fun `sleeps until the earliest next availability when no module is runnable`() {
+        val early = NOW.plusSeconds(120)
+        val late = NOW.plusSeconds(300)
+        val snapshot = snapshot(
+            modules = listOf(
+                module(71, AutomationModuleType.COOLDOWN_ADVENTURE, 0, maps = listOf(map("late"))),
+                module(72, AutomationModuleType.COOLDOWN_ADVENTURE, 1, maps = listOf(map("early"))),
+            ),
+            states = listOf(state("late", cooldownUntil = late), state("early", cooldownUntil = early)),
+        )
+
+        val decision = policy.decide(snapshot)
+
+        assertEquals(AutomationDecisionType.SLEEP, decision.type)
+        assertNull(decision.moduleConfigId)
+        assertEquals(early, decision.nextRunAt)
+    }
+
+    @Test
+    fun `quest module never claims or accepts an unconfigured quest`() {
+        val snapshot = snapshot(
+            modules = listOf(
+                module(
+                    81,
+                    AutomationModuleType.OTHER_QUEST,
+                    0,
+                    quests = listOf(ConfiguredAutomationQuest("configured", 0, emptyList())),
+                ),
+            ),
+            quests = listOf(
+                quest("outside", QuestState.CLAIMABLE),
+                quest("configured", QuestState.AVAILABLE),
+            ),
+        )
+
+        val decision = policy.decide(snapshot)
+
+        assertEquals(AutomationDecisionType.ACCEPT_QUEST, decision.type)
+        assertEquals(81L, decision.moduleConfigId)
+        assertEquals("configured", decision.questId)
+    }
+
+    @Test
+    fun `key quest module without configured quests never falls back to global quest catalog`() {
+        val snapshot = snapshot(
+            modules = listOf(module(82, AutomationModuleType.KEY_QUEST, 0)),
+            quests = listOf(quest("0563", QuestState.CLAIMABLE)),
+        )
+
+        val decision = policy.decide(snapshot)
+
+        assertEquals(AutomationDecisionType.WAITING_CONFIG, decision.type)
+        assertEquals(82L, decision.moduleConfigId)
+        assertNull(decision.questId)
+    }
+
+    @Test
+    fun `time burn runs at the exact module threshold and unsupported modules are ignored`() {
+        val snapshot = snapshot(
+            modules = listOf(
+                module(90, AutomationModuleType.UNION, 0),
+                module(91, AutomationModuleType.TIME_BURN, 1, threshold = 90, maps = listOf(map("time"))),
+            ),
+            states = listOf(state("time")),
+            timeCurrent = 90,
+        )
+
+        val decision = policy.decide(snapshot)
+
+        assertEquals(AutomationDecisionType.RUN_BATTLE, decision.type)
+        assertEquals(91L, decision.moduleConfigId)
     }
 
     private fun snapshot(
-        claimable: QuestSnapshot? = null,
-        acceptable: QuestSnapshot? = null,
-        priorityQuestDecision: QuestDecision? = null,
+        modules: List<AutomationModuleSnapshot>,
+        states: List<AutomationMapState> = emptyList(),
+        quests: List<QuestSnapshot> = emptyList(),
         timeCurrent: Int = 0,
-        union: UnionCandidate? = null,
-        cooldown: AutomationMapCandidate? = null,
-        next: Instant? = null,
     ) = AutomationSnapshot(
-        claimableQuest = claimable,
-        acceptablePriorityQuest = acceptable,
-        priorityQuestDecision = priorityQuestDecision,
-        timeCurrent = timeCurrent,
-        timeMax = 100,
-        timeThresholdPercent = 90,
-        timeMap = map("normal"),
-        unionTarget = union,
-        readyCooldownMap = cooldown,
-        readyDailyMap = null,
-        normalQuestDecision = null,
-        earliestNextRunAt = next,
+        accountId = 7L,
+        modules = modules,
+        accountStatus = AutomationAccountStatus(timeCurrent, 100),
+        questState = quests,
+        mapStates = states,
+        now = NOW,
     )
 
-    private fun quest(id: String, state: QuestState) = QuestSnapshot(id, id, state, null, id)
-    private fun map(code: String) = AutomationMapCandidate(code, code, 0)
+    private fun module(
+        id: Long,
+        type: AutomationModuleType,
+        priority: Int,
+        threshold: Int? = null,
+        maps: List<ConfiguredAutomationMap> = emptyList(),
+        quests: List<ConfiguredAutomationQuest> = emptyList(),
+    ) = AutomationModuleSnapshot(id, type, priority, threshold, maps, quests)
+
+    private fun map(code: String) = ConfiguredAutomationMap(
+        categoryId = "battle_map",
+        mapCode = code,
+        mapName = code,
+        partyPresetId = 300L + code.length,
+        executionOrder = 0,
+    )
+
+    private fun state(
+        code: String,
+        visible: Boolean = true,
+        cooldownUntil: Instant? = null,
+    ) = AutomationMapState(
+        categoryId = "battle_map",
+        mapCode = code,
+        mapName = code,
+        visible = visible,
+        enabled = true,
+        cooldownUntil = cooldownUntil,
+        winRemaining = null,
+        attemptRemaining = null,
+        availableCount = null,
+        keyCount = null,
+    )
+
+    private fun quest(id: String, state: QuestState) = QuestSnapshot(id, id, state, null, "action-$id")
+
+    private companion object {
+        val NOW: Instant = Instant.parse("2026-07-14T00:00:00Z")
+    }
 }

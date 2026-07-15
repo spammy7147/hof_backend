@@ -32,7 +32,8 @@ class KeyQuestPolicy(
         quests: List<QuestSnapshot>,
         configs: Map<String, QuestExecutionConfig>,
     ): QuestDecision? {
-        val ordered = KeyQuestDefaultCatalog.priorityQuestIds.mapNotNull { id -> quests.firstOrNull { it.questId == id } }
+        val orderedIds = configs.keys.ifEmpty { KeyQuestDefaultCatalog.priorityQuestIds }
+        val ordered = orderedIds.mapNotNull { id -> quests.firstOrNull { it.questId == id } }
         ordered.firstOrNull { it.state == QuestState.CLAIMABLE }
             ?.let { return QuestDecision.Claim(it.questId, it.actionNo) }
         ordered.firstOrNull { it.state == QuestState.AVAILABLE }

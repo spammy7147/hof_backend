@@ -198,6 +198,30 @@ class BattleMapQueryRepository(
             )
             .fetchOne()
 
+    /**
+     * 자동화 판단에 필요한 계정별 맵 상태를 `(categoryId, mapCode)` 집합으로 한 번에 조회한다.
+     *
+     * SQL의 두 `IN` 조건이 만들 수 있는 교차 조합은 결과에서 다시 제거해 요청하지 않은 상태가 실행
+     * 후보로 섞이지 않게 한다.
+     */
+    fun findStatesForExecution(
+        accountId: Long,
+        candidates: Collection<Pair<String, String>>,
+    ): List<AccountBattleMapStateEntity> {
+        val requestedPairs = candidates.toSet()
+        if (requestedPairs.isEmpty()) return emptyList()
+
+        return stateQuery()
+            .where(
+                accountBattleMapStateEntity.account.id.eq(accountId),
+                battleMapEntity.categoryId.`in`(requestedPairs.map { it.first }.toSet()),
+                battleMapEntity.mapCode.`in`(requestedPairs.map { it.second }.toSet()),
+            )
+            .orderBy(battleMapEntity.categoryId.asc(), battleMapEntity.mapCode.asc(), battleMapEntity.id.asc())
+            .fetch()
+            .filter { state -> state.battleMap.categoryId to state.battleMap.mapCode in requestedPairs }
+    }
+
     /** 계정/카테고리/그룹/이름 정규화 정체성이 일치하는 미해결 행을 조회한다. */
     fun findUnresolvedByIdentity(
         accountId: Long,
