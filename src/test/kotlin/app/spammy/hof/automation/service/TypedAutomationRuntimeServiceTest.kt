@@ -31,6 +31,9 @@ class TypedAutomationRuntimeServiceTest {
 
         assertEquals(false, service.start(7))
         assertEquals(TypedAutomationLifecycle.STOPPED, state.lifecycleStatus)
+        service.pause(7)
+        assertEquals(TypedAutomationLifecycle.STOPPED, state.lifecycleStatus)
+        assertEquals(AutomationStopReason.NETWORK.name, state.stopReason)
 
         service.resumeState(7)
         assertEquals(TypedAutomationLifecycle.RUNNING, state.lifecycleStatus)

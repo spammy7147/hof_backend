@@ -116,6 +116,9 @@ class UnifiedAutomationRunner(
                     wakeupPort.schedule(accountId, it, "TYPED_SAFE_RETRY")
                 }
                 return
+            } catch (error: FatalAutomationException) {
+                runtime.stop(accountId, token, null, AutomationStopReason.FATAL, error.message ?: "Fatal live snapshot failure")
+                return
             }
             when (decision) {
                 is AutomationCoordination.Runnable -> toStored(decision.entryId, decision.action)

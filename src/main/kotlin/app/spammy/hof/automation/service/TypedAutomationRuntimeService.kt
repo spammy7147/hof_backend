@@ -56,7 +56,7 @@ class TypedAutomationRuntimeService(
     fun resume(accountId: Long) {
         dailyPreflight.resume(accountId)
         resumeState(accountId)
-        wakeups.wake(accountId, "TYPED_AUTOMATION_RESUMED")
+        wakeAfterCommit(accountId, "TYPED_AUTOMATION_RESUMED")
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -76,6 +76,7 @@ class TypedAutomationRuntimeService(
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun pause(accountId: Long) {
         queryRepository.lockRuntimeState(accountId)?.let {
+            if (it.lifecycleStatus == TypedAutomationLifecycle.STOPPED) return
             it.lifecycleStatus = TypedAutomationLifecycle.PAUSED
             it.stopReason = null
             it.leaseToken = null
@@ -194,6 +195,13 @@ class TypedAutomationRuntimeService(
     private fun stopState(state: TypedAutomationRuntimeStateEntity, reason: AutomationStopReason, now: Instant) {
         state.lifecycleStatus = TypedAutomationLifecycle.STOPPED; state.stopReason = reason.name
         state.nextAttemptAt = null; state.leaseToken = null; state.leaseUntil = null; state.updatedAt = now
+    }
+
+    private fun wakeAfterCommit(accountId: Long, reason: String) {
+        check(TransactionSynchronizationManager.isSynchronizationActive()) { "Typed lifecycle wake requires transaction synchronization." }
+        TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
+            override fun afterCommit() = wakeups.wake(accountId, reason)
+        })
     }
 
     private fun StoredTypedActionPayload.kind(): String = when (this) {

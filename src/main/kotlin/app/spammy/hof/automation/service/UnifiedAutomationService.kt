@@ -265,11 +265,23 @@ class UnifiedAutomationService(
 
     /** 사용자가 일시정지한 통합 자동화를 다음 의사결정부터 재개한다. */
     @Transactional
-    fun resume(accountId: Long): UnifiedAutomationStatusResponse =
-        transition(accountId, setOf("PAUSED"), "RUNNING", finished = false).also {
+    fun resume(accountId: Long): UnifiedAutomationStatusResponse {
+        val typedStopped = typedAutomationQueryRepository?.findRuntimeState(accountId)?.lifecycleStatus ==
+            app.spammy.hof.automation.entity.TypedAutomationLifecycle.STOPPED
+        val existing = queryRepository.findCurrentJob(accountId)
+        if (typedStopped && existing?.status == "RUNNING") {
+            val profile = queryRepository.findProfile(accountId)
+                ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "통합 자동화 설정을 찾지 못했습니다.")
+            val modules = queryRepository.findModules(profile.id)
+            wakeAfterCommit(accountId, "USER_RESUME")
+            typedAfterCommit { typedRuntimeService?.resume(accountId) }
+            return buildStatus(profile, existing, modules, readinessEvaluator.evaluate(modules))
+        }
+        return transition(accountId, setOf("PAUSED"), "RUNNING", finished = false).also {
             wakeAfterCommit(accountId, "USER_RESUME")
             typedAfterCommit { typedRuntimeService?.resume(accountId) }
         }
+    }
 
     /** 활성 상태의 통합 자동화를 종료하고 더 이상 다음 행동을 예약하지 않게 한다. */
     @Transactional

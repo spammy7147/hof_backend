@@ -8,7 +8,6 @@ import app.spammy.hof.battle.service.BattleRunService
 import app.spammy.hof.character.repository.CharacterQueryRepository
 import app.spammy.hof.party.repository.PartyPresetQueryRepository
 import app.spammy.hof.quest.service.QuestGatewayService
-import app.spammy.hof.external.model.HofBattleOutcome
 import java.time.Instant
 import org.springframework.stereotype.Service
 import tools.jackson.databind.ObjectMapper
@@ -79,15 +78,15 @@ class DefaultAutomationActionExecutor(
                 }
                 is StoredTypedActionPayload.QuestBattle -> {
                     val result = runTypedBattle(accountId, payload.battleRequest)
-                    requireExactTerminal(accountId, action.executionIdentity, payload.battleRequest, result, BattleAutomationActionSource.QUEST_AUTOMATION)
+                    val proof = exactTerminalProof(accountId, action.executionIdentity, payload.battleRequest, result, BattleAutomationActionSource.QUEST_AUTOMATION)
                     val questAction = QuestAction.Battle(
                         payload.questCode, payload.questCycle, payload.missionKey, payload.missionType,
                         payload.categoryId, payload.mapCode, payload.mapCode,
                         QuestPresetSelection(payload.presetMode, payload.presetId), payload.battleCount,
                     )
                     questHandler?.onBattleCompleted(
-                        accountId, action.executionIdentity, questAction,
-                        if (result.rounds.all { it.outcome == HofBattleOutcome.VICTORY.name }) QuestBattleOutcome.VICTORY else QuestBattleOutcome.DEFEAT,
+                        accountId, proof.resultIdentity, questAction,
+                        if (proof.outcomes.single() == BattleAutomationRoundOutcome.VICTORY) QuestBattleOutcome.VICTORY else QuestBattleOutcome.DEFEAT,
                     )
                 }
                 is StoredTypedActionPayload.BattleMap -> {
@@ -107,7 +106,7 @@ class DefaultAutomationActionExecutor(
                 }
                 is StoredTypedActionPayload.AdventureMap -> {
                     val result = runTypedBattle(accountId, payload.battleRequest)
-                    requireExactTerminal(accountId, action.executionIdentity, payload.battleRequest, result, BattleAutomationActionSource.ADVENTURE_AUTOMATION)
+                    exactTerminalProof(accountId, action.executionIdentity, payload.battleRequest, result, BattleAutomationActionSource.ADVENTURE_AUTOMATION)
                 }
         }
     }
@@ -119,25 +118,31 @@ class DefaultAutomationActionExecutor(
             throw AmbiguousAutomationSubmissionException("Battle submission outcome is not provable; it will not be resent.", error)
         }
 
-    private fun requireExactTerminal(
+    private fun exactTerminalProof(
         accountId: Long,
         executionIdentity: String,
         request: RunBattleRequest,
         result: app.spammy.hof.battle.dto.BattleResultResponse,
         source: BattleAutomationActionSource,
-    ) {
+    ): TerminalProof {
         val outcomes = result.rounds.mapNotNull { runCatching { BattleAutomationRoundOutcome.valueOf(it.outcome) }.getOrNull() }
         if (outcomes.size == request.resolvedBattleCount() && outcomes.all {
                 it == BattleAutomationRoundOutcome.VICTORY || it == BattleAutomationRoundOutcome.DEFEAT || it == BattleAutomationRoundOutcome.DRAW
-            }) return
+            }) return TerminalProof(executionIdentity, outcomes)
         val probe = BattleMapAutomationAction(
             accountId, java.time.LocalDate.now(), request.categoryId, request.mapCode,
             app.spammy.hof.automation.entity.PresetSelectionMode.EXPLICIT, null,
             request.resolvedBattleCount(), executionIdentity, source,
         )
-        battleOutcomeReconciler?.reloadRecentAuthoritativeEvidence(probe)
-        throw AmbiguousAutomationSubmissionException("Battle response did not prove every requested terminal round.")
+        return when (val reconciliation = battleOutcomeReconciler?.reloadRecentAuthoritativeEvidence(probe)) {
+            is BattleOutcomeReconciliation.Proven -> reconciliation.evidence.takeIf { it.binds(probe) && it.isCompleteTerminal() }
+                ?.let { TerminalProof(it.resultIdentity, it.outcomes) }
+                ?: throw AmbiguousAutomationSubmissionException("Reloaded battle evidence did not bind the submitted action.")
+            else -> throw AmbiguousAutomationSubmissionException("Battle response did not prove every requested terminal round.")
+        }
     }
+
+    private data class TerminalProof(val resultIdentity: String, val outcomes: List<BattleAutomationRoundOutcome>)
 
     private fun requireActionNo(decision: AutomationDecision): String = decision.actionNo
         ?: throw AutomationConfigurationException("퀘스트 처리 링크를 다시 불러와 주세요.")

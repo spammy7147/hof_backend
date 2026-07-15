@@ -64,6 +64,7 @@ fun interface TypedAutomationActionExecutor {
 }
 
 class SafeRetryableAutomationException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
+class FatalAutomationException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
 class AmbiguousAutomationSubmissionException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
 
 class AutomationConfigurationException(

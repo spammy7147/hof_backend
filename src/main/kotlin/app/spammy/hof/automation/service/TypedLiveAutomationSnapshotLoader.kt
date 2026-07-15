@@ -14,6 +14,9 @@ import java.time.ZoneId
 import java.util.UUID
 import app.spammy.hof.battle.dto.BattlePatternLoadRequest
 import org.springframework.stereotype.Component
+import java.io.IOException
+import app.spammy.hof.common.error.ApiException
+import app.spammy.hof.common.error.ErrorCode
 
 @Component
 class TypedLiveAutomationSnapshotLoader(
@@ -24,6 +27,7 @@ class TypedLiveAutomationSnapshotLoader(
     private val identities: BattleMapIdentityResolver,
     private val battleMapService: BattleMapService,
     private val timeProvider: TimeProvider,
+    private val sessionRecovery: HofSessionRecoveryExecutor,
 ) : TypedAutomationSnapshotLoader {
     override fun loadTyped(accountId: Long): AutomationCoordinatorSnapshot {
         val entries = typed.findEntries(accountId).filter { it.enabled }.sortedWith(compareBy<AutomationEntryEntity> { it.priority }.thenBy { it.id })
@@ -34,9 +38,17 @@ class TypedLiveAutomationSnapshotLoader(
         } }.distinct()
         // Authoritative GET refreshes happen without an encompassing transaction; their persistence is short-lived downstream.
         val liveQuests = try {
-            categories.forEach { battleMapService.findMaps(accountId, it) }
-            questGateway.load(accountId)
-        } catch (error: Exception) { throw SafeRetryableAutomationException("Unable to refresh live automation state.", error) }
+            sessionRecovery.execute(accountId) {
+                categories.forEach { battleMapService.findMaps(accountId, it) }
+                questGateway.load(accountId)
+            }
+        } catch (error: Exception) {
+            val causes = generateSequence<Throwable>(error) { it.cause }.toList()
+            if (causes.any { it is IOException } || causes.filterIsInstance<ApiException>().any { it.errorCode == ErrorCode.HOF_REQUEST_FAILED }) {
+                throw SafeRetryableAutomationException("Transient live-state refresh failure.", error)
+            }
+            throw FatalAutomationException("Live-state refresh failed and cannot be retried safely.", error)
+        }
         val now = timeProvider.now()
         val stateEntities = maps.findAllStatesForExecution(accountId)
         val allPresets = presets.findAllByAccountId(accountId)
