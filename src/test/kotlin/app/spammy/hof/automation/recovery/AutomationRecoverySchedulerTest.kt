@@ -5,6 +5,7 @@ import app.spammy.hof.automation.entity.AutomationJobEntity
 import app.spammy.hof.automation.entity.AutomationProfileEntity
 import app.spammy.hof.automation.port.AutomationWakeupPort
 import app.spammy.hof.automation.repository.AutomationJobQueryRepository
+import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import app.spammy.hof.common.time.TimeProvider
 import java.time.Instant
 import kotlin.test.Test
@@ -14,18 +15,21 @@ class AutomationRecoverySchedulerTest {
     private val query = Mockito.mock(AutomationJobQueryRepository::class.java)
     private val wakeup = Mockito.mock(AutomationWakeupPort::class.java)
     private val now = Instant.parse("2026-07-13T00:00:00Z")
-    private val scheduler = AutomationRecoveryScheduler(query, wakeup, TimeProvider { now })
+    private val typedQuery = Mockito.mock(TypedAutomationQueryRepository::class.java)
+    private val scheduler = AutomationRecoveryScheduler(query, wakeup, TimeProvider { now }, typedQuery)
 
     @Test
     fun onlyRowsReturnedByTheExplicitRecoverableQueryAreWoken() {
         val first = job(1L)
         val second = job(2L)
         Mockito.`when`(query.findRecoverable(now)).thenReturn(listOf(first, second))
+        Mockito.`when`(typedQuery.findRecoverableRuntimeAccountIds(now)).thenReturn(listOf(3L))
 
         scheduler.enqueueDue("STARTUP_RECOVERY")
 
         Mockito.verify(wakeup).wake(1L, "STARTUP_RECOVERY")
         Mockito.verify(wakeup).wake(2L, "STARTUP_RECOVERY")
+        Mockito.verify(wakeup).wake(3L, "TYPED_STARTUP_RECOVERY")
         Mockito.verifyNoMoreInteractions(wakeup)
     }
 

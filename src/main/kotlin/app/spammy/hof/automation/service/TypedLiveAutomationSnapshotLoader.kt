@@ -32,7 +32,8 @@ class TypedLiveAutomationSnapshotLoader(
     override fun loadTyped(accountId: Long): AutomationCoordinatorSnapshot {
         val entries = typed.findEntries(accountId).filter { it.enabled }.sortedWith(compareBy<AutomationEntryEntity> { it.priority }.thenBy { it.id })
         val categories = entries.flatMap { entry -> when (entry.type) {
-            AutomationType.QUEST -> typed.findQuestMaps(typed.findQuestSelections(entry.id).map { it.id }).map { it.categoryId }
+            AutomationType.QUEST -> QUEST_ALIAS_CATEGORIES +
+                typed.findQuestMaps(typed.findQuestSelections(entry.id).map { it.id }).map { it.categoryId }
             AutomationType.BATTLE_MAP -> typed.findBattleSettings(entry.id).map { it.categoryId }
             AutomationType.ADVENTURE_MAP -> typed.findAdventureSettings(entry.id).map { it.categoryId }
         } }.distinct()
@@ -121,4 +122,8 @@ class TypedLiveAutomationSnapshotLoader(
     private fun questState(state: AccountBattleMapStateEntity) = AutomationMapState(state.battleMap.categoryId, state.battleMap.mapCode, state.battleMap.name, state.visible, state.battleMap.enabled, state.cooldownUntil, state.winRemaining, state.attemptRemaining, state.availableCount, state.keyCount)
     private fun battleState(state: AccountBattleMapStateEntity) = BattleMapRunnableState(state.battleMap.categoryId, state.battleMap.mapCode, state.visible, state.battleMap.enabled, state.supportsThreeBattles, state.cooldownUntil, state.availableCount, state.attemptRemaining, state.winRemaining, state.keyCount)
     private fun adventureState(state: AccountBattleMapStateEntity) = AdventureMapRunnableState(state.battleMap.categoryId, state.battleMap.mapCode, true, state.visible, state.battleMap.enabled, state.cooldownUntil, null, state.attemptRemaining, state.winRemaining, state.availableCount, state.keyCount)
+
+    private companion object {
+        val QUEST_ALIAS_CATEGORIES = listOf("battle_map", "adventure_map")
+    }
 }
