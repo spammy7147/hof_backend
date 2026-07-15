@@ -11,8 +11,30 @@ import jakarta.persistence.JoinColumn
 import jakarta.persistence.ManyToOne
 import jakarta.persistence.OneToOne
 import jakarta.persistence.Table
+import jakarta.persistence.UniqueConstraint
 import java.time.Instant
 import java.time.LocalDate
+
+@Entity
+@Table(
+    name = "quest_automation_cycles",
+    uniqueConstraints = [
+        UniqueConstraint(
+            name = "uk_quest_automation_cycles_account_quest",
+            columnNames = ["account_id", "quest_code"],
+        ),
+    ],
+)
+class QuestAutomationCycleEntity(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+    @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "account_id", nullable = false)
+    var account: HofAccountEntity,
+    @Column(name = "quest_code", nullable = false, length = 100)
+    var questCode: String,
+    @Column(name = "current_cycle", nullable = false)
+    var currentCycle: Long,
+)
 
 @Entity
 @Table(name = "quest_map_execution_counters")

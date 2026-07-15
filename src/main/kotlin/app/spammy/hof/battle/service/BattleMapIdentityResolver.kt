@@ -1,6 +1,7 @@
 package app.spammy.hof.battle.service
 
 import app.spammy.hof.battle.entity.BattleMapEntity
+import app.spammy.hof.battle.model.BattleMapIdentityNormalizer
 import app.spammy.hof.battle.repository.BattleMapQueryRepository
 import app.spammy.hof.external.model.HofBattleMap
 import org.springframework.stereotype.Component
@@ -33,4 +34,36 @@ class BattleMapIdentityResolver(
             aliases = queryRepository.findAliasesByCategoryId(observation.categoryId),
         )
     }
+
+    /** Resolves a quest mission target only when its conservative alias match identifies one map. */
+    fun resolveAlias(categoryId: String, target: String): BattleMapAliasResolution {
+        val normalizedTargets = questTargetAliases(target)
+        if (normalizedTargets.isEmpty()) return BattleMapAliasResolution.Missing
+        val aliasMaps = queryRepository.findAliasesByCategoryId(categoryId)
+            .filter { questTargetNormalize(it.alias) in normalizedTargets }
+            .map { it.battleMap }
+        val nameMaps = queryRepository.findMapsByCategoryId(categoryId)
+            .filter { questTargetNormalize(it.name) in normalizedTargets }
+        val maps = (aliasMaps + nameMaps)
+            .distinctBy(BattleMapEntity::id)
+        return when (maps.size) {
+            0 -> BattleMapAliasResolution.Missing
+            1 -> maps.single().let { BattleMapAliasResolution.Resolved(it.categoryId, it.mapCode, it.name) }
+            else -> BattleMapAliasResolution.Ambiguous
+        }
+    }
+}
+
+private val questTargetSeparatorPattern = Regex("""\s*[-/·]\s*""")
+
+private fun questTargetAliases(value: String): Set<String> =
+    BattleMapIdentityNormalizer.aliasValues(value).mapTo(linkedSetOf(), ::questTargetNormalize)
+
+private fun questTargetNormalize(value: String): String =
+    BattleMapIdentityNormalizer.normalize(value).replace(questTargetSeparatorPattern, " - ")
+
+sealed interface BattleMapAliasResolution {
+    data class Resolved(val categoryId: String, val mapCode: String, val mapName: String) : BattleMapAliasResolution
+    data object Missing : BattleMapAliasResolution
+    data object Ambiguous : BattleMapAliasResolution
 }

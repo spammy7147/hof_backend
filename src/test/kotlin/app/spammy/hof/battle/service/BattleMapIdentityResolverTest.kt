@@ -13,6 +13,7 @@ import app.spammy.hof.external.model.HofBattleMap
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertNull
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
@@ -83,6 +84,28 @@ class BattleMapIdentityResolverTest {
         )
         assertNull(resolver.resolve(observation(mapCode = null, name = "Ambiguous- 중복", groupName = "First")))
         assertNull(resolver.resolve(observation(mapCode = null, name = "Unknown", groupName = "First")))
+    }
+
+    @Test
+    fun resolvesQuestTargetsAcrossCaseWhitespaceAndKoreanEnglishSeparatorsWithoutGuessing() {
+        val group = group("Quest", 1)
+        val frost = map("frost", "Frost Forest", group)
+        saveAlias(frost, "Frost - 서리 숲")
+
+        val resolved = assertIs<BattleMapAliasResolution.Resolved>(
+            resolver.resolveAlias(CATEGORY, "  frost /  서리   숲 "),
+        )
+        assertEquals("frost", resolved.mapCode)
+        val nameOnly = map("name-only", "Map Name Only", group)
+        assertEquals(
+            nameOnly.mapCode,
+            assertIs<BattleMapAliasResolution.Resolved>(resolver.resolveAlias(CATEGORY, " map NAME only ")).mapCode,
+        )
+        assertIs<BattleMapAliasResolution.Missing>(resolver.resolveAlias(CATEGORY, "없는 맵"))
+
+        val other = map("other-frost", "Other Frost", group)
+        saveAlias(other, "FROST · 서리 숲")
+        assertIs<BattleMapAliasResolution.Ambiguous>(resolver.resolveAlias(CATEGORY, "Frost-서리 숲"))
     }
 
     private fun group(

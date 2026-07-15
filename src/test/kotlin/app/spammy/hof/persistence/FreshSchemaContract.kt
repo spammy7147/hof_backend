@@ -389,6 +389,11 @@ internal object FreshSchemaContract {
             requiredInteger("execution_order"), requiredBoolean("manually_overridden"),
         ),
         table(
+            "quest_automation_cycles",
+            serialId(), requiredBigint("account_id"), requiredVarchar("quest_code", 100),
+            requiredBigint("current_cycle"),
+        ),
+        table(
             "quest_map_execution_counters",
             serialId(), requiredBigint("account_id"), requiredVarchar("quest_code", 100),
             requiredVarchar("quest_cycle", 100), requiredVarchar("mission_key", 100),
@@ -517,6 +522,10 @@ internal object FreshSchemaContract {
         key(
             "quest_automation_maps", "uk_quest_automation_maps_selection_mission_map",
             "quest_selection_id", "mission_key", "category_id", "map_code",
+        ),
+        key(
+            "quest_automation_cycles", "uk_quest_automation_cycles_account_quest",
+            "account_id", "quest_code",
         ),
         key(
             "quest_map_execution_counters", "uk_quest_map_execution_counters_identity",
@@ -653,6 +662,10 @@ internal object FreshSchemaContract {
         fk(
             "fk_quest_automation_maps_party_preset", "quest_automation_maps.party_preset_id",
             "party_presets.id", DeleteAction.SET_NULL,
+        ),
+        fk(
+            "fk_quest_automation_cycles_account", "quest_automation_cycles.account_id",
+            "hof_accounts.id", DeleteAction.CASCADE,
         ),
         fk(
             "fk_quest_map_execution_counters_account", "quest_map_execution_counters.account_id",
@@ -802,6 +815,10 @@ internal object FreshSchemaContract {
         index("quest_automation_maps", "idx_quest_automation_maps_identity", "category_id", "map_code", "id"),
         index("quest_automation_maps", "idx_quest_automation_maps_party_preset", "party_preset_id", "id"),
         index(
+            "quest_automation_cycles", "idx_quest_automation_cycles_account",
+            "account_id", "quest_code", "id",
+        ),
+        index(
             "quest_map_execution_counters", "idx_quest_map_execution_counters_account_cycle",
             "account_id", "quest_cycle", "quest_code", "id",
         ),
@@ -945,6 +962,10 @@ internal object FreshSchemaContract {
             "case preset_mode when 'PRIMARY' then true when 'EXPLICIT' then true else false end",
         ),
         check("quest_automation_maps", "ck_quest_automation_maps_execution_order", "execution_order >= 0"),
+        check(
+            "quest_automation_cycles", "ck_quest_automation_cycles_current_cycle",
+            "current_cycle > cast(0 as bigint)",
+        ),
         check(
             "quest_map_execution_counters", "ck_quest_map_execution_counters_successful_runs",
             "successful_runs >= 0",
