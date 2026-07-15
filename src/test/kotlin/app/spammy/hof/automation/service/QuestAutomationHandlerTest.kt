@@ -7,7 +7,8 @@ import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.automation.policy.AutomationMapState
 import app.spammy.hof.automation.repository.BattleAutomationDailyProgressCommandRepository
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
-import app.spammy.hof.battle.service.BattleMapAliasResolution
+import app.spammy.hof.battle.service.BattleMapIdentityCandidate
+import app.spammy.hof.battle.service.BattleMapIdentityResolver
 import app.spammy.hof.quest.model.QuestMission
 import app.spammy.hof.quest.model.QuestMissionType
 import app.spammy.hof.quest.model.QuestSection
@@ -22,19 +23,12 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
+import org.mockito.Mockito
 import org.springframework.test.context.ActiveProfiles
 
 class QuestAutomationHandlerTest {
-    private val resolver = QuestMapTargetResolver { _, target ->
-        when (target) {
-            "manual target" -> BattleMapAliasResolution.Resolved("battle_map", "auto-map", "Auto")
-            "missing" -> BattleMapAliasResolution.Missing
-            "ambiguous" -> BattleMapAliasResolution.Ambiguous
-            else -> BattleMapAliasResolution.Resolved("battle_map", "clear-map", "Clear")
-        }
-    }
     private val progress = RecordingProgressStore()
-    private val handler = QuestAutomationHandler(resolver, progress)
+    private val handler = QuestAutomationHandler(progress)
 
     @Test
     fun claimableBeatsAvailableAndProducesClaimAction() {
@@ -105,6 +99,19 @@ class QuestAutomationHandlerTest {
     }
 
     @Test
+    fun completableUnsupportedMissionDoesNotCauseAccept() {
+        val result = handler.evaluate(snapshot(
+            quests = listOf(
+                quest("unsupported", QuestState.AVAILABLE, 0,
+                    QuestMission("other", QuestMissionType.OTHER, null, null, completable = true)),
+            ),
+            selections = listOf(selection("unsupported")),
+        ))
+
+        assertIs<HandlerEvaluation.Skipped>(result)
+    }
+
+    @Test
     fun monsterPrecedesMapClearEvenWhenMapClearAppearsFirst() {
         val result = handler.evaluate(snapshot(
             quests = listOf(
@@ -140,9 +147,33 @@ class QuestAutomationHandlerTest {
             val result = handler.evaluate(snapshot(
                 quests = listOf(quest("q", QuestState.ACTIVE, 0, mapClear("clear", target))),
                 selections = listOf(selection("q")),
+                identities = if (target == "ambiguous") listOf(
+                    identity("first", target),
+                    identity("second", target),
+                ) else emptyList(),
             ))
             assertIs<HandlerEvaluation.ConfigurationWarning>(result)
         }
+    }
+
+    @Test
+    fun evaluationUsesOnlySnapshotCatalogAndNeverTouchesDbBackedResolver() {
+        val dbResolver = Mockito.mock(BattleMapIdentityResolver::class.java)
+        Mockito.`when`(dbResolver.resolveAlias(Mockito.anyString(), Mockito.anyString()))
+            .thenThrow(AssertionError("evaluate must not load catalog data"))
+        val context = snapshot(
+            quests = listOf(quest("q", QuestState.ACTIVE, 0, mapClear("clear", "Frost / 서리 숲"))),
+            selections = listOf(selection("q")),
+            states = listOf(state("frost")),
+            identities = listOf(identity("frost", "Frost - 서리 숲")),
+        )
+
+        val first = handler.evaluate(context)
+        val second = handler.evaluate(context)
+
+        assertEquals(first, second)
+        assertEquals("frost", battle(first).mapCode)
+        Mockito.verifyNoInteractions(dbResolver)
     }
 
     @Test
@@ -208,7 +239,8 @@ class QuestAutomationHandlerTest {
         states: List<AutomationMapState> = emptyList(),
         cycles: Map<String, String> = emptyMap(),
         counters: Map<QuestCounterKey, Int> = emptyMap(),
-    ) = QuestAutomationSnapshot(ACCOUNT_ID, quests, selections, states, cycles, counters, NOW)
+        identities: List<BattleMapIdentityCandidate> = emptyList(),
+    ) = QuestAutomationSnapshot(ACCOUNT_ID, quests, selections, states, cycles, counters, identities, NOW)
 
     private fun quest(code: String, state: QuestState, order: Int, vararg missions: QuestMission) =
         QuestSnapshot(code, code, state, if (state == QuestState.AVAILABLE) QuestSection.AVAILABLE else QuestSection.ACTIVE, order, missions.toList(), "$code-action")
@@ -236,6 +268,9 @@ class QuestAutomationHandlerTest {
 
     private fun counterKey(quest: String, cycle: String, mission: String, map: String) =
         QuestCounterKey(quest, cycle, mission, "battle_map", map)
+
+    private fun identity(code: String, vararg aliases: String) =
+        BattleMapIdentityCandidate("battle_map", code, code, aliases.toSet())
 
     private class RecordingProgressStore : QuestAutomationProgressStore {
         val cycles = mutableMapOf<Pair<Long, String>, String>()

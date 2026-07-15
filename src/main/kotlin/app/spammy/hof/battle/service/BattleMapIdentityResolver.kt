@@ -37,20 +37,50 @@ class BattleMapIdentityResolver(
 
     /** Resolves a quest mission target only when its conservative alias match identifies one map. */
     fun resolveAlias(categoryId: String, target: String): BattleMapAliasResolution {
-        val normalizedTargets = questTargetAliases(target)
-        if (normalizedTargets.isEmpty()) return BattleMapAliasResolution.Missing
-        val aliasMaps = queryRepository.findAliasesByCategoryId(categoryId)
-            .filter { questTargetNormalize(it.alias) in normalizedTargets }
-            .map { it.battleMap }
-        val nameMaps = queryRepository.findMapsByCategoryId(categoryId)
-            .filter { questTargetNormalize(it.name) in normalizedTargets }
-        val maps = (aliasMaps + nameMaps)
-            .distinctBy(BattleMapEntity::id)
-        return when (maps.size) {
-            0 -> BattleMapAliasResolution.Missing
-            1 -> maps.single().let { BattleMapAliasResolution.Resolved(it.categoryId, it.mapCode, it.name) }
-            else -> BattleMapAliasResolution.Ambiguous
+        return resolveBattleMapAlias(target, loadAliasCandidates(categoryId))
+    }
+
+    /** DB-loading boundary used by callers before constructing a pure automation snapshot. */
+    fun loadAliasCandidates(categoryId: String): List<BattleMapIdentityCandidate> {
+        val aliasesByMapId = queryRepository.findAliasesByCategoryId(categoryId)
+            .groupBy { it.battleMap.id }
+        return queryRepository.findMapsByCategoryId(categoryId).map { map ->
+            BattleMapIdentityCandidate(
+                categoryId = map.categoryId,
+                mapCode = map.mapCode,
+                mapName = map.name,
+                aliases = aliasesByMapId[map.id].orEmpty().mapTo(linkedSetOf()) { it.alias },
+            )
         }
+    }
+}
+
+data class BattleMapIdentityCandidate(
+    val categoryId: String,
+    val mapCode: String,
+    val mapName: String,
+    val aliases: Set<String>,
+)
+
+/** Pure target resolution over an immutable catalog snapshot; never performs repository I/O. */
+fun resolveBattleMapAlias(
+    target: String,
+    candidates: Collection<BattleMapIdentityCandidate>,
+): BattleMapAliasResolution {
+    val normalizedTargets = questTargetAliases(target)
+    if (normalizedTargets.isEmpty()) return BattleMapAliasResolution.Missing
+    val matches = candidates.filter { candidate ->
+        sequenceOf(candidate.mapName)
+            .plus(candidate.aliases.asSequence())
+            .flatMap { questTargetAliases(it).asSequence() }
+            .any { it in normalizedTargets }
+    }.distinctBy { it.categoryId to it.mapCode }
+    return when (matches.size) {
+        0 -> BattleMapAliasResolution.Missing
+        1 -> matches.single().let {
+            BattleMapAliasResolution.Resolved(it.categoryId, it.mapCode, it.mapName)
+        }
+        else -> BattleMapAliasResolution.Ambiguous
     }
 }
 

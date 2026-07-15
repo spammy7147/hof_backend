@@ -8,13 +8,13 @@ import app.spammy.hof.automation.repository.QuestAutomationCycleCommandRepositor
 import app.spammy.hof.automation.repository.QuestMapExecutionCounterCommandRepository
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import app.spammy.hof.battle.service.BattleMapAliasResolution
-import app.spammy.hof.battle.service.BattleMapIdentityResolver
+import app.spammy.hof.battle.service.BattleMapIdentityCandidate
+import app.spammy.hof.battle.service.resolveBattleMapAlias
 import app.spammy.hof.quest.model.QuestMission
 import app.spammy.hof.quest.model.QuestMissionType
 import app.spammy.hof.quest.model.QuestSnapshot
 import app.spammy.hof.quest.model.QuestState
 import java.time.Instant
-import org.springframework.stereotype.Component
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 
@@ -80,20 +80,9 @@ data class QuestAutomationSnapshot(
     val mapStates: List<AutomationMapState>,
     val currentCycles: Map<String, String>,
     val counters: Map<QuestCounterKey, Int>,
+    val mapIdentityCandidates: List<BattleMapIdentityCandidate>,
     val now: Instant,
 )
-
-fun interface QuestMapTargetResolver {
-    fun resolve(categoryId: String, target: String): BattleMapAliasResolution
-}
-
-@Component
-class CatalogQuestMapTargetResolver(
-    private val resolver: BattleMapIdentityResolver,
-) : QuestMapTargetResolver {
-    override fun resolve(categoryId: String, target: String): BattleMapAliasResolution =
-        resolver.resolveAlias(categoryId, target)
-}
 
 interface QuestAutomationProgressStore {
     fun startNewCycle(accountId: Long, questCode: String): String
@@ -156,7 +145,6 @@ enum class QuestBattleOutcome { VICTORY, DEFEAT, NETWORK_FAILURE }
  */
 @Service
 class QuestAutomationHandler(
-    private val targetResolver: QuestMapTargetResolver,
     private val progressStore: QuestAutomationProgressStore,
 ) : AutomationHandler<QuestAutomationSnapshot> {
     override fun evaluate(context: QuestAutomationSnapshot): HandlerEvaluation {
@@ -252,7 +240,8 @@ class QuestAutomationHandler(
             val target = mission.target?.takeIf(String::isNotBlank)
                 ?: return HandlerEvaluation.ConfigurationWarning("Quest ${quest.questId} mission ${mission.key} has no map target.")
             val categoryId = configured.firstOrNull()?.categoryId ?: DEFAULT_BATTLE_CATEGORY
-            when (val resolved = targetResolver.resolve(categoryId, target)) {
+            val identityCandidates = context.mapIdentityCandidates.filter { it.categoryId == categoryId }
+            when (val resolved = resolveBattleMapAlias(target, identityCandidates)) {
                 is BattleMapAliasResolution.Resolved -> configured.firstOrNull {
                     it.categoryId == resolved.categoryId && it.mapCode == resolved.mapCode
                 } ?: QuestAutomationMapSelection(
@@ -312,7 +301,7 @@ class QuestAutomationHandler(
             when (mission.type) {
                 QuestMissionType.IMMEDIATE -> true
                 QuestMissionType.ITEM_TURN_IN -> mission.completable
-                else -> mission.completable
+                else -> false
             }
         }
 
