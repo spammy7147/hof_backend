@@ -14,7 +14,10 @@ import app.spammy.hof.common.persistence.QueryDslConfig
 import app.spammy.hof.common.time.TimeProvider
 import java.time.Instant
 import kotlin.test.Test
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import org.mockito.Mockito
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
@@ -48,30 +51,62 @@ class AutomationOutboxLocalReplayIntegrationTest {
     @Autowired private lateinit var entries: AutomationEntryCommandRepository
     @Autowired private lateinit var query: AutomationOutboxQueryRepository
     @Autowired private lateinit var publisher: AutomationOutboxPublisher
+    @Autowired private lateinit var localExecutor: LocalAutomationWakeExecutor
     @Autowired private lateinit var wakeups: AutomationWakeupPort
     @Autowired private lateinit var transactionManager: PlatformTransactionManager
     @Autowired private lateinit var lifecycle: TypedAutomationLifecycleBridge
 
     @Test
-    fun `no-profile publisher replays committed wake row locally and marks it published`() {
+    fun `no-profile publisher marks a wake only after synchronous local execution completes`() {
+        val (accountId, rowId) = enqueueWake("local-success")
+        var completed = false
+        Mockito.doAnswer {
+            assertNull(query.findById(rowId)?.publishedAt)
+            completed = true
+            null
+        }.`when`(localExecutor).execute(accountId, "CRASH_RECOVERY")
+
+        publisher.publishBatch()
+
+        assertTrue(completed)
+        assertNotNull(query.findById(rowId)?.publishedAt)
+        Mockito.verify(localExecutor).execute(accountId, "CRASH_RECOVERY")
+        Mockito.verifyNoInteractions(wakeups)
+    }
+
+    @Test
+    fun `failed local execution leaves wake unpublished and next poll retries it once`() {
+        val (accountId, rowId) = enqueueWake("local-retry")
+        Mockito.doThrow(IllegalStateException("runner crashed"))
+            .doAnswer { null }
+            .`when`(localExecutor).execute(accountId, "CRASH_RECOVERY")
+
+        assertFailsWith<IllegalStateException> { publisher.publishBatch() }
+        assertNull(query.findById(rowId)?.publishedAt)
+
+        publisher.publishBatch()
+
+        assertNotNull(query.findById(rowId)?.publishedAt)
+        Mockito.verify(localExecutor, Mockito.times(2)).execute(accountId, "CRASH_RECOVERY")
+        Mockito.verifyNoInteractions(wakeups)
+    }
+
+    private fun enqueueWake(loginId: String): Pair<Long, Long> {
         val accountId = TransactionTemplate(transactionManager).execute {
-            val account = accounts.save(HofAccountEntity(loginId = "local-replay", encryptedPassword = "encrypted", createdAt = NOW))
+            val account = accounts.save(HofAccountEntity(loginId = loginId, encryptedPassword = "encrypted", createdAt = NOW))
             entries.save(AutomationEntryEntity(account = account, type = AutomationType.QUEST, priority = 0, enabled = true, createdAt = NOW, updatedAt = NOW))
             account.id
         }
         TransactionTemplate(transactionManager).execute { lifecycle.start(accountId, "CRASH_RECOVERY") }
         val rowId = query.findUnpublished(NOW.plusSeconds(1)).single { it.account.id == accountId }.id
-
-        publisher.publishBatch()
-
-        Mockito.verify(wakeups).wake(accountId, "CRASH_RECOVERY")
-        assertNotNull(query.findById(rowId)?.publishedAt)
+        return accountId to rowId
     }
 
     @TestConfiguration(proxyBeanMethods = false)
     class Config {
         @Bean fun objectMapper(): ObjectMapper = jacksonObjectMapper()
         @Bean fun timeProvider(): TimeProvider = TimeProvider { NOW }
+        @Bean fun localExecutor(): LocalAutomationWakeExecutor = Mockito.mock(LocalAutomationWakeExecutor::class.java)
         @Bean fun wakeups(): AutomationWakeupPort = Mockito.mock(AutomationWakeupPort::class.java)
     }
 

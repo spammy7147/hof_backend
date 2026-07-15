@@ -1,6 +1,5 @@
 package app.spammy.hof.automation.outbox
 
-import app.spammy.hof.automation.port.AutomationWakeupPort
 import app.spammy.hof.common.time.TimeProvider
 import java.util.concurrent.TimeUnit
 import org.springframework.context.annotation.Profile
@@ -16,17 +15,21 @@ interface AutomationOutboxTransport {
     fun publish(row: AutomationOutboxEntity)
 }
 
+fun interface LocalAutomationWakeExecutor {
+    fun execute(accountId: Long, reason: String)
+}
+
 @Component
 @Profile("!docker & !kafka")
 class LocalAutomationOutboxTransport(
-    private val wakeups: AutomationWakeupPort,
+    private val executor: LocalAutomationWakeExecutor,
     private val objectMapper: ObjectMapper,
 ) : AutomationOutboxTransport {
     override val supportedTopics = setOf(AutomationOutboxService.WAKEUP_TOPIC)
 
     override fun publish(row: AutomationOutboxEntity) {
         val event = objectMapper.readValue(row.payload, AutomationWakeupEvent::class.java)
-        wakeups.wake(event.accountId, event.reason)
+        executor.execute(event.accountId, event.reason)
     }
 }
 
