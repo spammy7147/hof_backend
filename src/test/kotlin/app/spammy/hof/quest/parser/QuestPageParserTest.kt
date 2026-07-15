@@ -7,6 +7,7 @@ import app.spammy.hof.quest.model.QuestState
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -39,7 +40,7 @@ class QuestPageParserTest {
             quests.map { it.questId },
         )
         assertEquals((0..5).toList(), quests.map { it.sourceOrder })
-        assertEquals("0571:0", quests.first().missions.single().key)
+        assertNotEquals("0571:0", quests.first().missions.single().key)
     }
 
     @Test
@@ -87,4 +88,98 @@ class QuestPageParserTest {
         assertNull(immediateMission.progress)
         assertTrue(immediateMission.completable)
     }
+
+    @Test
+    fun semanticMissionKeysSurviveUnrelatedInsertionsReorderingAndProgressChanges() {
+        val original = parser.parse(
+            questWithMissions(
+                """
+                미션 : 몬스터 처치( Killer Maid ) - [ 1 / 5 ]<br>
+                미션 : 지역 클리어( Castle In The Sky- 천공성(제 2탑) )
+                """.trimIndent(),
+            ),
+        ).single().missions.associateBy { it.type to it.target }
+        val changed = parser.parse(
+            questWithMissions(
+                """
+                미션 : 아이템 전달( Silver Key ) - [ 0 / 1 ]<br>
+                미션 : 지역 클리어( Castle In The Sky- 천공성(제 2탑) )<br>
+                미션 : 몬스터 처치( Killer Maid ) - [ 4 / 5 ]
+                """.trimIndent(),
+            ),
+        ).single().missions.associateBy { it.type to it.target }
+
+        val monsterIdentity = QuestMissionType.MONSTER_KILL to "Killer Maid"
+        val mapIdentity = QuestMissionType.MAP_CLEAR to "Castle In The Sky- 천공성(제 2탑)"
+        assertEquals(original.getValue(monsterIdentity).key, changed.getValue(monsterIdentity).key)
+        assertEquals(original.getValue(mapIdentity).key, changed.getValue(mapIdentity).key)
+        assertEquals(QuestProgress(4, 5), changed.getValue(monsterIdentity).progress)
+        assertEquals(changed.size, changed.values.map { it.key }.distinct().size)
+    }
+
+    @Test
+    fun identicalSemanticMissionsReceiveDeterministicDuplicateSuffixes() {
+        val missions = parser.parse(
+            questWithMissions(
+                """
+                미션 : 몬스터 처치( Killer Maid ) - [ 1 / 5 ]<br>
+                미션 : 몬스터 처치( Killer Maid ) - [ 2 / 5 ]
+                """.trimIndent(),
+            ),
+        ).single().missions
+
+        assertEquals(2, missions.size)
+        assertNotEquals(missions[0].key, missions[1].key)
+        assertTrue(missions[1].key.startsWith(missions[0].key))
+    }
+
+    @Test
+    fun parsesCompositeMissionCellsAndFormActions() {
+        val parsed = edgeCaseQuests().associateBy { it.questId }
+        val active = parsed.getValue("DUPB")
+
+        assertEquals(
+            listOf(QuestMissionType.MONSTER_KILL, QuestMissionType.MAP_CLEAR, QuestMissionType.ITEM_TURN_IN),
+            active.missions.map { it.type },
+        )
+        assertEquals("Killer Maid", active.missions[0].target)
+        assertEquals(QuestProgress(12, 30), active.missions[0].progress)
+        assertEquals("Castle In The Sky- 천공성(제 2탑)", active.missions[1].target)
+        assertEquals("Silver Key", active.missions[2].target)
+        assertEquals("claim-form", active.actionNo)
+        assertEquals("accept-form", parsed.getValue("DUPA").actionNo)
+    }
+
+    @Test
+    fun resolvesDuplicateQuestsByStatePriorityAndRetainsChosenDomOrder() {
+        val parsed = edgeCaseQuests()
+        val byId = parsed.associateBy { it.questId }
+
+        assertEquals(listOf("DONE", "WRAP", "OUTER", "DUPA", "DUPB"), parsed.map { it.questId })
+        assertEquals(listOf(1, 2, 4, 5, 6), parsed.map { it.sourceOrder })
+        assertEquals(QuestSection.COMPLETED, byId.getValue("DONE").section)
+        assertEquals(QuestSection.AVAILABLE, byId.getValue("DUPA").section)
+        assertEquals(QuestState.AVAILABLE, byId.getValue("DUPA").state)
+        assertEquals(QuestSection.ACTIVE, byId.getValue("DUPB").section)
+        assertEquals(QuestState.CLAIMABLE, byId.getValue("DUPB").state)
+        assertTrue("NESTED" !in byId)
+        assertTrue("INNER" !in byId)
+    }
+
+    private fun edgeCaseQuests() = parser.parse(
+        checkNotNull(
+            javaClass.classLoader.getResource("fixtures/quest/quest-parser-edge-cases.html"),
+        ).readText(),
+    )
+
+    private fun questWithMissions(missions: String) = """
+        <div id="contents">
+          <h4>진행중인 퀘스트</h4>
+          <table><tr>
+            <td class="td7s">[KEYS] 안정 키 검증</td>
+            <td>$missions</td>
+            <td class="td8s">-</td>
+          </tr></table>
+        </div>
+    """.trimIndent()
 }

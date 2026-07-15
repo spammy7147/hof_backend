@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="ko">
+<body>
+<div id="contents">
+  <h4>완료한 퀘스트</h4>
+  <table>
+    <tr>
+      <td class="td7s">[DUPA] 과거의 중복 의뢰</td>
+      <td class="td8s">완료</td>
+    </tr>
+    <tr>
+      <td class="td7s">[DONE] 완료 보관 의뢰</td>
+      <td class="td8s">완료</td>
+    </tr>
+  </table>
+
+  <section data-quest-id="WRAP">
+    <h3>[WRAP] 독립 수락 의뢰</h3>
+    <a href="?menu=quest&amp;action=get&amp;no=wrapper-link">수락</a>
+  </section>
+
+  <h4>대기중인 퀘스트</h4>
+  <table>
+    <tr>
+      <td class="td7s">[DUPB] 잠긴 중복 의뢰</td>
+      <td>미션 : 몬스터 처치( Waiting Guard ) - [ 0 / 1 ]</td>
+      <td class="td8s">2일 후 가능</td>
+    </tr>
+  </table>
+
+  <article data-quest-id="OUTER">
+    <h3>[OUTER] 독립 진행 의뢰</h3>
+    <div data-quest-id="NESTED">표시용 내부 데이터</div>
+    <table>
+      <tr><td class="td7s">[INNER] 표시용 내부 행</td></tr>
+    </table>
+  </article>
+
+  <h4>수락 가능 퀘스트</h4>
+  <table>
+    <tr>
+      <td class="td7s">[DUPA] 현재 수락 의뢰</td>
+      <td>미션 : 즉시 완료</td>
+      <td class="td8s">
+        <form method="post">
+          <input type="hidden" name="no" value="accept-form">
+          <button type="submit" name="get">수락</button>
+        </form>
+      </td>
+    </tr>
+  </table>
+
+  <h4>진행중인 퀘스트</h4>
+  <table>
+    <tr>
+      <td class="td7s">[DUPB] 현재 복합 의뢰</td>
+      <td>
+        미션 : 몬스터 처치( Killer Maid ) - [ 12 / 30 ]<br>
+        미션 : 지역 클리어( Castle In The Sky- 천공성(제 2탑) )<br>
+        미션 : 아이템 전달( Silver Key ) - [ 1 / 1 ]
+      </td>
+      <td class="td8s">
+        <form method="post">
+          <input type="hidden" name="no" value="claim-form">
+          <button type="submit" name="complete">완료</button>
+        </form>
+      </td>
+    </tr>
+  </table>
+</div>
+</body>
+</html>
