@@ -1,5 +1,6 @@
 package app.spammy.hof.character.controller
 
+import app.spammy.hof.account.service.HofSessionRecoveryService
 import app.spammy.hof.character.dto.CharacterDetailResponse
 import app.spammy.hof.character.dto.CharacterResponse
 import app.spammy.hof.character.dto.CharacterSyncJobResponse
@@ -25,6 +26,7 @@ class CharacterController(
     private val characterService: CharacterService,
     private val characterSyncJobService: CharacterSyncJobService,
     private val characterPatternService: CharacterPatternService,
+    private val sessionRecoveryService: HofSessionRecoveryService,
 ) {
     /**
      * 캐릭터 동기화 job을 생성한다. 실제 파싱은 SSE 연결 후 시작된다.
@@ -79,9 +81,11 @@ class CharacterController(
         @PathVariable hofCharacterId: String,
         @PathVariable slot: Int,
     ): LoadPatternResponse =
-        characterPatternService.loadPattern(
-            accountId = accountId,
-            hofCharacterId = hofCharacterId,
-            slot = slot,
-        )
+        sessionRecoveryService.execute(accountId) {
+            characterPatternService.loadPattern(
+                accountId = accountId,
+                hofCharacterId = hofCharacterId,
+                slot = slot,
+            )
+        }
 }

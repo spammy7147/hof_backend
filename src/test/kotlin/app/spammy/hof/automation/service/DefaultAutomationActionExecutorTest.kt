@@ -1,6 +1,7 @@
 package app.spammy.hof.automation.service
 
 import app.spammy.hof.account.service.HofAccountService
+import app.spammy.hof.account.service.HofSessionRecoveryService
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.automation.entity.AutomationModuleType
 import app.spammy.hof.automation.policy.AutomationDecision
@@ -29,7 +30,9 @@ class DefaultAutomationActionExecutorTest {
     private val battleRunService = Mockito.mock(BattleRunService::class.java)
     private val characterQueryRepository = Mockito.mock(CharacterQueryRepository::class.java)
     private val partyPresetQueryRepository = Mockito.mock(PartyPresetQueryRepository::class.java)
-    private val sessionRecoveryExecutor = HofSessionRecoveryExecutor(Mockito.mock(HofAccountService::class.java))
+    private val sessionRecoveryExecutor = HofSessionRecoveryExecutor(
+        HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java)),
+    )
     private val executor = DefaultAutomationActionExecutor(
         questGatewayService,
         battleRunService,
