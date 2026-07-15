@@ -115,6 +115,8 @@ class FreshSchemaTest {
             assertEquals(0, connection.automationCount("automation_profile_maps", "TIME_BURN"))
             assertEquals(0, connection.automationCount("automation_module_configs", "TIME_BURN"))
             assertEquals(0, connection.actionRunCount("TIME_BURN"))
+            assertEquals(0, connection.count("select count(*) from automation_consumed_events"))
+            assertEquals(0, connection.count("select count(*) from account_automation_leases"))
         }
     }
 
@@ -174,6 +176,15 @@ private fun seedV7AutomationData(connection: Connection) {
         select id, 'TIME_BURN', 'BATTLE', 'PENDING', 'upgrade-action-' || id, '{}',
                current_timestamp, current_timestamp
         from automation_jobs
+        """.trimIndent(),
+        """
+        insert into automation_consumed_events (event_id, consumed_at)
+        values ('upgrade-consumed-event', current_timestamp)
+        """.trimIndent(),
+        """
+        insert into account_automation_leases (account_id, owner_id, lease_until, updated_at)
+        select id, 'upgrade-owner', current_timestamp, current_timestamp
+        from hof_accounts where login_id = 'upgrade-unified'
         """.trimIndent(),
         """
         insert into automation_profile_maps

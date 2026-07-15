@@ -1,6 +1,8 @@
 delete from automation_action_runs;
 delete from automation_jobs;
 delete from automation_outbox;
+delete from automation_consumed_events;
+delete from account_automation_leases;
 delete from automation_module_quest_maps;
 delete from automation_module_quests;
 delete from automation_module_maps;
