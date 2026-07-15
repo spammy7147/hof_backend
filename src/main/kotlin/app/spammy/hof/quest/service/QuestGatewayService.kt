@@ -22,6 +22,7 @@ class QuestGatewayService(
     private val loginStateParser: LoginStateParser,
     private val parser: QuestPageParser,
 ) {
+    /** Returns the authenticated quest page as heading-scoped, source-ordered snapshots. */
     fun load(accountId: Long): List<QuestSnapshot> = execute(accountId, requestFactory.questPage())
 
     fun accept(accountId: Long, actionNo: String): List<QuestSnapshot> =
