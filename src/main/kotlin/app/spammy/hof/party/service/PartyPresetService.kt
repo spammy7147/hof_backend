@@ -59,8 +59,7 @@ class PartyPresetService(
         accountId: Long,
         request: CreatePartyPresetRequest,
     ): PartyPresetResponse {
-        val account = accountQueryRepository.findById(accountId)
-            ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
+        val account = lockAccountForMutation(accountId)
         val name = normalizeName(request.name)
         val validatedMembers = validateMembers(accountId, request.members)
         val now = timeProvider.now()
@@ -85,6 +84,7 @@ class PartyPresetService(
         presetId: Long,
         request: UpdatePartyPresetRequest,
     ): PartyPresetResponse {
+        lockAccountForMutation(accountId)
         val preset = findOwnedPreset(accountId = accountId, presetId = presetId)
         val name = normalizeName(request.name)
         val validatedMembers = validateMembers(accountId, request.members)
@@ -111,8 +111,7 @@ class PartyPresetService(
         accountId: Long,
         presetId: Long,
     ): PartyPresetResponse {
-        accountQueryRepository.findByIdForUpdate(accountId)
-            ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
+        lockAccountForMutation(accountId)
         val selected = findOwnedPreset(accountId = accountId, presetId = presetId)
         val previous = presetQueryRepository.findPrimaryByAccountIdForUpdate(accountId)
         if (previous != null && previous.id != selected.id) {
@@ -133,6 +132,7 @@ class PartyPresetService(
         accountId: Long,
         presetId: Long,
     ) {
+        lockAccountForMutation(accountId)
         val preset = findOwnedPreset(accountId = accountId, presetId = presetId)
         val members = presetQueryRepository.findMembersByPresetIds(listOf(preset.id))
         if (members.isNotEmpty()) {
@@ -142,6 +142,16 @@ class PartyPresetService(
         presetRepository.delete(preset)
         presetRepository.flush()
     }
+
+    /**
+     * 모든 계정별 프리셋 쓰기가 공유하는 잠금 경계다.
+     *
+     * 호출자는 이 잠금을 얻은 뒤에만 프리셋 부모나 슬롯을 조회·변경해야 stale entity 갱신과 기본
+     * marker 교체가 서로 직렬화된다.
+     */
+    private fun lockAccountForMutation(accountId: Long) =
+        accountQueryRepository.findByIdForUpdate(accountId)
+            ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
 
     /**
      * 계정 ID와 프리셋 ID를 QueryDSL 한 조건으로 조회해 소유권 정보 노출을 막는다.
