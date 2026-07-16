@@ -1109,7 +1109,17 @@ class UnifiedAutomationService(
             )
         }
         val runtime = typed.findRuntimeState(accountId)
-        val currentAction = typed.findActiveTypedAction(accountId)?.let(::typedCurrentAction)
+        val activeAction = typed.findActiveTypedAction(accountId)
+        val stoppedAction = if (
+            activeAction == null
+            && runtime?.lifecycleStatus == TypedAutomationLifecycle.STOPPED
+            && runtime.stopReason in setOf(AutomationStopReason.NETWORK.name, AutomationStopReason.FATAL.name)
+        ) {
+            typed.findLatestStoppedTypedAction(accountId)
+        } else {
+            null
+        }
+        val currentAction = (activeAction ?: stoppedAction)?.let(::typedCurrentAction)
         val today = timeProvider.now().atZone(KOREA_ZONE).toLocalDate()
         val latestRefresh = typed.findLatestAdventureRefresh(accountId)
         val dailyRefresh = AdventureDailyRefreshResponse(
@@ -1137,13 +1147,25 @@ class UnifiedAutomationService(
     }
 
     private fun typedCurrentAction(row: app.spammy.hof.automation.entity.TypedAutomationActionRunEntity): TypedAutomationCurrentActionResponse? {
-        val source = row.entry?.type ?: return null
         val decoded = try {
             storedActionCodec.verifyPersisted(row, row.account.id)
         } catch (_: RuntimeException) {
             null
         }
         val payload = decoded?.payload
+        val source = row.entry?.type ?: when (payload) {
+            is StoredTypedActionPayload.QuestClaim,
+            is StoredTypedActionPayload.QuestAccept,
+            is StoredTypedActionPayload.QuestBattle -> AutomationType.QUEST
+            is StoredTypedActionPayload.BattleMap -> AutomationType.BATTLE_MAP
+            is StoredTypedActionPayload.AdventureMap -> AutomationType.ADVENTURE_MAP
+            null -> when {
+                row.actionKind.startsWith("QUEST_") -> AutomationType.QUEST
+                row.actionKind == "BATTLE_MAP" -> AutomationType.BATTLE_MAP
+                row.actionKind == "ADVENTURE_MAP" -> AutomationType.ADVENTURE_MAP
+                else -> null
+            }
+        } ?: return null
         val title = when (payload) {
             is StoredTypedActionPayload.QuestClaim -> payload.questCode
             is StoredTypedActionPayload.QuestAccept -> payload.questCode

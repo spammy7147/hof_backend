@@ -244,6 +244,75 @@ class UnifiedAutomationServiceTest {
     }
 
     @Test
+    fun stoppedNetworkAggregateRetainsTheFailedActionAndDerivesItsSourceWithoutAnEntry() {
+        val account = account()
+        val runtime = stoppedNetworkRuntime(account)
+        val action = TypedAutomationActionRunEntity(
+            id = 502L,
+            account = account,
+            entry = null,
+            executionIdentity = "failed-adventure-action",
+            actionKind = "ADVENTURE_MAP",
+            schemaVersion = 1,
+            payloadJson = "{}",
+            actionFingerprint = "b".repeat(64),
+            status = TypedAutomationActionStatus.FAILED,
+            leaseToken = "lease",
+            lastError = "connection reset",
+            createdAt = NOW,
+            finishedAt = NOW.plusSeconds(1),
+            updatedAt = NOW.plusSeconds(1),
+        )
+        val stored = StoredTypedAutomationActionV1(
+            entryId = 91L,
+            executionIdentity = action.executionIdentity,
+            payload = StoredTypedActionPayload.AdventureMap(
+                categoryId = "adventure_map",
+                mapCode = "sp_hunt_1",
+                presetMode = PresetSelectionMode.PRIMARY,
+                presetId = 7L,
+                battleCount = 1,
+                settingIdentity = 901L,
+                battleRequest = app.spammy.hof.battle.dto.RunBattleRequest(
+                    categoryId = "adventure_map",
+                    mapCode = "sp_hunt_1",
+                    characterIds = listOf("c1"),
+                    patternLoads = listOf(app.spammy.hof.battle.dto.BattlePatternLoadRequest("c1", 0)),
+                    battleCount = 1,
+                ),
+            ),
+        )
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(emptyList())
+        Mockito.`when`(accountQueryRepository.findById(ACCOUNT_ID)).thenReturn(account)
+        Mockito.`when`(typedQuery.findRuntimeState(ACCOUNT_ID)).thenReturn(runtime)
+        Mockito.`when`(typedQuery.findLatestStoppedTypedAction(ACCOUNT_ID)).thenReturn(action)
+        Mockito.`when`(storedActionCodec.verifyPersisted(action, ACCOUNT_ID)).thenReturn(stored)
+
+        val response = service.getTyped(ACCOUNT_ID)
+
+        assertEquals(AutomationType.ADVENTURE_MAP, response.runtime.currentAction?.source)
+        assertEquals("sp_hunt_1", response.runtime.currentAction?.title)
+        assertEquals(1, response.runtime.currentAction?.battleCurrent)
+        assertEquals(1, response.runtime.currentAction?.battleTotal)
+    }
+
+    @Test
+    fun runningAggregateDoesNotPresentAnOldFailedActionAsCurrent() {
+        val account = account()
+        val runtime = TypedAutomationRuntimeStateEntity(
+            ACCOUNT_ID, account, TypedAutomationLifecycle.RUNNING, createdAt = NOW, updatedAt = NOW,
+        )
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(emptyList())
+        Mockito.`when`(accountQueryRepository.findById(ACCOUNT_ID)).thenReturn(account)
+        Mockito.`when`(typedQuery.findRuntimeState(ACCOUNT_ID)).thenReturn(runtime)
+
+        val response = service.getTyped(ACCOUNT_ID)
+
+        assertEquals(null, response.runtime.currentAction)
+        Mockito.verify(typedQuery, Mockito.never()).findLatestStoppedTypedAction(ACCOUNT_ID)
+    }
+
+    @Test
     fun createTypedEntryRejectsExistingSingletonType() {
         val existing = AutomationEntryEntity(
             id = 91L, account = account(), type = AutomationType.QUEST, priority = 0, enabled = false,

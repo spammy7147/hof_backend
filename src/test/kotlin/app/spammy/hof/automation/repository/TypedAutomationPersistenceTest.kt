@@ -202,6 +202,75 @@ class TypedAutomationPersistenceTest {
     }
 
     @Test
+    fun latestStoppedActionIsAccountScopedAndIncludesFailedAndAmbiguousRows() {
+        val now = Instant.parse("2026-07-16T00:00:00Z")
+        val account = newAccount("typed-stopped-action", now)
+        val otherAccount = newAccount("typed-stopped-action-other", now)
+        runtimeRepository.save(
+            TypedAutomationRuntimeStateEntity(
+                account.id,
+                account,
+                TypedAutomationLifecycle.STOPPED,
+                stopReason = "NETWORK",
+                createdAt = now,
+                updatedAt = now.plusSeconds(4),
+            ),
+        )
+        val entry = entryRepository.save(newEntry(account, AutomationType.BATTLE_MAP, 0, now))
+        val otherEntry = entryRepository.save(newEntry(otherAccount, AutomationType.BATTLE_MAP, 0, now))
+        actionRepository.save(
+            action(account, entry, "failed", TypedAutomationActionStatus.FAILED, now.plusSeconds(1)),
+        )
+        val expected = actionRepository.save(
+            action(account, entry, "ambiguous", TypedAutomationActionStatus.AMBIGUOUS, now.plusSeconds(2)),
+        )
+        actionRepository.save(
+            action(account, entry, "succeeded", TypedAutomationActionStatus.SUCCEEDED, now.plusSeconds(3)),
+        )
+        actionRepository.save(
+            action(otherAccount, otherEntry, "other-failed", TypedAutomationActionStatus.FAILED, now.plusSeconds(4)),
+        )
+        entityManager.flush()
+        entityManager.clear()
+
+        val actual = requireNotNull(queryRepository.findLatestStoppedTypedAction(account.id))
+
+        assertEquals(expected.id, actual.id)
+        assertEquals(TypedAutomationActionStatus.AMBIGUOUS, actual.status)
+        assertEquals(account.id, actual.account.id)
+    }
+
+    @Test
+    fun latestStoppedActionSurvivesDeletionOfItsAutomationEntry() {
+        val now = Instant.parse("2026-07-16T00:00:00Z")
+        val account = newAccount("typed-stopped-deleted-entry", now)
+        runtimeRepository.save(
+            TypedAutomationRuntimeStateEntity(
+                account.id,
+                account,
+                TypedAutomationLifecycle.STOPPED,
+                stopReason = "FATAL",
+                createdAt = now,
+                updatedAt = now.plusSeconds(1),
+            ),
+        )
+        val entry = entryRepository.save(newEntry(account, AutomationType.ADVENTURE_MAP, 0, now))
+        val expected = actionRepository.save(
+            action(account, entry, "deleted-entry", TypedAutomationActionStatus.FAILED, now.plusSeconds(1)),
+        )
+        entityManager.flush()
+        entityManager.clear()
+
+        entryRepository.delete(requireNotNull(queryRepository.findEntry(account.id, entry.id)))
+        entityManager.flush()
+        entityManager.clear()
+
+        val actual = requireNotNull(queryRepository.findLatestStoppedTypedAction(account.id))
+        assertEquals(expected.id, actual.id)
+        assertEquals(null, actual.entry)
+    }
+
+    @Test
     fun deletingAndRecreatingBattleEntryDoesNotResetSameDayProgress() {
         val now = Instant.parse("2026-07-16T00:00:00Z")
         val account = newAccount("typed-progress-recreate", now)
@@ -244,6 +313,27 @@ class TypedAutomationPersistenceTest {
         priority = priority,
         enabled = true,
         createdAt = now,
+        updatedAt = now,
+    )
+
+    private fun action(
+        account: HofAccountEntity,
+        entry: AutomationEntryEntity,
+        identity: String,
+        status: TypedAutomationActionStatus,
+        now: Instant,
+    ) = TypedAutomationActionRunEntity(
+        account = account,
+        entry = entry,
+        executionIdentity = identity,
+        actionKind = entry.type.name,
+        schemaVersion = 1,
+        payloadJson = "{}",
+        actionFingerprint = identity.padEnd(64, 'a').take(64),
+        status = status,
+        leaseToken = "lease-$identity",
+        createdAt = now,
+        finishedAt = now,
         updatedAt = now,
     )
 }
