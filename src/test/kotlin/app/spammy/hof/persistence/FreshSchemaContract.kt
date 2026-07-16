@@ -279,7 +279,7 @@ internal object FreshSchemaContract {
             "account_battle_map_states",
             serialId(), requiredBigint("account_id"), requiredBigint("battle_map_id"), optionalInteger("key_count"),
             optionalInteger("available_count"), optionalInteger("attempt_remaining"), optionalInteger("win_remaining"),
-            optionalInstant("cooldown_until"), requiredText("raw_href"), requiredBoolean("visible"),
+            optionalInstant("cooldown_until"), requiredBoolean("supports_three_battles"), requiredText("raw_href"), requiredBoolean("visible"),
             requiredInstant("last_seen_at"),
         ),
         table(
@@ -296,7 +296,7 @@ internal object FreshSchemaContract {
         table(
             "party_presets",
             serialId(), requiredBigint("account_id"), requiredVarchar("name"), requiredInstant("created_at"),
-            requiredInstant("updated_at"),
+            requiredInstant("updated_at"), requiredBoolean("is_primary"), optionalInteger("primary_marker"),
         ),
         table(
             "party_preset_members",
@@ -371,10 +371,97 @@ internal object FreshSchemaContract {
             primaryKey = listOf("event_id"),
         ),
         table(
+            "automation_entries",
+            serialId(), requiredBigint("account_id"), requiredVarchar("automation_type", 30),
+            requiredInteger("priority"), requiredBoolean("enabled"), requiredInstant("created_at"),
+            requiredInstant("updated_at"),
+        ),
+        table(
+            "quest_automation_selections",
+            serialId(), requiredBigint("automation_entry_id"), requiredVarchar("quest_code", 100),
+            requiredBoolean("enabled"), requiredInteger("source_order"),
+        ),
+        table(
+            "quest_automation_maps",
+            serialId(), requiredBigint("quest_selection_id"), requiredVarchar("mission_key", 100),
+            requiredVarchar("category_id", 50), requiredVarchar("map_code", 100),
+            requiredVarchar("preset_mode", 20), optionalBigint("party_preset_id"),
+            requiredInteger("execution_order"), requiredBoolean("manually_overridden"),
+        ),
+        table(
+            "quest_automation_cycles",
+            serialId(), requiredBigint("account_id"), requiredVarchar("quest_code", 100),
+            requiredBigint("current_cycle"),
+        ),
+        table(
+            "quest_automation_processed_results",
+            serialId(), requiredBigint("account_id"), requiredVarchar("result_kind", 30),
+            requiredVarchar("result_identity", 128), requiredVarchar("action_fingerprint", 64),
+            optionalVarchar("result_value", 100), requiredInstant("processed_at"),
+        ),
+        table(
+            "quest_map_execution_counters",
+            serialId(), requiredBigint("account_id"), requiredVarchar("quest_code", 100),
+            requiredVarchar("quest_cycle", 100), requiredVarchar("mission_key", 100),
+            requiredVarchar("category_id", 50), requiredVarchar("map_code", 100),
+            requiredInteger("successful_runs"),
+        ),
+        table(
+            "battle_automation_maps",
+            serialId(), requiredBigint("automation_entry_id"), requiredVarchar("category_id", 50),
+            requiredVarchar("map_code", 100), requiredInteger("daily_target_count"),
+            requiredVarchar("preset_mode", 20), optionalBigint("party_preset_id"), requiredInteger("execution_order"),
+        ),
+        table(
+            "battle_automation_daily_progress",
+            serialId(), requiredBigint("account_id"), requiredDate("progress_date"),
+            requiredVarchar("category_id", 50), requiredVarchar("map_code", 100), requiredVarchar("source", 50),
+            requiredInteger("successful_runs"), requiredInstant("updated_at"),
+        ),
+        table(
+            "battle_automation_processed_results",
+            serialId(), requiredBigint("account_id"), requiredVarchar("result_identity", 128),
+            requiredVarchar("execution_identity", 128), requiredVarchar("action_fingerprint", 64),
+            requiredVarchar("outcome_fingerprint", 64), requiredInteger("victory_count"), requiredInstant("processed_at"),
+        ),
+        table(
+            "adventure_automation_maps",
+            serialId(), requiredBigint("automation_entry_id"), requiredVarchar("category_id", 50),
+            requiredVarchar("map_code", 100), requiredVarchar("preset_mode", 20),
+            optionalBigint("party_preset_id"), requiredInteger("execution_order"),
+        ),
+        table(
+            "adventure_daily_refresh",
+            serialId(), requiredBigint("account_id"), requiredDate("refresh_date"), requiredInstant("refreshed_at"),
+        ),
+        table(
+            "adventure_daily_preflight_states",
+            serialId(), requiredBigint("account_id"), requiredDate("refresh_date"), requiredInteger("failed_attempts"),
+            optionalInstant("next_attempt_at"), optionalVarchar("stop_reason", 30),
+            optionalVarchar("in_flight_token", 36), optionalInstant("in_flight_until"), requiredInstant("updated_at"),
+        ),
+        table(
             "account_automation_leases",
             requiredBigint("account_id"), requiredVarchar("owner_id", 120), requiredInstant("lease_until"),
             requiredInstant("updated_at"),
             primaryKey = listOf("account_id"),
+        ),
+        table(
+            "typed_automation_runtime_states",
+            requiredBigint("account_id"), requiredVarchar("lifecycle_status", 20), optionalVarchar("stop_reason", 30),
+            requiredInteger("retry_attempt"), optionalInstant("next_attempt_at"), optionalVarchar("lease_token", 128),
+            optionalInstant("lease_until"), optionalBigint("stop_action_id"), optionalText("warning_text"), optionalText("last_error"),
+            requiredInstant("created_at"), requiredInstant("updated_at"), requiredBigint("version"),
+            primaryKey = listOf("account_id"),
+        ),
+        table(
+            "typed_automation_action_runs",
+            serialId(), requiredBigint("account_id"), optionalBigint("automation_entry_id"),
+            requiredVarchar("execution_identity", 128), requiredVarchar("action_kind", 30), requiredInteger("schema_version"),
+            requiredText("payload_json"), requiredVarchar("action_fingerprint", 64), requiredVarchar("status", 20),
+            requiredInteger("retry_attempt"), optionalInstant("next_attempt_at"), requiredVarchar("lease_token", 128),
+            optionalText("last_error"), requiredInstant("created_at"), optionalInstant("submitted_at"),
+            optionalInstant("finished_at"), requiredInstant("updated_at"),
         ),
         table(
             "device_push_targets",
@@ -443,6 +530,7 @@ internal object FreshSchemaContract {
             "account_id", "category_id", "group_normalized_name", "normalized_name",
         ),
         key("party_preset_members", "uk_party_preset_members_preset_slot", "preset_id", "slot_index"),
+        key("party_presets", "uk_party_presets_account_primary_marker", "account_id", "primary_marker"),
         key("automation_profile_maps", "uk_automation_profile_maps_profile_map", "profile_id", "battle_map_id"),
         key("automation_module_maps", "uk_automation_module_maps_module_map", "module_config_id", "battle_map_id"),
         key(
@@ -455,6 +543,51 @@ internal object FreshSchemaContract {
         ),
         key("automation_action_runs", "uk_automation_action_runs_request_key", "request_key"),
         key("automation_outbox", "uk_automation_outbox_event_id", "event_id"),
+        key("automation_entries", "uk_automation_entries_account_type", "account_id", "automation_type"),
+        key(
+            "quest_automation_selections", "uk_quest_automation_selections_entry_quest",
+            "automation_entry_id", "quest_code",
+        ),
+        key(
+            "quest_automation_maps", "uk_quest_automation_maps_selection_mission_map",
+            "quest_selection_id", "mission_key", "category_id", "map_code",
+        ),
+        key(
+            "quest_automation_cycles", "uk_quest_automation_cycles_account_quest",
+            "account_id", "quest_code",
+        ),
+        key(
+            "quest_automation_processed_results", "uk_quest_automation_processed_results_identity",
+            "account_id", "result_identity",
+        ),
+        key(
+            "quest_map_execution_counters", "uk_quest_map_execution_counters_identity",
+            "account_id", "quest_code", "quest_cycle", "mission_key", "category_id", "map_code",
+        ),
+        key(
+            "battle_automation_maps", "uk_battle_automation_maps_entry_map",
+            "automation_entry_id", "category_id", "map_code",
+        ),
+        key(
+            "battle_automation_daily_progress", "uk_battle_automation_daily_progress_identity",
+            "account_id", "progress_date", "category_id", "map_code", "source",
+        ),
+        key(
+            "battle_automation_processed_results", "uk_battle_automation_processed_results_identity",
+            "account_id", "result_identity",
+        ),
+        key(
+            "battle_automation_processed_results", "uk_battle_automation_processed_results_execution",
+            "account_id", "execution_identity",
+        ),
+        key(
+            "adventure_automation_maps", "uk_adventure_automation_maps_entry_map",
+            "automation_entry_id", "category_id", "map_code",
+        ),
+        key("adventure_daily_refresh", "uk_adventure_daily_refresh_account_date", "account_id", "refresh_date"),
+        key(
+            "adventure_daily_preflight_states", "uk_adventure_daily_preflight_states_account", "account_id",
+        ),
         key(
             "device_push_targets", "uk_device_push_targets_account_installation", "account_id", "installation_id",
         ),
@@ -463,6 +596,7 @@ internal object FreshSchemaContract {
             "battle_log_loots", "uk_battle_log_loots_log_display_order", "battle_log_id", "display_order",
         ),
         key("captcha_form_fields", "uk_captcha_form_fields_challenge_name", "challenge_id", "field_name"),
+        key("typed_automation_action_runs", "uk_typed_action_execution", "account_id", "execution_identity"),
     )
 
     private val FOREIGN_KEYS = listOf(
@@ -558,6 +692,63 @@ internal object FreshSchemaContract {
             "fk_automation_outbox_account", "automation_outbox.account_id",
             "hof_accounts.id", DeleteAction.CASCADE,
         ),
+        fk("fk_automation_entries_account", "automation_entries.account_id", "hof_accounts.id", DeleteAction.CASCADE),
+        fk(
+            "fk_quest_automation_selections_entry", "quest_automation_selections.automation_entry_id",
+            "automation_entries.id", DeleteAction.CASCADE,
+        ),
+        fk(
+            "fk_quest_automation_maps_selection", "quest_automation_maps.quest_selection_id",
+            "quest_automation_selections.id", DeleteAction.CASCADE,
+        ),
+        fk(
+            "fk_quest_automation_maps_party_preset", "quest_automation_maps.party_preset_id",
+            "party_presets.id", DeleteAction.SET_NULL,
+        ),
+        fk(
+            "fk_quest_automation_cycles_account", "quest_automation_cycles.account_id",
+            "hof_accounts.id", DeleteAction.CASCADE,
+        ),
+        fk(
+            "fk_quest_automation_processed_results_account", "quest_automation_processed_results.account_id",
+            "hof_accounts.id", DeleteAction.CASCADE,
+        ),
+        fk(
+            "fk_quest_map_execution_counters_account", "quest_map_execution_counters.account_id",
+            "hof_accounts.id", DeleteAction.CASCADE,
+        ),
+        fk(
+            "fk_battle_automation_maps_entry", "battle_automation_maps.automation_entry_id",
+            "automation_entries.id", DeleteAction.CASCADE,
+        ),
+        fk(
+            "fk_battle_automation_maps_party_preset", "battle_automation_maps.party_preset_id",
+            "party_presets.id", DeleteAction.SET_NULL,
+        ),
+        fk(
+            "fk_battle_automation_daily_progress_account", "battle_automation_daily_progress.account_id",
+            "hof_accounts.id", DeleteAction.CASCADE,
+        ),
+        fk(
+            "fk_battle_automation_processed_results_account", "battle_automation_processed_results.account_id",
+            "hof_accounts.id", DeleteAction.CASCADE,
+        ),
+        fk(
+            "fk_adventure_automation_maps_entry", "adventure_automation_maps.automation_entry_id",
+            "automation_entries.id", DeleteAction.CASCADE,
+        ),
+        fk(
+            "fk_adventure_automation_maps_party_preset", "adventure_automation_maps.party_preset_id",
+            "party_presets.id", DeleteAction.SET_NULL,
+        ),
+        fk(
+            "fk_adventure_daily_refresh_account", "adventure_daily_refresh.account_id",
+            "hof_accounts.id", DeleteAction.CASCADE,
+        ),
+        fk(
+            "fk_adventure_daily_preflight_states_account", "adventure_daily_preflight_states.account_id",
+            "hof_accounts.id", DeleteAction.CASCADE,
+        ),
         fk(
             "fk_account_automation_leases_account", "account_automation_leases.account_id",
             "hof_accounts.id", DeleteAction.CASCADE,
@@ -578,6 +769,10 @@ internal object FreshSchemaContract {
         ),
         fk("fk_battle_log_loots_log", "battle_log_loots.battle_log_id", "battle_logs.id", DeleteAction.CASCADE),
         fk("fk_captcha_challenges_account", "captcha_challenges.account_id", "hof_accounts.id", DeleteAction.CASCADE),
+        fk("fk_typed_runtime_account", "typed_automation_runtime_states.account_id", "hof_accounts.id", DeleteAction.CASCADE),
+        fk("fk_typed_runtime_stop_action", "typed_automation_runtime_states.stop_action_id", "typed_automation_action_runs.id", DeleteAction.SET_NULL),
+        fk("fk_typed_action_account", "typed_automation_action_runs.account_id", "hof_accounts.id", DeleteAction.CASCADE),
+        fk("fk_typed_action_entry", "typed_automation_action_runs.automation_entry_id", "automation_entries.id", DeleteAction.SET_NULL),
         fk(
             "fk_captcha_challenges_automation_action", "captcha_challenges.automation_action_run_id",
             "automation_action_runs.id", DeleteAction.SET_NULL,
@@ -662,6 +857,57 @@ internal object FreshSchemaContract {
             "automation_outbox", "idx_automation_outbox_unpublished",
             "published_at", "available_at", "id",
         ),
+        index("automation_entries", "idx_automation_entries_account_priority", "account_id", "priority", "id"),
+        index(
+            "quest_automation_selections", "idx_quest_automation_selections_entry_order",
+            "automation_entry_id", "source_order", "id",
+        ),
+        index(
+            "quest_automation_maps", "idx_quest_automation_maps_selection_order",
+            "quest_selection_id", "execution_order", "id",
+        ),
+        index("quest_automation_maps", "idx_quest_automation_maps_identity", "category_id", "map_code", "id"),
+        index("quest_automation_maps", "idx_quest_automation_maps_party_preset", "party_preset_id", "id"),
+        index(
+            "quest_map_execution_counters", "idx_quest_map_execution_counters_account_cycle",
+            "account_id", "quest_cycle", "quest_code", "id",
+        ),
+        index(
+            "quest_map_execution_counters", "idx_quest_map_execution_counters_map_identity",
+            "category_id", "map_code", "id",
+        ),
+        index(
+            "battle_automation_maps", "idx_battle_automation_maps_entry_order",
+            "automation_entry_id", "execution_order", "id",
+        ),
+        index("battle_automation_maps", "idx_battle_automation_maps_identity", "category_id", "map_code", "id"),
+        index("battle_automation_maps", "idx_battle_automation_maps_party_preset", "party_preset_id", "id"),
+        index(
+            "battle_automation_daily_progress", "idx_battle_automation_daily_progress_account_date",
+            "account_id", "progress_date", "source", "id",
+        ),
+        index(
+            "battle_automation_daily_progress", "idx_battle_automation_daily_progress_map_identity",
+            "category_id", "map_code", "progress_date", "id",
+        ),
+        index(
+            "adventure_automation_maps", "idx_adventure_automation_maps_entry_order",
+            "automation_entry_id", "execution_order", "id",
+        ),
+        index("adventure_automation_maps", "idx_adventure_automation_maps_identity", "category_id", "map_code", "id"),
+        index("adventure_automation_maps", "idx_adventure_automation_maps_party_preset", "party_preset_id", "id"),
+        index(
+            "adventure_daily_refresh", "idx_adventure_daily_refresh_account_date",
+            "account_id", "refresh_date", "id",
+        ),
+        index(
+            "adventure_daily_preflight_states", "idx_adventure_daily_preflight_states_next_attempt",
+            "next_attempt_at", "account_id",
+        ),
+        index(
+            "adventure_daily_preflight_states", "idx_adventure_daily_preflight_states_in_flight",
+            "in_flight_until", "account_id",
+        ),
         index(
             "account_automation_leases", "idx_account_automation_leases_until",
             "lease_until", "account_id",
@@ -686,10 +932,20 @@ internal object FreshSchemaContract {
             "captcha_challenges", "idx_captcha_challenges_automation_action", "automation_action_run_id",
         ),
         index("captcha_form_fields", "idx_captcha_form_fields_challenge_order", "challenge_id", "field_order", "id"),
+        index("typed_automation_action_runs", "idx_typed_action_account_status", "account_id", "status", "updated_at", "id"),
     )
 
     private val CHECKS = listOf(
         check("characters", "ck_characters_pattern_slot_count", "pattern_slot_count >= 0"),
+        check("typed_automation_runtime_states", "ck_typed_runtime_lifecycle", "locate(',' || lifecycle_status || ',', ',RUNNING,PAUSED,STOPPED,') > 0"),
+        check("typed_automation_runtime_states", "ck_typed_runtime_stop", "(lifecycle_status = 'STOPPED' and stop_reason is not null) or (lifecycle_status <> 'STOPPED' and stop_reason is null)"),
+        check("typed_automation_runtime_states", "ck_typed_runtime_retry", "retry_attempt >= 0"),
+        check("typed_automation_runtime_states", "ck_typed_runtime_lease", "(lease_token is null and lease_until is null) or (lease_token is not null and lease_until is not null)"),
+        check("typed_automation_runtime_states", "ck_typed_runtime_stop_action", "lifecycle_status = 'STOPPED' or stop_action_id is null"),
+        check("typed_automation_action_runs", "ck_typed_action_status", "locate(',' || status || ',', ',PREPARED,SUBMITTING,SUCCEEDED,FAILED,AMBIGUOUS,') > 0"),
+        check("typed_automation_action_runs", "ck_typed_action_schema", "schema_version > 0"),
+        check("typed_automation_action_runs", "ck_typed_action_retry", "retry_attempt >= 0"),
+        check("typed_automation_action_runs", "ck_typed_action_fingerprint", "char_length(action_fingerprint) = 64"),
         check("character_status_lines", "ck_character_status_lines_order", "line_order >= 0"),
         check("character_action_patterns", "ck_character_action_patterns_row", "row_index >= 0"),
         check("character_position_choices", "ck_character_position_choices_order", "choice_order >= 0"),
@@ -734,6 +990,10 @@ internal object FreshSchemaContract {
             "required_time is null or required_time >= 0",
         ),
         check("party_preset_members", "ck_party_preset_members_slot", "slot_index between 0 and 4"),
+        check(
+            "party_presets", "ck_party_presets_primary_marker",
+            "(is_primary and primary_marker = 1) or (is_primary = false and primary_marker is null)",
+        ),
         check("automation_profile_maps", "ck_automation_profile_maps_execution_order", "execution_order >= 0"),
         check("automation_jobs", "ck_automation_jobs_current_step", "current_step_index >= 0"),
         check("automation_module_configs", "ck_automation_module_configs_priority", "priority >= 0"),
@@ -748,6 +1008,85 @@ internal object FreshSchemaContract {
             "execution_order >= 0",
         ),
         check("automation_action_runs", "ck_automation_action_runs_attempt_count", "attempt_count >= 0"),
+        check(
+            "automation_entries", "ck_automation_entries_type",
+            "case automation_type when 'QUEST' then true when 'BATTLE_MAP' then true " +
+                "when 'ADVENTURE_MAP' then true else false end",
+        ),
+        check("automation_entries", "ck_automation_entries_priority", "priority >= 0"),
+        check(
+            "quest_automation_selections", "ck_quest_automation_selections_source_order", "source_order >= 0",
+        ),
+        check(
+            "quest_automation_maps", "ck_quest_automation_maps_preset_mode",
+            "case preset_mode when 'PRIMARY' then true when 'EXPLICIT' then true else false end",
+        ),
+        check("quest_automation_maps", "ck_quest_automation_maps_execution_order", "execution_order >= 0"),
+        check(
+            "quest_automation_cycles", "ck_quest_automation_cycles_current_cycle",
+            "current_cycle > cast(0 as bigint)",
+        ),
+        check(
+            "quest_automation_processed_results", "ck_quest_automation_processed_results_identity",
+            "char_length(trim(result_identity)) between 1 and 128",
+        ),
+        check(
+            "quest_automation_processed_results", "ck_quest_automation_processed_results_fingerprint",
+            "char_length(action_fingerprint) = 64",
+        ),
+        check(
+            "quest_automation_processed_results", "ck_quest_automation_processed_results_kind_value",
+            "case result_kind when 'ACCEPT' then result_value is not null and cast(result_value as bigint) > 0 " +
+                "when 'BATTLE_VICTORY' then result_value is null else false end",
+        ),
+        check(
+            "quest_map_execution_counters", "ck_quest_map_execution_counters_successful_runs",
+            "successful_runs >= 0",
+        ),
+        check("battle_automation_maps", "ck_battle_automation_maps_daily_target", "daily_target_count > 0"),
+        check(
+            "battle_automation_maps", "ck_battle_automation_maps_preset_mode",
+            "case preset_mode when 'PRIMARY' then true when 'EXPLICIT' then true else false end",
+        ),
+        check("battle_automation_maps", "ck_battle_automation_maps_execution_order", "execution_order >= 0"),
+        check(
+            "battle_automation_daily_progress", "ck_battle_automation_daily_progress_successful_runs",
+            "successful_runs >= 0",
+        ),
+        check(
+            "battle_automation_processed_results", "ck_battle_automation_processed_results_victories",
+            "victory_count between 0 and 3",
+        ),
+        check(
+            "battle_automation_processed_results", "ck_battle_automation_processed_results_result_identity",
+            "char_length(trim(result_identity)) between 1 and 128",
+        ),
+        check(
+            "battle_automation_processed_results", "ck_battle_automation_processed_results_execution_identity",
+            "char_length(trim(execution_identity)) between 1 and 128",
+        ),
+        check(
+            "battle_automation_processed_results", "ck_battle_automation_processed_results_action_fingerprint",
+            "char_length(action_fingerprint) = 64",
+        ),
+        check(
+            "battle_automation_processed_results", "ck_battle_automation_processed_results_outcome_fingerprint",
+            "char_length(outcome_fingerprint) = 64",
+        ),
+        check(
+            "adventure_automation_maps", "ck_adventure_automation_maps_preset_mode",
+            "case preset_mode when 'PRIMARY' then true when 'EXPLICIT' then true else false end",
+        ),
+        check("adventure_automation_maps", "ck_adventure_automation_maps_execution_order", "execution_order >= 0"),
+        check(
+            "adventure_daily_preflight_states", "ck_adventure_daily_preflight_states_attempts",
+            "failed_attempts >= 0",
+        ),
+        check(
+            "adventure_daily_preflight_states", "ck_adventure_daily_preflight_states_in_flight",
+            "case when in_flight_token is null and in_flight_until is null then true " +
+                "when in_flight_token is not null and in_flight_until is not null then true else false end",
+        ),
         check("battle_log_participants", "ck_battle_log_participants_slot", "slot_index >= 0"),
         check("battle_log_loots", "ck_battle_log_loots_order", "display_order >= 0"),
         check("battle_log_loots", "ck_battle_log_loots_quantity", "quantity > 0"),
@@ -793,6 +1132,7 @@ private enum class TypeFamily {
     VARCHAR,
     TEXT,
     BOOLEAN,
+    DATE,
     TIMESTAMP_WITH_TIME_ZONE,
     ;
 
@@ -805,6 +1145,7 @@ private enum class TypeFamily {
         VARCHAR -> dataType == Types.VARCHAR || dataType == Types.NVARCHAR
         TEXT -> (dataType == Types.VARCHAR || dataType == Types.LONGVARCHAR) && size > 300
         BOOLEAN -> dataType == Types.BOOLEAN || dataType == Types.BIT
+        DATE -> dataType == Types.DATE
         TIMESTAMP_WITH_TIME_ZONE -> dataType == Types.TIMESTAMP_WITH_TIMEZONE
     }
 }
@@ -881,6 +1222,7 @@ private fun optionalVarchar(name: String, length: Int = 255): ColumnContract =
 private fun requiredText(name: String): ColumnContract = ColumnContract(name, TypeFamily.TEXT, nullable = false)
 private fun optionalText(name: String): ColumnContract = ColumnContract(name, TypeFamily.TEXT, nullable = true)
 private fun requiredBoolean(name: String): ColumnContract = ColumnContract(name, TypeFamily.BOOLEAN, nullable = false)
+private fun requiredDate(name: String): ColumnContract = ColumnContract(name, TypeFamily.DATE, nullable = false)
 private fun requiredInstant(name: String): ColumnContract =
     ColumnContract(name, TypeFamily.TIMESTAMP_WITH_TIME_ZONE, nullable = false)
 private fun optionalInstant(name: String): ColumnContract =

@@ -222,6 +222,11 @@ class BattleMapQueryRepository(
             .filter { state -> state.battleMap.categoryId to state.battleMap.mapCode in requestedPairs }
     }
 
+    fun findAllStatesForExecution(accountId: Long): List<AccountBattleMapStateEntity> = stateQuery()
+        .where(accountBattleMapStateEntity.account.id.eq(accountId))
+        .orderBy(battleMapEntity.categoryId.asc(), battleMapEntity.mapCode.asc(), battleMapEntity.id.asc())
+        .fetch()
+
     /** 계정/카테고리/그룹/이름 정규화 정체성이 일치하는 미해결 행을 조회한다. */
     fun findUnresolvedByIdentity(
         accountId: Long,

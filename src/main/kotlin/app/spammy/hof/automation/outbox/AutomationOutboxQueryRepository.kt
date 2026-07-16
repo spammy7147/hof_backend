@@ -10,11 +10,16 @@ import org.springframework.stereotype.Repository
 class AutomationOutboxQueryRepository(
     private val queryFactory: JPAQueryFactory,
 ) {
-    fun findUnpublished(now: Instant, limit: Long = 100): List<AutomationOutboxEntity> =
+    fun findUnpublished(
+        now: Instant,
+        limit: Long = 100,
+        topics: Collection<String>? = null,
+    ): List<AutomationOutboxEntity> =
         queryFactory.selectFrom(automationOutboxEntity)
             .where(
                 automationOutboxEntity.publishedAt.isNull,
                 automationOutboxEntity.availableAt.loe(now),
+                topics?.let { automationOutboxEntity.topic.`in`(it) },
             )
             .orderBy(automationOutboxEntity.id.asc())
             .limit(limit)

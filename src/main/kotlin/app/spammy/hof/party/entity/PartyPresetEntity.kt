@@ -38,4 +38,31 @@ class PartyPresetEntity(
 
     @Column(name = "updated_at", nullable = false)
     var updatedAt: Instant,
-)
+
+    isPrimary: Boolean = false,
+) {
+    @Column(name = "is_primary", nullable = false)
+    var isPrimary: Boolean = isPrimary
+        protected set(value) {
+            field = value
+            primaryMarker = if (value) PRIMARY_MARKER else null
+        }
+
+    @Column(name = "primary_marker")
+    var primaryMarker: Int? = if (isPrimary) PRIMARY_MARKER else null
+        protected set
+
+    /** 기본 프리셋 상태와 portable unique marker를 하나의 변경으로 유지한다. */
+    fun markPrimary() {
+        isPrimary = true
+    }
+
+    /** 기본 프리셋 상태를 해제하면서 unique marker도 함께 비운다. */
+    fun clearPrimary() {
+        isPrimary = false
+    }
+
+    companion object {
+        private const val PRIMARY_MARKER = 1
+    }
+}

@@ -1,0 +1,45 @@
+package app.spammy.hof.automation.repository
+
+import app.spammy.hof.automation.entity.AdventureAutomationMapEntity
+import app.spammy.hof.automation.entity.AdventureDailyRefreshEntity
+import app.spammy.hof.automation.entity.AdventureDailyPreflightStateEntity
+import app.spammy.hof.automation.entity.AutomationEntryEntity
+import app.spammy.hof.automation.entity.BattleAutomationDailyProgressEntity
+import app.spammy.hof.automation.entity.BattleAutomationMapEntity
+import app.spammy.hof.automation.entity.BattleAutomationProcessedResultEntity
+import app.spammy.hof.automation.entity.QuestAutomationMapEntity
+import app.spammy.hof.automation.entity.QuestAutomationCycleEntity
+import app.spammy.hof.automation.entity.QuestAutomationProcessedResultEntity
+import app.spammy.hof.automation.entity.QuestAutomationSelectionEntity
+import app.spammy.hof.automation.entity.QuestMapExecutionCounterEntity
+import app.spammy.hof.automation.entity.TypedAutomationActionRunEntity
+import app.spammy.hof.automation.entity.TypedAutomationRuntimeStateEntity
+import app.spammy.hof.common.persistence.CommandRepository
+
+interface AutomationEntryCommandRepository : CommandRepository<AutomationEntryEntity, Long>
+
+interface QuestAutomationSelectionCommandRepository : CommandRepository<QuestAutomationSelectionEntity, Long>
+
+interface QuestAutomationMapCommandRepository : CommandRepository<QuestAutomationMapEntity, Long>
+
+interface QuestAutomationCycleCommandRepository : CommandRepository<QuestAutomationCycleEntity, Long>
+
+interface QuestAutomationProcessedResultCommandRepository : CommandRepository<QuestAutomationProcessedResultEntity, Long>
+
+interface QuestMapExecutionCounterCommandRepository : CommandRepository<QuestMapExecutionCounterEntity, Long>
+
+interface BattleAutomationMapCommandRepository : CommandRepository<BattleAutomationMapEntity, Long>
+
+interface BattleAutomationDailyProgressCommandRepository : CommandRepository<BattleAutomationDailyProgressEntity, Long>
+
+interface BattleAutomationProcessedResultCommandRepository : CommandRepository<BattleAutomationProcessedResultEntity, Long>
+
+interface AdventureAutomationMapCommandRepository : CommandRepository<AdventureAutomationMapEntity, Long>
+
+interface AdventureDailyRefreshCommandRepository : CommandRepository<AdventureDailyRefreshEntity, Long>
+
+interface AdventureDailyPreflightStateCommandRepository : CommandRepository<AdventureDailyPreflightStateEntity, Long>
+
+interface TypedAutomationRuntimeStateCommandRepository : CommandRepository<TypedAutomationRuntimeStateEntity, Long>
+
+interface TypedAutomationActionRunCommandRepository : CommandRepository<TypedAutomationActionRunEntity, Long>

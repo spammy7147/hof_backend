@@ -54,6 +54,16 @@ class PartyPresetController(
         presetService.update(accountId = accountId, presetId = presetId, request = request)
 
     /**
+     * 소유한 파티 프리셋을 계정의 기본 프리셋으로 지정한다.
+     */
+    @PostMapping("/{presetId}/primary")
+    fun makePrimary(
+        @CurrentAccountId accountId: Long,
+        @PathVariable presetId: Long,
+    ): PartyPresetResponse =
+        presetService.makePrimary(accountId = accountId, presetId = presetId)
+
+    /**
      * 파티 프리셋을 삭제한다.
      */
     @DeleteMapping("/{presetId}")

@@ -1,6 +1,7 @@
 package app.spammy.hof.automation.adapter
 
 import app.spammy.hof.automation.port.AutomationWakeupPort
+import app.spammy.hof.automation.outbox.LocalAutomationWakeExecutor
 import app.spammy.hof.automation.service.UnifiedAutomationRunner
 import jakarta.annotation.PreDestroy
 import java.time.Duration
@@ -12,6 +13,16 @@ import java.util.concurrent.TimeUnit
 import org.springframework.beans.factory.ObjectProvider
 import org.springframework.context.annotation.Profile
 import org.springframework.stereotype.Component
+
+@Component
+@Profile("!docker & !kafka")
+class UnifiedAutomationLocalWakeExecutor(
+    private val runner: UnifiedAutomationRunner,
+) : LocalAutomationWakeExecutor {
+    override fun execute(accountId: Long, reason: String) {
+        runner.runOne(accountId)
+    }
+}
 
 @Component
 @Profile("!docker & !kafka")

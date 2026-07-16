@@ -184,6 +184,21 @@ class BattleRunServiceTest {
     }
 
     @Test
+    fun runBattleRejectsThreeBattlesWhenTheAccountMapStateHasNotObservedThatControl() {
+        Mockito.`when`(accountQueryRepository.findById(1L)).thenReturn(account)
+        Mockito.`when`(
+            battleMapQueryRepository.findStateForExecution(1L, "battle_map", "snow22"),
+        ).thenReturn(battleMapState(supportsThreeBattles = false))
+
+        val error = assertFailsWith<ApiException> {
+            service.runBattle(1L, runRequest().copy(battleCount = 3))
+        }
+
+        assertEquals(ErrorCode.INVALID_REQUEST, error.errorCode)
+        assertTrue(gateway.requests.isEmpty())
+    }
+
+    @Test
     fun runBattleLoadsRequestedPatternThenPostsBattleAndParsesResult() {
         Mockito.`when`(accountQueryRepository.findById(1L)).thenReturn(account)
         Mockito.`when`(cookieQueryRepository.findValueMapByAccountId(1L))
@@ -446,6 +461,7 @@ class BattleRunServiceTest {
         attemptRemaining: Int? = null,
         winRemaining: Int? = null,
         cooldownUntil: Instant? = null,
+        supportsThreeBattles: Boolean = true,
     ): AccountBattleMapStateEntity =
         AccountBattleMapStateEntity(
             account = account,
@@ -464,6 +480,7 @@ class BattleRunServiceTest {
             attemptRemaining = attemptRemaining,
             winRemaining = winRemaining,
             cooldownUntil = cooldownUntil,
+            supportsThreeBattles = supportsThreeBattles,
             rawHref = "index.php?common=snow22",
             visible = visible,
             lastSeenAt = now,

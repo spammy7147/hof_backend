@@ -1,17 +1,35 @@
 package app.spammy.hof.battle.service
 
-import app.spammy.hof.account.entity.HofCookieEntity
 import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.CookieQueryRepository
 import app.spammy.hof.battle.dto.BattleMapResponse
 import app.spammy.hof.battle.model.BattleCategoryId
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
+import app.spammy.hof.captcha.service.CaptchaService
 import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.client.HofRequestFactory
+import app.spammy.hof.external.model.HofBattleMap
 import app.spammy.hof.external.parser.BattleMapParser
+import app.spammy.hof.external.parser.LoginStateParser
+import java.io.IOException
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
+
+/** Precise failure contract consumed by the account-wide automation preflight. */
+sealed class AdventureMapRefreshException(
+    message: String,
+    cause: Throwable? = null,
+) : RuntimeException(message, cause) {
+    class Retryable(message: String, cause: Throwable? = null) : AdventureMapRefreshException(message, cause)
+    class Fatal(message: String, cause: Throwable? = null) : AdventureMapRefreshException(message, cause)
+}
+
+/** Immutable, side-effect-free result of fetching and parsing the authenticated adventure page. */
+data class AdventureMapSnapshot(
+    val accountId: Long,
+    val observations: List<HofBattleMap>,
+)
 
 @Service
 /**
@@ -28,6 +46,8 @@ class BattleMapService(
     private val gateway: HofGateway,
     private val battleMapParser: BattleMapParser,
     private val catalogService: BattleMapCatalogService,
+    private val loginStateParser: LoginStateParser,
+    private val captchaService: CaptchaService,
 ) {
     private val log = LoggerFactory.getLogger(BattleMapService::class.java)
 
@@ -38,6 +58,52 @@ class BattleMapService(
         accountId: Long,
         categoryId: String,
     ): List<BattleMapResponse> {
+        val snapshot = fetchMapSnapshot(accountId, categoryId, requireObservations = false)
+        if (snapshot.observations.isEmpty()) {
+            return catalogService.findVisibleByCategory(accountId, snapshot.category.value).map(BattleMapResponse::from)
+        }
+        return synchronizeSnapshot(snapshot)
+    }
+
+    /**
+     * Performs the authenticated `?sp_hunt` refresh used by the automation daily gate. Unlike the read endpoint,
+     * an empty/unparseable page is a failed refresh because no observed account state was synchronized.
+     */
+    fun refreshAdventureMaps(accountId: Long): List<BattleMapResponse> =
+        synchronizeAdventureMapSnapshot(fetchAdventureMapSnapshot(accountId))
+
+    /** Performs only account/cookie reads plus network fetch and parsing; it never writes map state. */
+    fun fetchAdventureMapSnapshot(accountId: Long): AdventureMapSnapshot = try {
+        val fetched = fetchMapSnapshot(accountId, BattleCategoryId.ADVENTURE_MAP.value, requireObservations = true)
+        AdventureMapSnapshot(accountId = fetched.accountId, observations = fetched.observations.toList())
+    } catch (error: Exception) {
+        if (error.hasInterruption()) {
+            Thread.currentThread().interrupt()
+            if (error is AdventureMapRefreshException.Fatal) throw error
+            throw AdventureMapRefreshException.Fatal("HOF 모험 맵 요청이 중단되었습니다.", error)
+        }
+        error.nearestTypedFailure()?.let { throw it }
+        if (error.hasTransportFailure()) {
+            throw AdventureMapRefreshException.Retryable("HOF 모험 맵 요청 중 네트워크 오류가 발생했습니다.", error)
+        }
+        throw AdventureMapRefreshException.Fatal("HOF 모험 맵 새로고침에 실패했습니다.", error)
+    }
+
+    /** Applies a previously parsed snapshot. Callers may include this in their own token-fenced transaction. */
+    fun synchronizeAdventureMapSnapshot(snapshot: AdventureMapSnapshot): List<BattleMapResponse> {
+        val fetched = BattleMapSnapshot(
+            accountId = snapshot.accountId,
+            category = BattleCategoryId.ADVENTURE_MAP,
+            observations = snapshot.observations,
+        )
+        return synchronizeSnapshot(fetched)
+    }
+
+    private fun fetchMapSnapshot(
+        accountId: Long,
+        categoryId: String,
+        requireObservations: Boolean,
+    ): BattleMapSnapshot {
         val category = BattleCategoryId.fromValue(categoryId)
             ?: throw ApiException(ErrorCode.INVALID_REQUEST, "지원하지 않는 전투 카테고리입니다.")
         val source = category.toSource()
@@ -67,6 +133,23 @@ class BattleMapService(
                 )
             }
             ?: response
+        if (requireObservations && mapPageResponse.statusCode !in 200..299) {
+            if (mapPageResponse.statusCode in 500..599) {
+                throw AdventureMapRefreshException.Retryable(
+                    "HOF 모험 맵 서버가 일시적으로 응답하지 않습니다. status=${mapPageResponse.statusCode}",
+                )
+            }
+            throw AdventureMapRefreshException.Fatal(
+                "HOF 모험 맵 요청이 거부되었습니다. status=${mapPageResponse.statusCode}",
+            )
+        }
+        val login = loginStateParser.parse(mapPageResponse.body)
+        if (login.hasLoginForm && !login.isLoggedIn) {
+            throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "HOF 로그인 세션이 만료되었습니다.")
+        }
+        if (captchaService.detectAndRecord(account, mapPageResponse.body, mapPageResponse.finalUrl) != null) {
+            throw ApiException(ErrorCode.CAPTCHA_REQUIRED, "캡차 또는 통행증 입력이 필요합니다.")
+        }
         val maps = battleMapParser.parse(
             categoryId = category.value,
             queryName = source.mapQuery,
@@ -88,10 +171,19 @@ class BattleMapService(
                 category.value,
                 mapPageResponse.statusCode,
             )
-            return catalogService.findVisibleByCategory(account.id, category.value).map(BattleMapResponse::from)
+            if (requireObservations) {
+                throw AdventureMapRefreshException.Fatal("HOF 모험 맵 응답에서 상태를 확인하지 못했습니다.")
+            }
         }
 
-        return catalogService.synchronizeCategory(account, category.value, maps).map(BattleMapResponse::from)
+        return BattleMapSnapshot(account.id, category, maps.toList())
+    }
+
+    private fun synchronizeSnapshot(snapshot: BattleMapSnapshot): List<BattleMapResponse> {
+        val account = accountQueryRepository.findById(snapshot.accountId)
+            ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
+        return catalogService.synchronizeCategory(account, snapshot.category.value, snapshot.observations)
+            .map(BattleMapResponse::from)
     }
 
     /**
@@ -115,4 +207,19 @@ class BattleMapService(
         val mapQuery: String,
         val detailPageQuery: String? = null,
     )
+
+    private data class BattleMapSnapshot(
+        val accountId: Long,
+        val category: BattleCategoryId,
+        val observations: List<HofBattleMap>,
+    )
+
+    private fun Throwable.causes(): Sequence<Throwable> = generateSequence(this) { it.cause }
+
+    private fun Throwable.hasInterruption(): Boolean = causes().any { it is InterruptedException }
+
+    private fun Throwable.nearestTypedFailure(): AdventureMapRefreshException? =
+        causes().filterIsInstance<AdventureMapRefreshException>().firstOrNull()
+
+    private fun Throwable.hasTransportFailure(): Boolean = causes().any { it is IOException }
 }

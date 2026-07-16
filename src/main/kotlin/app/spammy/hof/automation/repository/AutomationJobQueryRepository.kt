@@ -3,7 +3,6 @@ package app.spammy.hof.automation.repository
 import app.spammy.hof.automation.entity.AutomationJobEntity
 import app.spammy.hof.automation.entity.QAutomationJobEntity.automationJobEntity
 import app.spammy.hof.automation.entity.QAutomationProfileEntity.automationProfileEntity
-import app.spammy.hof.automation.entity.QAutomationModuleConfigEntity.automationModuleConfigEntity
 import com.querydsl.jpa.impl.JPAQueryFactory
 import jakarta.persistence.LockModeType
 import org.springframework.stereotype.Repository
@@ -121,9 +120,26 @@ class AutomationJobQueryRepository(
         return (runnable + dueConfig).distinctBy { it.id }
     }
 
+    /** Scalar recovery projection avoids carrying lazy JPA entities beyond the read transaction. */
+    fun findRecoverableAccountIds(now: Instant): List<Long> {
+        val runnable = queryFactory.select(automationJobEntity.account.id)
+            .from(automationJobEntity)
+            .where(
+                automationJobEntity.status.`in`("PENDING", "RUNNING"),
+                automationJobEntity.nextRunAt.isNull.or(automationJobEntity.nextRunAt.loe(now)),
+            ).fetch()
+        val dueConfig = queryFactory.select(automationJobEntity.account.id)
+            .from(automationJobEntity)
+            .where(
+                automationJobEntity.status.eq("WAITING_CONFIG"),
+                automationJobEntity.nextRunAt.isNotNull,
+                automationJobEntity.nextRunAt.loe(now),
+            ).fetch()
+        return (runnable + dueConfig).distinct().sorted()
+    }
+
     private fun baseQuery() =
         queryFactory
             .selectFrom(automationJobEntity)
             .join(automationJobEntity.profile, automationProfileEntity).fetchJoin()
-            .leftJoin(automationJobEntity.currentModuleConfig, automationModuleConfigEntity).fetchJoin()
 }

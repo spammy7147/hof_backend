@@ -142,10 +142,78 @@ class BattleMapParser {
                     cooldownRemainingSeconds = cooldownRemaining?.seconds,
                     keyCount = keyCount,
                     requiredTime = parseRequiredTime(contextText),
+                    supportsThreeBattles = mapCode?.let {
+                        supportsThreeBattles(link, it, document.select("form"), queryPattern)
+                    },
                     iconUrl = link.selectFirst("img[src]")?.absUrl("src")?.ifBlank { null },
                     rawHref = rawHref,
                 )
             }
+    }
+
+    /**
+     * Parses one authenticated map-detail page. `null` means the page did not expose exactly one execution form
+     * for this map, so callers must preserve the prior observation instead of guessing or downgrading it.
+     */
+    fun observeThreeBattleCapability(
+        queryName: String,
+        mapCode: String,
+        html: String,
+        authoritativeCurrentMapCode: String? = null,
+    ): Boolean? {
+        val document = Jsoup.parse(html, HOF_BASE_URL)
+        val queryPattern = Regex("""[?&]${Regex.escape(queryName)}=([^&"'#\s]+)""")
+        val executionForm = document.select("form").singleOrNull { form ->
+            val action = form.attr("action").trim()
+            if (action.isEmpty()) {
+                authoritativeCurrentMapCode == mapCode
+            } else {
+                parseDirectMapCode(action, queryPattern) == mapCode
+            }
+        } ?: return null
+        return executionForm.supportsThreeBattleSubmit()
+    }
+
+    /** Capability is authoritative only when the real submit control belongs to this map's execution form. */
+    private fun supportsThreeBattles(
+        mapLink: Element,
+        mapCode: String,
+        forms: List<Element>,
+        queryPattern: Regex,
+    ): Boolean? {
+        val containingForm = mapLink.parents()
+            .firstOrNull { it.tagName() == "form" }
+            ?.takeIf { form ->
+                val actionMapCode = parseDirectMapCode(form.attr("action"), queryPattern)
+                actionMapCode == null || actionMapCode == mapCode
+            }
+        val executionForm = containingForm ?: forms.singleOrNull { form ->
+            parseDirectMapCode(form.attr("action"), queryPattern) == mapCode
+        } ?: return null
+
+        return executionForm.supportsThreeBattleSubmit()
+    }
+
+    private fun Element.supportsThreeBattleSubmit(): Boolean =
+        ownerDocument()
+            ?.select("[name=monster_battle_10]")
+            .orEmpty()
+            .any { control -> control.isThreeBattleSubmit() && control.belongsTo(this) }
+
+    private fun Element.isThreeBattleSubmit(): Boolean {
+        if (hasAttr("disabled")) return false
+        val type = attr("type").trim().lowercase()
+        return when (tagName()) {
+            "button" -> type.isBlank() || type == "submit"
+            "input" -> type == "submit"
+            else -> false
+        }
+    }
+
+    private fun Element.belongsTo(form: Element): Boolean {
+        val explicitFormId = attr("form").trim()
+        if (explicitFormId.isNotBlank()) return form.id().isNotBlank() && explicitFormId == form.id()
+        return parents().firstOrNull { it.tagName() == "form" } === form
     }
 
     /**

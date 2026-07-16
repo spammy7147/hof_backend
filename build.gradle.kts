@@ -69,6 +69,8 @@ allOpen {
 
 tasks.withType<Test> {
 	useJUnitPlatform()
+	// Bound unique Spring test contexts so the default 512 MB test worker does not retain the entire suite graph.
+	systemProperty("spring.test.context.cache.maxSize", "16")
 }
 
 tasks.register<JavaExec>("generateBattleMapSeed") {

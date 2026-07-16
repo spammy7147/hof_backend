@@ -1,37 +1,60 @@
 package app.spammy.hof.quest.parser
 
+import app.spammy.hof.quest.model.QuestMission
+import app.spammy.hof.quest.model.QuestMissionType
 import app.spammy.hof.quest.model.QuestProgress
+import app.spammy.hof.quest.model.QuestSection
 import app.spammy.hof.quest.model.QuestSnapshot
 import app.spammy.hof.quest.model.QuestState
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
+import java.util.Locale
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
+import org.jsoup.nodes.Node
+import org.jsoup.nodes.TextNode
 import org.springframework.stereotype.Component
 
 @Component
 class QuestPageParser {
     fun parse(html: String): List<QuestSnapshot> {
         val document = Jsoup.parse(html)
-        val snapshots = mutableListOf<QuestSnapshot>()
-
-        document.select("#contents table tr, table tr").forEach { row ->
-            parseElement(row, categoryOf(row.closest("table")))?.let(snapshots::add)
-        }
-        document.select("[data-quest-id]").forEach { block ->
-            if (block.closest("tr") == null) {
-                parseElement(block, categoryOf(block))?.let(snapshots::add)
+        val scope = document.selectFirst("#contents") ?: document
+        var sourceOrder = 0
+        val occurrences = scope.select("tr, [data-quest-id]")
+            .filter(::isTopLevelQuestNode)
+            .mapNotNull { element ->
+                parseElement(element, sectionOf(element))
+                    ?.copy(sourceOrder = sourceOrder++)
             }
-        }
 
-        return snapshots
+        return occurrences
             .groupBy(QuestSnapshot::questId)
-            .map { (_, duplicated) -> duplicated.maxBy { STATE_PRIORITY.getValue(it.state) } }
+            .map { (_, duplicates) -> duplicates.maxBy(::occurrencePriority) }
+            .sortedBy(QuestSnapshot::sourceOrder)
+    }
+
+    private fun occurrencePriority(snapshot: QuestSnapshot): Int = when {
+        snapshot.state == QuestState.CLAIMABLE -> 5
+        snapshot.section == QuestSection.ACTIVE -> 4
+        snapshot.section == QuestSection.AVAILABLE -> 3
+        snapshot.section == QuestSection.WAITING -> 2
+        snapshot.section == QuestSection.COMPLETED -> 1
+        else -> 0
+    }
+
+    private fun isTopLevelQuestNode(element: Element): Boolean {
+        val isRow = element.tagName().equals("tr", ignoreCase = true)
+        return element.parents().none { parent ->
+            parent.hasAttr("data-quest-id") ||
+                (!isRow && parent.tagName().equals("tr", ignoreCase = true))
+        }
     }
 
     private fun parseElement(
         element: Element,
-        category: String,
+        section: QuestSection?,
     ): QuestSnapshot? {
         val nameText = element.selectFirst("td.td7s")?.text()
             ?: element.selectFirst("h1, h2, h3, h4, [data-quest-name]")?.text()
@@ -41,60 +64,198 @@ class QuestPageParser {
         }
         if (questId.isBlank()) return null
 
-        val fullText = element.text().replace(WHITESPACE, " ").trim()
-        val actionLink = element.selectFirst("a[href*='action=']")
-        val actionHref = actionLink?.attr("href").orEmpty()
+        val normalizedName = normalize(nameText.replace(QUEST_ID, ""))
+        val actionHref = element.selectFirst("a[href*='action=']")?.attr("href").orEmpty()
+        val formAction = element.selectFirst("form[action*='action=']")?.attr("action").orEmpty()
+        val actionControl = element.selectFirst("[name=complete], [name=get]")
         val action = ACTION.find(actionHref)?.groupValues?.get(1)
+            ?: ACTION.find(formAction)?.groupValues?.get(1)
             ?: element.selectFirst("[name=complete]")?.let { "complete" }
             ?: element.selectFirst("[name=get]")?.let { "get" }
-        val progress = PROGRESS.find(fullText)?.let { match ->
-            QuestProgress(
-                current = match.groupValues[1].toInt(),
-                target = match.groupValues[2].toInt(),
+        val resolvedSection = section ?: sectionFromAction(action)
+        val missionTexts = missionTexts(element)
+        val missions = missionTexts.map { text ->
+            parseMission(
+                questId = questId,
+                text = text,
+                hasCompleteAction = action == "complete",
             )
         }
         val state = when {
+            resolvedSection == QuestSection.COMPLETED -> QuestState.COMPLETED
+            resolvedSection == QuestSection.AVAILABLE -> QuestState.AVAILABLE
+            resolvedSection == QuestSection.WAITING -> QuestState.UNAVAILABLE
             action == "complete" -> QuestState.CLAIMABLE
-            action == "get" -> QuestState.AVAILABLE
-            category.contains("완료") || fullText.contains("완료한 퀘스트") -> QuestState.COMPLETED
-            category.contains("진행") || progress != null -> QuestState.ACTIVE
-            else -> QuestState.UNAVAILABLE
+            else -> QuestState.ACTIVE
         }
 
         return QuestSnapshot(
             questId = questId,
-            name = nameText.replace(QUEST_ID, "").trim(),
+            name = normalizedName,
             state = state,
-            progress = progress,
-            actionNo = NO_PARAMETER.find(actionHref)?.groupValues?.get(1)?.let(::decode),
+            section = resolvedSection,
+            sourceOrder = 0,
+            missions = missions,
+            actionNo = actionNo(
+                element = element,
+                actionControl = actionControl,
+                actionHref = actionHref,
+                formAction = formAction,
+            ),
         )
     }
 
-    private fun categoryOf(element: Element?): String {
-        var cursor = element?.previousElementSibling()
-        while (cursor != null) {
-            if (cursor.tagName().equals("h4", ignoreCase = true)) return cursor.text()
-            if (cursor.tagName().equals("table", ignoreCase = true)) return ""
-            cursor = cursor.previousElementSibling()
-        }
-        return ""
+    private fun actionNo(
+        element: Element,
+        actionControl: Element?,
+        actionHref: String,
+        formAction: String,
+    ): String? {
+        val encodedUrlValue = NO_PARAMETER.find(actionHref)?.groupValues?.get(1)
+            ?: NO_PARAMETER.find(formAction)?.groupValues?.get(1)
+        if (encodedUrlValue != null) return decodeUrlParameter(encodedUrlValue)
+
+        return actionControl?.closest("form")?.selectFirst("input[name=no]")?.attr("value")?.ifBlank { null }
+            ?: element.selectFirst("input[name=no]")?.attr("value")?.ifBlank { null }
     }
 
-    private fun decode(value: String): String =
+    private fun missionTexts(element: Element): List<String> {
+        val cells = element.select("td")
+            .filterNot { it.hasClass("td7s") || it.hasClass("td8s") }
+            .flatMap(::splitMissionSegments)
+        if (cells.isNotEmpty()) return cells
+
+        return splitMissionSegments(element)
+    }
+
+    private fun splitMissionSegments(element: Element): List<String> {
+        val segments = mutableListOf<String>()
+        val current = StringBuilder()
+
+        fun flush() {
+            val text = normalize(current.toString())
+            if (text.contains("미션")) segments += text
+            current.clear()
+        }
+
+        fun visit(node: Node) {
+            when (node) {
+                is TextNode -> current.append(node.wholeText)
+                is Element -> when {
+                    node.tagName().equals("br", ignoreCase = true) -> flush()
+                    node.normalName() in MISSION_BLOCK_TAGS -> {
+                        if (current.isNotBlank()) flush()
+                        node.childNodes().forEach(::visit)
+                        flush()
+                    }
+                    else -> node.childNodes().forEach(::visit)
+                }
+            }
+        }
+
+        element.childNodes().forEach(::visit)
+        flush()
+        return segments
+    }
+
+    private fun parseMission(
+        questId: String,
+        text: String,
+        hasCompleteAction: Boolean,
+    ): QuestMission {
+        val description = normalize(text.replaceFirst(MISSION_PREFIX, ""))
+        val type = when {
+            description.contains("즉시 완료") -> QuestMissionType.IMMEDIATE
+            description.contains("아이템 전달") || description.contains("아이템 반납") -> QuestMissionType.ITEM_TURN_IN
+            description.contains("몬스터 처치") -> QuestMissionType.MONSTER_KILL
+            description.contains("지역 클리어") || description.contains("맵 클리어") -> QuestMissionType.MAP_CLEAR
+            else -> QuestMissionType.OTHER
+        }
+        val progress = PROGRESS.find(description)?.let { match ->
+            QuestProgress(
+                current = match.groupValues[1].toInt(),
+                required = match.groupValues[2].toInt(),
+            )
+        }
+        val target = extractTarget(description)
+        val completable = type == QuestMissionType.IMMEDIATE ||
+            hasCompleteAction ||
+            progress?.let { it.current >= it.required } == true
+        val stableDescriptor = normalize(
+            PROGRESS.replace(description) { match ->
+                "[required=${match.groupValues[2]}]"
+            },
+        )
+
+        return QuestMission(
+            key = semanticMissionKey(questId, type, stableDescriptor),
+            type = type,
+            target = target,
+            progress = progress,
+            completable = completable,
+        )
+    }
+
+    private fun semanticMissionKey(
+        questId: String,
+        type: QuestMissionType,
+        stableDescriptor: String,
+    ): String {
+        // Identical descriptors intentionally share a key: no source qualifier exists to distinguish them stably.
+        val normalizedIdentity = stableDescriptor.lowercase(Locale.ROOT)
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(normalizedIdentity.toByteArray(StandardCharsets.UTF_8))
+            .joinToString("") { byte -> "%02x".format(byte) }
+            .take(16)
+        return "$questId:${type.name.lowercase(Locale.ROOT)}:$digest"
+    }
+
+    private fun extractTarget(description: String): String? {
+        val start = description.indexOf('(')
+        val end = description.lastIndexOf(')')
+        if (start < 0 || end <= start) return null
+        return normalize(description.substring(start + 1, end)).ifBlank { null }
+    }
+
+    private fun sectionOf(element: Element): QuestSection? {
+        val table = element.closest("table") ?: return null
+        var cursor = table.previousElementSibling()
+        while (cursor != null) {
+            if (cursor.tagName().equals("h4", ignoreCase = true)) return parseSection(cursor.text())
+            if (cursor.tagName().equals("table", ignoreCase = true)) return null
+            cursor = cursor.previousElementSibling()
+        }
+        return null
+    }
+
+    private fun parseSection(heading: String): QuestSection? = when {
+        heading.contains("진행") || heading.contains("ACTIVE", ignoreCase = true) -> QuestSection.ACTIVE
+        heading.contains("수락 가능") || heading.contains("AVAILABLE", ignoreCase = true) -> QuestSection.AVAILABLE
+        heading.contains("대기") || heading.contains("WAITING", ignoreCase = true) -> QuestSection.WAITING
+        heading.contains("완료") || heading.contains("COMPLETED", ignoreCase = true) -> QuestSection.COMPLETED
+        else -> null
+    }
+
+    private fun sectionFromAction(action: String?): QuestSection = when (action) {
+        "get" -> QuestSection.AVAILABLE
+        else -> QuestSection.ACTIVE
+    }
+
+    private fun normalize(value: String): String = value.replace(WHITESPACE, " ").trim()
+
+    private fun decodeUrlParameter(value: String): String = try {
         URLDecoder.decode(value, StandardCharsets.UTF_8)
+    } catch (_: IllegalArgumentException) {
+        value
+    }
 
     private companion object {
         val QUEST_ID = Regex("\\[([A-Za-z0-9_-]{4,})]")
         val PROGRESS = Regex("\\[\\s*(\\d+)\\s*/\\s*(\\d+)\\s*]")
         val ACTION = Regex("[?&]action=(get|complete)(?:[&#]|$)")
         val NO_PARAMETER = Regex("[?&]no=([^&\"'#\\s]+)")
+        val MISSION_PREFIX = Regex("^\\s*미션\\s*:\\s*")
         val WHITESPACE = Regex("\\s+")
-        val STATE_PRIORITY = mapOf(
-            QuestState.UNAVAILABLE to 0,
-            QuestState.COMPLETED to 1,
-            QuestState.AVAILABLE to 2,
-            QuestState.ACTIVE to 3,
-            QuestState.CLAIMABLE to 4,
-        )
+        val MISSION_BLOCK_TAGS = setOf("div", "li", "p")
     }
 }

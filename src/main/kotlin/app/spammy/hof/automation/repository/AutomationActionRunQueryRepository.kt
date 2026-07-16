@@ -3,7 +3,6 @@ package app.spammy.hof.automation.repository
 import app.spammy.hof.automation.entity.AutomationActionRunEntity
 import app.spammy.hof.automation.entity.QAutomationActionRunEntity.automationActionRunEntity
 import app.spammy.hof.automation.entity.QAutomationJobEntity.automationJobEntity
-import app.spammy.hof.automation.entity.QAutomationModuleConfigEntity.automationModuleConfigEntity
 import com.querydsl.jpa.impl.JPAQueryFactory
 import jakarta.persistence.LockModeType
 import org.springframework.stereotype.Repository
@@ -57,7 +56,6 @@ class AutomationActionRunQueryRepository(
 
     private fun baseQuery() = queryFactory.selectFrom(automationActionRunEntity)
         .join(automationActionRunEntity.job, automationJobEntity).fetchJoin()
-        .leftJoin(automationActionRunEntity.moduleConfig, automationModuleConfigEntity).fetchJoin()
 }
 
 /** action이 속한 job을 먼저 잠그기 위한 최소 무잠금 조회 결과다. */

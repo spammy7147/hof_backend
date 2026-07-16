@@ -85,6 +85,7 @@ class PartyPresetServiceTest {
         )
 
         assertEquals("범용 파티", response.name)
+        assertEquals(false, response.isPrimary)
         assertEquals(5L, queryRepository.countMembers(response.id))
         assertEquals(listOf(0, 1, 2, 3, 4), response.members.map { it.slotIndex })
         assertEquals("char-1", response.members.first().characterId)
@@ -140,6 +141,7 @@ class PartyPresetServiceTest {
             account.id,
             request("변경 전", characterId = "char-before", patternSlot = 0),
         )
+        service.makePrimary(account.id, created.id)
 
         val updated = service.update(
             account.id,
@@ -151,6 +153,7 @@ class PartyPresetServiceTest {
         )
 
         assertEquals("변경 후", updated.name)
+        assertEquals(true, updated.isPrimary)
         assertEquals(5L, queryRepository.countMembers(created.id))
         assertEquals("char-after", updated.members.first().characterId)
         assertEquals(1, updated.members.first().patternSlot)
@@ -283,6 +286,56 @@ class PartyPresetServiceTest {
 
         assertEquals(0L, queryRepository.countMembers(created.id))
         assertNull(queryRepository.findOwnedByAccountIdAndId(account.id, created.id))
+    }
+
+    @Test
+    fun selectingSecondPresetAsPrimaryClearsThePreviousPrimaryForTheAccount() {
+        val account = savedAccount("party-primary-switch")
+        val first = service.create(account.id, request("첫 번째"))
+        val second = service.create(account.id, request("두 번째"))
+
+        val firstSelected = service.makePrimary(account.id, first.id)
+        val secondSelected = service.makePrimary(account.id, second.id)
+        entityManager.flush()
+        entityManager.clear()
+
+        assertEquals(true, firstSelected.isPrimary)
+        assertEquals(true, secondSelected.isPrimary)
+        assertEquals(
+            mapOf(first.id to false, second.id to true),
+            service.findAll(account.id).associate { it.id to it.isPrimary },
+        )
+        assertEquals(second.id, queryRepository.findPrimaryByAccountId(account.id)?.id)
+    }
+
+    @Test
+    fun deletingPrimaryLeavesAccountWithoutAnImplicitReplacement() {
+        val account = savedAccount("party-primary-delete")
+        val remaining = service.create(account.id, request("남을 프리셋"))
+        val primary = service.create(account.id, request("삭제할 기본 프리셋"))
+        service.makePrimary(account.id, primary.id)
+
+        service.delete(account.id, primary.id)
+        entityManager.flush()
+        entityManager.clear()
+
+        assertNull(queryRepository.findPrimaryByAccountId(account.id))
+        assertEquals(false, service.findAll(account.id).single { it.id == remaining.id }.isPrimary)
+    }
+
+    @Test
+    fun makePrimaryEnforcesPresetOwnership() {
+        val owner = savedAccount("party-primary-owner")
+        val requester = savedAccount("party-primary-requester")
+        val foreignPreset = service.create(owner.id, request("다른 계정 프리셋"))
+
+        val exception = assertFailsWith<ApiException> {
+            service.makePrimary(requester.id, foreignPreset.id)
+        }
+
+        assertEquals(ErrorCode.RESOURCE_NOT_FOUND, exception.errorCode)
+        assertNull(queryRepository.findPrimaryByAccountId(owner.id))
+        assertNull(queryRepository.findPrimaryByAccountId(requester.id))
     }
 
     private fun savedAccount(loginId: String): HofAccountEntity =

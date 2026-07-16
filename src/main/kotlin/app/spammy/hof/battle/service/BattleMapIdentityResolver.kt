@@ -1,6 +1,7 @@
 package app.spammy.hof.battle.service
 
 import app.spammy.hof.battle.entity.BattleMapEntity
+import app.spammy.hof.battle.model.BattleMapIdentityNormalizer
 import app.spammy.hof.battle.repository.BattleMapQueryRepository
 import app.spammy.hof.external.model.HofBattleMap
 import org.springframework.stereotype.Component
@@ -33,4 +34,83 @@ class BattleMapIdentityResolver(
             aliases = queryRepository.findAliasesByCategoryId(observation.categoryId),
         )
     }
+
+    /** Resolves a quest mission target only when its conservative alias match identifies one map. */
+    fun resolveAlias(categoryId: String, target: String): BattleMapAliasResolution {
+        return resolveBattleMapAlias(target, loadAliasCandidates(categoryId))
+    }
+
+    /** DB-loading boundary used by callers before constructing a pure automation snapshot. */
+    fun loadAliasCandidates(categoryId: String): List<BattleMapIdentityCandidate> {
+        val aliasesByMapId = queryRepository.findAliasesByCategoryId(categoryId)
+            .groupBy { it.battleMap.id }
+        return queryRepository.findMapsByCategoryId(categoryId).map { map ->
+            BattleMapIdentityCandidate(
+                categoryId = map.categoryId,
+                mapCode = map.mapCode,
+                mapName = map.name,
+                aliases = aliasesByMapId[map.id].orEmpty().mapTo(linkedSetOf()) { it.alias },
+            )
+        }
+    }
+}
+
+data class BattleMapIdentityCandidate(
+    val categoryId: String,
+    val mapCode: String,
+    val mapName: String,
+    val aliases: Set<String>,
+)
+
+/** Pure target resolution over an immutable catalog snapshot; never performs repository I/O. */
+fun resolveBattleMapAlias(
+    target: String,
+    candidates: Collection<BattleMapIdentityCandidate>,
+): BattleMapAliasResolution {
+    val normalizedTarget = questTargetNormalize(target)
+    if (normalizedTarget.isBlank()) return BattleMapAliasResolution.Missing
+    val exactMatches = candidates.filter { candidate ->
+        sequenceOf(candidate.mapName)
+            .plus(candidate.aliases.asSequence())
+            .any { questTargetNormalize(it) == normalizedTarget }
+    }.distinctBy { it.categoryId to it.mapCode }
+    resolveUnique(exactMatches)?.let { return it }
+    if (exactMatches.size > 1) return BattleMapAliasResolution.Ambiguous
+
+    val derivedTargets = questTargetDerivedAliases(target)
+    val fallbackMatches = candidates.filter { candidate ->
+        sequenceOf(candidate.mapName)
+            .plus(candidate.aliases.asSequence())
+            .flatMap { questTargetDerivedAliases(it).asSequence() }
+            .any { it in derivedTargets }
+    }.distinctBy { it.categoryId to it.mapCode }
+    return resolveUnique(fallbackMatches) ?: when (fallbackMatches.size) {
+        0 -> BattleMapAliasResolution.Missing
+        else -> BattleMapAliasResolution.Ambiguous
+    }
+}
+
+private fun resolveUnique(matches: List<BattleMapIdentityCandidate>): BattleMapAliasResolution.Resolved? =
+    matches.singleOrNull()?.let {
+        BattleMapAliasResolution.Resolved(it.categoryId, it.mapCode, it.mapName)
+    }
+
+private val questTargetSeparatorPattern = Regex("""\s*[-/·]\s*""")
+
+private fun questTargetAliases(value: String): Set<String> =
+    BattleMapIdentityNormalizer.aliasValues(value).mapTo(linkedSetOf(), ::questTargetNormalize)
+
+private fun questTargetDerivedAliases(value: String): Set<String> {
+    val full = questTargetNormalize(value)
+    val derived = questTargetAliases(value).filterTo(linkedSetOf()) { it != full }
+    return derived.ifEmpty { setOf(full) }
+}
+
+private fun questTargetNormalize(value: String): String =
+    BattleMapIdentityNormalizer.normalize(value).replace(questTargetSeparatorPattern, " - ")
+
+sealed interface BattleMapAliasResolution {
+    data class Resolved(val categoryId: String, val mapCode: String, val mapName: String) : BattleMapAliasResolution
+    data object Missing : BattleMapAliasResolution
+    data object Ambiguous : BattleMapAliasResolution
 }

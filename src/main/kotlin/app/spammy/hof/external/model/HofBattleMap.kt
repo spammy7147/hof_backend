@@ -17,6 +17,8 @@ data class HofBattleMap(
     val cooldownRemainingSeconds: Long? = null,
     val keyCount: Int? = null,
     val requiredTime: Int? = null,
+    /** Null means this page did not contain an authoritative execution form for this map. */
+    val supportsThreeBattles: Boolean? = null,
     val enabled: Boolean = true,
     val resolved: Boolean = mapCode != null,
     val iconUrl: String? = null,

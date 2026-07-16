@@ -7,6 +7,7 @@ import app.spammy.hof.party.entity.PartyPresetMemberEntity
 import app.spammy.hof.party.entity.QPartyPresetEntity.partyPresetEntity
 import app.spammy.hof.party.entity.QPartyPresetMemberEntity.partyPresetMemberEntity
 import com.querydsl.jpa.impl.JPAQueryFactory
+import jakarta.persistence.LockModeType
 import org.springframework.stereotype.Repository
 
 /**
@@ -47,6 +48,27 @@ class PartyPresetQueryRepository(
                 partyPresetEntity.id.eq(presetId),
                 partyPresetEntity.account.id.eq(accountId),
             )
+            .fetchOne()
+
+    /** 계정에 지정된 기본 프리셋을 조회한다. */
+    fun findPrimaryByAccountId(accountId: Long): PartyPresetEntity? =
+        queryFactory
+            .selectFrom(partyPresetEntity)
+            .where(
+                partyPresetEntity.account.id.eq(accountId),
+                partyPresetEntity.isPrimary.isTrue,
+            )
+            .fetchOne()
+
+    /** 기본 프리셋을 교체하는 동안 기존 기본 row에 비관적 쓰기 잠금을 건다. */
+    fun findPrimaryByAccountIdForUpdate(accountId: Long): PartyPresetEntity? =
+        queryFactory
+            .selectFrom(partyPresetEntity)
+            .where(
+                partyPresetEntity.account.id.eq(accountId),
+                partyPresetEntity.isPrimary.isTrue,
+            )
+            .setLockMode(LockModeType.PESSIMISTIC_WRITE)
             .fetchOne()
 
     /** 계정과 요청 PK 집합이 모두 일치하는 프리셋을 ID 순서로 한 번에 조회한다. */

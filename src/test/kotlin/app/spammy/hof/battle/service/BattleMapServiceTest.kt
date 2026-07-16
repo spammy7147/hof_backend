@@ -18,21 +18,30 @@ import app.spammy.hof.battle.repository.BattleMapQueryRepository
 import app.spammy.hof.battle.repository.BattleMapRepository
 import app.spammy.hof.battle.repository.UnresolvedBattleMapCommandRepository
 import app.spammy.hof.common.persistence.QueryDslConfig
+import app.spammy.hof.common.error.ApiException
+import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.captcha.dto.CaptchaChallengeResponse
+import app.spammy.hof.captcha.service.CaptchaService
 import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
 import app.spammy.hof.external.parser.BattleMapParser
+import app.spammy.hof.external.parser.LoginStateParser
+import java.io.IOException
+import java.net.http.HttpTimeoutException
 import java.time.Instant
 import java.util.Base64
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import org.junit.jupiter.api.BeforeEach
+import org.mockito.Mockito
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
 import org.springframework.boot.test.context.TestConfiguration
@@ -51,6 +60,7 @@ import org.springframework.test.context.ActiveProfiles
     BattleMapCatalogService::class,
     BattleMapCatalogTransactionService::class,
     BattleMapService::class,
+    BattleMapCapabilityObservationService::class,
     BattleMapParser::class,
     HofRequestFactory::class,
     BattleMapServiceTest.TestConfig::class,
@@ -60,7 +70,13 @@ class BattleMapServiceTest {
     private lateinit var service: BattleMapService
 
     @Autowired
+    private lateinit var capabilityObservationService: BattleMapCapabilityObservationService
+
+    @Autowired
     private lateinit var gateway: FakeHofGateway
+
+    @Autowired
+    private lateinit var captchaService: CaptchaService
 
     @Autowired
     private lateinit var accountRepository: HofAccountRepository
@@ -83,6 +99,7 @@ class BattleMapServiceTest {
     @BeforeEach
     fun resetGateway() {
         gateway.reset()
+        Mockito.reset(captchaService)
     }
 
     @Test
@@ -111,6 +128,88 @@ class BattleMapServiceTest {
         assertEquals(listOf("index.php?sp_hunt#", "index.php?sp_hunt#"), maps.map { it.rawHref })
         assertEquals("Festival- 별빛 축제", festival.name)
         assertEquals("Noble's Mansion- 귀족 무도회", noble.name)
+    }
+
+    @Test
+    fun persistsObservedThreeBattleCapabilityAndReturnsItInTheResponse() {
+        val account = savedAccount("battle-map-three-capability")
+        gateway.defaultBody = """
+            <form method="post" action="index.php?common=three01">
+              <a href="index.php?common=three01">Three-capable map</a>
+              <input type="submit" name="monster_battle_10" value="Battle !">
+            </form>
+        """.trimIndent()
+
+        val response = service.findMaps(account.id, "battle_map").single()
+        val state = queryRepository.findStateForExecution(account.id, "battle_map", "three01")
+
+        assertTrue(response.supportsThreeBattles)
+        assertTrue(requireNotNull(state).supportsThreeBattles)
+    }
+
+    @Test
+    fun authoritativeDetailFormCanRefreshCapabilityWithoutGuessingFromAnUnrelatedPage() {
+        val account = savedAccount("battle-map-detail-capability")
+        gateway.defaultBody = """
+            <form action="index.php?common=detail01">
+              <a href="index.php?common=detail01">Detail map</a>
+              <button name="monster_battle">Battle one</button>
+            </form>
+        """.trimIndent()
+        service.findMaps(account.id, "battle_map")
+
+        assertEquals(
+            true,
+            capabilityObservationService.observeAuthenticatedDetail(
+                account.id,
+                "battle_map",
+                "common",
+                "detail01",
+                """
+                    <form action="index.php?common=detail01">
+                      <button name="monster_battle_10">Battle three</button>
+                    </form>
+                """.trimIndent(),
+            ),
+        )
+        assertTrue(requireNotNull(queryRepository.findStateForExecution(account.id, "battle_map", "detail01")).supportsThreeBattles)
+
+        assertNull(
+            capabilityObservationService.observeAuthenticatedDetail(
+                account.id, "battle_map", "common", "detail01",
+                "<form action='index.php?common=other'><button name='monster_battle_10'>Unrelated</button></form>",
+            ),
+        )
+        assertTrue(requireNotNull(queryRepository.findStateForExecution(account.id, "battle_map", "detail01")).supportsThreeBattles)
+    }
+
+    @Test
+    fun unknownCategoryRefreshPreservesCapabilityAndAuthoritativeSingleFormClearsIt() {
+        val account = savedAccount("battle-map-tristate-capability")
+        gateway.defaultBody = """
+            <form action="index.php?common=tri01">
+              <a href="index.php?common=tri01">Tri-state map</a>
+              <button name="monster_battle_10">Battle three</button>
+            </form>
+        """.trimIndent()
+        assertTrue(service.findMaps(account.id, "battle_map").single().supportsThreeBattles)
+
+        gateway.defaultBody = "<a href='index.php?common=tri01'>Tri-state map</a>"
+        assertTrue(service.findMaps(account.id, "battle_map").single().supportsThreeBattles)
+        assertTrue(requireNotNull(queryRepository.findStateForExecution(account.id, "battle_map", "tri01")).supportsThreeBattles)
+
+        gateway.defaultBody = """
+            <form action="index.php?common=tri01">
+              <a href="index.php?common=tri01">Tri-state map</a>
+              <button name="monster_battle">Battle one</button>
+            </form>
+        """.trimIndent()
+        assertFalse(service.findMaps(account.id, "battle_map").single().supportsThreeBattles)
+
+        val newAccount = savedAccount("battle-map-tristate-unknown")
+        gateway.defaultBody = "<a href='index.php?common=unknown01'>Unknown map</a>"
+        assertFalse(service.findMaps(newAccount.id, "battle_map").single().supportsThreeBattles)
+        assertFalse(requireNotNull(queryRepository.findStateForExecution(newAccount.id, "battle_map", "unknown01")).supportsThreeBattles)
     }
 
     @Test
@@ -227,6 +326,145 @@ class BattleMapServiceTest {
             assertEquals(listOf("shared01"), preserved.map { it.mapCode })
             assertEquals(3, preserved.single().availableCount)
             assertTrue(assertNotNull(queryRepository.findStateByAccountIdAndMapId(account.id, catalogMap.id)).visible)
+        }
+    }
+
+    @Test
+    fun authenticatedAdventureRefreshRejectsPageWithoutMapObservations() {
+        val account = savedAccount("battle-map-strict-refresh")
+        gateway.defaultBody = "<html><body><h1>Temporary upstream error</h1></body></html>"
+
+        assertFailsWith<AdventureMapRefreshException.Fatal> {
+            service.refreshAdventureMaps(account.id)
+        }
+        assertEquals(
+            listOf("http://sic.zerosic.com/ZeroHOF/index.php?sp_hunt"),
+            gateway.requests.map { it.url },
+        )
+    }
+
+    @Test
+    fun authenticatedAdventureRefreshPreservesExpiredSessionSignalForRecovery() {
+        val account = savedAccount("battle-map-expired-session")
+        gateway.defaultBody = """
+            <html><body>
+              <form action="index.php" method="post">
+                <input type="text" name="id">
+                <input type="password" name="pass">
+                <input type="submit" name="Login" value="login">
+              </form>
+            </body></html>
+        """.trimIndent()
+
+        val error = assertFailsWith<AdventureMapRefreshException.Fatal> {
+            service.refreshAdventureMaps(account.id)
+        }
+
+        val api = generateSequence<Throwable>(error) { it.cause }.filterIsInstance<ApiException>().first()
+        assertEquals(ErrorCode.HOF_SESSION_EXPIRED, api.errorCode)
+    }
+
+    @Test
+    fun authenticatedAdventureRefreshPreservesCaptchaSignalForAutomationStop() {
+        val account = savedAccount("battle-map-captcha")
+        gateway.defaultBody = "<html><body>captcha gate</body></html>"
+        Mockito.doReturn(
+            CaptchaChallengeResponse(
+                91L,
+                account.id,
+                "PENDING",
+                "captcha",
+                null,
+                "https://example.test/captcha",
+                NOW.toString(),
+                null,
+            ),
+        ).`when`(captchaService).detectAndRecord(
+            anyAccount(),
+            anyStringValue(),
+            anyStringValue(),
+        )
+
+        val error = assertFailsWith<AdventureMapRefreshException.Fatal> {
+            service.refreshAdventureMaps(account.id)
+        }
+
+        val api = generateSequence<Throwable>(error) { it.cause }.filterIsInstance<ApiException>().first()
+        assertEquals(ErrorCode.CAPTCHA_REQUIRED, api.errorCode)
+    }
+
+    @Test
+    fun authenticatedAdventureRefreshRejectsNonSuccessHttpResponse() {
+        val account = savedAccount("battle-map-http-error")
+        val url = "http://sic.zerosic.com/ZeroHOF/index.php?sp_hunt"
+        gateway.responsesByUrl[url] = HofHttpResponse(
+            statusCode = 503,
+            finalUrl = url,
+            body = directAdventureHtml(sharedCount = 3, includeStale = false),
+            setCookies = emptyMap(),
+        )
+
+        assertFailsWith<AdventureMapRefreshException.Retryable> {
+            service.refreshAdventureMaps(account.id)
+        }
+        assertTrue(queryRepository.findVisibleStatesByAccountIdAndCategoryId(account.id, ADVENTURE).isEmpty())
+    }
+
+    @Test
+    fun authenticatedAdventureRefreshRejectsClientHttpResponseAsFatal() {
+        val account = savedAccount("battle-map-http-client-error")
+        val url = "http://sic.zerosic.com/ZeroHOF/index.php?sp_hunt"
+        gateway.responsesByUrl[url] = HofHttpResponse(
+            statusCode = 403,
+            finalUrl = url,
+            body = directAdventureHtml(sharedCount = 3, includeStale = false),
+            setCookies = emptyMap(),
+        )
+
+        assertFailsWith<AdventureMapRefreshException.Fatal> {
+            service.refreshAdventureMaps(account.id)
+        }
+        assertTrue(queryRepository.findVisibleStatesByAccountIdAndCategoryId(account.id, ADVENTURE).isEmpty())
+    }
+
+    @Test
+    fun authenticatedAdventureRefreshClassifiesTransportAndTimeoutFailuresAsRetryable() {
+        val account = savedAccount("battle-map-transport-errors")
+
+        listOf(IOException("connection reset"), HttpTimeoutException("timed out")).forEach { failure ->
+            gateway.failure = failure
+
+            assertFailsWith<AdventureMapRefreshException.Retryable> {
+                service.refreshAdventureMaps(account.id)
+            }
+        }
+    }
+
+    @Test
+    fun authenticatedAdventureRefreshPreservesNearestFatalTypeOverNestedTransportCause() {
+        val account = savedAccount("battle-map-fatal-wrapped-transport")
+        val fatal = AdventureMapRefreshException.Fatal("fatal parse", IOException("nested transport"))
+        gateway.failure = fatal
+
+        val actual = assertFailsWith<AdventureMapRefreshException.Fatal> {
+            service.refreshAdventureMaps(account.id)
+        }
+
+        assertEquals(fatal, actual)
+    }
+
+    @Test
+    fun authenticatedAdventureRefreshRestoresInterruptAndDoesNotClassifyCancellationAsRetryable() {
+        val account = savedAccount("battle-map-interrupted")
+        gateway.failure = InterruptedException("cancelled")
+
+        try {
+            assertFailsWith<AdventureMapRefreshException.Fatal> {
+                service.refreshAdventureMaps(account.id)
+            }
+            assertTrue(Thread.currentThread().isInterrupted)
+        } finally {
+            Thread.interrupted()
         }
     }
 
@@ -361,6 +599,12 @@ class BattleMapServiceTest {
 
         @Bean
         fun fakeHofGateway(): FakeHofGateway = FakeHofGateway()
+
+        @Bean
+        fun loginStateParser(): LoginStateParser = LoginStateParser()
+
+        @Bean
+        fun captchaService(): CaptchaService = Mockito.mock(CaptchaService::class.java)
     }
 
     class FakeHofGateway : HofGateway {
@@ -368,11 +612,13 @@ class BattleMapServiceTest {
         val cookies = mutableListOf<Map<String, String>>()
         val responsesByUrl = mutableMapOf<String, HofHttpResponse>()
         var defaultBody: String = ""
+        var failure: Exception? = null
 
         override fun execute(
             request: HofRequest,
             cookies: Map<String, String>,
         ): HofHttpResponse {
+            failure?.let { throw it }
             requests += request
             this.cookies += cookies
             return responsesByUrl[request.url] ?: HofHttpResponse(
@@ -388,6 +634,7 @@ class BattleMapServiceTest {
             cookies.clear()
             responsesByUrl.clear()
             defaultBody = ""
+            failure = null
         }
     }
 
@@ -395,4 +642,10 @@ class BattleMapServiceTest {
         const val ADVENTURE = "adventure_map"
         val NOW: Instant = Instant.parse("2026-07-08T00:00:00Z")
     }
+
+    private fun anyAccount(): HofAccountEntity =
+        Mockito.any(HofAccountEntity::class.java)
+            ?: HofAccountEntity(999L, "matcher", "encrypted", NOW)
+
+    private fun anyStringValue(): String = Mockito.anyString() ?: ""
 }
