@@ -3,6 +3,8 @@ package app.spammy.hof.automation.service
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.HofAccountRepository
+import app.spammy.hof.account.service.HofAccountService
+import app.spammy.hof.account.service.HofSessionRecoveryService
 import app.spammy.hof.automation.repository.AdventureDailyPreflightQueryRepository
 import app.spammy.hof.battle.service.AdventureMapRefreshException
 import app.spammy.hof.battle.service.AdventureMapSnapshot
@@ -59,10 +61,12 @@ class AutomationDailyPreflightTest {
     @Autowired private lateinit var transactionManager: PlatformTransactionManager
     @Autowired private lateinit var entityManager: EntityManager
     @Autowired private lateinit var timeProvider: MutableTimeProvider
+    @Autowired private lateinit var hofAccountService: HofAccountService
 
     @BeforeTest
     fun reset() {
         Mockito.reset(battleMapService)
+        Mockito.reset(hofAccountService)
         Mockito.doAnswer { invocation ->
             val accountId = invocation.getArgument<Long>(0)
             battleMapService.refreshAdventureMaps(accountId)
@@ -228,21 +232,81 @@ class AutomationDailyPreflightTest {
     }
 
     @Test
-    fun `fatal failure stops without retrying`() {
+    fun `expired preflight session reauthenticates and retries fetch exactly once`() {
+        val accountId = savedAccount("preflight-session-recovery")
+        Mockito.doThrow(
+                AdventureMapRefreshException.Fatal(
+                    "wrapped expired session",
+                    ApiException(ErrorCode.HOF_SESSION_EXPIRED, "expired"),
+                ),
+            )
+            .doReturn(AdventureMapSnapshot(accountId, emptyList()))
+            .`when`(battleMapService).fetchAdventureMapSnapshot(accountId)
+
+        assertIs<AutomationDailyPreflight.Result.Ready>(service.ensureReady(accountId))
+
+        Mockito.verify(hofAccountService).reauthenticate(accountId)
+        Mockito.verify(battleMapService, Mockito.times(2)).fetchAdventureMapSnapshot(accountId)
+    }
+
+    @Test
+    fun `rejected stored credentials stop preflight for authentication`() {
+        val accountId = savedAccount("preflight-authentication")
+        Mockito.doThrow(
+                AdventureMapRefreshException.Fatal(
+                    "wrapped expired session",
+                    ApiException(ErrorCode.HOF_SESSION_EXPIRED, "expired"),
+                ),
+            )
+            .`when`(battleMapService).fetchAdventureMapSnapshot(accountId)
+        Mockito.`when`(hofAccountService.reauthenticate(accountId))
+            .thenThrow(ApiException(ErrorCode.HOF_LOGIN_FAILED, "rejected"))
+
+        assertEquals(
+            AutomationDailyPreflight.Result.Stopped(AutomationDailyPreflight.StopReason.AUTHENTICATION),
+            service.ensureReady(accountId),
+        )
+        assertEquals(
+            AutomationDailyPreflight.Result.Stopped(AutomationDailyPreflight.StopReason.AUTHENTICATION),
+            service.ensureReady(accountId),
+        )
+        Mockito.verify(battleMapService, Mockito.times(1)).fetchAdventureMapSnapshot(accountId)
+    }
+
+    @Test
+    fun `captcha preflight response stops separately from network and authentication`() {
+        val accountId = savedAccount("preflight-captcha")
+        Mockito.doThrow(
+                AdventureMapRefreshException.Fatal(
+                    "wrapped captcha",
+                    ApiException(ErrorCode.CAPTCHA_REQUIRED, "captcha"),
+                ),
+            )
+            .`when`(battleMapService).fetchAdventureMapSnapshot(accountId)
+
+        assertEquals(
+            AutomationDailyPreflight.Result.Stopped(AutomationDailyPreflight.StopReason.CAPTCHA),
+            service.ensureReady(accountId),
+        )
+        Mockito.verifyNoInteractions(hofAccountService)
+    }
+
+    @Test
+    fun `session failure after one recovery stops for authentication without retrying later`() {
         val accountId = savedAccount("preflight-fatal")
         Mockito.doThrow(ApiException(ErrorCode.HOF_SESSION_EXPIRED, "expired"))
             .`when`(battleMapService).refreshAdventureMaps(accountId)
 
         assertEquals(
-            AutomationDailyPreflight.Result.Stopped(AutomationDailyPreflight.StopReason.FATAL),
+            AutomationDailyPreflight.Result.Stopped(AutomationDailyPreflight.StopReason.AUTHENTICATION),
             service.ensureReady(accountId),
         )
         timeProvider.current.set(KOREA_MIDNIGHT_AFTER.plusSeconds(600))
         assertEquals(
-            AutomationDailyPreflight.Result.Stopped(AutomationDailyPreflight.StopReason.FATAL),
+            AutomationDailyPreflight.Result.Stopped(AutomationDailyPreflight.StopReason.AUTHENTICATION),
             service.ensureReady(accountId),
         )
-        Mockito.verify(battleMapService, Mockito.times(1)).refreshAdventureMaps(accountId)
+        Mockito.verify(battleMapService, Mockito.times(2)).refreshAdventureMaps(accountId)
     }
 
     @Test
@@ -513,6 +577,10 @@ class AutomationDailyPreflightTest {
     class Config {
         @Bean fun timeProvider(): MutableTimeProvider = MutableTimeProvider(KOREA_MIDNIGHT_AFTER)
         @Bean fun battleMapService(): BattleMapService = Mockito.mock(BattleMapService::class.java)
+        @Bean fun hofAccountService(): HofAccountService = Mockito.mock(HofAccountService::class.java)
+        @Bean
+        fun sessionRecovery(hofAccountService: HofAccountService): HofSessionRecoveryExecutor =
+            HofSessionRecoveryExecutor(HofSessionRecoveryService(hofAccountService))
     }
 
     class MutableTimeProvider(initial: Instant) : TimeProvider {

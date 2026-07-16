@@ -59,6 +59,10 @@ class TypedLiveAutomationSnapshotLoader(
         }
     } catch (error: Exception) {
         val causes = generateSequence<Throwable>(error) { it.cause }.toList()
+        causes.filterIsInstance<AutomationLoginRequiredException>().firstOrNull()?.let { throw it }
+        causes.filterIsInstance<ApiException>()
+            .firstOrNull { it.errorCode == ErrorCode.CAPTCHA_REQUIRED }
+            ?.let { throw it }
         if (causes.any { it is IOException } || causes.filterIsInstance<ApiException>().any { it.errorCode == ErrorCode.HOF_REQUEST_FAILED }) {
             throw SafeRetryableAutomationException("Transient live-state refresh failure.", error)
         }

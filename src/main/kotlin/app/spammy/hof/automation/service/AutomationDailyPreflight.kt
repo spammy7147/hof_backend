@@ -40,6 +40,7 @@ class AutomationDailyPreflight(
     private val refreshRepository: AdventureDailyRefreshCommandRepository,
     private val stateRepository: AdventureDailyPreflightStateCommandRepository,
     private val battleMapService: BattleMapService,
+    private val sessionRecovery: HofSessionRecoveryExecutor,
     private val timeProvider: TimeProvider,
     transactionManager: PlatformTransactionManager,
 ) {
@@ -54,7 +55,7 @@ class AutomationDailyPreflight(
         data class Stopped(val reason: StopReason) : Result
     }
 
-    enum class StopReason { NETWORK, FATAL }
+    enum class StopReason { AUTHENTICATION, CAPTCHA, NETWORK, FATAL }
 
     fun ensureReady(accountId: Long): Result {
         check(!TransactionSynchronizationManager.isActualTransactionActive()) { TRANSACTIONAL_CALLER_MESSAGE }
@@ -67,7 +68,9 @@ class AutomationDailyPreflight(
         claim as ClaimDecision.Claimed
 
         val snapshot = try {
-            battleMapService.fetchAdventureMapSnapshot(accountId)
+            sessionRecovery.execute(accountId) {
+                battleMapService.fetchAdventureMapSnapshot(accountId)
+            }
         } catch (error: Exception) {
             val completedAt = timeProvider.now()
             val completed = CompletedRefresh(classify(error), completedAt, completedAt.koreaDate())
@@ -173,14 +176,23 @@ class AutomationDailyPreflight(
                 requireNotNull(snapshot),
             )
             RefreshOutcome.RetryableFailure -> finalizeRetryableFailure(state, completed.completedAt)
+            RefreshOutcome.AuthenticationFailure -> finalizeStopped(state, StopReason.AUTHENTICATION)
+            RefreshOutcome.CaptchaFailure -> finalizeStopped(state, StopReason.CAPTCHA)
             RefreshOutcome.FatalFailure -> {
-                clearClaim(state)
-                state.stopReason = StopReason.FATAL.name
-                state.nextAttemptAt = null
-                stateRepository.save(state)
-                Result.Stopped(StopReason.FATAL)
+                finalizeStopped(state, StopReason.FATAL)
             }
         }
+    }
+
+    private fun finalizeStopped(
+        state: AdventureDailyPreflightStateEntity,
+        reason: StopReason,
+    ): Result.Stopped {
+        clearClaim(state)
+        state.stopReason = reason.name
+        state.nextAttemptAt = null
+        stateRepository.save(state)
+        return Result.Stopped(reason)
     }
 
     private fun finalizeSuccess(
@@ -287,6 +299,16 @@ class AutomationDailyPreflight(
             Thread.currentThread().interrupt()
             return RefreshOutcome.FatalFailure
         }
+        if (causes.any { it is AutomationLoginRequiredException }) {
+            return RefreshOutcome.AuthenticationFailure
+        }
+        causes.filterIsInstance<ApiException>().firstOrNull()?.let { api ->
+            return when (api.errorCode) {
+                ErrorCode.CAPTCHA_REQUIRED -> RefreshOutcome.CaptchaFailure
+                ErrorCode.HOF_LOGIN_FAILED, ErrorCode.HOF_SESSION_EXPIRED -> RefreshOutcome.AuthenticationFailure
+                else -> RefreshOutcome.FatalFailure
+            }
+        }
         causes.filterIsInstance<AdventureMapRefreshException>().firstOrNull()?.let { typed ->
             return when (typed) {
                 is AdventureMapRefreshException.Retryable -> RefreshOutcome.RetryableFailure
@@ -313,7 +335,13 @@ class AutomationDailyPreflight(
         val koreaDate: LocalDate,
     )
 
-    private enum class RefreshOutcome { Success, RetryableFailure, FatalFailure }
+    private enum class RefreshOutcome {
+        Success,
+        RetryableFailure,
+        AuthenticationFailure,
+        CaptchaFailure,
+        FatalFailure,
+    }
 
     companion object {
         const val TRANSACTIONAL_CALLER_MESSAGE =

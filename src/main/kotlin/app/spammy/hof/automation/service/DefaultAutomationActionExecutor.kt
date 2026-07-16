@@ -2,6 +2,8 @@ package app.spammy.hof.automation.service
 
 import app.spammy.hof.battle.dto.RunBattleRequest
 import app.spammy.hof.battle.service.BattleRunService
+import app.spammy.hof.common.error.ApiException
+import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.quest.service.QuestGatewayService
 import org.springframework.stereotype.Service
 
@@ -12,14 +14,14 @@ class DefaultAutomationActionExecutor(
     private val questHandler: QuestAutomationHandler,
     private val battleHandler: BattleMapAutomationHandler,
     private val battleOutcomeReconciler: BattleOutcomeReconciler,
+    private val sessionRecovery: HofSessionRecoveryExecutor,
 ) : TypedAutomationActionExecutor {
     override fun execute(accountId: Long, action: StoredTypedAutomationActionV1) {
-        // The durable runner has already marked this action SUBMITTING. Session recovery may repeat its lambda,
-        // which is unsafe for a POST whose outcome is ambiguous, so typed actions are deliberately invoked once.
         when (val payload = action.payload) {
-                is StoredTypedActionPayload.QuestClaim -> questGatewayService.claim(accountId, payload.actionNo)
+                is StoredTypedActionPayload.QuestClaim ->
+                    sessionRecovery.execute(accountId) { questGatewayService.claim(accountId, payload.actionNo) }
                 is StoredTypedActionPayload.QuestAccept -> {
-                    questGatewayService.accept(accountId, payload.actionNo)
+                    sessionRecovery.execute(accountId) { questGatewayService.accept(accountId, payload.actionNo) }
                     questHandler.onAcceptSucceeded(accountId, action.executionIdentity, QuestAction.Accept(payload.questCode, payload.actionNo))
                 }
                 is StoredTypedActionPayload.QuestBattle -> {
@@ -58,11 +60,29 @@ class DefaultAutomationActionExecutor(
     }
 
     private fun runTypedBattle(accountId: Long, request: RunBattleRequest) =
+        sessionRecovery.execute(accountId) {
+            runTypedBattleOnce(accountId, request)
+        }
+
+    private fun runTypedBattleOnce(accountId: Long, request: RunBattleRequest) =
         try {
             battleRunService.runBattle(accountId, request)
         } catch (error: Exception) {
+            error.findApiException()?.let { api ->
+                if (api.errorCode in setOf(
+                        ErrorCode.HOF_SESSION_EXPIRED,
+                        ErrorCode.HOF_LOGIN_FAILED,
+                        ErrorCode.CAPTCHA_REQUIRED,
+                    )
+                ) {
+                    throw api
+                }
+            }
             throw AmbiguousAutomationSubmissionException("Battle submission outcome is not provable; it will not be resent.", error)
         }
+
+    private fun Throwable.findApiException(): ApiException? =
+        generateSequence(this) { it.cause }.filterIsInstance<ApiException>().firstOrNull()
 
     private fun exactTerminalProof(
         accountId: Long,

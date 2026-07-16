@@ -81,6 +81,24 @@ class TypedAutomationRuntimeServiceTest {
     }
 
     @Test
+    fun `proven captcha response fails action without marking its outcome ambiguous`() {
+        val state = state().apply { leaseToken = "token"; leaseUntil = now.plusSeconds(300) }
+        val entry = AutomationEntryEntity(9, account, AutomationType.BATTLE_MAP, 0, true, now, now)
+        val action = TypedAutomationActionRunEntity(
+            14, account, entry, "captcha-execution", "BATTLE_MAP", 1, "{}", "d".repeat(64),
+            TypedAutomationActionStatus.SUBMITTING, leaseToken = "token", createdAt = now, updatedAt = now,
+        )
+        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
+        Mockito.`when`(query.lockTypedAction(action.id)).thenReturn(action)
+
+        assertTrue(service.stop(7, "token", action.id, AutomationStopReason.CAPTCHA, "captcha"))
+
+        assertEquals(action.id, state.stopActionId)
+        assertEquals(TypedAutomationActionStatus.FAILED, action.status)
+        assertEquals(AutomationStopReason.CAPTCHA.name, state.stopReason)
+    }
+
+    @Test
     fun `actionless stop clears an earlier stopped action context`() {
         val state = state().apply {
             leaseToken = "token"

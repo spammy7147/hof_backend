@@ -36,4 +36,23 @@ class HofSessionRecoveryExecutorTest {
             executor.execute(7L) { throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "expired") }
         }
     }
+
+    @Test
+    fun wrappedExpiredSessionAlsoReauthenticatesAndRetriesExactlyOnce() {
+        var attempts = 0
+        val result = executor.execute(7L) {
+            attempts += 1
+            if (attempts == 1) {
+                throw IllegalStateException(
+                    "wrapped",
+                    ApiException(ErrorCode.HOF_SESSION_EXPIRED, "expired"),
+                )
+            }
+            "ok"
+        }
+
+        assertEquals("ok", result)
+        assertEquals(2, attempts)
+        Mockito.verify(accountService).reauthenticate(7L)
+    }
 }

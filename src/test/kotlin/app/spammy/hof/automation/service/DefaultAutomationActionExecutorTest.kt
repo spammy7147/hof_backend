@@ -1,15 +1,21 @@
 package app.spammy.hof.automation.service
 
 import app.spammy.hof.automation.entity.PresetSelectionMode
+import app.spammy.hof.account.service.HofAccountService
+import app.spammy.hof.account.service.HofSessionRecoveryService
 import app.spammy.hof.battle.dto.BattlePatternLoadRequest
 import app.spammy.hof.battle.dto.RunBattleRequest
 import app.spammy.hof.battle.service.BattleRunService
+import app.spammy.hof.common.error.ApiException
+import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.quest.service.QuestGatewayService
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import org.mockito.Mockito
 
 class DefaultAutomationActionExecutorTest {
+    private val accountService = Mockito.mock(HofAccountService::class.java)
     private val questGateway = Mockito.mock(QuestGatewayService::class.java)
     private val battleRun = Mockito.mock(BattleRunService::class.java)
     private val questHandler = Mockito.mock(QuestAutomationHandler::class.java)
@@ -21,6 +27,7 @@ class DefaultAutomationActionExecutorTest {
         questHandler,
         battleHandler,
         reconciler,
+        HofSessionRecoveryExecutor(HofSessionRecoveryService(accountService)),
     )
 
     @Test
@@ -39,6 +46,98 @@ class DefaultAutomationActionExecutorTest {
             "quest-accept-1",
             QuestAction.Accept("Q-1", "accept-no"),
         )
+    }
+
+    @Test
+    fun `expired session reauthenticates then replays the exact action once`() {
+        val action = StoredTypedAutomationActionV1(
+            entryId = 11L,
+            executionIdentity = "quest-accept-recovery",
+            payload = StoredTypedActionPayload.QuestAccept("Q-1", "accept-no"),
+        )
+        Mockito.`when`(questGateway.accept(7L, "accept-no"))
+            .thenThrow(ApiException(ErrorCode.HOF_SESSION_EXPIRED, "expired"))
+            .thenReturn(emptyList())
+
+        executor.execute(7L, action)
+
+        Mockito.verify(accountService).reauthenticate(7L)
+        Mockito.verify(questGateway, Mockito.times(2)).accept(7L, "accept-no")
+        Mockito.verify(questHandler, Mockito.times(1)).onAcceptSucceeded(
+            7L,
+            "quest-accept-recovery",
+            QuestAction.Accept("Q-1", "accept-no"),
+        )
+    }
+
+    @Test
+    fun `invalid stored credentials surface authentication without replay`() {
+        val action = StoredTypedAutomationActionV1(
+            entryId = 11L,
+            executionIdentity = "quest-accept-auth",
+            payload = StoredTypedActionPayload.QuestAccept("Q-1", "accept-no"),
+        )
+        Mockito.`when`(questGateway.accept(7L, "accept-no"))
+            .thenThrow(ApiException(ErrorCode.HOF_SESSION_EXPIRED, "expired"))
+        Mockito.`when`(accountService.reauthenticate(7L))
+            .thenThrow(ApiException(ErrorCode.HOF_LOGIN_FAILED, "rejected"))
+
+        assertFailsWith<AutomationLoginRequiredException> {
+            executor.execute(7L, action)
+        }
+
+        Mockito.verify(questGateway, Mockito.times(1)).accept(7L, "accept-no")
+        Mockito.verifyNoInteractions(questHandler)
+    }
+
+    @Test
+    fun `post success bookkeeping failure never replays the external quest action`() {
+        val action = StoredTypedAutomationActionV1(
+            entryId = 11L,
+            executionIdentity = "quest-accept-bookkeeping",
+            payload = StoredTypedActionPayload.QuestAccept("Q-1", "accept-no"),
+        )
+        Mockito.doThrow(ApiException(ErrorCode.HOF_SESSION_EXPIRED, "unexpected bookkeeping failure"))
+            .`when`(questHandler).onAcceptSucceeded(
+                7L,
+                "quest-accept-bookkeeping",
+                QuestAction.Accept("Q-1", "accept-no"),
+            )
+
+        assertFailsWith<ApiException> {
+            executor.execute(7L, action)
+        }
+
+        Mockito.verify(questGateway, Mockito.times(1)).accept(7L, "accept-no")
+        Mockito.verifyNoInteractions(accountService)
+    }
+
+    @Test
+    fun `captcha battle is classified without ambiguous wrapping or replay`() {
+        val request = battleRequest()
+        val action = StoredTypedAutomationActionV1(
+            entryId = 12L,
+            executionIdentity = "battle-captcha",
+            payload = StoredTypedActionPayload.BattleMap(
+                progressDate = java.time.LocalDate.parse("2026-07-16"),
+                categoryId = request.categoryId,
+                mapCode = request.mapCode,
+                presetMode = PresetSelectionMode.PRIMARY,
+                presetId = 301L,
+                battleCount = 3,
+                battleRequest = request,
+            ),
+        )
+        Mockito.`when`(battleRun.runBattle(7L, request))
+            .thenThrow(ApiException(ErrorCode.CAPTCHA_REQUIRED, "captcha"))
+
+        val error = assertFailsWith<ApiException> {
+            executor.execute(7L, action)
+        }
+
+        assertEquals(ErrorCode.CAPTCHA_REQUIRED, error.errorCode)
+        Mockito.verify(battleRun, Mockito.times(1)).runBattle(7L, request)
+        Mockito.verifyNoInteractions(accountService, battleHandler)
     }
 
     @Test
@@ -64,6 +163,7 @@ class DefaultAutomationActionExecutorTest {
         }
 
         Mockito.verify(battleRun, Mockito.times(1)).runBattle(7L, request)
+        Mockito.verifyNoInteractions(accountService)
         Mockito.verifyNoInteractions(battleHandler)
     }
 

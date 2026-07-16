@@ -1,6 +1,8 @@
 package app.spammy.hof.automation.service
 
 import app.spammy.hof.automation.port.AutomationWakeupPort
+import app.spammy.hof.common.error.ApiException
+import app.spammy.hof.common.error.ErrorCode
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.springframework.transaction.support.TransactionSynchronizationManager
@@ -24,6 +26,7 @@ class UnifiedAutomationRunner(
         check(!TransactionSynchronizationManager.isActualTransactionActive()) {
             "Typed automation runner must not be called with an active transaction."
         }
+        if (!typedRuntime.isRunning(accountId)) return
         when (val preflight = dailyPreflight.ensureReady(accountId)) {
             AutomationDailyPreflight.Result.Ready -> Unit
             is AutomationDailyPreflight.Result.Busy -> { wakeupPort.schedule(accountId, preflight.retryAt, "DAILY_PREFLIGHT_BUSY"); return }
@@ -32,6 +35,8 @@ class UnifiedAutomationRunner(
                 typedRuntime.stop(
                     accountId,
                     when (preflight.reason) {
+                        AutomationDailyPreflight.StopReason.AUTHENTICATION -> AutomationStopReason.AUTHENTICATION
+                        AutomationDailyPreflight.StopReason.CAPTCHA -> AutomationStopReason.CAPTCHA
                         AutomationDailyPreflight.StopReason.NETWORK -> AutomationStopReason.NETWORK
                         AutomationDailyPreflight.StopReason.FATAL -> AutomationStopReason.FATAL
                     },
@@ -58,6 +63,23 @@ class UnifiedAutomationRunner(
                 typedRuntime.scheduleSafeRetry(accountId, token, error.message ?: "Safe snapshot retry")?.let {
                     wakeupPort.schedule(accountId, it, "TYPED_SAFE_RETRY")
                 }
+                return
+            } catch (error: AutomationLoginRequiredException) {
+                typedRuntime.stop(
+                    accountId,
+                    token,
+                    null,
+                    AutomationStopReason.AUTHENTICATION,
+                    error.message,
+                )
+                return
+            } catch (error: ApiException) {
+                val reason = when (error.errorCode) {
+                    ErrorCode.CAPTCHA_REQUIRED -> AutomationStopReason.CAPTCHA
+                    ErrorCode.HOF_LOGIN_FAILED, ErrorCode.HOF_SESSION_EXPIRED -> AutomationStopReason.AUTHENTICATION
+                    else -> AutomationStopReason.FATAL
+                }
+                typedRuntime.stop(accountId, token, null, reason, error.message)
                 return
             } catch (error: FatalAutomationException) {
                 typedRuntime.stop(accountId, token, null, AutomationStopReason.FATAL, error.message ?: "Fatal live snapshot failure")
@@ -103,7 +125,30 @@ class UnifiedAutomationRunner(
             typedRuntime.succeedAndEnqueueWake(accountId, token, row.id, "TYPED_ACTION_COMPLETED")
         } catch (error: Throwable) {
             log.warn("Typed automation action stopped accountId={} actionId={} errorType={}", accountId, row.id, error.javaClass.name)
-            typedRuntime.stop(accountId, token, row.id, AutomationStopReason.NETWORK, error.message ?: error.javaClass.simpleName)
+            typedRuntime.stop(
+                accountId,
+                token,
+                row.id,
+                classifyActionStop(error),
+                error.message ?: error.javaClass.simpleName,
+            )
+        }
+    }
+
+    private fun classifyActionStop(error: Throwable): AutomationStopReason {
+        val causes = generateSequence(error) { it.cause }.toList()
+        if (causes.any { it is AutomationLoginRequiredException }) return AutomationStopReason.AUTHENTICATION
+        causes.filterIsInstance<ApiException>().firstOrNull()?.let { api ->
+            return when (api.errorCode) {
+                ErrorCode.CAPTCHA_REQUIRED -> AutomationStopReason.CAPTCHA
+                ErrorCode.HOF_LOGIN_FAILED, ErrorCode.HOF_SESSION_EXPIRED -> AutomationStopReason.AUTHENTICATION
+                else -> AutomationStopReason.FATAL
+            }
+        }
+        return if (causes.any { it is AmbiguousAutomationSubmissionException }) {
+            AutomationStopReason.NETWORK
+        } else {
+            AutomationStopReason.FATAL
         }
     }
 

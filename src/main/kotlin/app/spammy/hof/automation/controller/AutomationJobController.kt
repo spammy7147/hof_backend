@@ -14,14 +14,14 @@ import org.springframework.web.bind.annotation.RestController
 @RestController
 @RequestMapping("/api/automation/jobs")
 /**
- * 자동화 job 실행 상태를 다루는 API다.
+ * 마이그레이션 전 레거시 job 조회 호환성만 유지하는 종료 API다.
  *
- * 현재는 자동전투 실행 루프 전 단계의 골격이며, job 생성/조회/상태 변경을 담당한다.
+ * 현재 상태 조회 외 모든 변경 endpoint는 410 Gone을 반환하며 신규 실행은 typed 통합 자동화 API가 담당한다.
  */
 class AutomationJobController(
     private val automationJobService: AutomationJobService,
 ) {
-    /** 계정 소유 프로필 ID로 자동화 job row를 생성한다. */
+    /** 종료된 레거시 job 생성 요청을 410 Gone으로 거부한다. */
     @PostMapping
     fun create(
         @CurrentAccountId accountId: Long,
@@ -39,7 +39,7 @@ class AutomationJobController(
         automationJobService.findCurrent(accountId)
 
     /**
-     * 실행 중인 자동화 job을 일시정지 상태로 바꾼다.
+     * 종료된 레거시 pause 요청을 410 Gone으로 거부한다.
      */
     @PostMapping("/{jobId}/pause")
     fun pause(
@@ -49,7 +49,7 @@ class AutomationJobController(
         automationJobService.pause(accountId = accountId, jobId = jobId)
 
     /**
-     * 일시정지된 자동화 job을 재개 대기 상태로 바꾼다.
+     * 종료된 레거시 resume 요청을 410 Gone으로 거부한다.
      */
     @PostMapping("/{jobId}/resume")
     fun resume(
@@ -59,7 +59,7 @@ class AutomationJobController(
         automationJobService.resume(accountId = accountId, jobId = jobId)
 
     /**
-     * 자동화 job을 취소 상태로 바꾼다.
+     * 종료된 레거시 cancel 요청을 410 Gone으로 거부한다.
      */
     @PostMapping("/{jobId}/cancel")
     fun cancel(

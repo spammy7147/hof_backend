@@ -27,6 +27,10 @@ class TypedAutomationRuntimeService(
     private val lifecycleBridge: TypedAutomationLifecycleBridge,
     private val outbox: AutomationOutboxService,
 ) {
+    @Transactional(readOnly = true, propagation = Propagation.REQUIRES_NEW)
+    fun isRunning(accountId: Long): Boolean =
+        queryRepository.findRuntimeState(accountId)?.lifecycleStatus == TypedAutomationLifecycle.RUNNING
+
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun start(accountId: Long): Boolean {
         return lifecycleBridge.start(accountId, "TYPED_AUTOMATION_STARTED")
@@ -123,7 +127,11 @@ class TypedAutomationRuntimeService(
             }
         }
         stoppedAction?.apply {
-            status = if (status == TypedAutomationActionStatus.SUBMITTING) TypedAutomationActionStatus.AMBIGUOUS else TypedAutomationActionStatus.FAILED
+            status = if (status == TypedAutomationActionStatus.SUBMITTING && reason == AutomationStopReason.NETWORK) {
+                TypedAutomationActionStatus.AMBIGUOUS
+            } else {
+                TypedAutomationActionStatus.FAILED
+            }
             lastError = message.take(2000); finishedAt = now; updatedAt = now
         }
         state.lastError = sanitizeDiagnostic(message)

@@ -18,8 +18,13 @@ class HofSessionRecoveryExecutor(
         action: () -> T,
     ): T = try {
         sessionRecoveryService.execute(accountId, action)
-    } catch (loginError: ApiException) {
-        if (loginError.errorCode == ErrorCode.HOF_LOGIN_FAILED) throw AutomationLoginRequiredException()
-        throw loginError
+    } catch (error: Throwable) {
+        val apiError = generateSequence(error) { it.cause }
+            .filterIsInstance<ApiException>()
+            .firstOrNull()
+        if (apiError?.errorCode in setOf(ErrorCode.HOF_LOGIN_FAILED, ErrorCode.HOF_SESSION_EXPIRED)) {
+            throw AutomationLoginRequiredException()
+        }
+        throw error
     }
 }

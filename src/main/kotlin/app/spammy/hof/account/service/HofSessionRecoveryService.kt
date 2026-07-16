@@ -16,8 +16,11 @@ class HofSessionRecoveryService(
         action: () -> T,
     ): T = try {
         action()
-    } catch (error: ApiException) {
-        if (error.errorCode != ErrorCode.HOF_SESSION_EXPIRED) throw error
+    } catch (error: Throwable) {
+        val sessionError = generateSequence(error) { it.cause }
+            .filterIsInstance<ApiException>()
+            .firstOrNull { it.errorCode == ErrorCode.HOF_SESSION_EXPIRED }
+            ?: throw error
         accountService.reauthenticate(accountId)
         action()
     }

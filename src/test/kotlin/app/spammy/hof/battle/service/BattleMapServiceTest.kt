@@ -18,12 +18,17 @@ import app.spammy.hof.battle.repository.BattleMapQueryRepository
 import app.spammy.hof.battle.repository.BattleMapRepository
 import app.spammy.hof.battle.repository.UnresolvedBattleMapCommandRepository
 import app.spammy.hof.common.persistence.QueryDslConfig
+import app.spammy.hof.common.error.ApiException
+import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.captcha.dto.CaptchaChallengeResponse
+import app.spammy.hof.captcha.service.CaptchaService
 import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
 import app.spammy.hof.external.parser.BattleMapParser
+import app.spammy.hof.external.parser.LoginStateParser
 import java.io.IOException
 import java.net.http.HttpTimeoutException
 import java.time.Instant
@@ -36,6 +41,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import org.junit.jupiter.api.BeforeEach
+import org.mockito.Mockito
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
 import org.springframework.boot.test.context.TestConfiguration
@@ -70,6 +76,9 @@ class BattleMapServiceTest {
     private lateinit var gateway: FakeHofGateway
 
     @Autowired
+    private lateinit var captchaService: CaptchaService
+
+    @Autowired
     private lateinit var accountRepository: HofAccountRepository
 
     @Autowired
@@ -90,6 +99,7 @@ class BattleMapServiceTest {
     @BeforeEach
     fun resetGateway() {
         gateway.reset()
+        Mockito.reset(captchaService)
     }
 
     @Test
@@ -334,6 +344,56 @@ class BattleMapServiceTest {
     }
 
     @Test
+    fun authenticatedAdventureRefreshPreservesExpiredSessionSignalForRecovery() {
+        val account = savedAccount("battle-map-expired-session")
+        gateway.defaultBody = """
+            <html><body>
+              <form action="index.php" method="post">
+                <input type="text" name="id">
+                <input type="password" name="pass">
+                <input type="submit" name="Login" value="login">
+              </form>
+            </body></html>
+        """.trimIndent()
+
+        val error = assertFailsWith<AdventureMapRefreshException.Fatal> {
+            service.refreshAdventureMaps(account.id)
+        }
+
+        val api = generateSequence<Throwable>(error) { it.cause }.filterIsInstance<ApiException>().first()
+        assertEquals(ErrorCode.HOF_SESSION_EXPIRED, api.errorCode)
+    }
+
+    @Test
+    fun authenticatedAdventureRefreshPreservesCaptchaSignalForAutomationStop() {
+        val account = savedAccount("battle-map-captcha")
+        gateway.defaultBody = "<html><body>captcha gate</body></html>"
+        Mockito.doReturn(
+            CaptchaChallengeResponse(
+                91L,
+                account.id,
+                "PENDING",
+                "captcha",
+                null,
+                "https://example.test/captcha",
+                NOW.toString(),
+                null,
+            ),
+        ).`when`(captchaService).detectAndRecord(
+            anyAccount(),
+            anyStringValue(),
+            anyStringValue(),
+        )
+
+        val error = assertFailsWith<AdventureMapRefreshException.Fatal> {
+            service.refreshAdventureMaps(account.id)
+        }
+
+        val api = generateSequence<Throwable>(error) { it.cause }.filterIsInstance<ApiException>().first()
+        assertEquals(ErrorCode.CAPTCHA_REQUIRED, api.errorCode)
+    }
+
+    @Test
     fun authenticatedAdventureRefreshRejectsNonSuccessHttpResponse() {
         val account = savedAccount("battle-map-http-error")
         val url = "http://sic.zerosic.com/ZeroHOF/index.php?sp_hunt"
@@ -539,6 +599,12 @@ class BattleMapServiceTest {
 
         @Bean
         fun fakeHofGateway(): FakeHofGateway = FakeHofGateway()
+
+        @Bean
+        fun loginStateParser(): LoginStateParser = LoginStateParser()
+
+        @Bean
+        fun captchaService(): CaptchaService = Mockito.mock(CaptchaService::class.java)
     }
 
     class FakeHofGateway : HofGateway {
@@ -576,4 +642,10 @@ class BattleMapServiceTest {
         const val ADVENTURE = "adventure_map"
         val NOW: Instant = Instant.parse("2026-07-08T00:00:00Z")
     }
+
+    private fun anyAccount(): HofAccountEntity =
+        Mockito.any(HofAccountEntity::class.java)
+            ?: HofAccountEntity(999L, "matcher", "encrypted", NOW)
+
+    private fun anyStringValue(): String = Mockito.anyString() ?: ""
 }

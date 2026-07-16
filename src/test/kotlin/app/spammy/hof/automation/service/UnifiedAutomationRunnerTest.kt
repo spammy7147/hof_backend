@@ -8,6 +8,8 @@ import app.spammy.hof.automation.entity.TypedAutomationActionRunEntity
 import app.spammy.hof.automation.entity.TypedAutomationActionStatus
 import app.spammy.hof.automation.port.AutomationWakeupPort
 import app.spammy.hof.battle.dto.BattlePatternLoadRequest
+import app.spammy.hof.common.error.ApiException
+import app.spammy.hof.common.error.ErrorCode
 import java.time.Instant
 import java.time.LocalDate
 import kotlin.test.Test
@@ -23,6 +25,10 @@ class UnifiedAutomationRunnerTest {
     private val wakeup = Mockito.mock(AutomationWakeupPort::class.java)
     private val codec = StoredTypedAutomationActionCodec(jacksonObjectMapper())
     private val runner = UnifiedAutomationRunner(preflight, runtime, loader, coordinator, executor, codec, wakeup)
+
+    init {
+        Mockito.`when`(runtime.isRunning(7)).thenReturn(true)
+    }
 
     @Test
     fun `runner persists submits and checkpoints one action then wakes a fresh evaluation`() {
@@ -95,14 +101,75 @@ class UnifiedAutomationRunnerTest {
     }
 
     @Test
-    fun `inactive typed runtime returns without loading or executing`() {
-        Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
-        Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Inactive)
+    fun `inactive typed runtime returns before preflight or any HOF work`() {
+        Mockito.`when`(runtime.isRunning(7)).thenReturn(false)
 
         runner.runOne(7)
 
-        Mockito.verify(runtime).claim(7)
-        Mockito.verifyNoInteractions(loader, coordinator, executor)
+        Mockito.verify(runtime).isRunning(7)
+        Mockito.verifyNoInteractions(preflight, loader, coordinator, executor, wakeup)
+        Mockito.verify(runtime, Mockito.never()).claim(7)
+    }
+
+    @Test
+    fun `preflight terminal stop transitions once and its wake cannot call preflight again`() {
+        Mockito.`when`(runtime.isRunning(7)).thenReturn(true, false)
+        Mockito.`when`(preflight.ensureReady(7))
+            .thenReturn(AutomationDailyPreflight.Result.Stopped(AutomationDailyPreflight.StopReason.NETWORK))
+
+        runner.runOne(7)
+        runner.runOne(7)
+
+        Mockito.verify(preflight, Mockito.times(1)).ensureReady(7)
+        Mockito.verify(runtime, Mockito.times(1)).stop(7, AutomationStopReason.NETWORK)
+        Mockito.verify(runtime, Mockito.never()).claim(7)
+        Mockito.verifyNoInteractions(loader, coordinator, executor, wakeup)
+    }
+
+    @Test
+    fun `session login failure stops typed runtime for authentication`() {
+        preparedActionFailure(
+            IllegalStateException("wrapped login failure", AutomationLoginRequiredException()),
+            AutomationStopReason.AUTHENTICATION,
+        )
+    }
+
+    @Test
+    fun `captcha response stops typed runtime for captcha instead of network`() {
+        preparedActionFailure(
+            IllegalStateException(
+                "wrapped captcha",
+                ApiException(ErrorCode.CAPTCHA_REQUIRED, "captcha"),
+            ),
+            AutomationStopReason.CAPTCHA,
+        )
+    }
+
+    @Test
+    fun `captcha live snapshot stops typed runtime before preparing any action`() {
+        liveSnapshotFailure(
+            ApiException(ErrorCode.CAPTCHA_REQUIRED, "captcha"),
+            AutomationStopReason.CAPTCHA,
+        )
+    }
+
+    @Test
+    fun `failed live snapshot login recovery stops typed runtime for authentication`() {
+        liveSnapshotFailure(
+            AutomationLoginRequiredException(),
+            AutomationStopReason.AUTHENTICATION,
+        )
+    }
+
+    @Test
+    fun `ambiguous submission stops typed runtime for network without replay`() {
+        preparedActionFailure(
+            IllegalStateException(
+                "wrapped ambiguous outcome",
+                AmbiguousAutomationSubmissionException("unknown outcome"),
+            ),
+            AutomationStopReason.NETWORK,
+        )
     }
 
     @Test
@@ -178,6 +245,7 @@ class UnifiedAutomationRunnerTest {
                 wakeup,
             )
             Mockito.`when`(casePreflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
+            Mockito.`when`(caseRuntime.isRunning(7)).thenReturn(true)
             Mockito.`when`(caseRuntime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token", row))
 
             caseRunner.runOne(7)
@@ -198,4 +266,63 @@ class UnifiedAutomationRunnerTest {
             ?: StoredTypedAutomationActionV1(1, "any", StoredTypedActionPayload.QuestClaim("q", "a"))
 
     private fun eqString(value: String): String = Mockito.eq(value) ?: value
+
+    private fun preparedActionFailure(error: Throwable, expectedReason: AutomationStopReason) {
+        val stored = StoredTypedAutomationActionV1(
+            12,
+            "execution-1",
+            StoredTypedActionPayload.QuestClaim("quest", "claim"),
+        )
+        val encoded = codec.encode(stored)
+        val owner = HofAccountEntity(7, "login", "encrypted", Instant.EPOCH)
+        val entry = AutomationEntryEntity(12, owner, AutomationType.QUEST, 0, true, Instant.EPOCH, Instant.EPOCH)
+        val row = TypedAutomationActionRunEntity(
+            88,
+            owner,
+            entry,
+            stored.executionIdentity,
+            stored.payload.kind(),
+            1,
+            encoded.json,
+            encoded.fingerprint,
+            TypedAutomationActionStatus.PREPARED,
+            leaseToken = "token",
+            createdAt = Instant.EPOCH,
+            updatedAt = Instant.EPOCH,
+        )
+        Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
+        Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token", row))
+        Mockito.`when`(runtime.markSubmitting(7, "token", 88)).thenReturn(true)
+        Mockito.doThrow(error).`when`(executor).execute(Mockito.eq(7L), anyStoredAction())
+
+        runner.runOne(7)
+
+        Mockito.verify(runtime).stop(
+            Mockito.eq(7L),
+            eqString("token"),
+            Mockito.eq(88L),
+            eqValue(expectedReason),
+            anyStringValue(),
+        )
+    }
+
+    private fun <T> eqValue(value: T): T = Mockito.eq(value) ?: value
+    private fun anyStringValue(): String = Mockito.anyString() ?: ""
+
+    private fun liveSnapshotFailure(error: Throwable, expectedReason: AutomationStopReason) {
+        Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
+        Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token"))
+        Mockito.`when`(loader.loadTyped(7)).thenThrow(error)
+
+        runner.runOne(7)
+
+        Mockito.verify(runtime).stop(
+            Mockito.eq(7L),
+            eqString("token"),
+            Mockito.isNull(),
+            eqValue(expectedReason),
+            anyStringValue(),
+        )
+        Mockito.verifyNoInteractions(coordinator, executor)
+    }
 }

@@ -7,6 +7,8 @@ import app.spammy.hof.account.repository.CookieQueryRepository
 import app.spammy.hof.account.repository.HofAccountRepository
 import app.spammy.hof.account.repository.HofCookieRepository
 import app.spammy.hof.account.service.HofCookieCipher
+import app.spammy.hof.account.service.HofAccountService
+import app.spammy.hof.account.service.HofSessionRecoveryService
 import app.spammy.hof.automation.repository.AdventureDailyPreflightQueryRepository
 import app.spammy.hof.battle.repository.BattleMapQueryRepository
 import app.spammy.hof.battle.service.BattleMapCatalogService
@@ -15,11 +17,13 @@ import app.spammy.hof.battle.service.BattleMapIdentityResolver
 import app.spammy.hof.battle.service.BattleMapService
 import app.spammy.hof.common.persistence.QueryDslConfig
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.captcha.service.CaptchaService
 import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
 import app.spammy.hof.external.parser.BattleMapParser
+import app.spammy.hof.external.parser.LoginStateParser
 import jakarta.persistence.EntityManager
 import java.time.Instant
 import java.util.Base64
@@ -37,6 +41,7 @@ import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
 import org.springframework.boot.test.context.TestConfiguration
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Import
+import org.mockito.Mockito
 import org.springframework.test.context.ActiveProfiles
 import org.springframework.transaction.PlatformTransactionManager
 import org.springframework.transaction.annotation.Propagation
@@ -136,6 +141,12 @@ class AutomationDailyPreflightMapSyncTest {
     class Config {
         @Bean fun timeProvider(): MutableTimeProvider = MutableTimeProvider(NOW)
         @Bean fun gateway(): BlockingAdventureGateway = BlockingAdventureGateway()
+        @Bean fun loginStateParser(): LoginStateParser = LoginStateParser()
+        @Bean fun captchaService(): CaptchaService = Mockito.mock(CaptchaService::class.java)
+        @Bean fun hofAccountService(): HofAccountService = Mockito.mock(HofAccountService::class.java)
+        @Bean
+        fun sessionRecovery(hofAccountService: HofAccountService): HofSessionRecoveryExecutor =
+            HofSessionRecoveryExecutor(HofSessionRecoveryService(hofAccountService))
         @Bean fun cipher(): HofCookieCipher =
             HofCookieCipher(Base64.getEncoder().encodeToString(ByteArray(32) { 11 }))
     }

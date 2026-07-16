@@ -130,6 +130,80 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
         assertNull(state.stopActionId)
     }
 
+    @Test
+    fun `repeating the same terminal stop is idempotent and emits no wake`() {
+        val accountId = seed("idempotent-stop")
+
+        TransactionTemplate(transactionManager).executeWithoutResult {
+            bridge.stop(accountId, AutomationStopReason.NETWORK, "PREFLIGHT_STOPPED")
+        }
+
+        val state = requireNotNull(typedQuery.findRuntimeState(accountId))
+        assertEquals(TypedAutomationLifecycle.STOPPED, state.lifecycleStatus)
+        assertEquals(AutomationStopReason.NETWORK.name, state.stopReason)
+        assertTrue(state.stopActionId != null)
+        assertEquals(
+            emptyList(),
+            outboxQuery.findUnpublished(NOW.plusSeconds(1)).filter { it.account.id == accountId },
+        )
+    }
+
+    @Test
+    fun `captcha answer resumes only captcha stopped runtime and clears preflight atomically`() {
+        val accountId = seed("captcha-resume")
+        setStopReason(accountId, AutomationStopReason.CAPTCHA)
+
+        val resumed = TransactionTemplate(transactionManager).execute {
+            bridge.resumeIfStoppedForCaptcha(accountId, "CAPTCHA_ANSWERED")
+        }
+
+        assertTrue(requireNotNull(resumed))
+        val state = requireNotNull(typedQuery.findRuntimeState(accountId))
+        assertEquals(TypedAutomationLifecycle.RUNNING, state.lifecycleStatus)
+        assertNull(state.stopReason)
+        assertNull(state.stopActionId)
+        val preflight = requireNotNull(preflightQuery.findState(accountId))
+        assertEquals(0, preflight.failedAttempts)
+        assertNull(preflight.stopReason)
+        assertNull(preflight.inFlightToken)
+        val events = outboxQuery.findUnpublished(NOW.plusSeconds(1)).filter { it.account.id == accountId }
+        assertEquals(1, events.size)
+        assertTrue(events.single().payload.contains("\"reason\":\"CAPTCHA_ANSWERED\""))
+    }
+
+    @Test
+    fun `captcha answer never resumes network manual or authentication stops`() {
+        listOf(
+            AutomationStopReason.NETWORK,
+            AutomationStopReason.MANUAL_STOP,
+            AutomationStopReason.AUTHENTICATION,
+        ).forEach { reason ->
+            val accountId = seed("captcha-guard-${reason.name.lowercase()}")
+            setStopReason(accountId, reason)
+
+            val resumed = TransactionTemplate(transactionManager).execute {
+                bridge.resumeIfStoppedForCaptcha(accountId, "CAPTCHA_ANSWERED")
+            }
+
+            assertFalse(requireNotNull(resumed))
+            val state = requireNotNull(typedQuery.findRuntimeState(accountId))
+            assertEquals(TypedAutomationLifecycle.STOPPED, state.lifecycleStatus)
+            assertEquals(reason.name, state.stopReason)
+            assertEquals(
+                emptyList(),
+                outboxQuery.findUnpublished(NOW.plusSeconds(1)).filter { it.account.id == accountId },
+            )
+        }
+    }
+
+    private fun setStopReason(accountId: Long, reason: AutomationStopReason) {
+        TransactionTemplate(transactionManager).executeWithoutResult {
+            entityManager.createNativeQuery(
+                "update typed_automation_runtime_states set stop_reason = ?1 where account_id = ?2",
+            ).setParameter(1, reason.name).setParameter(2, accountId).executeUpdate()
+        }
+    }
+
     private fun seed(suffix: String): Long = TransactionTemplate(transactionManager).execute {
         val account = accounts.save(HofAccountEntity(loginId = "lifecycle-$suffix", encryptedPassword = "encrypted", createdAt = NOW))
         val entry = entries.save(

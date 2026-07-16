@@ -11,6 +11,8 @@ import app.spammy.hof.battle.repository.BattleMapQueryRepository
 import app.spammy.hof.battle.service.BattleMapIdentityResolver
 import app.spammy.hof.battle.service.BattleMapService
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.common.error.ApiException
+import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.party.repository.PartyPresetQueryRepository
 import app.spammy.hof.quest.service.QuestGatewayService
 import java.time.Instant
@@ -27,6 +29,32 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource
 import org.springframework.transaction.support.TransactionSynchronizationManager
 
 class TypedLiveAutomationSnapshotLoaderTest {
+    @Test
+    fun `captcha live snapshot failure remains a typed captcha stop signal`() {
+        val fixture = liveFailureFixture()
+        Mockito.`when`(fixture.quest.load(7L))
+            .thenThrow(ApiException(ErrorCode.CAPTCHA_REQUIRED, "captcha"))
+
+        val error = assertFailsWith<ApiException> {
+            fixture.loader.loadTyped(7L)
+        }
+
+        assertEquals(ErrorCode.CAPTCHA_REQUIRED, error.errorCode)
+    }
+
+    @Test
+    fun `failed stored credential recovery remains an authentication stop signal`() {
+        val fixture = liveFailureFixture()
+        Mockito.`when`(fixture.quest.load(7L))
+            .thenThrow(ApiException(ErrorCode.HOF_SESSION_EXPIRED, "expired"))
+        Mockito.`when`(fixture.accountService.reauthenticate(7L))
+            .thenThrow(ApiException(ErrorCode.HOF_LOGIN_FAILED, "rejected"))
+
+        assertFailsWith<AutomationLoginRequiredException> {
+            fixture.loader.loadTyped(7L)
+        }
+    }
+
     @Test
     fun `primary rematerializes while explicit and per snapshot execution identities remain stable`() {
         val now = Instant.parse("2026-07-16T00:00:00Z")
@@ -226,4 +254,33 @@ class TypedLiveAutomationSnapshotLoaderTest {
         val pattern = CharacterPatternSlotEntity(2_000 + preset.id * 10 + slot, character, (slot + 1).toString(), "p", true)
         PartyPresetMemberEntity(preset, slot, character, pattern)
     }
+
+    private fun liveFailureFixture(): LiveFailureFixture {
+        val now = Instant.parse("2026-07-16T00:00:00Z")
+        val typed = Mockito.mock(TypedAutomationQueryRepository::class.java)
+        val maps = Mockito.mock(BattleMapQueryRepository::class.java)
+        val presets = Mockito.mock(PartyPresetQueryRepository::class.java)
+        val quest = Mockito.mock(QuestGatewayService::class.java)
+        val accountService = Mockito.mock(HofAccountService::class.java)
+        Mockito.`when`(typed.findEntries(7L)).thenReturn(emptyList())
+        Mockito.`when`(presets.findAllByAccountId(7L)).thenReturn(emptyList())
+        Mockito.`when`(presets.findMembersByPresetIds(emptyList())).thenReturn(emptyList())
+        val loader = TypedLiveAutomationSnapshotLoader(
+            quest,
+            typed,
+            maps,
+            presets,
+            Mockito.mock(BattleMapIdentityResolver::class.java),
+            Mockito.mock(BattleMapService::class.java),
+            TimeProvider { now },
+            HofSessionRecoveryExecutor(HofSessionRecoveryService(accountService)),
+        )
+        return LiveFailureFixture(loader, quest, accountService)
+    }
+
+    private data class LiveFailureFixture(
+        val loader: TypedLiveAutomationSnapshotLoader,
+        val quest: QuestGatewayService,
+        val accountService: HofAccountService,
+    )
 }

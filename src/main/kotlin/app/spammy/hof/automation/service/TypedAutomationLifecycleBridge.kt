@@ -79,17 +79,26 @@ class TypedAutomationLifecycleBridge(
                 state.lifecycleStatus = TypedAutomationLifecycle.RUNNING
                 clearRuntime(state, now)
             }
-            preflight.findState(accountId)?.let { value ->
-                value.failedAttempts = 0
-                value.nextAttemptAt = null
-                value.stopReason = null
-                value.inFlightToken = null
-                value.inFlightUntil = null
-                value.updatedAt = now
-                preflightStates.save(value)
-            }
+            clearPreflight(accountId, now)
         }
         outbox.enqueue(accountId, wakeReason)
+    }
+
+    @Transactional(propagation = Propagation.MANDATORY)
+    fun resumeIfStoppedForCaptcha(accountId: Long, wakeReason: String): Boolean {
+        accounts.findByIdForUpdate(accountId) ?: error("Account $accountId does not exist.")
+        val state = typed.lockRuntimeState(accountId) ?: return false
+        if (state.lifecycleStatus != TypedAutomationLifecycle.STOPPED ||
+            state.stopReason != AutomationStopReason.CAPTCHA.name
+        ) {
+            return false
+        }
+        val now = timeProvider.now()
+        state.lifecycleStatus = TypedAutomationLifecycle.RUNNING
+        clearRuntime(state, now)
+        clearPreflight(accountId, now)
+        outbox.enqueue(accountId, wakeReason)
+        return true
     }
 
     @Transactional(propagation = Propagation.MANDATORY)
@@ -97,6 +106,7 @@ class TypedAutomationLifecycleBridge(
         val account = accounts.findByIdForUpdate(accountId) ?: error("Account $accountId does not exist.")
         val now = timeProvider.now()
         val state = typed.lockRuntimeState(accountId)
+        if (state?.lifecycleStatus == TypedAutomationLifecycle.STOPPED && state.stopReason == reason.name) return
         if (state == null && typed.hasTypedAutomation(accountId)) {
             states.save(TypedAutomationRuntimeStateEntity(accountId, account, TypedAutomationLifecycle.STOPPED, reason.name, createdAt = now, updatedAt = now))
         } else state?.let {
@@ -121,5 +131,17 @@ class TypedAutomationLifecycleBridge(
         state.warningText = null
         state.lastError = null
         state.updatedAt = now
+    }
+
+    private fun clearPreflight(accountId: Long, now: java.time.Instant) {
+        preflight.findState(accountId)?.let { value ->
+            value.failedAttempts = 0
+            value.nextAttemptAt = null
+            value.stopReason = null
+            value.inFlightToken = null
+            value.inFlightUntil = null
+            value.updatedAt = now
+            preflightStates.save(value)
+        }
     }
 }
