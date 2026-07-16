@@ -89,6 +89,7 @@ class UnifiedAutomationServiceTest {
     private val battleSettingRepository = Mockito.mock(BattleAutomationMapCommandRepository::class.java)
     private val adventureSettingRepository = Mockito.mock(AdventureAutomationMapCommandRepository::class.java)
     private val automationOutbox = Mockito.mock(AutomationOutboxService::class.java)
+    private var currentTime: Instant = NOW
     private val service = UnifiedAutomationService(
         accountQueryRepository = accountQueryRepository,
         profileRepository = profileRepository,
@@ -100,7 +101,7 @@ class UnifiedAutomationServiceTest {
         queryRepository = queryRepository,
         battleMapQueryRepository = battleMapQueryRepository,
         partyPresetQueryRepository = partyPresetQueryRepository,
-        timeProvider = TimeProvider { NOW },
+        timeProvider = TimeProvider { currentTime },
         afterCommitWakeupService = afterCommitWakeupService,
         readinessEvaluator = readinessEvaluator,
         typedEntryRepository = entryRepository,
@@ -236,7 +237,7 @@ class UnifiedAutomationServiceTest {
     }
 
     @Test
-    fun typedUpdatesRejectDuplicateQuestsAndAdventureOnlyBattleMaps() {
+    fun typedUpdatesRejectDuplicateQuestsAndUnsupportedBattleCategories() {
         val quest = AutomationEntryEntity(91L, account(), AutomationType.QUEST, 0, false, NOW, NOW)
         Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(quest))
         assertFailsWith<ApiException> {
@@ -254,17 +255,55 @@ class UnifiedAutomationServiceTest {
 
         val battle = AutomationEntryEntity(92L, account(), AutomationType.BATTLE_MAP, 0, false, NOW, NOW)
         Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(battle))
-        assertFailsWith<ApiException> {
+        listOf("adventure_map" to "모험맵", "union" to "유니온").forEach { (categoryId, messagePart) ->
+            val error = assertFailsWith<ApiException> {
+                service.updateBattleMaps(
+                    ACCOUNT_ID,
+                    UpdateBattleMapAutomationRequest(
+                        enabled = false,
+                        maps = listOf(
+                            BattleMapSettingRequest(categoryId, "map", 1, PresetSelectionMode.PRIMARY, null, 0),
+                        ),
+                    ),
+                )
+            }
+            assertEquals(ErrorCode.INVALID_REQUEST, error.errorCode)
+            assertTrue(error.message.contains(messagePart))
+        }
+        Mockito.verifyNoInteractions(battleMapQueryRepository)
+    }
+
+    @Test
+    fun typedBattleUpdateDoesNotRejectUnionSubstringsOrUnrelatedCategoryIds() {
+        val account = account()
+        val battle = AutomationEntryEntity(92L, account, AutomationType.BATTLE_MAP, 0, false, NOW, NOW)
+        val maps = listOf(
+            battleMap("scenario_union", "scenario"),
+            battleMap("reunion_event", "unrelated", id = 82L),
+        )
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(battle))
+        Mockito.`when`(
+            battleMapQueryRepository.findMapsByCategoryIdAndMapCodePairs(
+                setOf("scenario_union" to "scenario", "reunion_event" to "unrelated"),
+            ),
+        ).thenReturn(maps)
+        Mockito.`when`(typedQuery.findBattleSettings(battle.id)).thenReturn(emptyList())
+        Mockito.`when`(partyPresetQueryRepository.findAllByAccountId(ACCOUNT_ID)).thenReturn(emptyList())
+
+        assertDoesNotThrow {
             service.updateBattleMaps(
                 ACCOUNT_ID,
                 UpdateBattleMapAutomationRequest(
                     enabled = false,
                     maps = listOf(
-                        BattleMapSettingRequest("adventure_map", "Noble101", 1, PresetSelectionMode.PRIMARY, null, 0),
+                        BattleMapSettingRequest("scenario_union", "scenario", 1, PresetSelectionMode.PRIMARY, null, 0),
+                        BattleMapSettingRequest("reunion_event", "unrelated", 1, PresetSelectionMode.PRIMARY, null, 1),
                     ),
                 ),
             )
         }
+
+        Mockito.verify(battleSettingRepository, Mockito.times(2)).save(anyTypedBattleSetting())
     }
 
     @Test
@@ -302,14 +341,15 @@ class UnifiedAutomationServiceTest {
     }
 
     @Test
-    fun typedAggregateExposesCurrentKstBattleProgressOnceOnlyOnTheBattleEntry() {
+    fun typedAggregateUsesTheNextKstDateAcrossTheUtcBoundaryAndExposesProgressOnlyOnBattleEntry() {
+        currentTime = Instant.parse("2026-07-14T15:00:01Z")
         val account = account()
         val quest = AutomationEntryEntity(91L, account, AutomationType.QUEST, 0, false, NOW, NOW)
         val battle = AutomationEntryEntity(92L, account, AutomationType.BATTLE_MAP, 1, false, NOW, NOW)
         val progress = listOf(
             BattleAutomationDailyProgressEntity(
                 account = account,
-                progressDate = LocalDate.parse("2026-07-14"),
+                progressDate = LocalDate.parse("2026-07-15"),
                 categoryId = "battle_map",
                 mapCode = "gb0",
                 source = "battle_map",
@@ -318,7 +358,7 @@ class UnifiedAutomationServiceTest {
             ),
             BattleAutomationDailyProgressEntity(
                 account = account,
-                progressDate = LocalDate.parse("2026-07-14"),
+                progressDate = LocalDate.parse("2026-07-15"),
                 categoryId = "battle_map",
                 mapCode = "deleted-map",
                 source = "battle_map",
@@ -329,7 +369,7 @@ class UnifiedAutomationServiceTest {
         Mockito.`when`(accountQueryRepository.findById(ACCOUNT_ID)).thenReturn(account)
         Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(quest, battle))
         Mockito.`when`(
-            typedQuery.findBattleProgressRows(ACCOUNT_ID, LocalDate.parse("2026-07-14"), "battle_map"),
+            typedQuery.findBattleProgressRows(ACCOUNT_ID, LocalDate.parse("2026-07-15"), "battle_map"),
         ).thenReturn(progress)
         Mockito.`when`(partyPresetQueryRepository.findAllByAccountId(ACCOUNT_ID)).thenReturn(emptyList())
 
@@ -344,7 +384,7 @@ class UnifiedAutomationServiceTest {
             response.entries.last().battleMapProgress.map { Triple(it.categoryId, it.mapCode, it.successfulRuns) },
         )
         Mockito.verify(typedQuery, Mockito.times(1))
-            .findBattleProgressRows(ACCOUNT_ID, LocalDate.parse("2026-07-14"), "battle_map")
+            .findBattleProgressRows(ACCOUNT_ID, LocalDate.parse("2026-07-15"), "battle_map")
     }
 
     @Test

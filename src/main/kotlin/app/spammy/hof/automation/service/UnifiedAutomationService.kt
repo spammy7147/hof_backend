@@ -218,6 +218,9 @@ class UnifiedAutomationService(
         if (normalized.any { it.categoryId == app.spammy.hof.battle.model.BattleCategoryId.ADVENTURE_MAP.value }) {
             invalid("모험맵은 전투 맵 자동화에 설정할 수 없습니다.")
         }
+        if (normalized.any { it.categoryId == app.spammy.hof.battle.model.BattleCategoryId.UNION.value }) {
+            invalid("유니온은 전투 맵 자동화에 설정할 수 없습니다.")
+        }
         val presets = validateMapAndPresetReferences(accountId, normalized.map(::mapReference))
         val old = typedQuery().findBattleSettings(entry.id)
         if (old.isNotEmpty()) typedBattleMaps().deleteAll(old).also { typedBattleMaps().flush() }

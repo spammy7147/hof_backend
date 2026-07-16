@@ -3,11 +3,16 @@ package app.spammy.hof.automation.controller
 import app.spammy.hof.auth.service.JwtTokenService
 import app.spammy.hof.automation.dto.TypedAutomationAggregateResponse
 import app.spammy.hof.automation.dto.BattleMapDailyProgressResponse
+import app.spammy.hof.automation.dto.BattleMapSettingRequest
 import app.spammy.hof.automation.dto.TypedAutomationEntryResponse
 import app.spammy.hof.automation.dto.TypedAutomationRuntimeResponse
+import app.spammy.hof.automation.dto.UpdateBattleMapAutomationRequest
 import app.spammy.hof.automation.entity.TypedAutomationLifecycle
 import app.spammy.hof.automation.entity.AutomationType
+import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.automation.service.UnifiedAutomationService
+import app.spammy.hof.common.error.ApiException
+import app.spammy.hof.common.error.ErrorCode
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito
@@ -169,6 +174,29 @@ class UnifiedAutomationApiSecurityTest(
                 .andExpect(jsonPath("$.code").value("INVALID_REQUEST"))
         }
         Mockito.verifyNoInteractions(service)
+    }
+
+    @Test
+    fun authenticatedUnionBattleAutomationValidationIsReturnedAsBadRequest() {
+        val request = UpdateBattleMapAutomationRequest(
+            enabled = false,
+            maps = listOf(
+                BattleMapSettingRequest("union", "union-map", 1, PresetSelectionMode.PRIMARY, null, 0),
+            ),
+        )
+        Mockito.`when`(service.updateBattleMaps(42L, request))
+            .thenThrow(ApiException(ErrorCode.INVALID_REQUEST, "유니온은 전투 맵 자동화에 설정할 수 없습니다."))
+
+        mockMvc.perform(
+            put("/api/automation/unified/battle-maps")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer ${jwtTokenService.issue(42L).value}")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""{"enabled":false,"maps":[{"categoryId":"union","mapCode":"union-map","dailyTargetCount":1,"presetMode":"PRIMARY","partyPresetId":null,"executionOrder":0}]}"""),
+        )
+            .andExpect(status().isBadRequest)
+            .andExpect(jsonPath("$.code").value("INVALID_REQUEST"))
+
+        Mockito.verify(service).updateBattleMaps(42L, request)
     }
 
     @TestConfiguration(proxyBeanMethods = false)
