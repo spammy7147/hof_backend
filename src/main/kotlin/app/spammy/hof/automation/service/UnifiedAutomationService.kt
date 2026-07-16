@@ -1109,17 +1109,12 @@ class UnifiedAutomationService(
             )
         }
         val runtime = typed.findRuntimeState(accountId)
-        val activeAction = typed.findActiveTypedAction(accountId)
-        val stoppedAction = if (
-            activeAction == null
-            && runtime?.lifecycleStatus == TypedAutomationLifecycle.STOPPED
-            && runtime.stopReason in setOf(AutomationStopReason.NETWORK.name, AutomationStopReason.FATAL.name)
-        ) {
-            typed.findLatestStoppedTypedAction(accountId)
+        val currentActionRow = if (runtime?.lifecycleStatus == TypedAutomationLifecycle.STOPPED) {
+            runtime.stopActionId?.let { typed.findStoppedTypedAction(accountId, it) }
         } else {
-            null
+            typed.findActiveTypedAction(accountId)
         }
-        val currentAction = (activeAction ?: stoppedAction)?.let(::typedCurrentAction)
+        val currentAction = currentActionRow?.let(::typedCurrentAction)
         val today = timeProvider.now().atZone(KOREA_ZONE).toLocalDate()
         val latestRefresh = typed.findLatestAdventureRefresh(accountId)
         val dailyRefresh = AdventureDailyRefreshResponse(

@@ -97,23 +97,20 @@ class TypedAutomationQueryRepository(
             )
             .orderBy(typedAutomationActionRunEntity.id.desc()).fetchFirst()
 
-    fun findLatestStoppedTypedAction(accountId: Long): TypedAutomationActionRunEntity? =
+    fun findStoppedTypedAction(accountId: Long, actionId: Long): TypedAutomationActionRunEntity? =
         queryFactory.selectFrom(typedAutomationActionRunEntity)
             .join(typedAutomationActionRunEntity.account, actionAccount).fetchJoin()
             .leftJoin(typedAutomationActionRunEntity.entry, actionEntry).fetchJoin()
             .leftJoin(actionEntry.account, actionEntryAccount).fetchJoin()
             .where(
                 typedAutomationActionRunEntity.account.id.eq(accountId),
+                typedAutomationActionRunEntity.id.eq(actionId),
                 typedAutomationActionRunEntity.status.`in`(
                     TypedAutomationActionStatus.FAILED,
                     TypedAutomationActionStatus.AMBIGUOUS,
                 ),
             )
-            .orderBy(
-                typedAutomationActionRunEntity.updatedAt.desc(),
-                typedAutomationActionRunEntity.id.desc(),
-            )
-            .fetchFirst()
+            .fetchOne()
 
     fun lockTypedAction(actionId: Long): TypedAutomationActionRunEntity? =
         queryFactory.selectFrom(typedAutomationActionRunEntity)

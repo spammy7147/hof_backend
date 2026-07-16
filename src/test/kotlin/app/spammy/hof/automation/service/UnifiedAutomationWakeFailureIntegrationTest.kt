@@ -34,6 +34,8 @@ import org.springframework.transaction.PlatformTransactionManager
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.transaction.support.TransactionTemplate
+import tools.jackson.databind.ObjectMapper
+import tools.jackson.module.kotlin.jacksonObjectMapper
 
 @DataJpaTest
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
@@ -45,6 +47,7 @@ import org.springframework.transaction.support.TransactionTemplate
     BattleMapQueryRepository::class,
     PartyPresetQueryRepository::class,
     AutomationModuleReadinessEvaluator::class,
+    StoredTypedAutomationActionCodec::class,
     UnifiedAutomationService::class,
     UnifiedAutomationWakeFailureIntegrationTest.Config::class,
 )
@@ -184,6 +187,9 @@ class UnifiedAutomationWakeFailureIntegrationTest {
                 Mockito.doThrow(IllegalStateException("simulated delivery failure"))
                     .`when`(service).wake(Mockito.anyLong(), Mockito.anyString())
             }
+
+        @Bean
+        fun objectMapper(): ObjectMapper = jacksonObjectMapper()
     }
 
     private companion object {

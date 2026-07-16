@@ -66,6 +66,7 @@ class FreshSchemaTest {
                 "15" to "add typed automation runtime",
                 "16" to "harden typed automation runtime",
                 "17" to "retain typed actions when entry deleted",
+                "18" to "bind typed automation stop action",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -86,6 +87,7 @@ class FreshSchemaTest {
                 "V15__add_typed_automation_runtime.sql",
                 "V16__harden_typed_automation_runtime.sql",
                 "V17__retain_typed_actions_when_entry_deleted.sql",
+                "V18__bind_typed_automation_stop_action.sql",
                 "V1__initialize_schema.sql",
                 "V2__seed_battle_map_catalog.sql",
                 "V3__add_token_authentication.sql",
@@ -133,6 +135,98 @@ class FreshSchemaTest {
             assertEquals(0, connection.actionRunCount("TIME_BURN"))
             assertEquals(0, connection.count("select count(*) from automation_consumed_events"))
             assertEquals(0, connection.count("select count(*) from account_automation_leases"))
+        }
+    }
+
+    @Test
+    fun v18AddsNullableStopActionContextToAnExistingTypedRuntime() {
+        val suffix = UUID.randomUUID().toString().replace("-", "")
+        val upgradeDatabase = "v18_upgrade_$suffix"
+        val upgradeUrl =
+            "jdbc:h2:mem:$upgradeDatabase;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;" +
+                "DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1"
+        Flyway.configure().dataSource(upgradeUrl, "sa", "").target("17").load().migrate()
+
+        DriverManager.getConnection(upgradeUrl, "sa", "").use { connection ->
+            connection.createStatement().use { statement ->
+                statement.execute(
+                    """
+                    insert into hof_accounts (login_id, encrypted_password, created_at)
+                    values ('v18-upgrade', 'encrypted', current_timestamp)
+                    """.trimIndent(),
+                )
+                statement.execute(
+                    """
+                    insert into automation_entries
+                        (account_id, automation_type, priority, enabled, created_at, updated_at)
+                    select id, 'BATTLE_MAP', 0, true, current_timestamp, current_timestamp
+                    from hof_accounts where login_id = 'v18-upgrade'
+                    """.trimIndent(),
+                )
+                statement.execute(
+                    """
+                    insert into typed_automation_action_runs
+                        (account_id, automation_entry_id, execution_identity, action_kind, schema_version,
+                         payload_json, action_fingerprint, status, retry_attempt, lease_token,
+                         created_at, finished_at, updated_at)
+                    select a.id, e.id, 'v18-failed-action', 'BATTLE_MAP', 1,
+                           '{}', '${"a".repeat(64)}', 'FAILED', 0, 'old-token',
+                           current_timestamp, current_timestamp, current_timestamp
+                    from hof_accounts a
+                    join automation_entries e on e.account_id = a.id
+                    where a.login_id = 'v18-upgrade'
+                    """.trimIndent(),
+                )
+                statement.execute(
+                    """
+                    insert into typed_automation_runtime_states
+                        (account_id, lifecycle_status, stop_reason, retry_attempt, created_at, updated_at, version)
+                    select id, 'STOPPED', 'NETWORK', 0, current_timestamp, current_timestamp, 0
+                    from hof_accounts where login_id = 'v18-upgrade'
+                    """.trimIndent(),
+                )
+            }
+        }
+
+        Flyway.configure().dataSource(upgradeUrl, "sa", "").load().migrate()
+
+        DriverManager.getConnection(upgradeUrl, "sa", "").use { connection ->
+            connection.createStatement().use { statement ->
+                statement.executeQuery(
+                    """
+                    select stop_action_id
+                    from typed_automation_runtime_states r
+                    join hof_accounts a on a.id = r.account_id
+                    where a.login_id = 'v18-upgrade'
+                    """.trimIndent(),
+                ).use { rows ->
+                    assertTrue(rows.next())
+                    assertEquals(null, rows.getObject(1))
+                }
+                statement.executeUpdate(
+                    """
+                    update typed_automation_runtime_states
+                    set stop_action_id = (
+                        select ar.id
+                        from typed_automation_action_runs ar
+                        where ar.execution_identity = 'v18-failed-action'
+                    )
+                    where account_id = (
+                        select id from hof_accounts where login_id = 'v18-upgrade'
+                    )
+                    """.trimIndent(),
+                )
+                statement.executeQuery(
+                    """
+                    select count(*)
+                    from typed_automation_runtime_states
+                    where stop_action_id is not null
+                    """.trimIndent(),
+                ).use { rows ->
+                    assertTrue(rows.next())
+                    assertEquals(1L, rows.getLong(1))
+                }
+            }
         }
     }
 

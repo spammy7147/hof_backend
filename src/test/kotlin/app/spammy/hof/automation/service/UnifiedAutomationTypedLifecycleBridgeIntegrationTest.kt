@@ -49,6 +49,8 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
     @Autowired private lateinit var accounts: HofAccountRepository
     @Autowired private lateinit var profiles: AutomationProfileRepository
     @Autowired private lateinit var jobs: AutomationJobRepository
+    @Autowired private lateinit var entries: AutomationEntryCommandRepository
+    @Autowired private lateinit var actions: TypedAutomationActionRunCommandRepository
     @Autowired private lateinit var preflightStates: AdventureDailyPreflightStateCommandRepository
     @Autowired private lateinit var unifiedQuery: UnifiedAutomationQueryRepository
     @Autowired private lateinit var typedQuery: TypedAutomationQueryRepository
@@ -74,6 +76,7 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
         val typed = requireNotNull(typedQuery.findRuntimeState(accountId))
         assertEquals(TypedAutomationLifecycle.RUNNING, typed.lifecycleStatus)
         assertNull(typed.stopReason)
+        assertNull(typed.stopActionId)
         assertNull(typed.leaseToken)
         val preflight = requireNotNull(preflightQuery.findState(accountId))
         assertEquals(0, preflight.failedAttempts)
@@ -102,6 +105,7 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
         val typed = requireNotNull(typedQuery.findRuntimeState(accountId))
         assertEquals(TypedAutomationLifecycle.STOPPED, typed.lifecycleStatus)
         assertEquals(AutomationStopReason.NETWORK.name, typed.stopReason)
+        assertTrue(typed.stopActionId != null)
         val preflight = requireNotNull(preflightQuery.findState(accountId))
         assertEquals(3, preflight.failedAttempts)
         assertEquals("NETWORK", preflight.stopReason)
@@ -120,18 +124,59 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
         val state = requireNotNull(typedQuery.findRuntimeState(accountId))
         assertEquals(TypedAutomationLifecycle.STOPPED, state.lifecycleStatus)
         assertEquals(AutomationStopReason.NETWORK.name, state.stopReason)
+        assertTrue(state.stopActionId != null)
         val events = outboxQuery.findUnpublished(NOW.plusSeconds(1)).filter { it.account.id == accountId }
         assertEquals(1, events.size)
+    }
+
+    @Test
+    fun `manual stop clears a previous action stop context`() {
+        val accountId = seed("manual-stop")
+
+        TransactionTemplate(transactionManager).executeWithoutResult {
+            bridge.stop(accountId, AutomationStopReason.MANUAL_STOP, "USER_STOP")
+        }
+
+        val state = requireNotNull(typedQuery.findRuntimeState(accountId))
+        assertEquals(TypedAutomationLifecycle.STOPPED, state.lifecycleStatus)
+        assertEquals(AutomationStopReason.MANUAL_STOP.name, state.stopReason)
+        assertNull(state.stopActionId)
     }
 
     private fun seed(suffix: String): Long = TransactionTemplate(transactionManager).execute {
         val account = accounts.save(HofAccountEntity(loginId = "lifecycle-$suffix", encryptedPassword = "encrypted", createdAt = NOW))
         val profile = profiles.save(AutomationProfileEntity(account = account, name = "unified", mode = "UNIFIED", enabled = true, createdAt = NOW, updatedAt = NOW))
         jobs.save(AutomationJobEntity(account = account, profile = profile, status = "PAUSED", currentStepIndex = 0, message = null, createdAt = NOW, startedAt = NOW, updatedAt = NOW, finishedAt = null))
+        val entry = entries.save(
+            AutomationEntryEntity(
+                account = account,
+                type = AutomationType.BATTLE_MAP,
+                priority = 0,
+                enabled = true,
+                createdAt = NOW,
+                updatedAt = NOW,
+            ),
+        )
+        val action = actions.save(
+            TypedAutomationActionRunEntity(
+                account = account,
+                entry = entry,
+                executionIdentity = "stopped-action-$suffix",
+                actionKind = "BATTLE_MAP",
+                schemaVersion = 1,
+                payloadJson = "{}",
+                actionFingerprint = "a".repeat(64),
+                status = TypedAutomationActionStatus.FAILED,
+                leaseToken = "old-token",
+                createdAt = NOW,
+                finishedAt = NOW,
+                updatedAt = NOW,
+            ),
+        )
         entityManager.flush()
         entityManager.createNativeQuery(
-            "insert into typed_automation_runtime_states (account_id,lifecycle_status,stop_reason,retry_attempt,created_at,updated_at,version) values (?1,'STOPPED','NETWORK',0,?2,?2,0)",
-        ).setParameter(1, account.id).setParameter(2, NOW).executeUpdate()
+            "insert into typed_automation_runtime_states (account_id,lifecycle_status,stop_reason,stop_action_id,retry_attempt,created_at,updated_at,version) values (?1,'STOPPED','NETWORK',?2,0,?3,?3,0)",
+        ).setParameter(1, account.id).setParameter(2, action.id).setParameter(3, NOW).executeUpdate()
         preflightStates.save(AdventureDailyPreflightStateEntity(account = account, refreshDate = LocalDate.parse("2026-07-16"), failedAttempts = 3, nextAttemptAt = NOW.plusSeconds(30), stopReason = "NETWORK", inFlightToken = "preflight-token", inFlightUntil = NOW.plusSeconds(300), updatedAt = NOW))
         account.id
     }

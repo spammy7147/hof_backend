@@ -244,9 +244,8 @@ class UnifiedAutomationServiceTest {
     }
 
     @Test
-    fun stoppedNetworkAggregateRetainsTheFailedActionAndDerivesItsSourceWithoutAnEntry() {
+    fun stoppedNetworkAggregateUsesItsExactFailedActionAndDerivesItsSourceWithoutAnEntry() {
         val account = account()
-        val runtime = stoppedNetworkRuntime(account)
         val action = TypedAutomationActionRunEntity(
             id = 502L,
             account = account,
@@ -263,6 +262,7 @@ class UnifiedAutomationServiceTest {
             finishedAt = NOW.plusSeconds(1),
             updatedAt = NOW.plusSeconds(1),
         )
+        val runtime = stoppedNetworkRuntime(account).apply { stopActionId = action.id }
         val stored = StoredTypedAutomationActionV1(
             entryId = 91L,
             executionIdentity = action.executionIdentity,
@@ -285,7 +285,7 @@ class UnifiedAutomationServiceTest {
         Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(emptyList())
         Mockito.`when`(accountQueryRepository.findById(ACCOUNT_ID)).thenReturn(account)
         Mockito.`when`(typedQuery.findRuntimeState(ACCOUNT_ID)).thenReturn(runtime)
-        Mockito.`when`(typedQuery.findLatestStoppedTypedAction(ACCOUNT_ID)).thenReturn(action)
+        Mockito.`when`(typedQuery.findStoppedTypedAction(ACCOUNT_ID, action.id)).thenReturn(action)
         Mockito.`when`(storedActionCodec.verifyPersisted(action, ACCOUNT_ID)).thenReturn(stored)
 
         val response = service.getTyped(ACCOUNT_ID)
@@ -294,6 +294,20 @@ class UnifiedAutomationServiceTest {
         assertEquals("sp_hunt_1", response.runtime.currentAction?.title)
         assertEquals(1, response.runtime.currentAction?.battleCurrent)
         assertEquals(1, response.runtime.currentAction?.battleTotal)
+    }
+
+    @Test
+    fun actionlessNetworkStopDoesNotPresentAnOldFailedActionAsCurrent() {
+        val account = account()
+        val runtime = stoppedNetworkRuntime(account)
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(emptyList())
+        Mockito.`when`(accountQueryRepository.findById(ACCOUNT_ID)).thenReturn(account)
+        Mockito.`when`(typedQuery.findRuntimeState(ACCOUNT_ID)).thenReturn(runtime)
+
+        val response = service.getTyped(ACCOUNT_ID)
+
+        assertEquals(null, response.runtime.currentAction)
+        Mockito.verify(typedQuery, Mockito.never()).findStoppedTypedAction(Mockito.anyLong(), Mockito.anyLong())
     }
 
     @Test
@@ -309,7 +323,7 @@ class UnifiedAutomationServiceTest {
         val response = service.getTyped(ACCOUNT_ID)
 
         assertEquals(null, response.runtime.currentAction)
-        Mockito.verify(typedQuery, Mockito.never()).findLatestStoppedTypedAction(ACCOUNT_ID)
+        Mockito.verify(typedQuery, Mockito.never()).findStoppedTypedAction(Mockito.anyLong(), Mockito.anyLong())
     }
 
     @Test

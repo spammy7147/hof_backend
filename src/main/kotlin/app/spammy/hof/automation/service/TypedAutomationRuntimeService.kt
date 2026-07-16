@@ -59,7 +59,7 @@ class TypedAutomationRuntimeService(
             active.status = TypedAutomationActionStatus.AMBIGUOUS
             active.finishedAt = now
             active.updatedAt = now
-            stopState(state, AutomationStopReason.NETWORK, now)
+            stopState(state, AutomationStopReason.NETWORK, now, active.id)
             return TypedRuntimeClaim.AmbiguousRecovered("A submitted action lost its lease; outcome is ambiguous.")
         }
         val token = UUID.randomUUID().toString()
@@ -115,12 +115,19 @@ class TypedAutomationRuntimeService(
     fun stop(accountId: Long, token: String, actionId: Long?, reason: AutomationStopReason, message: String): Boolean {
         val state = fencedState(accountId, token) ?: return false
         val now = timeProvider.now()
-        actionId?.let { id -> queryRepository.lockTypedAction(id)?.takeIf { it.leaseToken == token }?.apply {
+        val stoppedAction = actionId?.let { id ->
+            queryRepository.lockTypedAction(id)?.takeIf {
+                it.account.id == accountId &&
+                    it.leaseToken == token &&
+                    it.status in setOf(TypedAutomationActionStatus.PREPARED, TypedAutomationActionStatus.SUBMITTING)
+            }
+        }
+        stoppedAction?.apply {
             status = if (status == TypedAutomationActionStatus.SUBMITTING) TypedAutomationActionStatus.AMBIGUOUS else TypedAutomationActionStatus.FAILED
             lastError = message.take(2000); finishedAt = now; updatedAt = now
-        } }
+        }
         state.lastError = sanitizeDiagnostic(message)
-        stopState(state, reason, now)
+        stopState(state, reason, now, stoppedAction?.id)
         return true
     }
 
@@ -189,14 +196,21 @@ class TypedAutomationRuntimeService(
         action.status = status; action.lastError = error; action.finishedAt = now; action.updatedAt = now
         state.retryAttempt = 0; state.nextAttemptAt = null; state.leaseToken = null; state.leaseUntil = null; state.updatedAt = now
         state.warningText = null; state.lastError = null
+        state.stopActionId = null
         return true
     }
 
     private fun fencedState(accountId: Long, token: String) = queryRepository.lockRuntimeState(accountId)
         ?.takeIf { it.lifecycleStatus == TypedAutomationLifecycle.RUNNING && it.leaseToken == token }
 
-    private fun stopState(state: TypedAutomationRuntimeStateEntity, reason: AutomationStopReason, now: Instant) {
+    private fun stopState(
+        state: TypedAutomationRuntimeStateEntity,
+        reason: AutomationStopReason,
+        now: Instant,
+        stopActionId: Long? = null,
+    ) {
         state.lifecycleStatus = TypedAutomationLifecycle.STOPPED; state.stopReason = reason.name
+        state.stopActionId = stopActionId
         state.nextAttemptAt = null; state.leaseToken = null; state.leaseUntil = null; state.updatedAt = now
     }
 

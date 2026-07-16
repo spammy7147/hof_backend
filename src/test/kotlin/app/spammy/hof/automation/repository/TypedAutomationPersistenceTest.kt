@@ -202,7 +202,7 @@ class TypedAutomationPersistenceTest {
     }
 
     @Test
-    fun latestStoppedActionIsAccountScopedAndIncludesFailedAndAmbiguousRows() {
+    fun stoppedActionLookupUsesTheExactIdAndIsAccountScoped() {
         val now = Instant.parse("2026-07-16T00:00:00Z")
         val account = newAccount("typed-stopped-action", now)
         val otherAccount = newAccount("typed-stopped-action-other", now)
@@ -225,6 +225,9 @@ class TypedAutomationPersistenceTest {
             action(account, entry, "ambiguous", TypedAutomationActionStatus.AMBIGUOUS, now.plusSeconds(2)),
         )
         actionRepository.save(
+            action(account, entry, "newer-failed", TypedAutomationActionStatus.FAILED, now.plusSeconds(5)),
+        )
+        actionRepository.save(
             action(account, entry, "succeeded", TypedAutomationActionStatus.SUCCEEDED, now.plusSeconds(3)),
         )
         actionRepository.save(
@@ -233,15 +236,16 @@ class TypedAutomationPersistenceTest {
         entityManager.flush()
         entityManager.clear()
 
-        val actual = requireNotNull(queryRepository.findLatestStoppedTypedAction(account.id))
+        val actual = requireNotNull(queryRepository.findStoppedTypedAction(account.id, expected.id))
 
         assertEquals(expected.id, actual.id)
         assertEquals(TypedAutomationActionStatus.AMBIGUOUS, actual.status)
         assertEquals(account.id, actual.account.id)
+        assertEquals(null, queryRepository.findStoppedTypedAction(otherAccount.id, expected.id))
     }
 
     @Test
-    fun latestStoppedActionSurvivesDeletionOfItsAutomationEntry() {
+    fun exactStoppedActionSurvivesDeletionOfItsAutomationEntry() {
         val now = Instant.parse("2026-07-16T00:00:00Z")
         val account = newAccount("typed-stopped-deleted-entry", now)
         runtimeRepository.save(
@@ -265,9 +269,23 @@ class TypedAutomationPersistenceTest {
         entityManager.flush()
         entityManager.clear()
 
-        val actual = requireNotNull(queryRepository.findLatestStoppedTypedAction(account.id))
+        val actual = requireNotNull(queryRepository.findStoppedTypedAction(account.id, expected.id))
         assertEquals(expected.id, actual.id)
         assertEquals(null, actual.entry)
+    }
+
+    @Test
+    fun stoppedActionLookupRejectsSucceededRows() {
+        val now = Instant.parse("2026-07-16T00:00:00Z")
+        val account = newAccount("typed-stopped-succeeded", now)
+        val entry = entryRepository.save(newEntry(account, AutomationType.BATTLE_MAP, 0, now))
+        val succeeded = actionRepository.save(
+            action(account, entry, "succeeded-only", TypedAutomationActionStatus.SUCCEEDED, now),
+        )
+        entityManager.flush()
+        entityManager.clear()
+
+        assertEquals(null, queryRepository.findStoppedTypedAction(account.id, succeeded.id))
     }
 
     @Test

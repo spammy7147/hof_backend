@@ -58,6 +58,7 @@ class TypedAutomationLifecycleBridge(
             if (it.lifecycleStatus != TypedAutomationLifecycle.STOPPED) {
                 it.lifecycleStatus = TypedAutomationLifecycle.PAUSED
                 it.stopReason = null
+                it.stopActionId = null
                 it.leaseToken = null
                 it.leaseUntil = null
                 it.updatedAt = timeProvider.now()
@@ -101,6 +102,7 @@ class TypedAutomationLifecycleBridge(
         } else state?.let {
             it.lifecycleStatus = TypedAutomationLifecycle.STOPPED
             it.stopReason = reason.name
+            it.stopActionId = null
             it.nextAttemptAt = null
             it.leaseToken = null
             it.leaseUntil = null
@@ -111,6 +113,7 @@ class TypedAutomationLifecycleBridge(
 
     private fun clearRuntime(state: TypedAutomationRuntimeStateEntity, now: java.time.Instant) {
         state.stopReason = null
+        state.stopActionId = null
         state.retryAttempt = 0
         state.nextAttemptAt = null
         state.leaseToken = null

@@ -14,6 +14,7 @@ class TypedAutomationRuntimeStateEntity(
     @OneToOne(fetch = FetchType.LAZY) @MapsId @JoinColumn(name = "account_id") val account: HofAccountEntity,
     @Enumerated(EnumType.STRING) @Column(name = "lifecycle_status") var lifecycleStatus: TypedAutomationLifecycle,
     @Column(name = "stop_reason") var stopReason: String? = null,
+    @Column(name = "stop_action_id") var stopActionId: Long? = null,
     @Column(name = "retry_attempt") var retryAttempt: Int = 0,
     @Column(name = "next_attempt_at") var nextAttemptAt: Instant? = null,
     @Column(name = "lease_token") var leaseToken: String? = null,

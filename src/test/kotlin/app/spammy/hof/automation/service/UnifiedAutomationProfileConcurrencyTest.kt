@@ -26,6 +26,8 @@ import org.springframework.transaction.PlatformTransactionManager
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.transaction.support.TransactionTemplate
+import tools.jackson.databind.ObjectMapper
+import tools.jackson.module.kotlin.jacksonObjectMapper
 
 @DataJpaTest
 @ActiveProfiles("test")
@@ -37,6 +39,7 @@ import org.springframework.transaction.support.TransactionTemplate
     BattleMapQueryRepository::class,
     PartyPresetQueryRepository::class,
     AutomationModuleReadinessEvaluator::class,
+    StoredTypedAutomationActionCodec::class,
     UnifiedAutomationService::class,
     UnifiedAutomationProfileConcurrencyTest.Config::class,
 )
@@ -98,6 +101,9 @@ class UnifiedAutomationProfileConcurrencyTest {
         @Bean
         fun afterCommitWakeupService(): AutomationAfterCommitWakeupService =
             Mockito.mock(AutomationAfterCommitWakeupService::class.java)
+
+        @Bean
+        fun objectMapper(): ObjectMapper = jacksonObjectMapper()
     }
 
     private companion object {
