@@ -67,6 +67,7 @@ class FreshSchemaTest {
                 "16" to "harden typed automation runtime",
                 "17" to "retain typed actions when entry deleted",
                 "18" to "bind typed automation stop action",
+                "19" to "retire legacy automation jobs",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -88,6 +89,7 @@ class FreshSchemaTest {
                 "V16__harden_typed_automation_runtime.sql",
                 "V17__retain_typed_actions_when_entry_deleted.sql",
                 "V18__bind_typed_automation_stop_action.sql",
+                "V19__retire_legacy_automation_jobs.sql",
                 "V1__initialize_schema.sql",
                 "V2__seed_battle_map_catalog.sql",
                 "V3__add_token_authentication.sql",
@@ -227,6 +229,135 @@ class FreshSchemaTest {
                     assertEquals(1L, rows.getLong(1))
                 }
             }
+        }
+    }
+
+    @Test
+    fun v19CancelsActiveLegacyJobsAndAbortsTheirUnfinishedActionsWithoutDeletingHistory() {
+        val suffix = UUID.randomUUID().toString().replace("-", "")
+        val upgradeDatabase = "v19_upgrade_$suffix"
+        val upgradeUrl =
+            "jdbc:h2:mem:$upgradeDatabase;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;" +
+                "DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1"
+        Flyway.configure().dataSource(upgradeUrl, "sa", "").target("18").load().migrate()
+
+        DriverManager.getConnection(upgradeUrl, "sa", "").use { connection ->
+            connection.createStatement().use { statement ->
+                statement.execute(
+                    """
+                    insert into hof_accounts (login_id, encrypted_password, created_at)
+                    values ('v19-upgrade', 'encrypted', current_timestamp)
+                    """.trimIndent(),
+                )
+                statement.execute(
+                    """
+                    insert into automation_profiles
+                        (account_id, name, mode, enabled, created_at, updated_at)
+                    select id, 'v19-profile', 'TIME_BURN', true, current_timestamp, current_timestamp
+                    from hof_accounts where login_id = 'v19-upgrade'
+                    """.trimIndent(),
+                )
+                statement.execute(
+                    """
+                    insert into automation_module_configs
+                        (profile_id, module_type, enabled, priority, display_name, created_at, updated_at)
+                    select id, 'TIME_BURN', true, 0, 'Time Burn', current_timestamp, current_timestamp
+                    from automation_profiles where name = 'v19-profile'
+                    """.trimIndent(),
+                )
+                statement.execute(
+                    """
+                    insert into automation_jobs
+                        (account_id, profile_id, status, current_step_index, message,
+                         created_at, started_at, updated_at, finished_at,
+                         current_module, current_action, next_run_at, last_heartbeat_at, version)
+                    select account_id, id, 'RUNNING', 1, 'active',
+                           current_timestamp, current_timestamp, current_timestamp, null,
+                           'TIME_BURN', 'battle', current_timestamp, current_timestamp, 0
+                    from automation_profiles where name = 'v19-profile'
+                    union all
+                    select account_id, id, 'COMPLETED', 2, 'history',
+                           current_timestamp, current_timestamp, current_timestamp, current_timestamp,
+                           'TIME_BURN', 'stale-history-action', current_timestamp, current_timestamp, 0
+                    from automation_profiles where name = 'v19-profile'
+                    """.trimIndent(),
+                )
+                statement.execute(
+                    """
+                    update automation_jobs
+                    set current_module_config_id = (
+                        select id from automation_module_configs where module_type = 'TIME_BURN'
+                    )
+                    """.trimIndent(),
+                )
+                statement.execute(
+                    """
+                    insert into automation_action_runs
+                        (job_id, module_type, action_type, status, request_key, payload_json,
+                         attempt_count, next_attempt_at, created_at, started_at, updated_at)
+                    select id, 'TIME_BURN', 'BATTLE', 'RETRY_WAIT', 'v19-active-action', '{}',
+                           1, current_timestamp, current_timestamp, current_timestamp, current_timestamp
+                    from automation_jobs where message = 'active'
+                    """.trimIndent(),
+                )
+            }
+        }
+
+        Flyway.configure().dataSource(upgradeUrl, "sa", "").load().migrate()
+
+        DriverManager.getConnection(upgradeUrl, "sa", "").use { connection ->
+            assertEquals(
+                "CANCELLED",
+                connection.stringValue("select status from automation_jobs where message like '레거시%'"),
+            )
+            assertEquals(
+                1,
+                connection.count(
+                    """
+                    select count(*) from automation_jobs
+                    where message like '레거시%'
+                      and finished_at is not null
+                      and current_module is null
+                      and current_module_config_id is null
+                      and current_action is null
+                      and next_run_at is null
+                      and last_heartbeat_at is null
+                    """.trimIndent(),
+                ),
+            )
+            assertEquals(
+                "COMPLETED",
+                connection.stringValue("select status from automation_jobs where message = 'history'"),
+            )
+            assertEquals(
+                1,
+                connection.count(
+                    """
+                    select count(*) from automation_jobs
+                    where message = 'history'
+                      and current_module is null
+                      and current_module_config_id is null
+                      and current_action is null
+                      and next_run_at is null
+                      and last_heartbeat_at is null
+                    """.trimIndent(),
+                ),
+            )
+            assertEquals(
+                "ABORTED",
+                connection.stringValue("select status from automation_action_runs where request_key = 'v19-active-action'"),
+            )
+            assertEquals(
+                1,
+                connection.count(
+                    """
+                    select count(*) from automation_action_runs
+                    where request_key = 'v19-active-action'
+                      and finished_at is not null
+                      and next_attempt_at is null
+                    """.trimIndent(),
+                ),
+            )
         }
     }
 

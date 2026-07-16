@@ -1,7 +1,6 @@
 package app.spammy.hof.automation.recovery
 
 import app.spammy.hof.automation.port.AutomationWakeupPort
-import app.spammy.hof.automation.repository.AutomationJobQueryRepository
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import app.spammy.hof.common.time.TimeProvider
 import java.time.Instant
@@ -15,12 +14,11 @@ import org.springframework.transaction.annotation.Transactional
 
 @Service
 class AutomationRecoveryDueAccountQuery(
-    private val jobs: AutomationJobQueryRepository,
     private val typed: TypedAutomationQueryRepository,
 ) {
     @Transactional(readOnly = true)
     fun findDueAccountIds(now: Instant): List<Long> =
-        (jobs.findRecoverableAccountIds(now) + typed.findRecoverableRuntimeAccountIds(now)).distinct().sorted()
+        typed.findRecoverableRuntimeAccountIds(now).distinct().sorted()
 }
 
 @Component
