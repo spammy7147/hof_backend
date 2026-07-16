@@ -88,6 +88,7 @@ class UnifiedAutomationService(
     private val typedBattleMapRepository: BattleAutomationMapCommandRepository? = null,
     private val typedAdventureMapRepository: AdventureAutomationMapCommandRepository? = null,
     private val automationOutboxService: AutomationOutboxService? = null,
+    private val storedActionCodec: StoredTypedAutomationActionCodec,
 ) {
     @Transactional(readOnly = true)
     fun getTyped(accountId: Long): TypedAutomationAggregateResponse {
@@ -1108,6 +1109,14 @@ class UnifiedAutomationService(
             )
         }
         val runtime = typed.findRuntimeState(accountId)
+        val currentAction = typed.findActiveTypedAction(accountId)?.let(::typedCurrentAction)
+        val today = timeProvider.now().atZone(KOREA_ZONE).toLocalDate()
+        val latestRefresh = typed.findLatestAdventureRefresh(accountId)
+        val dailyRefresh = AdventureDailyRefreshResponse(
+            status = if (latestRefresh?.refreshDate == today) "COMPLETE" else "PENDING",
+            refreshDate = latestRefresh?.refreshDate?.toString(),
+            refreshedAt = latestRefresh?.refreshedAt?.toString(),
+        )
         val persistedWarnings = runtime?.warningText.orEmpty().lineSequence()
             .map(String::trim)
             .filter(String::isNotEmpty)
@@ -1121,7 +1130,40 @@ class UnifiedAutomationService(
                 nextAttemptAt = runtime?.nextAttemptAt?.toString(),
                 warnings = (persistedWarnings + configWarnings).distinct(),
                 lastError = runtime?.lastError,
+                currentAction = currentAction,
+                dailyRefresh = dailyRefresh,
             ),
+        )
+    }
+
+    private fun typedCurrentAction(row: app.spammy.hof.automation.entity.TypedAutomationActionRunEntity): TypedAutomationCurrentActionResponse? {
+        val source = row.entry?.type ?: return null
+        val decoded = try {
+            storedActionCodec.verifyPersisted(row, row.account.id)
+        } catch (_: RuntimeException) {
+            null
+        }
+        val payload = decoded?.payload
+        val title = when (payload) {
+            is StoredTypedActionPayload.QuestClaim -> payload.questCode
+            is StoredTypedActionPayload.QuestAccept -> payload.questCode
+            is StoredTypedActionPayload.QuestBattle -> payload.mapCode
+            is StoredTypedActionPayload.BattleMap -> payload.mapCode
+            is StoredTypedActionPayload.AdventureMap -> payload.mapCode
+            null -> row.actionKind
+        }
+        val battleTotal = when (payload) {
+            is StoredTypedActionPayload.QuestBattle -> payload.battleCount
+            is StoredTypedActionPayload.BattleMap -> payload.battleCount
+            is StoredTypedActionPayload.AdventureMap -> payload.battleCount
+            else -> null
+        }
+        return TypedAutomationCurrentActionResponse(
+            source = source,
+            kind = row.actionKind,
+            title = title,
+            battleCurrent = battleTotal?.let { 1 },
+            battleTotal = battleTotal,
         )
     }
 

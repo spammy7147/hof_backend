@@ -28,6 +28,9 @@ import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.entity.BattleAutomationMapEntity
 import app.spammy.hof.automation.entity.BattleAutomationDailyProgressEntity
+import app.spammy.hof.automation.entity.AdventureDailyRefreshEntity
+import app.spammy.hof.automation.entity.TypedAutomationActionRunEntity
+import app.spammy.hof.automation.entity.TypedAutomationActionStatus
 import app.spammy.hof.automation.entity.TypedAutomationLifecycle
 import app.spammy.hof.automation.entity.TypedAutomationRuntimeStateEntity
 import app.spammy.hof.automation.repository.AutomationJobRepository
@@ -89,6 +92,7 @@ class UnifiedAutomationServiceTest {
     private val battleSettingRepository = Mockito.mock(BattleAutomationMapCommandRepository::class.java)
     private val adventureSettingRepository = Mockito.mock(AdventureAutomationMapCommandRepository::class.java)
     private val automationOutbox = Mockito.mock(AutomationOutboxService::class.java)
+    private val storedActionCodec = Mockito.mock(StoredTypedAutomationActionCodec::class.java)
     private var currentTime: Instant = NOW
     private val service = UnifiedAutomationService(
         accountQueryRepository = accountQueryRepository,
@@ -111,6 +115,7 @@ class UnifiedAutomationServiceTest {
         typedAdventureMapRepository = adventureSettingRepository,
         automationOutboxService = automationOutbox,
         typedAutomationQueryRepository = typedQuery,
+        storedActionCodec = storedActionCodec,
     )
 
     init {
@@ -162,6 +167,80 @@ class UnifiedAutomationServiceTest {
         assertEquals(emptyList(), response.entries.single().warnings)
         assertPreservedFailureDiagnostic(response, runtime)
         Mockito.verify(automationOutbox).enqueue(ACCOUNT_ID, "SETTINGS_UPDATED")
+    }
+
+    @Test
+    fun typedAggregateExposesCurrentActionAndKoreaDailyRefreshStatus() {
+        currentTime = Instant.parse("2026-07-16T00:00:00Z")
+        val account = account()
+        val entry = AutomationEntryEntity(
+            id = 91L, account = account, type = AutomationType.BATTLE_MAP, priority = 0, enabled = true,
+            createdAt = NOW, updatedAt = NOW,
+        )
+        val action = TypedAutomationActionRunEntity(
+            id = 501L,
+            account = account,
+            entry = entry,
+            executionIdentity = "battle-action-1",
+            actionKind = "BATTLE_MAP",
+            schemaVersion = 1,
+            payloadJson = "{}",
+            actionFingerprint = "a".repeat(64),
+            status = TypedAutomationActionStatus.SUBMITTING,
+            leaseToken = "lease",
+            createdAt = NOW,
+            updatedAt = NOW,
+        )
+        val stored = StoredTypedAutomationActionV1(
+            entryId = entry.id,
+            executionIdentity = action.executionIdentity,
+            payload = StoredTypedActionPayload.BattleMap(
+                progressDate = LocalDate.parse("2026-07-16"),
+                categoryId = "battle",
+                mapCode = "Castle202",
+                presetMode = PresetSelectionMode.PRIMARY,
+                presetId = 7L,
+                battleCount = 3,
+                battleRequest = app.spammy.hof.battle.dto.RunBattleRequest(
+                    categoryId = "battle",
+                    mapCode = "Castle202",
+                    characterIds = listOf("c1"),
+                    patternLoads = listOf(app.spammy.hof.battle.dto.BattlePatternLoadRequest("c1", 0)),
+                    battleCount = 3,
+                ),
+            ),
+        )
+        val refresh = AdventureDailyRefreshEntity(
+            id = 601L,
+            account = account,
+            refreshDate = LocalDate.parse("2026-07-16"),
+            refreshedAt = NOW.minusSeconds(60),
+        )
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(entry))
+        Mockito.`when`(accountQueryRepository.findById(ACCOUNT_ID)).thenReturn(account)
+        Mockito.`when`(typedQuery.findBattleSettings(entry.id)).thenReturn(emptyList())
+        Mockito.`when`(typedQuery.findRuntimeState(ACCOUNT_ID)).thenReturn(
+            TypedAutomationRuntimeStateEntity(
+                accountId = ACCOUNT_ID,
+                account = account,
+                lifecycleStatus = TypedAutomationLifecycle.RUNNING,
+                createdAt = NOW,
+                updatedAt = NOW,
+            ),
+        )
+        Mockito.`when`(typedQuery.findActiveTypedAction(ACCOUNT_ID)).thenReturn(action)
+        Mockito.`when`(storedActionCodec.verifyPersisted(action, ACCOUNT_ID)).thenReturn(stored)
+        Mockito.`when`(typedQuery.findLatestAdventureRefresh(ACCOUNT_ID)).thenReturn(refresh)
+
+        val response = service.getTyped(ACCOUNT_ID)
+
+        assertEquals(AutomationType.BATTLE_MAP, response.runtime.currentAction?.source)
+        assertEquals("Castle202", response.runtime.currentAction?.title)
+        assertEquals(1, response.runtime.currentAction?.battleCurrent)
+        assertEquals(3, response.runtime.currentAction?.battleTotal)
+        assertEquals("COMPLETE", response.runtime.dailyRefresh.status)
+        assertEquals("2026-07-16", response.runtime.dailyRefresh.refreshDate)
+        assertEquals(refresh.refreshedAt.toString(), response.runtime.dailyRefresh.refreshedAt)
     }
 
     @Test

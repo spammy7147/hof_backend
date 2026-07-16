@@ -19,6 +19,7 @@ import app.spammy.hof.automation.entity.QQuestAutomationSelectionEntity.questAut
 import app.spammy.hof.automation.entity.QQuestAutomationMapEntity.questAutomationMapEntity
 import app.spammy.hof.automation.entity.QBattleAutomationMapEntity.battleAutomationMapEntity
 import app.spammy.hof.automation.entity.QAdventureAutomationMapEntity.adventureAutomationMapEntity
+import app.spammy.hof.automation.entity.QAdventureDailyRefreshEntity.adventureDailyRefreshEntity
 import app.spammy.hof.party.entity.QPartyPresetEntity.partyPresetEntity
 import app.spammy.hof.automation.entity.QuestAutomationCycleEntity
 import app.spammy.hof.automation.entity.QuestAutomationProcessedResultEntity
@@ -30,6 +31,7 @@ import app.spammy.hof.automation.entity.QuestAutomationSelectionEntity
 import app.spammy.hof.automation.entity.QuestAutomationMapEntity
 import app.spammy.hof.automation.entity.BattleAutomationMapEntity
 import app.spammy.hof.automation.entity.AdventureAutomationMapEntity
+import app.spammy.hof.automation.entity.AdventureDailyRefreshEntity
 import com.querydsl.jpa.impl.JPAQueryFactory
 import jakarta.persistence.LockModeType
 import java.time.LocalDate
@@ -53,6 +55,16 @@ class TypedAutomationQueryRepository(
     fun findRuntimeState(accountId: Long): TypedAutomationRuntimeStateEntity? =
         queryFactory.selectFrom(typedAutomationRuntimeStateEntity)
             .where(typedAutomationRuntimeStateEntity.accountId.eq(accountId)).fetchOne()
+
+    fun findLatestAdventureRefresh(accountId: Long): AdventureDailyRefreshEntity? =
+        queryFactory.selectFrom(adventureDailyRefreshEntity)
+            .where(adventureDailyRefreshEntity.account.id.eq(accountId))
+            .orderBy(
+                adventureDailyRefreshEntity.refreshDate.desc(),
+                adventureDailyRefreshEntity.refreshedAt.desc(),
+                adventureDailyRefreshEntity.id.desc(),
+            )
+            .fetchFirst()
 
     fun findRecoverableRuntimeAccountIds(now: Instant): List<Long> =
         queryFactory.select(typedAutomationRuntimeStateEntity.accountId)

@@ -144,6 +144,22 @@ data class TypedAutomationRuntimeResponse(
     val nextAttemptAt: String? = null,
     val warnings: List<String> = emptyList(),
     val lastError: String? = null,
+    val currentAction: TypedAutomationCurrentActionResponse? = null,
+    val dailyRefresh: AdventureDailyRefreshResponse = AdventureDailyRefreshResponse(),
+)
+
+data class TypedAutomationCurrentActionResponse(
+    val source: AutomationType,
+    val kind: String,
+    val title: String,
+    val battleCurrent: Int? = null,
+    val battleTotal: Int? = null,
+)
+
+data class AdventureDailyRefreshResponse(
+    val status: String = "PENDING",
+    val refreshDate: String? = null,
+    val refreshedAt: String? = null,
 )
 
 data class TypedAutomationAggregateResponse(
