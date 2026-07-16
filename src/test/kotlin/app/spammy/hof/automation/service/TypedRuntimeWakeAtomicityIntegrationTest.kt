@@ -14,6 +14,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import org.mockito.Mockito
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
@@ -89,6 +90,18 @@ class TypedRuntimeWakeAtomicityIntegrationTest {
 
         assertNull(typed.findRuntimeState(fixture.accountId)?.leaseToken)
         assertEquals(1, outbox.findUnpublished(NOW.plusSeconds(1)).count { it.account.id == fixture.accountId })
+    }
+
+    @Test
+    fun `idle release remains discoverable by periodic recovery after runner clears its next time`() {
+        val fixture = seed("idle-periodic-recovery", TypedAutomationActionStatus.PREPARED)
+
+        assertEquals(true, runtime.releaseWithDiagnostics(fixture.accountId, TOKEN, null, emptyList()))
+
+        val state = requireNotNull(typed.findRuntimeState(fixture.accountId))
+        assertNull(state.nextAttemptAt)
+        assertNull(state.leaseToken)
+        assertTrue(typed.findRecoverableRuntimeAccountIds(NOW).contains(fixture.accountId))
     }
 
     private fun seed(login: String, status: TypedAutomationActionStatus): Fixture = TransactionTemplate(transactionManager).execute {

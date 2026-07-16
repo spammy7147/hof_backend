@@ -69,6 +69,36 @@ class TypedAutomationPersistenceTest {
     }
 
     @Test
+    fun recoverableRuntimeQueryIncludesRunningIdleAndDueRowsButExcludesInactiveOrNotYetDueRows() {
+        val now = Instant.parse("2026-07-16T00:00:00Z")
+        val idle = newAccount("typed-recovery-idle", now)
+        val dueRetry = newAccount("typed-recovery-due", now)
+        val expiredLease = newAccount("typed-recovery-expired-lease", now)
+        val futureRetry = newAccount("typed-recovery-future", now)
+        val validLease = newAccount("typed-recovery-valid-lease", now)
+        val paused = newAccount("typed-recovery-paused", now)
+        val stopped = newAccount("typed-recovery-stopped", now)
+        runtimeRepository.saveAll(
+            listOf(
+                runtime(idle, TypedAutomationLifecycle.RUNNING, now),
+                runtime(dueRetry, TypedAutomationLifecycle.RUNNING, now, nextAttemptAt = now),
+                runtime(expiredLease, TypedAutomationLifecycle.RUNNING, now, leaseToken = "expired", leaseUntil = now),
+                runtime(futureRetry, TypedAutomationLifecycle.RUNNING, now, nextAttemptAt = now.plusSeconds(1)),
+                runtime(validLease, TypedAutomationLifecycle.RUNNING, now, leaseToken = "valid", leaseUntil = now.plusSeconds(1)),
+                runtime(paused, TypedAutomationLifecycle.PAUSED, now),
+                runtime(stopped, TypedAutomationLifecycle.STOPPED, now, stopReason = "NETWORK"),
+            ),
+        )
+        entityManager.flush()
+        entityManager.clear()
+
+        assertEquals(
+            listOf(idle.id, dueRetry.id, expiredLease.id).sorted(),
+            queryRepository.findRecoverableRuntimeAccountIds(now),
+        )
+    }
+
+    @Test
     fun rejectsDuplicateTypeForTheSameAccount() {
         val now = Instant.parse("2026-07-15T00:00:00Z")
         val account = newAccount("typed-duplicate", now)
@@ -330,6 +360,26 @@ class TypedAutomationPersistenceTest {
         type = type,
         priority = priority,
         enabled = true,
+        createdAt = now,
+        updatedAt = now,
+    )
+
+    private fun runtime(
+        account: HofAccountEntity,
+        lifecycle: TypedAutomationLifecycle,
+        now: Instant,
+        nextAttemptAt: Instant? = null,
+        leaseToken: String? = null,
+        leaseUntil: Instant? = null,
+        stopReason: String? = null,
+    ) = TypedAutomationRuntimeStateEntity(
+        account.id,
+        account,
+        lifecycle,
+        stopReason = stopReason,
+        nextAttemptAt = nextAttemptAt,
+        leaseToken = leaseToken,
+        leaseUntil = leaseUntil,
         createdAt = now,
         updatedAt = now,
     )

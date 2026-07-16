@@ -9,6 +9,7 @@ import app.spammy.hof.battle.service.BattleRunService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.quest.service.QuestGatewayService
+import java.io.IOException
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -88,6 +89,42 @@ class DefaultAutomationActionExecutorTest {
 
         Mockito.verify(questGateway, Mockito.times(1)).accept(7L, "accept-no")
         Mockito.verifyNoInteractions(questHandler)
+    }
+
+    @Test
+    fun `ambiguous quest accept transport failure is never replayed`() {
+        val action = StoredTypedAutomationActionV1(
+            entryId = 11L,
+            executionIdentity = "quest-accept-ambiguous",
+            payload = StoredTypedActionPayload.QuestAccept("Q-1", "accept-no"),
+        )
+        Mockito.`when`(questGateway.accept(7L, "accept-no"))
+            .thenThrow(RuntimeException("transport wrapper", IOException("connection reset")))
+
+        assertFailsWith<AmbiguousAutomationSubmissionException> {
+            executor.execute(7L, action)
+        }
+
+        Mockito.verify(questGateway, Mockito.times(1)).accept(7L, "accept-no")
+        Mockito.verifyNoInteractions(accountService, questHandler)
+    }
+
+    @Test
+    fun `ambiguous quest claim request failure is never replayed`() {
+        val action = StoredTypedAutomationActionV1(
+            entryId = 11L,
+            executionIdentity = "quest-claim-ambiguous",
+            payload = StoredTypedActionPayload.QuestClaim("Q-1", "claim-no"),
+        )
+        Mockito.`when`(questGateway.claim(7L, "claim-no"))
+            .thenThrow(ApiException(ErrorCode.HOF_REQUEST_FAILED, "upstream result unknown"))
+
+        assertFailsWith<AmbiguousAutomationSubmissionException> {
+            executor.execute(7L, action)
+        }
+
+        Mockito.verify(questGateway, Mockito.times(1)).claim(7L, "claim-no")
+        Mockito.verifyNoInteractions(accountService, questHandler)
     }
 
     @Test

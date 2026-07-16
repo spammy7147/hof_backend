@@ -12,6 +12,7 @@ import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import java.time.Instant
 import java.time.LocalDate
+import java.io.IOException
 import kotlin.test.Test
 import org.mockito.Mockito
 import tools.jackson.module.kotlin.jacksonObjectMapper
@@ -167,6 +168,17 @@ class UnifiedAutomationRunnerTest {
             IllegalStateException(
                 "wrapped ambiguous outcome",
                 AmbiguousAutomationSubmissionException("unknown outcome"),
+            ),
+            AutomationStopReason.NETWORK,
+        )
+    }
+
+    @Test
+    fun `ambiguous quest side effect is checkpointed as network stop for manual resume`() {
+        preparedActionFailure(
+            AmbiguousAutomationSubmissionException(
+                "Quest side-effect request outcome is not provable; it will not be resent.",
+                IOException("connection reset"),
             ),
             AutomationStopReason.NETWORK,
         )

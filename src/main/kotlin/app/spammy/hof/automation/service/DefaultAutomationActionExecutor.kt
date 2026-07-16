@@ -5,6 +5,7 @@ import app.spammy.hof.battle.service.BattleRunService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.quest.service.QuestGatewayService
+import java.io.IOException
 import org.springframework.stereotype.Service
 
 @Service
@@ -19,9 +20,9 @@ class DefaultAutomationActionExecutor(
     override fun execute(accountId: Long, action: StoredTypedAutomationActionV1) {
         when (val payload = action.payload) {
                 is StoredTypedActionPayload.QuestClaim ->
-                    sessionRecovery.execute(accountId) { questGatewayService.claim(accountId, payload.actionNo) }
+                    runQuestMutation(accountId) { questGatewayService.claim(accountId, payload.actionNo) }
                 is StoredTypedActionPayload.QuestAccept -> {
-                    sessionRecovery.execute(accountId) { questGatewayService.accept(accountId, payload.actionNo) }
+                    runQuestMutation(accountId) { questGatewayService.accept(accountId, payload.actionNo) }
                     questHandler.onAcceptSucceeded(accountId, action.executionIdentity, QuestAction.Accept(payload.questCode, payload.actionNo))
                 }
                 is StoredTypedActionPayload.QuestBattle -> {
@@ -58,6 +59,37 @@ class DefaultAutomationActionExecutor(
                 }
         }
     }
+
+    private fun <T> runQuestMutation(accountId: Long, operation: () -> T): T =
+        try {
+            sessionRecovery.execute(accountId, operation)
+        } catch (error: Throwable) {
+            val causes = generateSequence(error) { it.cause }.toList()
+            if (causes.any { it is AutomationLoginRequiredException }) throw error
+            causes.filterIsInstance<ApiException>().firstOrNull()?.let { api ->
+                if (api.errorCode in setOf(
+                        ErrorCode.HOF_SESSION_EXPIRED,
+                        ErrorCode.HOF_LOGIN_FAILED,
+                        ErrorCode.CAPTCHA_REQUIRED,
+                    )
+                ) {
+                    throw error
+                }
+                if (api.errorCode == ErrorCode.HOF_REQUEST_FAILED) {
+                    throw AmbiguousAutomationSubmissionException(
+                        "Quest side-effect request outcome is not provable; it will not be resent.",
+                        error,
+                    )
+                }
+            }
+            if (causes.any { it is IOException }) {
+                throw AmbiguousAutomationSubmissionException(
+                    "Quest side-effect request outcome is not provable; it will not be resent.",
+                    error,
+                )
+            }
+            throw error
+        }
 
     private fun runTypedBattle(accountId: Long, request: RunBattleRequest) =
         sessionRecovery.execute(accountId) {

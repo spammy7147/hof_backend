@@ -71,9 +71,13 @@ class TypedAutomationQueryRepository(
             .from(typedAutomationRuntimeStateEntity)
             .where(
                 typedAutomationRuntimeStateEntity.lifecycleStatus.eq(app.spammy.hof.automation.entity.TypedAutomationLifecycle.RUNNING),
-                typedAutomationRuntimeStateEntity.nextAttemptAt.isNotNull
-                    .and(typedAutomationRuntimeStateEntity.nextAttemptAt.loe(now))
+                typedAutomationRuntimeStateEntity.nextAttemptAt.isNull
                     .and(typedAutomationRuntimeStateEntity.leaseToken.isNull)
+                    .or(
+                        typedAutomationRuntimeStateEntity.nextAttemptAt.isNotNull
+                            .and(typedAutomationRuntimeStateEntity.nextAttemptAt.loe(now))
+                            .and(typedAutomationRuntimeStateEntity.leaseToken.isNull),
+                    )
                     .or(
                         typedAutomationRuntimeStateEntity.leaseUntil.isNotNull
                             .and(typedAutomationRuntimeStateEntity.leaseUntil.loe(now)),
