@@ -27,6 +27,7 @@ import app.spammy.hof.automation.entity.AutomationProfileEntity
 import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.entity.BattleAutomationMapEntity
+import app.spammy.hof.automation.entity.BattleAutomationDailyProgressEntity
 import app.spammy.hof.automation.entity.TypedAutomationLifecycle
 import app.spammy.hof.automation.entity.TypedAutomationRuntimeStateEntity
 import app.spammy.hof.automation.repository.AutomationJobRepository
@@ -56,6 +57,7 @@ import app.spammy.hof.party.entity.PartyPresetEntity
 import app.spammy.hof.party.entity.PartyPresetMemberEntity
 import app.spammy.hof.party.repository.PartyPresetQueryRepository
 import java.time.Instant
+import java.time.LocalDate
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -297,6 +299,52 @@ class UnifiedAutomationServiceTest {
 
         assertFalse(response.entries.single().ready)
         assertTrue(response.entries.single().warnings.any { it.contains("전투") || it.contains("파티") })
+    }
+
+    @Test
+    fun typedAggregateExposesCurrentKstBattleProgressOnceOnlyOnTheBattleEntry() {
+        val account = account()
+        val quest = AutomationEntryEntity(91L, account, AutomationType.QUEST, 0, false, NOW, NOW)
+        val battle = AutomationEntryEntity(92L, account, AutomationType.BATTLE_MAP, 1, false, NOW, NOW)
+        val progress = listOf(
+            BattleAutomationDailyProgressEntity(
+                account = account,
+                progressDate = LocalDate.parse("2026-07-14"),
+                categoryId = "battle_map",
+                mapCode = "gb0",
+                source = "battle_map",
+                successfulRuns = 6,
+                updatedAt = NOW,
+            ),
+            BattleAutomationDailyProgressEntity(
+                account = account,
+                progressDate = LocalDate.parse("2026-07-14"),
+                categoryId = "battle_map",
+                mapCode = "deleted-map",
+                source = "battle_map",
+                successfulRuns = 2,
+                updatedAt = NOW,
+            ),
+        )
+        Mockito.`when`(accountQueryRepository.findById(ACCOUNT_ID)).thenReturn(account)
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(quest, battle))
+        Mockito.`when`(
+            typedQuery.findBattleProgressRows(ACCOUNT_ID, LocalDate.parse("2026-07-14"), "battle_map"),
+        ).thenReturn(progress)
+        Mockito.`when`(partyPresetQueryRepository.findAllByAccountId(ACCOUNT_ID)).thenReturn(emptyList())
+
+        val response = service.getTyped(ACCOUNT_ID)
+
+        assertEquals(emptyList(), response.entries.first().battleMapProgress)
+        assertEquals(
+            listOf(
+                Triple("battle_map", "deleted-map", 2),
+                Triple("battle_map", "gb0", 6),
+            ),
+            response.entries.last().battleMapProgress.map { Triple(it.categoryId, it.mapCode, it.successfulRuns) },
+        )
+        Mockito.verify(typedQuery, Mockito.times(1))
+            .findBattleProgressRows(ACCOUNT_ID, LocalDate.parse("2026-07-14"), "battle_map")
     }
 
     @Test

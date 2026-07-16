@@ -111,6 +111,12 @@ data class BattleMapSettingResponse(
     val executionOrder: Int,
 )
 
+data class BattleMapDailyProgressResponse(
+    val categoryId: String,
+    val mapCode: String,
+    val successfulRuns: Int,
+)
+
 data class AdventureMapSettingResponse(
     val categoryId: String,
     val mapCode: String,
@@ -128,6 +134,7 @@ data class TypedAutomationEntryResponse(
     val warnings: List<String>,
     val quests: List<QuestSelectionResponse> = emptyList(),
     val battleMaps: List<BattleMapSettingResponse> = emptyList(),
+    val battleMapProgress: List<BattleMapDailyProgressResponse> = emptyList(),
     val adventureMaps: List<AdventureMapSettingResponse> = emptyList(),
 )
 

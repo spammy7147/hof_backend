@@ -2,8 +2,11 @@ package app.spammy.hof.automation.controller
 
 import app.spammy.hof.auth.service.JwtTokenService
 import app.spammy.hof.automation.dto.TypedAutomationAggregateResponse
+import app.spammy.hof.automation.dto.BattleMapDailyProgressResponse
+import app.spammy.hof.automation.dto.TypedAutomationEntryResponse
 import app.spammy.hof.automation.dto.TypedAutomationRuntimeResponse
 import app.spammy.hof.automation.entity.TypedAutomationLifecycle
+import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.service.UnifiedAutomationService
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -65,6 +68,45 @@ class UnifiedAutomationApiSecurityTest(
             .andExpect(status().isOk)
             .andExpect(jsonPath("$.entries").isEmpty)
             .andExpect(jsonPath("$.runtime.lifecycle").value("STOPPED"))
+
+        Mockito.verify(service).getTyped(42L)
+    }
+
+    @Test
+    fun typedAggregateSerializesBattleProgressWithExactFieldNamesOnlyOnBattleEntry() {
+        val response = TypedAutomationAggregateResponse(
+            entries = listOf(
+                TypedAutomationEntryResponse(
+                    id = 1L,
+                    type = AutomationType.QUEST,
+                    enabled = false,
+                    priority = 0,
+                    ready = true,
+                    warnings = emptyList(),
+                ),
+                TypedAutomationEntryResponse(
+                    id = 2L,
+                    type = AutomationType.BATTLE_MAP,
+                    enabled = true,
+                    priority = 1,
+                    ready = true,
+                    warnings = emptyList(),
+                    battleMapProgress = listOf(BattleMapDailyProgressResponse("battle_map", "gb0", 6)),
+                ),
+            ),
+            runtime = TypedAutomationRuntimeResponse(TypedAutomationLifecycle.STOPPED),
+        )
+        Mockito.`when`(service.getTyped(42L)).thenReturn(response)
+
+        mockMvc.perform(
+            get("/api/automation/unified")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer ${jwtTokenService.issue(42L).value}"),
+        )
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.entries[0].battleMapProgress").isEmpty)
+            .andExpect(jsonPath("$.entries[1].battleMapProgress[0].categoryId").value("battle_map"))
+            .andExpect(jsonPath("$.entries[1].battleMapProgress[0].mapCode").value("gb0"))
+            .andExpect(jsonPath("$.entries[1].battleMapProgress[0].successfulRuns").value(6))
 
         Mockito.verify(service).getTyped(42L)
     }

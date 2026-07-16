@@ -51,6 +51,7 @@ import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.party.entity.PartyPresetEntity
 import app.spammy.hof.party.repository.PartyPresetQueryRepository
 import java.time.Instant
+import java.time.ZoneId
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -1038,6 +1039,21 @@ class UnifiedAutomationService(
     private fun buildTypedAggregate(accountId: Long): TypedAutomationAggregateResponse {
         val typed = typedQuery()
         val entries = typed.findEntries(accountId)
+        val battleMapProgress = if (entries.any { it.type == AutomationType.BATTLE_MAP }) {
+            typed.findBattleProgressRows(
+                accountId,
+                timeProvider.now().atZone(KOREA_ZONE).toLocalDate(),
+                TypedAutomationQueryRepository.BATTLE_MAP_AUTOMATION_SOURCE,
+            ).sortedWith(compareBy({ it.categoryId }, { it.mapCode })).map { progress ->
+                BattleMapDailyProgressResponse(
+                    categoryId = progress.categoryId,
+                    mapCode = progress.mapCode,
+                    successfulRuns = progress.successfulRuns,
+                )
+            }
+        } else {
+            emptyList()
+        }
         val presets = partyPresetQueryRepository.findAllByAccountId(accountId)
         val presetMembers = partyPresetQueryRepository.findMembersByPresetIds(presets.map { it.id })
         val validPresetIds = presetMembers.groupBy { it.preset.id }.filterValues { members ->
@@ -1080,6 +1096,7 @@ class UnifiedAutomationService(
                         map.partyPreset?.id, map.executionOrder,
                     )
                 },
+                battleMapProgress = if (entry.type == AutomationType.BATTLE_MAP) battleMapProgress else emptyList(),
                 adventureMaps = adventure.map { map ->
                     AdventureMapSettingResponse(
                         map.categoryId, map.mapCode, map.presetMode, map.partyPreset?.id, map.executionOrder,
@@ -1270,6 +1287,7 @@ class UnifiedAutomationService(
 
     private companion object {
         val logger = LoggerFactory.getLogger(UnifiedAutomationService::class.java)
+        val KOREA_ZONE: ZoneId = ZoneId.of("Asia/Seoul")
         const val MAX_DISPLAY_NAME_LENGTH = 50
         const val MAX_CATEGORY_ID_LENGTH = 50
         const val MAX_MAP_CODE_LENGTH = 100
