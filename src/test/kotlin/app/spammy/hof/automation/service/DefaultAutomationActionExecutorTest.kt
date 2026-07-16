@@ -1,145 +1,150 @@
 package app.spammy.hof.automation.service
 
-import app.spammy.hof.account.service.HofAccountService
-import app.spammy.hof.account.service.HofSessionRecoveryService
-import app.spammy.hof.account.entity.HofAccountEntity
-import app.spammy.hof.automation.entity.AutomationModuleType
-import app.spammy.hof.automation.policy.AutomationDecision
-import app.spammy.hof.automation.policy.AutomationDecisionType
-import app.spammy.hof.automation.policy.AutomationMapCandidate
-import app.spammy.hof.automation.policy.KeyQuestMapCandidate
-import app.spammy.hof.automation.policy.PartyBlueprint
-import app.spammy.hof.automation.policy.PartyBlueprintSlot
-import app.spammy.hof.automation.policy.QuestDecision
+import app.spammy.hof.automation.entity.PresetSelectionMode
+import app.spammy.hof.battle.dto.BattlePatternLoadRequest
+import app.spammy.hof.battle.dto.RunBattleRequest
 import app.spammy.hof.battle.service.BattleRunService
-import app.spammy.hof.character.repository.CharacterQueryRepository
-import app.spammy.hof.party.repository.PartyPresetQueryRepository
-import app.spammy.hof.party.entity.PartyPresetEntity
-import app.spammy.hof.party.entity.PartyPresetMemberEntity
-import app.spammy.hof.character.entity.CharacterEntity
-import app.spammy.hof.character.entity.CharacterPatternSlotEntity
 import app.spammy.hof.quest.service.QuestGatewayService
-import java.time.Instant
 import kotlin.test.Test
-import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import org.mockito.Mockito
-import tools.jackson.module.kotlin.jacksonObjectMapper
 
 class DefaultAutomationActionExecutorTest {
-    private val questGatewayService = Mockito.mock(QuestGatewayService::class.java)
-    private val battleRunService = Mockito.mock(BattleRunService::class.java)
-    private val characterQueryRepository = Mockito.mock(CharacterQueryRepository::class.java)
-    private val partyPresetQueryRepository = Mockito.mock(PartyPresetQueryRepository::class.java)
-    private val sessionRecoveryExecutor = HofSessionRecoveryExecutor(
-        HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java)),
-    )
+    private val questGateway = Mockito.mock(QuestGatewayService::class.java)
+    private val battleRun = Mockito.mock(BattleRunService::class.java)
+    private val questHandler = Mockito.mock(QuestAutomationHandler::class.java)
+    private val battleHandler = Mockito.mock(BattleMapAutomationHandler::class.java)
+    private val reconciler = Mockito.mock(BattleOutcomeReconciler::class.java)
     private val executor = DefaultAutomationActionExecutor(
-        questGatewayService,
-        battleRunService,
-        characterQueryRepository,
-        partyPresetQueryRepository,
-        jacksonObjectMapper(),
-        sessionRecoveryExecutor,
+        questGateway,
+        battleRun,
+        questHandler,
+        battleHandler,
+        reconciler,
     )
 
     @Test
-    fun `prepare resolves preset characters and patterns before the action is checkpointed`() {
-        val now = Instant.parse("2026-07-14T00:00:00Z")
-        val account = HofAccountEntity(7L, "login", "encrypted", now)
-        val preset = PartyPresetEntity(301L, account, "원본 파티", now, now)
-        val character = CharacterEntity(
-            id = 401L,
-            account = account,
-            hofCharacterId = "original-character",
-            name = "기사",
-            job = "Knight",
-            level = 60,
-            updatedAt = now,
+    fun `quest accept posts once and records its exact execution identity`() {
+        val action = StoredTypedAutomationActionV1(
+            entryId = 11L,
+            executionIdentity = "quest-accept-1",
+            payload = StoredTypedActionPayload.QuestAccept("Q-1", "accept-no"),
         )
-        val pattern = CharacterPatternSlotEntity(501L, character, "2", "패턴 2", true)
-        val member = PartyPresetMemberEntity(preset, 0, character, pattern)
-        val decision = battleDecision(now)
-        Mockito.`when`(partyPresetQueryRepository.findOwnedByAccountIdAndId(7L, 301L)).thenReturn(preset)
-        Mockito.`when`(partyPresetQueryRepository.findMembersByPresetIds(listOf(301L))).thenReturn(listOf(member))
 
-        val prepared = executor.prepare(7L, decision)
-        character.hofCharacterId = "changed-character"
-        pattern.slotCode = "4"
+        executor.execute(7L, action)
 
-        assertEquals(listOf("original-character"), prepared.resolvedBattleRequest?.characterIds)
-        assertEquals(2, prepared.resolvedBattleRequest?.patternLoads?.single()?.slot)
+        Mockito.verify(questGateway, Mockito.times(1)).accept(7L, "accept-no")
+        Mockito.verify(questHandler).onAcceptSucceeded(
+            7L,
+            "quest-accept-1",
+            QuestAction.Accept("Q-1", "accept-no"),
+        )
     }
 
     @Test
-    fun `prepare resolves a key quest blueprint to exact character ids and battle count`() {
-        val now = Instant.parse("2026-07-14T00:00:00Z")
-        val account = HofAccountEntity(7L, "login", "encrypted", now)
-        val character = CharacterEntity(
-            id = 401L,
-            account = account,
-            hofCharacterId = "bard-id",
-            name = "바드",
-            job = "Bard",
-            level = 60,
-            updatedAt = now,
-        )
-        val map = KeyQuestMapCandidate("Noble102", "저택", null, 0, null, "adventure_map")
-        val keyBattle = QuestDecision.Battle(
-            questId = "0563",
-            map = map,
-            blueprint = PartyBlueprint(listOf(PartyBlueprintSlot("바드", 4)), battleCount = 3),
-        )
-        val decision = AutomationDecision(
-            type = AutomationDecisionType.RUN_BATTLE,
-            moduleType = AutomationModuleType.KEY_QUEST,
-            moduleConfigId = 20L,
-            moduleRevision = now,
-            questId = "0563",
-            map = AutomationMapCandidate("Noble102", "저택", 0, null, "adventure_map"),
-            keyQuestBattle = keyBattle,
-        )
-        Mockito.`when`(characterQueryRepository.findAllByAccountId(7L)).thenReturn(listOf(character))
-
-        val prepared = executor.prepare(7L, decision)
-
-        assertEquals(listOf("bard-id"), prepared.resolvedBattleRequest?.characterIds)
-        assertEquals(4, prepared.resolvedBattleRequest?.patternLoads?.single()?.slot)
-        assertEquals(3, prepared.resolvedBattleRequest?.battleCount)
-    }
-
-    @Test
-    fun `execute uses the battle request fixed during prepare even when preset data changes`() {
-        val decision = battleDecision(Instant.parse("2026-07-14T00:00:00Z"))
-        val prepared = AutomationExecutionPayload(
-            decision = decision,
-            resolvedBattleRequest = app.spammy.hof.battle.dto.RunBattleRequest(
-                categoryId = "battle_map",
-                mapCode = "gb0",
-                characterIds = listOf("original-character"),
-                patternLoads = listOf(
-                    app.spammy.hof.battle.dto.BattlePatternLoadRequest("original-character", 2),
-                ),
+    fun `ambiguous battle submission is surfaced and never blindly retried`() {
+        val request = battleRequest()
+        val action = StoredTypedAutomationActionV1(
+            entryId = 12L,
+            executionIdentity = "battle-1",
+            payload = StoredTypedActionPayload.BattleMap(
+                progressDate = java.time.LocalDate.parse("2026-07-16"),
+                categoryId = request.categoryId,
+                mapCode = request.mapCode,
+                presetMode = PresetSelectionMode.PRIMARY,
+                presetId = 301L,
                 battleCount = 3,
+                battleRequest = request,
             ),
         )
-        val preparedRequest = requireNotNull(prepared.resolvedBattleRequest)
-        Mockito.`when`(battleRunService.runBattle(7L, preparedRequest))
-            .thenReturn(Mockito.mock(app.spammy.hof.battle.dto.BattleResultResponse::class.java))
+        Mockito.`when`(battleRun.runBattle(7L, request)).thenThrow(RuntimeException("connection reset"))
 
-        executor.execute(7L, prepared)
+        assertFailsWith<AmbiguousAutomationSubmissionException> {
+            executor.execute(7L, action)
+        }
 
-        Mockito.verify(battleRunService).runBattle(7L, preparedRequest)
-        Mockito.verifyNoInteractions(partyPresetQueryRepository, characterQueryRepository)
-        assertEquals("original-character", prepared.resolvedBattleRequest.characterIds.single())
-        assertEquals(2, prepared.resolvedBattleRequest.patternLoads.single().slot)
-        assertEquals(3, prepared.resolvedBattleRequest.battleCount)
+        Mockito.verify(battleRun, Mockito.times(1)).runBattle(7L, request)
+        Mockito.verifyNoInteractions(battleHandler)
     }
 
-    private fun battleDecision(revision: Instant) = AutomationDecision(
-        type = AutomationDecisionType.RUN_BATTLE,
-        moduleType = AutomationModuleType.TIME_BURN,
-        moduleConfigId = 10L,
-        moduleRevision = revision,
-        map = AutomationMapCandidate("gb0", "고블린", 0, 301L),
+    @Test
+    fun `battle map terminal rounds are handed to the required progress handler`() {
+        val request = battleRequest()
+        val result = Mockito.mock(app.spammy.hof.battle.dto.BattleResultResponse::class.java)
+        val round1 = Mockito.mock(app.spammy.hof.battle.dto.BattleRoundResponse::class.java)
+        val round2 = Mockito.mock(app.spammy.hof.battle.dto.BattleRoundResponse::class.java)
+        val round3 = Mockito.mock(app.spammy.hof.battle.dto.BattleRoundResponse::class.java)
+        Mockito.`when`(round1.outcome).thenReturn("VICTORY")
+        Mockito.`when`(round2.outcome).thenReturn("DEFEAT")
+        Mockito.`when`(round3.outcome).thenReturn("DRAW")
+        Mockito.`when`(result.rounds).thenReturn(listOf(round1, round2, round3))
+        Mockito.`when`(battleRun.runBattle(7L, request)).thenReturn(result)
+        Mockito.`when`(
+            battleHandler.onBattleCompleted(
+                anyBattleAction(),
+                eqValue(BattleAutomationActionSource.BATTLE_MAP_AUTOMATION),
+                eqValue("battle-1"),
+                eqValue(
+                    listOf(
+                        BattleAutomationRoundOutcome.VICTORY,
+                        BattleAutomationRoundOutcome.DEFEAT,
+                        BattleAutomationRoundOutcome.DRAW,
+                    ),
+                ),
+                eqValue(reconciler),
+            ),
+        ).thenReturn(BattleOutcomeResolution.Applied("battle-1", 1))
+        val action = StoredTypedAutomationActionV1(
+            entryId = 12L,
+            executionIdentity = "battle-1",
+            payload = StoredTypedActionPayload.BattleMap(
+                java.time.LocalDate.parse("2026-07-16"),
+                request.categoryId,
+                request.mapCode,
+                PresetSelectionMode.PRIMARY,
+                301L,
+                3,
+                request,
+            ),
+        )
+
+        executor.execute(7L, action)
+
+        Mockito.verify(battleHandler).onBattleCompleted(
+            anyBattleAction(),
+            eqValue(BattleAutomationActionSource.BATTLE_MAP_AUTOMATION),
+            eqValue("battle-1"),
+            eqValue(
+                listOf(
+                    BattleAutomationRoundOutcome.VICTORY,
+                    BattleAutomationRoundOutcome.DEFEAT,
+                    BattleAutomationRoundOutcome.DRAW,
+                ),
+            ),
+            eqValue(reconciler),
+        )
+    }
+
+    private fun battleRequest() = RunBattleRequest(
+        categoryId = "battle_map",
+        mapCode = "gb0",
+        characterIds = listOf("character-1"),
+        patternLoads = listOf(BattlePatternLoadRequest("character-1", 1)),
+        battleCount = 3,
     )
+
+    private fun anyBattleAction(): BattleMapAutomationAction =
+        Mockito.any(BattleMapAutomationAction::class.java)
+            ?: BattleMapAutomationAction(
+                7L,
+                java.time.LocalDate.parse("2026-07-16"),
+                "battle_map",
+                "gb0",
+                PresetSelectionMode.PRIMARY,
+                301L,
+                3,
+                "matcher",
+            )
+
+    private fun <T> eqValue(value: T): T = Mockito.eq(value) ?: value
 }

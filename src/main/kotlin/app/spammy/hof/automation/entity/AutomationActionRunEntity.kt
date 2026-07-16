@@ -2,8 +2,6 @@ package app.spammy.hof.automation.entity
 
 import jakarta.persistence.Column
 import jakarta.persistence.Entity
-import jakarta.persistence.EnumType
-import jakarta.persistence.Enumerated
 import jakarta.persistence.FetchType
 import jakarta.persistence.GeneratedValue
 import jakarta.persistence.GenerationType
@@ -15,10 +13,9 @@ import jakarta.persistence.UniqueConstraint
 import java.time.Instant
 
 /**
- * 자동화의 멱등 request key, 준비 완료 실행 payload와 실행 당시 모듈 인스턴스를 보존하는 action 기록이다.
+ * 이전 프로필 job의 멱등 request key와 실행 payload를 보존하는 호환 action 기록이다.
  *
- * [payloadJson]은 실제 캐릭터 ID·패턴 슬롯까지 해석한 요청이므로 성공 후에도 덮어쓰지 않는다.
- * [moduleConfig]는 모듈 삭제 시 DB의 `ON DELETE SET NULL`로 비워지지만 action과 payload는 남는다.
+ * 범용 모듈 runtime entity는 제거했으므로 `module_config_id`와 `module_type`은 원시 호환 값으로만 읽는다.
  */
 @Entity
 @Table(
@@ -36,13 +33,11 @@ class AutomationActionRunEntity(
     @JoinColumn(name = "job_id", nullable = false)
     var job: AutomationJobEntity,
 
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "module_config_id")
-    var moduleConfig: AutomationModuleConfigEntity? = null,
+    @Column(name = "module_config_id")
+    var moduleConfigId: Long? = null,
 
-    @Enumerated(EnumType.STRING)
     @Column(name = "module_type", nullable = false, length = 50)
-    var moduleType: AutomationModuleType,
+    var moduleType: String,
 
     @Column(name = "action_type", nullable = false, length = 80)
     var actionType: String,
@@ -50,7 +45,7 @@ class AutomationActionRunEntity(
     @Column(name = "action_key", length = 255)
     var actionKey: String?,
 
-    @Enumerated(EnumType.STRING)
+    @jakarta.persistence.Enumerated(jakarta.persistence.EnumType.STRING)
     @Column(name = "status", nullable = false, length = 50)
     var status: AutomationActionStatus,
 

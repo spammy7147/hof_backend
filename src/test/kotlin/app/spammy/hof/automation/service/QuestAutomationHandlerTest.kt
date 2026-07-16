@@ -4,7 +4,6 @@ import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.repository.HofAccountRepository
 import app.spammy.hof.automation.entity.BattleAutomationDailyProgressEntity
 import app.spammy.hof.automation.entity.PresetSelectionMode
-import app.spammy.hof.automation.policy.AutomationMapState
 import app.spammy.hof.automation.repository.BattleAutomationDailyProgressCommandRepository
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import app.spammy.hof.battle.service.BattleMapIdentityCandidate

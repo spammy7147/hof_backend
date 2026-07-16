@@ -51,8 +51,7 @@ class CaptchaAutomationHook(
     /**
      * 캡차를 발생시킨 과거 action을 종료하고 같은 job의 다음 step을 최신 설정 판단으로 재개한다.
      *
-     * 과거 prepared payload를 재시도하지 않으므로 인증 대기 중 적용된 재정렬·수정·비활성화·삭제가 다음
-     * [app.spammy.hof.automation.service.AutomationSnapshotLoader] 조회에 반영된다.
+     * 과거 prepared payload를 재시도하지 않고 다음 실행 요청이 새 설정을 다시 읽도록 한다.
      */
     fun answered(challenge: CaptchaChallengeEntity) {
         val linkedAction = challenge.automationActionRun ?: return
@@ -69,7 +68,7 @@ class CaptchaAutomationHook(
         job.status = "RUNNING"
         job.currentStepIndex += 1
         job.currentModule = null
-        job.currentModuleConfig = null
+        job.currentModuleConfigId = null
         job.currentAction = null
         job.message = "인증이 완료되어 최신 설정으로 자동화를 이어갑니다."
         job.nextRunAt = now

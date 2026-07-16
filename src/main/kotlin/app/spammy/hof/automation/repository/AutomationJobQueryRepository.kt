@@ -3,7 +3,6 @@ package app.spammy.hof.automation.repository
 import app.spammy.hof.automation.entity.AutomationJobEntity
 import app.spammy.hof.automation.entity.QAutomationJobEntity.automationJobEntity
 import app.spammy.hof.automation.entity.QAutomationProfileEntity.automationProfileEntity
-import app.spammy.hof.automation.entity.QAutomationModuleConfigEntity.automationModuleConfigEntity
 import com.querydsl.jpa.impl.JPAQueryFactory
 import jakarta.persistence.LockModeType
 import org.springframework.stereotype.Repository
@@ -143,5 +142,4 @@ class AutomationJobQueryRepository(
         queryFactory
             .selectFrom(automationJobEntity)
             .join(automationJobEntity.profile, automationProfileEntity).fetchJoin()
-            .leftJoin(automationJobEntity.currentModuleConfig, automationModuleConfigEntity).fetchJoin()
 }

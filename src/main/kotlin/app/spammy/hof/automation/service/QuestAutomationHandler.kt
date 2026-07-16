@@ -5,7 +5,6 @@ import app.spammy.hof.automation.entity.QuestAutomationCycleEntity
 import app.spammy.hof.automation.entity.QuestAutomationProcessedResultEntity
 import app.spammy.hof.automation.entity.QuestAutomationResultKind
 import app.spammy.hof.automation.entity.QuestMapExecutionCounterEntity
-import app.spammy.hof.automation.policy.AutomationMapState
 import app.spammy.hof.automation.repository.QuestAutomationCycleCommandRepository
 import app.spammy.hof.automation.repository.QuestAutomationProcessedResultCommandRepository
 import app.spammy.hof.automation.repository.QuestMapExecutionCounterCommandRepository

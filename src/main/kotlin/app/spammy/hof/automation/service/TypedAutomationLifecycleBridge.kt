@@ -14,8 +14,8 @@ import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 
 /**
- * Core typed lifecycle transition. Every mutation joins the caller's transaction so the legacy job,
- * typed runtime, preflight reset, and durable wake outbox are one atomic commit.
+ * Core typed lifecycle transition. Every mutation joins the caller's transaction so typed runtime,
+ * preflight reset, and durable wake outbox are one atomic commit.
  */
 @Service
 class TypedAutomationLifecycleBridge(

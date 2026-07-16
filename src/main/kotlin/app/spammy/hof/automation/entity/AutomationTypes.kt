@@ -12,16 +12,6 @@ enum class AutomationJobStatus {
     FAILED,
 }
 
-enum class AutomationModuleType {
-    KEY_QUEST,
-    TIME_BURN,
-    UNION,
-    COOLDOWN_ADVENTURE,
-    DAILY_ADVENTURE,
-    OTHER_QUEST,
-    NORMAL_MAP,
-}
-
 enum class AutomationActionStatus {
     PLANNED,
     RUNNING,

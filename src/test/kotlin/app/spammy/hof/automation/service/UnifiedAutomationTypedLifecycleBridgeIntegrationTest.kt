@@ -38,7 +38,6 @@ import tools.jackson.module.kotlin.jacksonObjectMapper
     QueryDslConfig::class,
     AccountQueryRepository::class,
     TypedAutomationQueryRepository::class,
-    UnifiedAutomationQueryRepository::class,
     AdventureDailyPreflightQueryRepository::class,
     AutomationOutboxQueryRepository::class,
     AutomationOutboxService::class,
@@ -47,12 +46,9 @@ import tools.jackson.module.kotlin.jacksonObjectMapper
 )
 class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
     @Autowired private lateinit var accounts: HofAccountRepository
-    @Autowired private lateinit var profiles: AutomationProfileRepository
-    @Autowired private lateinit var jobs: AutomationJobRepository
     @Autowired private lateinit var entries: AutomationEntryCommandRepository
     @Autowired private lateinit var actions: TypedAutomationActionRunCommandRepository
     @Autowired private lateinit var preflightStates: AdventureDailyPreflightStateCommandRepository
-    @Autowired private lateinit var unifiedQuery: UnifiedAutomationQueryRepository
     @Autowired private lateinit var typedQuery: TypedAutomationQueryRepository
     @Autowired private lateinit var preflightQuery: AdventureDailyPreflightQueryRepository
     @Autowired private lateinit var outboxQuery: AutomationOutboxQueryRepository
@@ -61,18 +57,13 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
     @Autowired private lateinit var entityManager: EntityManager
 
     @Test
-    fun `resume atomically updates legacy typed and preflight state and persists durable wake`() {
+    fun `resume atomically updates typed and preflight state and persists durable wake`() {
         val accountId = seed("commit")
 
         TransactionTemplate(transactionManager).executeWithoutResult {
-            val job = requireNotNull(unifiedQuery.findCurrentJob(accountId))
-            job.status = "RUNNING"
-            job.updatedAt = NOW
-            jobs.save(job)
             bridge.resume(accountId, "USER_RESUME")
         }
 
-        assertEquals("RUNNING", unifiedQuery.findCurrentJob(accountId)?.status)
         val typed = requireNotNull(typedQuery.findRuntimeState(accountId))
         assertEquals(TypedAutomationLifecycle.RUNNING, typed.lifecycleStatus)
         assertNull(typed.stopReason)
@@ -93,15 +84,11 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
 
         assertFailsWith<ForcedRollback> {
             TransactionTemplate(transactionManager).executeWithoutResult {
-                val job = requireNotNull(unifiedQuery.findCurrentJob(accountId))
-                job.status = "RUNNING"
-                jobs.save(job)
                 bridge.resume(accountId, "USER_RESUME")
                 throw ForcedRollback()
             }
         }
 
-        assertEquals("PAUSED", unifiedQuery.findCurrentJob(accountId)?.status)
         val typed = requireNotNull(typedQuery.findRuntimeState(accountId))
         assertEquals(TypedAutomationLifecycle.STOPPED, typed.lifecycleStatus)
         assertEquals(AutomationStopReason.NETWORK.name, typed.stopReason)
@@ -145,8 +132,6 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
 
     private fun seed(suffix: String): Long = TransactionTemplate(transactionManager).execute {
         val account = accounts.save(HofAccountEntity(loginId = "lifecycle-$suffix", encryptedPassword = "encrypted", createdAt = NOW))
-        val profile = profiles.save(AutomationProfileEntity(account = account, name = "unified", mode = "UNIFIED", enabled = true, createdAt = NOW, updatedAt = NOW))
-        jobs.save(AutomationJobEntity(account = account, profile = profile, status = "PAUSED", currentStepIndex = 0, message = null, createdAt = NOW, startedAt = NOW, updatedAt = NOW, finishedAt = null))
         val entry = entries.save(
             AutomationEntryEntity(
                 account = account,

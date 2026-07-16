@@ -1,7 +1,6 @@
 package app.spammy.hof.automation.service
 
 import app.spammy.hof.automation.entity.*
-import app.spammy.hof.automation.policy.AutomationMapState
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import app.spammy.hof.battle.dto.BattlePatternLoadRequest
 import app.spammy.hof.battle.entity.AccountBattleMapStateEntity

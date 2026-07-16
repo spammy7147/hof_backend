@@ -4,7 +4,6 @@ import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.automation.entity.AutomationActionRunEntity
 import app.spammy.hof.automation.entity.AutomationActionStatus
 import app.spammy.hof.automation.entity.AutomationJobEntity
-import app.spammy.hof.automation.entity.AutomationModuleType
 import app.spammy.hof.automation.entity.AutomationProfileEntity
 import app.spammy.hof.automation.repository.AutomationActionLockTarget
 import app.spammy.hof.automation.repository.AutomationActionRunQueryRepository
@@ -58,7 +57,7 @@ class AutomationActionLockCoordinatorTest {
     private fun action() = AutomationActionRunEntity(
         id = 91L,
         job = job(),
-        moduleType = AutomationModuleType.TIME_BURN,
+        moduleType = "TIME_BURN",
         actionType = "RUN_BATTLE",
         actionKey = "map",
         status = AutomationActionStatus.RUNNING,
