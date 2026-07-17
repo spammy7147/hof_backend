@@ -60,6 +60,7 @@ class QuestControllerTest {
             .andExpect(jsonPath("$[0].missions[0].type").value("MONSTER_KILL"))
             .andExpect(jsonPath("$[0].missions[0].progress.current").value(12))
             .andExpect(jsonPath("$[0].missions[0].progress.required").value(30))
+            .andExpect(jsonPath("$[0].rewards[0]").value("아이템( Red Potion ) x2"))
         Mockito.verify(gateway).load(42L)
         Mockito.verifyNoInteractions(accountService)
     }
@@ -112,6 +113,7 @@ class QuestControllerTest {
             ),
         ),
         actionNo = null,
+        rewards = listOf("아이템( Red Potion ) x2"),
     )
 
     private companion object {

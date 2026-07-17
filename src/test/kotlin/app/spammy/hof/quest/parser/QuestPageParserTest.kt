@@ -64,6 +64,21 @@ class QuestPageParserTest {
     }
 
     @Test
+    fun parsesRewardColumnInDisplayOrderWithoutMissionOrDialogue() {
+        val byId = quests.associateBy { it.questId }
+
+        assertEquals(
+            listOf(
+                "아이템( Red Potion(99회 사용가능) ) x2",
+                "아이템( Blue Potion(99회 사용가능) ) x2",
+            ),
+            byId.getValue("0571").rewards,
+        )
+        assertTrue(byId.getValue("0801").rewards.isEmpty())
+        assertTrue(byId.getValue("0571").rewards.none { it.contains("미션") || it.contains("길드 마스터") })
+    }
+
+    @Test
     fun classifiesMapClearAndOtherMissionText() {
         val mapMission = quests.single { it.questId == "0800" }.missions.single()
         val otherMission = quests.single { it.questId == "0801" }.missions.single()

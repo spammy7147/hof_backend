@@ -44,6 +44,7 @@ data class QuestSnapshot(
     val sourceOrder: Int,
     val missions: List<QuestMission>,
     val actionNo: String?,
+    val rewards: List<String> = emptyList(),
 ) {
     /** Keeps policy fixtures source-compatible while quest parsing moves to the richer model. */
     constructor(

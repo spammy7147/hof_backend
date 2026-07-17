@@ -102,6 +102,7 @@ class QuestPageParser {
                 actionHref = actionHref,
                 formAction = formAction,
             ),
+            rewards = rewardTexts(element),
         )
     }
 
@@ -126,6 +127,57 @@ class QuestPageParser {
         if (cells.isNotEmpty()) return cells
 
         return splitMissionSegments(element)
+    }
+
+    private fun rewardTexts(element: Element): List<String> {
+        val table = element.closest("table") ?: return emptyList()
+        val rewardColumn = rewardColumnIndex(table) ?: return emptyList()
+        val rewardCell = element.children()
+            .filter { it.tagName().equals("td", ignoreCase = true) }
+            .getOrNull(rewardColumn)
+            ?: return emptyList()
+
+        return splitDisplayLines(rewardCell)
+            .map { normalize(it.replaceFirst(REWARD_PREFIX, "")) }
+            .filter { it.isNotBlank() && it != "-" }
+    }
+
+    private fun rewardColumnIndex(table: Element): Int? = table.select("tr")
+        .firstNotNullOfOrNull { row ->
+            row.children()
+                .indexOfFirst {
+                    it.tagName().equals("th", ignoreCase = true) && normalize(it.text()) == "보상"
+                }
+                .takeIf { it >= 0 }
+        }
+
+    private fun splitDisplayLines(element: Element): List<String> {
+        val lines = mutableListOf<String>()
+        val current = StringBuilder()
+
+        fun flush() {
+            lines += current.toString()
+            current.clear()
+        }
+
+        fun visit(node: Node) {
+            when (node) {
+                is TextNode -> current.append(node.wholeText)
+                is Element -> when {
+                    node.tagName().equals("br", ignoreCase = true) -> flush()
+                    node.normalName() in DISPLAY_BLOCK_TAGS -> {
+                        if (current.isNotBlank()) flush()
+                        node.childNodes().forEach(::visit)
+                        flush()
+                    }
+                    else -> node.childNodes().forEach(::visit)
+                }
+            }
+        }
+
+        element.childNodes().forEach(::visit)
+        flush()
+        return lines
     }
 
     private fun splitMissionSegments(element: Element): List<String> {
@@ -255,7 +307,9 @@ class QuestPageParser {
         val ACTION = Regex("[?&]action=(get|complete)(?:[&#]|$)")
         val NO_PARAMETER = Regex("[?&]no=([^&\"'#\\s]+)")
         val MISSION_PREFIX = Regex("^\\s*미션\\s*:\\s*")
+        val REWARD_PREFIX = Regex("^\\s*보상\\s*[:：]?\\s*")
         val WHITESPACE = Regex("\\s+")
         val MISSION_BLOCK_TAGS = setOf("div", "li", "p")
+        val DISPLAY_BLOCK_TAGS = setOf("div", "li", "p")
     }
 }
