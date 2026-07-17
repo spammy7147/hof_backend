@@ -143,6 +143,7 @@ class QuestPageParser {
     }
 
     private fun rewardColumnIndex(table: Element): Int? = table.select("tr")
+        .filter { it.closest("table") === table }
         .firstNotNullOfOrNull { row ->
             row.children()
                 .indexOfFirst {
@@ -165,7 +166,7 @@ class QuestPageParser {
                 is TextNode -> current.append(node.wholeText)
                 is Element -> when {
                     node.tagName().equals("br", ignoreCase = true) -> flush()
-                    node.normalName() in DISPLAY_BLOCK_TAGS -> {
+                    node.isBlock -> {
                         if (current.isNotBlank()) flush()
                         node.childNodes().forEach(::visit)
                         flush()
@@ -310,6 +311,5 @@ class QuestPageParser {
         val REWARD_PREFIX = Regex("^\\s*보상\\s*[:：]?\\s*")
         val WHITESPACE = Regex("\\s+")
         val MISSION_BLOCK_TAGS = setOf("div", "li", "p")
-        val DISPLAY_BLOCK_TAGS = setOf("div", "li", "p")
     }
 }

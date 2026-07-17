@@ -79,6 +79,43 @@ class QuestPageParserTest {
     }
 
     @Test
+    fun ignoresRewardHeadersOwnedByNestedTables() {
+        val quest = parser.parse(
+            """
+            <div id="contents">
+              <h4>진행중인 퀘스트</h4>
+              <table><tr>
+                <td class="td7s">[NEST] 중첩 헤더</td>
+                <td>미션 : 즉시 완료<table><tr><th>퀘스트명</th><th>보상</th></tr></table></td>
+              </tr></table>
+            </div>
+            """.trimIndent(),
+        ).single()
+
+        assertTrue(quest.rewards.isEmpty())
+    }
+
+    @Test
+    fun splitsAdjacentSectionRewardElements() {
+        val quest = parser.parse(
+            """
+            <div id="contents">
+              <h4>진행중인 퀘스트</h4>
+              <table>
+                <tr><th>퀘스트명</th><th>미션</th><th>보상</th><th>행동</th></tr>
+                <tr>
+                  <td class="td7s">[BLCK] 블록 보상</td><td>미션 : 즉시 완료</td>
+                  <td><section>First</section><section>Second</section></td><td>-</td>
+                </tr>
+              </table>
+            </div>
+            """.trimIndent(),
+        ).single()
+
+        assertEquals(listOf("First", "Second"), quest.rewards)
+    }
+
+    @Test
     fun classifiesMapClearAndOtherMissionText() {
         val mapMission = quests.single { it.questId == "0800" }.missions.single()
         val otherMission = quests.single { it.questId == "0801" }.missions.single()
