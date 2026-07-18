@@ -124,6 +124,30 @@ class QuestPageParserTest {
     }
 
     @Test
+    fun actionNoIgnoresNestedFormInputBeforeDirectInput() {
+        val quest = parser.parse(
+            """
+            <div id="contents">
+              <h4>진행중인 퀘스트</h4>
+              <table><tr>
+                <td class="td7s">[FRM2] 폼 소유 경계</td>
+                <td>
+                  <form>
+                    <table><tr><td><input name="no" value="nested-wrong"></td></tr></table>
+                    <input name="no" value="direct-right">
+                    <button name="complete">완료</button>
+                  </form>
+                </td>
+              </tr></table>
+            </div>
+            """.trimIndent(),
+        ).single()
+
+        assertEquals("direct-right", quest.actionNo)
+        assertEquals(QuestState.CLAIMABLE, quest.state)
+    }
+
+    @Test
     fun splitsAdjacentSectionRewardElements() {
         val quest = parser.parse(
             """
@@ -231,6 +255,15 @@ class QuestPageParserTest {
                 .flatMap { it.rewards }
                 .none { it.contains("명시 보상 연속 행") || it.contains("다음 퀘스트") },
         )
+    }
+
+    @Test
+    fun idlessQuestStyleCellDoesNotEndOwningSiblingBlock() {
+        val quest = productionRowBlockQuests().single { it.questId == "0900" }
+
+        assertEquals(listOf(QuestMissionType.IMMEDIATE), quest.missions.map { it.type })
+        assertEquals("after-idless-cell", quest.actionNo)
+        assertEquals(QuestState.CLAIMABLE, quest.state)
     }
 
     @Test

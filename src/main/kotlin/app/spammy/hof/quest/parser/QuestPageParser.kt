@@ -57,7 +57,9 @@ class QuestPageParser {
     private fun isQuestStart(element: Element): Boolean = element.hasAttr("data-quest-id") ||
         (
             element.tagName().equals("tr", ignoreCase = true) &&
-                directCells(element).any { it.hasClass("td7s") }
+                directCells(element).any {
+                    it.hasClass("td7s") && QUEST_ID.containsMatchIn(it.text())
+                }
             )
 
     private fun occurrencePriority(snapshot: QuestSnapshot): Int = when {
@@ -147,7 +149,10 @@ class QuestPageParser {
             ?: NO_PARAMETER.find(formAction)?.groupValues?.get(1)
         if (encodedUrlValue != null) return decodeUrlParameter(encodedUrlValue)
 
-        return actionControl?.closest("form")?.selectFirst("input[name=no]")?.attr("value")?.ifBlank { null }
+        val actionForm = actionControl?.closest("form")
+        return actionForm?.let { form ->
+            selectOwnedFirst(form, "input[name=no]")?.attr("value")?.ifBlank { null }
+        }
             ?: nodes.firstNotNullOfOrNull { node ->
                 selectOwnedFirst(node, "input[name=no]")?.attr("value")?.ifBlank { null }
             }
