@@ -83,4 +83,41 @@ class HofMainStatusParserTest {
 
         assertEquals("Unknown", status.playerName)
     }
+
+    @Test
+    fun parsesWorkAndAuctionOutsidePlayerStatusRow() {
+        val html = """
+            <table>
+              <tr>
+                <td>《얼어붙은 손길》공민이</td>
+                <td>Funds : ${'$'} 309,385,362</td>
+                <td>Time : 6000/6000</td>
+              </tr>
+              <tr>
+                <td>Work : Nothing</td>
+                <td>Auction : item/funds</td>
+              </tr>
+            </table>
+        """.trimIndent()
+
+        val status = parser.parse(html)
+
+        assertEquals("Nothing", status.work)
+        assertEquals("item/funds", status.auction)
+    }
+
+    @Test
+    fun ignoresNestedPublicNameInsideFlattenedStatusBody() {
+        val html = """
+            <body>
+              《얼어붙은 손길》공민이
+              <div class="ranking">《순금 120%》켄류</div>
+              Funds : ${'$'} 1,720 Time : 4100/6000 Work : 12:34 Auction : Nothing
+            </body>
+        """.trimIndent()
+
+        val status = parser.parse(html)
+
+        assertEquals("《얼어붙은 손길》공민이", status.playerName)
+    }
 }

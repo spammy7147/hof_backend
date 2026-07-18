@@ -16,15 +16,14 @@ class HofMainStatusParser {
      */
     fun parse(html: String): HofMainStatus {
         val document = Jsoup.parse(html)
-        val statusScope = findStatusScope(document)
-        val ownTexts = statusScope?.allElements
-            .orEmpty()
+        val ownTexts = document.allElements
             .map { element -> element.ownText().normalizeSpaces() }
             .filter { text -> text.isNotBlank() }
-        val fullText = statusScope?.text()?.normalizeSpaces().orEmpty()
+        val fullText = document.text().normalizeSpaces()
+        val statusOwnerText = findStatusOwnerText(document).orEmpty()
 
         return HofMainStatus(
-            playerName = parsePlayerName(fullText),
+            playerName = parsePlayerName(statusOwnerText),
             funds = firstMatch(ownTexts, fullText, FUNDS_REGEX) { it.toLongNumberOrNull() },
             timeCurrent = firstMatch(ownTexts, fullText, TIME_REGEX) { it.toIntOrNull() },
             timeMax = firstMatch(ownTexts, fullText, TIME_REGEX, groupIndex = 2) { it.toIntOrNull() },
@@ -46,12 +45,21 @@ class HofMainStatusParser {
     /**
      * Funds와 Time을 함께 소유한 상태 영역을 찾는다.
      */
-    private fun findStatusScope(document: Document): Element? =
+    private fun findStatusOwnerText(document: Document): String? =
         document.select("tr").firstOrNull(::containsStatusMarkers)
+            ?.text()
+            ?.normalizeSpaces()
             ?: document.allElements.firstOrNull { element ->
-                element.isNamedStatusContainer() && containsStatusMarkers(element)
+                element !== document.body() &&
+                    element.isNamedStatusContainer() &&
+                    containsStatusMarkers(element)
             }
-            ?: document.body().takeIf { body -> containsStatusMarkers(body.ownText().normalizeSpaces()) }
+                ?.text()
+                ?.normalizeSpaces()
+            ?: document.body()
+                .ownText()
+                .normalizeSpaces()
+                .takeIf(::containsStatusMarkers)
 
     private fun containsStatusMarkers(element: Element): Boolean =
         containsStatusMarkers(element.text().normalizeSpaces())
