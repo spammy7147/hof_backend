@@ -121,36 +121,76 @@ class QuestPageParser {
     }
 
     private fun missionTexts(element: Element): List<String> {
+        val rewardCell = rewardCell(element)
         val cells = element.select("td")
-            .filterNot { it.hasClass("td7s") || it.hasClass("td8s") }
-            .flatMap(::splitMissionSegments)
+            .filterNot {
+                it.hasClass("td7s") ||
+                    it.hasClass("td8s") ||
+                    it.isWithin(rewardCell)
+            }
+            .flatMap { splitMissionSegments(it) }
         if (cells.isNotEmpty()) return cells
 
-        return splitMissionSegments(element)
+        return splitMissionSegments(element, rewardCell)
     }
 
     private fun rewardTexts(element: Element): List<String> {
-        val table = element.closest("table") ?: return emptyList()
-        val rewardColumn = rewardColumnIndex(table) ?: return emptyList()
-        val rewardCell = element.children()
-            .filter { it.tagName().equals("td", ignoreCase = true) }
-            .getOrNull(rewardColumn)
-            ?: return emptyList()
+        val rewardCell = rewardCell(element) ?: return emptyList()
 
         return splitDisplayLines(rewardCell)
             .map { normalize(it.replaceFirst(REWARD_PREFIX, "")) }
             .filter { it.isNotBlank() && it != "-" }
     }
 
+    private fun rewardCell(element: Element): Element? {
+        val cells = directCells(element)
+        if (cells.isEmpty()) return null
+
+        val localLabel = cells.indexOfFirst { normalize(it.text()) == "보상" }
+        if (localLabel >= 0 && localLabel + 1 < cells.lastIndex) return cells[localLabel + 1]
+
+        cells.firstOrNull { LABELED_REWARD_PREFIX.containsMatchIn(it.text()) }?.let { return it }
+
+        val table = element.closest("table")
+        val rewardColumn = table?.let(::rewardColumnIndex)
+        if (rewardColumn != null) return cells.getOrNull(rewardColumn)
+
+        val actionCell = cells.lastOrNull() ?: return null
+        val hasLegacyShape = element.tagName().equals("tr", ignoreCase = true) &&
+            cells.size >= 4 &&
+            cells.first().hasClass("td7s") &&
+            (
+                actionCell.hasClass("td8s") ||
+                    actionCell.select("a[href*='action='], [name=complete], [name=get]").isNotEmpty()
+                )
+        return cells.getOrNull(cells.lastIndex - 1).takeIf { hasLegacyShape }
+    }
+
+    private fun directCells(element: Element): List<Element> = element.children()
+        .filter { it.tagName().equals("td", ignoreCase = true) }
+
     private fun rewardColumnIndex(table: Element): Int? = table.select("tr")
         .filter { it.closest("table") === table }
+        .filterNot(::isQuestDataRow)
         .firstNotNullOfOrNull { row ->
             row.children()
-                .indexOfFirst {
-                    it.tagName().equals("th", ignoreCase = true) && normalize(it.text()) == "보상"
+                .filter {
+                    it.tagName().equals("th", ignoreCase = true) ||
+                        it.tagName().equals("td", ignoreCase = true)
                 }
+                .indexOfFirst { normalize(it.text()) == "보상" }
                 .takeIf { it >= 0 }
         }
+
+    private fun isQuestDataRow(row: Element): Boolean {
+        val cells = directCells(row)
+        return row.hasAttr("data-quest-id") ||
+            cells.any { it.hasClass("td7s") } ||
+            QUEST_ID.containsMatchIn(cells.firstOrNull()?.text().orEmpty())
+    }
+
+    private fun Element.isWithin(ancestor: Element?): Boolean = ancestor != null &&
+        (this === ancestor || parents().any { it === ancestor })
 
     private fun splitDisplayLines(element: Element): List<String> {
         val lines = mutableListOf<String>()
@@ -181,7 +221,10 @@ class QuestPageParser {
         return lines
     }
 
-    private fun splitMissionSegments(element: Element): List<String> {
+    private fun splitMissionSegments(
+        element: Element,
+        excluded: Element? = null,
+    ): List<String> {
         val segments = mutableListOf<String>()
         val current = StringBuilder()
 
@@ -192,6 +235,7 @@ class QuestPageParser {
         }
 
         fun visit(node: Node) {
+            if (node === excluded) return
             when (node) {
                 is TextNode -> current.append(node.wholeText)
                 is Element -> when {
@@ -309,6 +353,7 @@ class QuestPageParser {
         val NO_PARAMETER = Regex("[?&]no=([^&\"'#\\s]+)")
         val MISSION_PREFIX = Regex("^\\s*미션\\s*:\\s*")
         val REWARD_PREFIX = Regex("^\\s*보상\\s*[:：]?\\s*")
+        val LABELED_REWARD_PREFIX = Regex("^\\s*보상\\s*[:：]\\s*")
         val WHITESPACE = Regex("\\s+")
         val MISSION_BLOCK_TAGS = setOf("div", "li", "p")
     }

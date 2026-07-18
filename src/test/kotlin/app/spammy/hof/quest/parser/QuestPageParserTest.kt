@@ -116,6 +116,33 @@ class QuestPageParserTest {
     }
 
     @Test
+    fun parsesProductionTdRewardHeaderWithoutTreatingRewardTextAsMission() {
+        val quest = productionRewardQuests().single { it.questId == "0105" }
+
+        assertEquals(
+            listOf("아이템( Red Potion(99회 사용가능) ) x2", "미션 포인트 x3"),
+            quest.rewards,
+        )
+        assertTrue(quest.missions.isEmpty())
+    }
+
+    @Test
+    fun parsesHeaderlessLegacyRewardColumnWithoutTreatingRewardTextAsMission() {
+        val quest = productionRewardQuests().single { it.questId == "LGCY" }
+
+        assertEquals(listOf("Gold x10", "미션 포인트 x1"), quest.rewards)
+        assertTrue(quest.missions.isEmpty())
+    }
+
+    @Test
+    fun parsesRewardValueAfterRowLocalTdLabelWithinOwningTable() {
+        val quest = productionRewardQuests().single { it.questId == "CELL" }
+
+        assertEquals(listOf("명성 x2", "미션 포인트 x4"), quest.rewards)
+        assertEquals(listOf(QuestMissionType.IMMEDIATE), quest.missions.map { it.type })
+    }
+
+    @Test
     fun classifiesMapClearAndOtherMissionText() {
         val mapMission = quests.single { it.questId == "0800" }.missions.single()
         val otherMission = quests.single { it.questId == "0801" }.missions.single()
@@ -309,6 +336,12 @@ class QuestPageParserTest {
     private fun edgeCaseQuests() = parser.parse(
         checkNotNull(
             javaClass.classLoader.getResource("fixtures/quest/quest-parser-edge-cases.html"),
+        ).readText(),
+    )
+
+    private fun productionRewardQuests() = parser.parse(
+        checkNotNull(
+            javaClass.classLoader.getResource("fixtures/quest/quest-production-reward-shapes.html"),
         ).readText(),
     )
 
