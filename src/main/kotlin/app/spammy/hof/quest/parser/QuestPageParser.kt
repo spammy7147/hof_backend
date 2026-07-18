@@ -61,9 +61,13 @@ class QuestPageParser {
             )
 
     private fun containsOwnedQuestId(cell: Element): Boolean {
+        return QUEST_ID.containsMatchIn(ownedCellText(cell))
+    }
+
+    private fun ownedCellText(cell: Element): String {
         val ownedContent = cell.clone()
         ownedContent.select("table, [data-quest-id]").forEach { it.remove() }
-        return QUEST_ID.containsMatchIn(ownedContent.text())
+        return ownedContent.text()
     }
 
     private fun occurrencePriority(snapshot: QuestSnapshot): Int = when {
@@ -87,7 +91,10 @@ class QuestPageParser {
         section: QuestSection?,
     ): QuestSnapshot? {
         val start = block.start
-        val nameText = directCells(start).firstOrNull { it.hasClass("td7s") }?.text()
+        val startCells = directCells(start)
+        val nameCell = startCells.firstOrNull { it.hasClass("td7s") }
+            ?: startCells.firstOrNull(::containsOwnedQuestId)
+        val nameText = nameCell?.let(::ownedCellText)
             ?: start.selectFirst("h1, h2, h3, h4, [data-quest-name]")?.text()
             ?: start.text()
         val questId = start.attr("data-quest-id").ifBlank {

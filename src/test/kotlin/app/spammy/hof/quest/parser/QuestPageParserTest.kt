@@ -276,6 +276,7 @@ class QuestPageParserTest {
         assertNull(prior.actionNo)
 
         val classless = byId.getValue("0902")
+        assertEquals("클래스 없는 시작", classless.name)
         assertEquals(listOf(QuestMissionType.ITEM_TURN_IN), classless.missions.map { it.type })
         assertEquals("Classless Token", classless.missions.single().target)
         assertEquals(QuestProgress(0, 1), classless.missions.single().progress)
