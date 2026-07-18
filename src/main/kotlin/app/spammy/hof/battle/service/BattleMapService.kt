@@ -6,7 +6,6 @@ import app.spammy.hof.battle.dto.BattleMapResponse
 import app.spammy.hof.battle.model.BattleCategoryId
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
-import app.spammy.hof.captcha.service.CaptchaService
 import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.HofBattleMap
@@ -47,7 +46,6 @@ class BattleMapService(
     private val battleMapParser: BattleMapParser,
     private val catalogService: BattleMapCatalogService,
     private val loginStateParser: LoginStateParser,
-    private val captchaService: CaptchaService,
 ) {
     private val log = LoggerFactory.getLogger(BattleMapService::class.java)
 
@@ -146,9 +144,6 @@ class BattleMapService(
         val login = loginStateParser.parse(mapPageResponse.body)
         if (login.hasLoginForm && !login.isLoggedIn) {
             throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "HOF 로그인 세션이 만료되었습니다.")
-        }
-        if (captchaService.detectAndRecord(account, mapPageResponse.body, mapPageResponse.finalUrl) != null) {
-            throw ApiException(ErrorCode.CAPTCHA_REQUIRED, "캡차 또는 통행증 입력이 필요합니다.")
         }
         val maps = battleMapParser.parse(
             categoryId = category.value,

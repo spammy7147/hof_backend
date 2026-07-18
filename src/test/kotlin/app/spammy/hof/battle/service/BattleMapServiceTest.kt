@@ -330,6 +330,33 @@ class BattleMapServiceTest {
     }
 
     @Test
+    fun manualMapListDoesNotDetectOrCreateCaptchaChallenges() {
+        val account = savedAccount("battle-map-manual-captcha")
+        gateway.defaultBody = directAdventureHtml(sharedCount = 3, includeStale = false)
+        Mockito.doReturn(
+            CaptchaChallengeResponse(
+                92L,
+                account.id,
+                "PENDING",
+                "captcha",
+                null,
+                "https://example.test/captcha",
+                NOW.toString(),
+                null,
+            ),
+        ).`when`(captchaService).detectAndRecord(
+            anyAccount(),
+            anyStringValue(),
+            anyStringValue(),
+        )
+
+        val maps = service.findMaps(account.id, ADVENTURE)
+
+        assertEquals(listOf("shared01"), maps.map { it.mapCode })
+        Mockito.verifyNoInteractions(captchaService)
+    }
+
+    @Test
     fun authenticatedAdventureRefreshRejectsPageWithoutMapObservations() {
         val account = savedAccount("battle-map-strict-refresh")
         gateway.defaultBody = "<html><body><h1>Temporary upstream error</h1></body></html>"
@@ -365,9 +392,9 @@ class BattleMapServiceTest {
     }
 
     @Test
-    fun authenticatedAdventureRefreshPreservesCaptchaSignalForAutomationStop() {
+    fun authenticatedAdventureRefreshDoesNotDetectOrCreateCaptchaChallenges() {
         val account = savedAccount("battle-map-captcha")
-        gateway.defaultBody = "<html><body>captcha gate</body></html>"
+        gateway.defaultBody = directAdventureHtml(sharedCount = 3, includeStale = false)
         Mockito.doReturn(
             CaptchaChallengeResponse(
                 91L,
@@ -385,12 +412,10 @@ class BattleMapServiceTest {
             anyStringValue(),
         )
 
-        val error = assertFailsWith<AdventureMapRefreshException.Fatal> {
-            service.refreshAdventureMaps(account.id)
-        }
+        val maps = service.refreshAdventureMaps(account.id)
 
-        val api = generateSequence<Throwable>(error) { it.cause }.filterIsInstance<ApiException>().first()
-        assertEquals(ErrorCode.CAPTCHA_REQUIRED, api.errorCode)
+        assertEquals(listOf("shared01"), maps.map { it.mapCode })
+        Mockito.verifyNoInteractions(captchaService)
     }
 
     @Test
