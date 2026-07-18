@@ -9,6 +9,7 @@ import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.parser.HofMainStatusParser
+import app.spammy.hof.external.parser.LoginStateParser
 import app.spammy.hof.status.dto.HofStatusResponse
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
@@ -23,6 +24,7 @@ class HofStatusService(
     private val cookieQueryRepository: CookieQueryRepository,
     private val requestFactory: HofRequestFactory,
     private val gateway: HofGateway,
+    private val loginStateParser: LoginStateParser,
     private val statusParser: HofMainStatusParser,
     private val timeProvider: TimeProvider,
 ) {
@@ -43,6 +45,11 @@ class HofStatusService(
 
         log.info("HOF status requested accountId={} cookieNames={}", account.id, cookies.keys.sorted())
         val response = gateway.execute(requestFactory.home(), cookies)
+        val loginState = loginStateParser.parse(response.body)
+        if (!loginState.isLoggedIn) {
+            log.warn("HOF status rejected accountId={} reason=session-expired status={}", account.id, response.statusCode)
+            throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "HOF 로그인 세션이 만료되었습니다.")
+        }
         val parsed = statusParser.parse(response.body)
         log.info(
             "HOF status parsed accountId={} status={} playerName={} funds={} time={}/{} work={} auction={}",

@@ -11,6 +11,7 @@ import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
 import app.spammy.hof.external.parser.HofMainStatusParser
+import app.spammy.hof.external.parser.LoginStateParser
 import java.time.Instant
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito
@@ -33,6 +34,7 @@ class HofStatusServiceTest {
         cookieQueryRepository = cookieQueryRepository,
         requestFactory = HofRequestFactory(),
         gateway = gateway,
+        loginStateParser = LoginStateParser(),
         statusParser = HofMainStatusParser(),
         timeProvider = TimeProvider { now },
     )
@@ -80,9 +82,38 @@ class HofStatusServiceTest {
         assertEquals(emptyList(), gateway.requests)
     }
 
+    @Test
+    fun fetchRejectsStoredCookiesWhenHomeIsLoggedOut() {
+        Mockito.`when`(accountQueryRepository.findById(1L)).thenReturn(account)
+        Mockito.`when`(cookieQueryRepository.findValueMapByAccountId(1L))
+            .thenReturn(mapOf("PHPSESSID" to "expired-session"))
+        gateway.responseBody = """
+            <div>《순금 120%》켄류</div>
+            <form method="post">
+              <input name="id">
+              <input name="pass" type="password">
+              <input name="Login" value="login">
+            </form>
+        """.trimIndent()
+
+        val error = assertFailsWith<ApiException> { service.fetch(1L) }
+
+        assertEquals(ErrorCode.HOF_SESSION_EXPIRED, error.errorCode)
+        assertEquals("HOF 로그인 세션이 만료되었습니다.", error.message)
+    }
+
     private class FakeHofGateway : HofGateway {
         val requests = mutableListOf<HofRequest>()
         val cookies = mutableListOf<Map<String, String>>()
+        var responseBody = """
+            <table>
+              <tr>
+                <td>《얼어붙은 손길》공민이</td>
+                <td>Funds : ${'$'} 309,385,362<br>Work : Nothing</td>
+                <td>Time : 6000/6000<br>Auction : item/funds</td>
+              </tr>
+            </table>
+        """.trimIndent()
 
         override fun execute(request: HofRequest, cookies: Map<String, String>): HofHttpResponse {
             requests += request
@@ -90,15 +121,7 @@ class HofStatusServiceTest {
             return HofHttpResponse(
                 statusCode = 200,
                 finalUrl = request.url,
-                body = """
-                    <table>
-                      <tr>
-                        <td>《얼어붙은 손길》공민이</td>
-                        <td>Funds : $ 309,385,362<br>Work : Nothing</td>
-                        <td>Time : 6000/6000<br>Auction : item/funds</td>
-                      </tr>
-                    </table>
-                """.trimIndent(),
+                body = responseBody,
                 setCookies = emptyMap(),
             )
         }

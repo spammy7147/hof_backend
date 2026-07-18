@@ -2,6 +2,8 @@ package app.spammy.hof.external.parser
 
 import app.spammy.hof.external.model.HofMainStatus
 import org.jsoup.Jsoup
+import org.jsoup.nodes.Document
+import org.jsoup.nodes.Element
 import org.springframework.stereotype.Component
 
 @Component
@@ -14,13 +16,15 @@ class HofMainStatusParser {
      */
     fun parse(html: String): HofMainStatus {
         val document = Jsoup.parse(html)
-        val ownTexts = document.allElements
+        val statusScope = findStatusScope(document)
+        val ownTexts = statusScope?.allElements
+            .orEmpty()
             .map { element -> element.ownText().normalizeSpaces() }
             .filter { text -> text.isNotBlank() }
-        val fullText = document.text().normalizeSpaces()
+        val fullText = statusScope?.text()?.normalizeSpaces().orEmpty()
 
         return HofMainStatus(
-            playerName = parsePlayerName(ownTexts, fullText),
+            playerName = parsePlayerName(fullText),
             funds = firstMatch(ownTexts, fullText, FUNDS_REGEX) { it.toLongNumberOrNull() },
             timeCurrent = firstMatch(ownTexts, fullText, TIME_REGEX) { it.toIntOrNull() },
             timeMax = firstMatch(ownTexts, fullText, TIME_REGEX, groupIndex = 2) { it.toIntOrNull() },
@@ -32,13 +36,36 @@ class HofMainStatusParser {
     /**
      * HOF 원문에서 `《타이틀》캐릭터명` 형태의 플레이어 표시명을 찾는다.
      */
-    private fun parsePlayerName(ownTexts: List<String>, fullText: String): String =
-        ownTexts.firstNotNullOfOrNull { text -> PLAYER_REGEX.find(text)?.value }
-            ?: FUNDS_REGEX.find(fullText)
-                ?.range
-                ?.first
-                ?.let { fundsIndex -> PLAYER_REGEX.findAll(fullText.substring(0, fundsIndex)).lastOrNull()?.value }
+    private fun parsePlayerName(fullText: String): String =
+        FUNDS_REGEX.find(fullText)
+            ?.range
+            ?.first
+            ?.let { fundsIndex -> PLAYER_REGEX.findAll(fullText.substring(0, fundsIndex)).lastOrNull()?.value }
             ?: UNKNOWN_VALUE
+
+    /**
+     * Funds와 Time을 함께 소유한 상태 영역을 찾는다.
+     */
+    private fun findStatusScope(document: Document): Element? =
+        document.select("tr").firstOrNull(::containsStatusMarkers)
+            ?: document.allElements.firstOrNull { element ->
+                element.isNamedStatusContainer() && containsStatusMarkers(element)
+            }
+            ?: document.body().takeIf { body -> containsStatusMarkers(body.ownText().normalizeSpaces()) }
+
+    private fun containsStatusMarkers(element: Element): Boolean =
+        containsStatusMarkers(element.text().normalizeSpaces())
+
+    private fun containsStatusMarkers(text: String): Boolean =
+        FUNDS_REGEX.containsMatchIn(text) && TIME_REGEX.containsMatchIn(text)
+
+    private fun Element.isNamedStatusContainer(): Boolean =
+        tagName() == "header" ||
+            id().containsStatusContainerName() ||
+            classNames().any { className -> className.containsStatusContainerName() }
+
+    private fun String.containsStatusContainerName(): Boolean =
+        contains("header", ignoreCase = true) || contains("status", ignoreCase = true)
 
     /**
      * element ownText를 먼저 보고, 실패하면 전체 텍스트에서 첫 매치를 찾는다.

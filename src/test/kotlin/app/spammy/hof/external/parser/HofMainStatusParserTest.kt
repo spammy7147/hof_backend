@@ -48,4 +48,39 @@ class HofMainStatusParserTest {
         assertEquals("12:34", status.work)
         assertEquals("Nothing", status.auction)
     }
+
+    @Test
+    fun prefersPlayerNameInStatusRowOverEarlierPublicName() {
+        val html = """
+            <div class="ranking">《순금 120%》켄류</div>
+            <table>
+              <tr>
+                <td>《얼어붙은 손길》공민이</td>
+                <td>Funds : ${'$'} 309,385,362<br>Work : Nothing</td>
+                <td>Time : 6000/6000<br>Auction : item/funds</td>
+              </tr>
+            </table>
+        """.trimIndent()
+
+        val status = parser.parse(html)
+
+        assertEquals("《얼어붙은 손길》공민이", status.playerName)
+    }
+
+    @Test
+    fun returnsUnknownWhenStatusRowHasNoPlayerName() {
+        val html = """
+            <div class="ranking">《순금 120%》켄류</div>
+            <table>
+              <tr>
+                <td>Funds : ${'$'} 309,385,362<br>Work : Nothing</td>
+                <td>Time : 6000/6000<br>Auction : item/funds</td>
+              </tr>
+            </table>
+        """.trimIndent()
+
+        val status = parser.parse(html)
+
+        assertEquals("Unknown", status.playerName)
+    }
 }
