@@ -151,6 +151,48 @@ class QuestPageParserTest {
     }
 
     @Test
+    fun parsesProductionSiblingRowsAsBoundedQuestBlocks() {
+        val parsed = productionRowBlockQuests()
+        val byId = parsed.associateBy { it.questId }
+
+        assertEquals(listOf("0105", "0571"), parsed.map { it.questId })
+
+        val support = byId.getValue("0105")
+        assertEquals("포션 지원", support.name)
+        assertEquals(listOf("Red Potion x2", "Blue Potion x2"), support.rewards)
+        assertEquals(listOf(QuestMissionType.ITEM_TURN_IN), support.missions.map { it.type })
+        assertEquals("Potion Bottle", support.missions.single().target)
+        assertEquals(QuestProgress(0, 1), support.missions.single().progress)
+
+        val maid = byId.getValue("0571")
+        assertEquals("메이드 토벌", maid.name)
+        assertEquals(listOf("Fund $15,000", "미션 포인트 x3"), maid.rewards)
+        assertEquals(
+            listOf(QuestMissionType.MONSTER_KILL, QuestMissionType.MAP_CLEAR),
+            maid.missions.map { it.type },
+        )
+        assertEquals(listOf("Killer Maid", "Maid Hall"), maid.missions.map { it.target })
+        assertEquals(QuestProgress(12, 30), maid.missions[0].progress)
+        assertNull(maid.missions[1].progress)
+        assertEquals("maid", maid.actionNo)
+        assertEquals(QuestState.CLAIMABLE, maid.state)
+    }
+
+    @Test
+    fun excludesDialogueRewardsAndNestedRowsFromSiblingBlockMissions() {
+        val byId = productionRowBlockQuests().associateBy { it.questId }
+
+        assertEquals(setOf("0105", "0571"), byId.keys)
+        assertEquals(1, byId.getValue("0105").missions.size)
+        assertEquals(2, byId.getValue("0571").missions.size)
+        assertTrue(
+            byId.values
+                .flatMap { it.missions }
+                .none { it.target == "Nested Ghost" || it.type == QuestMissionType.OTHER },
+        )
+    }
+
+    @Test
     fun classifiesMapClearAndOtherMissionText() {
         val mapMission = quests.single { it.questId == "0800" }.missions.single()
         val otherMission = quests.single { it.questId == "0801" }.missions.single()
@@ -350,6 +392,12 @@ class QuestPageParserTest {
     private fun productionRewardQuests() = parser.parse(
         checkNotNull(
             javaClass.classLoader.getResource("fixtures/quest/quest-production-reward-shapes.html"),
+        ).readText(),
+    )
+
+    private fun productionRowBlockQuests() = parser.parse(
+        checkNotNull(
+            javaClass.classLoader.getResource("fixtures/quest/quest-production-row-blocks.html"),
         ).readText(),
     )
 

@@ -22,10 +22,9 @@ class QuestPageParser {
         val document = Jsoup.parse(html)
         val scope = document.selectFirst("#contents") ?: document
         var sourceOrder = 0
-        val occurrences = scope.select("tr, [data-quest-id]")
-            .filter(::isTopLevelQuestNode)
-            .mapNotNull { element ->
-                parseElement(element, sectionOf(element))
+        val occurrences = questBlocks(scope)
+            .mapNotNull { block ->
+                parseBlock(block, sectionOf(block.start))
                     ?.copy(sourceOrder = sourceOrder++)
             }
 
@@ -34,6 +33,32 @@ class QuestPageParser {
             .map { (_, duplicates) -> duplicates.maxBy(::occurrencePriority) }
             .sortedBy(QuestSnapshot::sourceOrder)
     }
+
+    private data class QuestBlock(
+        val start: Element,
+        val nodes: List<Element>,
+    )
+
+    private fun questBlocks(scope: Element): List<QuestBlock> = scope.select("tr, [data-quest-id]")
+        .filter(::isTopLevelQuestNode)
+        .filter(::isQuestStart)
+        .map { start ->
+            if (!start.tagName().equals("tr", ignoreCase = true)) {
+                QuestBlock(start = start, nodes = listOf(start))
+            } else {
+                val continuationRows = generateSequence(start.nextElementSibling()) { it.nextElementSibling() }
+                    .filter { it.tagName().equals("tr", ignoreCase = true) }
+                    .takeWhile { !isQuestStart(it) }
+                    .toList()
+                QuestBlock(start = start, nodes = listOf(start) + continuationRows)
+            }
+        }
+
+    private fun isQuestStart(element: Element): Boolean = element.hasAttr("data-quest-id") ||
+        (
+            element.tagName().equals("tr", ignoreCase = true) &&
+                directCells(element).any { it.hasClass("td7s") }
+            )
 
     private fun occurrencePriority(snapshot: QuestSnapshot): Int = when {
         snapshot.state == QuestState.CLAIMABLE -> 5
@@ -45,35 +70,41 @@ class QuestPageParser {
     }
 
     private fun isTopLevelQuestNode(element: Element): Boolean {
-        val isRow = element.tagName().equals("tr", ignoreCase = true)
         return element.parents().none { parent ->
             parent.hasAttr("data-quest-id") ||
-                (!isRow && parent.tagName().equals("tr", ignoreCase = true))
+                parent.tagName().equals("tr", ignoreCase = true)
         }
     }
 
-    private fun parseElement(
-        element: Element,
+    private fun parseBlock(
+        block: QuestBlock,
         section: QuestSection?,
     ): QuestSnapshot? {
-        val nameText = element.selectFirst("td.td7s")?.text()
-            ?: element.selectFirst("h1, h2, h3, h4, [data-quest-name]")?.text()
-            ?: element.text()
-        val questId = element.attr("data-quest-id").ifBlank {
+        val start = block.start
+        val nameText = directCells(start).firstOrNull { it.hasClass("td7s") }?.text()
+            ?: start.selectFirst("h1, h2, h3, h4, [data-quest-name]")?.text()
+            ?: start.text()
+        val questId = start.attr("data-quest-id").ifBlank {
             QUEST_ID.find(nameText)?.groupValues?.get(1).orEmpty()
         }
         if (questId.isBlank()) return null
 
         val normalizedName = normalize(nameText.replace(QUEST_ID, ""))
-        val actionHref = element.selectFirst("a[href*='action=']")?.attr("href").orEmpty()
-        val formAction = element.selectFirst("form[action*='action=']")?.attr("action").orEmpty()
-        val actionControl = element.selectFirst("[name=complete], [name=get]")
+        val actionHref = block.nodes.firstNotNullOfOrNull { node ->
+            selectOwnedFirst(node, "a[href*='action=']")?.attr("href")
+        }.orEmpty()
+        val formAction = block.nodes.firstNotNullOfOrNull { node ->
+            selectOwnedFirst(node, "form[action*='action=']")?.attr("action")
+        }.orEmpty()
+        val actionControl = block.nodes.firstNotNullOfOrNull { node ->
+            selectOwnedFirst(node, "[name=complete], [name=get]")
+        }
         val action = ACTION.find(actionHref)?.groupValues?.get(1)
             ?: ACTION.find(formAction)?.groupValues?.get(1)
-            ?: element.selectFirst("[name=complete]")?.let { "complete" }
-            ?: element.selectFirst("[name=get]")?.let { "get" }
+            ?: block.nodes.firstNotNullOfOrNull { selectOwnedFirst(it, "[name=complete]") }?.let { "complete" }
+            ?: block.nodes.firstNotNullOfOrNull { selectOwnedFirst(it, "[name=get]") }?.let { "get" }
         val resolvedSection = section ?: sectionFromAction(action)
-        val missionTexts = missionTexts(element)
+        val missionTexts = block.nodes.flatMap(::missionTexts)
         val missions = missionTexts.map { text ->
             parseMission(
                 questId = questId,
@@ -97,17 +128,17 @@ class QuestPageParser {
             sourceOrder = 0,
             missions = missions,
             actionNo = actionNo(
-                element = element,
+                nodes = block.nodes,
                 actionControl = actionControl,
                 actionHref = actionHref,
                 formAction = formAction,
             ),
-            rewards = rewardTexts(element),
+            rewards = rewardTexts(block),
         )
     }
 
     private fun actionNo(
-        element: Element,
+        nodes: List<Element>,
         actionControl: Element?,
         actionHref: String,
         formAction: String,
@@ -117,30 +148,60 @@ class QuestPageParser {
         if (encodedUrlValue != null) return decodeUrlParameter(encodedUrlValue)
 
         return actionControl?.closest("form")?.selectFirst("input[name=no]")?.attr("value")?.ifBlank { null }
-            ?: element.selectFirst("input[name=no]")?.attr("value")?.ifBlank { null }
+            ?: nodes.firstNotNullOfOrNull { node ->
+                selectOwnedFirst(node, "input[name=no]")?.attr("value")?.ifBlank { null }
+            }
     }
+
+    private fun selectOwnedFirst(node: Element, selector: String): Element? = node.select(selector)
+        .firstOrNull { selected ->
+            !node.tagName().equals("tr", ignoreCase = true) ||
+                selected.parents().firstOrNull { it.tagName().equals("tr", ignoreCase = true) } === node
+        }
 
     private fun missionTexts(element: Element): List<String> {
         val rewardCell = rewardCell(element)
-        val cells = element.select("td")
+        val cells = if (element.tagName().equals("tr", ignoreCase = true)) {
+            directCells(element)
+        } else {
+            element.select("td")
+        }
+        val missionCells = cells
             .filterNot {
                 it.hasClass("td7s") ||
                     it.hasClass("td8s") ||
                     it.isWithin(rewardCell)
             }
             .flatMap { splitMissionSegments(it) }
-        if (cells.isNotEmpty()) return cells
+        if (missionCells.isNotEmpty()) return missionCells
 
         return splitMissionSegments(element, rewardCell)
     }
 
+    private fun rewardTexts(block: QuestBlock): List<String> = rewardTexts(block.start) +
+        block.nodes.drop(1).flatMap(::explicitRewardTexts)
+
     private fun rewardTexts(element: Element): List<String> {
         val rewardCell = rewardCell(element) ?: return emptyList()
 
-        return splitDisplayLines(rewardCell)
+        return rewardLines(rewardCell)
+    }
+
+    private fun explicitRewardTexts(element: Element): List<String> {
+        val cells = directCells(element)
+        val localLabel = cells.indexOfFirst { normalize(it.text()) == "보상" }
+        val rewardCell = when {
+            localLabel >= 0 && localLabel + 1 <= cells.lastIndex -> cells[localLabel + 1]
+            else -> cells.firstOrNull { LABELED_REWARD_PREFIX.containsMatchIn(it.text()) }
+        } ?: return emptyList()
+
+        return rewardLines(rewardCell)
+    }
+
+    private fun rewardLines(rewardCell: Element): List<String> =
+        splitDisplayLines(rewardCell)
             .map { normalize(it.replaceFirst(REWARD_PREFIX, "")) }
             .filter { it.isNotBlank() && it != "-" }
-    }
 
     private fun rewardCell(element: Element): Element? {
         val cells = directCells(element)
@@ -230,7 +291,7 @@ class QuestPageParser {
 
         fun flush() {
             val text = normalize(current.toString())
-            if (text.contains("미션")) segments += text
+            if (MISSION_PREFIX.containsMatchIn(text)) segments += text
             current.clear()
         }
 
@@ -239,6 +300,7 @@ class QuestPageParser {
             when (node) {
                 is TextNode -> current.append(node.wholeText)
                 is Element -> when {
+                    node.tagName().equals("table", ignoreCase = true) -> Unit
                     node.tagName().equals("br", ignoreCase = true) -> flush()
                     node.normalName() in MISSION_BLOCK_TAGS -> {
                         if (current.isNotBlank()) flush()
@@ -351,7 +413,7 @@ class QuestPageParser {
         val PROGRESS = Regex("\\[\\s*(\\d+)\\s*/\\s*(\\d+)\\s*]")
         val ACTION = Regex("[?&]action=(get|complete)(?:[&#]|$)")
         val NO_PARAMETER = Regex("[?&]no=([^&\"'#\\s]+)")
-        val MISSION_PREFIX = Regex("^\\s*미션\\s*:\\s*")
+        val MISSION_PREFIX = Regex("^미션\\s*[:：]\\s*")
         val REWARD_PREFIX = Regex("^\\s*보상\\s*[:：]?\\s*")
         val LABELED_REWARD_PREFIX = Regex("^\\s*보상\\s*[:：]\\s*")
         val WHITESPACE = Regex("\\s+")
