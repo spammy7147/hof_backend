@@ -46,7 +46,7 @@ class HofMainStatusParser {
      * Funds와 Time을 함께 소유한 상태 영역을 찾는다.
      */
     private fun findStatusOwnerText(document: Document): String? =
-        document.select("tr").firstOrNull(::containsStatusMarkers)
+        findInnermostStatusRow(document)
             ?.text()
             ?.normalizeSpaces()
             ?: document.allElements.firstOrNull { element ->
@@ -60,6 +60,15 @@ class HofMainStatusParser {
                 .ownText()
                 .normalizeSpaces()
                 .takeIf(::containsStatusMarkers)
+
+    private fun findInnermostStatusRow(document: Document): Element? =
+        document.select("tr")
+            .filter(::containsStatusMarkers)
+            .firstOrNull { candidate ->
+                candidate.select("tr").none { descendant ->
+                    descendant !== candidate && containsStatusMarkers(descendant)
+                }
+            }
 
     private fun containsStatusMarkers(element: Element): Boolean =
         containsStatusMarkers(element.text().normalizeSpaces())

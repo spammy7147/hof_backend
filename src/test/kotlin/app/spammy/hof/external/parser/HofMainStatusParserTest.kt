@@ -120,4 +120,51 @@ class HofMainStatusParserTest {
 
         assertEquals("《얼어붙은 손길》공민이", status.playerName)
     }
+
+    @Test
+    fun ignoresPublicNameInOuterRowWhenNestedStatusRowIsAnonymous() {
+        val html = """
+            <table>
+              <tr>
+                <td>《순금 120%》켄류</td>
+                <td>
+                  <table>
+                    <tr>
+                      <td>Funds : ${'$'} 1,720</td>
+                      <td>Time : 4100/6000</td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+            </table>
+        """.trimIndent()
+
+        val status = parser.parse(html)
+
+        assertEquals("Unknown", status.playerName)
+    }
+
+    @Test
+    fun selectsAuthenticatedNameInNestedStatusRow() {
+        val html = """
+            <table>
+              <tr>
+                <td>《순금 120%》켄류</td>
+                <td>
+                  <table>
+                    <tr>
+                      <td>《얼어붙은 손길》공민이</td>
+                      <td>Funds : ${'$'} 1,720</td>
+                      <td>Time : 4100/6000</td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+            </table>
+        """.trimIndent()
+
+        val status = parser.parse(html)
+
+        assertEquals("《얼어붙은 손길》공민이", status.playerName)
+    }
 }
