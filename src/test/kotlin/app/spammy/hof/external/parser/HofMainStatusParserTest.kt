@@ -167,4 +167,39 @@ class HofMainStatusParserTest {
 
         assertEquals("《얼어붙은 손길》공민이", status.playerName)
     }
+
+    @Test
+    fun ignoresPublicNameInHeaderWhenNestedStatusContainerIsAnonymous() {
+        val html = """
+            <header>
+              <div class="ranking">《순금 120%》켄류</div>
+              <div class="status">
+                <span>Funds : ${'$'} 1,720</span>
+                <span>Time : 4100/6000</span>
+              </div>
+            </header>
+        """.trimIndent()
+
+        val status = parser.parse(html)
+
+        assertEquals("Unknown", status.playerName)
+    }
+
+    @Test
+    fun selectsAuthenticatedNameInNestedStatusContainer() {
+        val html = """
+            <header>
+              <div class="ranking">《순금 120%》켄류</div>
+              <div class="status">
+                <span>《얼어붙은 손길》공민이</span>
+                <span>Funds : ${'$'} 1,720</span>
+                <span>Time : 4100/6000</span>
+              </div>
+            </header>
+        """.trimIndent()
+
+        val status = parser.parse(html)
+
+        assertEquals("《얼어붙은 손길》공민이", status.playerName)
+    }
 }

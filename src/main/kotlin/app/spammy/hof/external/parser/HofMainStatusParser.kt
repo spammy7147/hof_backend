@@ -46,14 +46,14 @@ class HofMainStatusParser {
      * Funds와 Time을 함께 소유한 상태 영역을 찾는다.
      */
     private fun findStatusOwnerText(document: Document): String? =
-        findInnermostStatusRow(document)
+        findMinimalStatusCandidate(document.select("tr"))
             ?.text()
             ?.normalizeSpaces()
-            ?: document.allElements.firstOrNull { element ->
-                element !== document.body() &&
-                    element.isNamedStatusContainer() &&
-                    containsStatusMarkers(element)
-            }
+            ?: findMinimalStatusCandidate(
+                document.allElements.filter { element ->
+                    element !== document.body() && element.isNamedStatusContainer()
+                },
+            )
                 ?.text()
                 ?.normalizeSpaces()
             ?: document.body()
@@ -61,14 +61,14 @@ class HofMainStatusParser {
                 .normalizeSpaces()
                 .takeIf(::containsStatusMarkers)
 
-    private fun findInnermostStatusRow(document: Document): Element? =
-        document.select("tr")
-            .filter(::containsStatusMarkers)
-            .firstOrNull { candidate ->
-                candidate.select("tr").none { descendant ->
-                    descendant !== candidate && containsStatusMarkers(descendant)
-                }
+    private fun findMinimalStatusCandidate(candidates: Iterable<Element>): Element? {
+        val matchingCandidates = candidates.filter(::containsStatusMarkers)
+        return matchingCandidates.firstOrNull { candidate ->
+            candidate.allElements.none { descendant ->
+                descendant !== candidate && descendant in matchingCandidates
             }
+        }
+    }
 
     private fun containsStatusMarkers(element: Element): Boolean =
         containsStatusMarkers(element.text().normalizeSpaces())
@@ -78,6 +78,7 @@ class HofMainStatusParser {
 
     private fun Element.isNamedStatusContainer(): Boolean =
         tagName() == "header" ||
+            hasAttr("data-status") ||
             id().containsStatusContainerName() ||
             classNames().any { className -> className.containsStatusContainerName() }
 
