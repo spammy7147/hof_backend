@@ -207,7 +207,7 @@ class QuestPageParserTest {
         val parsed = productionRowBlockQuests()
         val byId = parsed.associateBy { it.questId }
 
-        assertEquals(listOf("0105", "0571", "0900", "0901"), parsed.map { it.questId })
+        assertEquals(listOf("0105", "0571", "0900", "0901", "0902"), parsed.map { it.questId })
 
         val support = byId.getValue("0105")
         assertEquals("포션 지원", support.name)
@@ -234,7 +234,7 @@ class QuestPageParserTest {
     fun excludesDialogueRewardsAndNestedRowsFromSiblingBlockMissions() {
         val byId = productionRowBlockQuests().associateBy { it.questId }
 
-        assertEquals(setOf("0105", "0571", "0900", "0901"), byId.keys)
+        assertEquals(setOf("0105", "0571", "0900", "0901", "0902"), byId.keys)
         assertEquals(1, byId.getValue("0105").missions.size)
         assertEquals(2, byId.getValue("0571").missions.size)
         assertTrue(
@@ -264,6 +264,24 @@ class QuestPageParserTest {
         assertEquals(listOf(QuestMissionType.IMMEDIATE), quest.missions.map { it.type })
         assertEquals("after-idless-cell", quest.actionNo)
         assertEquals(QuestState.CLAIMABLE, quest.state)
+    }
+
+    @Test
+    fun classlessDirectIdCellStartsAndOwnsItsSiblingBlock() {
+        val byId = productionRowBlockQuests().associateBy { it.questId }
+        val prior = byId.getValue("0901")
+
+        assertEquals(listOf(QuestMissionType.IMMEDIATE), prior.missions.map { it.type })
+        assertTrue(prior.rewards.isEmpty())
+        assertNull(prior.actionNo)
+
+        val classless = byId.getValue("0902")
+        assertEquals(listOf(QuestMissionType.ITEM_TURN_IN), classless.missions.map { it.type })
+        assertEquals("Classless Token", classless.missions.single().target)
+        assertEquals(QuestProgress(0, 1), classless.missions.single().progress)
+        assertEquals(listOf("Silver Coin x2"), classless.rewards)
+        assertEquals("classless-start", classless.actionNo)
+        assertEquals(QuestState.CLAIMABLE, classless.state)
     }
 
     @Test
