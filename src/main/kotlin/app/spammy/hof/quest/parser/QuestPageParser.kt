@@ -153,20 +153,20 @@ class QuestPageParser {
             }
     }
 
-    private fun selectOwnedFirst(node: Element, selector: String): Element? = node.select(selector)
+    private fun selectOwnedFirst(owner: Element, selector: String): Element? = owner.select(selector)
         .firstOrNull { selected ->
-            !node.tagName().equals("tr", ignoreCase = true) ||
-                selected.parents().firstOrNull { it.tagName().equals("tr", ignoreCase = true) } === node
+            selected.parents()
+                .takeWhile { it !== owner }
+                .none {
+                    it.hasAttr("data-quest-id") ||
+                        it.normalName() == "table" ||
+                        it.normalName() == "tr"
+                }
         }
 
     private fun missionTexts(element: Element): List<String> {
         val rewardCell = rewardCell(element)
-        val cells = if (element.tagName().equals("tr", ignoreCase = true)) {
-            directCells(element)
-        } else {
-            element.select("td")
-        }
-        val missionCells = cells
+        val missionCells = directCells(element)
             .filterNot {
                 it.hasClass("td7s") ||
                     it.hasClass("td8s") ||
@@ -234,12 +234,15 @@ class QuestPageParser {
         .filter { it.closest("table") === table }
         .filterNot(::isQuestDataRow)
         .firstNotNullOfOrNull { row ->
-            row.children()
+            val headerCells = row.children()
                 .filter {
                     it.tagName().equals("th", ignoreCase = true) ||
                         it.tagName().equals("td", ignoreCase = true)
                 }
-                .indexOfFirst { normalize(it.text()) == "보상" }
+
+            if (headerCells.none { normalize(it.text()) == "퀘스트명" }) return@firstNotNullOfOrNull null
+
+            headerCells.indexOfFirst { normalize(it.text()) == "보상" }
                 .takeIf { it >= 0 }
         }
 
@@ -300,6 +303,7 @@ class QuestPageParser {
             when (node) {
                 is TextNode -> current.append(node.wholeText)
                 is Element -> when {
+                    node.hasAttr("data-quest-id") -> Unit
                     node.tagName().equals("table", ignoreCase = true) -> Unit
                     node.tagName().equals("br", ignoreCase = true) -> flush()
                     node.normalName() in MISSION_BLOCK_TAGS -> {

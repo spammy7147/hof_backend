@@ -96,6 +96,34 @@ class QuestPageParserTest {
     }
 
     @Test
+    fun standaloneDataQuestContainerExcludesNestedTableMissionAndAction() {
+        val quest = parser.parse(
+            """
+            <div id="contents">
+              <h4>진행중인 퀘스트</h4>
+              <section data-quest-id="WRP2">
+                <h3>[WRP2] 독립 컨테이너</h3>
+                <table>
+                  <tr>
+                    <td>미션 : 몬스터 처치( Nested Guard ) - [ 1 / 1 ]</td>
+                    <td><a href="?action=complete&amp;no=nested-action">완료</a></td>
+                  </tr>
+                </table>
+                <p>미션 : 아이템 반납( Direct Token ) - [ 0 / 1 ]</p>
+                <a href="?action=complete&amp;no=direct-action">완료</a>
+              </section>
+            </div>
+            """.trimIndent(),
+        ).single()
+
+        assertEquals(listOf(QuestMissionType.ITEM_TURN_IN), quest.missions.map { it.type })
+        assertEquals("Direct Token", quest.missions.single().target)
+        assertEquals(QuestProgress(0, 1), quest.missions.single().progress)
+        assertEquals("direct-action", quest.actionNo)
+        assertEquals(QuestState.CLAIMABLE, quest.state)
+    }
+
+    @Test
     fun splitsAdjacentSectionRewardElements() {
         val quest = parser.parse(
             """
@@ -155,7 +183,7 @@ class QuestPageParserTest {
         val parsed = productionRowBlockQuests()
         val byId = parsed.associateBy { it.questId }
 
-        assertEquals(listOf("0105", "0571"), parsed.map { it.questId })
+        assertEquals(listOf("0105", "0571", "0900", "0901"), parsed.map { it.questId })
 
         val support = byId.getValue("0105")
         assertEquals("포션 지원", support.name)
@@ -182,13 +210,26 @@ class QuestPageParserTest {
     fun excludesDialogueRewardsAndNestedRowsFromSiblingBlockMissions() {
         val byId = productionRowBlockQuests().associateBy { it.questId }
 
-        assertEquals(setOf("0105", "0571"), byId.keys)
+        assertEquals(setOf("0105", "0571", "0900", "0901"), byId.keys)
         assertEquals(1, byId.getValue("0105").missions.size)
         assertEquals(2, byId.getValue("0571").missions.size)
         assertTrue(
             byId.values
                 .flatMap { it.missions }
                 .none { it.target == "Nested Ghost" || it.type == QuestMissionType.OTHER },
+        )
+    }
+
+    @Test
+    fun appendsHeaderlessExplicitContinuationRewardOnlyToOwningBlock() {
+        val byId = productionRowBlockQuests().associateBy { it.questId }
+
+        assertEquals(listOf("Gold x10"), byId.getValue("0900").rewards)
+        assertTrue(byId.getValue("0901").rewards.isEmpty())
+        assertTrue(
+            byId.values
+                .flatMap { it.rewards }
+                .none { it.contains("명시 보상 연속 행") || it.contains("다음 퀘스트") },
         )
     }
 
