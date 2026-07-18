@@ -64,6 +64,228 @@ class QuestPageParserTest {
     }
 
     @Test
+    fun parsesRewardColumnInDisplayOrderWithoutMissionOrDialogue() {
+        val byId = quests.associateBy { it.questId }
+
+        assertEquals(
+            listOf(
+                "아이템( Red Potion(99회 사용가능) ) x2",
+                "아이템( Blue Potion(99회 사용가능) ) x2",
+            ),
+            byId.getValue("0571").rewards,
+        )
+        assertTrue(byId.getValue("0801").rewards.isEmpty())
+        assertTrue(byId.getValue("0571").rewards.none { it.contains("미션") || it.contains("길드 마스터") })
+    }
+
+    @Test
+    fun ignoresRewardHeadersOwnedByNestedTables() {
+        val quest = parser.parse(
+            """
+            <div id="contents">
+              <h4>진행중인 퀘스트</h4>
+              <table><tr>
+                <td class="td7s">[NEST] 중첩 헤더</td>
+                <td>미션 : 즉시 완료<table><tr><th>퀘스트명</th><th>보상</th></tr></table></td>
+              </tr></table>
+            </div>
+            """.trimIndent(),
+        ).single()
+
+        assertTrue(quest.rewards.isEmpty())
+    }
+
+    @Test
+    fun standaloneDataQuestContainerExcludesNestedTableMissionAndAction() {
+        val quest = parser.parse(
+            """
+            <div id="contents">
+              <h4>진행중인 퀘스트</h4>
+              <section data-quest-id="WRP2">
+                <h3>[WRP2] 독립 컨테이너</h3>
+                <table>
+                  <tr>
+                    <td>미션 : 몬스터 처치( Nested Guard ) - [ 1 / 1 ]</td>
+                    <td><a href="?action=complete&amp;no=nested-action">완료</a></td>
+                  </tr>
+                </table>
+                <p>미션 : 아이템 반납( Direct Token ) - [ 0 / 1 ]</p>
+                <a href="?action=complete&amp;no=direct-action">완료</a>
+              </section>
+            </div>
+            """.trimIndent(),
+        ).single()
+
+        assertEquals(listOf(QuestMissionType.ITEM_TURN_IN), quest.missions.map { it.type })
+        assertEquals("Direct Token", quest.missions.single().target)
+        assertEquals(QuestProgress(0, 1), quest.missions.single().progress)
+        assertEquals("direct-action", quest.actionNo)
+        assertEquals(QuestState.CLAIMABLE, quest.state)
+    }
+
+    @Test
+    fun actionNoIgnoresNestedFormInputBeforeDirectInput() {
+        val quest = parser.parse(
+            """
+            <div id="contents">
+              <h4>진행중인 퀘스트</h4>
+              <table><tr>
+                <td class="td7s">[FRM2] 폼 소유 경계</td>
+                <td>
+                  <form>
+                    <table><tr><td><input name="no" value="nested-wrong"></td></tr></table>
+                    <input name="no" value="direct-right">
+                    <button name="complete">완료</button>
+                  </form>
+                </td>
+              </tr></table>
+            </div>
+            """.trimIndent(),
+        ).single()
+
+        assertEquals("direct-right", quest.actionNo)
+        assertEquals(QuestState.CLAIMABLE, quest.state)
+    }
+
+    @Test
+    fun splitsAdjacentSectionRewardElements() {
+        val quest = parser.parse(
+            """
+            <div id="contents">
+              <h4>진행중인 퀘스트</h4>
+              <table>
+                <tr><th>퀘스트명</th><th>미션</th><th>보상</th><th>행동</th></tr>
+                <tr>
+                  <td class="td7s">[BLCK] 블록 보상</td><td>미션 : 즉시 완료</td>
+                  <td><section>First</section><section>Second</section></td><td>-</td>
+                </tr>
+              </table>
+            </div>
+            """.trimIndent(),
+        ).single()
+
+        assertEquals(listOf("First", "Second"), quest.rewards)
+    }
+
+    @Test
+    fun parsesProductionTdRewardHeaderWithoutTreatingRewardTextAsMission() {
+        val quest = productionRewardQuests().single { it.questId == "0105" }
+
+        assertEquals(
+            listOf("아이템( Red Potion(99회 사용가능) ) x2", "미션 포인트 x3"),
+            quest.rewards,
+        )
+        assertTrue(quest.missions.isEmpty())
+    }
+
+    @Test
+    fun parsesHeaderlessLegacyRewardColumnWithoutTreatingRewardTextAsMission() {
+        val quest = productionRewardQuests().single { it.questId == "LGCY" }
+
+        assertEquals(listOf("Gold x10", "미션 포인트 x1"), quest.rewards)
+        assertTrue(quest.missions.isEmpty())
+    }
+
+    @Test
+    fun parsesRewardValueAfterRowLocalTdLabelWithinOwningTable() {
+        val quest = productionRewardQuests().single { it.questId == "CELL" }
+
+        assertEquals(listOf("명성 x2", "미션 포인트 x4"), quest.rewards)
+        assertEquals(listOf(QuestMissionType.IMMEDIATE), quest.missions.map { it.type })
+    }
+
+    @Test
+    fun parsesLastCellRewardAfterRowLocalTdLabelWithoutLeakingIntoMissions() {
+        val quest = productionRewardQuests().single { it.questId == "LAST" }
+
+        assertEquals(listOf("명성 x5", "미션 포인트 x6"), quest.rewards)
+        assertEquals(listOf(QuestMissionType.IMMEDIATE), quest.missions.map { it.type })
+    }
+
+    @Test
+    fun parsesProductionSiblingRowsAsBoundedQuestBlocks() {
+        val parsed = productionRowBlockQuests()
+        val byId = parsed.associateBy { it.questId }
+
+        assertEquals(listOf("0105", "0571", "0900", "0901", "0902"), parsed.map { it.questId })
+
+        val support = byId.getValue("0105")
+        assertEquals("포션 지원", support.name)
+        assertEquals(listOf("Red Potion x2", "Blue Potion x2"), support.rewards)
+        assertEquals(listOf(QuestMissionType.ITEM_TURN_IN), support.missions.map { it.type })
+        assertEquals("Potion Bottle", support.missions.single().target)
+        assertEquals(QuestProgress(0, 1), support.missions.single().progress)
+
+        val maid = byId.getValue("0571")
+        assertEquals("메이드 토벌", maid.name)
+        assertEquals(listOf("Fund $15,000", "미션 포인트 x3"), maid.rewards)
+        assertEquals(
+            listOf(QuestMissionType.MONSTER_KILL, QuestMissionType.MAP_CLEAR),
+            maid.missions.map { it.type },
+        )
+        assertEquals(listOf("Killer Maid", "Maid Hall"), maid.missions.map { it.target })
+        assertEquals(QuestProgress(12, 30), maid.missions[0].progress)
+        assertNull(maid.missions[1].progress)
+        assertEquals("maid", maid.actionNo)
+        assertEquals(QuestState.CLAIMABLE, maid.state)
+    }
+
+    @Test
+    fun excludesDialogueRewardsAndNestedRowsFromSiblingBlockMissions() {
+        val byId = productionRowBlockQuests().associateBy { it.questId }
+
+        assertEquals(setOf("0105", "0571", "0900", "0901", "0902"), byId.keys)
+        assertEquals(1, byId.getValue("0105").missions.size)
+        assertEquals(2, byId.getValue("0571").missions.size)
+        assertTrue(
+            byId.values
+                .flatMap { it.missions }
+                .none { it.target == "Nested Ghost" || it.type == QuestMissionType.OTHER },
+        )
+    }
+
+    @Test
+    fun appendsHeaderlessExplicitContinuationRewardOnlyToOwningBlock() {
+        val byId = productionRowBlockQuests().associateBy { it.questId }
+
+        assertEquals(listOf("Gold x10"), byId.getValue("0900").rewards)
+        assertTrue(byId.getValue("0901").rewards.isEmpty())
+        assertTrue(
+            byId.values
+                .flatMap { it.rewards }
+                .none { it.contains("명시 보상 연속 행") || it.contains("다음 퀘스트") },
+        )
+    }
+
+    @Test
+    fun idlessQuestStyleCellDoesNotEndOwningSiblingBlock() {
+        val quest = productionRowBlockQuests().single { it.questId == "0900" }
+
+        assertEquals(listOf(QuestMissionType.IMMEDIATE), quest.missions.map { it.type })
+        assertEquals("after-idless-cell", quest.actionNo)
+        assertEquals(QuestState.CLAIMABLE, quest.state)
+    }
+
+    @Test
+    fun classlessDirectIdCellStartsAndOwnsItsSiblingBlock() {
+        val byId = productionRowBlockQuests().associateBy { it.questId }
+        val prior = byId.getValue("0901")
+
+        assertEquals(listOf(QuestMissionType.IMMEDIATE), prior.missions.map { it.type })
+        assertTrue(prior.rewards.isEmpty())
+        assertNull(prior.actionNo)
+
+        val classless = byId.getValue("0902")
+        assertEquals("클래스 없는 시작", classless.name)
+        assertEquals(listOf(QuestMissionType.ITEM_TURN_IN), classless.missions.map { it.type })
+        assertEquals("Classless Token", classless.missions.single().target)
+        assertEquals(QuestProgress(0, 1), classless.missions.single().progress)
+        assertEquals(listOf("Silver Coin x2"), classless.rewards)
+        assertEquals("classless-start", classless.actionNo)
+        assertEquals(QuestState.CLAIMABLE, classless.state)
+    }
+
+    @Test
     fun classifiesMapClearAndOtherMissionText() {
         val mapMission = quests.single { it.questId == "0800" }.missions.single()
         val otherMission = quests.single { it.questId == "0801" }.missions.single()
@@ -257,6 +479,18 @@ class QuestPageParserTest {
     private fun edgeCaseQuests() = parser.parse(
         checkNotNull(
             javaClass.classLoader.getResource("fixtures/quest/quest-parser-edge-cases.html"),
+        ).readText(),
+    )
+
+    private fun productionRewardQuests() = parser.parse(
+        checkNotNull(
+            javaClass.classLoader.getResource("fixtures/quest/quest-production-reward-shapes.html"),
+        ).readText(),
+    )
+
+    private fun productionRowBlockQuests() = parser.parse(
+        checkNotNull(
+            javaClass.classLoader.getResource("fixtures/quest/quest-production-row-blocks.html"),
         ).readText(),
     )
 
