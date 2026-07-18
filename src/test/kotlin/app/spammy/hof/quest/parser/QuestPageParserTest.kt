@@ -143,6 +143,14 @@ class QuestPageParserTest {
     }
 
     @Test
+    fun parsesLastCellRewardAfterRowLocalTdLabelWithoutLeakingIntoMissions() {
+        val quest = productionRewardQuests().single { it.questId == "LAST" }
+
+        assertEquals(listOf("명성 x5", "미션 포인트 x6"), quest.rewards)
+        assertEquals(listOf(QuestMissionType.IMMEDIATE), quest.missions.map { it.type })
+    }
+
+    @Test
     fun classifiesMapClearAndOtherMissionText() {
         val mapMission = quests.single { it.questId == "0800" }.missions.single()
         val otherMission = quests.single { it.questId == "0801" }.missions.single()

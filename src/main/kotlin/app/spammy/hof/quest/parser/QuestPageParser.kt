@@ -147,7 +147,7 @@ class QuestPageParser {
         if (cells.isEmpty()) return null
 
         val localLabel = cells.indexOfFirst { normalize(it.text()) == "보상" }
-        if (localLabel >= 0 && localLabel + 1 < cells.lastIndex) return cells[localLabel + 1]
+        if (localLabel >= 0 && localLabel + 1 <= cells.lastIndex) return cells[localLabel + 1]
 
         cells.firstOrNull { LABELED_REWARD_PREFIX.containsMatchIn(it.text()) }?.let { return it }
 
