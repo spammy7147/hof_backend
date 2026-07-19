@@ -124,13 +124,32 @@ class CaptchaChallengeParser {
     ): String {
         if (pageText.contains(VIGILANTE_PASS_PROMPT)) return VIGILANTE_PASS_PROMPT
 
-        return document.select("p, div, td, span, font, label")
-            .asSequence()
-            .map { element -> element.text().replace(WHITESPACE, " ").trim() }
-            .firstOrNull { text -> CAPTCHA_SIGNAL.containsMatchIn(text) || text.contains("자경단") }
+        val conciseInstruction = promptCandidates(document)
+            .firstOrNull { text ->
+                text.length <= MAX_PROMPT_LENGTH &&
+                    CAPTCHA_SIGNAL.containsMatchIn(text) &&
+                    CAPTCHA_PROMPT_ACTION.containsMatchIn(text)
+            }
+        if (conciseInstruction != null) return conciseInstruction
+
+        if (findChallengeImage(document) != null || findCaptchaNamedInput(document) != null) {
+            return CAPTCHA_ENTRY_PROMPT
+        }
+
+        return promptCandidates(document)
+            .firstOrNull { text ->
+                text.length <= MAX_PROMPT_LENGTH &&
+                    (CAPTCHA_SIGNAL.containsMatchIn(text) || text.contains("자경단"))
+            }
             ?.ifBlank { null }
             ?: "캡차 또는 통행증 입력이 필요합니다."
     }
+
+    private fun promptCandidates(document: Element): Sequence<String> =
+        document.select("p, div, td, span, font, label")
+            .asSequence()
+            .map { element -> element.ownText().replace(WHITESPACE, " ").trim() }
+            .filter(String::isNotBlank)
 
     private fun selectChallengeForm(document: Element): Element? =
         document.select("form").asSequence().maxByOrNull(::challengeFormScore)
@@ -227,6 +246,7 @@ class CaptchaChallengeParser {
 
     companion object {
         const val VIGILANTE_PASS_PROMPT = "자경단에서 통행증을 발급받아주세요."
+        const val CAPTCHA_ENTRY_PROMPT = "이미지의 보안문자를 입력하세요."
         const val DEFAULT_ANSWER_FIELD = "captcha"
         const val SIMPLE_CAPTCHA_SCRIPT = "simple-php-captcha"
         const val SIMPLE_CAPTCHA_IMAGE_PATH = "simple-php-captcha.php?_CAPTCHA=1"
@@ -239,6 +259,7 @@ class CaptchaChallengeParser {
             """(captcha|캡차|통행증|인증\s*문자|자동\s*입력\s*방지)""",
             RegexOption.IGNORE_CASE,
         )
+        private val CAPTCHA_PROMPT_ACTION = Regex("""(입력|적어|작성|enter|type)""", RegexOption.IGNORE_CASE)
         private val RED_STYLE = Regex(
             """color\s*:\s*(red|#f00\b|#ff0000\b|rgb\(\s*255\s*,\s*0\s*,\s*0\s*\))""",
             RegexOption.IGNORE_CASE,
@@ -249,5 +270,6 @@ class CaptchaChallengeParser {
         private val CAPTCHA_SUCCESS_MARKERS = listOf("통행증이 발급되었습니다", "정답입니다")
         private val TEXT_INPUT_TYPES = setOf("text", "password", "tel", "number", "search")
         private val RED_VALUES = setOf("red", "#f00", "#ff0000")
+        private const val MAX_PROMPT_LENGTH = 160
     }
 }
