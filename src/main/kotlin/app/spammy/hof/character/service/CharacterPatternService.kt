@@ -3,6 +3,7 @@ package app.spammy.hof.character.service
 import app.spammy.hof.account.entity.HofCookieEntity
 import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.CookieQueryRepository
+import app.spammy.hof.battle.dto.BattlePatternLoadRequest
 import app.spammy.hof.character.dto.LoadPatternResponse
 import app.spammy.hof.character.repository.CharacterQueryRepository
 import app.spammy.hof.common.error.ApiException
@@ -25,6 +26,7 @@ class CharacterPatternService(
     private val requestFactory: HofRequestFactory,
     private val gateway: HofGateway,
     private val loginStateParser: LoginStateParser,
+    private val sessionPatternLoadTracker: SessionPatternLoadTracker,
 ) {
     private val log = LoggerFactory.getLogger(CharacterPatternService::class.java)
 
@@ -62,17 +64,23 @@ class CharacterPatternService(
             slot,
             cookies.keys.sorted(),
         )
-        val response = gateway.execute(requestFactory.loadPattern(hofCharacterId, slot), cookies)
-        val loginState = loginStateParser.parse(response.body)
-        if (loginState.hasLoginForm && !loginState.isLoggedIn) {
-            log.warn(
-                "Character pattern load session expired accountId={} characterId={} slot={} status={}",
-                account.id,
-                hofCharacterId,
-                slot,
-                response.statusCode,
-            )
-            throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "HOF 로그인 세션이 만료되었습니다.")
+        val response = sessionPatternLoadTracker.withSession(account.id, cookies) { session ->
+            val hofResponse = gateway.execute(requestFactory.loadPattern(hofCharacterId, slot), cookies)
+            val loginState = loginStateParser.parse(hofResponse.body)
+            if (loginState.hasLoginForm && !loginState.isLoggedIn) {
+                log.warn(
+                    "Character pattern load session expired accountId={} characterId={} slot={} status={}",
+                    account.id,
+                    hofCharacterId,
+                    slot,
+                    hofResponse.statusCode,
+                )
+                throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "HOF 로그인 세션이 만료되었습니다.")
+            }
+            if (hofResponse.statusCode in 200..399) {
+                session.recordLoaded(BattlePatternLoadRequest(hofCharacterId, slot))
+            }
+            hofResponse
         }
 
         val loaded = response.statusCode in 200..399

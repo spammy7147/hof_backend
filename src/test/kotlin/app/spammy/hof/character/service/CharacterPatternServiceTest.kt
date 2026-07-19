@@ -3,6 +3,7 @@ package app.spammy.hof.character.service
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.CookieQueryRepository
+import app.spammy.hof.battle.dto.BattlePatternLoadRequest
 import app.spammy.hof.character.entity.CharacterEntity
 import app.spammy.hof.character.repository.CharacterQueryRepository
 import app.spammy.hof.external.client.HofGateway
@@ -36,6 +37,7 @@ class CharacterPatternServiceTest {
     private val cookieQueryRepository = Mockito.mock(CookieQueryRepository::class.java)
     private val characterQueryRepository = Mockito.mock(CharacterQueryRepository::class.java)
     private val gateway = FakeHofGateway()
+    private val sessionPatternLoadTracker = SessionPatternLoadTracker()
     private val service = CharacterPatternService(
         accountQueryRepository = accountQueryRepository,
         cookieQueryRepository = cookieQueryRepository,
@@ -43,6 +45,7 @@ class CharacterPatternServiceTest {
         requestFactory = HofRequestFactory(),
         gateway = gateway,
         loginStateParser = LoginStateParser(),
+        sessionPatternLoadTracker = sessionPatternLoadTracker,
     )
 
     @Test
@@ -66,6 +69,23 @@ class CharacterPatternServiceTest {
         assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?char=1683198503393759", gateway.requests.single().url)
         assertEquals(mapOf("patternno" to "0", "loadpattern" to "LOAD"), gateway.requests.single().formFields)
         assertEquals(mapOf("PHPSESSID" to "abc"), gateway.cookies.single())
+    }
+
+    @Test
+    fun successfulDirectLoadUpdatesTheSharedSessionState() {
+        val cookies = mapOf("PHPSESSID" to "abc")
+        val pattern = BattlePatternLoadRequest(character.hofCharacterId, 2)
+        Mockito.`when`(accountQueryRepository.findById(1L)).thenReturn(account)
+        Mockito.`when`(cookieQueryRepository.findValueMapByAccountId(1L)).thenReturn(cookies)
+        Mockito.`when`(
+            characterQueryRepository.findByAccountIdAndHofCharacterId(1L, character.hofCharacterId),
+        ).thenReturn(character)
+
+        service.loadPattern(1L, character.hofCharacterId, 2)
+
+        sessionPatternLoadTracker.withSession(1L, cookies) { session ->
+            assertEquals(emptyList(), session.requiredLoads(listOf(pattern)))
+        }
     }
 
     private class FakeHofGateway : HofGateway {

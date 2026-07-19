@@ -31,6 +31,7 @@ import app.spammy.hof.captcha.service.CaptchaService
 import app.spammy.hof.captcha.service.StoredCaptchaImage
 import app.spammy.hof.character.entity.CharacterEntity
 import app.spammy.hof.character.repository.CharacterQueryRepository
+import app.spammy.hof.character.service.SessionPatternLoadTracker
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
@@ -114,6 +115,7 @@ class BattleRunServiceTest {
         battleResultParser = BattleResultParser(),
         battleLogService = battleLogService,
         captchaService = captchaService,
+        sessionPatternLoadTracker = SessionPatternLoadTracker(),
         timeProvider = TimeProvider { now },
     )
 
@@ -244,6 +246,42 @@ class BattleRunServiceTest {
         assertEquals("battle_map", savedLog.categoryIdSnapshot)
         assertEquals("snow22", savedLog.mapCodeSnapshot)
         assertEquals("VICTORY", savedLog.outcome)
+    }
+
+    @Test
+    fun runBattleSkipsPatternsAlreadyLoadedForTheSameSessionOnTheNextMap() {
+        val cookies = mapOf("PHPSESSID" to "abc")
+        val characterIds = characters.map { character -> character.hofCharacterId }
+        val patternLoads = characters.mapIndexed { index, character ->
+            BattlePatternLoadRequest(characterId = character.hofCharacterId, slot = index)
+        }
+        Mockito.`when`(accountQueryRepository.findById(1L)).thenReturn(account)
+        Mockito.`when`(cookieQueryRepository.findValueMapByAccountId(1L)).thenReturn(cookies)
+        Mockito.`when`(
+            characterQueryRepository.findByAccountIdAndHofCharacterIds(1L, characterIds),
+        ).thenReturn(characters)
+        Mockito.`when`(
+            battleMapQueryRepository.findStateForExecution(1L, "battle_map", "second"),
+        ).thenReturn(battleMapState(mapCode = "second"))
+
+        service.runBattle(
+            1L,
+            RunBattleRequest("battle_map", "snow22", characterIds, patternLoads),
+        )
+        service.runBattle(
+            1L,
+            RunBattleRequest("battle_map", "second", characterIds, patternLoads),
+        )
+
+        assertEquals(7, gateway.requests.size)
+        assertEquals(5, gateway.requests.count { request -> request.url.contains("?char=") })
+        assertEquals(
+            listOf(
+                "http://sic.zerosic.com/ZeroHOF/index.php?common=snow22",
+                "http://sic.zerosic.com/ZeroHOF/index.php?common=second",
+            ),
+            gateway.requests.filterNot { request -> request.url.contains("?char=") }.map { request -> request.url },
+        )
     }
 
     @Test
@@ -448,6 +486,7 @@ class BattleRunServiceTest {
         )
 
     private fun battleMapState(
+        mapCode: String = "snow22",
         visible: Boolean = true,
         staticEnabled: Boolean = true,
         keyCount: Int? = null,
@@ -463,7 +502,7 @@ class BattleRunServiceTest {
             battleMap = BattleMapEntity(
                 id = 100L,
                 categoryId = "battle_map",
-                mapCode = "snow22",
+                mapCode = mapCode,
                 name = "Frosty Mountain- 대충산",
                 normalizedName = "frosty mountain- 대충산",
                 enabled = staticEnabled,
@@ -477,7 +516,7 @@ class BattleRunServiceTest {
             winRemaining = winRemaining,
             cooldownUntil = cooldownUntil,
             supportsThreeBattles = supportsThreeBattles,
-            rawHref = "index.php?common=snow22",
+            rawHref = "index.php?common=$mapCode",
             visible = visible,
             lastSeenAt = now,
         )

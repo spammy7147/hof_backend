@@ -12,6 +12,7 @@ import app.spammy.hof.battle.repository.BattleMapQueryRepository
 import app.spammy.hof.captcha.service.CaptchaService
 import app.spammy.hof.character.entity.CharacterEntity
 import app.spammy.hof.character.repository.CharacterQueryRepository
+import app.spammy.hof.character.service.SessionPatternLoadTracker
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
@@ -42,6 +43,7 @@ class BattleRunService(
     private val battleResultParser: BattleResultParser,
     private val battleLogService: BattleLogService,
     private val captchaService: CaptchaService,
+    private val sessionPatternLoadTracker: SessionPatternLoadTracker,
     private val timeProvider: TimeProvider,
 ) {
     private val log = LoggerFactory.getLogger(BattleRunService::class.java)
@@ -90,19 +92,6 @@ class BattleRunService(
             if (patternLoad.characterId !in characterIdSet) {
                 throw ApiException(ErrorCode.INVALID_REQUEST, "패턴 로드 캐릭터는 전투 캐릭터에 포함되어야 합니다.")
             }
-            log.info(
-                "Battle pattern preload accountId={} categoryId={} mapCode={} characterId={} slot={}",
-                account.id,
-                category.value,
-                mapCode,
-                patternLoad.characterId,
-                patternLoad.slot,
-            )
-            val preloadResponse = gateway.execute(requestFactory.loadPattern(patternLoad.characterId, patternLoad.slot), cookies)
-            ensureActiveSession(
-                response = preloadResponse,
-                message = "HOF 로그인 세션이 만료되어 패턴을 로드하지 못했습니다.",
-            )
         }
 
         log.info(
@@ -115,15 +104,38 @@ class BattleRunService(
             battleCount,
             cookies.keys.sorted(),
         )
-        val battleResponse = gateway.execute(
-            requestFactory.battle(
-                type = battleType,
-                code = mapCode,
-                characterIds = characters.map { character -> character.hofCharacterId },
-                battleCount = battleCount,
-            ),
-            cookies,
-        )
+        val battleResponse = sessionPatternLoadTracker.withSession(account.id, cookies) { session ->
+            session.requiredLoads(request.patternLoads).forEach { patternLoad ->
+                log.info(
+                    "Battle pattern preload accountId={} categoryId={} mapCode={} characterId={} slot={}",
+                    account.id,
+                    category.value,
+                    mapCode,
+                    patternLoad.characterId,
+                    patternLoad.slot,
+                )
+                val preloadResponse = gateway.execute(
+                    requestFactory.loadPattern(patternLoad.characterId, patternLoad.slot),
+                    cookies,
+                )
+                ensureActiveSession(
+                    response = preloadResponse,
+                    message = "HOF 로그인 세션이 만료되어 패턴을 로드하지 못했습니다.",
+                )
+                if (preloadResponse.statusCode in 200..399) {
+                    session.recordLoaded(patternLoad)
+                }
+            }
+            gateway.execute(
+                requestFactory.battle(
+                    type = battleType,
+                    code = mapCode,
+                    characterIds = characters.map { character -> character.hofCharacterId },
+                    battleCount = battleCount,
+                ),
+                cookies,
+            )
+        }
         ensureActiveSession(
             response = battleResponse,
             message = "HOF 로그인 세션이 만료되어 전투를 진행하지 못했습니다.",
