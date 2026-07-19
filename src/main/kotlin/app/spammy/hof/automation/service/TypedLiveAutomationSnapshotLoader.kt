@@ -126,10 +126,10 @@ class TypedLiveAutomationSnapshotLoader(
         }
         val version = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(canonical.toByteArray()))
         val categories = entries.filter { it.enabled }.flatMap { entry -> when (entry.type) {
-            AutomationType.QUEST -> QUEST_ALIAS_CATEGORIES + entry.quest.flatMap { it.maps }.map { it.categoryId }
+            AutomationType.QUEST -> entry.quest.flatMap { it.maps }.map { it.categoryId }
             AutomationType.BATTLE_MAP -> entry.battle.map { it.categoryId }
             AutomationType.ADVENTURE_MAP -> entry.adventure.map { it.categoryId }
-        } }.distinct()
+        } }.filter { it.isNotBlank() }.distinct()
         return DetachedConfiguration(entries, primary, validPresetIds, parties, categories, version)
     }
 
@@ -201,5 +201,4 @@ class TypedLiveAutomationSnapshotLoader(
     private data class DetachedAdventureSetting(val id: Long, val categoryId: String, val mapCode: String, val presetMode: PresetSelectionMode, val presetId: Long?, val executionOrder: Int)
     private data class DetachedMember(val presetId: Long, val slotIndex: Int, val characterId: String?, val patternSlot: String?, val canLoad: Boolean)
 
-    private companion object { val QUEST_ALIAS_CATEGORIES = listOf("battle_map", "adventure_map") }
 }
