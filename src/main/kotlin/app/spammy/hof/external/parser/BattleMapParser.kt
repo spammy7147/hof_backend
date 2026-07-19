@@ -168,7 +168,7 @@ class BattleMapParser {
             val rawHref = link.attr("href")
             val mapCode = mapCodes[index]
             val parent = link.parent()
-            val fragmentIndexes = if (mapCode == null || parent == null) {
+            val sameMapIndexes = if (mapCode == null || parent == null) {
                 listOf(index)
             } else {
                 candidateLinks.indices.filter { candidateIndex ->
@@ -177,6 +177,18 @@ class BattleMapParser {
                         mapCodes[candidateIndex] == mapCode &&
                         candidateLinks[candidateIndex].parent() === parent
                 }
+            }
+            val keyFragmentIndexes = mutableListOf<Int>()
+            var accumulatedText = ""
+            for (candidateIndex in sameMapIndexes) {
+                keyFragmentIndexes += candidateIndex
+                accumulatedText += candidateLinks[candidateIndex].text().normalizedText()
+                if (KEY_ADVERTISEMENT_PATTERN.containsMatchIn(accumulatedText)) break
+            }
+            val fragmentIndexes = if (KEY_ADVERTISEMENT_PATTERN.containsMatchIn(accumulatedText)) {
+                keyFragmentIndexes
+            } else {
+                listOf(index)
             }
             fragmentIndexes.forEach { fragmentIndex -> consumed[fragmentIndex] = true }
             observations += MapLinkObservation(
@@ -464,7 +476,8 @@ class BattleMapParser {
         val WIN_ADVERTISEMENT_PATTERN = Regex("""승리[^)\r\n]*?회""")
         val REQUIRED_TIME_PATTERN =
             Regex("""(?:Time|타임\s*소모|타임|필요\s*Time)\s*[:：]?\s*([\d,]+)""", RegexOption.IGNORE_CASE)
-        val FINITE_KEY_PATTERN = Regex("""\(\s*x\s*(\d+(?:,\d+)*)\s*\)\s*$""", RegexOption.IGNORE_CASE)
+        val FINITE_KEY_PATTERN =
+            Regex("""\(\s*x\s*(\d+|\d{1,3}(?:,\d{3})+)\s*\)\s*$""", RegexOption.IGNORE_CASE)
         val PERMANENT_KEY_PATTERN = Regex("""\(\s*x\s*\)\s*$""", RegexOption.IGNORE_CASE)
         val KEY_ADVERTISEMENT_PATTERN = Regex("""\(\s*x[^)]*\)\s*$""", RegexOption.IGNORE_CASE)
         val RECOMMENDED_LEVEL_PATTERN = Regex("""\(\s*적정\s*레벨\s*:\s*([^)]+)\)""")

@@ -421,8 +421,11 @@ class BattleMapParserTest {
                 queryName = "sp_common",
                 html = """
                     <p><a href="index.php?sp_common=valid">Valid ( x1,234 )</a></p>
+                    <p><a href="index.php?sp_common=plain-digits">Plain digits ( x42 )</a></p>
                     <p><a href="index.php?sp_common=comma-only">Comma only ( x, )</a></p>
                     <p><a href="index.php?sp_common=bad-comma">Bad comma ( x1,,2 )</a></p>
+                    <p><a href="index.php?sp_common=short-group">Short group ( x12,34 )</a></p>
+                    <p><a href="index.php?sp_common=uneven-groups">Uneven groups ( x1,23,4 )</a></p>
                     <p><a href="index.php?sp_common=overflow">Overflow ( x2,147,483,648 )</a></p>
                 """.trimIndent(),
             )
@@ -433,14 +436,21 @@ class BattleMapParserTest {
         assertEquals(BattleMapKeyMode.LIMITED, valid.keyMode)
         assertEquals(1_234, valid.keyCount)
 
-        maps.filterNot { it.mapCode == "valid" }.forEach { malformed ->
+        val plainDigits = maps.first { it.mapCode == "plain-digits" }
+        assertEquals("Plain digits", plainDigits.name)
+        assertEquals(BattleMapKeyMode.LIMITED, plainDigits.keyMode)
+        assertEquals(42, plainDigits.keyCount)
+
+        maps.filterNot { it.mapCode == "valid" || it.mapCode == "plain-digits" }.forEach { malformed ->
             assertEquals(BattleMapKeyMode.UNKNOWN, malformed.keyMode)
             assertNull(malformed.keyCount)
         }
         assertEquals("Comma only", maps.first { it.mapCode == "comma-only" }.name)
         assertEquals("Bad comma", maps.first { it.mapCode == "bad-comma" }.name)
+        assertEquals("Short group", maps.first { it.mapCode == "short-group" }.name)
+        assertEquals("Uneven groups", maps.first { it.mapCode == "uneven-groups" }.name)
         assertEquals("Overflow", maps.first { it.mapCode == "overflow" }.name)
-        assertEquals(3, warnings.count { "keyCount" in it })
+        assertEquals(5, warnings.count { "keyCount" in it })
     }
 
     @Test
@@ -566,6 +576,7 @@ class BattleMapParserTest {
         )
 
         assertEquals(listOf("future01", null, null), maps.map { it.mapCode })
+        assertEquals("Future- 직접 맵", maps.first().name)
         assertEquals(listOf(1, 1, 2), maps.map { it.groupOrder })
     }
 
