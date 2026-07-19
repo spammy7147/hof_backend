@@ -1,6 +1,7 @@
 package app.spammy.hof.battle.seed
 
 import app.spammy.hof.battle.model.BattleMapIdentityNormalizer
+import app.spammy.hof.battle.model.BattleMapKeyMode
 import app.spammy.hof.external.model.HofBattleMap
 import app.spammy.hof.external.parser.BattleMapParser
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
@@ -70,8 +71,17 @@ internal class BattleMapFixtureReader(
         val path = SeedFixturePathResolver.resolve(repositoryRoot, source.relativePath)
         val html = Files.readString(path, Charset.forName("MS949"))
         return parser.parse(source.categoryId, source.queryName, html)
+            .map(HofBattleMap::toLegacyV2FixtureObservation)
     }
 }
+
+/** V2 checksum을 보존하기 위해 실행 중 파서의 permanent-key 정규화만 기존 seed 형식으로 돌린다. */
+private fun HofBattleMap.toLegacyV2FixtureObservation(): HofBattleMap =
+    if (keyMode == BattleMapKeyMode.UNLIMITED) {
+        copy(name = "$name( x )")
+    } else {
+        this
+    }
 
 /** APK JSON에서 맵 코드와 원본 label/mapName/group만 읽고 실행 설정은 버린다. */
 internal class BattleMapApkSeedReader {

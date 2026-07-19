@@ -285,6 +285,12 @@ class BattleMapParserTest {
         assertEquals(103, maps.size)
         assertEquals(1, maps.count { it.mapCode == "min11" })
 
+        val permanent = maps.first { it.mapCode == "min08" }
+        assertEquals("Dead Pit- 지각 내부 (B4) Tuls의 문", permanent.name)
+        assertEquals(BattleMapKeyMode.UNLIMITED, permanent.keyMode)
+        assertNull(permanent.keyCount)
+        assertEquals(100, permanent.requiredTime)
+
         val herb = maps.first { it.mapCode == "HerbS01" }
         assertEquals("Wandai- 완다이 산맥(빅풋의 영역)", herb.name)
         assertEquals(114, herb.keyCount)

@@ -69,6 +69,7 @@ class FreshSchemaTest {
                 "18" to "bind typed automation stop action",
                 "19" to "retire legacy automation jobs",
                 "20" to "add battle map key mode",
+                "21" to "normalize permanent key map names",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -93,6 +94,7 @@ class FreshSchemaTest {
                 "V19__retire_legacy_automation_jobs.sql",
                 "V1__initialize_schema.sql",
                 "V20__add_battle_map_key_mode.sql",
+                "V21__normalize_permanent_key_map_names.sql",
                 "V2__seed_battle_map_catalog.sql",
                 "V3__add_token_authentication.sql",
                 "V4__add_unified_automation_state.sql",
