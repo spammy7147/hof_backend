@@ -126,7 +126,8 @@ class TypedLiveAutomationSnapshotLoader(
         }
         val version = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(canonical.toByteArray()))
         val categories = entries.filter { it.enabled }.flatMap { entry -> when (entry.type) {
-            AutomationType.QUEST -> entry.quest.flatMap { it.maps }.map { it.categoryId }
+            AutomationType.QUEST -> entry.quest.asSequence().filter { it.enabled }
+                .flatMap { it.maps.asSequence() }.map { it.categoryId }.toList()
             AutomationType.BATTLE_MAP -> entry.battle.map { it.categoryId }
             AutomationType.ADVENTURE_MAP -> entry.adventure.map { it.categoryId }
         } }.filter { it.isNotBlank() }.distinct()

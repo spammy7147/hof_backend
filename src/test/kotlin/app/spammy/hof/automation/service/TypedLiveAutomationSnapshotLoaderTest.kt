@@ -223,13 +223,19 @@ class TypedLiveAutomationSnapshotLoaderTest {
         val presets = Mockito.mock(PartyPresetQueryRepository::class.java)
         val quest = Mockito.mock(QuestGatewayService::class.java)
         val identities = Mockito.mock(BattleMapIdentityResolver::class.java)
+        val questEntry = AutomationEntryEntity(10, account, AutomationType.QUEST, 0, true, now, now)
+        val enabledSelection = QuestAutomationSelectionEntity(20, questEntry, "0091", true, 0)
+        val disabledSelection = QuestAutomationSelectionEntity(21, questEntry, "stale", false, 1)
         val loader = TypedLiveAutomationSnapshotLoader(
             quest, typed, mapQuery, presets, identities, mapService, TimeProvider { now },
             HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
         )
-        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(AutomationEntryEntity(10, account, AutomationType.QUEST, 0, true, now, now)))
-        Mockito.`when`(typed.findQuestSelectionsByEntryIds(listOf(10))).thenReturn(emptyList())
-        Mockito.`when`(typed.findQuestMaps(emptyList())).thenReturn(emptyList())
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(questEntry))
+        Mockito.`when`(typed.findQuestSelectionsByEntryIds(listOf(10))).thenReturn(listOf(enabledSelection, disabledSelection))
+        Mockito.`when`(typed.findQuestMaps(listOf(20, 21))).thenReturn(listOf(
+            QuestAutomationMapEntity(22, disabledSelection, "mission-1", "battle_map", "battle", PresetSelectionMode.PRIMARY, null, 0, true),
+            QuestAutomationMapEntity(23, disabledSelection, "mission-2", "adventure_map", "adventure", PresetSelectionMode.PRIMARY, null, 1, true),
+        ))
         Mockito.`when`(quest.load(7)).thenReturn(emptyList())
         Mockito.`when`(mapQuery.findAllStatesForExecution(7)).thenReturn(emptyList())
         Mockito.`when`(presets.findAllByAccountId(7)).thenReturn(emptyList())
