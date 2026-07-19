@@ -479,7 +479,6 @@ class UnifiedAutomationService(
                 if (quests.none { it.enabled }) warnings += "활성화된 퀘스트가 없습니다."
                 quests.filter { it.enabled }.forEach { selection ->
                     val maps = questMaps[selection.id].orEmpty()
-                    if (maps.isEmpty()) warnings += "${selection.questCode} 퀘스트의 전투 맵 설정이 없습니다."
                     maps.forEach { map ->
                         presetWarning(
                             map.presetMode,

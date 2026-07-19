@@ -98,6 +98,29 @@ class QuestAutomationHandlerTest {
     }
 
     @Test
+    fun activeIncompleteItemTurnInWithoutConfiguredMapsIsSkipped() {
+        val result = handler.evaluate(snapshot(
+            quests = listOf(quest("q", QuestState.ACTIVE, 0, item(completable = false))),
+            selections = listOf(selection("q")),
+        ))
+
+        assertIs<HandlerEvaluation.Skipped>(result)
+    }
+
+    @Test
+    fun activeMonsterKillWithoutConfiguredMapsReturnsConfigurationWarning() {
+        val result = handler.evaluate(snapshot(
+            quests = listOf(quest("q", QuestState.ACTIVE, 0, monster("kill"))),
+            selections = listOf(selection("q")),
+        ))
+
+        assertEquals(
+            "q · monster 전투 맵 설정이 없습니다.",
+            assertIs<HandlerEvaluation.ConfigurationWarning>(result).message,
+        )
+    }
+
+    @Test
     fun completableUnsupportedMissionDoesNotCauseAccept() {
         val result = handler.evaluate(snapshot(
             quests = listOf(
@@ -252,7 +275,10 @@ class QuestAutomationHandlerTest {
                     identity("second", target),
                 ) else emptyList(),
             ))
-            assertIs<HandlerEvaluation.ConfigurationWarning>(result)
+            assertEquals(
+                "q · $target 전투 맵 설정이 없습니다.",
+                assertIs<HandlerEvaluation.ConfigurationWarning>(result).message,
+            )
         }
     }
 

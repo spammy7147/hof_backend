@@ -14,6 +14,7 @@ import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.entity.BattleAutomationDailyProgressEntity
 import app.spammy.hof.automation.entity.BattleAutomationMapEntity
 import app.spammy.hof.automation.entity.PresetSelectionMode
+import app.spammy.hof.automation.entity.QuestAutomationSelectionEntity
 import app.spammy.hof.automation.entity.TypedAutomationActionRunEntity
 import app.spammy.hof.automation.entity.TypedAutomationActionStatus
 import app.spammy.hof.automation.entity.TypedAutomationLifecycle
@@ -293,6 +294,20 @@ class UnifiedAutomationServiceTest {
         assertTrue(response.entries.first().ready)
         assertFalse(response.entries.last().ready)
         assertEquals(listOf("전투 맵 설정이 없습니다."), response.runtime.warnings)
+    }
+
+    @Test
+    fun `enabled non-combat quest without configured maps has no combat map warning`() {
+        val quest = entry(91L, AutomationType.QUEST, enabled = true)
+        val selection = QuestAutomationSelectionEntity(901L, quest, "0091", true, 0)
+        Mockito.`when`(accountQueryRepository.findById(ACCOUNT_ID)).thenReturn(account())
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(quest))
+        Mockito.`when`(typedQuery.findQuestSelections(quest.id)).thenReturn(listOf(selection))
+        Mockito.`when`(typedQuery.findQuestMaps(listOf(selection.id))).thenReturn(emptyList())
+
+        val response = service.getTyped(ACCOUNT_ID)
+
+        assertTrue(response.runtime.warnings.none { it.contains("전투 맵 설정") })
     }
 
     @Test

@@ -311,7 +311,7 @@ class QuestAutomationHandler(
     ): HandlerEvaluation {
         val configured = selection.maps.filter { it.missionKey == mission.key }
         if (configured.isEmpty()) {
-            return HandlerEvaluation.ConfigurationWarning("Quest ${quest.questId} mission ${mission.key} has no battle map.")
+            return HandlerEvaluation.ConfigurationWarning(missingBattleMapWarning(quest, mission))
         }
         val invalidPresetExists = configured.any { !it.hasValidPreset() }
         val validConfigured = configured.filter { it.hasValidPreset() }
@@ -366,7 +366,7 @@ class QuestAutomationHandler(
             }
         } else {
             val target = mission.target?.takeIf(String::isNotBlank)
-                ?: return HandlerEvaluation.ConfigurationWarning("Quest ${quest.questId} mission ${mission.key} has no map target.")
+                ?: return HandlerEvaluation.ConfigurationWarning(missingBattleMapWarning(quest, mission))
             val categoryId = configured.firstOrNull()?.categoryId ?: DEFAULT_BATTLE_CATEGORY
             val identityCandidates = context.mapIdentityCandidates.filter { it.categoryId == categoryId }
             when (val resolved = resolveBattleMapAlias(target, identityCandidates)) {
@@ -393,7 +393,7 @@ class QuestAutomationHandler(
                 BattleMapAliasResolution.Missing,
                 BattleMapAliasResolution.Ambiguous,
                 -> return HandlerEvaluation.ConfigurationWarning(
-                    "Quest ${quest.questId} mission ${mission.key} map '$target' is missing or ambiguous.",
+                    missingBattleMapWarning(quest, mission),
                 )
             }
         }
@@ -406,6 +406,11 @@ class QuestAutomationHandler(
                 ?: HandlerEvaluation.Skipped
         }
         return selected.toBattleEvaluation(quest, context.currentCycles[quest.questId] ?: INITIAL_CYCLE, mission)
+    }
+
+    private fun missingBattleMapWarning(quest: QuestSnapshot, mission: QuestMission): String {
+        val targetOrKey = mission.target?.takeIf(String::isNotBlank) ?: mission.key
+        return "${quest.name} · $targetOrKey 전투 맵 설정이 없습니다."
     }
 
     private fun QuestAutomationMapSelection.toBattleEvaluation(
