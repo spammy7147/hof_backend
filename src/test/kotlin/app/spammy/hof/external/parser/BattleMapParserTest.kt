@@ -348,6 +348,38 @@ class BattleMapParserTest {
     }
 
     @Test
+    fun coalescesSameParentMapFragmentsAcrossInterveningElementsAndMapLinks() {
+        lateinit var maps: List<HofBattleMap>
+        val warnings = captureWarnings {
+            maps = parser.parse(
+                categoryId = "adventure_map",
+                queryName = "sp_common",
+                html = """
+                    <div id="mapgroup1">
+                      <p>
+                        <a href="index.php?sp_common=min08">Dead Pit- 지각 내부 (B4) Tuls의 문(</a>
+                        <span class="decoration"></span>
+                        <a href="index.php?sp_common=other">Other Map</a>
+                        <em></em>
+                        <a href="index.php?sp_common=min08">x )</a>
+                        (타임 소모 : 100)
+                      </p>
+                    </div>
+                """.trimIndent(),
+            )
+        }
+
+        assertEquals(listOf("min08", "other"), maps.map { it.mapCode })
+        val permanent = maps.first()
+        assertEquals("Dead Pit- 지각 내부 (B4) Tuls의 문", permanent.name)
+        assertEquals(BattleMapKeyMode.UNLIMITED, permanent.keyMode)
+        assertNull(permanent.keyCount)
+        assertEquals(100, permanent.requiredTime)
+        assertEquals("Other Map", maps.last().name)
+        assertTrue(warnings.isEmpty())
+    }
+
+    @Test
     fun distinguishesFiniteAbsentAndMalformedKeyAdvertisements() {
         lateinit var maps: List<HofBattleMap>
         val warnings = captureWarnings {
@@ -378,6 +410,37 @@ class BattleMapParserTest {
         assertNull(broken.keyCount)
         assertEquals(1, warnings.size)
         assertTrue("keyCount" in warnings.single())
+    }
+
+    @Test
+    fun rejectsMalformedAndOverflowingFiniteKeyCountsButPreservesValidCommas() {
+        lateinit var maps: List<HofBattleMap>
+        val warnings = captureWarnings {
+            maps = parser.parse(
+                categoryId = "adventure_map",
+                queryName = "sp_common",
+                html = """
+                    <p><a href="index.php?sp_common=valid">Valid ( x1,234 )</a></p>
+                    <p><a href="index.php?sp_common=comma-only">Comma only ( x, )</a></p>
+                    <p><a href="index.php?sp_common=bad-comma">Bad comma ( x1,,2 )</a></p>
+                    <p><a href="index.php?sp_common=overflow">Overflow ( x2,147,483,648 )</a></p>
+                """.trimIndent(),
+            )
+        }
+
+        val valid = maps.first { it.mapCode == "valid" }
+        assertEquals("Valid", valid.name)
+        assertEquals(BattleMapKeyMode.LIMITED, valid.keyMode)
+        assertEquals(1_234, valid.keyCount)
+
+        maps.filterNot { it.mapCode == "valid" }.forEach { malformed ->
+            assertEquals(BattleMapKeyMode.UNKNOWN, malformed.keyMode)
+            assertNull(malformed.keyCount)
+        }
+        assertEquals("Comma only", maps.first { it.mapCode == "comma-only" }.name)
+        assertEquals("Bad comma", maps.first { it.mapCode == "bad-comma" }.name)
+        assertEquals("Overflow", maps.first { it.mapCode == "overflow" }.name)
+        assertEquals(3, warnings.count { "keyCount" in it })
     }
 
     @Test

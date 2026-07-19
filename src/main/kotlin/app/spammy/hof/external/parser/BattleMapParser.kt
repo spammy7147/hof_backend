@@ -158,34 +158,39 @@ class BattleMapParser {
     private fun coalesceMapLinks(
         candidateLinks: List<Element>,
         queryPattern: Regex,
-    ): List<MapLinkObservation> =
-        candidateLinks.fold(mutableListOf()) { observations, link ->
+    ): List<MapLinkObservation> {
+        val mapCodes = candidateLinks.map { link -> parseDirectMapCode(link.attr("href"), queryPattern) }
+        val consumed = BooleanArray(candidateLinks.size)
+        val observations = mutableListOf<MapLinkObservation>()
+        candidateLinks.forEachIndexed { index, link ->
+            if (consumed[index]) return@forEachIndexed
+
             val rawHref = link.attr("href")
-            val mapCode = parseDirectMapCode(rawHref, queryPattern)
-            val displayName = link.text().normalizedText()
-            val previous = observations.lastOrNull()
-            if (
-                mapCode != null &&
-                previous?.mapCode == mapCode &&
-                previous.lastLink.parent() === link.parent() &&
-                previous.lastLink.nextElementSibling() === link
-            ) {
-                observations[observations.lastIndex] = previous.copy(
-                    lastLink = link,
-                    displayName = previous.displayName + displayName,
-                )
+            val mapCode = mapCodes[index]
+            val parent = link.parent()
+            val fragmentIndexes = if (mapCode == null || parent == null) {
+                listOf(index)
             } else {
-                observations += MapLinkObservation(
-                    link = link,
-                    lastLink = link,
-                    rawHref = rawHref,
-                    mapCode = mapCode,
-                    displayName = displayName,
-                    contextText = link.parent()?.text()?.trim().orEmpty(),
-                )
+                candidateLinks.indices.filter { candidateIndex ->
+                    candidateIndex >= index &&
+                        !consumed[candidateIndex] &&
+                        mapCodes[candidateIndex] == mapCode &&
+                        candidateLinks[candidateIndex].parent() === parent
+                }
             }
-            observations
+            fragmentIndexes.forEach { fragmentIndex -> consumed[fragmentIndex] = true }
+            observations += MapLinkObservation(
+                link = link,
+                rawHref = rawHref,
+                mapCode = mapCode,
+                displayName = fragmentIndexes.joinToString(separator = "") { fragmentIndex ->
+                    candidateLinks[fragmentIndex].text().normalizedText()
+                },
+                contextText = parent?.text()?.trim().orEmpty(),
+            )
         }
+        return observations
+    }
 
     /**
      * Parses one authenticated map-detail page. `null` means the page did not expose exactly one execution form
@@ -385,11 +390,17 @@ class BattleMapParser {
         when {
             PERMANENT_KEY_PATTERN.containsMatchIn(text) ->
                 ParsedKey(BattleMapKeyMode.UNLIMITED, null)
-            FINITE_KEY_PATTERN.containsMatchIn(text) ->
-                ParsedKey(
-                    BattleMapKeyMode.LIMITED,
-                    FINITE_KEY_PATTERN.find(text)?.groupValues?.getOrNull(1)?.toNumberOrNull(),
-                )
+            FINITE_KEY_PATTERN.containsMatchIn(text) -> {
+                val count = FINITE_KEY_PATTERN.find(text)
+                    ?.groupValues
+                    ?.getOrNull(1)
+                    ?.toNumberOrNull()
+                if (count == null) {
+                    ParsedKey(BattleMapKeyMode.UNKNOWN, null)
+                } else {
+                    ParsedKey(BattleMapKeyMode.LIMITED, count)
+                }
+            }
             KEY_ADVERTISEMENT_PATTERN.containsMatchIn(text) ->
                 ParsedKey(BattleMapKeyMode.UNKNOWN, null)
             else -> ParsedKey(BattleMapKeyMode.NOT_REQUIRED, null)
@@ -453,7 +464,7 @@ class BattleMapParser {
         val WIN_ADVERTISEMENT_PATTERN = Regex("""승리[^)\r\n]*?회""")
         val REQUIRED_TIME_PATTERN =
             Regex("""(?:Time|타임\s*소모|타임|필요\s*Time)\s*[:：]?\s*([\d,]+)""", RegexOption.IGNORE_CASE)
-        val FINITE_KEY_PATTERN = Regex("""\(\s*x\s*([\d,]+)\s*\)\s*$""", RegexOption.IGNORE_CASE)
+        val FINITE_KEY_PATTERN = Regex("""\(\s*x\s*(\d+(?:,\d+)*)\s*\)\s*$""", RegexOption.IGNORE_CASE)
         val PERMANENT_KEY_PATTERN = Regex("""\(\s*x\s*\)\s*$""", RegexOption.IGNORE_CASE)
         val KEY_ADVERTISEMENT_PATTERN = Regex("""\(\s*x[^)]*\)\s*$""", RegexOption.IGNORE_CASE)
         val RECOMMENDED_LEVEL_PATTERN = Regex("""\(\s*적정\s*레벨\s*:\s*([^)]+)\)""")
@@ -476,7 +487,6 @@ class BattleMapParser {
 
     private data class MapLinkObservation(
         val link: Element,
-        val lastLink: Element,
         val rawHref: String,
         val mapCode: String?,
         val displayName: String,
