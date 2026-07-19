@@ -234,6 +234,7 @@ class TypedLiveAutomationSnapshotLoaderTest {
 
         assertEquals(AutomationType.QUEST, snapshot.entries.single().type)
         assertTrue(snapshot.entries.single().quest != null)
+        Mockito.verify(quest).load(7)
         Mockito.verifyNoInteractions(mapService)
     }
 
