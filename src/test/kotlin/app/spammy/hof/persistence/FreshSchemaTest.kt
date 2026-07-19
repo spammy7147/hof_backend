@@ -68,6 +68,7 @@ class FreshSchemaTest {
                 "17" to "retain typed actions when entry deleted",
                 "18" to "bind typed automation stop action",
                 "19" to "retire legacy automation jobs",
+                "20" to "add battle map key mode",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -91,6 +92,7 @@ class FreshSchemaTest {
                 "V18__bind_typed_automation_stop_action.sql",
                 "V19__retire_legacy_automation_jobs.sql",
                 "V1__initialize_schema.sql",
+                "V20__add_battle_map_key_mode.sql",
                 "V2__seed_battle_map_catalog.sql",
                 "V3__add_token_authentication.sql",
                 "V4__add_unified_automation_state.sql",
@@ -361,6 +363,101 @@ class FreshSchemaTest {
         }
     }
 
+    @Test
+    fun v20BackfillsBattleMapKeyModesWithoutChangingCounts() {
+        val suffix = UUID.randomUUID().toString().replace("-", "")
+        val upgradeDatabase = "v20_upgrade_$suffix"
+        val upgradeUrl =
+            "jdbc:h2:mem:$upgradeDatabase;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;" +
+                "DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1"
+        Flyway.configure().dataSource(upgradeUrl, "sa", "").target("19").load().migrate()
+
+        DriverManager.getConnection(upgradeUrl, "sa", "").use { connection ->
+            connection.createStatement().use { statement ->
+                statement.execute(
+                    """
+                    insert into hof_accounts (login_id, encrypted_password, created_at)
+                    values ('v20-upgrade', 'encrypted', current_timestamp)
+                    """.trimIndent(),
+                )
+                statement.execute(
+                    """
+                    insert into battle_maps
+                        (category_id, map_code, name, normalized_name, display_order,
+                         enabled, created_at, updated_at)
+                    values
+                        ('adventure_map', 'v20-null', 'V20 Null', 'v20 null', 0,
+                         true, current_timestamp, current_timestamp),
+                        ('adventure_map', 'v20-limited', 'V20 Limited', 'v20 limited', 1,
+                         true, current_timestamp, current_timestamp)
+                    """.trimIndent(),
+                )
+                statement.execute(
+                    """
+                    insert into account_battle_map_states
+                        (account_id, battle_map_id, key_count, raw_href, visible, last_seen_at,
+                         supports_three_battles)
+                    select a.id, m.id,
+                           case m.map_code when 'v20-limited' then 3 else null end,
+                           'index.php?sp_common=' || m.map_code, true, current_timestamp, false
+                    from hof_accounts a
+                    cross join battle_maps m
+                    where a.login_id = 'v20-upgrade'
+                      and m.map_code in ('v20-null', 'v20-limited')
+                    """.trimIndent(),
+                )
+                statement.execute(
+                    """
+                    insert into unresolved_battle_maps
+                        (account_id, category_id, group_normalized_name, group_display_order,
+                         map_display_order, observed_name, normalized_name, key_count,
+                         raw_href, visible, last_seen_at)
+                    select id, 'adventure_map', 'v20 group', 0, 0,
+                           'V20 Null', 'v20 unresolved null', null,
+                           'index.php?sp_hunt#null', true, current_timestamp
+                    from hof_accounts where login_id = 'v20-upgrade'
+                    union all
+                    select id, 'adventure_map', 'v20 group', 0, 1,
+                           'V20 Limited', 'v20 unresolved limited', 4,
+                           'index.php?sp_hunt#limited', true, current_timestamp
+                    from hof_accounts where login_id = 'v20-upgrade'
+                    """.trimIndent(),
+                )
+            }
+        }
+
+        Flyway.configure().dataSource(upgradeUrl, "sa", "").load().migrate()
+
+        DriverManager.getConnection(upgradeUrl, "sa", "").use { connection ->
+            assertEquals(
+                listOf("v20-limited" to ("LIMITED" to 3), "v20-null" to ("UNKNOWN" to null)),
+                connection.keyModes(
+                    """
+                    select m.map_code, s.key_mode, s.key_count
+                    from account_battle_map_states s
+                    join battle_maps m on m.id = s.battle_map_id
+                    where m.map_code like 'v20-%'
+                    order by m.map_code
+                    """.trimIndent(),
+                ),
+            )
+            assertEquals(
+                listOf(
+                    "v20 unresolved limited" to ("LIMITED" to 4),
+                    "v20 unresolved null" to ("UNKNOWN" to null),
+                ),
+                connection.keyModes(
+                    """
+                    select normalized_name, key_mode, key_count
+                    from unresolved_battle_maps
+                    where normalized_name like 'v20 unresolved%'
+                    order by normalized_name
+                    """.trimIndent(),
+                ),
+            )
+        }
+    }
+
     companion object {
         private val databaseName = "fresh_schema_${UUID.randomUUID().toString().replace("-", "")}"
         private val MIGRATION_DIRECTORY = java.nio.file.Path.of("src/main/resources/db/migration")
@@ -486,5 +583,17 @@ private fun Connection.stringValue(sql: String): String =
         statement.executeQuery(sql).use { rows ->
             check(rows.next())
             rows.getString(1)
+        }
+    }
+
+private fun Connection.keyModes(sql: String): List<Pair<String, Pair<String, Int?>>> =
+    createStatement().use { statement ->
+        statement.executeQuery(sql).use { rows ->
+            buildList {
+                while (rows.next()) {
+                    val keyCount = rows.getInt(3).let { value -> if (rows.wasNull()) null else value }
+                    add(rows.getString(1) to (rows.getString(2) to keyCount))
+                }
+            }
         }
     }
