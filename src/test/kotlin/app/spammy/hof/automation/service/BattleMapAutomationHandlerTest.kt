@@ -4,6 +4,7 @@ import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.repository.HofAccountRepository
 import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
+import app.spammy.hof.battle.model.BattleMapKeyMode
 import java.time.Instant
 import java.time.LocalDate
 import java.util.concurrent.Executors
@@ -48,12 +49,34 @@ class BattleMapAutomationHandlerTest {
                 state("complete"),
                 state("bad-preset"),
                 state("blocked", visible = false),
-                state("later"),
+                state("later", mapName = "Later map"),
             ),
         )
 
         val action = assertIs<BattleMapAutomationAction>(assertIs<HandlerEvaluation.Runnable>(handler.evaluate(context)).action)
         assertEquals("later", action.mapCode)
+        assertEquals("Later map", action.mapName)
+    }
+
+    @Test
+    fun visibleUnlimitedMapWithoutACountRunsWhileHiddenLimitedMapWithKeysIsSkipped() {
+        val unlimited = handler.evaluate(
+            snapshot(
+                settings = listOf(setting("unlimited", 1)),
+                progress = emptyMap(),
+                states = listOf(state("unlimited", keyMode = BattleMapKeyMode.UNLIMITED)),
+            ),
+        )
+        assertEquals("unlimited", assertIs<BattleMapAutomationAction>(assertIs<HandlerEvaluation.Runnable>(unlimited).action).mapCode)
+
+        val hidden = handler.evaluate(
+            snapshot(
+                settings = listOf(setting("hidden", 1)),
+                progress = emptyMap(),
+                states = listOf(state("hidden", visible = false, keyMode = BattleMapKeyMode.LIMITED, keyCount = 10)),
+            ),
+        )
+        assertIs<HandlerEvaluation.Skipped>(hidden)
     }
 
     @Test
@@ -315,9 +338,12 @@ class BattleMapAutomationHandlerTest {
         attemptRemaining: Int? = null,
         winRemaining: Int? = null,
         keyCount: Int? = null,
+        keyMode: BattleMapKeyMode = if (keyCount == null) BattleMapKeyMode.UNKNOWN else BattleMapKeyMode.LIMITED,
+        mapName: String? = null,
     ) = BattleMapRunnableState(
         "battle_map", mapCode, visible, enabled = true, supportsThreeBattles = supportsThree,
-        availableCount = availableCount, attemptRemaining = attemptRemaining, winRemaining = winRemaining, keyCount = keyCount,
+        availableCount = availableCount, attemptRemaining = attemptRemaining, winRemaining = winRemaining,
+        keyMode = keyMode, keyCount = keyCount, mapName = mapName,
     )
 
     private fun evidence(
@@ -390,6 +416,20 @@ class BattleMapAutomationProgressStorePersistenceTest {
         assertFailsWith<BattleMapAutomationResultConflictException> {
             progressStore.recordResult(changed, evidence(changed, "semantic-result", victories = 1))
         }
+        assertEquals(1, queryRepository.findBattleWins(account.id, DATE, "battle_map", "map"))
+    }
+
+    @Test
+    fun `map display name does not change battle replay identity`() {
+        val account = accountRepository.save(
+            HofAccountEntity(loginId = "battle-display-${System.nanoTime()}", encryptedPassword = "encrypted", createdAt = NOW),
+        )
+        val original = action(account.id, "display-execution").copy(mapName = "이전 이름")
+        progressStore.recordResult(original, evidence(original, "display-result", victories = 1))
+
+        val renamed = original.copy(mapName = "새 이름")
+        progressStore.recordResult(renamed, evidence(renamed, "display-result", victories = 1))
+
         assertEquals(1, queryRepository.findBattleWins(account.id, DATE, "battle_map", "map"))
     }
 

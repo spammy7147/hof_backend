@@ -11,6 +11,7 @@ import app.spammy.hof.battle.entity.BattleMapAliasEntity
 import app.spammy.hof.battle.entity.BattleMapEntity
 import app.spammy.hof.battle.entity.BattleMapGroupEntity
 import app.spammy.hof.battle.model.BattleMapIdentityNormalizer
+import app.spammy.hof.battle.model.BattleMapKeyMode
 import app.spammy.hof.battle.repository.AccountBattleMapStateCommandRepository
 import app.spammy.hof.battle.repository.BattleMapAliasCommandRepository
 import app.spammy.hof.battle.repository.BattleMapGroupCommandRepository
@@ -145,6 +146,41 @@ class BattleMapServiceTest {
 
         assertTrue(response.supportsThreeBattles)
         assertTrue(requireNotNull(state).supportsThreeBattles)
+    }
+
+    @Test
+    fun persistsResolvedUnlimitedAndUnresolvedLimitedKeyObservations() {
+        val resolvedAccount = savedAccount("battle-map-unlimited-key")
+        gateway.defaultBody = """
+            <div>지각 내부 (1)</div>
+            <div id="mapgroup1">
+              <a href="index.php?sp_common=min08">Dead Pit- 지각 내부 (B4) Tuls의 문( x )</a>
+            </div>
+        """.trimIndent()
+
+        val unlimited = service.findMaps(resolvedAccount.id, ADVENTURE).single()
+        val unlimitedState = assertNotNull(queryRepository.findStateForExecution(resolvedAccount.id, ADVENTURE, "min08"))
+        assertEquals(BattleMapKeyMode.UNLIMITED, unlimited.keyMode)
+        assertNull(unlimited.keyCount)
+        assertTrue(unlimited.enabled)
+        assertEquals(BattleMapKeyMode.UNLIMITED, unlimitedState.keyMode)
+        assertNull(unlimitedState.keyCount)
+        assertTrue(unlimitedState.visible)
+
+        val unresolvedAccount = savedAccount("battle-map-unresolved-key")
+        gateway.defaultBody = """
+            <div>미지 지역 (1)</div>
+            <div id="mapgroup2">
+              <a href="index.php?sp_hunt#">Future- 아직 모르는 이름 ( x12 )</a>
+            </div>
+        """.trimIndent()
+
+        val limited = service.findMaps(unresolvedAccount.id, ADVENTURE).single()
+        val unresolved = queryRepository.findVisibleUnresolvedByAccountIdAndCategoryId(unresolvedAccount.id, ADVENTURE).single()
+        assertEquals(BattleMapKeyMode.LIMITED, limited.keyMode)
+        assertEquals(12, limited.keyCount)
+        assertEquals(BattleMapKeyMode.LIMITED, unresolved.keyMode)
+        assertEquals(12, unresolved.keyCount)
     }
 
     @Test
@@ -293,7 +329,10 @@ class BattleMapServiceTest {
 
         assertEquals(listOf("shared01"), refreshed.map { it.mapCode })
         val staleMap = assertNotNull(queryRepository.findMapByCategoryIdAndMapCode(ADVENTURE, "stale01"))
-        assertFalse(assertNotNull(queryRepository.findStateByAccountIdAndMapId(firstAccount.id, staleMap.id)).visible)
+        val staleState = assertNotNull(queryRepository.findStateByAccountIdAndMapId(firstAccount.id, staleMap.id))
+        assertFalse(staleState.visible)
+        assertEquals(BattleMapKeyMode.LIMITED, staleState.keyMode)
+        assertEquals(10, staleState.keyCount)
         assertNotNull(queryRepository.findMapByCategoryIdAndMapCode(ADVENTURE, "stale01"))
         val sharedMap = assertNotNull(queryRepository.findMapByCategoryIdAndMapCode(ADVENTURE, "shared01"))
         assertEquals(1, queryRepository.findStateByAccountIdAndMapId(firstAccount.id, sharedMap.id)?.availableCount)
@@ -609,7 +648,7 @@ class BattleMapServiceTest {
             <div>공유 지역 (2)</div>
             <div id="mapgroup1">
               <p><a href="index.php?sp_common=shared01">Shared- 공유 맵</a> $sharedCount 가능</p>
-              ${if (includeStale) "<p><a href=\"index.php?sp_common=stale01\">Shared- 사라질 맵</a> 2 가능</p>" else ""}
+              ${if (includeStale) "<p><a href=\"index.php?sp_common=stale01\">Shared- 사라질 맵 ( x10 )</a> 2 가능</p>" else ""}
             </div>
         """.trimIndent()
 

@@ -75,6 +75,21 @@ class BattleMapSeedTest {
     }
 
     @Test
+    fun normalizesPermanentKeyMapNameWhilePreservingLegacyAlias() {
+        val map = assertNotNull(queryRepository.findMapByCategoryIdAndMapCode(ADVENTURE_CATEGORY, "min08"))
+
+        assertEquals(PERMANENT_KEY_CLEAN_NAME, map.name)
+        assertEquals(
+            BattleMapIdentityNormalizer.normalize(PERMANENT_KEY_CLEAN_NAME),
+            queryString(
+                "select normalized_name from battle_maps " +
+                    "where category_id = 'adventure_map' and map_code = 'min08'",
+            ),
+        )
+        assertEquals("min08", mapCodeForAlias(ADVENTURE_CATEGORY, PERMANENT_KEY_LEGACY_NAME))
+    }
+
+    @Test
     fun preservesDeterministicTreeOrderAndUniqueAliases() {
         listOf(BATTLE_CATEGORY, ADVENTURE_CATEGORY).forEach { categoryId ->
             val maps = queryRepository.findMapsByCategoryId(categoryId)
@@ -100,6 +115,19 @@ class BattleMapSeedTest {
         assertFalse(migrationSql.contains("config_json", ignoreCase = true))
         assertFalse(migrationSql.contains("_files", ignoreCase = true))
         assertTrue(migrationSql.contains("Noble''s Mansion"))
+        assertTrue(
+            migrationSql.contains(
+                "'adventure_map', 'min08', (select id from battle_map_groups where category_id = " +
+                    "'adventure_map' and name = '지각 내부'), '$PERMANENT_KEY_LEGACY_NAME', " +
+                    "'dead pit- 지각 내부 (b4) tuls의 문( x )', 0, 100",
+            ),
+        )
+        assertTrue(
+            migrationSql.contains(
+                "map_code = 'min08'), '$PERMANENT_KEY_LEGACY_NAME', " +
+                    "'dead pit- 지각 내부 (b4) tuls의 문( x )'",
+            ),
+        )
 
         val lastGroup = statements.indexOfLast { it.startsWith("insert into battle_map_groups ") }
         val firstMap = statements.indexOfFirst { it.startsWith("insert into battle_maps ") }
@@ -138,6 +166,16 @@ class BattleMapSeedTest {
             }
         }
 
+    private fun queryString(sql: String): String =
+        dataSource.connection.use { connection ->
+            connection.createStatement().use { statement ->
+                statement.executeQuery(sql).use { rows ->
+                    assertTrue(rows.next())
+                    rows.getString(1)
+                }
+            }
+        }
+
     private fun mapCodeForAlias(
         categoryId: String,
         alias: String,
@@ -153,6 +191,8 @@ class BattleMapSeedTest {
     companion object {
         private const val BATTLE_CATEGORY = "battle_map"
         private const val ADVENTURE_CATEGORY = "adventure_map"
+        private const val PERMANENT_KEY_CLEAN_NAME = "Dead Pit- 지각 내부 (B4) Tuls의 문"
+        private const val PERMANENT_KEY_LEGACY_NAME = "Dead Pit- 지각 내부 (B4) Tuls의 문( x )"
         private val databaseName = "battle_map_seed_${UUID.randomUUID().toString().replace("-", "")}"
         private val SEED_MIGRATION = Path.of("src/main/resources/db/migration/V2__seed_battle_map_catalog.sql")
         private val MAP_ORDER = compareBy<BattleMapEntity> { it.group?.displayOrder ?: Int.MAX_VALUE }

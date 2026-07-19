@@ -6,6 +6,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNull
 import tools.jackson.module.kotlin.jacksonObjectMapper
 import app.spammy.hof.battle.dto.RunBattleRequest
 import app.spammy.hof.account.entity.HofAccountEntity
@@ -35,6 +36,70 @@ class StoredTypedAutomationActionCodecTest {
             battleRequest = RunBattleRequest("battle_map", "gb0", listOf("c2"), listOf(app.spammy.hof.battle.dto.BattlePatternLoadRequest("c2", 4)), 3),
         ))
         assertNotEquals(encoded.fingerprint, codec.encode(changed).fingerprint)
+    }
+
+    @Test
+    fun `legacy payloads without display decode with null display`() {
+        val legacyJson = """{"entryId":12,"executionIdentity":"execution","payload":{"kind":"QUEST_CLAIM","questCode":"quest","actionNo":"claim"}}"""
+
+        val decoded = codec.decode(1, legacyJson)
+
+        assertNull((decoded.payload as StoredTypedActionPayload.QuestClaim).display)
+    }
+
+    @Test
+    fun `all current payload kinds remain decodable when display is absent`() {
+        val request = RunBattleRequest(
+            "battle_map", "gb0", listOf("c1"),
+            listOf(app.spammy.hof.battle.dto.BattlePatternLoadRequest("c1", 2)), 1,
+        )
+        val payloads = listOf<StoredTypedActionPayload>(
+            StoredTypedActionPayload.QuestClaim("quest", "claim"),
+            StoredTypedActionPayload.QuestAccept("quest", "accept"),
+            StoredTypedActionPayload.QuestBattle(
+                "quest", "1", "mission", app.spammy.hof.quest.model.QuestMissionType.MONSTER_KILL,
+                "battle_map", "gb0", PresetSelectionMode.PRIMARY, 44, 1, request,
+            ),
+            StoredTypedActionPayload.BattleMap(
+                LocalDate.parse("2026-07-16"), "battle_map", "gb0", PresetSelectionMode.PRIMARY, 44, 1, request,
+            ),
+            StoredTypedActionPayload.AdventureMap(
+                "battle_map", "gb0", PresetSelectionMode.PRIMARY, 44, 1, 55, request,
+            ),
+        )
+
+        payloads.forEachIndexed { index, payload ->
+            val encoded = codec.encode(StoredTypedAutomationActionV1(12, "execution-$index", payload))
+            val legacyJson = encoded.json.replace(Regex(",?\\\"display\\\":null"), "")
+            assertNull(codec.decode(1, legacyJson).payload.display)
+        }
+    }
+
+    @Test
+    fun `round trips quest and battle display snapshots`() {
+        val questDisplay = StoredActionDisplay(
+            questName = "초보자 임무",
+            missionLabel = "몬스터 처치 · 슬라임",
+            missionCurrent = 2,
+            missionRequired = 5,
+            mapName = "푸른 초원",
+        )
+        val claim = StoredTypedAutomationActionV1(
+            12, "claim-display", StoredTypedActionPayload.QuestClaim("quest", "claim", questDisplay),
+        )
+        val request = RunBattleRequest(
+            "battle_map", "gb0", listOf("c1"),
+            listOf(app.spammy.hof.battle.dto.BattlePatternLoadRequest("c1", 2)), 1,
+        )
+        val battle = StoredTypedAutomationActionV1(
+            13, "battle-display", StoredTypedActionPayload.BattleMap(
+                LocalDate.parse("2026-07-16"), "battle_map", "gb0", PresetSelectionMode.PRIMARY, 44, 1, request,
+                StoredActionDisplay(mapName = "푸른 초원"),
+            ),
+        )
+
+        assertEquals(questDisplay, (codec.decode(1, codec.encode(claim).json).payload as StoredTypedActionPayload.QuestClaim).display)
+        assertEquals("푸른 초원", (codec.decode(1, codec.encode(battle).json).payload as StoredTypedActionPayload.BattleMap).display?.mapName)
     }
 
     @Test

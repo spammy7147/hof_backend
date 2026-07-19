@@ -159,23 +159,36 @@ class UnifiedAutomationRunner(
             else -> UUID.randomUUID().toString()
         }
         val payload = when (action) {
-            is QuestAction.Claim -> StoredTypedActionPayload.QuestClaim(action.questCode, action.actionNo)
-            is QuestAction.Accept -> StoredTypedActionPayload.QuestAccept(action.questCode, action.actionNo)
+            is QuestAction.Claim -> StoredTypedActionPayload.QuestClaim(
+                action.questCode, action.actionNo, StoredActionDisplay(questName = action.questName),
+            )
+            is QuestAction.Accept -> StoredTypedActionPayload.QuestAccept(
+                action.questCode, action.actionNo, StoredActionDisplay(questName = action.questName),
+            )
             is QuestAction.Battle -> StoredTypedActionPayload.QuestBattle(
                 action.questCode, action.questCycle, action.missionKey, action.missionType,
                 action.categoryId, action.mapCode, action.preset.mode,
                 action.preset.resolvedPresetId ?: action.preset.presetId ?: throw AutomationConfigurationException(), action.battleCount,
                 action.resolvedParty.toRequest(action.categoryId, action.mapCode, action.battleCount),
+                StoredActionDisplay(
+                    action.questName,
+                    action.missionLabel,
+                    action.missionCurrent,
+                    action.missionRequired,
+                    action.mapName,
+                ),
             )
             is BattleMapAutomationAction -> StoredTypedActionPayload.BattleMap(
                 action.progressDate, action.categoryId, action.mapCode, action.presetMode,
                 action.presetId ?: throw AutomationConfigurationException(), action.battleCount,
                 action.resolvedParty.toRequest(action.categoryId, action.mapCode, action.battleCount),
+                StoredActionDisplay(mapName = action.mapName),
             )
             is AdventureMapAutomationAction -> StoredTypedActionPayload.AdventureMap(
                 action.categoryId, action.mapCode, action.presetMode, action.presetId,
                 action.battleCount, action.settingIdentity,
                 action.resolvedParty.toRequest(action.categoryId, action.mapCode, action.battleCount),
+                StoredActionDisplay(mapName = action.mapName),
             )
         }
         return StoredTypedAutomationActionV1(entryId, executionId, payload)

@@ -7,6 +7,7 @@ import app.spammy.hof.battle.entity.BattleMapEntity
 import app.spammy.hof.battle.entity.BattleMapGroupEntity
 import app.spammy.hof.battle.entity.UnresolvedBattleMapEntity
 import app.spammy.hof.battle.model.BattleMapIdentityNormalizer
+import app.spammy.hof.battle.model.hasUsableKey
 import app.spammy.hof.battle.repository.AccountBattleMapStateCommandRepository
 import app.spammy.hof.battle.repository.BattleMapAliasCommandRepository
 import app.spammy.hof.battle.repository.BattleMapGroupCommandRepository
@@ -89,6 +90,13 @@ class BattleMapCatalogTransactionService(
     ): List<HofBattleMap> {
         val now = timeProvider.now()
         val index = preloadIndex(account.id, categoryId)
+        if (observations.isEmpty()) {
+            return assembleVisibleTree(
+                states = index.states().filter(AccountBattleMapStateEntity::visible),
+                unresolved = index.unresolvedRows().filter(UnresolvedBattleMapEntity::visible),
+                now = now,
+            )
+        }
         hideExistingRows(index)
 
         observations.forEach { sourceObservation ->
@@ -262,6 +270,7 @@ class BattleMapCatalogTransactionService(
                 rawHref = observation.rawHref,
                 lastSeenAt = now,
             )
+        state.keyMode = observation.keyMode
         state.keyCount = observation.keyCount
         state.availableCount = observation.availableCount
         state.attemptRemaining = observation.attemptCount
@@ -296,6 +305,7 @@ class BattleMapCatalogTransactionService(
         unresolved.mapDisplayOrder = observation.mapOrder
         unresolved.observedName = observation.name
         unresolved.recommendedLevel = observation.recommendedLevel
+        unresolved.keyMode = observation.keyMode
         unresolved.keyCount = observation.keyCount
         unresolved.availableCount = observation.availableCount
         unresolved.attemptRemaining = observation.attemptCount
@@ -348,7 +358,7 @@ class BattleMapCatalogTransactionService(
 
     private fun AccountBattleMapStateEntity.toDomain(now: Instant): HofBattleMap {
         val activeCooldown = cooldownUntil?.isAfter(now) == true
-        val hasZeroDynamicLimit = listOf(keyCount, availableCount, attemptRemaining, winRemaining)
+        val hasZeroDynamicLimit = listOf(availableCount, attemptRemaining, winRemaining)
             .any { count -> count != null && count <= 0 }
         return HofBattleMap(
             categoryId = battleMap.categoryId,
@@ -362,10 +372,11 @@ class BattleMapCatalogTransactionService(
             attemptCount = attemptRemaining,
             winCount = winRemaining,
             cooldownRemainingSeconds = remainingSeconds(cooldownUntil, now),
+            keyMode = keyMode,
             keyCount = keyCount,
             requiredTime = battleMap.requiredTime,
             supportsThreeBattles = supportsThreeBattles,
-            enabled = battleMap.enabled && visible && !hasZeroDynamicLimit && !activeCooldown,
+            enabled = battleMap.enabled && visible && keyMode.hasUsableKey(keyCount) && !hasZeroDynamicLimit && !activeCooldown,
             resolved = true,
             iconUrl = battleMap.iconUrl,
             rawHref = rawHref,
@@ -385,6 +396,7 @@ class BattleMapCatalogTransactionService(
             attemptCount = attemptRemaining,
             winCount = winRemaining,
             cooldownRemainingSeconds = remainingSeconds(cooldownUntil, now),
+            keyMode = keyMode,
             keyCount = keyCount,
             requiredTime = requiredTime,
             enabled = false,

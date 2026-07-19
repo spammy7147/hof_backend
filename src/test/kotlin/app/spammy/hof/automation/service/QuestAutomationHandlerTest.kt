@@ -7,8 +7,10 @@ import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.automation.repository.BattleAutomationDailyProgressCommandRepository
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import app.spammy.hof.battle.service.BattleMapIdentityCandidate
+import app.spammy.hof.battle.model.BattleMapKeyMode
 import app.spammy.hof.quest.model.QuestMission
 import app.spammy.hof.quest.model.QuestMissionType
+import app.spammy.hof.quest.model.QuestProgress
 import app.spammy.hof.quest.model.QuestSection
 import app.spammy.hof.quest.model.QuestSnapshot
 import app.spammy.hof.quest.model.QuestState
@@ -20,6 +22,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
+import kotlin.test.assertNull
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.test.context.ActiveProfiles
@@ -76,6 +79,70 @@ class QuestAutomationHandlerTest {
     }
 
     @Test
+    fun `prepared quest actions retain human readable names mission label and progress`() {
+        val mission = QuestMission(
+            "kill", QuestMissionType.MONSTER_KILL, "  슬라임  ", QuestProgress(2, 5), false,
+        )
+        val result = handler.evaluate(snapshot(
+            quests = listOf(quest("q", QuestState.ACTIVE, 0, mission)),
+            selections = listOf(selection("q", maps = listOf(map("kill", "map-a", 0)))),
+            states = listOf(state("map-a", mapName = "Map A")),
+        ))
+
+        val action = battle(result)
+        assertEquals("q", action.questName)
+        assertEquals("몬스터 처치 · 슬라임", action.missionLabel)
+        assertEquals(2, action.missionCurrent)
+        assertEquals(5, action.missionRequired)
+        assertEquals("Map A", action.mapName)
+    }
+
+    @Test
+    fun `configured monster map display uses matched live name instead of raw code`() {
+        val result = handler.evaluate(snapshot(
+            quests = listOf(quest("q", QuestState.ACTIVE, 0, monster("kill"))),
+            selections = listOf(selection("q", maps = listOf(map("kill", "qmap", 0)))),
+            states = listOf(state("qmap", mapName = "Live map")),
+        ))
+
+        assertEquals("Live map", battle(result).mapName)
+    }
+
+    @Test
+    fun `manual map clear display uses matched live name and never falls back to raw code`() {
+        val named = handler.evaluate(snapshot(
+            quests = listOf(quest("q", QuestState.ACTIVE, 0, mapClear("clear", "target"))),
+            selections = listOf(selection("q", maps = listOf(map("clear", "qmap", 0, manual = true)))),
+            states = listOf(state("qmap", mapName = "Live map")),
+        ))
+        val blank = handler.evaluate(snapshot(
+            quests = listOf(quest("q", QuestState.ACTIVE, 0, mapClear("clear", "target"))),
+            selections = listOf(selection("q", maps = listOf(map("clear", "qmap", 0, manual = true)))),
+            states = listOf(state("qmap", mapName = "   ")),
+        ))
+
+        assertEquals("Live map", battle(named).mapName)
+        assertNull(battle(blank).mapName)
+    }
+
+    @Test
+    fun `mission display labels cover every type and trim nonblank targets`() {
+        val labels = QuestMissionType.entries.associateWith { type ->
+            QuestMission("mission", type, "  대상  ", null, false).displayLabel()
+        }
+
+        assertEquals("몬스터 처치 · 대상", labels[QuestMissionType.MONSTER_KILL])
+        assertEquals("맵 클리어 · 대상", labels[QuestMissionType.MAP_CLEAR])
+        assertEquals("아이템 반납 · 대상", labels[QuestMissionType.ITEM_TURN_IN])
+        assertEquals("즉시 완료 · 대상", labels[QuestMissionType.IMMEDIATE])
+        assertEquals("기타 · 대상", labels[QuestMissionType.OTHER])
+        assertEquals(
+            "맵 클리어",
+            QuestMission("mission", QuestMissionType.MAP_CLEAR, "   ", null, false).displayLabel(),
+        )
+    }
+
+    @Test
     fun manualOverrideWinsInsteadOfAutomaticAlias() {
         val result = handler.evaluate(snapshot(
             quests = listOf(quest("q", QuestState.ACTIVE, 0, mapClear("clear", "manual target"))),
@@ -94,6 +161,29 @@ class QuestAutomationHandlerTest {
         ))
 
         assertEquals("q", assertIs<QuestAction.Accept>(assertIs<HandlerEvaluation.Runnable>(result).action).questCode)
+    }
+
+    @Test
+    fun activeIncompleteItemTurnInWithoutConfiguredMapsIsSkipped() {
+        val result = handler.evaluate(snapshot(
+            quests = listOf(quest("q", QuestState.ACTIVE, 0, item(completable = false))),
+            selections = listOf(selection("q")),
+        ))
+
+        assertIs<HandlerEvaluation.Skipped>(result)
+    }
+
+    @Test
+    fun activeMonsterKillWithoutConfiguredMapsReturnsConfigurationWarning() {
+        val result = handler.evaluate(snapshot(
+            quests = listOf(quest("q", QuestState.ACTIVE, 0, monster("kill"))),
+            selections = listOf(selection("q")),
+        ))
+
+        assertEquals(
+            "q · monster 전투 맵 설정이 없습니다.",
+            assertIs<HandlerEvaluation.ConfigurationWarning>(result).message,
+        )
     }
 
     @Test
@@ -160,6 +250,23 @@ class QuestAutomationHandlerTest {
         ))
 
         assertEquals("ready", battle(result).mapCode)
+    }
+
+    @Test
+    fun visibleUnlimitedMapWithoutACountRunsWhileHiddenLimitedMapWithKeysIsSkipped() {
+        val unlimited = handler.evaluate(snapshot(
+            quests = listOf(quest("q", QuestState.ACTIVE, 0, monster("kill"))),
+            selections = listOf(selection("q", maps = listOf(map("kill", "unlimited", 0)))),
+            states = listOf(state("unlimited", keyMode = BattleMapKeyMode.UNLIMITED)),
+        ))
+        assertEquals("unlimited", battle(unlimited).mapCode)
+
+        val hidden = handler.evaluate(snapshot(
+            quests = listOf(quest("q", QuestState.ACTIVE, 0, monster("kill"))),
+            selections = listOf(selection("q", maps = listOf(map("kill", "hidden", 0)))),
+            states = listOf(state("hidden", visible = false, keyMode = BattleMapKeyMode.LIMITED, keyCount = 10)),
+        ))
+        assertIs<HandlerEvaluation.Skipped>(hidden)
     }
 
     @Test
@@ -257,7 +364,10 @@ class QuestAutomationHandlerTest {
                     identity("second", target),
                 ) else emptyList(),
             ))
-            assertIs<HandlerEvaluation.ConfigurationWarning>(result)
+            assertEquals(
+                "q · $target 전투 맵 설정이 없습니다.",
+                assertIs<HandlerEvaluation.ConfigurationWarning>(result).message,
+            )
         }
     }
 
@@ -363,10 +473,17 @@ class QuestAutomationHandlerTest {
         manual: Boolean = false,
         presetMode: PresetSelectionMode = PresetSelectionMode.PRIMARY,
         presetId: Long? = null,
-    ) = QuestAutomationMapSelection(mission, "battle_map", code, code, QuestPresetSelection(presetMode, presetId), order, manual)
+    ) = QuestAutomationMapSelection(mission, "battle_map", code, QuestPresetSelection(presetMode, presetId), order, manual)
 
-    private fun state(code: String, keyCount: Int? = null, cooldownUntil: Instant? = null) = AutomationMapState(
-        "battle_map", code, code, true, true, cooldownUntil, null, null, null, keyCount,
+    private fun state(
+        code: String,
+        mapName: String = code,
+        visible: Boolean = true,
+        keyCount: Int? = null,
+        keyMode: BattleMapKeyMode = if (keyCount == null) BattleMapKeyMode.UNKNOWN else BattleMapKeyMode.LIMITED,
+        cooldownUntil: Instant? = null,
+    ) = AutomationMapState(
+        "battle_map", code, mapName, visible, true, cooldownUntil, null, null, null, keyMode, keyCount,
     )
 
     private fun counterKey(quest: String, cycle: String, mission: String, map: String) =
@@ -499,6 +616,28 @@ class QuestAutomationProgressStorePersistenceTest {
         assertEquals(1, queryRepository.findQuestMapWins(account.id, "q", "1", "kill", "battle_map", "first-map"))
         assertEquals(0, queryRepository.findQuestMapWins(account.id, "q", "2", "kill", "battle_map", "second-map"))
         assertEquals(null, queryRepository.findQuestCycle(account.id, "q"))
+    }
+
+    @Test
+    fun `quest display context does not change victory replay identity`() {
+        val account = accountRepository.save(
+            HofAccountEntity(loginId = "quest-display-${System.nanoTime()}", encryptedPassword = "encrypted", createdAt = NOW),
+        )
+        val original = battleAction(cycle = "1", mapCode = "map").copy(
+            questName = "이전 퀘스트 이름",
+            missionLabel = "몬스터 처치 · 이전 대상",
+            missionCurrent = 1,
+            missionRequired = 5,
+        )
+        progressStore.recordVictory(account.id, "display-result", original)
+
+        progressStore.recordVictory(
+            account.id,
+            "display-result",
+            original.copy(questName = "새 퀘스트 이름", missionLabel = "몬스터 처치 · 새 대상", missionCurrent = 4),
+        )
+
+        assertEquals(1, queryRepository.findQuestMapWins(account.id, "q", "1", "kill", "battle_map", "map"))
     }
 
     private fun battleAction(cycle: String, mapCode: String) = QuestAction.Battle(

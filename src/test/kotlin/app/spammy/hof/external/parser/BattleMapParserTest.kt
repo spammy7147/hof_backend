@@ -1,5 +1,6 @@
 package app.spammy.hof.external.parser
 
+import app.spammy.hof.battle.model.BattleMapKeyMode
 import app.spammy.hof.external.model.HofBattleMap
 import ch.qos.logback.classic.Level
 import ch.qos.logback.classic.Logger
@@ -284,6 +285,12 @@ class BattleMapParserTest {
         assertEquals(103, maps.size)
         assertEquals(1, maps.count { it.mapCode == "min11" })
 
+        val permanent = maps.first { it.mapCode == "min08" }
+        assertEquals("Dead Pit- 지각 내부 (B4) Tuls의 문", permanent.name)
+        assertEquals(BattleMapKeyMode.UNLIMITED, permanent.keyMode)
+        assertNull(permanent.keyCount)
+        assertEquals(100, permanent.requiredTime)
+
         val herb = maps.first { it.mapCode == "HerbS01" }
         assertEquals("Wandai- 완다이 산맥(빅풋의 영역)", herb.name)
         assertEquals(114, herb.keyCount)
@@ -317,6 +324,139 @@ class BattleMapParserTest {
         assertEquals("Frosty Mountain- 대충산(리치의 창고)", keyedMap.name)
         assertEquals(9, keyedMap.keyCount)
         assertEquals(null, maps.first { it.mapCode == "plain" }.keyCount)
+    }
+
+    @Test
+    fun coalescesSplitPermanentKeyMapLinksWithoutWarning() {
+        lateinit var maps: List<HofBattleMap>
+        val warnings = captureWarnings {
+            maps = parser.parse(
+                categoryId = "adventure_map",
+                queryName = "sp_common",
+                html = """
+                    <div id="mapgroup1">
+                      <p>
+                        <a href="index.php?sp_common=min08">Dead Pit- 지각 내부 (B4) Tuls의 문(</a><a href="index.php?sp_common=min08">x )</a>
+                        (타임 소모 : 100)
+                      </p>
+                    </div>
+                """.trimIndent(),
+            )
+        }
+
+        val map = maps.single()
+        assertEquals("min08", map.mapCode)
+        assertEquals("Dead Pit- 지각 내부 (B4) Tuls의 문", map.name)
+        assertEquals(BattleMapKeyMode.UNLIMITED, map.keyMode)
+        assertNull(map.keyCount)
+        assertEquals(100, map.requiredTime)
+        assertTrue(warnings.isEmpty())
+    }
+
+    @Test
+    fun coalescesSameParentMapFragmentsAcrossInterveningElementsAndMapLinks() {
+        lateinit var maps: List<HofBattleMap>
+        val warnings = captureWarnings {
+            maps = parser.parse(
+                categoryId = "adventure_map",
+                queryName = "sp_common",
+                html = """
+                    <div id="mapgroup1">
+                      <p>
+                        <a href="index.php?sp_common=min08">Dead Pit- 지각 내부 (B4) Tuls의 문(</a>
+                        <span class="decoration"></span>
+                        <a href="index.php?sp_common=other">Other Map</a>
+                        <em></em>
+                        <a href="index.php?sp_common=min08">x )</a>
+                        (타임 소모 : 100)
+                      </p>
+                    </div>
+                """.trimIndent(),
+            )
+        }
+
+        assertEquals(listOf("min08", "other"), maps.map { it.mapCode })
+        val permanent = maps.first()
+        assertEquals("Dead Pit- 지각 내부 (B4) Tuls의 문", permanent.name)
+        assertEquals(BattleMapKeyMode.UNLIMITED, permanent.keyMode)
+        assertNull(permanent.keyCount)
+        assertEquals(100, permanent.requiredTime)
+        assertEquals("Other Map", maps.last().name)
+        assertTrue(warnings.isEmpty())
+    }
+
+    @Test
+    fun distinguishesFiniteAbsentAndMalformedKeyAdvertisements() {
+        lateinit var maps: List<HofBattleMap>
+        val warnings = captureWarnings {
+            maps = parser.parse(
+                categoryId = "adventure_map",
+                queryName = "sp_common",
+                html = """
+                    <p><a href="index.php?sp_common=finite">Finite ( x12 )</a></p>
+                    <p><a href="index.php?sp_common=plain">Plain</a></p>
+                    <p><a href="index.php?sp_common=broken">Broken ( xunknown )</a></p>
+                """.trimIndent(),
+            )
+        }
+
+        val finite = maps.first { it.mapCode == "finite" }
+        assertEquals("Finite", finite.name)
+        assertEquals(BattleMapKeyMode.LIMITED, finite.keyMode)
+        assertEquals(12, finite.keyCount)
+
+        val plain = maps.first { it.mapCode == "plain" }
+        assertEquals("Plain", plain.name)
+        assertEquals(BattleMapKeyMode.NOT_REQUIRED, plain.keyMode)
+        assertNull(plain.keyCount)
+
+        val broken = maps.first { it.mapCode == "broken" }
+        assertEquals("Broken", broken.name)
+        assertEquals(BattleMapKeyMode.UNKNOWN, broken.keyMode)
+        assertNull(broken.keyCount)
+        assertEquals(1, warnings.size)
+        assertTrue("keyCount" in warnings.single())
+    }
+
+    @Test
+    fun rejectsMalformedAndOverflowingFiniteKeyCountsButPreservesValidCommas() {
+        lateinit var maps: List<HofBattleMap>
+        val warnings = captureWarnings {
+            maps = parser.parse(
+                categoryId = "adventure_map",
+                queryName = "sp_common",
+                html = """
+                    <p><a href="index.php?sp_common=valid">Valid ( x1,234 )</a></p>
+                    <p><a href="index.php?sp_common=plain-digits">Plain digits ( x42 )</a></p>
+                    <p><a href="index.php?sp_common=comma-only">Comma only ( x, )</a></p>
+                    <p><a href="index.php?sp_common=bad-comma">Bad comma ( x1,,2 )</a></p>
+                    <p><a href="index.php?sp_common=short-group">Short group ( x12,34 )</a></p>
+                    <p><a href="index.php?sp_common=uneven-groups">Uneven groups ( x1,23,4 )</a></p>
+                    <p><a href="index.php?sp_common=overflow">Overflow ( x2,147,483,648 )</a></p>
+                """.trimIndent(),
+            )
+        }
+
+        val valid = maps.first { it.mapCode == "valid" }
+        assertEquals("Valid", valid.name)
+        assertEquals(BattleMapKeyMode.LIMITED, valid.keyMode)
+        assertEquals(1_234, valid.keyCount)
+
+        val plainDigits = maps.first { it.mapCode == "plain-digits" }
+        assertEquals("Plain digits", plainDigits.name)
+        assertEquals(BattleMapKeyMode.LIMITED, plainDigits.keyMode)
+        assertEquals(42, plainDigits.keyCount)
+
+        maps.filterNot { it.mapCode == "valid" || it.mapCode == "plain-digits" }.forEach { malformed ->
+            assertEquals(BattleMapKeyMode.UNKNOWN, malformed.keyMode)
+            assertNull(malformed.keyCount)
+        }
+        assertEquals("Comma only", maps.first { it.mapCode == "comma-only" }.name)
+        assertEquals("Bad comma", maps.first { it.mapCode == "bad-comma" }.name)
+        assertEquals("Short group", maps.first { it.mapCode == "short-group" }.name)
+        assertEquals("Uneven groups", maps.first { it.mapCode == "uneven-groups" }.name)
+        assertEquals("Overflow", maps.first { it.mapCode == "overflow" }.name)
+        assertEquals(5, warnings.count { "keyCount" in it })
     }
 
     @Test
@@ -442,6 +582,7 @@ class BattleMapParserTest {
         )
 
         assertEquals(listOf("future01", null, null), maps.map { it.mapCode })
+        assertEquals("Future- 직접 맵", maps.first().name)
         assertEquals(listOf(1, 1, 2), maps.map { it.groupOrder })
     }
 

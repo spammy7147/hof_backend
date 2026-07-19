@@ -1,6 +1,7 @@
 package app.spammy.hof.automation.service
 
 import app.spammy.hof.automation.entity.PresetSelectionMode
+import app.spammy.hof.battle.model.BattleMapKeyMode
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -18,7 +19,7 @@ class AdventureMapAutomationHandlerTest {
                 state("cooldown", cooldownUntil = LATER),
                 state("exhausted", availableCount = 0),
                 state("no-key", keyCount = 0),
-                state("ready"),
+                state("ready", mapName = "Ready map"),
             ),
         )
 
@@ -28,6 +29,7 @@ class AdventureMapAutomationHandlerTest {
         assertEquals(1, action.battleCount)
         assertEquals(4, action.settingIdentity)
         assertEquals("execution-4", action.executionIdentity)
+        assertEquals("Ready map", action.mapName)
     }
 
     @Test
@@ -81,6 +83,33 @@ class AdventureMapAutomationHandlerTest {
             runnable(handler.evaluate(snapshot(settings, listOf(state("zero", keyCount = 0), state("positive", keyCount = 1), state("unknown"))))).mapCode,
         )
         assertEquals("unknown", runnable(handler.evaluate(snapshot(listOf(settings[2]), listOf(state("unknown"))))).mapCode)
+    }
+
+    @Test
+    fun `visible unlimited map without a count runs while hidden limited map with keys is skipped`() {
+        val unlimited = setting(1, "unlimited", 0)
+        assertEquals(
+            "unlimited",
+            runnable(
+                handler.evaluate(
+                    snapshot(
+                        listOf(unlimited),
+                        listOf(state("unlimited", keyMode = BattleMapKeyMode.UNLIMITED)),
+                    ),
+                ),
+            ).mapCode,
+        )
+
+        val hidden = setting(2, "hidden", 0)
+        assertSame(
+            HandlerEvaluation.Skipped,
+            handler.evaluate(
+                snapshot(
+                    listOf(hidden),
+                    listOf(state("hidden", visible = false, keyMode = BattleMapKeyMode.LIMITED, keyCount = 10)),
+                ),
+            ),
+        )
     }
 
     @Test
@@ -287,6 +316,8 @@ class AdventureMapAutomationHandlerTest {
         winRemaining: Int? = null,
         availableCount: Int? = null,
         keyCount: Int? = null,
+        keyMode: BattleMapKeyMode = if (keyCount == null) BattleMapKeyMode.UNKNOWN else BattleMapKeyMode.LIMITED,
+        mapName: String? = null,
     ) = AdventureMapRunnableState(
         categoryId = category,
         mapCode = mapCode,
@@ -298,7 +329,9 @@ class AdventureMapAutomationHandlerTest {
         attemptRemaining = attemptRemaining,
         winRemaining = winRemaining,
         availableCount = availableCount,
+        keyMode = keyMode,
         keyCount = keyCount,
+        mapName = mapName,
     )
 
     private fun snapshot(

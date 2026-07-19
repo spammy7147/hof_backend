@@ -8,6 +8,9 @@ import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.entity.*
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import app.spammy.hof.battle.repository.BattleMapQueryRepository
+import app.spammy.hof.battle.entity.AccountBattleMapStateEntity
+import app.spammy.hof.battle.entity.BattleMapEntity
+import app.spammy.hof.battle.model.BattleMapKeyMode
 import app.spammy.hof.battle.service.BattleMapIdentityResolver
 import app.spammy.hof.battle.service.BattleMapService
 import app.spammy.hof.common.time.TimeProvider
@@ -65,6 +68,23 @@ class TypedLiveAutomationSnapshotLoaderTest {
         val questEntry = AutomationEntryEntity(10, account, AutomationType.QUEST, 0, true, now, now)
         val battleEntry = AutomationEntryEntity(11, account, AutomationType.BATTLE_MAP, 1, true, now, now)
         val adventureEntry = AutomationEntryEntity(12, account, AutomationType.ADVENTURE_MAP, 2, true, now, now)
+        val liveMap = BattleMapEntity(
+            id = 30,
+            categoryId = "battle_map",
+            mapCode = "qmap",
+            name = "Live map",
+            normalizedName = "live map",
+            createdAt = now,
+            updatedAt = now,
+        )
+        val liveState = AccountBattleMapStateEntity(
+            account = account,
+            battleMap = liveMap,
+            keyMode = BattleMapKeyMode.UNLIMITED,
+            keyCount = null,
+            rawHref = "index.php?common=qmap",
+            lastSeenAt = now,
+        )
         val selection = QuestAutomationSelectionEntity(20, questEntry, "q", true, 0)
         val typed = Mockito.mock(TypedAutomationQueryRepository::class.java)
         val mapQuery = Mockito.mock(BattleMapQueryRepository::class.java)
@@ -82,7 +102,7 @@ class TypedLiveAutomationSnapshotLoaderTest {
         Mockito.`when`(typed.findBattleSettingsByEntryIds(listOf(11))).thenReturn(listOf(BattleAutomationMapEntity(22, battleEntry, "battle_map", "bmap", 1, PresetSelectionMode.PRIMARY, null, 0)))
         Mockito.`when`(typed.findAdventureSettingsByEntryIds(listOf(12))).thenReturn(listOf(AdventureAutomationMapEntity(23, adventureEntry, "adventure_map", "amap", PresetSelectionMode.EXPLICIT, explicitX, 0)))
         Mockito.`when`(quest.load(7)).thenReturn(emptyList())
-        Mockito.`when`(mapQuery.findAllStatesForExecution(7)).thenReturn(emptyList())
+        Mockito.`when`(mapQuery.findAllStatesForExecution(7)).thenReturn(listOf(liveState))
         Mockito.`when`(presets.findAllByAccountId(7)).thenReturn(listOf(primaryA, primaryB, explicitX))
         Mockito.`when`(presets.findPrimaryByAccountId(7)).thenReturn(primaryA, primaryA, primaryB, primaryB)
         Mockito.`when`(presets.findMembersByPresetIds(listOf(101L, 102L, 103L))).thenReturn(
@@ -98,6 +118,12 @@ class TypedLiveAutomationSnapshotLoaderTest {
         assertEquals((1..5).toList(), secondQuest.selections.single().maps.single().preset.resolvedParty?.patternLoads?.map { it.slot })
         val firstBattle = requireNotNull(first.entries[1].battle)
         val secondBattle = requireNotNull(second.entries[1].battle)
+        assertEquals(BattleMapKeyMode.UNLIMITED, firstQuest.mapStates.single().keyMode)
+        assertEquals("qmap", firstQuest.mapStates.single().mapCode)
+        assertEquals("Live map", firstQuest.mapStates.single().mapName)
+        assertEquals("qmap", firstQuest.selections.single().maps.single().mapCode)
+        assertEquals(BattleMapKeyMode.UNLIMITED, firstBattle.mapStates.single().keyMode)
+        assertEquals("Live map", firstBattle.mapStates.single().mapName)
         assertEquals(101, firstBattle.primaryPresetId); assertEquals(102, secondBattle.primaryPresetId)
         assertNotEquals(firstBattle.executionIdentity, secondBattle.executionIdentity)
         assertTrue(firstBattle.executionIdentity.isNotBlank() && firstBattle.executionIdentity.length <= 128)
@@ -107,6 +133,8 @@ class TypedLiveAutomationSnapshotLoaderTest {
         val secondResolution = secondAdventure.presetResolutions.getValue(23) as AdventureMapPresetResolution.Valid
         assertEquals(103, firstResolution.resolvedPresetId); assertEquals(103, secondResolution.resolvedPresetId)
         assertEquals((0..4).map { "X-$it" }, secondResolution.resolvedParty?.characterIds)
+        assertEquals(BattleMapKeyMode.UNLIMITED, firstAdventure.mapStates.single().keyMode)
+        assertEquals("Live map", firstAdventure.mapStates.single().mapName)
         assertEquals(firstAdventure.executionIdentities.getValue(23), firstAdventure.executionIdentities.getValue(23))
         assertNotEquals(firstAdventure.executionIdentities.getValue(23), secondAdventure.executionIdentities.getValue(23))
         assertTrue(secondAdventure.executionIdentities.getValue(23).length <= 128)
@@ -186,7 +214,7 @@ class TypedLiveAutomationSnapshotLoaderTest {
     }
 
     @Test
-    fun `quest without configured maps refreshes battle and adventure alias categories`() {
+    fun `enabled quest without configured combat maps loads snapshot without refreshing maps`() {
         val now = Instant.parse("2026-07-16T00:00:00Z")
         val account = HofAccountEntity(7, "login", "encrypted", now)
         val typed = Mockito.mock(TypedAutomationQueryRepository::class.java)
@@ -195,22 +223,75 @@ class TypedLiveAutomationSnapshotLoaderTest {
         val presets = Mockito.mock(PartyPresetQueryRepository::class.java)
         val quest = Mockito.mock(QuestGatewayService::class.java)
         val identities = Mockito.mock(BattleMapIdentityResolver::class.java)
+        val questEntry = AutomationEntryEntity(10, account, AutomationType.QUEST, 0, true, now, now)
+        val enabledSelection = QuestAutomationSelectionEntity(20, questEntry, "0091", true, 0)
+        val disabledSelection = QuestAutomationSelectionEntity(21, questEntry, "stale", false, 1)
         val loader = TypedLiveAutomationSnapshotLoader(
             quest, typed, mapQuery, presets, identities, mapService, TimeProvider { now },
             HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
         )
-        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(AutomationEntryEntity(10, account, AutomationType.QUEST, 0, true, now, now)))
-        Mockito.`when`(typed.findQuestSelectionsByEntryIds(listOf(10))).thenReturn(emptyList())
-        Mockito.`when`(typed.findQuestMaps(emptyList())).thenReturn(emptyList())
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(questEntry))
+        Mockito.`when`(typed.findQuestSelectionsByEntryIds(listOf(10))).thenReturn(listOf(enabledSelection, disabledSelection))
+        Mockito.`when`(typed.findQuestMaps(listOf(20, 21))).thenReturn(listOf(
+            QuestAutomationMapEntity(22, disabledSelection, "mission-1", "battle_map", "battle", PresetSelectionMode.PRIMARY, null, 0, true),
+            QuestAutomationMapEntity(23, disabledSelection, "mission-2", "adventure_map", "adventure", PresetSelectionMode.PRIMARY, null, 1, true),
+        ))
         Mockito.`when`(quest.load(7)).thenReturn(emptyList())
         Mockito.`when`(mapQuery.findAllStatesForExecution(7)).thenReturn(emptyList())
         Mockito.`when`(presets.findAllByAccountId(7)).thenReturn(emptyList())
         Mockito.`when`(presets.findMembersByPresetIds(emptyList())).thenReturn(emptyList())
 
+        val snapshot = loader.loadTyped(7)
+
+        assertEquals(AutomationType.QUEST, snapshot.entries.single().type)
+        assertTrue(snapshot.entries.single().quest != null)
+        Mockito.verify(quest).load(7)
+        Mockito.verifyNoInteractions(mapService)
+    }
+
+    @Test
+    fun `refreshes each distinct nonblank category from enabled entries exactly once`() {
+        val now = Instant.parse("2026-07-16T00:00:00Z")
+        val account = HofAccountEntity(7, "login-categories", "encrypted", now)
+        val questEntry = AutomationEntryEntity(10, account, AutomationType.QUEST, 0, true, now, now)
+        val battleEntry = AutomationEntryEntity(11, account, AutomationType.BATTLE_MAP, 1, true, now, now)
+        val adventureEntry = AutomationEntryEntity(12, account, AutomationType.ADVENTURE_MAP, 2, true, now, now)
+        val disabledBattleEntry = AutomationEntryEntity(13, account, AutomationType.BATTLE_MAP, 3, false, now, now)
+        val questSelection = QuestAutomationSelectionEntity(20, questEntry, "q", true, 0)
+        val typed = Mockito.mock(TypedAutomationQueryRepository::class.java)
+        val mapQuery = Mockito.mock(BattleMapQueryRepository::class.java)
+        val mapService = Mockito.mock(BattleMapService::class.java)
+        val presets = Mockito.mock(PartyPresetQueryRepository::class.java)
+        val quest = Mockito.mock(QuestGatewayService::class.java)
+        val loader = TypedLiveAutomationSnapshotLoader(
+            quest, typed, mapQuery, presets, Mockito.mock(BattleMapIdentityResolver::class.java), mapService,
+            TimeProvider { now }, HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
+        )
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(questEntry, battleEntry, adventureEntry, disabledBattleEntry))
+        Mockito.`when`(typed.findQuestSelectionsByEntryIds(listOf(10))).thenReturn(listOf(questSelection))
+        Mockito.`when`(typed.findQuestMaps(listOf(20))).thenReturn(listOf(
+            QuestAutomationMapEntity(21, questSelection, "mission-1", "battle_map", "quest-map", PresetSelectionMode.PRIMARY, null, 0, true),
+            QuestAutomationMapEntity(22, questSelection, "mission-2", " ", "blank-map", PresetSelectionMode.PRIMARY, null, 1, true),
+        ))
+        Mockito.`when`(typed.findBattleSettingsByEntryIds(listOf(11, 13))).thenReturn(listOf(
+            BattleAutomationMapEntity(23, battleEntry, "battle_map", "battle-map", 1, PresetSelectionMode.PRIMARY, null, 0),
+            BattleAutomationMapEntity(24, disabledBattleEntry, "disabled_map", "disabled-map", 1, PresetSelectionMode.PRIMARY, null, 0),
+        ))
+        Mockito.`when`(typed.findAdventureSettingsByEntryIds(listOf(12))).thenReturn(listOf(
+            AdventureAutomationMapEntity(25, adventureEntry, "adventure_map", "adventure-map", PresetSelectionMode.PRIMARY, null, 0),
+            AdventureAutomationMapEntity(26, adventureEntry, "", "blank-map", PresetSelectionMode.PRIMARY, null, 1),
+        ))
+        Mockito.`when`(presets.findAllByAccountId(7)).thenReturn(emptyList())
+        Mockito.`when`(presets.findMembersByPresetIds(emptyList())).thenReturn(emptyList())
+        Mockito.`when`(quest.load(7)).thenReturn(emptyList())
+        Mockito.`when`(mapQuery.findAllStatesForExecution(7)).thenReturn(emptyList())
+
         loader.loadTyped(7)
 
-        Mockito.verify(mapService).findMaps(7, "battle_map")
-        Mockito.verify(mapService).findMaps(7, "adventure_map")
+        val inOrder = Mockito.inOrder(mapService)
+        inOrder.verify(mapService).findMaps(7, "battle_map")
+        inOrder.verify(mapService).findMaps(7, "adventure_map")
+        Mockito.verifyNoMoreInteractions(mapService)
     }
 
     @Test

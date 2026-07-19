@@ -13,6 +13,7 @@ import app.spammy.hof.battle.entity.BattleLogEntity
 import app.spammy.hof.battle.entity.BattleLogLootEntity
 import app.spammy.hof.battle.entity.BattleLogParticipantEntity
 import app.spammy.hof.battle.entity.BattleMapEntity
+import app.spammy.hof.battle.model.BattleMapKeyMode
 import app.spammy.hof.battle.repository.BattleLogLootCommandRepository
 import app.spammy.hof.battle.repository.BattleLogParticipantCommandRepository
 import app.spammy.hof.battle.repository.BattleLogQueryRepository
@@ -144,6 +145,33 @@ class BattleRunServiceTest {
                 ErrorCode.INVALID_REQUEST,
                 assertFailsWith<ApiException> { service.runBattle(1L, runRequest()) }.errorCode,
                 "unavailable state $index",
+            )
+        }
+        assertTrue(gateway.requests.isEmpty())
+    }
+
+    @Test
+    fun runBattleRejectsOnlyUnusableLimitedKeyState() {
+        Mockito.`when`(accountQueryRepository.findById(1L)).thenReturn(account)
+        Mockito.`when`(cookieQueryRepository.findValueMapByAccountId(1L)).thenReturn(emptyMap())
+
+        listOf(BattleMapKeyMode.NOT_REQUIRED, BattleMapKeyMode.UNLIMITED, BattleMapKeyMode.UNKNOWN).forEach { keyMode ->
+            Mockito.`when`(
+                battleMapQueryRepository.findStateForExecution(1L, "battle_map", "snow22"),
+            ).thenReturn(battleMapState(keyMode = keyMode))
+            assertEquals(
+                ErrorCode.HOF_SESSION_EXPIRED,
+                assertFailsWith<ApiException> { service.runBattle(1L, runRequest()) }.errorCode,
+            )
+        }
+
+        listOf(null, 0).forEach { keyCount ->
+            Mockito.`when`(
+                battleMapQueryRepository.findStateForExecution(1L, "battle_map", "snow22"),
+            ).thenReturn(battleMapState(keyMode = BattleMapKeyMode.LIMITED, keyCount = keyCount))
+            assertEquals(
+                ErrorCode.INVALID_REQUEST,
+                assertFailsWith<ApiException> { service.runBattle(1L, runRequest()) }.errorCode,
             )
         }
         assertTrue(gateway.requests.isEmpty())
@@ -423,6 +451,7 @@ class BattleRunServiceTest {
         visible: Boolean = true,
         staticEnabled: Boolean = true,
         keyCount: Int? = null,
+        keyMode: BattleMapKeyMode = if (keyCount == null) BattleMapKeyMode.UNKNOWN else BattleMapKeyMode.LIMITED,
         availableCount: Int? = null,
         attemptRemaining: Int? = null,
         winRemaining: Int? = null,
@@ -441,6 +470,7 @@ class BattleRunServiceTest {
                 createdAt = now,
                 updatedAt = now,
             ),
+            keyMode = keyMode,
             keyCount = keyCount,
             availableCount = availableCount,
             attemptRemaining = attemptRemaining,

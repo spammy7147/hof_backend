@@ -33,8 +33,18 @@ data class StoredTypedAutomationActionV1(
     JsonSubTypes.Type(StoredTypedActionPayload.AdventureMap::class, name = "ADVENTURE_MAP"),
 )
 sealed interface StoredTypedActionPayload {
-    data class QuestClaim(val questCode: String, val actionNo: String) : StoredTypedActionPayload
-    data class QuestAccept(val questCode: String, val actionNo: String) : StoredTypedActionPayload
+    val display: StoredActionDisplay?
+
+    data class QuestClaim(
+        val questCode: String,
+        val actionNo: String,
+        override val display: StoredActionDisplay? = null,
+    ) : StoredTypedActionPayload
+    data class QuestAccept(
+        val questCode: String,
+        val actionNo: String,
+        override val display: StoredActionDisplay? = null,
+    ) : StoredTypedActionPayload
     data class QuestBattle(
         val questCode: String,
         val questCycle: String,
@@ -46,6 +56,7 @@ sealed interface StoredTypedActionPayload {
         val presetId: Long,
         val battleCount: Int,
         val battleRequest: RunBattleRequest,
+        override val display: StoredActionDisplay? = null,
     ) : StoredTypedActionPayload
     data class BattleMap(
         val progressDate: LocalDate,
@@ -55,6 +66,7 @@ sealed interface StoredTypedActionPayload {
         val presetId: Long,
         val battleCount: Int,
         val battleRequest: RunBattleRequest,
+        override val display: StoredActionDisplay? = null,
     ) : StoredTypedActionPayload
     data class AdventureMap(
         val categoryId: String,
@@ -64,8 +76,17 @@ sealed interface StoredTypedActionPayload {
         val battleCount: Int,
         val settingIdentity: Long,
         val battleRequest: RunBattleRequest,
+        override val display: StoredActionDisplay? = null,
     ) : StoredTypedActionPayload
 }
+
+data class StoredActionDisplay(
+    val questName: String? = null,
+    val missionLabel: String? = null,
+    val missionCurrent: Int? = null,
+    val missionRequired: Int? = null,
+    val mapName: String? = null,
+)
 
 data class EncodedTypedAutomationAction(val json: String, val fingerprint: String)
 

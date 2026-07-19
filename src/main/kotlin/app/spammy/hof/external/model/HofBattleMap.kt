@@ -1,5 +1,7 @@
 package app.spammy.hof.external.model
 
+import app.spammy.hof.battle.model.BattleMapKeyMode
+
 /**
  * HOF 원본 전투/모험 맵 목록 HTML에서 파싱한 맵 정보다.
  */
@@ -15,6 +17,7 @@ data class HofBattleMap(
     val attemptCount: Int? = null,
     val winCount: Int? = null,
     val cooldownRemainingSeconds: Long? = null,
+    val keyMode: BattleMapKeyMode = BattleMapKeyMode.UNKNOWN,
     val keyCount: Int? = null,
     val requiredTime: Int? = null,
     /** Null means this page did not contain an authoritative execution form for this map. */

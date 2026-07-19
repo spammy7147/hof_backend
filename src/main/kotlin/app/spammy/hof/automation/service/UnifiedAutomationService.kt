@@ -440,15 +440,8 @@ class UnifiedAutomationService(
                 else -> null
             }
         } ?: return null
-        val title = when (payload) {
-            is StoredTypedActionPayload.QuestClaim -> payload.questCode
-            is StoredTypedActionPayload.QuestAccept -> payload.questCode
-            is StoredTypedActionPayload.QuestBattle -> payload.mapCode
-            is StoredTypedActionPayload.BattleMap -> payload.mapCode
-            is StoredTypedActionPayload.AdventureMap -> payload.mapCode
-            null -> row.actionKind
-        }
-        val battleTotal = when (payload) {
+        val display = payload?.display
+        val battleCount = when (payload) {
             is StoredTypedActionPayload.QuestBattle -> payload.battleCount
             is StoredTypedActionPayload.BattleMap -> payload.battleCount
             is StoredTypedActionPayload.AdventureMap -> payload.battleCount
@@ -457,9 +450,22 @@ class UnifiedAutomationService(
         return TypedAutomationCurrentActionResponse(
             source = source,
             kind = row.actionKind,
-            title = title,
-            battleCurrent = battleTotal?.let { 1 },
-            battleTotal = battleTotal,
+            actionLabel = when {
+                payload is StoredTypedActionPayload.BattleMap && display == null -> "전투 진행 중"
+                row.actionKind == "QUEST_CLAIM" -> "퀘스트 완료"
+                row.actionKind == "QUEST_ACCEPT" -> "퀘스트 수락"
+                row.actionKind == "QUEST_BATTLE" -> "퀘스트 전투"
+                row.actionKind == "BATTLE_MAP" -> "전투맵"
+                row.actionKind == "ADVENTURE_MAP" -> "모험맵"
+                display != null -> "자동화 실행 중"
+                else -> "전투 진행 중"
+            },
+            questName = display?.questName,
+            missionLabel = display?.missionLabel,
+            missionCurrent = display?.missionCurrent,
+            missionRequired = display?.missionRequired,
+            mapName = display?.mapName,
+            battleCount = battleCount,
         )
     }
 
@@ -479,7 +485,6 @@ class UnifiedAutomationService(
                 if (quests.none { it.enabled }) warnings += "활성화된 퀘스트가 없습니다."
                 quests.filter { it.enabled }.forEach { selection ->
                     val maps = questMaps[selection.id].orEmpty()
-                    if (maps.isEmpty()) warnings += "${selection.questCode} 퀘스트의 전투 맵 설정이 없습니다."
                     maps.forEach { map ->
                         presetWarning(
                             map.presetMode,

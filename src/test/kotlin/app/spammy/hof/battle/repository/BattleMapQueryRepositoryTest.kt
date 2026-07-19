@@ -2,13 +2,17 @@ package app.spammy.hof.battle.repository
 
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.repository.HofAccountRepository
+import app.spammy.hof.battle.dto.BattleMapResponse
 import app.spammy.hof.battle.entity.AccountBattleMapStateEntity
 import app.spammy.hof.battle.entity.BattleMapAliasEntity
 import app.spammy.hof.battle.entity.BattleMapEntity
 import app.spammy.hof.battle.entity.BattleMapGroupEntity
 import app.spammy.hof.battle.entity.UnresolvedBattleMapEntity
 import app.spammy.hof.battle.model.BattleMapIdentityNormalizer
+import app.spammy.hof.battle.model.BattleMapKeyMode
 import app.spammy.hof.common.persistence.QueryDslConfig
+import app.spammy.hof.external.model.HofBattleMap
+import jakarta.persistence.EntityManager
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -43,6 +47,49 @@ class BattleMapQueryRepositoryTest {
 
     @Autowired
     private lateinit var queryRepository: BattleMapQueryRepository
+
+    @Autowired
+    private lateinit var entityManager: EntityManager
+
+    @Test
+    fun `map response preserves unlimited key mode without inventing a count`() {
+        val response = BattleMapResponse.from(
+            HofBattleMap(
+                categoryId = "adventure_map",
+                mapCode = "min08",
+                name = "Tuls의 문",
+                keyMode = BattleMapKeyMode.UNLIMITED,
+                keyCount = null,
+                rawHref = "index.php?sp_common=min08",
+            ),
+        )
+
+        assertEquals(BattleMapKeyMode.UNLIMITED, response.keyMode)
+        assertNull(response.keyCount)
+    }
+
+    @Test
+    fun `unlimited key mode round trips through persistence without a count`() {
+        val owner = accountRepository.save(account("unlimited-key-owner"))
+        val map = mapRepository.save(catalogMap("adventure_map", "unlimited-key-map"))
+        stateRepository.save(
+            AccountBattleMapStateEntity(
+                account = owner,
+                battleMap = map,
+                keyMode = BattleMapKeyMode.UNLIMITED,
+                keyCount = null,
+                rawHref = "index.php?sp_common=unlimited-key-map",
+                lastSeenAt = NOW,
+            ),
+        )
+        stateRepository.flush()
+        entityManager.clear()
+
+        val restored = queryRepository.findStateByAccountIdAndMapId(owner.id, map.id)
+
+        assertEquals(BattleMapKeyMode.UNLIMITED, restored?.keyMode)
+        assertNull(restored?.keyCount)
+    }
 
     @Test
     fun readsCatalogAliasesAndAccountScopedRowsInDeterministicTreeOrder() {
@@ -245,6 +292,7 @@ class BattleMapQueryRepositoryTest {
         AccountBattleMapStateEntity(
             account = account,
             battleMap = map,
+            keyMode = BattleMapKeyMode.LIMITED,
             keyCount = 2,
             availableCount = 3,
             attemptRemaining = 4,

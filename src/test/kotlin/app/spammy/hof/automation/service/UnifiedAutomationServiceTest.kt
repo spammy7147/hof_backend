@@ -14,6 +14,7 @@ import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.entity.BattleAutomationDailyProgressEntity
 import app.spammy.hof.automation.entity.BattleAutomationMapEntity
 import app.spammy.hof.automation.entity.PresetSelectionMode
+import app.spammy.hof.automation.entity.QuestAutomationSelectionEntity
 import app.spammy.hof.automation.entity.TypedAutomationActionRunEntity
 import app.spammy.hof.automation.entity.TypedAutomationActionStatus
 import app.spammy.hof.automation.entity.TypedAutomationLifecycle
@@ -26,6 +27,8 @@ import app.spammy.hof.automation.repository.QuestAutomationMapCommandRepository
 import app.spammy.hof.automation.repository.QuestAutomationSelectionCommandRepository
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import app.spammy.hof.battle.entity.BattleMapEntity
+import app.spammy.hof.battle.dto.BattlePatternLoadRequest
+import app.spammy.hof.battle.dto.RunBattleRequest
 import app.spammy.hof.battle.repository.BattleMapQueryRepository
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
@@ -37,6 +40,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import org.mockito.Mockito
 
@@ -227,7 +231,7 @@ class UnifiedAutomationServiceTest {
     }
 
     @Test
-    fun `stopped network runtime exposes only its exact failed action`() {
+    fun `stopped network runtime exposes its failed adventure action with a display name`() {
         val account = account()
         val action = TypedAutomationActionRunEntity(
             id = 502L,
@@ -268,6 +272,7 @@ class UnifiedAutomationServiceTest {
                     listOf("c1"),
                     listOf(app.spammy.hof.battle.dto.BattlePatternLoadRequest("c1", 0)),
                 ),
+                StoredActionDisplay(mapName = "모험의 숲"),
             ),
         )
         Mockito.`when`(accountQueryRepository.findById(ACCOUNT_ID)).thenReturn(account)
@@ -278,7 +283,130 @@ class UnifiedAutomationServiceTest {
         val response = service.getTyped(ACCOUNT_ID)
 
         assertEquals(AutomationType.ADVENTURE_MAP, response.runtime.currentAction?.source)
-        assertEquals("sp_hunt_1", response.runtime.currentAction?.title)
+        assertEquals("ADVENTURE_MAP", response.runtime.currentAction?.kind)
+        assertEquals("모험맵", response.runtime.currentAction?.actionLabel)
+        assertEquals("모험의 숲", response.runtime.currentAction?.mapName)
+        assertEquals(1, response.runtime.currentAction?.battleCount)
+    }
+
+    @Test
+    fun `current quest battle exposes exact structured display snapshot`() {
+        val payload = StoredTypedActionPayload.QuestBattle(
+            questCode = "quest-raw-code",
+            questCycle = "1",
+            missionKey = "mission-raw-key",
+            missionType = app.spammy.hof.quest.model.QuestMissionType.MAP_CLEAR,
+            categoryId = "battle_map",
+            mapCode = "tnfh1",
+            presetMode = PresetSelectionMode.PRIMARY,
+            presetId = 7L,
+            battleCount = 1,
+            battleRequest = battleRequest("battle_map", "tnfh1"),
+            display = StoredActionDisplay(
+                questName = "저택 동관 조사(반복)",
+                missionLabel = "맵 클리어",
+                missionCurrent = 21,
+                missionRequired = 25,
+                mapName = "동관 응접실",
+            ),
+        )
+        stubActiveAction("QUEST_BATTLE", payload)
+
+        val action = service.getTyped(ACCOUNT_ID).runtime.currentAction
+
+        assertEquals(AutomationType.QUEST, action?.source)
+        assertEquals("QUEST_BATTLE", action?.kind)
+        assertEquals("퀘스트 전투", action?.actionLabel)
+        assertEquals("저택 동관 조사(반복)", action?.questName)
+        assertEquals("맵 클리어", action?.missionLabel)
+        assertEquals(21, action?.missionCurrent)
+        assertEquals(25, action?.missionRequired)
+        assertEquals("동관 응접실", action?.mapName)
+        assertEquals(1, action?.battleCount)
+    }
+
+    @Test
+    fun `legacy battle payload never promotes raw map code into a display name`() {
+        val payload = StoredTypedActionPayload.BattleMap(
+            progressDate = LocalDate.parse("2026-07-19"),
+            categoryId = "battle_map",
+            mapCode = "tnfh1",
+            presetMode = PresetSelectionMode.PRIMARY,
+            presetId = 7L,
+            battleCount = 1,
+            battleRequest = battleRequest("battle_map", "tnfh1"),
+            display = null,
+        )
+        stubActiveAction("BATTLE_MAP", payload)
+
+        val action = service.getTyped(ACCOUNT_ID).runtime.currentAction
+
+        assertEquals(AutomationType.BATTLE_MAP, action?.source)
+        assertEquals("BATTLE_MAP", action?.kind)
+        assertEquals("전투 진행 중", action?.actionLabel)
+        assertNull(action?.questName)
+        assertNull(action?.missionLabel)
+        assertNull(action?.missionCurrent)
+        assertNull(action?.missionRequired)
+        assertNull(action?.mapName)
+        assertEquals(1, action?.battleCount)
+    }
+
+    @Test
+    fun `claim accept and unknown action kinds use safe labels without raw identifiers`() {
+        val claim = StoredTypedActionPayload.QuestClaim(
+            "claim-raw-code", "claim-raw-action", StoredActionDisplay(questName = "완료할 퀘스트"),
+        )
+        val accept = StoredTypedActionPayload.QuestAccept(
+            "accept-raw-code", "accept-raw-action", StoredActionDisplay(questName = "수락할 퀘스트"),
+        )
+        stubActiveActions(
+            listOf(
+                "QUEST_CLAIM" to claim,
+                "QUEST_ACCEPT" to accept,
+            ),
+        )
+
+        val claimAction = service.getTyped(ACCOUNT_ID).runtime.currentAction
+        val acceptAction = service.getTyped(ACCOUNT_ID).runtime.currentAction
+
+        assertEquals("퀘스트 완료", claimAction?.actionLabel)
+        assertEquals("완료할 퀘스트", claimAction?.questName)
+        assertNull(claimAction?.battleCount)
+        assertEquals("퀘스트 수락", acceptAction?.actionLabel)
+        assertEquals("수락할 퀘스트", acceptAction?.questName)
+        assertNull(acceptAction?.battleCount)
+
+        val unknownRow = actionRow("FUTURE_ACTION", "future-execution", entry(91L, AutomationType.QUEST))
+        Mockito.`when`(typedQuery.findActiveTypedAction(ACCOUNT_ID)).thenReturn(unknownRow)
+        Mockito.`when`(storedActionCodec.verifyPersisted(unknownRow, ACCOUNT_ID))
+            .thenThrow(IllegalArgumentException("unsupported payload"))
+
+        val unknownAction = service.getTyped(ACCOUNT_ID).runtime.currentAction
+
+        assertEquals("FUTURE_ACTION", unknownAction?.kind)
+        assertEquals("전투 진행 중", unknownAction?.actionLabel)
+        assertNull(unknownAction?.questName)
+        assertNull(unknownAction?.mapName)
+
+        val displayedUnknownRow = actionRow("FUTURE_ACTION", "displayed-future", entry(91L, AutomationType.QUEST))
+        Mockito.`when`(typedQuery.findActiveTypedAction(ACCOUNT_ID)).thenReturn(displayedUnknownRow)
+        Mockito.`when`(storedActionCodec.verifyPersisted(displayedUnknownRow, ACCOUNT_ID)).thenReturn(
+            StoredTypedAutomationActionV1(
+                91L,
+                displayedUnknownRow.executionIdentity,
+                StoredTypedActionPayload.QuestClaim(
+                    "raw-code",
+                    "raw-action",
+                    StoredActionDisplay(questName = "표시 이름"),
+                ),
+            ),
+        )
+
+        val displayedUnknownAction = service.getTyped(ACCOUNT_ID).runtime.currentAction
+
+        assertEquals("자동화 실행 중", displayedUnknownAction?.actionLabel)
+        assertEquals("표시 이름", displayedUnknownAction?.questName)
     }
 
     @Test
@@ -293,6 +421,20 @@ class UnifiedAutomationServiceTest {
         assertTrue(response.entries.first().ready)
         assertFalse(response.entries.last().ready)
         assertEquals(listOf("전투 맵 설정이 없습니다."), response.runtime.warnings)
+    }
+
+    @Test
+    fun `enabled non-combat quest without configured maps has no combat map warning`() {
+        val quest = entry(91L, AutomationType.QUEST, enabled = true)
+        val selection = QuestAutomationSelectionEntity(901L, quest, "0091", true, 0)
+        Mockito.`when`(accountQueryRepository.findById(ACCOUNT_ID)).thenReturn(account())
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(quest))
+        Mockito.`when`(typedQuery.findQuestSelections(quest.id)).thenReturn(listOf(selection))
+        Mockito.`when`(typedQuery.findQuestMaps(listOf(selection.id))).thenReturn(emptyList())
+
+        val response = service.getTyped(ACCOUNT_ID)
+
+        assertTrue(response.runtime.warnings.none { it.contains("전투 맵 설정") })
     }
 
     @Test
@@ -332,6 +474,60 @@ class UnifiedAutomationServiceTest {
         null,
         order,
         false,
+    )
+
+    private fun battleRequest(categoryId: String, mapCode: String) = RunBattleRequest(
+        categoryId,
+        mapCode,
+        listOf("c1"),
+        listOf(BattlePatternLoadRequest("c1", 0)),
+    )
+
+    private fun stubActiveAction(actionKind: String, payload: StoredTypedActionPayload) {
+        stubActiveActions(listOf(actionKind to payload))
+    }
+
+    private fun stubActiveActions(actions: List<Pair<String, StoredTypedActionPayload>>) {
+        val runtime = TypedAutomationRuntimeStateEntity(
+            accountId = ACCOUNT_ID,
+            account = account(),
+            lifecycleStatus = TypedAutomationLifecycle.RUNNING,
+            createdAt = NOW,
+            updatedAt = NOW,
+        )
+        val rows = actions.mapIndexed { index, (kind, _) ->
+            actionRow(kind, "execution-$index")
+        }
+        Mockito.`when`(accountQueryRepository.findById(ACCOUNT_ID)).thenReturn(account())
+        Mockito.`when`(typedQuery.findRuntimeState(ACCOUNT_ID)).thenReturn(runtime)
+        Mockito.`when`(typedQuery.findActiveTypedAction(ACCOUNT_ID)).thenReturn(
+            rows.first(),
+            *rows.drop(1).toTypedArray(),
+        )
+        rows.zip(actions).forEach { (row, action) ->
+            Mockito.`when`(storedActionCodec.verifyPersisted(row, ACCOUNT_ID)).thenReturn(
+                StoredTypedAutomationActionV1(91L, row.executionIdentity, action.second),
+            )
+        }
+    }
+
+    private fun actionRow(
+        actionKind: String,
+        executionIdentity: String,
+        actionEntry: AutomationEntryEntity? = null,
+    ) = TypedAutomationActionRunEntity(
+        id = 500L,
+        account = account(),
+        entry = actionEntry,
+        executionIdentity = executionIdentity,
+        actionKind = actionKind,
+        schemaVersion = 1,
+        payloadJson = "{}",
+        actionFingerprint = "a".repeat(64),
+        status = TypedAutomationActionStatus.SUBMITTING,
+        leaseToken = "lease",
+        createdAt = NOW,
+        updatedAt = NOW,
     )
 
     private fun anyEntry(): AutomationEntryEntity =

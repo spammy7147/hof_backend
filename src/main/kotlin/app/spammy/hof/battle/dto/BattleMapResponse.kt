@@ -1,5 +1,6 @@
 package app.spammy.hof.battle.dto
 
+import app.spammy.hof.battle.model.BattleMapKeyMode
 import app.spammy.hof.external.model.HofBattleMap
 
 /**
@@ -18,6 +19,7 @@ data class BattleMapResponse(
     val winCount: Int?,
     val cooldownRemainingText: String?,
     val cooldownRemainingSeconds: Long?,
+    val keyMode: BattleMapKeyMode,
     val keyCount: Int?,
     val requiredTime: Int?,
     val supportsThreeBattles: Boolean = false,
@@ -44,6 +46,7 @@ data class BattleMapResponse(
                 winCount = map.winCount,
                 cooldownRemainingText = map.cooldownRemainingText,
                 cooldownRemainingSeconds = map.cooldownRemainingSeconds,
+                keyMode = map.keyMode,
                 keyCount = map.keyCount,
                 requiredTime = map.requiredTime,
                 supportsThreeBattles = map.supportsThreeBattles ?: false,

@@ -1,8 +1,11 @@
 package app.spammy.hof.battle.entity
 
 import app.spammy.hof.account.entity.HofAccountEntity
+import app.spammy.hof.battle.model.BattleMapKeyMode
 import jakarta.persistence.Column
 import jakarta.persistence.Entity
+import jakarta.persistence.EnumType
+import jakarta.persistence.Enumerated
 import jakarta.persistence.FetchType
 import jakarta.persistence.GeneratedValue
 import jakarta.persistence.GenerationType
@@ -36,6 +39,10 @@ class AccountBattleMapStateEntity(
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "battle_map_id", nullable = false)
     val battleMap: BattleMapEntity,
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "key_mode", nullable = false, length = 20)
+    var keyMode: BattleMapKeyMode = BattleMapKeyMode.UNKNOWN,
 
     @Column(name = "key_count")
     var keyCount: Int? = null,

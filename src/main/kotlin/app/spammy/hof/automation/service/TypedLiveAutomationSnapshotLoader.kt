@@ -126,10 +126,11 @@ class TypedLiveAutomationSnapshotLoader(
         }
         val version = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(canonical.toByteArray()))
         val categories = entries.filter { it.enabled }.flatMap { entry -> when (entry.type) {
-            AutomationType.QUEST -> QUEST_ALIAS_CATEGORIES + entry.quest.flatMap { it.maps }.map { it.categoryId }
+            AutomationType.QUEST -> entry.quest.asSequence().filter { it.enabled }
+                .flatMap { it.maps.asSequence() }.map { it.categoryId }.toList()
             AutomationType.BATTLE_MAP -> entry.battle.map { it.categoryId }
             AutomationType.ADVENTURE_MAP -> entry.adventure.map { it.categoryId }
-        } }.distinct()
+        } }.filter { it.isNotBlank() }.distinct()
         return DetachedConfiguration(entries, primary, validPresetIds, parties, categories, version)
     }
 
@@ -150,7 +151,7 @@ class TypedLiveAutomationSnapshotLoader(
                 PresetSelectionMode.PRIMARY -> config.primary
                 PresetSelectionMode.EXPLICIT -> map.presetId?.takeIf { it in config.availablePresetIds }
             }
-            QuestAutomationMapSelection(map.missionKey, map.categoryId, map.mapCode, map.mapCode,
+            QuestAutomationMapSelection(map.missionKey, map.categoryId, map.mapCode,
                 QuestPresetSelection(map.presetMode, map.presetId, resolved, true, resolved?.let(config.parties::get)), map.executionOrder, map.manuallyOverridden)
         }) }
         val questCodes = selections.map { it.questCode }.toSet()
@@ -189,9 +190,9 @@ class TypedLiveAutomationSnapshotLoader(
     }
 
     private fun <T> inReadTransaction(block: () -> T): T = readTransaction?.execute { block() } ?: block()
-    private fun questState(state: AccountBattleMapStateEntity) = AutomationMapState(state.battleMap.categoryId, state.battleMap.mapCode, state.battleMap.name, state.visible, state.battleMap.enabled, state.cooldownUntil, state.winRemaining, state.attemptRemaining, state.availableCount, state.keyCount)
-    private fun battleState(state: AccountBattleMapStateEntity) = BattleMapRunnableState(state.battleMap.categoryId, state.battleMap.mapCode, state.visible, state.battleMap.enabled, state.supportsThreeBattles, state.cooldownUntil, state.availableCount, state.attemptRemaining, state.winRemaining, state.keyCount)
-    private fun adventureState(state: AccountBattleMapStateEntity) = AdventureMapRunnableState(state.battleMap.categoryId, state.battleMap.mapCode, true, state.visible, state.battleMap.enabled, state.cooldownUntil, null, state.attemptRemaining, state.winRemaining, state.availableCount, state.keyCount)
+    private fun questState(state: AccountBattleMapStateEntity) = AutomationMapState(state.battleMap.categoryId, state.battleMap.mapCode, state.battleMap.name, state.visible, state.battleMap.enabled, state.cooldownUntil, state.winRemaining, state.attemptRemaining, state.availableCount, state.keyMode, state.keyCount)
+    private fun battleState(state: AccountBattleMapStateEntity) = BattleMapRunnableState(state.battleMap.categoryId, state.battleMap.mapCode, state.visible, state.battleMap.enabled, state.supportsThreeBattles, state.cooldownUntil, state.availableCount, state.attemptRemaining, state.winRemaining, state.keyMode, state.keyCount, state.battleMap.name)
+    private fun adventureState(state: AccountBattleMapStateEntity) = AdventureMapRunnableState(state.battleMap.categoryId, state.battleMap.mapCode, true, state.visible, state.battleMap.enabled, state.cooldownUntil, null, state.attemptRemaining, state.winRemaining, state.availableCount, state.keyMode, state.keyCount, state.battleMap.name)
 
     private data class DetachedConfiguration(val entries: List<DetachedEntry>, val primary: Long?, val availablePresetIds: Set<Long>, val parties: Map<Long, ResolvedAutomationParty>, val categories: List<String>, val version: String)
     private data class DetachedEntry(val id: Long, val type: AutomationType, val priority: Int, val enabled: Boolean, val quest: List<DetachedQuestSelection>, val battle: List<DetachedBattleSetting>, val adventure: List<DetachedAdventureSetting>)
@@ -201,5 +202,4 @@ class TypedLiveAutomationSnapshotLoader(
     private data class DetachedAdventureSetting(val id: Long, val categoryId: String, val mapCode: String, val presetMode: PresetSelectionMode, val presetId: Long?, val executionOrder: Int)
     private data class DetachedMember(val presetId: Long, val slotIndex: Int, val characterId: String?, val patternSlot: String?, val canLoad: Boolean)
 
-    private companion object { val QUEST_ALIAS_CATEGORIES = listOf("battle_map", "adventure_map") }
 }

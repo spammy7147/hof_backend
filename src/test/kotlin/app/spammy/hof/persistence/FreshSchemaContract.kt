@@ -277,7 +277,8 @@ internal object FreshSchemaContract {
         ),
         table(
             "account_battle_map_states",
-            serialId(), requiredBigint("account_id"), requiredBigint("battle_map_id"), optionalInteger("key_count"),
+            serialId(), requiredBigint("account_id"), requiredBigint("battle_map_id"),
+            optionalInteger("key_count"), requiredVarchar("key_mode", 20),
             optionalInteger("available_count"), optionalInteger("attempt_remaining"), optionalInteger("win_remaining"),
             optionalInstant("cooldown_until"), requiredBoolean("supports_three_battles"), requiredText("raw_href"), requiredBoolean("visible"),
             requiredInstant("last_seen_at"),
@@ -288,7 +289,7 @@ internal object FreshSchemaContract {
             optionalVarchar("group_name", 200), requiredVarchar("group_normalized_name", 200),
             requiredInteger("group_display_order"), requiredInteger("map_display_order"),
             requiredVarchar("observed_name", 300), requiredVarchar("normalized_name", 300),
-            optionalVarchar("recommended_level", 50), optionalInteger("key_count"),
+            optionalVarchar("recommended_level", 50), optionalInteger("key_count"), requiredVarchar("key_mode", 20),
             optionalInteger("available_count"), optionalInteger("attempt_remaining"), optionalInteger("win_remaining"),
             optionalInstant("cooldown_until"), optionalInteger("required_time"), optionalText("icon_url"),
             requiredText("raw_href"), requiredBoolean("visible"), requiredInstant("last_seen_at"),
@@ -959,6 +960,16 @@ internal object FreshSchemaContract {
         check("battle_maps", "ck_battle_maps_required_time", "required_time is null or required_time >= 0"),
         check("account_battle_map_states", "ck_account_battle_map_states_key_count", "key_count is null or key_count >= 0"),
         check(
+            "account_battle_map_states", "ck_account_battle_map_states_key_mode",
+            "case key_mode when 'NOT_REQUIRED' then true when 'LIMITED' then true " +
+                "when 'UNLIMITED' then true when 'UNKNOWN' then true else false end",
+        ),
+        check(
+            "account_battle_map_states", "ck_account_battle_map_states_key_consistency",
+            "(key_mode = 'LIMITED' and key_count is not null) or " +
+                "(key_mode <> 'LIMITED' and key_count is null)",
+        ),
+        check(
             "account_battle_map_states", "ck_account_battle_map_states_available_count",
             "available_count is null or available_count >= 0",
         ),
@@ -973,6 +984,16 @@ internal object FreshSchemaContract {
         check("unresolved_battle_maps", "ck_unresolved_battle_maps_group_order", "group_display_order >= 0"),
         check("unresolved_battle_maps", "ck_unresolved_battle_maps_map_order", "map_display_order >= 0"),
         check("unresolved_battle_maps", "ck_unresolved_battle_maps_key_count", "key_count is null or key_count >= 0"),
+        check(
+            "unresolved_battle_maps", "ck_unresolved_battle_maps_key_mode",
+            "case key_mode when 'NOT_REQUIRED' then true when 'LIMITED' then true " +
+                "when 'UNLIMITED' then true when 'UNKNOWN' then true else false end",
+        ),
+        check(
+            "unresolved_battle_maps", "ck_unresolved_battle_maps_key_consistency",
+            "(key_mode = 'LIMITED' and key_count is not null) or " +
+                "(key_mode <> 'LIMITED' and key_count is null)",
+        ),
         check(
             "unresolved_battle_maps", "ck_unresolved_battle_maps_available_count",
             "available_count is null or available_count >= 0",
