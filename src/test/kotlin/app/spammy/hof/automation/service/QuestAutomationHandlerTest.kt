@@ -22,6 +22,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
+import kotlin.test.assertNull
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.test.context.ActiveProfiles
@@ -85,7 +86,7 @@ class QuestAutomationHandlerTest {
         val result = handler.evaluate(snapshot(
             quests = listOf(quest("q", QuestState.ACTIVE, 0, mission)),
             selections = listOf(selection("q", maps = listOf(map("kill", "map-a", 0)))),
-            states = listOf(state("map-a")),
+            states = listOf(state("map-a", mapName = "Map A")),
         ))
 
         val action = battle(result)
@@ -93,7 +94,35 @@ class QuestAutomationHandlerTest {
         assertEquals("몬스터 처치 · 슬라임", action.missionLabel)
         assertEquals(2, action.missionCurrent)
         assertEquals(5, action.missionRequired)
-        assertEquals("map-a", action.mapName)
+        assertEquals("Map A", action.mapName)
+    }
+
+    @Test
+    fun `configured monster map display uses matched live name instead of raw code`() {
+        val result = handler.evaluate(snapshot(
+            quests = listOf(quest("q", QuestState.ACTIVE, 0, monster("kill"))),
+            selections = listOf(selection("q", maps = listOf(map("kill", "qmap", 0)))),
+            states = listOf(state("qmap", mapName = "Live map")),
+        ))
+
+        assertEquals("Live map", battle(result).mapName)
+    }
+
+    @Test
+    fun `manual map clear display uses matched live name and never falls back to raw code`() {
+        val named = handler.evaluate(snapshot(
+            quests = listOf(quest("q", QuestState.ACTIVE, 0, mapClear("clear", "target"))),
+            selections = listOf(selection("q", maps = listOf(map("clear", "qmap", 0, manual = true)))),
+            states = listOf(state("qmap", mapName = "Live map")),
+        ))
+        val blank = handler.evaluate(snapshot(
+            quests = listOf(quest("q", QuestState.ACTIVE, 0, mapClear("clear", "target"))),
+            selections = listOf(selection("q", maps = listOf(map("clear", "qmap", 0, manual = true)))),
+            states = listOf(state("qmap", mapName = "   ")),
+        ))
+
+        assertEquals("Live map", battle(named).mapName)
+        assertNull(battle(blank).mapName)
     }
 
     @Test
@@ -421,16 +450,17 @@ class QuestAutomationHandlerTest {
         manual: Boolean = false,
         presetMode: PresetSelectionMode = PresetSelectionMode.PRIMARY,
         presetId: Long? = null,
-    ) = QuestAutomationMapSelection(mission, "battle_map", code, code, QuestPresetSelection(presetMode, presetId), order, manual)
+    ) = QuestAutomationMapSelection(mission, "battle_map", code, QuestPresetSelection(presetMode, presetId), order, manual)
 
     private fun state(
         code: String,
+        mapName: String = code,
         visible: Boolean = true,
         keyCount: Int? = null,
         keyMode: BattleMapKeyMode = if (keyCount == null) BattleMapKeyMode.UNKNOWN else BattleMapKeyMode.LIMITED,
         cooldownUntil: Instant? = null,
     ) = AutomationMapState(
-        "battle_map", code, code, visible, true, cooldownUntil, null, null, null, keyMode, keyCount,
+        "battle_map", code, mapName, visible, true, cooldownUntil, null, null, null, keyMode, keyCount,
     )
 
     private fun counterKey(quest: String, cycle: String, mission: String, map: String) =

@@ -71,7 +71,7 @@ class TypedLiveAutomationSnapshotLoaderTest {
         val liveMap = BattleMapEntity(
             id = 30,
             categoryId = "battle_map",
-            mapCode = "live-map",
+            mapCode = "qmap",
             name = "Live map",
             normalizedName = "live map",
             createdAt = now,
@@ -82,7 +82,7 @@ class TypedLiveAutomationSnapshotLoaderTest {
             battleMap = liveMap,
             keyMode = BattleMapKeyMode.UNLIMITED,
             keyCount = null,
-            rawHref = "index.php?common=live-map",
+            rawHref = "index.php?common=qmap",
             lastSeenAt = now,
         )
         val selection = QuestAutomationSelectionEntity(20, questEntry, "q", true, 0)
@@ -119,6 +119,9 @@ class TypedLiveAutomationSnapshotLoaderTest {
         val firstBattle = requireNotNull(first.entries[1].battle)
         val secondBattle = requireNotNull(second.entries[1].battle)
         assertEquals(BattleMapKeyMode.UNLIMITED, firstQuest.mapStates.single().keyMode)
+        assertEquals("qmap", firstQuest.mapStates.single().mapCode)
+        assertEquals("Live map", firstQuest.mapStates.single().mapName)
+        assertEquals("qmap", firstQuest.selections.single().maps.single().mapCode)
         assertEquals(BattleMapKeyMode.UNLIMITED, firstBattle.mapStates.single().keyMode)
         assertEquals("Live map", firstBattle.mapStates.single().mapName)
         assertEquals(101, firstBattle.primaryPresetId); assertEquals(102, secondBattle.primaryPresetId)

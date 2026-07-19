@@ -56,7 +56,7 @@ sealed interface QuestAction : PreparedAutomationAction {
         val missionType: QuestMissionType,
         val categoryId: String,
         val mapCode: String,
-        val mapName: String,
+        val mapName: String?,
         val preset: QuestPresetSelection,
         val battleCount: Int = 1,
         val resolvedParty: ResolvedAutomationParty? = preset.resolvedParty,
@@ -71,7 +71,6 @@ data class QuestAutomationMapSelection(
     val missionKey: String,
     val categoryId: String,
     val mapCode: String,
-    val mapName: String,
     val preset: QuestPresetSelection,
     val executionOrder: Int,
     val manuallyOverridden: Boolean,
@@ -353,7 +352,8 @@ class QuestAutomationHandler(
                 context.counters[QuestCounterKey(quest.questId, cycle, mission.key, it.categoryId, it.mapCode)] ?: 0
             }.thenBy(QuestAutomationMapSelection::executionOrder),
         )!!
-        return selected.toBattleEvaluation(quest, cycle, mission)
+        val selectedState = stateByMap.getValue(selected.categoryId to selected.mapCode)
+        return selected.toBattleEvaluation(quest, cycle, mission, selectedState.displayName())
     }
 
     private fun mapClearAction(
@@ -393,7 +393,6 @@ class QuestAutomationHandler(
                     mission.key,
                     resolved.categoryId,
                     resolved.mapCode,
-                    resolved.mapName,
                     if (context.primaryPresetId == null && context.primaryParty == null) {
                         QuestPresetSelection(PresetSelectionMode.PRIMARY)
                     } else {
@@ -422,7 +421,12 @@ class QuestAutomationHandler(
                 ?.let(HandlerEvaluation::Unavailable)
                 ?: HandlerEvaluation.Skipped
         }
-        return selected.toBattleEvaluation(quest, context.currentCycles[quest.questId] ?: INITIAL_CYCLE, mission)
+        return selected.toBattleEvaluation(
+            quest,
+            context.currentCycles[quest.questId] ?: INITIAL_CYCLE,
+            mission,
+            state.displayName(),
+        )
     }
 
     private fun missingBattleMapWarning(quest: QuestSnapshot, mission: QuestMission): String {
@@ -434,6 +438,7 @@ class QuestAutomationHandler(
         quest: QuestSnapshot,
         cycle: String,
         mission: QuestMission,
+        liveMapName: String?,
     ): HandlerEvaluation {
         if (!hasValidPreset()) {
             return HandlerEvaluation.ConfigurationWarning(
@@ -448,7 +453,7 @@ class QuestAutomationHandler(
                 mission.type,
                 categoryId,
                 mapCode,
-                mapName,
+                liveMapName,
                 preset,
                 battleCount = 1,
                 questName = quest.name,
@@ -474,6 +479,8 @@ class QuestAutomationHandler(
             (winRemaining == null || winRemaining > 0) &&
             (attemptRemaining == null || attemptRemaining > 0) &&
             (availableCount == null || availableCount > 0)
+
+    private fun AutomationMapState.displayName(): String? = mapName.trim().takeIf(String::isNotBlank)
 
     private fun QuestAutomationMapSelection.hasValidPreset(): Boolean =
         when (preset.mode) {

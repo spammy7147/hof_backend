@@ -150,7 +150,7 @@ class TypedLiveAutomationSnapshotLoader(
                 PresetSelectionMode.PRIMARY -> config.primary
                 PresetSelectionMode.EXPLICIT -> map.presetId?.takeIf { it in config.availablePresetIds }
             }
-            QuestAutomationMapSelection(map.missionKey, map.categoryId, map.mapCode, map.mapCode,
+            QuestAutomationMapSelection(map.missionKey, map.categoryId, map.mapCode,
                 QuestPresetSelection(map.presetMode, map.presetId, resolved, true, resolved?.let(config.parties::get)), map.executionOrder, map.manuallyOverridden)
         }) }
         val questCodes = selections.map { it.questCode }.toSet()
