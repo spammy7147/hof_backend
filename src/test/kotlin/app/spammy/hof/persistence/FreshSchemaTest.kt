@@ -6,6 +6,7 @@ import java.util.UUID
 import javax.sql.DataSource
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import org.flywaydb.core.Flyway
 import org.springframework.beans.factory.annotation.Autowired
@@ -70,6 +71,7 @@ class FreshSchemaTest {
                 "19" to "retire legacy automation jobs",
                 "20" to "add battle map key mode",
                 "21" to "normalize permanent key map names",
+                "22" to "drop unused legacy automation",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -95,6 +97,7 @@ class FreshSchemaTest {
                 "V1__initialize_schema.sql",
                 "V20__add_battle_map_key_mode.sql",
                 "V21__normalize_permanent_key_map_names.sql",
+                "V22__drop_unused_legacy_automation.sql",
                 "V2__seed_battle_map_catalog.sql",
                 "V3__add_token_authentication.sql",
                 "V4__add_unified_automation_state.sql",
@@ -121,7 +124,7 @@ class FreshSchemaTest {
             seedV7AutomationData(connection)
         }
 
-        Flyway.configure().dataSource(upgradeUrl, "sa", "").load().migrate()
+        Flyway.configure().dataSource(upgradeUrl, "sa", "").target("9").load().migrate()
 
         DriverManager.getConnection(upgradeUrl, "sa", "").use { connection ->
             assertEquals(2, connection.count("select count(*) from hof_accounts"))
@@ -194,7 +197,7 @@ class FreshSchemaTest {
             }
         }
 
-        Flyway.configure().dataSource(upgradeUrl, "sa", "").load().migrate()
+        Flyway.configure().dataSource(upgradeUrl, "sa", "").target("18").load().migrate()
 
         DriverManager.getConnection(upgradeUrl, "sa", "").use { connection ->
             connection.createStatement().use { statement ->
@@ -307,7 +310,7 @@ class FreshSchemaTest {
             }
         }
 
-        Flyway.configure().dataSource(upgradeUrl, "sa", "").load().migrate()
+        Flyway.configure().dataSource(upgradeUrl, "sa", "").target("19").load().migrate()
 
         DriverManager.getConnection(upgradeUrl, "sa", "").use { connection ->
             assertEquals(
@@ -460,9 +463,68 @@ class FreshSchemaTest {
         }
     }
 
+    @Test
+    fun v22DropsOnlyUnusedLegacyAutomationAndPreservesTypedState() {
+        val suffix = UUID.randomUUID().toString().replace("-", "")
+        val upgradeDatabase = "v22_upgrade_$suffix"
+        val upgradeUrl =
+            "jdbc:h2:mem:$upgradeDatabase;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;" +
+                "DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1"
+        Flyway.configure().dataSource(upgradeUrl, "sa", "").target("21").load().migrate()
+
+        DriverManager.getConnection(upgradeUrl, "sa", "").use { connection ->
+            connection.createStatement().use { statement ->
+                statement.execute(
+                    """
+                    insert into hof_accounts (login_id, encrypted_password, created_at)
+                    values ('v22-typed', 'encrypted', current_timestamp)
+                    """.trimIndent(),
+                )
+                statement.execute(
+                    """
+                    insert into automation_entries
+                        (account_id, automation_type, priority, enabled, created_at, updated_at)
+                    select id, 'BATTLE_MAP', 0, true, current_timestamp, current_timestamp
+                    from hof_accounts where login_id = 'v22-typed'
+                    """.trimIndent(),
+                )
+                statement.execute(
+                    """
+                    insert into typed_automation_runtime_states
+                        (account_id, lifecycle_status, stop_reason, retry_attempt, created_at, updated_at, version)
+                    select id, 'STOPPED', 'USER_REQUEST', 0, current_timestamp, current_timestamp, 0
+                    from hof_accounts where login_id = 'v22-typed'
+                    """.trimIndent(),
+                )
+            }
+        }
+
+        Flyway.configure().dataSource(upgradeUrl, "sa", "").load().migrate()
+
+        DriverManager.getConnection(upgradeUrl, "sa", "").use { connection ->
+            LEGACY_AUTOMATION_TABLES.forEach { table ->
+                assertFalse(connection.tableExists(table), "legacy table still exists: $table")
+            }
+            assertFalse(connection.columnExists("captcha_challenges", "automation_action_run_id"))
+            assertEquals(1, connection.count("select count(*) from automation_entries"))
+            assertEquals(1, connection.count("select count(*) from typed_automation_runtime_states"))
+        }
+    }
+
     companion object {
         private val databaseName = "fresh_schema_${UUID.randomUUID().toString().replace("-", "")}"
         private val MIGRATION_DIRECTORY = java.nio.file.Path.of("src/main/resources/db/migration")
+        private val LEGACY_AUTOMATION_TABLES = listOf(
+            "automation_profiles",
+            "automation_profile_maps",
+            "automation_jobs",
+            "automation_module_configs",
+            "automation_module_legacy_settings",
+            "automation_module_maps",
+            "automation_module_quests",
+            "automation_module_quest_maps",
+            "automation_action_runs",
+        )
 
         @JvmStatic
         @DynamicPropertySource
@@ -579,6 +641,12 @@ private fun Connection.count(sql: String): Int =
             rows.getInt(1)
         }
     }
+
+private fun Connection.tableExists(name: String): Boolean =
+    metaData.getTables(null, null, name, arrayOf("TABLE")).use { rows -> rows.next() }
+
+private fun Connection.columnExists(table: String, column: String): Boolean =
+    metaData.getColumns(null, null, table, column).use { rows -> rows.next() }
 
 private fun Connection.stringValue(sql: String): String =
     createStatement().use { statement ->

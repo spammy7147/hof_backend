@@ -21,7 +21,7 @@ internal object FreshSchemaContract {
             }
         }
         assertEquals(
-            setOf("payload_json", "settings_json"),
+            setOf("payload_json"),
             TABLES.values.flatMap { it.columns.keys }.filter { it.endsWith("_json", ignoreCase = true) }.toSet(),
         )
     }
@@ -306,61 +306,6 @@ internal object FreshSchemaContract {
             primaryKey = listOf("preset_id", "slot_index"),
         ),
         table(
-            "automation_profiles",
-            serialId(), requiredBigint("account_id"), requiredVarchar("name"), requiredVarchar("mode"),
-            requiredBoolean("enabled"), requiredInstant("created_at"), requiredInstant("updated_at"),
-        ),
-        table(
-            "automation_profile_maps",
-            serialId(), requiredBigint("profile_id"), requiredBigint("battle_map_id"),
-            optionalBigint("party_preset_id"), requiredInteger("execution_order"),
-            requiredVarchar("module_type", 50), requiredVarchar("purpose", 50),
-        ),
-        table(
-            "automation_jobs",
-            serialId(), requiredBigint("account_id"), requiredBigint("profile_id"), requiredVarchar("status"),
-            requiredInteger("current_step_index"), optionalText("message"), requiredInstant("created_at"),
-            optionalInstant("started_at"), requiredInstant("updated_at"), optionalInstant("finished_at"),
-            optionalVarchar("current_module", 50), optionalVarchar("current_action"), optionalInstant("next_run_at"),
-            optionalInstant("last_heartbeat_at"), requiredBigint("version"), optionalBigint("current_module_config_id"),
-        ),
-        table(
-            "automation_module_configs",
-            serialId(), requiredBigint("profile_id"), requiredVarchar("module_type", 50),
-            requiredBoolean("enabled"), requiredInteger("priority"), requiredVarchar("display_name", 50),
-            optionalInteger("threshold_percent"),
-            requiredInstant("created_at"), requiredInstant("updated_at"),
-        ),
-        table(
-            "automation_module_legacy_settings",
-            requiredBigint("module_config_id"), requiredText("settings_json"),
-            primaryKey = listOf("module_config_id"),
-        ),
-        table(
-            "automation_module_maps",
-            serialId(), requiredBigint("module_config_id"), requiredBigint("battle_map_id"),
-            optionalBigint("party_preset_id"), requiredInteger("execution_order"),
-        ),
-        table(
-            "automation_module_quests",
-            serialId(), requiredBigint("module_config_id"), requiredVarchar("quest_code", 100),
-            requiredInteger("execution_order"),
-        ),
-        table(
-            "automation_module_quest_maps",
-            serialId(), requiredBigint("module_quest_id"), requiredBigint("battle_map_id"),
-            optionalBigint("party_preset_id"), requiredInteger("execution_order"),
-        ),
-        table(
-            "automation_action_runs",
-            serialId(), requiredBigint("job_id"), requiredVarchar("module_type", 50),
-            requiredVarchar("action_type", 80), optionalVarchar("action_key"), requiredVarchar("status", 50),
-            requiredVarchar("request_key"), requiredText("payload_json"), requiredInteger("attempt_count"),
-            optionalInstant("next_attempt_at"), optionalText("last_error"), requiredInstant("created_at"),
-            optionalInstant("started_at"), optionalInstant("finished_at"), requiredInstant("updated_at"),
-            optionalBigint("module_config_id"),
-        ),
-        table(
             "automation_outbox",
             serialId(), requiredVarchar("event_id", 80), requiredBigint("account_id"), requiredVarchar("topic", 120),
             requiredVarchar("event_key", 80), requiredText("payload"), requiredInstant("created_at"),
@@ -500,7 +445,6 @@ internal object FreshSchemaContract {
             optionalText("image_url"), requiredText("source_url"), optionalText("answer"),
             requiredInstant("created_at"), optionalInstant("answered_at"), optionalText("submit_url"),
             requiredVarchar("submit_method", 10), requiredVarchar("answer_field_name", 100),
-            optionalBigint("automation_action_run_id"),
         ),
         table(
             "captcha_form_fields",
@@ -532,17 +476,6 @@ internal object FreshSchemaContract {
         ),
         key("party_preset_members", "uk_party_preset_members_preset_slot", "preset_id", "slot_index"),
         key("party_presets", "uk_party_presets_account_primary_marker", "account_id", "primary_marker"),
-        key("automation_profile_maps", "uk_automation_profile_maps_profile_map", "profile_id", "battle_map_id"),
-        key("automation_module_maps", "uk_automation_module_maps_module_map", "module_config_id", "battle_map_id"),
-        key(
-            "automation_module_quests", "uk_automation_module_quests_module_quest",
-            "module_config_id", "quest_code",
-        ),
-        key(
-            "automation_module_quest_maps", "uk_automation_module_quest_maps_quest_map",
-            "module_quest_id", "battle_map_id",
-        ),
-        key("automation_action_runs", "uk_automation_action_runs_request_key", "request_key"),
         key("automation_outbox", "uk_automation_outbox_event_id", "event_id"),
         key("automation_entries", "uk_automation_entries_account_type", "account_id", "automation_type"),
         key(
@@ -625,69 +558,6 @@ internal object FreshSchemaContract {
         fk(
             "fk_party_preset_members_pattern_slot", "party_preset_members.pattern_slot_id",
             "character_pattern_slots.id", DeleteAction.SET_NULL,
-        ),
-        fk("fk_automation_profiles_account", "automation_profiles.account_id", "hof_accounts.id", DeleteAction.CASCADE),
-        fk(
-            "fk_automation_profile_maps_profile", "automation_profile_maps.profile_id",
-            "automation_profiles.id", DeleteAction.CASCADE,
-        ),
-        fk(
-            "fk_automation_profile_maps_battle_map", "automation_profile_maps.battle_map_id",
-            "battle_maps.id", DeleteAction.CASCADE,
-        ),
-        fk(
-            "fk_automation_profile_maps_party_preset", "automation_profile_maps.party_preset_id",
-            "party_presets.id", DeleteAction.SET_NULL,
-        ),
-        fk("fk_automation_jobs_account", "automation_jobs.account_id", "hof_accounts.id", DeleteAction.CASCADE),
-        fk("fk_automation_jobs_profile", "automation_jobs.profile_id", "automation_profiles.id", DeleteAction.RESTRICT),
-        fk(
-            "fk_automation_jobs_current_module_config", "automation_jobs.current_module_config_id",
-            "automation_module_configs.id", DeleteAction.SET_NULL,
-        ),
-        fk(
-            "fk_automation_module_configs_profile", "automation_module_configs.profile_id",
-            "automation_profiles.id", DeleteAction.CASCADE,
-        ),
-        fk(
-            "fk_automation_module_legacy_settings_config", "automation_module_legacy_settings.module_config_id",
-            "automation_module_configs.id", DeleteAction.CASCADE,
-        ),
-        fk(
-            "fk_automation_module_maps_config", "automation_module_maps.module_config_id",
-            "automation_module_configs.id", DeleteAction.CASCADE,
-        ),
-        fk(
-            "fk_automation_module_maps_battle_map", "automation_module_maps.battle_map_id",
-            "battle_maps.id", DeleteAction.RESTRICT,
-        ),
-        fk(
-            "fk_automation_module_maps_party_preset", "automation_module_maps.party_preset_id",
-            "party_presets.id", DeleteAction.SET_NULL,
-        ),
-        fk(
-            "fk_automation_module_quests_config", "automation_module_quests.module_config_id",
-            "automation_module_configs.id", DeleteAction.CASCADE,
-        ),
-        fk(
-            "fk_automation_module_quest_maps_quest", "automation_module_quest_maps.module_quest_id",
-            "automation_module_quests.id", DeleteAction.CASCADE,
-        ),
-        fk(
-            "fk_automation_module_quest_maps_battle_map", "automation_module_quest_maps.battle_map_id",
-            "battle_maps.id", DeleteAction.RESTRICT,
-        ),
-        fk(
-            "fk_automation_module_quest_maps_party_preset", "automation_module_quest_maps.party_preset_id",
-            "party_presets.id", DeleteAction.SET_NULL,
-        ),
-        fk(
-            "fk_automation_action_runs_job", "automation_action_runs.job_id",
-            "automation_jobs.id", DeleteAction.CASCADE,
-        ),
-        fk(
-            "fk_automation_action_runs_module_config", "automation_action_runs.module_config_id",
-            "automation_module_configs.id", DeleteAction.SET_NULL,
         ),
         fk(
             "fk_automation_outbox_account", "automation_outbox.account_id",
@@ -775,10 +645,6 @@ internal object FreshSchemaContract {
         fk("fk_typed_action_account", "typed_automation_action_runs.account_id", "hof_accounts.id", DeleteAction.CASCADE),
         fk("fk_typed_action_entry", "typed_automation_action_runs.automation_entry_id", "automation_entries.id", DeleteAction.SET_NULL),
         fk(
-            "fk_captcha_challenges_automation_action", "captcha_challenges.automation_action_run_id",
-            "automation_action_runs.id", DeleteAction.SET_NULL,
-        ),
-        fk(
             "fk_captcha_form_fields_challenge", "captcha_form_fields.challenge_id",
             "captcha_challenges.id", DeleteAction.CASCADE,
         ),
@@ -802,58 +668,6 @@ internal object FreshSchemaContract {
         index("party_presets", "idx_party_presets_account_updated", "account_id", "updated_at", "id"),
         index("party_preset_members", "idx_party_preset_members_character", "character_id"),
         index("party_preset_members", "idx_party_preset_members_pattern_slot", "pattern_slot_id"),
-        index("automation_profiles", "idx_automation_profiles_account_updated", "account_id", "updated_at", "id"),
-        index(
-            "automation_profile_maps", "idx_automation_profile_maps_profile_order",
-            "profile_id", "execution_order", "battle_map_id", "id",
-        ),
-        index("automation_profile_maps", "idx_automation_profile_maps_party_preset", "party_preset_id"),
-        index(
-            "automation_jobs", "idx_automation_jobs_account_active_updated", "account_id", "status", "updated_at", "id",
-        ),
-        index("automation_jobs", "idx_automation_jobs_profile", "profile_id", "id"),
-        index(
-            "automation_jobs", "idx_automation_jobs_recovery",
-            "status", "next_run_at", "last_heartbeat_at", "id",
-        ),
-        index(
-            "automation_jobs", "idx_automation_jobs_current_module_config",
-            "current_module_config_id", "id",
-        ),
-        index(
-            "automation_module_configs", "idx_automation_module_configs_profile_priority",
-            "profile_id", "priority", "id",
-        ),
-        index(
-            "automation_module_maps", "idx_automation_module_maps_module_order",
-            "module_config_id", "execution_order", "id",
-        ),
-        index("automation_module_maps", "idx_automation_module_maps_battle_map", "battle_map_id", "id"),
-        index("automation_module_maps", "idx_automation_module_maps_party_preset", "party_preset_id", "id"),
-        index(
-            "automation_module_quests", "idx_automation_module_quests_module_order",
-            "module_config_id", "execution_order", "id",
-        ),
-        index(
-            "automation_module_quest_maps", "idx_automation_module_quest_maps_quest_order",
-            "module_quest_id", "execution_order", "id",
-        ),
-        index(
-            "automation_module_quest_maps", "idx_automation_module_quest_maps_battle_map",
-            "battle_map_id", "id",
-        ),
-        index(
-            "automation_module_quest_maps", "idx_automation_module_quest_maps_party_preset",
-            "party_preset_id", "id",
-        ),
-        index(
-            "automation_action_runs", "idx_automation_action_runs_job_status_updated",
-            "job_id", "status", "updated_at", "id",
-        ),
-        index(
-            "automation_action_runs", "idx_automation_action_runs_module_config",
-            "module_config_id", "id",
-        ),
         index(
             "automation_outbox", "idx_automation_outbox_unpublished",
             "published_at", "available_at", "id",
@@ -928,9 +742,6 @@ internal object FreshSchemaContract {
         index(
             "captcha_challenges", "idx_captcha_challenges_account_status_created",
             "account_id", "status", "created_at", "id",
-        ),
-        index(
-            "captcha_challenges", "idx_captcha_challenges_automation_action", "automation_action_run_id",
         ),
         index("captcha_form_fields", "idx_captcha_form_fields_challenge_order", "challenge_id", "field_order", "id"),
         index("typed_automation_action_runs", "idx_typed_action_account_status", "account_id", "status", "updated_at", "id"),
@@ -1015,20 +826,6 @@ internal object FreshSchemaContract {
             "party_presets", "ck_party_presets_primary_marker",
             "(is_primary and primary_marker = 1) or (is_primary = false and primary_marker is null)",
         ),
-        check("automation_profile_maps", "ck_automation_profile_maps_execution_order", "execution_order >= 0"),
-        check("automation_jobs", "ck_automation_jobs_current_step", "current_step_index >= 0"),
-        check("automation_module_configs", "ck_automation_module_configs_priority", "priority >= 0"),
-        check(
-            "automation_module_configs", "ck_automation_module_configs_threshold_percent",
-            "threshold_percent is null or threshold_percent between 1 and 100",
-        ),
-        check("automation_module_maps", "ck_automation_module_maps_execution_order", "execution_order >= 0"),
-        check("automation_module_quests", "ck_automation_module_quests_execution_order", "execution_order >= 0"),
-        check(
-            "automation_module_quest_maps", "ck_automation_module_quest_maps_execution_order",
-            "execution_order >= 0",
-        ),
-        check("automation_action_runs", "ck_automation_action_runs_attempt_count", "attempt_count >= 0"),
         check(
             "automation_entries", "ck_automation_entries_type",
             "case automation_type when 'QUEST' then true when 'BATTLE_MAP' then true " +

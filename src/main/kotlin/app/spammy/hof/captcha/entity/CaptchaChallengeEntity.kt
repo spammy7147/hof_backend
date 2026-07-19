@@ -1,7 +1,6 @@
 package app.spammy.hof.captcha.entity
 
 import app.spammy.hof.account.entity.HofAccountEntity
-import app.spammy.hof.automation.entity.AutomationActionRunEntity
 import jakarta.persistence.Column
 import jakarta.persistence.Entity
 import jakarta.persistence.FetchType
@@ -60,8 +59,4 @@ class CaptchaChallengeEntity(
 
     @Column(name = "answer_field_name", nullable = false, length = 100)
     var answerFieldName: String = "captcha",
-
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "automation_action_run_id")
-    var automationActionRun: AutomationActionRunEntity? = null,
 )

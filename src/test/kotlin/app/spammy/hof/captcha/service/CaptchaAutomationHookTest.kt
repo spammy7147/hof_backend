@@ -1,12 +1,9 @@
 package app.spammy.hof.captcha.service
 
 import app.spammy.hof.account.entity.HofAccountEntity
-import app.spammy.hof.automation.service.AutomationActionLockCoordinator
-import app.spammy.hof.automation.service.AutomationAfterCommitWakeupService
 import app.spammy.hof.automation.service.TypedAutomationRuntimeService
 import app.spammy.hof.automation.service.TypedCaptchaAutomationResumeService
 import app.spammy.hof.captcha.entity.CaptchaChallengeEntity
-import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.push.service.PushOutboxService
 import java.time.Instant
 import kotlin.test.Test
@@ -14,18 +11,13 @@ import org.mockito.Mockito
 import org.springframework.transaction.support.TransactionSynchronizationManager
 
 class CaptchaAutomationHookTest {
-    private val actions = Mockito.mock(AutomationActionLockCoordinator::class.java)
     private val pushes = Mockito.mock(PushOutboxService::class.java)
-    private val legacyWake = Mockito.mock(AutomationAfterCommitWakeupService::class.java)
     private val typedRuntime = Mockito.mock(TypedAutomationRuntimeService::class.java)
     private val typedResume = Mockito.mock(TypedCaptchaAutomationResumeService::class.java)
     private val hook = CaptchaAutomationHook(
-        actions,
         pushes,
-        legacyWake,
         typedRuntime,
         typedResume,
-        TimeProvider { NOW },
     )
 
     @Test
@@ -36,7 +28,6 @@ class CaptchaAutomationHookTest {
         hook.detected(challenge)
 
         Mockito.verify(pushes).enqueueCaptchaRequired(challenge.account, challenge.id)
-        Mockito.verifyNoInteractions(actions)
     }
 
     @Test
@@ -46,17 +37,16 @@ class CaptchaAutomationHookTest {
 
         hook.detected(challenge)
 
-        Mockito.verifyNoInteractions(pushes, actions)
+        Mockito.verifyNoInteractions(pushes)
     }
 
     @Test
-    fun `answered unlinked captcha conditionally resumes typed captcha stop instead of legacy wake`() {
+    fun `answered captcha conditionally resumes typed captcha stop`() {
         val challenge = challenge()
 
         hook.answered(challenge)
 
         Mockito.verify(typedResume).resumeAfterCaptcha(7L)
-        Mockito.verifyNoInteractions(actions, legacyWake)
     }
 
     @Test
