@@ -255,7 +255,7 @@ class QuestAutomationHandler(
                 ?: HandlerEvaluation.ConfigurationWarning("Quest ${quest.questId} has no claim action.")
         }
 
-        candidates.firstOrNull { it.state == QuestState.AVAILABLE && it.isImmediatelyCompletable() }?.let { quest ->
+        candidates.firstOrNull { it.state == QuestState.AVAILABLE }?.let { quest ->
             return quest.actionNo?.let { HandlerEvaluation.Runnable(QuestAction.Accept(quest.questId, it)) }
                 ?: HandlerEvaluation.ConfigurationWarning("Quest ${quest.questId} has no accept action.")
         }
@@ -431,15 +431,6 @@ class QuestAutomationHandler(
             ),
         )
     }
-
-    private fun QuestSnapshot.isImmediatelyCompletable(): Boolean =
-        missions.isNotEmpty() && missions.all { mission ->
-            when (mission.type) {
-                QuestMissionType.IMMEDIATE -> true
-                QuestMissionType.ITEM_TURN_IN -> mission.completable
-                else -> false
-            }
-        }
 
     private fun AutomationMapState.isRunnable(now: Instant): Boolean =
         visible && enabled &&

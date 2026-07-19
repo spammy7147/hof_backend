@@ -87,17 +87,17 @@ class QuestAutomationHandlerTest {
     }
 
     @Test
-    fun incompleteItemOnlyQuestIsSkipped() {
+    fun incompleteItemOnlyQuestIsAcceptedWhenSelected() {
         val result = handler.evaluate(snapshot(
             quests = listOf(quest("q", QuestState.AVAILABLE, 0, item(completable = false))),
             selections = listOf(selection("q")),
         ))
 
-        assertIs<HandlerEvaluation.Skipped>(result)
+        assertEquals("q", assertIs<QuestAction.Accept>(assertIs<HandlerEvaluation.Runnable>(result).action).questCode)
     }
 
     @Test
-    fun completableUnsupportedMissionDoesNotCauseAccept() {
+    fun unsupportedMissionIsAcceptedWhenSelected() {
         val result = handler.evaluate(snapshot(
             quests = listOf(
                 quest("unsupported", QuestState.AVAILABLE, 0,
@@ -106,7 +106,30 @@ class QuestAutomationHandlerTest {
             selections = listOf(selection("unsupported")),
         ))
 
-        assertIs<HandlerEvaluation.Skipped>(result)
+        assertEquals(
+            "unsupported",
+            assertIs<QuestAction.Accept>(assertIs<HandlerEvaluation.Runnable>(result).action).questCode,
+        )
+    }
+
+    @Test
+    fun availableMapClearQuestIsAcceptedBeforeActiveCombat() {
+        val result = handler.evaluate(snapshot(
+            quests = listOf(
+                quest("available-clear", QuestState.AVAILABLE, 0, mapClear("clear", "target")),
+                quest("active-combat", QuestState.ACTIVE, 1, monster("kill")),
+            ),
+            selections = listOf(
+                selection("available-clear"),
+                selection("active-combat", maps = listOf(map("kill", "combat-map", 0))),
+            ),
+            states = listOf(state("combat-map")),
+        ))
+
+        assertEquals(
+            "available-clear",
+            assertIs<QuestAction.Accept>(assertIs<HandlerEvaluation.Runnable>(result).action).questCode,
+        )
     }
 
     @Test
