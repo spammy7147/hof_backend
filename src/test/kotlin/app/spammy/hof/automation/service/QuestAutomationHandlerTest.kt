@@ -7,6 +7,7 @@ import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.automation.repository.BattleAutomationDailyProgressCommandRepository
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import app.spammy.hof.battle.service.BattleMapIdentityCandidate
+import app.spammy.hof.battle.model.BattleMapKeyMode
 import app.spammy.hof.quest.model.QuestMission
 import app.spammy.hof.quest.model.QuestMissionType
 import app.spammy.hof.quest.model.QuestSection
@@ -137,6 +138,23 @@ class QuestAutomationHandlerTest {
         ))
 
         assertEquals("ready", battle(result).mapCode)
+    }
+
+    @Test
+    fun visibleUnlimitedMapWithoutACountRunsWhileHiddenLimitedMapWithKeysIsSkipped() {
+        val unlimited = handler.evaluate(snapshot(
+            quests = listOf(quest("q", QuestState.ACTIVE, 0, monster("kill"))),
+            selections = listOf(selection("q", maps = listOf(map("kill", "unlimited", 0)))),
+            states = listOf(state("unlimited", keyMode = BattleMapKeyMode.UNLIMITED)),
+        ))
+        assertEquals("unlimited", battle(unlimited).mapCode)
+
+        val hidden = handler.evaluate(snapshot(
+            quests = listOf(quest("q", QuestState.ACTIVE, 0, monster("kill"))),
+            selections = listOf(selection("q", maps = listOf(map("kill", "hidden", 0)))),
+            states = listOf(state("hidden", visible = false, keyMode = BattleMapKeyMode.LIMITED, keyCount = 10)),
+        ))
+        assertIs<HandlerEvaluation.Skipped>(hidden)
     }
 
     @Test
@@ -342,8 +360,14 @@ class QuestAutomationHandlerTest {
         presetId: Long? = null,
     ) = QuestAutomationMapSelection(mission, "battle_map", code, code, QuestPresetSelection(presetMode, presetId), order, manual)
 
-    private fun state(code: String, keyCount: Int? = null, cooldownUntil: Instant? = null) = AutomationMapState(
-        "battle_map", code, code, true, true, cooldownUntil, null, null, null, keyCount,
+    private fun state(
+        code: String,
+        visible: Boolean = true,
+        keyCount: Int? = null,
+        keyMode: BattleMapKeyMode = if (keyCount == null) BattleMapKeyMode.UNKNOWN else BattleMapKeyMode.LIMITED,
+        cooldownUntil: Instant? = null,
+    ) = AutomationMapState(
+        "battle_map", code, code, visible, true, cooldownUntil, null, null, null, keyMode, keyCount,
     )
 
     private fun counterKey(quest: String, cycle: String, mission: String, map: String) =

@@ -6,6 +6,8 @@ import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.automation.repository.BattleAutomationDailyProgressCommandRepository
 import app.spammy.hof.automation.repository.BattleAutomationProcessedResultCommandRepository
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
+import app.spammy.hof.battle.model.BattleMapKeyMode
+import app.spammy.hof.battle.model.hasUsableKey
 import app.spammy.hof.common.time.TimeProvider
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
@@ -44,6 +46,7 @@ data class BattleMapRunnableState(
     val availableCount: Int? = null,
     val attemptRemaining: Int? = null,
     val winRemaining: Int? = null,
+    val keyMode: BattleMapKeyMode,
     val keyCount: Int? = null,
 )
 
@@ -362,11 +365,18 @@ class BattleMapAutomationHandler(
     }
 
     private fun BattleMapRunnableState.isRunnable(now: Instant): Boolean =
-        visible && enabled && cooldownUntil?.isAfter(now) != true &&
-            listOf(availableCount, attemptRemaining, winRemaining, keyCount).none { it != null && it <= 0 }
+        visible && enabled && keyMode.hasUsableKey(keyCount) && cooldownUntil?.isAfter(now) != true &&
+            listOf(availableCount, attemptRemaining, winRemaining).none { it != null && it <= 0 }
 
     private fun BattleMapRunnableState.hasCapacityForThree(): Boolean =
-        listOf(availableCount, attemptRemaining, winRemaining, keyCount).none { it != null && it < 3 }
+        listOf(availableCount, attemptRemaining, winRemaining).none { it != null && it < 3 } &&
+            when (keyMode) {
+                BattleMapKeyMode.LIMITED -> keyCount != null && keyCount >= 3
+                BattleMapKeyMode.NOT_REQUIRED,
+                BattleMapKeyMode.UNLIMITED,
+                BattleMapKeyMode.UNKNOWN,
+                -> true
+            }
 
     private companion object {
         const val MAX_RESULT_IDENTITY_LENGTH = 128

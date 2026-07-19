@@ -12,6 +12,7 @@ import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import app.spammy.hof.battle.service.BattleMapAliasResolution
 import app.spammy.hof.battle.service.BattleMapIdentityCandidate
 import app.spammy.hof.battle.service.resolveBattleMapAlias
+import app.spammy.hof.battle.model.hasUsableKey
 import app.spammy.hof.quest.model.QuestMission
 import app.spammy.hof.quest.model.QuestMissionType
 import app.spammy.hof.quest.model.QuestSnapshot
@@ -442,12 +443,11 @@ class QuestAutomationHandler(
         }
 
     private fun AutomationMapState.isRunnable(now: Instant): Boolean =
-        visible && enabled &&
+        visible && enabled && keyMode.hasUsableKey(keyCount) &&
             (cooldownUntil == null || !cooldownUntil.isAfter(now)) &&
             (winRemaining == null || winRemaining > 0) &&
             (attemptRemaining == null || attemptRemaining > 0) &&
-            (availableCount == null || availableCount > 0) &&
-            (keyCount == null || keyCount > 0)
+            (availableCount == null || availableCount > 0)
 
     private fun QuestAutomationMapSelection.hasValidPreset(): Boolean =
         when (preset.mode) {

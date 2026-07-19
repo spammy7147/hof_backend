@@ -7,6 +7,7 @@ import app.spammy.hof.battle.dto.BattleResultResponse
 import app.spammy.hof.battle.dto.RunBattleRequest
 import app.spammy.hof.battle.entity.AccountBattleMapStateEntity
 import app.spammy.hof.battle.model.BattleCategoryId
+import app.spammy.hof.battle.model.hasUsableKey
 import app.spammy.hof.battle.repository.BattleMapQueryRepository
 import app.spammy.hof.captcha.service.CaptchaService
 import app.spammy.hof.character.entity.CharacterEntity
@@ -187,7 +188,7 @@ class BattleRunService(
         if (state.cooldownUntil?.isAfter(timeProvider.now()) == true) {
             throw ApiException(ErrorCode.INVALID_REQUEST, "전투 맵 쿨타임이 남아 있습니다.")
         }
-        if (state.keyCount != null && state.keyCount!! <= 0) {
+        if (!state.keyMode.hasUsableKey(state.keyCount)) {
             throw ApiException(ErrorCode.INVALID_REQUEST, "전투 맵에 필요한 키가 없습니다.")
         }
         if (state.availableCount != null && state.availableCount!! <= 0) {

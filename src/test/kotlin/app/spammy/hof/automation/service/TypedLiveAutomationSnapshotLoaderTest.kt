@@ -8,6 +8,9 @@ import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.entity.*
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import app.spammy.hof.battle.repository.BattleMapQueryRepository
+import app.spammy.hof.battle.entity.AccountBattleMapStateEntity
+import app.spammy.hof.battle.entity.BattleMapEntity
+import app.spammy.hof.battle.model.BattleMapKeyMode
 import app.spammy.hof.battle.service.BattleMapIdentityResolver
 import app.spammy.hof.battle.service.BattleMapService
 import app.spammy.hof.common.time.TimeProvider
@@ -65,6 +68,23 @@ class TypedLiveAutomationSnapshotLoaderTest {
         val questEntry = AutomationEntryEntity(10, account, AutomationType.QUEST, 0, true, now, now)
         val battleEntry = AutomationEntryEntity(11, account, AutomationType.BATTLE_MAP, 1, true, now, now)
         val adventureEntry = AutomationEntryEntity(12, account, AutomationType.ADVENTURE_MAP, 2, true, now, now)
+        val liveMap = BattleMapEntity(
+            id = 30,
+            categoryId = "battle_map",
+            mapCode = "live-map",
+            name = "Live map",
+            normalizedName = "live map",
+            createdAt = now,
+            updatedAt = now,
+        )
+        val liveState = AccountBattleMapStateEntity(
+            account = account,
+            battleMap = liveMap,
+            keyMode = BattleMapKeyMode.UNLIMITED,
+            keyCount = null,
+            rawHref = "index.php?common=live-map",
+            lastSeenAt = now,
+        )
         val selection = QuestAutomationSelectionEntity(20, questEntry, "q", true, 0)
         val typed = Mockito.mock(TypedAutomationQueryRepository::class.java)
         val mapQuery = Mockito.mock(BattleMapQueryRepository::class.java)
@@ -82,7 +102,7 @@ class TypedLiveAutomationSnapshotLoaderTest {
         Mockito.`when`(typed.findBattleSettingsByEntryIds(listOf(11))).thenReturn(listOf(BattleAutomationMapEntity(22, battleEntry, "battle_map", "bmap", 1, PresetSelectionMode.PRIMARY, null, 0)))
         Mockito.`when`(typed.findAdventureSettingsByEntryIds(listOf(12))).thenReturn(listOf(AdventureAutomationMapEntity(23, adventureEntry, "adventure_map", "amap", PresetSelectionMode.EXPLICIT, explicitX, 0)))
         Mockito.`when`(quest.load(7)).thenReturn(emptyList())
-        Mockito.`when`(mapQuery.findAllStatesForExecution(7)).thenReturn(emptyList())
+        Mockito.`when`(mapQuery.findAllStatesForExecution(7)).thenReturn(listOf(liveState))
         Mockito.`when`(presets.findAllByAccountId(7)).thenReturn(listOf(primaryA, primaryB, explicitX))
         Mockito.`when`(presets.findPrimaryByAccountId(7)).thenReturn(primaryA, primaryA, primaryB, primaryB)
         Mockito.`when`(presets.findMembersByPresetIds(listOf(101L, 102L, 103L))).thenReturn(
@@ -98,6 +118,8 @@ class TypedLiveAutomationSnapshotLoaderTest {
         assertEquals((1..5).toList(), secondQuest.selections.single().maps.single().preset.resolvedParty?.patternLoads?.map { it.slot })
         val firstBattle = requireNotNull(first.entries[1].battle)
         val secondBattle = requireNotNull(second.entries[1].battle)
+        assertEquals(BattleMapKeyMode.UNLIMITED, firstQuest.mapStates.single().keyMode)
+        assertEquals(BattleMapKeyMode.UNLIMITED, firstBattle.mapStates.single().keyMode)
         assertEquals(101, firstBattle.primaryPresetId); assertEquals(102, secondBattle.primaryPresetId)
         assertNotEquals(firstBattle.executionIdentity, secondBattle.executionIdentity)
         assertTrue(firstBattle.executionIdentity.isNotBlank() && firstBattle.executionIdentity.length <= 128)
@@ -107,6 +129,7 @@ class TypedLiveAutomationSnapshotLoaderTest {
         val secondResolution = secondAdventure.presetResolutions.getValue(23) as AdventureMapPresetResolution.Valid
         assertEquals(103, firstResolution.resolvedPresetId); assertEquals(103, secondResolution.resolvedPresetId)
         assertEquals((0..4).map { "X-$it" }, secondResolution.resolvedParty?.characterIds)
+        assertEquals(BattleMapKeyMode.UNLIMITED, firstAdventure.mapStates.single().keyMode)
         assertEquals(firstAdventure.executionIdentities.getValue(23), firstAdventure.executionIdentities.getValue(23))
         assertNotEquals(firstAdventure.executionIdentities.getValue(23), secondAdventure.executionIdentities.getValue(23))
         assertTrue(secondAdventure.executionIdentities.getValue(23).length <= 128)

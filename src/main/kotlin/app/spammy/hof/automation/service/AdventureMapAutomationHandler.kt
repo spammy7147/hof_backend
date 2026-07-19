@@ -1,6 +1,8 @@
 package app.spammy.hof.automation.service
 
 import app.spammy.hof.automation.entity.PresetSelectionMode
+import app.spammy.hof.battle.model.BattleMapKeyMode
+import app.spammy.hof.battle.model.hasUsableKey
 import java.time.Instant
 import org.springframework.stereotype.Service
 
@@ -30,6 +32,7 @@ data class AdventureMapRunnableState(
     val attemptRemaining: Int? = null,
     val winRemaining: Int? = null,
     val availableCount: Int? = null,
+    val keyMode: BattleMapKeyMode,
     val keyCount: Int? = null,
 )
 
@@ -182,11 +185,11 @@ class AdventureMapAutomationHandler : AutomationHandler<AdventureMapAutomationSn
     ): String = (resolution as? AdventureMapPresetResolution.Invalid)?.warning
         ?: "Adventure map $categoryId/$mapCode setting $settingIdentity has an invalid ${preset.mode} preset selection."
 
-    private fun AdventureMapRunnableState.isAvailableMap(): Boolean = resolved && visible && enabled
+    private fun AdventureMapRunnableState.isAvailableMap(): Boolean =
+        resolved && visible && enabled && keyMode.hasUsableKey(keyCount)
 
     private fun AdventureMapRunnableState.hasExhaustedCapacity(): Boolean =
-        listOf(dailyRemaining, attemptRemaining, winRemaining, availableCount).any { it != null && it <= 0 } ||
-            (keyCount != null && keyCount <= 0)
+        listOf(dailyRemaining, attemptRemaining, winRemaining, availableCount).any { it != null && it <= 0 }
 
     private companion object {
         const val MAX_EXECUTION_IDENTITY_LENGTH = 128

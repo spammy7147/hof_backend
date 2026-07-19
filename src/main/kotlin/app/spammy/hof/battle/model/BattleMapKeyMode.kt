@@ -6,3 +6,11 @@ enum class BattleMapKeyMode {
     UNLIMITED,
     UNKNOWN,
 }
+
+fun BattleMapKeyMode.hasUsableKey(keyCount: Int?): Boolean = when (this) {
+    BattleMapKeyMode.LIMITED -> keyCount != null && keyCount > 0
+    BattleMapKeyMode.NOT_REQUIRED,
+    BattleMapKeyMode.UNLIMITED,
+    BattleMapKeyMode.UNKNOWN,
+    -> true
+}
