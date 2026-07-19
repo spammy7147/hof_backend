@@ -496,95 +496,34 @@ class CaptchaServiceTest {
     }
 
     @Test
-    fun loadImageDefaultsContentTypeWhenHeaderIsMissing() {
+    fun loadImageDefaultsContentTypeWhenHeaderIsMissingOrInvalid() {
         val bytes = byteArrayOf(5, 4, 3)
         val imageUrl = "http://sic.zerosic.com/ZeroHOF/pass_image.php?code=abc"
-        val challenge = pendingChallenge(id = 9L, imageUrl = imageUrl)
-        stubPendingImageChallenge(9L, challenge)
         Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(listOf(cookie()))
-        binaryGateway.response = HofBinaryResponse(
-            statusCode = 200,
-            finalUrl = imageUrl,
-            contentType = null,
-            body = bytes,
-        )
 
-        val response = service.loadImage(accountId = 1L, challengeId = 9L)
+        for ((challengeId, contentType) in listOf<Pair<Long, String?>>(9L to null, 15L to "not a media type")) {
+            stubPendingImageChallenge(challengeId, pendingChallenge(id = challengeId, imageUrl = imageUrl))
+            binaryGateway.response = HofBinaryResponse(
+                statusCode = 200,
+                finalUrl = imageUrl,
+                contentType = contentType,
+                body = bytes,
+            )
 
-        assertEquals("application/octet-stream", response.contentType)
-        assertContentEquals(bytes, response.bytes)
+            val response = service.loadImage(accountId = 1L, challengeId = challengeId)
+
+            assertEquals("application/octet-stream", response.contentType, contentType)
+            assertContentEquals(bytes, response.bytes)
+        }
     }
 
     @Test
-    fun loadImageDefaultsContentTypeWhenHeaderIsInvalid() {
-        val bytes = byteArrayOf(6, 7, 8)
-        val imageUrl = "http://sic.zerosic.com/ZeroHOF/pass_image.php?code=abc"
-        val challenge = pendingChallenge(id = 15L, imageUrl = imageUrl)
-        stubPendingImageChallenge(15L, challenge)
-        Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(listOf(cookie()))
-        binaryGateway.response = HofBinaryResponse(
-            statusCode = 200,
-            finalUrl = imageUrl,
-            contentType = "not a media type",
-            body = bytes,
-        )
-
-        val response = service.loadImage(accountId = 1L, challengeId = 15L)
-
-        assertEquals("application/octet-stream", response.contentType)
-        assertContentEquals(bytes, response.bytes)
-    }
-
-    @Test
-    fun loadImageRejectsMissingChallenge() {
+    fun loadImageRejectsUnavailableChallenge() {
         Mockito.`when`(queryRepository.findOwnedByAccountIdAndIdAndStatus(1L, 88L, "PENDING"))
             .thenReturn(null)
 
         val exception = assertFailsWith<ApiException> {
             service.loadImage(accountId = 1L, challengeId = 88L)
-        }
-
-        assertEquals(ErrorCode.RESOURCE_NOT_FOUND, exception.errorCode)
-        Mockito.verifyNoInteractions(cookieRepository)
-        assertEquals(emptyList(), binaryGateway.urls)
-    }
-
-    @Test
-    fun loadImageRejectsChallengeOwnedByAnotherAccount() {
-        val challenge = pendingChallenge(
-            id = 10L,
-            owner = HofAccountEntity(
-                id = 2L,
-                loginId = "zzzz99",
-                encryptedPassword = "qwer12",
-                createdAt = now,
-            ),
-            imageUrl = "http://sic.zerosic.com/ZeroHOF/pass_image.php?code=abc",
-        )
-        Mockito.`when`(queryRepository.findOwnedByAccountIdAndIdAndStatus(1L, 10L, "PENDING"))
-            .thenReturn(null)
-
-        val exception = assertFailsWith<ApiException> {
-            service.loadImage(accountId = 1L, challengeId = 10L)
-        }
-
-        assertEquals(ErrorCode.RESOURCE_NOT_FOUND, exception.errorCode)
-        Mockito.verifyNoInteractions(cookieRepository)
-        assertEquals(emptyList(), binaryGateway.urls)
-    }
-
-    @Test
-    fun loadImageRejectsChallengeThatIsNotPending() {
-        val challenge = pendingChallenge(
-            id = 11L,
-            status = "ANSWERED",
-            imageUrl = "http://sic.zerosic.com/ZeroHOF/pass_image.php?code=abc",
-        )
-        Mockito.`when`(queryRepository.findOwnedByAccountIdAndIdAndStatus(1L, 11L, "PENDING"))
-            .thenReturn(null)
-
-        val exception = assertFailsWith<ApiException> {
-            service.loadImage(accountId = 1L, challengeId = 11L)
         }
 
         assertEquals(ErrorCode.RESOURCE_NOT_FOUND, exception.errorCode)

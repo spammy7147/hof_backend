@@ -73,6 +73,54 @@ tasks.withType<Test> {
 	systemProperty("spring.test.context.cache.maxSize", "16")
 }
 
+tasks.register<Test>("fastTest") {
+	description = "Runs tests that do not start a Spring application or JPA test context."
+	group = "verification"
+	testClassesDirs = sourceSets["test"].output.classesDirs
+	classpath = sourceSets["test"].runtimeClasspath
+	useJUnitPlatform()
+	exclude(
+		"**/HofApplicationTests*.class",
+		"**/AccountQueryRepositoryTest*.class",
+		"**/AuthApiSecurityTest*.class",
+		"**/RefreshTokenQueryRepositoryTest*.class",
+		"**/UnifiedAutomationApiSecurityTest*.class",
+		"**/AccountAutomationLeaseServiceTest*.class",
+		"**/AutomationOutboxLocalReplayIntegrationTest*.class",
+		"**/AutomationRecoverySchedulerTransactionIntegrationTest*.class",
+		"**/AutomationJobQueryRepositoryTest*.class",
+		"**/AutomationProfileQueryRepositoryTest*.class",
+		"**/TypedAutomationPersistenceTest*.class",
+		"**/AutomationAfterCommitWakeupIntegrationTest*.class",
+		"**/AutomationDailyPreflightMapSyncTest*.class",
+		"**/AutomationDailyPreflightTest*.class",
+		"**/AutomationJobServiceTest*.class",
+		"**/AutomationProfileServiceTest*.class",
+		"**/BattleMapAutomationHandlerTest*.class",
+		"**/BattleMapAutomationProgressStorePersistenceTest*.class",
+		"**/QuestAutomationHandlerTest*.class",
+		"**/QuestAutomationProgressStorePersistenceTest*.class",
+		"**/TypedRuntimeWakeAtomicityIntegrationTest*.class",
+		"**/UnifiedAutomationTypedLifecycleBridgeIntegrationTest*.class",
+		"**/BattleLogQueryRepositoryTest*.class",
+		"**/BattleMapQueryRepositoryTest*.class",
+		"**/BattleMapSeedTest*.class",
+		"**/BattleLogServiceTest*.class",
+		"**/BattleMapIdentityResolverTest*.class",
+		"**/BattleMapServiceTest*.class",
+		"**/CaptchaQueryRepositoryTest*.class",
+		"**/CaptchaServicePersistenceTest*.class",
+		"**/CharacterQueryRepositoryTest*.class",
+		"**/QueryDslConfigTest*.class",
+		"**/HttpsEnforcementTest*.class",
+		"**/PartyPresetQueryRepositoryTest*.class",
+		"**/PartyPresetConcurrencyTest*.class",
+		"**/PartyPresetServiceTest*.class",
+		"**/FreshSchemaTest*.class",
+		"**/QuestApiSecurityTest*.class",
+	)
+}
+
 tasks.register<JavaExec>("generateBattleMapSeed") {
 	dependsOn(tasks.testClasses)
 	classpath = sourceSets["test"].runtimeClasspath

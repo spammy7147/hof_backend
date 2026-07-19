@@ -123,61 +123,27 @@ class BattleRunServiceTest {
     }
 
     @Test
-    fun runBattleRejectsMissingOrInvisibleStoredMapStateBeforeHofRequest() {
-        Mockito.`when`(accountQueryRepository.findById(1L)).thenReturn(account)
-        Mockito.`when`(
-            battleMapQueryRepository.findStateForExecution(1L, "battle_map", "snow22"),
-        ).thenReturn(null)
-
-        val missing = assertFailsWith<ApiException> { service.runBattle(1L, runRequest()) }
-        assertEquals(ErrorCode.INVALID_REQUEST, missing.errorCode)
-
-        Mockito.`when`(
-            battleMapQueryRepository.findStateForExecution(1L, "battle_map", "snow22"),
-        ).thenReturn(battleMapState(visible = false))
-        val invisible = assertFailsWith<ApiException> { service.runBattle(1L, runRequest()) }
-        assertEquals(ErrorCode.INVALID_REQUEST, invisible.errorCode)
-        assertTrue(gateway.requests.isEmpty())
-    }
-
-    @Test
-    fun runBattleRejectsStaticDisabledMapAndActiveCooldownBeforeHofRequest() {
-        Mockito.`when`(accountQueryRepository.findById(1L)).thenReturn(account)
-        Mockito.`when`(
-            battleMapQueryRepository.findStateForExecution(1L, "battle_map", "snow22"),
-        ).thenReturn(battleMapState(staticEnabled = false))
-        assertEquals(
-            ErrorCode.INVALID_REQUEST,
-            assertFailsWith<ApiException> { service.runBattle(1L, runRequest()) }.errorCode,
-        )
-
-        Mockito.`when`(
-            battleMapQueryRepository.findStateForExecution(1L, "battle_map", "snow22"),
-        ).thenReturn(battleMapState(cooldownUntil = now.plusSeconds(1)))
-        assertEquals(
-            ErrorCode.INVALID_REQUEST,
-            assertFailsWith<ApiException> { service.runBattle(1L, runRequest()) }.errorCode,
-        )
-        assertTrue(gateway.requests.isEmpty())
-    }
-
-    @Test
-    fun runBattleRejectsZeroKeyAndEveryZeroRemainingLimitBeforeHofRequest() {
+    fun runBattleRejectsUnavailableStoredMapStatesBeforeHofRequest() {
         Mockito.`when`(accountQueryRepository.findById(1L)).thenReturn(account)
         val unavailableStates = listOf(
+            null,
+            battleMapState(visible = false),
+            battleMapState(staticEnabled = false),
+            battleMapState(cooldownUntil = now.plusSeconds(1)),
             battleMapState(keyCount = 0),
             battleMapState(availableCount = 0),
             battleMapState(attemptRemaining = 0),
             battleMapState(winRemaining = 0),
         )
 
-        unavailableStates.forEach { state ->
+        unavailableStates.forEachIndexed { index, state ->
             Mockito.`when`(
                 battleMapQueryRepository.findStateForExecution(1L, "battle_map", "snow22"),
             ).thenReturn(state)
             assertEquals(
                 ErrorCode.INVALID_REQUEST,
                 assertFailsWith<ApiException> { service.runBattle(1L, runRequest()) }.errorCode,
+                "unavailable state $index",
             )
         }
         assertTrue(gateway.requests.isEmpty())
