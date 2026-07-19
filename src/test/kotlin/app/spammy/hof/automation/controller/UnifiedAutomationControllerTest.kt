@@ -3,6 +3,7 @@ package app.spammy.hof.automation.controller
 import app.spammy.hof.automation.dto.CreateAutomationEntryRequest
 import app.spammy.hof.automation.dto.ReorderAutomationEntriesRequest
 import app.spammy.hof.automation.dto.TypedAutomationAggregateResponse
+import app.spammy.hof.automation.dto.TypedAutomationCurrentActionResponse
 import app.spammy.hof.automation.dto.TypedAutomationRuntimeResponse
 import app.spammy.hof.automation.dto.UpdateAdventureMapAutomationRequest
 import app.spammy.hof.automation.dto.UpdateBattleMapAutomationRequest
@@ -12,7 +13,10 @@ import app.spammy.hof.automation.entity.TypedAutomationLifecycle
 import app.spammy.hof.automation.service.UnifiedAutomationService
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 import org.mockito.Mockito
+import tools.jackson.module.kotlin.jacksonObjectMapper
 
 class UnifiedAutomationControllerTest {
     private val service = Mockito.mock(UnifiedAutomationService::class.java)
@@ -52,5 +56,35 @@ class UnifiedAutomationControllerTest {
         assertEquals(aggregate, controller.pause(7L))
         assertEquals(aggregate, controller.resume(7L))
         assertEquals(aggregate, controller.stop(7L))
+    }
+
+    @Test
+    fun `serializes the structured current action without legacy progress aliases`() {
+        val action = TypedAutomationCurrentActionResponse(
+            source = AutomationType.QUEST,
+            kind = "QUEST_BATTLE",
+            actionLabel = "퀘스트 전투",
+            questName = "저택 동관 조사(반복)",
+            missionLabel = "맵 클리어",
+            missionCurrent = 21,
+            missionRequired = 25,
+            mapName = "동관 응접실",
+            battleCount = 1,
+        )
+
+        val json = jacksonObjectMapper().readTree(jacksonObjectMapper().writeValueAsString(action))
+
+        assertEquals(
+            setOf(
+                "source", "kind", "actionLabel", "questName", "missionLabel", "missionCurrent",
+                "missionRequired", "mapName", "battleCount",
+            ),
+            json.propertyNames().asSequence().toSet(),
+        )
+        assertEquals("\"퀘스트 전투\"", json["actionLabel"].toString())
+        assertTrue(json["battleCount"].isInt)
+        assertFalse(json.has("title"))
+        assertFalse(json.has("battleCurrent"))
+        assertFalse(json.has("battleTotal"))
     }
 }

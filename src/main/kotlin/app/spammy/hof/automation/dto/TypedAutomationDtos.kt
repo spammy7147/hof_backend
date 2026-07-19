@@ -151,9 +151,13 @@ data class TypedAutomationRuntimeResponse(
 data class TypedAutomationCurrentActionResponse(
     val source: AutomationType,
     val kind: String,
-    val title: String,
-    val battleCurrent: Int? = null,
-    val battleTotal: Int? = null,
+    val actionLabel: String,
+    val questName: String? = null,
+    val missionLabel: String? = null,
+    val missionCurrent: Int? = null,
+    val missionRequired: Int? = null,
+    val mapName: String? = null,
+    val battleCount: Int? = null,
 )
 
 data class AdventureDailyRefreshResponse(
