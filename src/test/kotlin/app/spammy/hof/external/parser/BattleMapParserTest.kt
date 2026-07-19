@@ -1,5 +1,6 @@
 package app.spammy.hof.external.parser
 
+import app.spammy.hof.battle.model.BattleMapKeyMode
 import app.spammy.hof.external.model.HofBattleMap
 import ch.qos.logback.classic.Level
 import ch.qos.logback.classic.Logger
@@ -317,6 +318,66 @@ class BattleMapParserTest {
         assertEquals("Frosty Mountain- 대충산(리치의 창고)", keyedMap.name)
         assertEquals(9, keyedMap.keyCount)
         assertEquals(null, maps.first { it.mapCode == "plain" }.keyCount)
+    }
+
+    @Test
+    fun coalescesSplitPermanentKeyMapLinksWithoutWarning() {
+        lateinit var maps: List<HofBattleMap>
+        val warnings = captureWarnings {
+            maps = parser.parse(
+                categoryId = "adventure_map",
+                queryName = "sp_common",
+                html = """
+                    <div id="mapgroup1">
+                      <p>
+                        <a href="index.php?sp_common=min08">Dead Pit- 지각 내부 (B4) Tuls의 문(</a><a href="index.php?sp_common=min08">x )</a>
+                        (타임 소모 : 100)
+                      </p>
+                    </div>
+                """.trimIndent(),
+            )
+        }
+
+        val map = maps.single()
+        assertEquals("min08", map.mapCode)
+        assertEquals("Dead Pit- 지각 내부 (B4) Tuls의 문", map.name)
+        assertEquals(BattleMapKeyMode.UNLIMITED, map.keyMode)
+        assertNull(map.keyCount)
+        assertEquals(100, map.requiredTime)
+        assertTrue(warnings.isEmpty())
+    }
+
+    @Test
+    fun distinguishesFiniteAbsentAndMalformedKeyAdvertisements() {
+        lateinit var maps: List<HofBattleMap>
+        val warnings = captureWarnings {
+            maps = parser.parse(
+                categoryId = "adventure_map",
+                queryName = "sp_common",
+                html = """
+                    <p><a href="index.php?sp_common=finite">Finite ( x12 )</a></p>
+                    <p><a href="index.php?sp_common=plain">Plain</a></p>
+                    <p><a href="index.php?sp_common=broken">Broken ( xunknown )</a></p>
+                """.trimIndent(),
+            )
+        }
+
+        val finite = maps.first { it.mapCode == "finite" }
+        assertEquals("Finite", finite.name)
+        assertEquals(BattleMapKeyMode.LIMITED, finite.keyMode)
+        assertEquals(12, finite.keyCount)
+
+        val plain = maps.first { it.mapCode == "plain" }
+        assertEquals("Plain", plain.name)
+        assertEquals(BattleMapKeyMode.NOT_REQUIRED, plain.keyMode)
+        assertNull(plain.keyCount)
+
+        val broken = maps.first { it.mapCode == "broken" }
+        assertEquals("Broken", broken.name)
+        assertEquals(BattleMapKeyMode.UNKNOWN, broken.keyMode)
+        assertNull(broken.keyCount)
+        assertEquals(1, warnings.size)
+        assertTrue("keyCount" in warnings.single())
     }
 
     @Test

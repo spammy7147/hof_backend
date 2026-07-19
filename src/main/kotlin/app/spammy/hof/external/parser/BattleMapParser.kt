@@ -1,6 +1,7 @@
 package app.spammy.hof.external.parser
 
 import app.spammy.hof.battle.model.BattleMapIdentityNormalizer
+import app.spammy.hof.battle.model.BattleMapKeyMode
 import app.spammy.hof.external.model.HofBattleMap
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
@@ -31,38 +32,40 @@ class BattleMapParser {
         val seenUnresolvedIdentities = linkedSetOf<String>()
         val mapOrdersByGroup = mutableMapOf<Int, Int>()
         val candidateLinks = document.select("a[href*=$queryName=], div[id^=$MAP_GROUP_ID_PREFIX] a[href]")
+        val linkObservations = coalesceMapLinks(candidateLinks, queryPattern)
 
         // 시나리오 지도는 동일한 맵 코드를 이미지, 클릭 영역, 한글 라벨 링크에 반복해서 사용한다.
         // 첫 이미지 링크에는 텍스트가 없으므로 뒤에 있는 첫 유효 라벨을 코드별 보조 정보로 미리 수집한다.
         val preferredTextByCode = linkedMapOf<String, PreferredMapText>()
-        candidateLinks.forEach { link ->
-            val mapCode = parseDirectMapCode(link.attr("href"), queryPattern) ?: return@forEach
-            val displayName = link.text().normalizedText()
+        linkObservations.forEach { observation ->
+            val mapCode = observation.mapCode ?: return@forEach
+            val displayName = observation.displayName
             if (displayName.isBlank()) return@forEach
 
             preferredTextByCode.putIfAbsent(
                 mapCode,
                 PreferredMapText(
                     displayName = displayName,
-                    contextText = link.parent()?.text()?.trim().orEmpty().ifBlank { displayName },
+                    contextText = observation.contextText.ifBlank { displayName },
                 ),
             )
         }
 
-        return candidateLinks
-            .mapNotNull { link ->
-                val rawHref = link.attr("href")
+        return linkObservations
+            .mapNotNull { observation ->
+                val link = observation.link
+                val rawHref = observation.rawHref
                 val groupElement = link.parents().firstOrNull { it.id().startsWith(MAP_GROUP_ID_PREFIX) }
                 val groupOrder = groupElement?.groupOrder() ?: 0
                 val groupMetadata = groupElement?.previousElementSibling()?.text()?.toGroupMetadata()
-                val mapCode = parseDirectMapCode(rawHref, queryPattern)
-                val directDisplayName = link.text().normalizedText()
+                val mapCode = observation.mapCode
+                val directDisplayName = observation.displayName
                 val preferredText = mapCode?.let(preferredTextByCode::get)
                 val displayName = directDisplayName.ifBlank { preferredText?.displayName.orEmpty() }
                 val contextText = if (directDisplayName.isBlank()) {
                     preferredText?.contextText.orEmpty().ifBlank { displayName }
                 } else {
-                    link.parent()?.text()?.trim().orEmpty().ifBlank { displayName }
+                    observation.contextText.ifBlank { displayName }
                 }
                 if (
                     mapCode == null &&
@@ -70,7 +73,8 @@ class BattleMapParser {
                 ) {
                     return@mapNotNull null
                 }
-                val name = displayName.withoutKeyCount().ifBlank { mapCode.orEmpty() }
+                val parsedKey = parseKey(displayName)
+                val name = displayName.withoutKeySuffix().ifBlank { mapCode.orEmpty() }
                 if (name.isBlank()) return@mapNotNull null
 
                 val isNewObservation = if (mapCode == null) {
@@ -91,7 +95,6 @@ class BattleMapParser {
                 val cooldownRemaining = parseCooldownRemaining(contextText)
                 val attemptCount = parseAttemptCount(contextText)
                 val winCount = parseWinCount(contextText)
-                val keyCount = parseKeyCount(displayName)
                 warnIfAdvertisedFieldFailed(
                     field = "cooldownRemainingSeconds",
                     advertised = COOLDOWN_ADVERTISEMENT_PATTERN.containsMatchIn(contextText),
@@ -121,8 +124,8 @@ class BattleMapParser {
                 )
                 warnIfAdvertisedFieldFailed(
                     field = "keyCount",
-                    advertised = KEY_ADVERTISEMENT_PATTERN.containsMatchIn(displayName),
-                    parsed = keyCount,
+                    advertised = parsedKey.mode == BattleMapKeyMode.UNKNOWN,
+                    parsed = parsedKey.count,
                     categoryId = categoryId,
                     mapCode = mapCode,
                     name = name,
@@ -140,7 +143,8 @@ class BattleMapParser {
                     attemptCount = attemptCount,
                     winCount = winCount,
                     cooldownRemainingSeconds = cooldownRemaining?.seconds,
-                    keyCount = keyCount,
+                    keyMode = parsedKey.mode,
+                    keyCount = parsedKey.count,
                     requiredTime = parseRequiredTime(contextText),
                     supportsThreeBattles = mapCode?.let {
                         supportsThreeBattles(link, it, document.select("form"), queryPattern)
@@ -150,6 +154,38 @@ class BattleMapParser {
                 )
             }
     }
+
+    private fun coalesceMapLinks(
+        candidateLinks: List<Element>,
+        queryPattern: Regex,
+    ): List<MapLinkObservation> =
+        candidateLinks.fold(mutableListOf()) { observations, link ->
+            val rawHref = link.attr("href")
+            val mapCode = parseDirectMapCode(rawHref, queryPattern)
+            val displayName = link.text().normalizedText()
+            val previous = observations.lastOrNull()
+            if (
+                mapCode != null &&
+                previous?.mapCode == mapCode &&
+                previous.lastLink.parent() === link.parent() &&
+                previous.lastLink.nextElementSibling() === link
+            ) {
+                observations[observations.lastIndex] = previous.copy(
+                    lastLink = link,
+                    displayName = previous.displayName + displayName,
+                )
+            } else {
+                observations += MapLinkObservation(
+                    link = link,
+                    lastLink = link,
+                    rawHref = rawHref,
+                    mapCode = mapCode,
+                    displayName = displayName,
+                    contextText = link.parent()?.text()?.trim().orEmpty(),
+                )
+            }
+            observations
+        }
 
     /**
      * Parses one authenticated map-detail page. `null` means the page did not expose exactly one execution form
@@ -345,20 +381,25 @@ class BattleMapParser {
         )
     }
 
-    /**
-     * 맵 이름 끝의 `(x9)` 같은 보유 키 수량을 읽는다.
-     */
-    private fun parseKeyCount(text: String): Int? =
-        KEY_COUNT_PATTERN.find(text)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.toNumberOrNull()
+    private fun parseKey(text: String): ParsedKey =
+        when {
+            PERMANENT_KEY_PATTERN.containsMatchIn(text) ->
+                ParsedKey(BattleMapKeyMode.UNLIMITED, null)
+            FINITE_KEY_PATTERN.containsMatchIn(text) ->
+                ParsedKey(
+                    BattleMapKeyMode.LIMITED,
+                    FINITE_KEY_PATTERN.find(text)?.groupValues?.getOrNull(1)?.toNumberOrNull(),
+                )
+            KEY_ADVERTISEMENT_PATTERN.containsMatchIn(text) ->
+                ParsedKey(BattleMapKeyMode.UNKNOWN, null)
+            else -> ParsedKey(BattleMapKeyMode.NOT_REQUIRED, null)
+        }
 
     /**
-     * 사용자에게 보여줄 맵 이름에서 키 수량 표기를 제거한다.
+     * 사용자에게 보여줄 맵 이름에서 키 표기를 제거한다.
      */
-    private fun String.withoutKeyCount(): String =
-        replace(KEY_COUNT_PATTERN, "").normalizedText()
+    private fun String.withoutKeySuffix(): String =
+        replace(KEY_ADVERTISEMENT_PATTERN, "").normalizedText()
 
     /**
      * mapgroupN id에서 그룹 순서를 읽는다.
@@ -412,7 +453,8 @@ class BattleMapParser {
         val WIN_ADVERTISEMENT_PATTERN = Regex("""승리[^)\r\n]*?회""")
         val REQUIRED_TIME_PATTERN =
             Regex("""(?:Time|타임\s*소모|타임|필요\s*Time)\s*[:：]?\s*([\d,]+)""", RegexOption.IGNORE_CASE)
-        val KEY_COUNT_PATTERN = Regex("""\(\s*x\s*([\d,]+)\s*\)\s*$""", RegexOption.IGNORE_CASE)
+        val FINITE_KEY_PATTERN = Regex("""\(\s*x\s*([\d,]+)\s*\)\s*$""", RegexOption.IGNORE_CASE)
+        val PERMANENT_KEY_PATTERN = Regex("""\(\s*x\s*\)\s*$""", RegexOption.IGNORE_CASE)
         val KEY_ADVERTISEMENT_PATTERN = Regex("""\(\s*x[^)]*\)\s*$""", RegexOption.IGNORE_CASE)
         val RECOMMENDED_LEVEL_PATTERN = Regex("""\(\s*적정\s*레벨\s*:\s*([^)]+)\)""")
         val TRAILING_GROUP_COUNT_PATTERN = Regex("""\(\s*[\d,]+\s*\)\s*$""")
@@ -425,6 +467,20 @@ class BattleMapParser {
 
     private data class CooldownRemaining(
         val seconds: Long,
+    )
+
+    private data class ParsedKey(
+        val mode: BattleMapKeyMode,
+        val count: Int?,
+    )
+
+    private data class MapLinkObservation(
+        val link: Element,
+        val lastLink: Element,
+        val rawHref: String,
+        val mapCode: String?,
+        val displayName: String,
+        val contextText: String,
     )
 
     private data class PreferredMapText(
