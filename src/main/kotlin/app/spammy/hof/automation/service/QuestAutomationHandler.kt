@@ -40,11 +40,13 @@ sealed interface QuestAction : PreparedAutomationAction {
     data class Claim(
         override val questCode: String,
         val actionNo: String,
+        val questName: String? = null,
     ) : QuestAction
 
     data class Accept(
         override val questCode: String,
         val actionNo: String,
+        val questName: String? = null,
     ) : QuestAction
 
     data class Battle(
@@ -58,6 +60,10 @@ sealed interface QuestAction : PreparedAutomationAction {
         val preset: QuestPresetSelection,
         val battleCount: Int = 1,
         val resolvedParty: ResolvedAutomationParty? = preset.resolvedParty,
+        val questName: String? = null,
+        val missionLabel: String? = null,
+        val missionCurrent: Int? = null,
+        val missionRequired: Int? = null,
     ) : QuestAction
 }
 
@@ -97,6 +103,17 @@ data class QuestAutomationSnapshot(
     val primaryPresetId: Long? = null,
     val primaryParty: ResolvedAutomationParty? = null,
 )
+
+internal fun QuestMission.displayLabel(): String {
+    val typeLabel = when (type) {
+        QuestMissionType.MONSTER_KILL -> "몬스터 처치"
+        QuestMissionType.MAP_CLEAR -> "맵 클리어"
+        QuestMissionType.ITEM_TURN_IN -> "아이템 반납"
+        QuestMissionType.IMMEDIATE -> "즉시 완료"
+        QuestMissionType.OTHER -> "기타"
+    }
+    return target?.trim()?.takeIf(String::isNotBlank)?.let { "$typeLabel · $it" } ?: typeLabel
+}
 
 interface QuestAutomationProgressStore {
     fun startNewCycle(accountId: Long, resultId: String, questCode: String): String
@@ -252,12 +269,12 @@ class QuestAutomationHandler(
             .sortedBy(QuestSnapshot::sourceOrder)
 
         candidates.firstOrNull { it.state == QuestState.CLAIMABLE }?.let { quest ->
-            return quest.actionNo?.let { HandlerEvaluation.Runnable(QuestAction.Claim(quest.questId, it)) }
+            return quest.actionNo?.let { HandlerEvaluation.Runnable(QuestAction.Claim(quest.questId, it, quest.name)) }
                 ?: HandlerEvaluation.ConfigurationWarning("Quest ${quest.questId} has no claim action.")
         }
 
         candidates.firstOrNull { it.state == QuestState.AVAILABLE && it.isImmediatelyCompletable() }?.let { quest ->
-            return quest.actionNo?.let { HandlerEvaluation.Runnable(QuestAction.Accept(quest.questId, it)) }
+            return quest.actionNo?.let { HandlerEvaluation.Runnable(QuestAction.Accept(quest.questId, it, quest.name)) }
                 ?: HandlerEvaluation.ConfigurationWarning("Quest ${quest.questId} has no accept action.")
         }
 
@@ -434,6 +451,10 @@ class QuestAutomationHandler(
                 mapName,
                 preset,
                 battleCount = 1,
+                questName = quest.name,
+                missionLabel = mission.displayLabel(),
+                missionCurrent = mission.progress?.current,
+                missionRequired = mission.progress?.required,
             ),
         )
     }

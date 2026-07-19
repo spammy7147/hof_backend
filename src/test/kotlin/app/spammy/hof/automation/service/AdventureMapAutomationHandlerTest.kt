@@ -19,7 +19,7 @@ class AdventureMapAutomationHandlerTest {
                 state("cooldown", cooldownUntil = LATER),
                 state("exhausted", availableCount = 0),
                 state("no-key", keyCount = 0),
-                state("ready"),
+                state("ready", mapName = "Ready map"),
             ),
         )
 
@@ -29,6 +29,7 @@ class AdventureMapAutomationHandlerTest {
         assertEquals(1, action.battleCount)
         assertEquals(4, action.settingIdentity)
         assertEquals("execution-4", action.executionIdentity)
+        assertEquals("Ready map", action.mapName)
     }
 
     @Test
@@ -316,6 +317,7 @@ class AdventureMapAutomationHandlerTest {
         availableCount: Int? = null,
         keyCount: Int? = null,
         keyMode: BattleMapKeyMode = if (keyCount == null) BattleMapKeyMode.UNKNOWN else BattleMapKeyMode.LIMITED,
+        mapName: String? = null,
     ) = AdventureMapRunnableState(
         categoryId = category,
         mapCode = mapCode,
@@ -329,6 +331,7 @@ class AdventureMapAutomationHandlerTest {
         availableCount = availableCount,
         keyMode = keyMode,
         keyCount = keyCount,
+        mapName = mapName,
     )
 
     private fun snapshot(

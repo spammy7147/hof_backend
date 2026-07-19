@@ -10,6 +10,7 @@ import app.spammy.hof.battle.service.BattleMapIdentityCandidate
 import app.spammy.hof.battle.model.BattleMapKeyMode
 import app.spammy.hof.quest.model.QuestMission
 import app.spammy.hof.quest.model.QuestMissionType
+import app.spammy.hof.quest.model.QuestProgress
 import app.spammy.hof.quest.model.QuestSection
 import app.spammy.hof.quest.model.QuestSnapshot
 import app.spammy.hof.quest.model.QuestState
@@ -74,6 +75,42 @@ class QuestAutomationHandlerTest {
 
         val equal = battle(handler.evaluate(base.copy(counters = base.counters.mapValues { 4 })))
         assertEquals("map-a", equal.mapCode)
+    }
+
+    @Test
+    fun `prepared quest actions retain human readable names mission label and progress`() {
+        val mission = QuestMission(
+            "kill", QuestMissionType.MONSTER_KILL, "  슬라임  ", QuestProgress(2, 5), false,
+        )
+        val result = handler.evaluate(snapshot(
+            quests = listOf(quest("q", QuestState.ACTIVE, 0, mission)),
+            selections = listOf(selection("q", maps = listOf(map("kill", "map-a", 0)))),
+            states = listOf(state("map-a")),
+        ))
+
+        val action = battle(result)
+        assertEquals("q", action.questName)
+        assertEquals("몬스터 처치 · 슬라임", action.missionLabel)
+        assertEquals(2, action.missionCurrent)
+        assertEquals(5, action.missionRequired)
+        assertEquals("map-a", action.mapName)
+    }
+
+    @Test
+    fun `mission display labels cover every type and trim nonblank targets`() {
+        val labels = QuestMissionType.entries.associateWith { type ->
+            QuestMission("mission", type, "  대상  ", null, false).displayLabel()
+        }
+
+        assertEquals("몬스터 처치 · 대상", labels[QuestMissionType.MONSTER_KILL])
+        assertEquals("맵 클리어 · 대상", labels[QuestMissionType.MAP_CLEAR])
+        assertEquals("아이템 반납 · 대상", labels[QuestMissionType.ITEM_TURN_IN])
+        assertEquals("즉시 완료 · 대상", labels[QuestMissionType.IMMEDIATE])
+        assertEquals("기타 · 대상", labels[QuestMissionType.OTHER])
+        assertEquals(
+            "맵 클리어",
+            QuestMission("mission", QuestMissionType.MAP_CLEAR, "   ", null, false).displayLabel(),
+        )
     }
 
     @Test
@@ -526,6 +563,28 @@ class QuestAutomationProgressStorePersistenceTest {
         assertEquals(1, queryRepository.findQuestMapWins(account.id, "q", "1", "kill", "battle_map", "first-map"))
         assertEquals(0, queryRepository.findQuestMapWins(account.id, "q", "2", "kill", "battle_map", "second-map"))
         assertEquals(null, queryRepository.findQuestCycle(account.id, "q"))
+    }
+
+    @Test
+    fun `quest display context does not change victory replay identity`() {
+        val account = accountRepository.save(
+            HofAccountEntity(loginId = "quest-display-${System.nanoTime()}", encryptedPassword = "encrypted", createdAt = NOW),
+        )
+        val original = battleAction(cycle = "1", mapCode = "map").copy(
+            questName = "이전 퀘스트 이름",
+            missionLabel = "몬스터 처치 · 이전 대상",
+            missionCurrent = 1,
+            missionRequired = 5,
+        )
+        progressStore.recordVictory(account.id, "display-result", original)
+
+        progressStore.recordVictory(
+            account.id,
+            "display-result",
+            original.copy(questName = "새 퀘스트 이름", missionLabel = "몬스터 처치 · 새 대상", missionCurrent = 4),
+        )
+
+        assertEquals(1, queryRepository.findQuestMapWins(account.id, "q", "1", "kill", "battle_map", "map"))
     }
 
     private fun battleAction(cycle: String, mapCode: String) = QuestAction.Battle(

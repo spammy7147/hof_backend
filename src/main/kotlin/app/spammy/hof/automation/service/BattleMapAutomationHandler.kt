@@ -48,6 +48,7 @@ data class BattleMapRunnableState(
     val winRemaining: Int? = null,
     val keyMode: BattleMapKeyMode,
     val keyCount: Int? = null,
+    val mapName: String? = null,
 )
 
 data class BattleMapProgressIdentity(val categoryId: String, val mapCode: String)
@@ -84,6 +85,7 @@ data class BattleMapAutomationAction(
     val executionIdentity: String,
     val source: BattleAutomationActionSource = BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
     val resolvedParty: ResolvedAutomationParty? = null,
+    val mapName: String? = null,
 ) : PreparedAutomationAction
 
 enum class BattleAutomationRoundOutcome { VICTORY, DEFEAT, DRAW, NETWORK_FAILURE, UNKNOWN }
@@ -301,6 +303,7 @@ class BattleMapAutomationHandler(
                         battleCount = battleCount,
                         executionIdentity = context.executionIdentity,
                         resolvedParty = context.resolvedParties[presetId],
+                        mapName = state.mapName,
                     ),
                 )
             }

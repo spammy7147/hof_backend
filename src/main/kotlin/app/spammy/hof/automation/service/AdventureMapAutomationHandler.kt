@@ -34,6 +34,7 @@ data class AdventureMapRunnableState(
     val availableCount: Int? = null,
     val keyMode: BattleMapKeyMode,
     val keyCount: Int? = null,
+    val mapName: String? = null,
 )
 
 sealed interface AdventureMapPresetResolution {
@@ -65,6 +66,7 @@ data class AdventureMapAutomationAction(
     val settingIdentity: Long,
     val executionIdentity: String,
     val resolvedParty: ResolvedAutomationParty? = null,
+    val mapName: String? = null,
 ) : PreparedAutomationAction
 
 /** Pure, ordered selection over the latest live adventure-map snapshot. */
@@ -157,6 +159,7 @@ class AdventureMapAutomationHandler : AutomationHandler<AdventureMapAutomationSn
                         settingIdentity = setting.settingIdentity,
                         executionIdentity = executionIdentity,
                         resolvedParty = (context.presetResolutions[setting.settingIdentity] as? AdventureMapPresetResolution.Valid)?.resolvedParty,
+                        mapName = state.mapName,
                     ),
                 )
             }

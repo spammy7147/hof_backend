@@ -36,7 +36,9 @@ class DefaultAutomationActionExecutorTest {
         val action = StoredTypedAutomationActionV1(
             entryId = 11L,
             executionIdentity = "quest-accept-1",
-            payload = StoredTypedActionPayload.QuestAccept("Q-1", "accept-no"),
+            payload = StoredTypedActionPayload.QuestAccept(
+                "Q-1", "accept-no", StoredActionDisplay(questName = "표시용 이름", mapName = "잘못된 실행 맵"),
+            ),
         )
 
         executor.execute(7L, action)
