@@ -59,10 +59,15 @@ pipeline {
                     docker info >/dev/null
                     test -x ./gradlew
                 '''
-                sshagent(credentials: ["${SSH_CREDENTIAL_ID}"]) {
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: "${SSH_CREDENTIAL_ID}",
+                        keyFileVariable: 'SSH_KEY_FILE',
+                    ),
+                ]) {
                     sh '''
                         set -eu
-                        ssh -o BatchMode=yes "$DEPLOY_TARGET" \
+                        ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes "$DEPLOY_TARGET" \
                           'command -v bash >/dev/null && command -v docker >/dev/null && command -v gunzip >/dev/null && command -v curl >/dev/null && command -v grep >/dev/null && command -v seq >/dev/null && docker info >/dev/null'
                     '''
                 }
@@ -90,11 +95,16 @@ pipeline {
 
         stage('Transfer Image') {
             steps {
-                sshagent(credentials: ["${SSH_CREDENTIAL_ID}"]) {
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: "${SSH_CREDENTIAL_ID}",
+                        keyFileVariable: 'SSH_KEY_FILE',
+                    ),
+                ]) {
                     sh '''#!/usr/bin/env bash
                         set -Eeuo pipefail
                         docker save "$IMAGE" | gzip | \
-                          ssh -o BatchMode=yes "$DEPLOY_TARGET" 'gunzip | docker load'
+                          ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes "$DEPLOY_TARGET" 'gunzip | docker load'
                     '''
                 }
             }
@@ -102,17 +112,20 @@ pipeline {
 
         stage('Deploy') {
             steps {
-                sshagent(credentials: ["${SSH_CREDENTIAL_ID}"]) {
-                    withCredentials([
-                        file(
-                            credentialsId: "${ENV_FILE_CREDENTIAL_ID}",
-                            variable: 'HOF_ENV_FILE',
-                        ),
-                    ]) {
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: "${SSH_CREDENTIAL_ID}",
+                        keyFileVariable: 'SSH_KEY_FILE',
+                    ),
+                    file(
+                        credentialsId: "${ENV_FILE_CREDENTIAL_ID}",
+                        variable: 'HOF_ENV_FILE',
+                    ),
+                ]) {
                         sh(script: '''#!/usr/bin/env bash
                             set -Eeuo pipefail
-                            scp "$HOF_ENV_FILE" "$DEPLOY_TARGET:$REMOTE_ENV_FILE"
-                            ssh -o BatchMode=yes "$DEPLOY_TARGET" \
+                            scp -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes "$HOF_ENV_FILE" "$DEPLOY_TARGET:$REMOTE_ENV_FILE"
+                            ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes "$DEPLOY_TARGET" \
                               "IMAGE='$IMAGE' IMAGE_REPOSITORY='$IMAGE_REPOSITORY' CONTAINER_NAME='$CONTAINER_NAME' DEPLOY_HOST_IP='$DEPLOY_HOST_IP' HOST_PORT='$HOST_PORT' CONTAINER_PORT='$CONTAINER_PORT' REMOTE_ENV_FILE='$REMOTE_ENV_FILE' bash -s" <<'REMOTE_SCRIPT'
                             set -Eeuo pipefail
 
@@ -190,7 +203,6 @@ pipeline {
                             docker image prune -f >/dev/null
                             REMOTE_SCRIPT
                         '''.stripIndent())
-                    }
                 }
             }
         }
@@ -203,9 +215,14 @@ pipeline {
                     sh 'docker image rm "$IMAGE" >/dev/null 2>&1 || true'
                 }
                 if (env.REMOTE_ENV_FILE?.trim()) {
-                    sshagent(credentials: ["${SSH_CREDENTIAL_ID}"]) {
+                    withCredentials([
+                        sshUserPrivateKey(
+                            credentialsId: "${SSH_CREDENTIAL_ID}",
+                            keyFileVariable: 'SSH_KEY_FILE',
+                        ),
+                    ]) {
                         sh '''
-                            ssh -o BatchMode=yes "$DEPLOY_TARGET" \
+                            ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes "$DEPLOY_TARGET" \
                               "rm -f '$REMOTE_ENV_FILE'" >/dev/null 2>&1 || true
                         '''
                     }
