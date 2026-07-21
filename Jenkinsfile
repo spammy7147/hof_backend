@@ -18,6 +18,7 @@ pipeline {
         ENV_FILE_CREDENTIAL_ID = 'hof-spammy-backend-env'
         DEPLOY_TARGET = 'spammy@192.168.50.202'
         DEPLOY_HOST_IP = '192.168.50.202'
+        SSH_KNOWN_HOSTS_FILE = "${WORKSPACE}/.jenkins/known_hosts"
         IMAGE_REPOSITORY = 'hof-backend'
         CONTAINER_NAME = 'hof-backend'
         HOST_PORT = '8080'
@@ -56,8 +57,11 @@ pipeline {
                     command -v gzip
                     command -v ssh
                     command -v scp
+                    command -v ssh-keygen
                     docker info >/dev/null
                     test -x ./gradlew
+                    test -r "$SSH_KNOWN_HOSTS_FILE"
+                    ssh-keygen -F "$DEPLOY_HOST_IP" -f "$SSH_KNOWN_HOSTS_FILE" >/dev/null
                 '''
                 withCredentials([
                     sshUserPrivateKey(
@@ -67,7 +71,9 @@ pipeline {
                 ]) {
                     sh '''
                         set -eu
-                        ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes "$DEPLOY_TARGET" \
+                        ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes \
+                          -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
+                          "$DEPLOY_TARGET" \
                           'command -v bash >/dev/null && command -v docker >/dev/null && command -v gunzip >/dev/null && command -v curl >/dev/null && command -v grep >/dev/null && command -v seq >/dev/null && docker info >/dev/null'
                     '''
                 }
@@ -104,7 +110,9 @@ pipeline {
                     sh '''#!/usr/bin/env bash
                         set -Eeuo pipefail
                         docker save "$IMAGE" | gzip | \
-                          ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes "$DEPLOY_TARGET" 'gunzip | docker load'
+                          ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes \
+                            -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
+                            "$DEPLOY_TARGET" 'gunzip | docker load'
                     '''
                 }
             }
@@ -124,8 +132,12 @@ pipeline {
                 ]) {
                         sh(script: '''#!/usr/bin/env bash
                             set -Eeuo pipefail
-                            scp -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes "$HOF_ENV_FILE" "$DEPLOY_TARGET:$REMOTE_ENV_FILE"
-                            ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes "$DEPLOY_TARGET" \
+                            scp -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes \
+                              -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
+                              "$HOF_ENV_FILE" "$DEPLOY_TARGET:$REMOTE_ENV_FILE"
+                            ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes \
+                              -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
+                              "$DEPLOY_TARGET" \
                               "IMAGE='$IMAGE' IMAGE_REPOSITORY='$IMAGE_REPOSITORY' CONTAINER_NAME='$CONTAINER_NAME' DEPLOY_HOST_IP='$DEPLOY_HOST_IP' HOST_PORT='$HOST_PORT' CONTAINER_PORT='$CONTAINER_PORT' REMOTE_ENV_FILE='$REMOTE_ENV_FILE' bash -s" <<'REMOTE_SCRIPT'
                             set -Eeuo pipefail
 
@@ -222,7 +234,9 @@ pipeline {
                         ),
                     ]) {
                         sh '''
-                            ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes "$DEPLOY_TARGET" \
+                            ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes \
+                              -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
+                              "$DEPLOY_TARGET" \
                               "rm -f '$REMOTE_ENV_FILE'" >/dev/null 2>&1 || true
                         '''
                     }
