@@ -14,7 +14,7 @@ pipeline {
         REPO_URL = 'https://github.com/spammy7147/hof_backend.git'
         REPO_BRANCH = 'master'
         GITHUB_CREDENTIAL_ID = 'SPAMMY-github-token'
-        SSH_CREDENTIAL_ID = 'spammy-agent-key'
+        SSH_CREDENTIAL_ID = 'hof-deploy-ssh'
         ENV_FILE_CREDENTIAL_ID = 'hof-spammy-backend-env'
         DEPLOY_TARGET = 'spammy@192.168.50.202'
         DEPLOY_HOST_IP = '192.168.50.202'
