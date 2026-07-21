@@ -106,10 +106,11 @@ class BattleMapSeedTest {
 
     @Test
     fun generatedMigrationIsDeterministicPlainInsertSql() {
-        val migrationSql = Files.readString(SEED_MIGRATION, StandardCharsets.UTF_8)
+        val baselineSql = Files.readString(BASELINE_MIGRATION, StandardCharsets.UTF_8)
+        val migrationSql = BattleMapSeedGenerator.extractSeedSql(baselineSql)
         val statements = migrationSql.lineSequence().filter(String::isNotBlank).toList()
 
-        assertEquals(migrationSql, BattleMapSeedGenerator.generateSql())
+        assertEquals(migrationSql, BattleMapSeedGenerator.generateSql().trimEnd())
         assertTrue(statements.all { statement -> statement.startsWith("insert into ") })
         assertFalse(migrationSql.contains("_json", ignoreCase = true))
         assertFalse(migrationSql.contains("config_json", ignoreCase = true))
@@ -194,7 +195,7 @@ class BattleMapSeedTest {
         private const val PERMANENT_KEY_CLEAN_NAME = "Dead Pit- 지각 내부 (B4) Tuls의 문"
         private const val PERMANENT_KEY_LEGACY_NAME = "Dead Pit- 지각 내부 (B4) Tuls의 문( x )"
         private val databaseName = "battle_map_seed_${UUID.randomUUID().toString().replace("-", "")}"
-        private val SEED_MIGRATION = Path.of("src/main/resources/db/migration/V2__seed_battle_map_catalog.sql")
+        private val BASELINE_MIGRATION = Path.of("src/main/resources/db/migration/V1__initialize_schema.sql")
         private val MAP_ORDER = compareBy<BattleMapEntity> { it.group?.displayOrder ?: Int.MAX_VALUE }
             .thenBy(BattleMapEntity::displayOrder)
             .thenBy(BattleMapEntity::name)

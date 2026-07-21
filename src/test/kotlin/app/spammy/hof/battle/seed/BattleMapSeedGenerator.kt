@@ -14,20 +14,32 @@ import java.util.Locale
 import tools.jackson.module.kotlin.jacksonObjectMapper
 import tools.jackson.module.kotlin.readValue
 
-/** 저장된 HOF HTML과 APK 분석 자료를 읽어 재현 가능한 V2 정적 맵 시드를 생성한다. */
+/** 저장된 HOF HTML과 APK 분석 자료를 읽어 V1의 재현 가능한 정적 맵 시드 구간을 갱신한다. */
 object BattleMapSeedGenerator {
     @JvmStatic
     fun main(args: Array<String>) {
         val layout = SeedProjectLayout.locate()
-        Files.writeString(
-            layout.seedMigration,
-            generateSql(layout),
-            StandardCharsets.UTF_8,
-        )
+        val baseline = Files.readString(layout.baselineMigration, StandardCharsets.UTF_8)
+        Files.writeString(layout.baselineMigration, replaceSeedSql(baseline, generateSql(layout)), StandardCharsets.UTF_8)
     }
 
     /** 현재 저장소의 원본 자료만 사용해 매 실행마다 동일한 SQL 문자열을 만든다. */
     fun generateSql(): String = generateSql(SeedProjectLayout.locate())
+
+    internal fun extractSeedSql(baseline: String): String =
+        baseline.substringAfter("$SEED_START\n").substringBefore("\n$SEED_END")
+
+    private fun replaceSeedSql(
+        baseline: String,
+        seedSql: String,
+    ): String {
+        check(baseline.contains("$SEED_START\n") && baseline.contains("\n$SEED_END")) {
+            "generated battle map seed markers are missing"
+        }
+        return baseline.substringBefore("$SEED_START\n") +
+            "$SEED_START\n" + seedSql.trimEnd() + "\n$SEED_END" +
+            baseline.substringAfter("\n$SEED_END")
+    }
 
     private fun generateSql(layout: SeedProjectLayout): String {
         val fixtureReader = BattleMapFixtureReader(BattleMapParser())
@@ -58,6 +70,8 @@ object BattleMapSeedGenerator {
 
     private const val BATTLE_CATEGORY = "battle_map"
     private const val ADVENTURE_CATEGORY = "adventure_map"
+    private const val SEED_START = "-- BEGIN GENERATED BATTLE MAP SEED"
+    private const val SEED_END = "-- END GENERATED BATTLE MAP SEED"
 }
 
 /** MS949 HTML fixture의 NFD/NFC 파일명 차이를 흡수하고 기존 파서 관측값을 반환한다. */
@@ -372,8 +386,8 @@ private data class SeedAlias(
 private data class SeedProjectLayout(
     val repositoryRoot: Path,
 ) {
-    val seedMigration: Path = repositoryRoot
-        .resolve("hof_backend/src/main/resources/db/migration/V2__seed_battle_map_catalog.sql")
+    val baselineMigration: Path = repositoryRoot
+        .resolve("hof_backend/src/main/resources/db/migration/V1__initialize_schema.sql")
 
     companion object {
         fun locate(): SeedProjectLayout {
