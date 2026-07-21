@@ -79,12 +79,16 @@ class TypedLiveAutomationSnapshotLoader(
                 it.patternSlot?.slotCode, it.patternSlot?.canLoad == true,
             )
         }
-        val membersByPreset = memberConfigs.groupBy { it.presetId }
-        val validPresetIds = membersByPreset.filterValues { rows -> rows.isNotEmpty() && rows.all { row ->
-            row.characterId != null && row.canLoad && row.patternSlot?.toIntOrNull() != null
-        } }.keys
+        val validMembersByPreset = validAutomationPartyMembersByPreset(
+            memberConfigs,
+            presetId = { it.presetId },
+            characterId = { it.characterId },
+            patternSlotCode = { it.patternSlot },
+            canLoadPattern = { it.canLoad },
+        )
+        val validPresetIds = validMembersByPreset.keys
         val parties = validPresetIds.associateWith { id ->
-            val rows = membersByPreset.getValue(id).sortedBy { it.slotIndex }
+            val rows = validMembersByPreset.getValue(id).sortedBy { it.slotIndex }
             ResolvedAutomationParty(
                 rows.map { requireNotNull(it.characterId) },
                 rows.map { BattlePatternLoadRequest(requireNotNull(it.characterId), requireNotNull(it.patternSlot).toInt()) },

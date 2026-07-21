@@ -310,13 +310,13 @@ class UnifiedAutomationService(
         }
         val presets = partyPresetQueryRepository.findAllByAccountId(accountId)
         val presetMembers = partyPresetQueryRepository.findMembersByPresetIds(presets.map { it.id })
-        val validPresetIds = presetMembers.groupBy { it.preset.id }.filterValues { members ->
-            members.isNotEmpty() && members.all { member ->
-                member.character?.hofCharacterId != null &&
-                    member.patternSlot?.canLoad == true &&
-                    member.patternSlot?.slotCode?.toIntOrNull() != null
-            }
-        }.keys
+        val validPresetIds = validAutomationPartyMembersByPreset(
+            presetMembers,
+            presetId = { it.preset.id },
+            characterId = { it.character?.hofCharacterId },
+            patternSlotCode = { it.patternSlot?.slotCode },
+            canLoadPattern = { it.patternSlot?.canLoad == true },
+        ).keys
         val primaryPresetId = presets.singleOrNull { it.isPrimary }?.id
         val responses = entries.map { entry ->
             val quests = if (entry.type == AutomationType.QUEST) {

@@ -30,9 +30,13 @@ import app.spammy.hof.battle.entity.BattleMapEntity
 import app.spammy.hof.battle.dto.BattlePatternLoadRequest
 import app.spammy.hof.battle.dto.RunBattleRequest
 import app.spammy.hof.battle.repository.BattleMapQueryRepository
+import app.spammy.hof.character.entity.CharacterEntity
+import app.spammy.hof.character.entity.CharacterPatternSlotEntity
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.party.entity.PartyPresetEntity
+import app.spammy.hof.party.entity.PartyPresetMemberEntity
 import app.spammy.hof.party.repository.PartyPresetQueryRepository
 import java.time.Instant
 import java.time.LocalDate
@@ -435,6 +439,61 @@ class UnifiedAutomationServiceTest {
         val response = service.getTyped(ACCOUNT_ID)
 
         assertTrue(response.runtime.warnings.none { it.contains("전투 맵 설정") })
+    }
+
+    @Test
+    fun `quest automation accepts a configured three member party with two empty slots`() {
+        val account = account()
+        val quest = AutomationEntryEntity(91L, account, AutomationType.QUEST, 0, true, NOW, NOW)
+        val selection = QuestAutomationSelectionEntity(901L, quest, "0571", true, 0)
+        val preset = PartyPresetEntity(101L, account, "three-member", NOW, NOW)
+        val members = (0..4).map { slot ->
+            if (slot >= 3) {
+                PartyPresetMemberEntity(preset, slot)
+            } else {
+                val character = CharacterEntity(
+                    id = 1_000L + slot,
+                    account = account,
+                    hofCharacterId = "character-$slot",
+                    name = "character-$slot",
+                    job = "job",
+                    level = 1,
+                    patternSlotCount = 1,
+                    imageUrl = null,
+                    updatedAt = NOW,
+                )
+                val pattern = CharacterPatternSlotEntity(
+                    2_000L + slot,
+                    character,
+                    (slot + 1).toString(),
+                    "pattern",
+                    true,
+                )
+                PartyPresetMemberEntity(preset, slot, character, pattern)
+            }
+        }
+        val map = app.spammy.hof.automation.entity.QuestAutomationMapEntity(
+            902L,
+            selection,
+            "mission",
+            "battle_map",
+            "map",
+            PresetSelectionMode.EXPLICIT,
+            preset,
+            0,
+            true,
+        )
+        Mockito.`when`(accountQueryRepository.findById(ACCOUNT_ID)).thenReturn(account)
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(quest))
+        Mockito.`when`(typedQuery.findQuestSelections(quest.id)).thenReturn(listOf(selection))
+        Mockito.`when`(typedQuery.findQuestMaps(listOf(selection.id))).thenReturn(listOf(map))
+        Mockito.`when`(partyPresetQueryRepository.findAllByAccountId(ACCOUNT_ID)).thenReturn(listOf(preset))
+        Mockito.`when`(partyPresetQueryRepository.findMembersByPresetIds(listOf(preset.id))).thenReturn(members)
+
+        val response = service.getTyped(ACCOUNT_ID)
+
+        assertTrue(response.entries.single().ready)
+        assertTrue(response.entries.single().warnings.isEmpty())
     }
 
     @Test

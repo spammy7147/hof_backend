@@ -141,6 +141,49 @@ class TypedLiveAutomationSnapshotLoaderTest {
     }
 
     @Test
+    fun `snapshot resolves only configured members from a party with empty slots`() {
+        val now = Instant.parse("2026-07-16T00:00:00Z")
+        val account = HofAccountEntity(7, "login-partial-party", "encrypted", now)
+        val primary = preset(101, account, "three-member", now)
+        val entry = AutomationEntryEntity(10, account, AutomationType.QUEST, 0, true, now, now)
+        val selection = QuestAutomationSelectionEntity(20, entry, "0571", true, 0)
+        val typed = Mockito.mock(TypedAutomationQueryRepository::class.java)
+        val mapQuery = Mockito.mock(BattleMapQueryRepository::class.java)
+        val mapService = Mockito.mock(BattleMapService::class.java)
+        val presets = Mockito.mock(PartyPresetQueryRepository::class.java)
+        val quest = Mockito.mock(QuestGatewayService::class.java)
+        val loader = TypedLiveAutomationSnapshotLoader(
+            quest,
+            typed,
+            mapQuery,
+            presets,
+            Mockito.mock(BattleMapIdentityResolver::class.java),
+            mapService,
+            TimeProvider { now },
+            HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
+        )
+        val configuredMembers = members(primary, "member", account, now).take(3)
+        val emptyMembers = (3..4).map { PartyPresetMemberEntity(primary, it) }
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(entry))
+        Mockito.`when`(typed.findQuestSelectionsByEntryIds(listOf(10))).thenReturn(listOf(selection))
+        Mockito.`when`(typed.findQuestMaps(listOf(20))).thenReturn(listOf(
+            QuestAutomationMapEntity(21, selection, "mission", "battle_map", "map", PresetSelectionMode.PRIMARY, null, 0, true),
+        ))
+        Mockito.`when`(presets.findAllByAccountId(7)).thenReturn(listOf(primary))
+        Mockito.`when`(presets.findMembersByPresetIds(listOf(101L))).thenReturn(configuredMembers + emptyMembers)
+        Mockito.`when`(presets.findPrimaryByAccountId(7)).thenReturn(primary)
+        Mockito.`when`(quest.load(7)).thenReturn(emptyList())
+        Mockito.`when`(mapQuery.findAllStatesForExecution(7)).thenReturn(emptyList())
+
+        val snapshot = loader.loadTyped(7)
+
+        val party = requireNotNull(snapshot.entries.single().quest)
+            .selections.single().maps.single().preset.resolvedParty
+        assertEquals(listOf("member-0", "member-1", "member-2"), party?.characterIds)
+        assertEquals(listOf(1, 2, 3), party?.patternLoads?.map { it.slot })
+    }
+
+    @Test
     fun `category change during blocking GET rejects mixed snapshot and next load refreshes new category without transaction`() {
         val now = Instant.parse("2026-07-16T00:00:00Z")
         val account = HofAccountEntity(7, "login-category", "encrypted", now)
