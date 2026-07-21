@@ -15,7 +15,7 @@ pipeline {
         REPO_BRANCH = 'master'
         GITHUB_CREDENTIAL_ID = 'HOF-github-token'
         SSH_CREDENTIAL_ID = 'hof-deploy-ssh'
-        ENV_FILE_CREDENTIAL_ID = 'hof-backend-env'
+        ENV_FILE_CREDENTIAL_ID = 'hof-spammy-backend-env'
         DEPLOY_TARGET = 'spammy@192.168.50.202'
         IMAGE_REPOSITORY = 'hof-backend'
         CONTAINER_NAME = 'hof-backend'
