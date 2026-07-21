@@ -202,4 +202,31 @@ class HofMainStatusParserTest {
 
         assertEquals("《얼어붙은 손길》공민이", status.playerName)
     }
+
+    @Test
+    fun parsesPlayerDisplayNameFromMenu2StatusBar() {
+        listOf(
+            "《얼어붙은 손길》공민이",
+            "공민이",
+        ).forEach { expectedPlayerName ->
+            val html = """
+                <div id="menu2">
+                  <div style="width:100%">
+                    <div style="width:33%;float:left">$expectedPlayerName</div>
+                    <div style="width:67%;float:right">
+                      <div style="width:50%;float:left"><span class="bold">Funds</span> : ${'$'}&nbsp;311,953,216</div>
+                      <div style="width:50%;float:right"><span class="bold">Time</span> : 6000/6000</div>
+                      <div style="width:50%;float:left"><span class="bold">Work</span> : Nothing</div>
+                      <div style="width:50%;float:left"><span class="bold">Auction</span> : Nothing</div>
+                    </div>
+                    <div class="c-both"></div>
+                  </div>
+                </div>
+            """.trimIndent()
+
+            val status = parser.parse(html)
+
+            assertEquals(expectedPlayerName, status.playerName)
+        }
+    }
 }

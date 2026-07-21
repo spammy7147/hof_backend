@@ -23,13 +23,31 @@ class HofMainStatusParser {
         val statusOwnerText = findStatusOwnerText(document).orEmpty()
 
         return HofMainStatus(
-            playerName = parsePlayerName(statusOwnerText),
+            playerName = findMenuPlayerName(document) ?: parsePlayerName(statusOwnerText),
             funds = firstMatch(ownTexts, fullText, FUNDS_REGEX) { it.toLongNumberOrNull() },
             timeCurrent = firstMatch(ownTexts, fullText, TIME_REGEX) { it.toIntOrNull() },
             timeMax = firstMatch(ownTexts, fullText, TIME_REGEX, groupIndex = 2) { it.toIntOrNull() },
             work = firstMatch(ownTexts, fullText, WORK_REGEX) { it.trimStatusValue() } ?: UNKNOWN_VALUE,
             auction = firstMatch(ownTexts, fullText, AUCTION_REGEX) { it.trimStatusValue() } ?: UNKNOWN_VALUE,
         )
+    }
+
+    /**
+     * 인증 상태바인 `#menu2`의 첫 번째 열에서 플레이어 표시명을 읽는다.
+     */
+    private fun findMenuPlayerName(document: Document): String? {
+        val statusRow = document.selectFirst("#menu2")
+            ?.children()
+            ?.firstOrNull(::containsStatusMarkers)
+            ?: return null
+        val candidate = statusRow.children().firstOrNull()
+            ?.text()
+            ?.normalizeSpaces()
+            .orEmpty()
+
+        return candidate.takeIf { playerName ->
+            playerName.isNotBlank() && !STATUS_FIELD_REGEX.containsMatchIn(playerName)
+        }
     }
 
     /**
@@ -111,6 +129,7 @@ class HofMainStatusParser {
     private companion object {
         const val UNKNOWN_VALUE = "Unknown"
         val PLAYER_REGEX = Regex("""《[^》]+》\S+""")
+        val STATUS_FIELD_REGEX = Regex("""\b(?:Funds|Time|Work|Auction)\s*:""")
         val FUNDS_REGEX = Regex("""Funds\s*:\s*\$\s*([0-9,]+)""")
         val TIME_REGEX = Regex("""Time\s*:\s*(\d+)\s*/\s*(\d+)""")
         val WORK_REGEX = Regex("""Work\s*:\s*(.+?)(?=\s+Auction\s*:|$)""")
