@@ -13,10 +13,11 @@ pipeline {
     environment {
         REPO_URL = 'https://github.com/spammy7147/hof_backend.git'
         REPO_BRANCH = 'master'
-        GITHUB_CREDENTIAL_ID = 'HOF-github-token'
-        SSH_CREDENTIAL_ID = 'hof-deploy-ssh'
+        GITHUB_CREDENTIAL_ID = 'SPAMMY-github-token'
+        SSH_CREDENTIAL_ID = 'spammy-agent-key'
         ENV_FILE_CREDENTIAL_ID = 'hof-spammy-backend-env'
         DEPLOY_TARGET = 'spammy@192.168.50.202'
+        DEPLOY_HOST_IP = '192.168.50.202'
         IMAGE_REPOSITORY = 'hof-backend'
         CONTAINER_NAME = 'hof-backend'
         HOST_PORT = '8080'
@@ -112,7 +113,7 @@ pipeline {
                             set -Eeuo pipefail
                             scp "$HOF_ENV_FILE" "$DEPLOY_TARGET:$REMOTE_ENV_FILE"
                             ssh -o BatchMode=yes "$DEPLOY_TARGET" \
-                              "IMAGE='$IMAGE' IMAGE_REPOSITORY='$IMAGE_REPOSITORY' CONTAINER_NAME='$CONTAINER_NAME' HOST_PORT='$HOST_PORT' CONTAINER_PORT='$CONTAINER_PORT' REMOTE_ENV_FILE='$REMOTE_ENV_FILE' bash -s" <<'REMOTE_SCRIPT'
+                              "IMAGE='$IMAGE' IMAGE_REPOSITORY='$IMAGE_REPOSITORY' CONTAINER_NAME='$CONTAINER_NAME' DEPLOY_HOST_IP='$DEPLOY_HOST_IP' HOST_PORT='$HOST_PORT' CONTAINER_PORT='$CONTAINER_PORT' REMOTE_ENV_FILE='$REMOTE_ENV_FILE' bash -s" <<'REMOTE_SCRIPT'
                             set -Eeuo pipefail
 
                             rollback_name="${CONTAINER_NAME}-rollback"
@@ -154,7 +155,7 @@ pipeline {
 
                             if ! docker run -d \
                                 --name "$CONTAINER_NAME" \
-                                --publish "$HOST_PORT:$CONTAINER_PORT" \
+                                --publish "$DEPLOY_HOST_IP:$HOST_PORT:$CONTAINER_PORT" \
                                 --env-file "$REMOTE_ENV_FILE" \
                                 --restart unless-stopped \
                                 "$IMAGE" >/dev/null; then
@@ -165,7 +166,7 @@ pipeline {
                             healthy=0
                             for attempt in $(seq 1 30); do
                                 if curl --fail --silent \
-                                    "http://127.0.0.1:${HOST_PORT}/actuator/health" | \
+                                    "http://${DEPLOY_HOST_IP}:${HOST_PORT}/actuator/health" | \
                                     grep -Eq '"status"[[:space:]]*:[[:space:]]*"UP"'; then
                                     healthy=1
                                     break
