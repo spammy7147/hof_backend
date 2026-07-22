@@ -213,7 +213,7 @@ pipeline {
                                 fi
                             fi
                             docker image prune -f >/dev/null
-                            REMOTE_SCRIPT
+REMOTE_SCRIPT
                         '''.stripIndent())
                 }
             }
