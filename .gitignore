@@ -45,3 +45,6 @@ out/
 
 ### Kotlin ###
 .kotlin
+
+### Local worktrees ###
+.worktrees/
