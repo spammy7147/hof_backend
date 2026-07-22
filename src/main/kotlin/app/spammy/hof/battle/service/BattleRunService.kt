@@ -20,6 +20,7 @@ import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.HofBattleType
 import app.spammy.hof.external.model.HofHttpResponse
+import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.external.parser.BattleResultParser
 import app.spammy.hof.external.parser.LoginStateParser
 import org.slf4j.LoggerFactory
@@ -56,6 +57,7 @@ class BattleRunService(
     fun runBattle(
         accountId: Long,
         request: RunBattleRequest,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
     ): BattleResultResponse {
         check(!TransactionSynchronizationManager.isActualTransactionActive()) {
             "Battle HTTP submission must not run inside a database transaction."
@@ -115,7 +117,7 @@ class BattleRunService(
                     patternLoad.slot,
                 )
                 val preloadResponse = gateway.execute(
-                    requestFactory.loadPattern(patternLoad.characterId, patternLoad.slot),
+                    requestFactory.loadPattern(patternLoad.characterId, patternLoad.slot, origin),
                     cookies,
                 )
                 ensureActiveSession(
@@ -132,6 +134,7 @@ class BattleRunService(
                     code = mapCode,
                     characterIds = characters.map { character -> character.hofCharacterId },
                     battleCount = battleCount,
+                    origin = origin,
                 ),
                 cookies,
             )

@@ -14,6 +14,8 @@ import app.spammy.hof.battle.service.BattleMapCatalogService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.external.model.HofRequestOrigin
+import app.spammy.hof.external.client.HofAutomationDeferredException
 import java.io.IOException
 import java.time.Duration
 import java.time.Instant
@@ -69,9 +71,12 @@ class AutomationDailyPreflight(
 
         val snapshot = try {
             sessionRecovery.execute(accountId) {
-                battleMapService.fetchAdventureMapSnapshot(accountId)
+                battleMapService.fetchAdventureMapSnapshot(accountId, HofRequestOrigin.AUTOMATION)
             }
         } catch (error: Exception) {
+            error.findHofAutomationDeferral()?.let { deferred ->
+                return persistence.execute { finalizeGlobalCooldown(accountId, claim, deferred.retryAt) }
+            }
             val completedAt = timeProvider.now()
             val completed = CompletedRefresh(classify(error), completedAt, completedAt.koreaDate())
             return persistence.execute { finalize(accountId, claim, completed, snapshot = null) }
@@ -235,6 +240,29 @@ class AutomationDailyPreflight(
         return Result.RetryScheduled(nextAttemptAt, retryAttempt)
     }
 
+    private fun finalizeGlobalCooldown(
+        accountId: Long,
+        claim: ClaimDecision.Claimed,
+        retryAt: Instant,
+    ): Result {
+        val (_, state) = lockAccountAndState(accountId)
+        val now = timeProvider.now()
+        val koreaDate = now.koreaDate()
+        if (state == null || state.inFlightToken != claim.token) {
+            return currentResult(accountId, state, koreaDate, now)
+        }
+        if (koreaDate != claim.refreshDate) {
+            resetForDate(state, koreaDate, now)
+            stateRepository.save(state)
+            return Result.Busy(now)
+        }
+        clearClaim(state)
+        state.nextAttemptAt = retryAt
+        state.updatedAt = now
+        stateRepository.save(state)
+        return Result.RetryScheduled(retryAt, state.failedAttempts)
+    }
+
     /** Runs only after the token-fenced synchronization transaction rolled back. */
     private fun finalizeSynchronizationFailure(accountId: Long, claim: ClaimDecision.Claimed): Result {
         val (_, state) = lockAccountAndState(accountId)
@@ -321,6 +349,9 @@ class AutomationDailyPreflight(
             RefreshOutcome.FatalFailure
         }
     }
+
+    private fun Throwable.findHofAutomationDeferral(): HofAutomationDeferredException? =
+        generateSequence(this) { it.cause }.filterIsInstance<HofAutomationDeferredException>().firstOrNull()
 
     private fun Instant.koreaDate(): LocalDate = LocalDate.ofInstant(this, KOREA_ZONE)
 

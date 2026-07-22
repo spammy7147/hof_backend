@@ -2,6 +2,7 @@ package app.spammy.hof.account.service
 
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
+import app.spammy.hof.external.model.HofRequestOrigin
 import org.springframework.stereotype.Service
 
 /**
@@ -13,6 +14,7 @@ class HofSessionRecoveryService(
 ) {
     fun <T> execute(
         accountId: Long,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
         action: () -> T,
     ): T = try {
         action()
@@ -21,7 +23,7 @@ class HofSessionRecoveryService(
             .filterIsInstance<ApiException>()
             .firstOrNull { it.errorCode == ErrorCode.HOF_SESSION_EXPIRED }
             ?: throw error
-        accountService.reauthenticate(accountId)
+        accountService.reauthenticate(accountId, origin)
         action()
     }
 }

@@ -3,6 +3,7 @@ package app.spammy.hof.automation.service
 import app.spammy.hof.account.service.HofSessionRecoveryService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
+import app.spammy.hof.external.model.HofRequestOrigin
 import org.springframework.stereotype.Service
 
 class AutomationLoginRequiredException(
@@ -17,7 +18,7 @@ class HofSessionRecoveryExecutor(
         accountId: Long,
         action: () -> T,
     ): T = try {
-        sessionRecoveryService.execute(accountId, action)
+        sessionRecoveryService.execute(accountId, HofRequestOrigin.AUTOMATION, action)
     } catch (error: Throwable) {
         val apiError = generateSequence(error) { it.cause }
             .filterIsInstance<ApiException>()

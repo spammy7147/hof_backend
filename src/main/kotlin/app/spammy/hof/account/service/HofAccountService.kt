@@ -11,6 +11,7 @@ import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.client.HofRequestFactory
+import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.external.parser.LoginStateParser
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
@@ -60,22 +61,25 @@ class HofAccountService(
                 createdAt = timeProvider.now(),
             )
 
-        return loginAccount(accountRepository.save(account))
+        return loginAccount(accountRepository.save(account), HofRequestOrigin.INTERACTIVE)
     }
 
     @Transactional
-    fun reauthenticate(accountId: Long): HofAccountEntity {
+    fun reauthenticate(
+        accountId: Long,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
+    ): HofAccountEntity {
         val account = accountQueryRepository.findById(accountId)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
-        return loginAccount(account)
+        return loginAccount(account, origin)
     }
 
     /**
      * HOF 홈 요청 후 로그인 요청을 보내고, 성공하면 쿠키를 DB에 저장한다.
      */
-    private fun loginAccount(account: HofAccountEntity): HofAccountEntity {
+    private fun loginAccount(account: HofAccountEntity, origin: HofRequestOrigin): HofAccountEntity {
         log.info("HOF login start accountId={} loginId={}", account.id, account.loginId)
-        val initialResponse = gateway.execute(requestFactory.home())
+        val initialResponse = gateway.execute(requestFactory.home(origin))
         log.info(
             "HOF login home fetched accountId={} status={} cookies={}",
             account.id,
@@ -86,6 +90,7 @@ class HofAccountService(
             request = requestFactory.login(
                 id = account.loginId,
                 password = credentialCipher.decrypt(account.encryptedPassword),
+                origin = origin,
             ),
             cookies = initialResponse.setCookies,
         )

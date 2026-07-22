@@ -4,6 +4,8 @@ import app.spammy.hof.battle.dto.RunBattleRequest
 import app.spammy.hof.battle.service.BattleRunService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
+import app.spammy.hof.external.model.HofRequestOrigin
+import app.spammy.hof.external.client.HofAutomationDeferredException
 import app.spammy.hof.quest.service.QuestGatewayService
 import java.io.IOException
 import org.springframework.stereotype.Service
@@ -20,9 +22,13 @@ class DefaultAutomationActionExecutor(
     override fun execute(accountId: Long, action: StoredTypedAutomationActionV1) {
         when (val payload = action.payload) {
                 is StoredTypedActionPayload.QuestClaim ->
-                    runQuestMutation(accountId) { questGatewayService.claim(accountId, payload.actionNo) }
+                    runQuestMutation(accountId) {
+                        questGatewayService.claim(accountId, payload.actionNo, HofRequestOrigin.AUTOMATION)
+                    }
                 is StoredTypedActionPayload.QuestAccept -> {
-                    runQuestMutation(accountId) { questGatewayService.accept(accountId, payload.actionNo) }
+                    runQuestMutation(accountId) {
+                        questGatewayService.accept(accountId, payload.actionNo, HofRequestOrigin.AUTOMATION)
+                    }
                     questHandler.onAcceptSucceeded(accountId, action.executionIdentity, QuestAction.Accept(payload.questCode, payload.actionNo))
                 }
                 is StoredTypedActionPayload.QuestBattle -> {
@@ -65,6 +71,7 @@ class DefaultAutomationActionExecutor(
             sessionRecovery.execute(accountId, operation)
         } catch (error: Throwable) {
             val causes = generateSequence(error) { it.cause }.toList()
+            causes.filterIsInstance<HofAutomationDeferredException>().firstOrNull()?.let { throw it }
             if (causes.any { it is AutomationLoginRequiredException }) throw error
             causes.filterIsInstance<ApiException>().firstOrNull()?.let { api ->
                 if (api.errorCode in setOf(
@@ -98,8 +105,12 @@ class DefaultAutomationActionExecutor(
 
     private fun runTypedBattleOnce(accountId: Long, request: RunBattleRequest) =
         try {
-            battleRunService.runBattle(accountId, request)
+            battleRunService.runBattle(accountId, request, HofRequestOrigin.AUTOMATION)
         } catch (error: Exception) {
+            generateSequence<Throwable>(error) { it.cause }
+                .filterIsInstance<HofAutomationDeferredException>()
+                .firstOrNull()
+                ?.let { throw it }
             error.findApiException()?.let { api ->
                 if (api.errorCode in setOf(
                         ErrorCode.HOF_SESSION_EXPIRED,

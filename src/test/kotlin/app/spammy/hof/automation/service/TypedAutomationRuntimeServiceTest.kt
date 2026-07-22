@@ -81,6 +81,36 @@ class TypedAutomationRuntimeServiceTest {
     }
 
     @Test
+    fun `503 deferral returns submitted action to prepared and keeps runtime running`() {
+        val retryAt = now.plusSeconds(30)
+        val state = state().apply {
+            leaseToken = "token"
+            leaseUntil = now.plusSeconds(300)
+        }
+        val entry = AutomationEntryEntity(9, account, AutomationType.BATTLE_MAP, 0, true, now, now)
+        val action = TypedAutomationActionRunEntity(
+            15, account, entry, "retry-execution", "BATTLE_MAP", 1, "{}", "e".repeat(64),
+            TypedAutomationActionStatus.SUBMITTING, leaseToken = "token", createdAt = now,
+            submittedAt = now, updatedAt = now,
+        )
+        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
+        Mockito.`when`(query.lockTypedAction(action.id)).thenReturn(action)
+
+        assertTrue(service.deferSubmittedAction(7, "token", action.id, retryAt, "password=secret\n503"))
+
+        assertEquals(TypedAutomationLifecycle.RUNNING, state.lifecycleStatus)
+        assertEquals(retryAt, state.nextAttemptAt)
+        assertNull(state.leaseToken)
+        assertEquals("password=[redacted] 503", state.lastError)
+        assertEquals(TypedAutomationActionStatus.PREPARED, action.status)
+        assertEquals(1, action.retryAttempt)
+        assertEquals(retryAt, action.nextAttemptAt)
+        assertNull(action.submittedAt)
+        assertNull(action.finishedAt)
+        assertEquals("password=[redacted] 503", action.lastError)
+    }
+
+    @Test
     fun `proven captcha response fails action without marking its outcome ambiguous`() {
         val state = state().apply { leaseToken = "token"; leaseUntil = now.plusSeconds(300) }
         val entry = AutomationEntryEntity(9, account, AutomationType.BATTLE_MAP, 0, true, now, now)

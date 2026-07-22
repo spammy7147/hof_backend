@@ -1,9 +1,13 @@
 package app.spammy.hof.external.client
 
+import app.spammy.hof.common.error.ApiException
+import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
+import app.spammy.hof.external.model.HofRequestOrigin
 import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Component
 import java.net.URI
 import java.net.URLEncoder
@@ -21,18 +25,38 @@ import java.time.Duration
  *
  * HOF 응답은 EUC-KR일 수 있으므로 응답 content-type의 charset을 보고 문자열로 디코딩한다.
  */
-class HofHttpClient(
-    private val client: HttpClient = HttpClient.newBuilder()
-        .followRedirects(HttpClient.Redirect.NORMAL)
-        .connectTimeout(Duration.ofSeconds(10))
-        .build(),
+class HofHttpClient private constructor(
+    private val governor: HofAutomationRequestGovernor?,
+    private val client: HttpClient,
 ) : HofGateway {
+    @Autowired
+    constructor(governor: HofAutomationRequestGovernor) : this(governor, defaultClient())
+
+    constructor() : this(null, defaultClient())
+
     private val log = LoggerFactory.getLogger(HofHttpClient::class.java)
 
     /**
      * HOF 요청을 실제 HTTP 요청으로 변환해 실행하고 응답 body와 Set-Cookie를 반환한다.
      */
     override fun execute(request: HofRequest, cookies: Map<String, String>): HofHttpResponse {
+        val response = when (request.origin) {
+            HofRequestOrigin.AUTOMATION -> requireNotNull(governor) {
+                "An automation request governor is required for automation requests"
+            }.execute { executeHttp(request, cookies) }
+            HofRequestOrigin.INTERACTIVE -> executeHttp(request, cookies)
+        }
+
+        if (request.origin == HofRequestOrigin.INTERACTIVE && response.statusCode == 503) {
+            throw ApiException(
+                ErrorCode.HOF_TEMPORARILY_UNAVAILABLE,
+                "HOF 서버 연결이 일시적으로 원활하지 않습니다. 잠시 후 다시 시도해 주세요.",
+            )
+        }
+        return response
+    }
+
+    private fun executeHttp(request: HofRequest, cookies: Map<String, String>): HofHttpResponse {
         val startedAt = System.nanoTime()
         log.info(
             "HOF OUT method={} url={} formFields={} cookieNames={}",
@@ -170,6 +194,11 @@ class HofHttpClient(
                 "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
         private val EUC_KR: Charset = Charset.forName("EUC-KR")
         private val CHARSET_PATTERN = Regex("""charset\s*=\s*"?([^;\s"]+)""", RegexOption.IGNORE_CASE)
+
+        private fun defaultClient(): HttpClient = HttpClient.newBuilder()
+            .followRedirects(HttpClient.Redirect.NORMAL)
+            .connectTimeout(Duration.ofSeconds(10))
+            .build()
 
         /**
          * 응답 bytes를 content-type charset 또는 기본 EUC-KR로 디코딩한다.

@@ -8,6 +8,7 @@ import app.spammy.hof.battle.dto.RunBattleRequest
 import app.spammy.hof.battle.service.BattleRunService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
+import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.quest.service.QuestGatewayService
 import java.io.IOException
 import kotlin.test.Test
@@ -43,7 +44,7 @@ class DefaultAutomationActionExecutorTest {
 
         executor.execute(7L, action)
 
-        Mockito.verify(questGateway, Mockito.times(1)).accept(7L, "accept-no")
+        Mockito.verify(questGateway, Mockito.times(1)).accept(7L, "accept-no", HofRequestOrigin.AUTOMATION)
         Mockito.verify(questHandler).onAcceptSucceeded(
             7L,
             "quest-accept-1",
@@ -58,14 +59,14 @@ class DefaultAutomationActionExecutorTest {
             executionIdentity = "quest-accept-recovery",
             payload = StoredTypedActionPayload.QuestAccept("Q-1", "accept-no"),
         )
-        Mockito.`when`(questGateway.accept(7L, "accept-no"))
+        Mockito.`when`(questGateway.accept(7L, "accept-no", HofRequestOrigin.AUTOMATION))
             .thenThrow(ApiException(ErrorCode.HOF_SESSION_EXPIRED, "expired"))
             .thenReturn(emptyList())
 
         executor.execute(7L, action)
 
-        Mockito.verify(accountService).reauthenticate(7L)
-        Mockito.verify(questGateway, Mockito.times(2)).accept(7L, "accept-no")
+        Mockito.verify(accountService).reauthenticate(7L, HofRequestOrigin.AUTOMATION)
+        Mockito.verify(questGateway, Mockito.times(2)).accept(7L, "accept-no", HofRequestOrigin.AUTOMATION)
         Mockito.verify(questHandler, Mockito.times(1)).onAcceptSucceeded(
             7L,
             "quest-accept-recovery",
@@ -80,16 +81,16 @@ class DefaultAutomationActionExecutorTest {
             executionIdentity = "quest-accept-auth",
             payload = StoredTypedActionPayload.QuestAccept("Q-1", "accept-no"),
         )
-        Mockito.`when`(questGateway.accept(7L, "accept-no"))
+        Mockito.`when`(questGateway.accept(7L, "accept-no", HofRequestOrigin.AUTOMATION))
             .thenThrow(ApiException(ErrorCode.HOF_SESSION_EXPIRED, "expired"))
-        Mockito.`when`(accountService.reauthenticate(7L))
+        Mockito.`when`(accountService.reauthenticate(7L, HofRequestOrigin.AUTOMATION))
             .thenThrow(ApiException(ErrorCode.HOF_LOGIN_FAILED, "rejected"))
 
         assertFailsWith<AutomationLoginRequiredException> {
             executor.execute(7L, action)
         }
 
-        Mockito.verify(questGateway, Mockito.times(1)).accept(7L, "accept-no")
+        Mockito.verify(questGateway, Mockito.times(1)).accept(7L, "accept-no", HofRequestOrigin.AUTOMATION)
         Mockito.verifyNoInteractions(questHandler)
     }
 
@@ -100,14 +101,14 @@ class DefaultAutomationActionExecutorTest {
             executionIdentity = "quest-accept-ambiguous",
             payload = StoredTypedActionPayload.QuestAccept("Q-1", "accept-no"),
         )
-        Mockito.`when`(questGateway.accept(7L, "accept-no"))
+        Mockito.`when`(questGateway.accept(7L, "accept-no", HofRequestOrigin.AUTOMATION))
             .thenThrow(RuntimeException("transport wrapper", IOException("connection reset")))
 
         assertFailsWith<AmbiguousAutomationSubmissionException> {
             executor.execute(7L, action)
         }
 
-        Mockito.verify(questGateway, Mockito.times(1)).accept(7L, "accept-no")
+        Mockito.verify(questGateway, Mockito.times(1)).accept(7L, "accept-no", HofRequestOrigin.AUTOMATION)
         Mockito.verifyNoInteractions(accountService, questHandler)
     }
 
@@ -118,14 +119,14 @@ class DefaultAutomationActionExecutorTest {
             executionIdentity = "quest-claim-ambiguous",
             payload = StoredTypedActionPayload.QuestClaim("Q-1", "claim-no"),
         )
-        Mockito.`when`(questGateway.claim(7L, "claim-no"))
+        Mockito.`when`(questGateway.claim(7L, "claim-no", HofRequestOrigin.AUTOMATION))
             .thenThrow(ApiException(ErrorCode.HOF_REQUEST_FAILED, "upstream result unknown"))
 
         assertFailsWith<AmbiguousAutomationSubmissionException> {
             executor.execute(7L, action)
         }
 
-        Mockito.verify(questGateway, Mockito.times(1)).claim(7L, "claim-no")
+        Mockito.verify(questGateway, Mockito.times(1)).claim(7L, "claim-no", HofRequestOrigin.AUTOMATION)
         Mockito.verifyNoInteractions(accountService, questHandler)
     }
 
@@ -147,7 +148,7 @@ class DefaultAutomationActionExecutorTest {
             executor.execute(7L, action)
         }
 
-        Mockito.verify(questGateway, Mockito.times(1)).accept(7L, "accept-no")
+        Mockito.verify(questGateway, Mockito.times(1)).accept(7L, "accept-no", HofRequestOrigin.AUTOMATION)
         Mockito.verifyNoInteractions(accountService)
     }
 
@@ -167,7 +168,7 @@ class DefaultAutomationActionExecutorTest {
                 battleRequest = request,
             ),
         )
-        Mockito.`when`(battleRun.runBattle(7L, request))
+        Mockito.`when`(battleRun.runBattle(7L, request, HofRequestOrigin.AUTOMATION))
             .thenThrow(ApiException(ErrorCode.CAPTCHA_REQUIRED, "captcha"))
 
         val error = assertFailsWith<ApiException> {
@@ -175,7 +176,7 @@ class DefaultAutomationActionExecutorTest {
         }
 
         assertEquals(ErrorCode.CAPTCHA_REQUIRED, error.errorCode)
-        Mockito.verify(battleRun, Mockito.times(1)).runBattle(7L, request)
+        Mockito.verify(battleRun, Mockito.times(1)).runBattle(7L, request, HofRequestOrigin.AUTOMATION)
         Mockito.verifyNoInteractions(accountService, battleHandler)
     }
 
@@ -195,13 +196,13 @@ class DefaultAutomationActionExecutorTest {
                 battleRequest = request,
             ),
         )
-        Mockito.`when`(battleRun.runBattle(7L, request)).thenThrow(RuntimeException("connection reset"))
+        Mockito.`when`(battleRun.runBattle(7L, request, HofRequestOrigin.AUTOMATION)).thenThrow(RuntimeException("connection reset"))
 
         assertFailsWith<AmbiguousAutomationSubmissionException> {
             executor.execute(7L, action)
         }
 
-        Mockito.verify(battleRun, Mockito.times(1)).runBattle(7L, request)
+        Mockito.verify(battleRun, Mockito.times(1)).runBattle(7L, request, HofRequestOrigin.AUTOMATION)
         Mockito.verifyNoInteractions(accountService)
         Mockito.verifyNoInteractions(battleHandler)
     }
@@ -217,7 +218,7 @@ class DefaultAutomationActionExecutorTest {
         Mockito.`when`(round2.outcome).thenReturn("DEFEAT")
         Mockito.`when`(round3.outcome).thenReturn("DRAW")
         Mockito.`when`(result.rounds).thenReturn(listOf(round1, round2, round3))
-        Mockito.`when`(battleRun.runBattle(7L, request)).thenReturn(result)
+        Mockito.`when`(battleRun.runBattle(7L, request, HofRequestOrigin.AUTOMATION)).thenReturn(result)
         Mockito.`when`(
             battleHandler.onBattleCompleted(
                 anyBattleAction(),

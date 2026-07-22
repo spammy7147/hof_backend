@@ -9,6 +9,8 @@ import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.HofBattleMap
+import app.spammy.hof.external.model.HofRequestOrigin
+import app.spammy.hof.external.client.HofAutomationDeferredException
 import app.spammy.hof.external.parser.BattleMapParser
 import app.spammy.hof.external.parser.LoginStateParser
 import java.io.IOException
@@ -55,8 +57,9 @@ class BattleMapService(
     fun findMaps(
         accountId: Long,
         categoryId: String,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
     ): List<BattleMapResponse> {
-        val snapshot = fetchMapSnapshot(accountId, categoryId, requireObservations = false)
+        val snapshot = fetchMapSnapshot(accountId, categoryId, requireObservations = false, origin)
         if (snapshot.observations.isEmpty()) {
             return catalogService.findVisibleByCategory(accountId, snapshot.category.value).map(BattleMapResponse::from)
         }
@@ -71,10 +74,17 @@ class BattleMapService(
         synchronizeAdventureMapSnapshot(fetchAdventureMapSnapshot(accountId))
 
     /** Performs only account/cookie reads plus network fetch and parsing; it never writes map state. */
-    fun fetchAdventureMapSnapshot(accountId: Long): AdventureMapSnapshot = try {
-        val fetched = fetchMapSnapshot(accountId, BattleCategoryId.ADVENTURE_MAP.value, requireObservations = true)
+    fun fetchAdventureMapSnapshot(
+        accountId: Long,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
+    ): AdventureMapSnapshot = try {
+        val fetched = fetchMapSnapshot(accountId, BattleCategoryId.ADVENTURE_MAP.value, requireObservations = true, origin)
         AdventureMapSnapshot(accountId = fetched.accountId, observations = fetched.observations.toList())
     } catch (error: Exception) {
+        generateSequence<Throwable>(error) { it.cause }
+            .filterIsInstance<HofAutomationDeferredException>()
+            .firstOrNull()
+            ?.let { throw it }
         if (error.hasInterruption()) {
             Thread.currentThread().interrupt()
             if (error is AdventureMapRefreshException.Fatal) throw error
@@ -101,6 +111,7 @@ class BattleMapService(
         accountId: Long,
         categoryId: String,
         requireObservations: Boolean,
+        origin: HofRequestOrigin,
     ): BattleMapSnapshot {
         val category = BattleCategoryId.fromValue(categoryId)
             ?: throw ApiException(ErrorCode.INVALID_REQUEST, "지원하지 않는 전투 카테고리입니다.")
@@ -122,11 +133,11 @@ class BattleMapService(
             source.mapQuery,
             cookies.keys.sorted(),
         )
-        val response = gateway.execute(requestFactory.battleMapPage(source.pageQuery), cookies)
+        val response = gateway.execute(requestFactory.battleMapPage(source.pageQuery, origin), cookies)
         val mapPageResponse = source.detailPageQuery
             ?.let { detailPageQuery ->
                 gateway.execute(
-                    request = requestFactory.battleMapPage(detailPageQuery),
+                    request = requestFactory.battleMapPage(detailPageQuery, origin),
                     cookies = cookies + response.setCookies,
                 )
             }

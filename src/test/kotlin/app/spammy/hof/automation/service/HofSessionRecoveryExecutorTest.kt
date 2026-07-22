@@ -4,6 +4,7 @@ import app.spammy.hof.account.service.HofAccountService
 import app.spammy.hof.account.service.HofSessionRecoveryService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
+import app.spammy.hof.external.model.HofRequestOrigin
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -24,12 +25,12 @@ class HofSessionRecoveryExecutorTest {
 
         assertEquals("ok", result)
         assertEquals(2, attempts)
-        Mockito.verify(accountService).reauthenticate(7L)
+        Mockito.verify(accountService).reauthenticate(7L, HofRequestOrigin.AUTOMATION)
     }
 
     @Test
     fun rejectedStoredCredentialsRequireUserLogin() {
-        Mockito.`when`(accountService.reauthenticate(7L))
+        Mockito.`when`(accountService.reauthenticate(7L, HofRequestOrigin.AUTOMATION))
             .thenThrow(ApiException(ErrorCode.HOF_LOGIN_FAILED, "rejected"))
 
         assertFailsWith<AutomationLoginRequiredException> {
@@ -53,6 +54,6 @@ class HofSessionRecoveryExecutorTest {
 
         assertEquals("ok", result)
         assertEquals(2, attempts)
-        Mockito.verify(accountService).reauthenticate(7L)
+        Mockito.verify(accountService).reauthenticate(7L, HofRequestOrigin.AUTOMATION)
     }
 }

@@ -3,6 +3,7 @@ package app.spammy.hof.external.client
 import app.spammy.hof.external.model.HofBattleType
 import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofRequest
+import app.spammy.hof.external.model.HofRequestOrigin
 import org.springframework.stereotype.Component
 
 @Component
@@ -13,15 +14,20 @@ class HofRequestFactory {
     /**
      * HOF 홈 페이지 요청을 만든다.
      */
-    fun home(): HofRequest = HofRequest(
+    fun home(origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE): HofRequest = HofRequest(
         method = HofHttpMethod.GET,
         url = HOF_BASE_URL,
+        origin = origin,
     )
 
     /**
      * HOF 로그인 form 제출 요청을 만든다.
      */
-    fun login(id: String, password: String): HofRequest = HofRequest(
+    fun login(
+        id: String,
+        password: String,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
+    ): HofRequest = HofRequest(
         method = HofHttpMethod.POST,
         url = HOF_BASE_URL,
         formFields = mapOf(
@@ -29,51 +35,68 @@ class HofRequestFactory {
             "pass" to password,
             "Login" to "login",
         ),
+        origin = origin,
     )
 
     /**
      * 특정 캐릭터 상세 페이지 요청을 만든다.
      */
-    fun characterPage(characterId: String): HofRequest = HofRequest(
+    fun characterPage(
+        characterId: String,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
+    ): HofRequest = HofRequest(
         method = HofHttpMethod.GET,
         url = "$HOF_BASE_URL?char=$characterId",
+        origin = origin,
     )
 
     /**
      * 전투/모험 맵 목록이 있는 페이지 요청을 만든다.
      */
-    fun battleMapPage(pageQuery: String): HofRequest = HofRequest(
+    fun battleMapPage(
+        pageQuery: String,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
+    ): HofRequest = HofRequest(
         method = HofHttpMethod.GET,
         url = "$HOF_BASE_URL?$pageQuery",
+        origin = origin,
     )
 
-    fun questPage(): HofRequest = HofRequest(
+    fun questPage(origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE): HofRequest = HofRequest(
         method = HofHttpMethod.GET,
         url = "$HOF_BASE_URL?menu=quest",
+        origin = origin,
     )
 
     fun questAction(
         action: String,
         actionNo: String,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
     ): HofRequest {
         require(action in setOf("get", "complete")) { "Unsupported quest action: $action" }
         return HofRequest(
             method = HofHttpMethod.GET,
             url = "$HOF_BASE_URL?menu=quest",
             formFields = mapOf("action" to action, "no" to actionNo),
+            origin = origin,
         )
     }
 
     /**
      * 캐릭터 저장 패턴 슬롯을 원본 세션에 로드하는 form 요청을 만든다.
      */
-    fun loadPattern(characterId: String, slot: Int): HofRequest = HofRequest(
+    fun loadPattern(
+        characterId: String,
+        slot: Int,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
+    ): HofRequest = HofRequest(
         method = HofHttpMethod.POST,
         url = "$HOF_BASE_URL?char=$characterId",
         formFields = mapOf(
             "patternno" to slot.toString(),
             "loadpattern" to "LOAD",
         ),
+        origin = origin,
     )
 
     /**
@@ -84,6 +107,7 @@ class HofRequestFactory {
         code: String,
         characterIds: List<String>,
         battleCount: Int,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
     ): HofRequest {
         val queryName = when (type) {
             HofBattleType.ADVENTURE -> "sp_common"
@@ -102,6 +126,7 @@ class HofRequestFactory {
             method = HofHttpMethod.POST,
             url = "$HOF_BASE_URL?$queryName=$code",
             formFields = characterFields + (submitName to "Battle !"),
+            origin = origin,
         )
     }
 

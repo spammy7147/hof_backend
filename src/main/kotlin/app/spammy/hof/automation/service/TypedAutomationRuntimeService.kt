@@ -100,8 +100,44 @@ class TypedAutomationRuntimeService(
         if (action.account.id != accountId || action.leaseToken != token || action.status != TypedAutomationActionStatus.PREPARED) return false
         val now = timeProvider.now()
         action.status = TypedAutomationActionStatus.SUBMITTING
+        action.nextAttemptAt = null
+        action.lastError = null
         action.submittedAt = now
         action.updatedAt = now
+        return true
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun deferSubmittedAction(
+        accountId: Long,
+        token: String,
+        actionId: Long,
+        retryAt: Instant,
+        message: String,
+    ): Boolean {
+        val state = fencedState(accountId, token) ?: return false
+        val action = queryRepository.lockTypedAction(actionId) ?: return false
+        if (
+            action.account.id != accountId ||
+            action.leaseToken != token ||
+            action.status != TypedAutomationActionStatus.SUBMITTING
+        ) return false
+
+        val now = timeProvider.now()
+        val diagnostic = sanitizeDiagnostic(message)
+        action.status = TypedAutomationActionStatus.PREPARED
+        action.retryAttempt += 1
+        action.nextAttemptAt = retryAt
+        action.submittedAt = null
+        action.finishedAt = null
+        action.lastError = diagnostic
+        action.updatedAt = now
+
+        state.nextAttemptAt = retryAt
+        state.leaseToken = null
+        state.leaseUntil = null
+        state.lastError = diagnostic
+        state.updatedAt = now
         return true
     }
 
@@ -151,6 +187,16 @@ class TypedAutomationRuntimeService(
             return null
         }
         return now.plusSeconds(RETRY_SECONDS[state.retryAttempt - 1]).also { state.nextAttemptAt = it }
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun deferUntil(accountId: Long, retryAt: Instant): Boolean {
+        val state = queryRepository.lockRuntimeState(accountId)
+            ?.takeIf { it.lifecycleStatus == TypedAutomationLifecycle.RUNNING }
+            ?: return false
+        state.nextAttemptAt = retryAt
+        state.updatedAt = timeProvider.now()
+        return true
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)

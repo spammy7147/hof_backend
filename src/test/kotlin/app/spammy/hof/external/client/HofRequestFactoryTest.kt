@@ -2,6 +2,7 @@ package app.spammy.hof.external.client
 
 import app.spammy.hof.external.model.HofBattleType
 import app.spammy.hof.external.model.HofHttpMethod
+import app.spammy.hof.external.model.HofRequestOrigin
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -68,6 +69,25 @@ class HofRequestFactoryTest {
                 "monster_battle" to "Battle !",
             ),
             request.formFields,
+        )
+    }
+
+    @Test
+    fun `preserves automation origin on generated requests`() {
+        assertEquals(HofRequestOrigin.AUTOMATION, factory.home(HofRequestOrigin.AUTOMATION).origin)
+        assertEquals(
+            HofRequestOrigin.AUTOMATION,
+            factory.questAction("complete", "7", HofRequestOrigin.AUTOMATION).origin,
+        )
+        assertEquals(
+            HofRequestOrigin.AUTOMATION,
+            factory.battle(
+                type = HofBattleType.ADVENTURE,
+                code = "map1",
+                characterIds = listOf("1"),
+                battleCount = 1,
+                origin = HofRequestOrigin.AUTOMATION,
+            ).origin,
         )
     }
 }

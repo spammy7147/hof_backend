@@ -3,6 +3,7 @@ package app.spammy.hof.automation.service
 import app.spammy.hof.automation.port.AutomationWakeupPort
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
+import app.spammy.hof.external.client.HofAutomationDeferredException
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.springframework.transaction.support.TransactionSynchronizationManager
@@ -30,7 +31,12 @@ class UnifiedAutomationRunner(
         when (val preflight = dailyPreflight.ensureReady(accountId)) {
             AutomationDailyPreflight.Result.Ready -> Unit
             is AutomationDailyPreflight.Result.Busy -> { wakeupPort.schedule(accountId, preflight.retryAt, "DAILY_PREFLIGHT_BUSY"); return }
-            is AutomationDailyPreflight.Result.RetryScheduled -> { wakeupPort.schedule(accountId, preflight.nextAttemptAt, "DAILY_PREFLIGHT_RETRY"); return }
+            is AutomationDailyPreflight.Result.RetryScheduled -> {
+                if (typedRuntime.deferUntil(accountId, preflight.nextAttemptAt)) {
+                    wakeupPort.schedule(accountId, preflight.nextAttemptAt, "DAILY_PREFLIGHT_RETRY")
+                }
+                return
+            }
             is AutomationDailyPreflight.Result.Stopped -> {
                 typedRuntime.stop(
                     accountId,
@@ -58,6 +64,11 @@ class UnifiedAutomationRunner(
                 coordinator.coordinate(typedSnapshotLoader.loadTyped(accountId))
             } catch (_: TypedAutomationConfigurationChangedException) {
                 typedRuntime.releaseAndEnqueueWake(accountId, token, "TYPED_CONFIG_RELOAD")
+                return
+            } catch (error: HofAutomationDeferredException) {
+                if (typedRuntime.release(accountId, token, error.retryAt)) {
+                    wakeupPort.schedule(accountId, error.retryAt, HOF_COOLDOWN_WAKE_REASON)
+                }
                 return
             } catch (error: SafeRetryableAutomationException) {
                 typedRuntime.scheduleSafeRetry(accountId, token, error.message ?: "Safe snapshot retry")?.let {
@@ -124,6 +135,19 @@ class UnifiedAutomationRunner(
             typedActionExecutor.execute(accountId, stored)
             typedRuntime.succeedAndEnqueueWake(accountId, token, row.id, "TYPED_ACTION_COMPLETED")
         } catch (error: Throwable) {
+            error.findHofAutomationDeferral()?.let { deferred ->
+                if (typedRuntime.deferSubmittedAction(
+                        accountId,
+                        token,
+                        row.id,
+                        deferred.retryAt,
+                        deferred.message ?: "HOF server returned 503.",
+                    )
+                ) {
+                    wakeupPort.schedule(accountId, deferred.retryAt, HOF_COOLDOWN_WAKE_REASON)
+                }
+                return
+            }
             log.warn("Typed automation action stopped accountId={} actionId={} errorType={}", accountId, row.id, error.javaClass.name)
             typedRuntime.stop(
                 accountId,
@@ -151,6 +175,9 @@ class UnifiedAutomationRunner(
             AutomationStopReason.FATAL
         }
     }
+
+    private fun Throwable.findHofAutomationDeferral(): HofAutomationDeferredException? =
+        generateSequence(this) { it.cause }.filterIsInstance<HofAutomationDeferredException>().firstOrNull()
 
     private fun toStored(entryId: Long, action: PreparedAutomationAction): StoredTypedAutomationActionV1 {
         val executionId = when (action) {
@@ -197,4 +224,8 @@ class UnifiedAutomationRunner(
     private fun ResolvedAutomationParty?.toRequest(categoryId: String, mapCode: String, battleCount: Int) =
         this?.let { app.spammy.hof.battle.dto.RunBattleRequest(categoryId, mapCode, it.characterIds, it.patternLoads, battleCount) }
             ?: throw AutomationConfigurationException("The prepared party is missing.")
+
+    private companion object {
+        const val HOF_COOLDOWN_WAKE_REASON = "HOF_503_COOLDOWN"
+    }
 }

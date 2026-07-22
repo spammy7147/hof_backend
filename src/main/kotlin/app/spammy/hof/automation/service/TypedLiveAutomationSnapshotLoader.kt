@@ -11,6 +11,8 @@ import app.spammy.hof.battle.service.BattleMapService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.external.model.HofRequestOrigin
+import app.spammy.hof.external.client.HofAutomationDeferredException
 import app.spammy.hof.party.repository.PartyPresetQueryRepository
 import app.spammy.hof.quest.model.QuestSnapshot
 import app.spammy.hof.quest.service.QuestGatewayService
@@ -54,11 +56,12 @@ class TypedLiveAutomationSnapshotLoader(
 
     private fun refreshLiveState(accountId: Long, categories: List<String>): List<QuestSnapshot> = try {
         sessionRecovery.execute(accountId) {
-            categories.forEach { battleMapService.findMaps(accountId, it) }
-            questGateway.load(accountId)
+            categories.forEach { battleMapService.findMaps(accountId, it, HofRequestOrigin.AUTOMATION) }
+            questGateway.load(accountId, HofRequestOrigin.AUTOMATION)
         }
     } catch (error: Exception) {
         val causes = generateSequence<Throwable>(error) { it.cause }.toList()
+        causes.filterIsInstance<HofAutomationDeferredException>().firstOrNull()?.let { throw it }
         causes.filterIsInstance<AutomationLoginRequiredException>().firstOrNull()?.let { throw it }
         causes.filterIsInstance<ApiException>()
             .firstOrNull { it.errorCode == ErrorCode.CAPTCHA_REQUIRED }

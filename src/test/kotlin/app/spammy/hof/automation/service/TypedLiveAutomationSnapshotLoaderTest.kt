@@ -16,6 +16,7 @@ import app.spammy.hof.battle.service.BattleMapService
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
+import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.party.repository.PartyPresetQueryRepository
 import app.spammy.hof.quest.service.QuestGatewayService
 import java.time.Instant
@@ -35,7 +36,7 @@ class TypedLiveAutomationSnapshotLoaderTest {
     @Test
     fun `captcha live snapshot failure remains a typed captcha stop signal`() {
         val fixture = liveFailureFixture()
-        Mockito.`when`(fixture.quest.load(7L))
+        Mockito.`when`(fixture.quest.load(7L, HofRequestOrigin.AUTOMATION))
             .thenThrow(ApiException(ErrorCode.CAPTCHA_REQUIRED, "captcha"))
 
         val error = assertFailsWith<ApiException> {
@@ -48,9 +49,9 @@ class TypedLiveAutomationSnapshotLoaderTest {
     @Test
     fun `failed stored credential recovery remains an authentication stop signal`() {
         val fixture = liveFailureFixture()
-        Mockito.`when`(fixture.quest.load(7L))
+        Mockito.`when`(fixture.quest.load(7L, HofRequestOrigin.AUTOMATION))
             .thenThrow(ApiException(ErrorCode.HOF_SESSION_EXPIRED, "expired"))
-        Mockito.`when`(fixture.accountService.reauthenticate(7L))
+        Mockito.`when`(fixture.accountService.reauthenticate(7L, HofRequestOrigin.AUTOMATION))
             .thenThrow(ApiException(ErrorCode.HOF_LOGIN_FAILED, "rejected"))
 
         assertFailsWith<AutomationLoginRequiredException> {
@@ -101,7 +102,7 @@ class TypedLiveAutomationSnapshotLoaderTest {
         Mockito.`when`(typed.findQuestMaps(listOf(20))).thenReturn(listOf(QuestAutomationMapEntity(21, selection, "m", "battle_map", "qmap", PresetSelectionMode.PRIMARY, null, 0, true)))
         Mockito.`when`(typed.findBattleSettingsByEntryIds(listOf(11))).thenReturn(listOf(BattleAutomationMapEntity(22, battleEntry, "battle_map", "bmap", 1, PresetSelectionMode.PRIMARY, null, 0)))
         Mockito.`when`(typed.findAdventureSettingsByEntryIds(listOf(12))).thenReturn(listOf(AdventureAutomationMapEntity(23, adventureEntry, "adventure_map", "amap", PresetSelectionMode.EXPLICIT, explicitX, 0)))
-        Mockito.`when`(quest.load(7)).thenReturn(emptyList())
+        Mockito.`when`(quest.load(7, HofRequestOrigin.AUTOMATION)).thenReturn(emptyList())
         Mockito.`when`(mapQuery.findAllStatesForExecution(7)).thenReturn(listOf(liveState))
         Mockito.`when`(presets.findAllByAccountId(7)).thenReturn(listOf(primaryA, primaryB, explicitX))
         Mockito.`when`(presets.findPrimaryByAccountId(7)).thenReturn(primaryA, primaryA, primaryB, primaryB)
@@ -172,7 +173,7 @@ class TypedLiveAutomationSnapshotLoaderTest {
         Mockito.`when`(presets.findAllByAccountId(7)).thenReturn(listOf(primary))
         Mockito.`when`(presets.findMembersByPresetIds(listOf(101L))).thenReturn(configuredMembers + emptyMembers)
         Mockito.`when`(presets.findPrimaryByAccountId(7)).thenReturn(primary)
-        Mockito.`when`(quest.load(7)).thenReturn(emptyList())
+        Mockito.`when`(quest.load(7, HofRequestOrigin.AUTOMATION)).thenReturn(emptyList())
         Mockito.`when`(mapQuery.findAllStatesForExecution(7)).thenReturn(emptyList())
 
         val snapshot = loader.loadTyped(7)
@@ -206,9 +207,11 @@ class TypedLiveAutomationSnapshotLoaderTest {
         Mockito.`when`(typed.findBattleSettingsByEntryIds(listOf(11))).thenReturn(listOf(categoryA), listOf(categoryB), listOf(categoryB), listOf(categoryB))
         Mockito.`when`(presets.findAllByAccountId(7)).thenReturn(emptyList())
         Mockito.`when`(presets.findMembersByPresetIds(emptyList())).thenReturn(emptyList())
-        Mockito.`when`(quest.load(7)).thenReturn(emptyList())
+        Mockito.`when`(quest.load(7, HofRequestOrigin.AUTOMATION)).thenReturn(emptyList())
         Mockito.`when`(mapQuery.findAllStatesForExecution(7)).thenReturn(emptyList())
-        Mockito.`when`(mapService.findMaps(Mockito.eq(7L), Mockito.anyString() ?: "")).thenAnswer {
+        Mockito.`when`(
+            mapService.findMaps(Mockito.eq(7L), Mockito.anyString() ?: "", eqOrigin(HofRequestOrigin.AUTOMATION)),
+        ).thenAnswer {
             assertEquals(false, TransactionSynchronizationManager.isActualTransactionActive())
             emptyList<Any>()
         }
@@ -217,8 +220,8 @@ class TypedLiveAutomationSnapshotLoaderTest {
         val refreshed = loader.loadTyped(7)
 
         assertEquals("category-b", requireNotNull(refreshed.entries.single().battle).settings.single().categoryId)
-        Mockito.verify(mapService).findMaps(7, "category-a")
-        Mockito.verify(mapService).findMaps(7, "category-b")
+        Mockito.verify(mapService).findMaps(7, "category-a", HofRequestOrigin.AUTOMATION)
+        Mockito.verify(mapService).findMaps(7, "category-b", HofRequestOrigin.AUTOMATION)
         database.connection.use { it.createStatement().execute("shutdown") }
     }
 
@@ -246,7 +249,7 @@ class TypedLiveAutomationSnapshotLoaderTest {
         Mockito.`when`(presets.findAllByAccountId(7)).thenReturn(listOf(primaryA, primaryB))
         Mockito.`when`(presets.findMembersByPresetIds(listOf(101L, 102L))).thenReturn(members(primaryA, "A", account, now) + members(primaryB, "B", account, now))
         Mockito.`when`(presets.findPrimaryByAccountId(7)).thenReturn(primaryA, primaryB, primaryB, primaryB)
-        Mockito.`when`(quest.load(7)).thenReturn(emptyList())
+        Mockito.`when`(quest.load(7, HofRequestOrigin.AUTOMATION)).thenReturn(emptyList())
         Mockito.`when`(mapQuery.findAllStatesForExecution(7)).thenReturn(emptyList())
 
         assertFailsWith<TypedAutomationConfigurationChangedException> { loader.loadTyped(7) }
@@ -279,7 +282,7 @@ class TypedLiveAutomationSnapshotLoaderTest {
             QuestAutomationMapEntity(22, disabledSelection, "mission-1", "battle_map", "battle", PresetSelectionMode.PRIMARY, null, 0, true),
             QuestAutomationMapEntity(23, disabledSelection, "mission-2", "adventure_map", "adventure", PresetSelectionMode.PRIMARY, null, 1, true),
         ))
-        Mockito.`when`(quest.load(7)).thenReturn(emptyList())
+        Mockito.`when`(quest.load(7, HofRequestOrigin.AUTOMATION)).thenReturn(emptyList())
         Mockito.`when`(mapQuery.findAllStatesForExecution(7)).thenReturn(emptyList())
         Mockito.`when`(presets.findAllByAccountId(7)).thenReturn(emptyList())
         Mockito.`when`(presets.findMembersByPresetIds(emptyList())).thenReturn(emptyList())
@@ -288,7 +291,7 @@ class TypedLiveAutomationSnapshotLoaderTest {
 
         assertEquals(AutomationType.QUEST, snapshot.entries.single().type)
         assertTrue(snapshot.entries.single().quest != null)
-        Mockito.verify(quest).load(7)
+        Mockito.verify(quest).load(7, HofRequestOrigin.AUTOMATION)
         Mockito.verifyNoInteractions(mapService)
     }
 
@@ -326,14 +329,14 @@ class TypedLiveAutomationSnapshotLoaderTest {
         ))
         Mockito.`when`(presets.findAllByAccountId(7)).thenReturn(emptyList())
         Mockito.`when`(presets.findMembersByPresetIds(emptyList())).thenReturn(emptyList())
-        Mockito.`when`(quest.load(7)).thenReturn(emptyList())
+        Mockito.`when`(quest.load(7, HofRequestOrigin.AUTOMATION)).thenReturn(emptyList())
         Mockito.`when`(mapQuery.findAllStatesForExecution(7)).thenReturn(emptyList())
 
         loader.loadTyped(7)
 
         val inOrder = Mockito.inOrder(mapService)
-        inOrder.verify(mapService).findMaps(7, "battle_map")
-        inOrder.verify(mapService).findMaps(7, "adventure_map")
+        inOrder.verify(mapService).findMaps(7, "battle_map", HofRequestOrigin.AUTOMATION)
+        inOrder.verify(mapService).findMaps(7, "adventure_map", HofRequestOrigin.AUTOMATION)
         Mockito.verifyNoMoreInteractions(mapService)
     }
 
@@ -357,7 +360,7 @@ class TypedLiveAutomationSnapshotLoaderTest {
         Mockito.`when`(typed.findQuestMaps(selections.map { it.id })).thenReturn(emptyList())
         Mockito.`when`(presets.findAllByAccountId(7)).thenReturn(emptyList())
         Mockito.`when`(presets.findMembersByPresetIds(emptyList())).thenReturn(emptyList())
-        Mockito.`when`(quest.load(7)).thenReturn(emptyList())
+        Mockito.`when`(quest.load(7, HofRequestOrigin.AUTOMATION)).thenReturn(emptyList())
         Mockito.`when`(mapQuery.findAllStatesForExecution(7)).thenReturn(emptyList())
 
         loader.loadTyped(7)
@@ -370,6 +373,7 @@ class TypedLiveAutomationSnapshotLoaderTest {
     }
 
     private fun preset(id: Long, account: HofAccountEntity, name: String, now: Instant) = PartyPresetEntity(id, account, name, now, now)
+    private fun eqOrigin(origin: HofRequestOrigin): HofRequestOrigin = Mockito.eq(origin) ?: origin
     private fun members(preset: PartyPresetEntity, prefix: String, account: HofAccountEntity, now: Instant) = (0..4).map { slot ->
         val character = CharacterEntity(
             id = 1_000 + preset.id * 10 + slot, account = account, hofCharacterId = "$prefix-$slot",

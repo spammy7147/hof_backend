@@ -10,11 +10,13 @@ import app.spammy.hof.automation.port.AutomationWakeupPort
 import app.spammy.hof.battle.dto.BattlePatternLoadRequest
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
+import app.spammy.hof.external.client.HofAutomationDeferredException
 import java.time.Instant
 import java.time.LocalDate
 import java.io.IOException
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import org.mockito.Mockito
 import tools.jackson.module.kotlin.jacksonObjectMapper
 
@@ -222,6 +224,20 @@ class UnifiedAutomationRunnerTest {
     }
 
     @Test
+    fun `preflight retry is persisted on the running runtime for user-visible waiting state`() {
+        val retryAt = Instant.parse("2026-07-23T00:00:30Z")
+        Mockito.`when`(preflight.ensureReady(7))
+            .thenReturn(AutomationDailyPreflight.Result.RetryScheduled(retryAt, 0))
+        Mockito.`when`(runtime.deferUntil(7, retryAt)).thenReturn(true)
+
+        runner.runOne(7)
+
+        Mockito.verify(runtime).deferUntil(7, retryAt)
+        Mockito.verify(wakeup).schedule(7, retryAt, "DAILY_PREFLIGHT_RETRY")
+        Mockito.verify(runtime, Mockito.never()).claim(7)
+    }
+
+    @Test
     fun `session login failure stops typed runtime for authentication`() {
         preparedActionFailure(
             IllegalStateException("wrapped login failure", AutomationLoginRequiredException()),
@@ -276,6 +292,50 @@ class UnifiedAutomationRunnerTest {
             ),
             AutomationStopReason.NETWORK,
         )
+    }
+
+    @Test
+    fun `503 while loading snapshot releases runtime and schedules its global retry`() {
+        val retryAt = Instant.parse("2026-07-23T00:00:30Z")
+        Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
+        Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token"))
+        Mockito.`when`(loader.loadTyped(7)).thenThrow(HofAutomationDeferredException(retryAt, 1))
+        Mockito.`when`(runtime.release(7, "token", retryAt)).thenReturn(true)
+
+        runner.runOne(7)
+
+        Mockito.verify(runtime).release(7, "token", retryAt)
+        Mockito.verify(wakeup).schedule(7, retryAt, "HOF_503_COOLDOWN")
+        assertTrue(Mockito.mockingDetails(runtime).invocations.none { it.method.name == "stop" })
+    }
+
+    @Test
+    fun `503 after submission returns action to prepared and schedules exact retry`() {
+        val retryAt = Instant.parse("2026-07-23T00:03:00Z")
+        val stored = StoredTypedAutomationActionV1(
+            12, "execution-1", StoredTypedActionPayload.QuestClaim("quest", "claim"),
+        )
+        val encoded = codec.encode(stored)
+        val owner = HofAccountEntity(7, "login", "encrypted", Instant.EPOCH)
+        val entry = AutomationEntryEntity(12, owner, AutomationType.QUEST, 0, true, Instant.EPOCH, Instant.EPOCH)
+        val row = TypedAutomationActionRunEntity(
+            88, owner, entry, stored.executionIdentity, stored.payload.kind(), 1, encoded.json,
+            encoded.fingerprint, TypedAutomationActionStatus.PREPARED, leaseToken = "token",
+            createdAt = Instant.EPOCH, updatedAt = Instant.EPOCH,
+        )
+        Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
+        Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token", row))
+        Mockito.`when`(runtime.markSubmitting(7, "token", 88)).thenReturn(true)
+        Mockito.doThrow(HofAutomationDeferredException(retryAt, 3))
+            .`when`(executor).execute(Mockito.eq(7L), anyStoredAction())
+        val message = "HOF automation requests are deferred until $retryAt"
+        Mockito.`when`(runtime.deferSubmittedAction(7, "token", 88, retryAt, message)).thenReturn(true)
+
+        runner.runOne(7)
+
+        Mockito.verify(runtime).deferSubmittedAction(7, "token", 88, retryAt, message)
+        Mockito.verify(wakeup).schedule(7, retryAt, "HOF_503_COOLDOWN")
+        assertTrue(Mockito.mockingDetails(runtime).invocations.none { it.method.name == "stop" })
     }
 
     @Test

@@ -14,6 +14,8 @@ import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.persistence.QueryDslConfig
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.external.client.HofAutomationDeferredException
+import app.spammy.hof.external.model.HofRequestOrigin
 import jakarta.persistence.EntityManager
 import java.io.IOException
 import java.time.Instant
@@ -71,7 +73,7 @@ class AutomationDailyPreflightTest {
             val accountId = invocation.getArgument<Long>(0)
             battleMapService.refreshAdventureMaps(accountId)
             AdventureMapSnapshot(accountId, emptyList())
-        }.`when`(battleMapService).fetchAdventureMapSnapshot(anyLong())
+        }.`when`(battleMapService).fetchAdventureMapSnapshot(anyLong(), anyOrigin())
         timeProvider.current.set(KOREA_MIDNIGHT_AFTER)
     }
 
@@ -232,6 +234,22 @@ class AutomationDailyPreflightTest {
     }
 
     @Test
+    fun `global 503 cooldown uses exact retry time without consuming network retry attempts`() {
+        val accountId = savedAccount("preflight-global-503")
+        val retryAt = KOREA_MIDNIGHT_AFTER.plusSeconds(30)
+        Mockito.doThrow(HofAutomationDeferredException(retryAt, 1))
+            .`when`(battleMapService).fetchAdventureMapSnapshot(accountId, HofRequestOrigin.AUTOMATION)
+
+        assertRetry(service.ensureReady(accountId), 0, retryAt)
+
+        timeProvider.current.set(retryAt.minusMillis(1))
+        assertRetry(service.ensureReady(accountId), 0, retryAt)
+        Mockito.verify(battleMapService, Mockito.times(1))
+            .fetchAdventureMapSnapshot(accountId, HofRequestOrigin.AUTOMATION)
+        assertEquals(null, preflightStopReason(accountId))
+    }
+
+    @Test
     fun `expired preflight session reauthenticates and retries fetch exactly once`() {
         val accountId = savedAccount("preflight-session-recovery")
         Mockito.doThrow(
@@ -241,12 +259,13 @@ class AutomationDailyPreflightTest {
                 ),
             )
             .doReturn(AdventureMapSnapshot(accountId, emptyList()))
-            .`when`(battleMapService).fetchAdventureMapSnapshot(accountId)
+            .`when`(battleMapService).fetchAdventureMapSnapshot(accountId, HofRequestOrigin.AUTOMATION)
 
         assertIs<AutomationDailyPreflight.Result.Ready>(service.ensureReady(accountId))
 
-        Mockito.verify(hofAccountService).reauthenticate(accountId)
-        Mockito.verify(battleMapService, Mockito.times(2)).fetchAdventureMapSnapshot(accountId)
+        Mockito.verify(hofAccountService).reauthenticate(accountId, HofRequestOrigin.AUTOMATION)
+        Mockito.verify(battleMapService, Mockito.times(2))
+            .fetchAdventureMapSnapshot(accountId, HofRequestOrigin.AUTOMATION)
     }
 
     @Test
@@ -258,8 +277,8 @@ class AutomationDailyPreflightTest {
                     ApiException(ErrorCode.HOF_SESSION_EXPIRED, "expired"),
                 ),
             )
-            .`when`(battleMapService).fetchAdventureMapSnapshot(accountId)
-        Mockito.`when`(hofAccountService.reauthenticate(accountId))
+            .`when`(battleMapService).fetchAdventureMapSnapshot(accountId, HofRequestOrigin.AUTOMATION)
+        Mockito.`when`(hofAccountService.reauthenticate(accountId, HofRequestOrigin.AUTOMATION))
             .thenThrow(ApiException(ErrorCode.HOF_LOGIN_FAILED, "rejected"))
 
         assertEquals(
@@ -270,7 +289,8 @@ class AutomationDailyPreflightTest {
             AutomationDailyPreflight.Result.Stopped(AutomationDailyPreflight.StopReason.AUTHENTICATION),
             service.ensureReady(accountId),
         )
-        Mockito.verify(battleMapService, Mockito.times(1)).fetchAdventureMapSnapshot(accountId)
+        Mockito.verify(battleMapService, Mockito.times(1))
+            .fetchAdventureMapSnapshot(accountId, HofRequestOrigin.AUTOMATION)
     }
 
     @Test
@@ -282,7 +302,7 @@ class AutomationDailyPreflightTest {
                     ApiException(ErrorCode.CAPTCHA_REQUIRED, "captcha"),
                 ),
             )
-            .`when`(battleMapService).fetchAdventureMapSnapshot(accountId)
+            .`when`(battleMapService).fetchAdventureMapSnapshot(accountId, HofRequestOrigin.AUTOMATION)
 
         assertEquals(
             AutomationDailyPreflight.Result.Stopped(AutomationDailyPreflight.StopReason.CAPTCHA),
@@ -373,7 +393,8 @@ class AutomationDailyPreflightTest {
             AutomationDailyPreflight.Result.Stopped(AutomationDailyPreflight.StopReason.FATAL),
             service.ensureReady(accountId),
         )
-        Mockito.verify(battleMapService, Mockito.times(1)).fetchAdventureMapSnapshot(accountId)
+        Mockito.verify(battleMapService, Mockito.times(1))
+            .fetchAdventureMapSnapshot(accountId, HofRequestOrigin.AUTOMATION)
     }
 
     @Test
@@ -490,7 +511,8 @@ class AutomationDailyPreflightTest {
         }
 
         assertEquals(AutomationDailyPreflight.TRANSACTIONAL_CALLER_MESSAGE, error.message)
-        Mockito.verify(battleMapService, Mockito.never()).fetchAdventureMapSnapshot(accountId)
+        Mockito.verify(battleMapService, Mockito.never())
+            .fetchAdventureMapSnapshot(accountId, HofRequestOrigin.AUTOMATION)
         assertEquals(0L, preflightStateCount(accountId))
     }
 
@@ -504,7 +526,8 @@ class AutomationDailyPreflightTest {
             assertEquals(AutomationDailyPreflight.TRANSACTIONAL_CALLER_MESSAGE, error.message)
         }
 
-        Mockito.verify(battleMapService, Mockito.never()).fetchAdventureMapSnapshot(accountId)
+        Mockito.verify(battleMapService, Mockito.never())
+            .fetchAdventureMapSnapshot(accountId, HofRequestOrigin.AUTOMATION)
         assertEquals(0L, preflightStateCount(accountId))
     }
 
@@ -572,6 +595,9 @@ class AutomationDailyPreflightTest {
     }
 
     private fun networkFailure() = AdventureMapRefreshException.Retryable("transient upstream failure")
+
+    private fun anyOrigin(): HofRequestOrigin =
+        Mockito.any(HofRequestOrigin::class.java) ?: HofRequestOrigin.AUTOMATION
 
     @TestConfiguration(proxyBeanMethods = false)
     class Config {

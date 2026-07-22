@@ -8,6 +8,7 @@ import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.HofRequest
+import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.external.parser.LoginStateParser
 import app.spammy.hof.quest.model.QuestSnapshot
 import app.spammy.hof.quest.parser.QuestPageParser
@@ -23,13 +24,22 @@ class QuestGatewayService(
     private val parser: QuestPageParser,
 ) {
     /** Returns the authenticated quest page as heading-scoped, source-ordered snapshots. */
-    fun load(accountId: Long): List<QuestSnapshot> = execute(accountId, requestFactory.questPage())
+    fun load(
+        accountId: Long,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
+    ): List<QuestSnapshot> = execute(accountId, requestFactory.questPage(origin))
 
-    fun accept(accountId: Long, actionNo: String): List<QuestSnapshot> =
-        execute(accountId, requestFactory.questAction("get", actionNo))
+    fun accept(
+        accountId: Long,
+        actionNo: String,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
+    ): List<QuestSnapshot> = execute(accountId, requestFactory.questAction("get", actionNo, origin))
 
-    fun claim(accountId: Long, actionNo: String): List<QuestSnapshot> =
-        execute(accountId, requestFactory.questAction("complete", actionNo))
+    fun claim(
+        accountId: Long,
+        actionNo: String,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
+    ): List<QuestSnapshot> = execute(accountId, requestFactory.questAction("complete", actionNo, origin))
 
     private fun execute(
         accountId: Long,

@@ -7,4 +7,5 @@ data class HofRequest(
     val method: HofHttpMethod,
     val url: String,
     val formFields: Map<String, String> = emptyMap(),
+    val origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
 )
