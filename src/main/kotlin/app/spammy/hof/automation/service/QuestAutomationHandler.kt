@@ -116,7 +116,7 @@ internal fun QuestMission.displayLabel(): String {
 
 interface QuestAutomationProgressStore {
     fun startNewCycle(accountId: Long, resultId: String, questCode: String): String
-    fun recordVictory(accountId: Long, resultId: String, action: QuestAction.Battle)
+    fun recordBattleResult(accountId: Long, resultId: String, action: QuestAction.Battle, victoryCount: Int)
 }
 
 class QuestAutomationResultConflictException(resultId: String) : IllegalStateException(
@@ -163,8 +163,16 @@ class JpaQuestAutomationProgressStore(
     }
 
     @Transactional
-    override fun recordVictory(accountId: Long, resultId: String, action: QuestAction.Battle) {
+    override fun recordBattleResult(
+        accountId: Long,
+        resultId: String,
+        action: QuestAction.Battle,
+        victoryCount: Int,
+    ) {
         validateResultIdentity(resultId)
+        require(victoryCount in 0..action.battleCount) {
+            "Quest battle victory count must be between zero and the requested battle count."
+        }
         val fingerprint = actionFingerprint(
             QuestAutomationResultKind.BATTLE_VICTORY,
             listOf(
@@ -173,6 +181,8 @@ class JpaQuestAutomationProgressStore(
                 action.missionKey,
                 action.categoryId,
                 action.mapCode,
+                action.battleCount.toString(),
+                victoryCount.toString(),
             ),
         )
         val account = queryRepository.lockAccount(accountId)
@@ -189,6 +199,7 @@ class JpaQuestAutomationProgressStore(
                 processedAt = Instant.now(),
             ),
         )
+        if (victoryCount == 0) return
         val counter = queryRepository.findQuestCounter(
             accountId,
             action.questCode,
@@ -206,11 +217,11 @@ class JpaQuestAutomationProgressStore(
                     missionKey = action.missionKey,
                     categoryId = action.categoryId,
                     mapCode = action.mapCode,
-                    successfulRuns = 1,
+                    successfulRuns = victoryCount,
                 ),
             )
         } else {
-            counter.successfulRuns += 1
+            counter.successfulRuns += victoryCount
         }
     }
 
@@ -248,8 +259,6 @@ class JpaQuestAutomationProgressStore(
     }
 }
 
-enum class QuestBattleOutcome { VICTORY, DEFEAT, NETWORK_FAILURE }
-
 /**
  * Pure quest priority evaluation plus explicit post-success progress callbacks.
  * No network request is made and [evaluate] never writes persistence state.
@@ -267,14 +276,14 @@ class QuestAutomationHandler(
             .filter { it.questId in selections }
             .sortedBy(QuestSnapshot::sourceOrder)
 
-        candidates.firstOrNull { it.state == QuestState.CLAIMABLE }?.let { quest ->
-            return quest.actionNo?.let { HandlerEvaluation.Runnable(QuestAction.Claim(quest.questId, it, quest.name)) }
-                ?: HandlerEvaluation.ConfigurationWarning("Quest ${quest.questId} has no claim action.")
-        }
-
         candidates.firstOrNull { it.state == QuestState.AVAILABLE }?.let { quest ->
             return quest.actionNo?.let { HandlerEvaluation.Runnable(QuestAction.Accept(quest.questId, it, quest.name)) }
                 ?: HandlerEvaluation.ConfigurationWarning("Quest ${quest.questId} has no accept action.")
+        }
+
+        candidates.firstOrNull { it.state == QuestState.CLAIMABLE }?.let { quest ->
+            return quest.actionNo?.let { HandlerEvaluation.Runnable(QuestAction.Claim(quest.questId, it, quest.name)) }
+                ?: HandlerEvaluation.ConfigurationWarning("Quest ${quest.questId} has no claim action.")
         }
 
         evaluateCombat(candidates, selections, context, QuestMissionType.MONSTER_KILL)?.let { return it }
@@ -289,9 +298,24 @@ class QuestAutomationHandler(
         accountId: Long,
         resultId: String,
         action: QuestAction.Battle,
-        outcome: QuestBattleOutcome,
+        outcomes: List<BattleAutomationRoundOutcome>,
     ) {
-        if (outcome == QuestBattleOutcome.VICTORY) progressStore.recordVictory(accountId, resultId, action)
+        require(outcomes.size == action.battleCount) {
+            "Quest battle result count must match the requested battle count."
+        }
+        require(outcomes.all {
+            it == BattleAutomationRoundOutcome.VICTORY ||
+                it == BattleAutomationRoundOutcome.DEFEAT ||
+                it == BattleAutomationRoundOutcome.DRAW
+        }) {
+            "Quest battle results must contain only terminal outcomes."
+        }
+        progressStore.recordBattleResult(
+            accountId,
+            resultId,
+            action,
+            outcomes.count { it == BattleAutomationRoundOutcome.VICTORY },
+        )
     }
 
     private fun evaluateCombat(
@@ -353,7 +377,7 @@ class QuestAutomationHandler(
             }.thenBy(QuestAutomationMapSelection::executionOrder),
         )!!
         val selectedState = stateByMap.getValue(selected.categoryId to selected.mapCode)
-        return selected.toBattleEvaluation(quest, cycle, mission, selectedState.displayName())
+        return selected.toBattleEvaluation(quest, cycle, mission, selectedState)
     }
 
     private fun mapClearAction(
@@ -425,7 +449,7 @@ class QuestAutomationHandler(
             quest,
             context.currentCycles[quest.questId] ?: INITIAL_CYCLE,
             mission,
-            state.displayName(),
+            state,
         )
     }
 
@@ -438,7 +462,7 @@ class QuestAutomationHandler(
         quest: QuestSnapshot,
         cycle: String,
         mission: QuestMission,
-        liveMapName: String?,
+        liveMapState: AutomationMapState,
     ): HandlerEvaluation {
         if (!hasValidPreset()) {
             return HandlerEvaluation.ConfigurationWarning(
@@ -453,15 +477,21 @@ class QuestAutomationHandler(
                 mission.type,
                 categoryId,
                 mapCode,
-                liveMapName,
+                liveMapState.displayName(),
                 preset,
-                battleCount = 1,
+                battleCount = mission.battleCount(liveMapState.supportsThreeBattles),
                 questName = quest.name,
                 missionLabel = mission.displayLabel(),
                 missionCurrent = mission.progress?.current,
                 missionRequired = mission.progress?.required,
             ),
         )
+    }
+
+    private fun QuestMission.battleCount(supportsThreeBattles: Boolean): Int {
+        val progress = progress ?: return 1
+        val remaining = (progress.required - progress.current).coerceAtLeast(0)
+        return if (supportsThreeBattles && remaining >= 3) 3 else 1
     }
 
     private fun AutomationMapState.isRunnable(now: Instant): Boolean =

@@ -40,8 +40,10 @@ class DefaultAutomationActionExecutor(
                         QuestPresetSelection(payload.presetMode, payload.presetId), payload.battleCount,
                     )
                     questHandler.onBattleCompleted(
-                        accountId, proof.resultIdentity, questAction,
-                        if (proof.outcomes.single() == BattleAutomationRoundOutcome.VICTORY) QuestBattleOutcome.VICTORY else QuestBattleOutcome.DEFEAT,
+                        accountId,
+                        proof.resultIdentity,
+                        questAction,
+                        proof.outcomes,
                     )
                 }
                 is StoredTypedActionPayload.BattleMap -> {

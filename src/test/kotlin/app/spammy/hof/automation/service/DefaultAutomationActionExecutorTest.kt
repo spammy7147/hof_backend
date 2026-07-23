@@ -9,6 +9,7 @@ import app.spammy.hof.battle.service.BattleRunService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.model.HofRequestOrigin
+import app.spammy.hof.quest.model.QuestMissionType
 import app.spammy.hof.quest.service.QuestGatewayService
 import java.io.IOException
 import kotlin.test.Test
@@ -150,6 +151,59 @@ class DefaultAutomationActionExecutorTest {
 
         Mockito.verify(questGateway, Mockito.times(1)).accept(7L, "accept-no", HofRequestOrigin.AUTOMATION)
         Mockito.verifyNoInteractions(accountService)
+    }
+
+    @Test
+    fun `quest battle forwards every terminal round to quest progress`() {
+        val request = battleRequest()
+        val result = Mockito.mock(app.spammy.hof.battle.dto.BattleResultResponse::class.java)
+        val round1 = Mockito.mock(app.spammy.hof.battle.dto.BattleRoundResponse::class.java)
+        val round2 = Mockito.mock(app.spammy.hof.battle.dto.BattleRoundResponse::class.java)
+        val round3 = Mockito.mock(app.spammy.hof.battle.dto.BattleRoundResponse::class.java)
+        Mockito.`when`(round1.outcome).thenReturn("VICTORY")
+        Mockito.`when`(round2.outcome).thenReturn("DEFEAT")
+        Mockito.`when`(round3.outcome).thenReturn("VICTORY")
+        Mockito.`when`(result.rounds).thenReturn(listOf(round1, round2, round3))
+        Mockito.`when`(battleRun.runBattle(7L, request, HofRequestOrigin.AUTOMATION)).thenReturn(result)
+        val action = StoredTypedAutomationActionV1(
+            entryId = 11L,
+            executionIdentity = "quest-battle-3",
+            payload = StoredTypedActionPayload.QuestBattle(
+                questCode = "Q-1",
+                questCycle = "2",
+                missionKey = "kill",
+                missionType = QuestMissionType.MONSTER_KILL,
+                categoryId = request.categoryId,
+                mapCode = request.mapCode,
+                presetMode = PresetSelectionMode.PRIMARY,
+                presetId = 301L,
+                battleCount = 3,
+                battleRequest = request,
+            ),
+        )
+
+        executor.execute(7L, action)
+
+        Mockito.verify(questHandler).onBattleCompleted(
+            7L,
+            "quest-battle-3",
+            QuestAction.Battle(
+                "Q-1",
+                "2",
+                "kill",
+                QuestMissionType.MONSTER_KILL,
+                request.categoryId,
+                request.mapCode,
+                request.mapCode,
+                QuestPresetSelection(PresetSelectionMode.PRIMARY, 301L),
+                3,
+            ),
+            listOf(
+                BattleAutomationRoundOutcome.VICTORY,
+                BattleAutomationRoundOutcome.DEFEAT,
+                BattleAutomationRoundOutcome.VICTORY,
+            ),
+        )
     }
 
     @Test

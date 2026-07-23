@@ -32,16 +32,16 @@ class QuestAutomationHandlerTest {
     private val handler = QuestAutomationHandler(progress)
 
     @Test
-    fun claimableBeatsAvailableAndProducesClaimAction() {
+    fun availableQuestIsAcceptedBeforeClaimableQuest() {
         val result = handler.evaluate(snapshot(
             quests = listOf(
-                quest("available", QuestState.AVAILABLE, 0, immediate()),
-                quest("claimable", QuestState.CLAIMABLE, 1, immediate()),
+                quest("available", QuestState.AVAILABLE, 1, immediate()),
+                quest("claimable", QuestState.CLAIMABLE, 0, immediate()),
             ),
             selections = listOf(selection("available"), selection("claimable")),
         ))
 
-        assertEquals("claimable", assertIs<QuestAction.Claim>(assertIs<HandlerEvaluation.Runnable>(result).action).questCode)
+        assertEquals("available", assertIs<QuestAction.Accept>(assertIs<HandlerEvaluation.Runnable>(result).action).questCode)
     }
 
     @Test
@@ -76,6 +76,52 @@ class QuestAutomationHandlerTest {
 
         val equal = battle(handler.evaluate(base.copy(counters = base.counters.mapValues { 4 })))
         assertEquals("map-a", equal.mapCode)
+    }
+
+    @Test
+    fun monsterUsesThreeBattlesOnlyWhenAtLeastThreeRemainAndMapSupportsIt() {
+        fun count(current: Int, required: Int, supportsThreeBattles: Boolean) = battle(handler.evaluate(snapshot(
+            quests = listOf(quest(
+                "q",
+                QuestState.ACTIVE,
+                0,
+                QuestMission(
+                    "kill",
+                    QuestMissionType.MONSTER_KILL,
+                    "monster",
+                    QuestProgress(current, required),
+                    false,
+                ),
+            )),
+            selections = listOf(selection("q", maps = listOf(map("kill", "map", 0)))),
+            states = listOf(state("map", supportsThreeBattles = supportsThreeBattles)),
+        ))).battleCount
+
+        assertEquals(3, count(current = 2, required = 5, supportsThreeBattles = true))
+        assertEquals(1, count(current = 3, required = 5, supportsThreeBattles = true))
+        assertEquals(1, count(current = 2, required = 5, supportsThreeBattles = false))
+    }
+
+    @Test
+    fun mapClearUsesThreeBattlesWhenAtLeastThreeRemainAndMapSupportsIt() {
+        val result = handler.evaluate(snapshot(
+            quests = listOf(quest(
+                "q",
+                QuestState.ACTIVE,
+                0,
+                QuestMission(
+                    "clear",
+                    QuestMissionType.MAP_CLEAR,
+                    "target",
+                    QuestProgress(1, 4),
+                    false,
+                ),
+            )),
+            selections = listOf(selection("q", maps = listOf(map("clear", "map", 0, manual = true)))),
+            states = listOf(state("map", supportsThreeBattles = true)),
+        ))
+
+        assertEquals(3, battle(result).battleCount)
     }
 
     @Test
@@ -406,17 +452,24 @@ class QuestAutomationHandlerTest {
     }
 
     @Test
-    fun acceptSuccessStartsNewCycleAndOnlyVictoryIncrementsChosenMap() {
+    fun acceptSuccessStartsNewCycleAndBattleResultRecordsOnlyVictories() {
         val first = QuestAction.Accept("q", "accept")
         assertEquals("1", handler.onAcceptSucceeded(ACCOUNT_ID, "accept-result-1", first))
         assertEquals("2", handler.onAcceptSucceeded(ACCOUNT_ID, "accept-result-2", first))
 
-        val action = QuestAction.Battle("q", "2", "kill", QuestMissionType.MONSTER_KILL, "battle_map", "chosen", "Chosen", QuestPresetSelection(PresetSelectionMode.PRIMARY), 1)
-        handler.onBattleCompleted(ACCOUNT_ID, "battle-result-1", action, QuestBattleOutcome.VICTORY)
-        handler.onBattleCompleted(ACCOUNT_ID, "battle-result-2", action, QuestBattleOutcome.DEFEAT)
-        handler.onBattleCompleted(ACCOUNT_ID, "battle-result-3", action, QuestBattleOutcome.NETWORK_FAILURE)
+        val action = QuestAction.Battle("q", "2", "kill", QuestMissionType.MONSTER_KILL, "battle_map", "chosen", "Chosen", QuestPresetSelection(PresetSelectionMode.PRIMARY), 3)
+        handler.onBattleCompleted(
+            ACCOUNT_ID,
+            "battle-result-1",
+            action,
+            listOf(
+                BattleAutomationRoundOutcome.VICTORY,
+                BattleAutomationRoundOutcome.DEFEAT,
+                BattleAutomationRoundOutcome.VICTORY,
+            ),
+        )
 
-        assertEquals(listOf(action), progress.victories)
+        assertEquals(listOf(action to 2), progress.results)
     }
 
     @Test
@@ -482,8 +535,10 @@ class QuestAutomationHandlerTest {
         keyCount: Int? = null,
         keyMode: BattleMapKeyMode = if (keyCount == null) BattleMapKeyMode.UNKNOWN else BattleMapKeyMode.LIMITED,
         cooldownUntil: Instant? = null,
+        supportsThreeBattles: Boolean = false,
     ) = AutomationMapState(
         "battle_map", code, mapName, visible, true, cooldownUntil, null, null, null, keyMode, keyCount,
+        supportsThreeBattles,
     )
 
     private fun counterKey(quest: String, cycle: String, mission: String, map: String) =
@@ -494,12 +549,14 @@ class QuestAutomationHandlerTest {
 
     private class RecordingProgressStore : QuestAutomationProgressStore {
         val cycles = mutableMapOf<Pair<Long, String>, String>()
-        val victories = mutableListOf<QuestAction.Battle>()
+        val results = mutableListOf<Pair<QuestAction.Battle, Int>>()
         override fun startNewCycle(accountId: Long, resultId: String, questCode: String): String {
             val key = accountId to questCode
             return ((cycles[key]?.toLongOrNull() ?: 0) + 1).toString().also { cycles[key] = it }
         }
-        override fun recordVictory(accountId: Long, resultId: String, action: QuestAction.Battle) { victories += action }
+        override fun recordBattleResult(accountId: Long, resultId: String, action: QuestAction.Battle, victoryCount: Int) {
+            results += action to victoryCount
+        }
     }
 
     private companion object {
@@ -536,18 +593,18 @@ class QuestAutomationProgressStorePersistenceTest {
         assertEquals("2", progressStore.startNewCycle(account.id, "accept-2", "q"))
         val action = QuestAction.Battle(
             "q", "2", "kill", QuestMissionType.MONSTER_KILL, "battle_map", "chosen", "Chosen",
-            QuestPresetSelection(PresetSelectionMode.PRIMARY), 1,
+            QuestPresetSelection(PresetSelectionMode.PRIMARY), 3,
         )
 
         val pool = Executors.newFixedThreadPool(4)
         val futures = List(12) {
-            pool.submit { progressStore.recordVictory(account.id, "duplicate-victory", action) }
+            pool.submit { progressStore.recordBattleResult(account.id, "duplicate-victory", action, 2) }
         }
         pool.shutdown()
         check(pool.awaitTermination(20, TimeUnit.SECONDS))
         futures.forEach { it.get() }
 
-        assertEquals(1, queryRepository.findQuestMapWins(account.id, "q", "2", "kill", "battle_map", "chosen"))
+        assertEquals(2, queryRepository.findQuestMapWins(account.id, "q", "2", "kill", "battle_map", "chosen"))
         assertEquals(23, queryRepository.findBattleWins(account.id, LocalDate.parse("2026-07-15"), "battle_map", "chosen"))
     }
 
@@ -600,20 +657,23 @@ class QuestAutomationProgressStorePersistenceTest {
         val account = accountRepository.save(
             HofAccountEntity(loginId = "quest-battle-conflict-${System.nanoTime()}", encryptedPassword = "encrypted", createdAt = NOW),
         )
-        val first = battleAction(cycle = "1", mapCode = "first-map")
-        progressStore.recordVictory(account.id, "battle-result", first)
+        val first = battleAction(cycle = "1", mapCode = "first-map", battleCount = 3)
+        progressStore.recordBattleResult(account.id, "battle-result", first, 2)
 
         assertFailsWith<QuestAutomationResultConflictException> {
-            progressStore.recordVictory(account.id, "battle-result", battleAction(cycle = "2", mapCode = "first-map"))
+            progressStore.recordBattleResult(account.id, "battle-result", first, 1)
         }
         assertFailsWith<QuestAutomationResultConflictException> {
-            progressStore.recordVictory(account.id, "battle-result", battleAction(cycle = "1", mapCode = "second-map"))
+            progressStore.recordBattleResult(account.id, "battle-result", battleAction(cycle = "2", mapCode = "first-map"), 1)
+        }
+        assertFailsWith<QuestAutomationResultConflictException> {
+            progressStore.recordBattleResult(account.id, "battle-result", battleAction(cycle = "1", mapCode = "second-map"), 1)
         }
         assertFailsWith<QuestAutomationResultConflictException> {
             progressStore.startNewCycle(account.id, "battle-result", "q")
         }
 
-        assertEquals(1, queryRepository.findQuestMapWins(account.id, "q", "1", "kill", "battle_map", "first-map"))
+        assertEquals(2, queryRepository.findQuestMapWins(account.id, "q", "1", "kill", "battle_map", "first-map"))
         assertEquals(0, queryRepository.findQuestMapWins(account.id, "q", "2", "kill", "battle_map", "second-map"))
         assertEquals(null, queryRepository.findQuestCycle(account.id, "q"))
     }
@@ -629,20 +689,21 @@ class QuestAutomationProgressStorePersistenceTest {
             missionCurrent = 1,
             missionRequired = 5,
         )
-        progressStore.recordVictory(account.id, "display-result", original)
+        progressStore.recordBattleResult(account.id, "display-result", original, 1)
 
-        progressStore.recordVictory(
+        progressStore.recordBattleResult(
             account.id,
             "display-result",
             original.copy(questName = "새 퀘스트 이름", missionLabel = "몬스터 처치 · 새 대상", missionCurrent = 4),
+            1,
         )
 
         assertEquals(1, queryRepository.findQuestMapWins(account.id, "q", "1", "kill", "battle_map", "map"))
     }
 
-    private fun battleAction(cycle: String, mapCode: String) = QuestAction.Battle(
+    private fun battleAction(cycle: String, mapCode: String, battleCount: Int = 1) = QuestAction.Battle(
         "q", cycle, "kill", QuestMissionType.MONSTER_KILL, "battle_map", mapCode, mapCode,
-        QuestPresetSelection(PresetSelectionMode.PRIMARY), 1,
+        QuestPresetSelection(PresetSelectionMode.PRIMARY), battleCount,
     )
 
     private companion object {
