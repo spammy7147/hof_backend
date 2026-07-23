@@ -5,21 +5,40 @@ import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.client.HofAutomationDeferredException
 import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Service
 import org.springframework.transaction.support.TransactionSynchronizationManager
 import java.util.UUID
 
 /** 최신 타입별 스냅샷 결정 또는 저장된 prepared payload 중 action 하나만 실행하는 자동화 루프다. */
 @Service
-class UnifiedAutomationRunner(
+class UnifiedAutomationRunner @Autowired constructor(
     private val dailyPreflight: AutomationDailyPreflight,
     private val typedRuntime: TypedAutomationRuntimeService,
-    private val typedSnapshotLoader: TypedAutomationSnapshotLoader,
-    private val coordinator: AutomationCoordinator,
+    private val decisionSource: AutomationDecisionSource,
+    private val workTracker: AutomationWorkTracker,
     private val typedActionExecutor: TypedAutomationActionExecutor,
     private val typedCodec: StoredTypedAutomationActionCodec,
     private val wakeupPort: AutomationWakeupPort,
 ) {
+    constructor(
+        dailyPreflight: AutomationDailyPreflight,
+        typedRuntime: TypedAutomationRuntimeService,
+        typedSnapshotLoader: TypedAutomationSnapshotLoader,
+        coordinator: AutomationCoordinator,
+        typedActionExecutor: TypedAutomationActionExecutor,
+        typedCodec: StoredTypedAutomationActionCodec,
+        wakeupPort: AutomationWakeupPort,
+    ) : this(
+        dailyPreflight,
+        typedRuntime,
+        AutomationDecisionSource { accountId -> coordinator.coordinate(typedSnapshotLoader.loadTyped(accountId)) },
+        AutomationWorkTracker { _, _, _ -> null },
+        typedActionExecutor,
+        typedCodec,
+        wakeupPort,
+    )
+
     private val log = LoggerFactory.getLogger(javaClass)
 
     /** 한 wakeup에서 최대 action 하나만 실행하고 후속 판단은 새 wakeup과 새 스냅샷에 맡긴다. */
@@ -61,7 +80,7 @@ class UnifiedAutomationRunner(
             }
         } ?: run {
             val decision = try {
-                coordinator.coordinate(typedSnapshotLoader.loadTyped(accountId))
+                decisionSource.select(accountId)
             } catch (_: TypedAutomationConfigurationChangedException) {
                 typedRuntime.releaseAndEnqueueWake(accountId, token, "TYPED_CONFIG_RELOAD")
                 return
@@ -99,6 +118,7 @@ class UnifiedAutomationRunner(
             when (decision) {
                 is AutomationCoordination.Runnable -> {
                     typedRuntime.recordWarnings(accountId, token, decision.warnings)
+                    workTracker.ensureForAction(accountId, decision.entryId, decision.action)
                     toStored(decision.entryId, decision.action)
                 }
                 is AutomationCoordination.Fatal -> {

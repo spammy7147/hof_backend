@@ -54,10 +54,42 @@ class TypedLiveAutomationSnapshotLoader(
         return inReadTransaction { assembleSnapshot(accountId, before, liveQuests) }
     }
 
-    private fun refreshLiveState(accountId: Long, categories: List<String>): List<QuestSnapshot> = try {
+    override fun loadEntry(
+        accountId: Long,
+        entryId: Long,
+        targetKey: String?,
+        questOverride: List<QuestSnapshot>?,
+    ): AutomationCoordinatorEntry {
+        val before = inReadTransaction { materializeConfiguration(accountId) }
+        val scopedBefore = before.scoped(entryId, targetKey)
+        check(!TransactionSynchronizationManager.isActualTransactionActive()) {
+            "Typed automation HTTP refresh must run without a transaction."
+        }
+        val liveQuests = if (questOverride != null) {
+            refreshLiveState(accountId, scopedBefore.categories, includeQuests = false)
+            questOverride
+        } else {
+            refreshLiveState(
+                accountId,
+                scopedBefore.categories,
+                includeQuests = scopedBefore.entries.single().type == AutomationType.QUEST,
+            )
+        }
+        val after = inReadTransaction { materializeConfiguration(accountId) }
+        if (before.version != after.version) throw TypedAutomationConfigurationChangedException()
+        return inReadTransaction {
+            assembleSnapshot(accountId, after.scoped(entryId, targetKey), liveQuests).entries.single()
+        }
+    }
+
+    private fun refreshLiveState(
+        accountId: Long,
+        categories: List<String>,
+        includeQuests: Boolean = true,
+    ): List<QuestSnapshot> = try {
         sessionRecovery.execute(accountId) {
             categories.forEach { battleMapService.findMaps(accountId, it, HofRequestOrigin.AUTOMATION) }
-            questGateway.load(accountId, HofRequestOrigin.AUTOMATION)
+            if (includeQuests) questGateway.load(accountId, HofRequestOrigin.AUTOMATION) else emptyList()
         }
     } catch (error: Exception) {
         val causes = generateSequence<Throwable>(error) { it.cause }.toList()
@@ -197,6 +229,30 @@ class TypedLiveAutomationSnapshotLoader(
     }
 
     private fun <T> inReadTransaction(block: () -> T): T = readTransaction?.execute { block() } ?: block()
+
+    private fun DetachedConfiguration.scoped(entryId: Long, targetKey: String?): DetachedConfiguration {
+        val entry = entries.singleOrNull { it.id == entryId }
+            ?: throw AutomationConfigurationException("Automation entry $entryId is missing or duplicated.")
+        val scopedEntry = targetKey?.let { entry.scopedToTarget(it) } ?: entry
+        val scopedEntries = listOf(scopedEntry)
+        return copy(entries = scopedEntries, categories = categoriesFor(scopedEntries))
+    }
+
+    private fun DetachedEntry.scopedToTarget(targetKey: String): DetachedEntry = when (type) {
+        AutomationType.QUEST -> copy(quest = quest.filter { it.questCode == targetKey })
+        AutomationType.BATTLE_MAP -> copy(battle = battle.filter { "${it.categoryId}/${it.mapCode}" == targetKey })
+        AutomationType.ADVENTURE_MAP -> copy(adventure = adventure.filter { "${it.categoryId}/${it.mapCode}" == targetKey })
+    }
+
+    private fun categoriesFor(entries: List<DetachedEntry>): List<String> = entries.flatMap { entry ->
+        when (entry.type) {
+            AutomationType.QUEST -> entry.quest.asSequence().filter { it.enabled }
+                .flatMap { it.maps.asSequence() }.map { it.categoryId }.toList()
+            AutomationType.BATTLE_MAP -> entry.battle.map { it.categoryId }
+            AutomationType.ADVENTURE_MAP -> entry.adventure.map { it.categoryId }
+        }
+    }.filter(String::isNotBlank).distinct()
+
     private fun questState(state: AccountBattleMapStateEntity) = AutomationMapState(state.battleMap.categoryId, state.battleMap.mapCode, state.battleMap.name, state.visible, state.battleMap.enabled, state.cooldownUntil, state.winRemaining, state.attemptRemaining, state.availableCount, state.keyMode, state.keyCount, state.supportsThreeBattles)
     private fun battleState(state: AccountBattleMapStateEntity) = BattleMapRunnableState(state.battleMap.categoryId, state.battleMap.mapCode, state.visible, state.battleMap.enabled, state.supportsThreeBattles, state.cooldownUntil, state.availableCount, state.attemptRemaining, state.winRemaining, state.keyMode, state.keyCount, state.battleMap.name)
     private fun adventureState(state: AccountBattleMapStateEntity) = AdventureMapRunnableState(state.battleMap.categoryId, state.battleMap.mapCode, true, state.visible, state.battleMap.enabled, state.cooldownUntil, null, state.attemptRemaining, state.winRemaining, state.availableCount, state.keyMode, state.keyCount, state.battleMap.name)

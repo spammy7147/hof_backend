@@ -1,7 +1,15 @@
 package app.spammy.hof.automation.service
 
-fun interface TypedAutomationSnapshotLoader {
+import app.spammy.hof.quest.model.QuestSnapshot
+
+interface TypedAutomationSnapshotLoader {
     fun loadTyped(accountId: Long): AutomationCoordinatorSnapshot
+    fun loadEntry(
+        accountId: Long,
+        entryId: Long,
+        targetKey: String? = null,
+        questOverride: List<QuestSnapshot>? = null,
+    ): AutomationCoordinatorEntry
 }
 
 fun interface TypedAutomationActionExecutor {

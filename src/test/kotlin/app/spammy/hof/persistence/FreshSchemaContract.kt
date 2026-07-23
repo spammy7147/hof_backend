@@ -324,6 +324,19 @@ internal object FreshSchemaContract {
             requiredInstant("updated_at"),
         ),
         table(
+            "automation_work_sessions",
+            serialId(), requiredBigint("account_id"), requiredBigint("automation_entry_id"),
+            requiredVarchar("work_type", 24), requiredVarchar("target_key", 255),
+            requiredVarchar("status", 24), requiredVarchar("config_version", 64),
+            optionalInteger("target_count"), requiredInteger("confirmed_count"),
+            optionalVarchar("quest_cycle", 64), optionalVarchar("mission_key", 255),
+            optionalVarchar("mission_type", 32), optionalInteger("observed_current"),
+            optionalInteger("observed_required"), optionalVarchar("material_name", 255),
+            optionalInteger("material_missing"), optionalInstant("next_check_at"),
+            optionalInstant("last_verified_at"), requiredInstant("created_at"), requiredInstant("updated_at"),
+            optionalInstant("finished_at"), requiredBigint("version"),
+        ),
+        table(
             "quest_automation_selections",
             serialId(), requiredBigint("automation_entry_id"), requiredVarchar("quest_code", 100),
             requiredBoolean("enabled"), requiredInteger("source_order"),
@@ -565,6 +578,8 @@ internal object FreshSchemaContract {
             "hof_accounts.id", DeleteAction.CASCADE,
         ),
         fk("fk_automation_entries_account", "automation_entries.account_id", "hof_accounts.id", DeleteAction.CASCADE),
+        fk("fk_automation_work_account", "automation_work_sessions.account_id", "hof_accounts.id", DeleteAction.CASCADE),
+        fk("fk_automation_work_entry", "automation_work_sessions.automation_entry_id", "automation_entries.id", DeleteAction.CASCADE),
         fk(
             "fk_quest_automation_selections_entry", "quest_automation_selections.automation_entry_id",
             "automation_entries.id", DeleteAction.CASCADE,
@@ -676,6 +691,14 @@ internal object FreshSchemaContract {
         ),
         index("automation_entries", "idx_automation_entries_account_priority", "account_id", "priority", "id"),
         index(
+            "automation_work_sessions", "idx_automation_work_account_status",
+            "account_id", "status", "updated_at", "id",
+        ),
+        index(
+            "automation_work_sessions", "idx_automation_work_due",
+            "status", "next_check_at", "account_id", "id",
+        ),
+        index(
             "quest_automation_selections", "idx_quest_automation_selections_entry_order",
             "automation_entry_id", "source_order", "id",
         ),
@@ -751,6 +774,27 @@ internal object FreshSchemaContract {
 
     private val CHECKS = listOf(
         check("characters", "ck_characters_pattern_slot_count", "pattern_slot_count >= 0"),
+        check(
+            "automation_work_sessions", "ck_automation_work_type",
+            "locate(',' || work_type || ',', ',QUEST,BATTLE_MAP,ADVENTURE_MAP,') > 0",
+        ),
+        check(
+            "automation_work_sessions", "ck_automation_work_status",
+            "locate(',' || status || ',', ',RUNNING,WAITING_COOLDOWN,WAITING_RESOURCE,YIELDED_PRIORITY,COMPLETED,STOPPED,') > 0",
+        ),
+        check(
+            "automation_work_sessions", "ck_automation_work_count",
+            "confirmed_count >= 0 and (target_count is null or target_count > 0)",
+        ),
+        check(
+            "automation_work_sessions", "ck_automation_work_material_missing",
+            "material_missing is null or material_missing >= 0",
+        ),
+        check(
+            "automation_work_sessions", "ck_automation_work_finished",
+            "(finished_at is not null and locate(',' || status || ',', ',COMPLETED,STOPPED,') > 0) or " +
+                "(finished_at is null and locate(',' || status || ',', ',COMPLETED,STOPPED,') = 0)",
+        ),
         check("typed_automation_runtime_states", "ck_typed_runtime_lifecycle", "locate(',' || lifecycle_status || ',', ',RUNNING,PAUSED,STOPPED,') > 0"),
         check("typed_automation_runtime_states", "ck_typed_runtime_stop", "(lifecycle_status = 'STOPPED' and stop_reason is not null) or (lifecycle_status <> 'STOPPED' and stop_reason is null)"),
         check("typed_automation_runtime_states", "ck_typed_runtime_retry", "retry_attempt >= 0"),

@@ -34,6 +34,54 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 class TypedLiveAutomationSnapshotLoaderTest {
     @Test
+    fun `quest entry probe refreshes only quest categories`() {
+        val now = Instant.parse("2026-07-23T00:00:00Z")
+        val account = HofAccountEntity(7, "scoped-probe", "encrypted", now)
+        val questEntry = AutomationEntryEntity(10, account, AutomationType.QUEST, 0, true, now, now)
+        val battleEntry = AutomationEntryEntity(11, account, AutomationType.BATTLE_MAP, 1, true, now, now)
+        val adventureEntry = AutomationEntryEntity(12, account, AutomationType.ADVENTURE_MAP, 2, true, now, now)
+        val selection = QuestAutomationSelectionEntity(20, questEntry, "quest-1", true, 0)
+        val typed = Mockito.mock(TypedAutomationQueryRepository::class.java)
+        val mapQuery = Mockito.mock(BattleMapQueryRepository::class.java)
+        val mapService = Mockito.mock(BattleMapService::class.java)
+        val presets = Mockito.mock(PartyPresetQueryRepository::class.java)
+        val quest = Mockito.mock(QuestGatewayService::class.java)
+        val loader = TypedLiveAutomationSnapshotLoader(
+            quest,
+            typed,
+            mapQuery,
+            presets,
+            Mockito.mock(BattleMapIdentityResolver::class.java),
+            mapService,
+            TimeProvider { now },
+            HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
+        )
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(questEntry, battleEntry, adventureEntry))
+        Mockito.`when`(typed.findQuestSelectionsByEntryIds(listOf(10))).thenReturn(listOf(selection))
+        Mockito.`when`(typed.findQuestMaps(listOf(20))).thenReturn(
+            listOf(QuestAutomationMapEntity(21, selection, "mission", "quest-category", "quest-map", PresetSelectionMode.PRIMARY, null, 0, true)),
+        )
+        Mockito.`when`(typed.findBattleSettingsByEntryIds(listOf(11))).thenReturn(
+            listOf(BattleAutomationMapEntity(22, battleEntry, "battle-category", "battle-map", 20, PresetSelectionMode.PRIMARY, null, 0)),
+        )
+        Mockito.`when`(typed.findAdventureSettingsByEntryIds(listOf(12))).thenReturn(
+            listOf(AdventureAutomationMapEntity(23, adventureEntry, "adventure-category", "adventure-map", PresetSelectionMode.PRIMARY, null, 0)),
+        )
+        Mockito.`when`(presets.findAllByAccountId(7)).thenReturn(emptyList())
+        Mockito.`when`(presets.findMembersByPresetIds(emptyList())).thenReturn(emptyList())
+        Mockito.`when`(quest.load(7, HofRequestOrigin.AUTOMATION)).thenReturn(emptyList())
+        Mockito.`when`(mapQuery.findAllStatesForExecution(7)).thenReturn(emptyList())
+
+        val snapshot = loader.loadEntry(7, 10)
+
+        assertEquals(AutomationType.QUEST, snapshot.type)
+        Mockito.verify(mapService).findMaps(7, "quest-category", HofRequestOrigin.AUTOMATION)
+        Mockito.verify(mapService, Mockito.never()).findMaps(7, "battle-category", HofRequestOrigin.AUTOMATION)
+        Mockito.verify(mapService, Mockito.never()).findMaps(7, "adventure-category", HofRequestOrigin.AUTOMATION)
+        Mockito.verify(quest).load(7, HofRequestOrigin.AUTOMATION)
+    }
+
+    @Test
     fun `captcha live snapshot failure remains a typed captcha stop signal`() {
         val fixture = liveFailureFixture()
         Mockito.`when`(fixture.quest.load(7L, HofRequestOrigin.AUTOMATION))

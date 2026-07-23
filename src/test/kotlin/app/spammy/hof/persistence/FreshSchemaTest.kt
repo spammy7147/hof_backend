@@ -48,7 +48,11 @@ class FreshSchemaTest {
     @Test
     fun appliesBaselineAndOrderedPresetUpgrade() {
         assertEquals(
-            listOf("1" to "initialize schema", "2" to "order party presets"),
+            listOf(
+                "1" to "initialize schema",
+                "2" to "order party presets",
+                "3" to "add automation work sessions",
+            ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
 
@@ -58,7 +62,14 @@ class FreshSchemaTest {
                 .filter { file -> file.isFile && file.extension == "sql" }
                 .map { file -> file.name }
                 .sorted()
-        assertEquals(listOf("V1__initialize_schema.sql", "V2__order_party_presets.sql"), migrationNames)
+        assertEquals(
+            listOf(
+                "V1__initialize_schema.sql",
+                "V2__order_party_presets.sql",
+                "V3__add_automation_work_sessions.sql",
+            ),
+            migrationNames,
+        )
 
         dataSource.connection.use { connection ->
             LEGACY_AUTOMATION_TABLES.forEach { table ->

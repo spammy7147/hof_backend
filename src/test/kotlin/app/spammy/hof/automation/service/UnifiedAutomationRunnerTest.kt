@@ -35,6 +35,27 @@ class UnifiedAutomationRunnerTest {
     }
 
     @Test
+    fun `production decision source replaces the global snapshot coordinator`() {
+        val decisions = Mockito.mock(AutomationDecisionSource::class.java)
+        val workTracker = Mockito.mock(AutomationWorkTracker::class.java)
+        val action = QuestAction.Accept("quest-1", "accept-1")
+        val row = Mockito.mock(TypedAutomationActionRunEntity::class.java)
+        Mockito.`when`(row.id).thenReturn(88L)
+        Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
+        Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token"))
+        Mockito.`when`(decisions.select(7)).thenReturn(AutomationCoordination.Runnable(10, action, emptyList()))
+        Mockito.`when`(runtime.prepare(Mockito.eq(7L), eqString("token"), anyStoredAction())).thenReturn(row)
+        Mockito.`when`(runtime.markSubmitting(7, "token", 88L)).thenReturn(true)
+        val scopedRunner = UnifiedAutomationRunner(preflight, runtime, decisions, workTracker, executor, codec, wakeup)
+
+        scopedRunner.runOne(7)
+
+        Mockito.verify(decisions).select(7)
+        Mockito.verify(workTracker).ensureForAction(7, 10, action)
+        Mockito.verify(loader, Mockito.never()).loadTyped(7)
+    }
+
+    @Test
     fun `runner persists submits and checkpoints one action then wakes a fresh evaluation`() {
         val snapshot = AutomationCoordinatorSnapshot(emptyList())
         val action = BattleMapAutomationAction(

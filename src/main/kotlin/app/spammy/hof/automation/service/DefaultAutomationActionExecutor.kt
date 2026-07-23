@@ -18,6 +18,7 @@ class DefaultAutomationActionExecutor(
     private val battleHandler: BattleMapAutomationHandler,
     private val battleOutcomeReconciler: BattleOutcomeReconciler,
     private val sessionRecovery: HofSessionRecoveryExecutor,
+    private val executionSignals: AutomationExecutionSignals,
 ) : TypedAutomationActionExecutor {
     override fun execute(accountId: Long, action: StoredTypedAutomationActionV1) {
         when (val payload = action.payload) {
@@ -45,6 +46,16 @@ class DefaultAutomationActionExecutor(
                         questAction,
                         proof.outcomes,
                     )
+                    val signalRounds = result.rounds.takeIf(List<*>::isNotEmpty)
+                    executionSignals.afterBattle(
+                        accountId = accountId,
+                        source = BattleAutomationActionSource.QUEST_AUTOMATION,
+                        outcomes = proof.outcomes,
+                        lootNames = signalRounds?.flatMap { it.loots.map { loot -> loot.name } }
+                            ?: result.loots.map { it.name },
+                        questTexts = signalRounds?.mapNotNull { it.quest?.takeIf(String::isNotBlank) }
+                            ?: listOfNotNull(result.quest?.takeIf(String::isNotBlank)),
+                    )
                 }
                 is StoredTypedActionPayload.BattleMap -> {
                     val result = runTypedBattle(accountId, payload.battleRequest)
@@ -60,6 +71,16 @@ class DefaultAutomationActionExecutor(
                         outcomes, battleOutcomeReconciler,
                     )
                     if (resolution is BattleOutcomeResolution.Fatal) throw AmbiguousAutomationSubmissionException(resolution.evaluation.message)
+                    val signalRounds = result.rounds.takeIf(List<*>::isNotEmpty)
+                    executionSignals.afterBattle(
+                        accountId = accountId,
+                        source = BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
+                        outcomes = outcomes,
+                        lootNames = signalRounds?.flatMap { it.loots.map { loot -> loot.name } }
+                            ?: result.loots.map { it.name },
+                        questTexts = signalRounds?.mapNotNull { it.quest?.takeIf(String::isNotBlank) }
+                            ?: listOfNotNull(result.quest?.takeIf(String::isNotBlank)),
+                    )
                 }
                 is StoredTypedActionPayload.AdventureMap -> {
                     val result = runTypedBattle(accountId, payload.battleRequest)

@@ -24,6 +24,7 @@ class DefaultAutomationActionExecutorTest {
     private val questHandler = Mockito.mock(QuestAutomationHandler::class.java)
     private val battleHandler = Mockito.mock(BattleMapAutomationHandler::class.java)
     private val reconciler = Mockito.mock(BattleOutcomeReconciler::class.java)
+    private val executionSignals = Mockito.mock(AutomationExecutionSignals::class.java)
     private val executor = DefaultAutomationActionExecutor(
         questGateway,
         battleRun,
@@ -31,6 +32,7 @@ class DefaultAutomationActionExecutorTest {
         battleHandler,
         reconciler,
         HofSessionRecoveryExecutor(HofSessionRecoveryService(accountService)),
+        executionSignals,
     )
 
     @Test
@@ -271,6 +273,10 @@ class DefaultAutomationActionExecutorTest {
         Mockito.`when`(round1.outcome).thenReturn("VICTORY")
         Mockito.`when`(round2.outcome).thenReturn("DEFEAT")
         Mockito.`when`(round3.outcome).thenReturn("DRAW")
+        Mockito.`when`(round1.loots).thenReturn(listOf(app.spammy.hof.battle.dto.BattleLootResponse("Steel Ingot x 2")))
+        Mockito.`when`(round2.loots).thenReturn(emptyList())
+        Mockito.`when`(round3.loots).thenReturn(emptyList())
+        Mockito.`when`(round1.quest).thenReturn("퀘스트 진행 4/5")
         Mockito.`when`(result.rounds).thenReturn(listOf(round1, round2, round3))
         Mockito.`when`(battleRun.runBattle(7L, request, HofRequestOrigin.AUTOMATION)).thenReturn(result)
         Mockito.`when`(
@@ -316,6 +322,17 @@ class DefaultAutomationActionExecutorTest {
                 ),
             ),
             eqValue(reconciler),
+        )
+        Mockito.verify(executionSignals).afterBattle(
+            7L,
+            BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
+            listOf(
+                BattleAutomationRoundOutcome.VICTORY,
+                BattleAutomationRoundOutcome.DEFEAT,
+                BattleAutomationRoundOutcome.DRAW,
+            ),
+            listOf("Steel Ingot x 2"),
+            listOf("퀘스트 진행 4/5"),
         )
     }
 
