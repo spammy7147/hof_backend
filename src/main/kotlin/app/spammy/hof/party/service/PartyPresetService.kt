@@ -257,6 +257,7 @@ class PartyPresetService(
             id = id,
             accountId = account.id,
             name = name,
+            displayOrder = displayOrder,
             isPrimary = isPrimary,
             members = members
                 .sortedBy { member -> member.slotIndex }

@@ -39,6 +39,9 @@ class PartyPresetEntity(
     @Column(name = "updated_at", nullable = false)
     var updatedAt: Instant,
 
+    @Column(name = "display_order", nullable = false)
+    var displayOrder: Int = 0,
+
     isPrimary: Boolean = false,
 ) {
     @Column(name = "is_primary", nullable = false)

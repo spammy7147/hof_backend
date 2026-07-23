@@ -55,17 +55,17 @@ class PartyPresetQueryRepositoryTest {
         val otherAccount = savedAccount("party-query-other")
         val character = savedCharacter(account, "query-char")
         val pattern = savedPatternSlot(character, 2)
-        val oldest = savedPreset(account, "가장 오래됨", UPDATED_EARLIER)
-        val firstTie = savedPreset(account, "동률 먼저 생성", UPDATED_LATER)
-        val secondTie = savedPreset(account, "동률 나중 생성", UPDATED_LATER)
-        val foreign = savedPreset(otherAccount, "다른 계정", UPDATED_LATER)
+        val oldest = savedPreset(account, "가장 오래됨", UPDATED_EARLIER, displayOrder = 2)
+        val firstTie = savedPreset(account, "동률 먼저 생성", UPDATED_LATER, displayOrder = 0)
+        val secondTie = savedPreset(account, "동률 나중 생성", UPDATED_LATER, displayOrder = 1)
+        val foreign = savedPreset(otherAccount, "다른 계정", UPDATED_LATER, displayOrder = 0)
         saveMembers(oldest)
         saveMembers(firstTie, character, pattern)
         saveMembers(secondTie)
         saveMembers(foreign)
 
         assertEquals(
-            listOf(secondTie.id, firstTie.id, oldest.id),
+            listOf(firstTie.id, secondTie.id, oldest.id),
             queryRepository.findAllByAccountId(account.id).map { it.id },
         )
         assertEquals(firstTie.id, assertNotNull(queryRepository.findOwnedByAccountIdAndId(account.id, firstTie.id)).id)
@@ -95,7 +95,7 @@ class PartyPresetQueryRepositoryTest {
         val account = savedAccount("party-query-constraints")
         val character = savedCharacter(account, "constraint-char")
         val pattern = savedPatternSlot(character, 0)
-        val preset = savedPreset(account, "제약 조건", UPDATED_LATER)
+        val preset = savedPreset(account, "제약 조건", UPDATED_LATER, displayOrder = 0)
 
         jdbcTemplate.update(
             """
@@ -186,11 +186,13 @@ class PartyPresetQueryRepositoryTest {
         account: HofAccountEntity,
         name: String,
         updatedAt: Instant,
+        displayOrder: Int,
     ): PartyPresetEntity =
         presetRepository.save(
             PartyPresetEntity(
                 account = account,
                 name = name,
+                displayOrder = displayOrder,
                 createdAt = CREATED_AT,
                 updatedAt = updatedAt,
             ),

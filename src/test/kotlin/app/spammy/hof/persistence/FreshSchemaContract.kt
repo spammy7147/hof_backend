@@ -298,6 +298,7 @@ internal object FreshSchemaContract {
             "party_presets",
             serialId(), requiredBigint("account_id"), requiredVarchar("name"), requiredInstant("created_at"),
             requiredInstant("updated_at"), requiredBoolean("is_primary"), optionalInteger("primary_marker"),
+            requiredInteger("display_order"),
         ),
         table(
             "party_preset_members",
@@ -666,6 +667,7 @@ internal object FreshSchemaContract {
             "group_display_order", "map_display_order", "observed_name", "id",
         ),
         index("party_presets", "idx_party_presets_account_updated", "account_id", "updated_at", "id"),
+        index("party_presets", "idx_party_presets_account_order", "account_id", "display_order", "id"),
         index("party_preset_members", "idx_party_preset_members_character", "character_id"),
         index("party_preset_members", "idx_party_preset_members_pattern_slot", "pattern_slot_id"),
         index(
@@ -822,6 +824,7 @@ internal object FreshSchemaContract {
             "required_time is null or required_time >= 0",
         ),
         check("party_preset_members", "ck_party_preset_members_slot", "slot_index between 0 and 4"),
+        check("party_presets", "ck_party_presets_display_order", "display_order >= 0"),
         check(
             "party_presets", "ck_party_presets_primary_marker",
             "(is_primary and primary_marker = 1) or (is_primary = false and primary_marker is null)",
