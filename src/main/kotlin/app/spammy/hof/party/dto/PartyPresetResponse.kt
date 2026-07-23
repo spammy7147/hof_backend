@@ -25,6 +25,11 @@ data class UpdatePartyPresetRequest(
     val members: List<PartyPresetMemberRequest>,
 )
 
+/** 계정의 모든 프리셋 ID를 원하는 표시 순서대로 전달한다. */
+data class ReorderPartyPresetsRequest(
+    val presetIds: List<Long>,
+)
+
 /**
  * 저장된 파티 프리셋의 슬롯 하나를 앱으로 내려주는 응답 DTO다.
  */

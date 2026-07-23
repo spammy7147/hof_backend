@@ -4,16 +4,19 @@ import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.HofAccountRepository
 import app.spammy.hof.character.repository.CharacterQueryRepository
+import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.persistence.QueryDslConfig
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.party.dto.CreatePartyPresetRequest
 import app.spammy.hof.party.dto.PartyPresetMemberRequest
 import app.spammy.hof.party.dto.PartyPresetResponse
+import app.spammy.hof.party.dto.ReorderPartyPresetsRequest
 import app.spammy.hof.party.dto.UpdatePartyPresetRequest
 import app.spammy.hof.party.repository.PartyPresetQueryRepository
 import java.time.Instant
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -140,6 +143,43 @@ class PartyPresetConcurrencyTest {
             assertEquals(1, stored.primaryMarker)
         } finally {
             allowPrimaryCommit.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun concurrentCreateAndReorderLeaveACompleteContiguousOrder() {
+        val accountId = savedAccount("party-create-reorder-lock")
+        val first = service.create(accountId, request("첫 번째"))
+        val second = service.create(accountId, request("두 번째"))
+        val ready = CountDownLatch(2)
+        val start = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
+
+        try {
+            val createFuture = executor.submit<PartyPresetResponse> {
+                ready.countDown()
+                check(start.await(10, TimeUnit.SECONDS))
+                service.create(accountId, request("세 번째"))
+            }
+            val reorderFuture = executor.submit<List<PartyPresetResponse>> {
+                ready.countDown()
+                check(start.await(10, TimeUnit.SECONDS))
+                service.reorder(accountId, ReorderPartyPresetsRequest(listOf(first.id, second.id)))
+            }
+            check(ready.await(10, TimeUnit.SECONDS))
+            start.countDown()
+            createFuture.get(10, TimeUnit.SECONDS)
+            try {
+                reorderFuture.get(10, TimeUnit.SECONDS)
+            } catch (error: ExecutionException) {
+                assertTrue(error.cause is ApiException)
+            }
+
+            val stored = service.findAll(accountId)
+            assertEquals(3, stored.map { preset -> preset.id }.toSet().size)
+            assertEquals(listOf(0, 1, 2), stored.map { preset -> preset.displayOrder })
+        } finally {
             executor.shutdownNow()
         }
     }

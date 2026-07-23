@@ -2,6 +2,7 @@ package app.spammy.hof.party.controller
 
 import app.spammy.hof.party.dto.CreatePartyPresetRequest
 import app.spammy.hof.party.dto.PartyPresetResponse
+import app.spammy.hof.party.dto.ReorderPartyPresetsRequest
 import app.spammy.hof.party.dto.UpdatePartyPresetRequest
 import app.spammy.hof.party.service.PartyPresetService
 import app.spammy.hof.common.security.CurrentAccountId
@@ -14,6 +15,7 @@ import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
+import org.springframework.web.bind.annotation.PutMapping
 
 @RestController
 @RequestMapping("/api/party-presets")
@@ -41,6 +43,14 @@ class PartyPresetController(
         @RequestBody request: CreatePartyPresetRequest,
     ): PartyPresetResponse =
         presetService.create(accountId = accountId, request = request)
+
+    /** 계정의 모든 파티 프리셋을 요청한 순서로 저장한다. */
+    @PutMapping("/order")
+    fun reorder(
+        @CurrentAccountId accountId: Long,
+        @RequestBody request: ReorderPartyPresetsRequest,
+    ): List<PartyPresetResponse> =
+        presetService.reorder(accountId = accountId, request = request)
 
     /**
      * 기존 파티 프리셋 이름과 슬롯 정보를 수정한다.
