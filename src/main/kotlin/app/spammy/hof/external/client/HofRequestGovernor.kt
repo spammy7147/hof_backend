@@ -45,9 +45,6 @@ class HofRequestGovernor(
     private var cooldownUntil: Instant? = null
     private var consecutiveServiceUnavailable = 0
 
-    fun execute(request: () -> HofHttpResponse): HofHttpResponse =
-        execute(HofRequestOrigin.AUTOMATION, request)
-
     fun execute(origin: HofRequestOrigin, request: () -> HofHttpResponse): HofHttpResponse {
         val queuedAtNanos = System.nanoTime()
         try {
@@ -134,5 +131,3 @@ class HofRequestGovernor(
             "HOF 서버 연결이 일시적으로 원활하지 않습니다. 잠시 후 다시 시도해 주세요."
     }
 }
-
-typealias HofAutomationRequestGovernor = HofRequestGovernor
