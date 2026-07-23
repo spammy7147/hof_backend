@@ -37,7 +37,9 @@ data class QuestSelectionRequest(
 ) {
     @get:AssertTrue(message = "퀘스트 맵 실행 순서를 중복해서 사용할 수 없습니다.")
     val hasUniqueMapExecutionOrders: Boolean
-        get() = maps.map { it.executionOrder }.let { it.size == it.toSet().size }
+        get() = maps.groupBy { it.missionKey }.values.all { missionMaps ->
+            missionMaps.map { it.executionOrder }.let { it.size == it.toSet().size }
+        }
 }
 
 data class QuestMapSettingRequest(

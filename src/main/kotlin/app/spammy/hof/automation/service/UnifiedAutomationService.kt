@@ -556,7 +556,12 @@ class UnifiedAutomationService(
                 .thenBy { it.categoryId }
                 .thenBy { it.mapCode },
         )
-        rejectDuplicates(normalized.map { it.executionOrder }, "퀘스트 맵 실행 순서를 중복해서 사용할 수 없습니다.")
+        normalized.groupBy { it.missionKey }.values.forEach { missionMaps ->
+            rejectDuplicates(
+                missionMaps.map { it.executionOrder },
+                "퀘스트 맵 실행 순서를 중복해서 사용할 수 없습니다.",
+            )
+        }
         rejectDuplicates(
             normalized.map { listOf(it.missionKey, it.categoryId, it.mapCode) },
             "같은 미션 맵을 두 번 설정할 수 없습니다.",

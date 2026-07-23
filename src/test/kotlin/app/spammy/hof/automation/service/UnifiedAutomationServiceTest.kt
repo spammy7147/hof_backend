@@ -15,6 +15,7 @@ import app.spammy.hof.automation.entity.AdventureAutomationMapEntity
 import app.spammy.hof.automation.entity.BattleAutomationDailyProgressEntity
 import app.spammy.hof.automation.entity.BattleAutomationMapEntity
 import app.spammy.hof.automation.entity.PresetSelectionMode
+import app.spammy.hof.automation.entity.QuestAutomationMapEntity
 import app.spammy.hof.automation.entity.QuestAutomationSelectionEntity
 import app.spammy.hof.automation.entity.TypedAutomationActionRunEntity
 import app.spammy.hof.automation.entity.TypedAutomationActionStatus
@@ -133,7 +134,7 @@ class UnifiedAutomationServiceTest {
     }
 
     @Test
-    fun `quest update rejects duplicate source and execution orders before reference lookup`() {
+    fun `quest update rejects duplicate source and per-mission execution orders before reference lookup`() {
         Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(entry(91L, AutomationType.QUEST)))
         val duplicateSource = UpdateQuestAutomationRequest(
             false,
@@ -151,7 +152,7 @@ class UnifiedAutomationServiceTest {
                     0,
                     listOf(
                         questMap("m1", 0),
-                        questMap("m2", 0),
+                        questMap("m1", 0).copy(mapCode = "other"),
                     ),
                 ),
             ),
@@ -164,6 +165,37 @@ class UnifiedAutomationServiceTest {
             )
         }
         Mockito.verifyNoInteractions(battleMapQueryRepository)
+    }
+
+    @Test
+    fun `quest update permits the same execution order across different missions`() {
+        val questEntry = entry(91L, AutomationType.QUEST)
+        val savedSelection = QuestAutomationSelectionEntity(301L, questEntry, "Q-1", true, 0)
+        val request = UpdateQuestAutomationRequest(
+            false,
+            listOf(
+                QuestSelectionRequest(
+                    "Q-1",
+                    true,
+                    0,
+                    listOf(
+                        questMap("m1", 0).copy(mapCode = "shared"),
+                        questMap("m2", 0).copy(mapCode = "shared"),
+                    ),
+                ),
+            ),
+        )
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(questEntry))
+        Mockito.`when`(
+            battleMapQueryRepository.findMapsByCategoryIdAndMapCodePairs(
+                setOf("battle_map" to "shared"),
+            ),
+        ).thenReturn(listOf(battleMap(1L, "battle_map", "shared")))
+        Mockito.`when`(questSelectionRepository.save(anyQuestSelection())).thenReturn(savedSelection)
+
+        service.updateQuest(ACCOUNT_ID, request)
+
+        Mockito.verify(questMapRepository, Mockito.times(2)).save(anyQuestMap())
     }
 
     @Test
@@ -622,6 +654,22 @@ class UnifiedAutomationServiceTest {
 
     private fun anyEntry(): AutomationEntryEntity =
         Mockito.any(AutomationEntryEntity::class.java) ?: entry(999L, AutomationType.QUEST)
+
+    private fun anyQuestSelection(): QuestAutomationSelectionEntity =
+        Mockito.any(QuestAutomationSelectionEntity::class.java)
+            ?: QuestAutomationSelectionEntity(999L, entry(999L, AutomationType.QUEST), "matcher", true, 0)
+
+    private fun anyQuestMap(): QuestAutomationMapEntity =
+        Mockito.any(QuestAutomationMapEntity::class.java)
+            ?: QuestAutomationMapEntity(
+                questSelection = QuestAutomationSelectionEntity(999L, entry(999L, AutomationType.QUEST), "matcher", true, 0),
+                missionKey = "matcher",
+                categoryId = "battle_map",
+                mapCode = "matcher",
+                presetMode = PresetSelectionMode.PRIMARY,
+                executionOrder = 0,
+                manuallyOverridden = false,
+            )
 
     private fun anyBattleSetting(): BattleAutomationMapEntity =
         Mockito.any(BattleAutomationMapEntity::class.java)
