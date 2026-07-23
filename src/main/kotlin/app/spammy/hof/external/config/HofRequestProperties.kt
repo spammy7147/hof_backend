@@ -1,11 +1,11 @@
 package app.spammy.hof.external.config
 
-import org.springframework.boot.context.properties.ConfigurationProperties
 import java.time.Duration
+import org.springframework.boot.context.properties.ConfigurationProperties
 
-@ConfigurationProperties("hof.automation-request")
-data class HofAutomationRequestProperties(
-    val minimumInterval: Duration = Duration.ofMillis(500),
+@ConfigurationProperties("hof.request")
+data class HofRequestProperties(
+    val minimumInterval: Duration = Duration.ofMillis(100),
     val shortCooldown: Duration = Duration.ofSeconds(30),
     val longCooldown: Duration = Duration.ofMinutes(3),
     val longCooldownThreshold: Int = 3,

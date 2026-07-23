@@ -1,7 +1,7 @@
 package app.spammy.hof.external.client
 
 import app.spammy.hof.common.time.TimeProvider
-import app.spammy.hof.external.config.HofAutomationRequestProperties
+import app.spammy.hof.external.config.HofRequestProperties
 import app.spammy.hof.external.model.HofHttpResponse
 import org.springframework.stereotype.Component
 import java.time.Duration
@@ -30,7 +30,7 @@ class ThreadSleepHofRequestWaiter : HofRequestWaiter {
 
 @Component
 class HofAutomationRequestGovernor(
-    private val properties: HofAutomationRequestProperties,
+    private val properties: HofRequestProperties,
     private val timeProvider: TimeProvider,
     private val waiter: HofRequestWaiter,
 ) {

@@ -3,7 +3,7 @@ package app.spammy.hof.external.client
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
-import app.spammy.hof.external.config.HofAutomationRequestProperties
+import app.spammy.hof.external.config.HofRequestProperties
 import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofRequest
 import app.spammy.hof.external.model.HofRequestOrigin
@@ -86,7 +86,7 @@ class HofHttpClientTest {
         val server = serverReturning(503)
         val now = Instant.parse("2026-07-23T00:00:00Z")
         val governor = HofAutomationRequestGovernor(
-            properties = HofAutomationRequestProperties(),
+            properties = HofRequestProperties(),
             timeProvider = TimeProvider { now },
             waiter = HofRequestWaiter { _: Duration -> },
         )

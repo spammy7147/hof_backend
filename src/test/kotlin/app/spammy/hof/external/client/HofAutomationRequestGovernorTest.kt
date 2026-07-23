@@ -1,7 +1,7 @@
 package app.spammy.hof.external.client
 
 import app.spammy.hof.common.time.TimeProvider
-import app.spammy.hof.external.config.HofAutomationRequestProperties
+import app.spammy.hof.external.config.HofRequestProperties
 import app.spammy.hof.external.model.HofHttpResponse
 import java.time.Duration
 import java.time.Instant
@@ -19,7 +19,7 @@ class HofAutomationRequestGovernorTest {
         governor.execute { response(200) }
         governor.execute { response(200) }
 
-        assertEquals(listOf(Duration.ofMillis(500)), waiter.waits)
+        assertEquals(listOf(Duration.ofMillis(100)), waiter.waits)
     }
 
     @Test
@@ -102,7 +102,7 @@ class HofAutomationRequestGovernorTest {
         clock: TimeProvider,
         waiter: HofRequestWaiter,
     ) = HofAutomationRequestGovernor(
-        properties = HofAutomationRequestProperties(),
+        properties = HofRequestProperties(),
         timeProvider = clock,
         waiter = waiter,
     )
