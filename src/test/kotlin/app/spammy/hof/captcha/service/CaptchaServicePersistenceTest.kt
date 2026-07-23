@@ -518,25 +518,26 @@ class CaptchaServicePersistenceTest {
     }
 
     class FakeCaptchaImageFileStore : CaptchaImageFileStore {
-        private val files = ConcurrentHashMap<Pair<Long, Long>, StoredCaptchaImage>()
+        private val files = ConcurrentHashMap<Triple<Long, Long, Int>, StoredCaptchaImage>()
         val events = CopyOnWriteArrayList<String>()
 
         override fun save(
             accountId: Long,
             challengeId: Long,
+            preparationVersion: Int,
             contentType: String,
             bytes: ByteArray,
         ) {
-            files[accountId to challengeId] = StoredCaptchaImage(contentType, bytes)
-            events += "save:$accountId:$challengeId"
+            files[Triple(accountId, challengeId, preparationVersion)] = StoredCaptchaImage(contentType, bytes)
+            events += event("save", accountId, challengeId, preparationVersion)
         }
 
-        override fun read(accountId: Long, challengeId: Long): StoredCaptchaImage? =
-            files[accountId to challengeId]
+        override fun read(accountId: Long, challengeId: Long, preparationVersion: Int): StoredCaptchaImage? =
+            files[Triple(accountId, challengeId, preparationVersion)]
 
-        override fun delete(accountId: Long, challengeId: Long) {
-            files.remove(accountId to challengeId)
-            events += "delete:$accountId:$challengeId"
+        override fun delete(accountId: Long, challengeId: Long, preparationVersion: Int) {
+            files.remove(Triple(accountId, challengeId, preparationVersion))
+            events += event("delete", accountId, challengeId, preparationVersion)
         }
 
         fun reset() {
@@ -547,6 +548,13 @@ class CaptchaServicePersistenceTest {
         fun clearEvents() {
             events.clear()
         }
+
+        private fun event(action: String, accountId: Long, challengeId: Long, preparationVersion: Int): String =
+            if (preparationVersion == 0) {
+                "$action:$accountId:$challengeId"
+            } else {
+                "$action:$accountId:$challengeId:$preparationVersion"
+            }
     }
 
     private companion object {

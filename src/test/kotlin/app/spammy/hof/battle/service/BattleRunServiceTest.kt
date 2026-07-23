@@ -642,6 +642,7 @@ class BattleRunServiceTest {
         override fun save(
             accountId: Long,
             challengeId: Long,
+            preparationVersion: Int,
             contentType: String,
             bytes: ByteArray,
         ) {
@@ -650,6 +651,7 @@ class BattleRunServiceTest {
         override fun read(
             accountId: Long,
             challengeId: Long,
+            preparationVersion: Int,
         ): StoredCaptchaImage? =
             StoredCaptchaImage(
                 contentType = "image/png",
@@ -659,6 +661,7 @@ class BattleRunServiceTest {
         override fun delete(
             accountId: Long,
             challengeId: Long,
+            preparationVersion: Int,
         ) {
         }
     }

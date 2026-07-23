@@ -24,8 +24,9 @@ class CaptchaImageManager(
     fun readStored(
         accountId: Long,
         challengeId: Long,
+        preparationVersion: Int = 0,
     ): CaptchaImageResponse? =
-        runCatching { fileStore.read(accountId, challengeId) }
+        runCatching { fileStore.read(accountId, challengeId, preparationVersion) }
             .getOrElse { error ->
                 throw ApiException(ErrorCode.HOF_REQUEST_FAILED, "저장된 캡차 이미지를 읽지 못했습니다.", error)
             }
@@ -35,7 +36,29 @@ class CaptchaImageManager(
     fun exists(
         accountId: Long,
         challengeId: Long,
-    ): Boolean = fileStore.read(accountId, challengeId) != null
+        preparationVersion: Int = 0,
+    ): Boolean = fileStore.read(accountId, challengeId, preparationVersion) != null
+
+    fun storePrepared(
+        accountId: Long,
+        challengeId: Long,
+        preparationVersion: Int,
+        imageUrl: String,
+        cookies: Map<String, String>,
+    ) {
+        val image = downloadRequired(imageUrl, cookies)
+        runCatching {
+            fileStore.save(
+                accountId = accountId,
+                challengeId = challengeId,
+                preparationVersion = preparationVersion,
+                contentType = image.contentType,
+                bytes = image.bytes,
+            )
+        }.getOrElse { error ->
+            throw ApiException(ErrorCode.HOF_REQUEST_FAILED, "캡차 이미지를 저장하지 못했습니다.", error)
+        }
+    }
 
     /**
      * 저장 파일이 없을 때만 사용하는 원본 fallback이다.
@@ -93,16 +116,18 @@ class CaptchaImageManager(
     fun deleteAfterCommit(
         accountId: Long,
         challengeId: Long,
+        preparationVersion: Int = 0,
     ) {
-        afterCommit { deleteImmediately(accountId, challengeId) }
+        afterCommit { deleteImmediately(accountId, challengeId, preparationVersion) }
     }
 
     /** 외부 요청 예외처럼 transaction 결과와 무관하게 폐기해야 하는 이미지를 즉시 삭제한다. */
     fun deleteImmediately(
         accountId: Long,
         challengeId: Long,
+        preparationVersion: Int = 0,
     ) {
-        fileStore.delete(accountId, challengeId)
+        fileStore.delete(accountId, challengeId, preparationVersion)
     }
 
     private fun storeIfPossible(
@@ -121,6 +146,7 @@ class CaptchaImageManager(
             fileStore.save(
                 accountId = accountId,
                 challengeId = challengeId,
+                preparationVersion = 0,
                 contentType = normalizeContentType(response.contentType),
                 bytes = response.body,
             )

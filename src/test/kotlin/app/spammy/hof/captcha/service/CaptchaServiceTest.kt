@@ -999,10 +999,11 @@ class CaptchaServiceTest {
         override fun save(
             accountId: Long,
             challengeId: Long,
+            preparationVersion: Int,
             contentType: String,
             bytes: ByteArray,
         ) {
-            files[key(accountId, challengeId)] = StoredFile(
+            files[key(accountId, challengeId, preparationVersion)] = StoredFile(
                 contentType = contentType,
                 bytes = bytes,
             )
@@ -1011,8 +1012,9 @@ class CaptchaServiceTest {
         override fun read(
             accountId: Long,
             challengeId: Long,
+            preparationVersion: Int,
         ): StoredCaptchaImage? =
-            files[key(accountId, challengeId)]?.let { file ->
+            files[key(accountId, challengeId, preparationVersion)]?.let { file ->
                 StoredCaptchaImage(
                     contentType = file.contentType,
                     bytes = file.bytes,
@@ -1022,8 +1024,9 @@ class CaptchaServiceTest {
         override fun delete(
             accountId: Long,
             challengeId: Long,
+            preparationVersion: Int,
         ) {
-            val key = key(accountId, challengeId)
+            val key = key(accountId, challengeId, preparationVersion)
             deletedKeys += key
             files.remove(key)
         }
@@ -1031,6 +1034,11 @@ class CaptchaServiceTest {
         private fun key(
             accountId: Long,
             challengeId: Long,
-        ): String = "$accountId:$challengeId"
+            preparationVersion: Int = 0,
+        ): String = if (preparationVersion == 0) {
+            "$accountId:$challengeId"
+        } else {
+            "$accountId:$challengeId:$preparationVersion"
+        }
     }
 }
