@@ -6,11 +6,25 @@ import app.spammy.hof.character.entity.QCharacterSyncFailureEntity.characterSync
 import app.spammy.hof.character.entity.QCharacterSyncJobEntity.characterSyncJobEntity
 import com.querydsl.jpa.impl.JPAQueryFactory
 import org.springframework.stereotype.Repository
+import app.spammy.hof.character.entity.CharacterSyncJobStatus
 
 @Repository
 class CharacterSyncJobQueryRepository(
     private val queryFactory: JPAQueryFactory,
 ) {
+    fun findNewestActiveByAccountId(accountId: Long): CharacterSyncJobEntity? =
+        queryFactory
+            .selectFrom(characterSyncJobEntity)
+            .where(
+                characterSyncJobEntity.account.id.eq(accountId),
+                characterSyncJobEntity.status.`in`(
+                    CharacterSyncJobStatus.PENDING,
+                    CharacterSyncJobStatus.RUNNING,
+                ),
+            )
+            .orderBy(characterSyncJobEntity.id.desc())
+            .fetchFirst()
+
     /**
      * 기본 키가 일치하는 캐릭터 동기화 job을 조회하며 없으면 `null`을 반환한다.
      */
