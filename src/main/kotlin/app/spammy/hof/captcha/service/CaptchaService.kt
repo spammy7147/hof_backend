@@ -17,6 +17,7 @@ import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofRequest
+import app.spammy.hof.external.parser.LoginStateParser
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.springframework.stereotype.Service
@@ -42,17 +43,17 @@ class CaptchaService(
     private val cookieCipher: HofCookieCipher,
     private val gateway: HofGateway,
     private val challengeParser: CaptchaChallengeParser,
+    private val loginStateParser: LoginStateParser,
     private val imageManager: CaptchaImageManager,
     private val timeProvider: TimeProvider,
     private val automationHook: CaptchaAutomationHook? = null,
 ) {
     /**
-     * HOF 응답 HTML에서 캡차/자경단 통행증 신호를 찾고 pending challenge로 저장한다.
+     * HOF 응답 HTML에서 캡차/자경단 통행증 신호만 찾아 detected challenge로 저장한다.
      *
-     * 자경단 문구만 있고 이미지가 본문에 없으면 `menu=police`를 추가 호출해서 실제
-     * simple-php-captcha 이미지와 제출 form 정보를 확보한다. 신호 확인 뒤 계정 row를
+     * 감지 시점에는 경찰서 페이지나 이미지에 접근하지 않는다. 신호 확인 뒤 계정 row를
      * `PESSIMISTIC_WRITE`로 잠그고 commit까지 유지하므로 같은 계정의 동시 감지는 직렬화된다.
-     * 기존 pending은 같은 ID로 metadata·field를 교체하고 과거 중복 pending은 삭제해 답변 완료 뒤
+     * 기존 active challenge는 같은 ID로 초기화하고 과거 중복 active challenge는 삭제해 답변 완료 뒤
      * 오래된 challenge가 다시 current로 나타나지 않게 한다.
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -70,60 +71,56 @@ class CaptchaService(
         val lockedAccount = captchaQueryRepository.findAccountByIdForUpdate(account.id)
             ?: account.takeUnless { isTransactionActive() }
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "캡차를 저장할 계정을 찾지 못했습니다.")
-        val pendingChallenges = captchaQueryRepository.findActiveByAccountId(lockedAccount.id)
-        val existingChallenge = pendingChallenges.firstOrNull()
-        val metadata = extractChallengeMetadata(lockedAccount, document, pageText, sourceUrl)
+        val activeChallenges = captchaQueryRepository.findActiveByAccountId(lockedAccount.id)
+        val existingChallenge = activeChallenges.firstOrNull()
+        val prompt = if (pageText.contains(VIGILANTE_PASS_PROMPT)) {
+            VIGILANTE_PASS_PROMPT
+        } else {
+            DEFAULT_PROMPT
+        }
         val detectedAt = timeProvider.now()
 
         val savedChallenge = if (existingChallenge == null) {
             captchaChallengeRepository.save(
                 CaptchaChallengeEntity(
                     account = lockedAccount,
-                    status = STATUS_PENDING,
-                    prompt = metadata.prompt,
-                    imageUrl = metadata.imageUrl,
-                    sourceUrl = metadata.sourceUrl,
+                    status = STATUS_DETECTED,
+                    prompt = prompt,
+                    imageUrl = null,
+                    sourceUrl = sourceUrl,
                     answer = null,
                     createdAt = detectedAt,
                     answeredAt = null,
-                    submitUrl = metadata.submitUrl,
-                    submitMethod = metadata.submitMethod,
-                    answerFieldName = metadata.answerFieldName,
+                    submitUrl = null,
+                    submitMethod = "POST",
+                    answerFieldName = CaptchaChallengeParser.DEFAULT_ANSWER_FIELD,
+                    preparationVersion = 0,
                 ),
-            ).also { challenge -> saveFormFields(challenge, metadata.formFields) }
+            )
         } else {
-            existingChallenge.status = STATUS_PENDING
+            val previousVersion = existingChallenge.preparationVersion
+            existingChallenge.status = STATUS_DETECTED
+            existingChallenge.prompt = prompt
+            existingChallenge.imageUrl = null
+            existingChallenge.sourceUrl = sourceUrl
             existingChallenge.answer = null
             existingChallenge.answeredAt = null
             existingChallenge.createdAt = detectedAt
-            existingChallenge.applyChallengeMetadata(metadata)
-            replaceFormFields(existingChallenge, metadata.formFields)
+            existingChallenge.submitUrl = null
+            existingChallenge.submitMethod = "POST"
+            existingChallenge.answerFieldName = CaptchaChallengeParser.DEFAULT_ANSWER_FIELD
+            existingChallenge.preparationVersion = 0
+            replaceFormFields(existingChallenge, emptyList())
+            imageManager.deleteAfterCommit(existingChallenge.account.id, existingChallenge.id, previousVersion)
             existingChallenge
         }
 
-        val staleChallenges = pendingChallenges.drop(1)
+        val staleChallenges = activeChallenges.drop(1)
         if (staleChallenges.isNotEmpty()) {
             captchaChallengeRepository.deleteAll(staleChallenges)
             staleChallenges.forEach { stale ->
-                imageManager.deleteAfterCommit(stale.account.id, stale.id)
+                imageManager.deleteAfterCommit(stale.account.id, stale.id, stale.preparationVersion)
             }
-        }
-
-        val imageCookies = metadata.imageCookies ?: findCookieMap(lockedAccount.id)
-        if (existingChallenge == null) {
-            imageManager.saveAfterCommit(
-                accountId = lockedAccount.id,
-                challengeId = savedChallenge.id,
-                imageUrl = metadata.imageUrl,
-                cookies = imageCookies,
-            )
-        } else {
-            imageManager.replaceAfterCommit(
-                accountId = lockedAccount.id,
-                challengeId = savedChallenge.id,
-                imageUrl = metadata.imageUrl,
-                cookies = imageCookies,
-            )
         }
 
         automationHook?.detected(savedChallenge)
@@ -131,11 +128,88 @@ class CaptchaService(
         return savedChallenge.toResponse()
     }
 
+    @Transactional
+    fun prepareCurrent(accountId: Long): CaptchaChallengeResponse {
+        val account = captchaQueryRepository.findAccountByIdForUpdate(accountId)
+            ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
+        val challenge = captchaQueryRepository.findLatestActiveByAccountId(accountId)
+            ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "대기 중인 캡차가 없습니다.")
+        val storedCookies = cookieQueryRepository.findByAccountId(accountId)
+        if (storedCookies.isEmpty()) {
+            throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "저장된 HOF 로그인 쿠키가 없습니다.")
+        }
+        val cookies = storedCookies.associate { cookie -> cookie.name to cookieCipher.decrypt(cookie.value) }
+        val policeUrl = challengeParser.buildPoliceUrl(challenge.sourceUrl)
+        val response = gateway.execute(HofRequest(HofHttpMethod.GET, policeUrl), cookies)
+        val login = loginStateParser.parse(response.body)
+        if (login.hasLoginForm && !login.isLoggedIn) {
+            throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "HOF 로그인 세션이 만료되었습니다.")
+        }
+        if (response.statusCode !in 200..299) {
+            throw ApiException(ErrorCode.HOF_REQUEST_FAILED, "HOF 캡차 화면을 불러오지 못했습니다.")
+        }
+
+        val activeCookies = mergeResponseCookies(account, storedCookies, response.setCookies)
+        val responseUrl = response.finalUrl.ifBlank { policeUrl }
+        val document = Jsoup.parse(response.body, responseUrl)
+        val hasSimpleCaptcha = response.body.contains(
+            CaptchaChallengeParser.SIMPLE_CAPTCHA_SCRIPT,
+            ignoreCase = true,
+        )
+        val metadata = challengeParser.extractDocumentMetadata(
+            document = document,
+            pageText = document.text().trim(),
+            sourceUrl = responseUrl,
+            defaultAnswerField = if (hasSimpleCaptcha) {
+                CaptchaChallengeParser.SIMPLE_CAPTCHA_ANSWER_FIELD
+            } else {
+                CaptchaChallengeParser.DEFAULT_ANSWER_FIELD
+            },
+            fallbackImageUrl = if (hasSimpleCaptcha) {
+                challengeParser.buildSimpleCaptchaImageUrl(responseUrl)
+            } else {
+                null
+            },
+            fallbackSubmitField = if (hasSimpleCaptcha) {
+                CaptchaChallengeParser.SIMPLE_CAPTCHA_SUBMIT_FIELD to CaptchaChallengeParser.SIMPLE_CAPTCHA_SUBMIT_VALUE
+            } else {
+                null
+            },
+        )
+        val imageUrl = metadata.imageUrl
+            ?: throw ApiException(ErrorCode.CAPTCHA_PREPARATION_FAILED, "최신 캡차를 준비하지 못했습니다.")
+        val previousVersion = challenge.preparationVersion
+        val nextVersion = previousVersion + 1
+        imageManager.storePrepared(accountId, challenge.id, nextVersion, imageUrl, activeCookies)
+        deletePreparedVersionAfterRollback(accountId, challenge.id, nextVersion)
+
+        challenge.applyChallengeMetadata(metadata.copy(prompt = challenge.prompt))
+        replaceFormFields(challenge, metadata.formFields)
+        challenge.status = STATUS_READY
+        challenge.preparationVersion = nextVersion
+        imageManager.deleteAfterCommit(accountId, challenge.id, previousVersion)
+        return challenge.toResponse()
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun invalidateCurrentPreparation(accountId: Long) {
+        captchaQueryRepository.findAccountByIdForUpdate(accountId) ?: return
+        val challenge = captchaQueryRepository.findLatestActiveByAccountId(accountId) ?: return
+        if (challenge.status != STATUS_READY) return
+
+        val previousVersion = challenge.preparationVersion
+        challenge.status = STATUS_DETECTED
+        challenge.imageUrl = null
+        challenge.submitUrl = null
+        challenge.submitMethod = "POST"
+        challenge.answerFieldName = CaptchaChallengeParser.DEFAULT_ANSWER_FIELD
+        challenge.preparationVersion = 0
+        replaceFormFields(challenge, emptyList())
+        imageManager.deleteAfterCommit(accountId, challenge.id, previousVersion)
+    }
+
     /**
-     * 현재 사용자에게 보여줄 pending challenge를 반환한다.
-     *
-     * 과거 감지 시점에 이미지 저장이 실패했을 수 있으므로, 자경단 통행증 challenge는
-     * 조회 시점에도 한 번 더 경찰서 페이지를 확인해 이미지 파일을 보강한다.
+     * 현재 사용자에게 보여줄 active challenge를 외부 호출 없이 반환한다.
      */
     @Transactional
     fun findCurrent(accountId: Long): CaptchaChallengeResponse? {
@@ -143,47 +217,35 @@ class CaptchaService(
             .findLatestActiveByAccountId(accountId)
             ?: return null
 
-        backfillMissingPoliceCaptcha(challenge)
-
         return challenge.toResponse()
     }
 
     /**
      * 앱 `<Image>`가 읽을 캡차 바이너리를 반환한다.
      *
-     * 기본 경로는 감지 시점에 저장한 로컬 파일이며, 파일이 없을 때만 마지막 수단으로
-     * 원본 이미지 URL을 현재 쿠키 세션으로 다시 호출한다.
+     * 준비 요청에서 저장한 정확한 버전의 로컬 파일만 반환한다.
      */
     @Transactional
     fun loadImage(
         accountId: Long,
         challengeId: Long,
+        preparationVersion: Int = 0,
     ): CaptchaImageResponse {
         val challenge = captchaQueryRepository
-            .findOwnedByAccountIdAndIdAndStatus(accountId, challengeId, STATUS_PENDING)
+            .findOwnedByAccountIdAndIdAndStatus(accountId, challengeId, STATUS_READY)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "캡차 이미지를 찾지 못했습니다.")
 
-        imageManager.readStored(accountId, challengeId)?.let { return it }
-
-        if (challengeParser.isVigilantePassText(challenge.prompt)) {
-            backfillMissingPoliceCaptcha(challenge)
-            imageManager.readStored(accountId, challengeId)?.let { return it }
+        if (challenge.preparationVersion != preparationVersion) {
+            throw ApiException(ErrorCode.CAPTCHA_STALE, "캡차가 갱신되었습니다. 최신 이미지를 다시 확인해 주세요.")
         }
-
-        val imageUrl = challenge.imageUrl
-            ?.trim()
-            ?.ifBlank { null }
+        return imageManager.readStored(accountId, challengeId, preparationVersion)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "캡차 이미지를 찾지 못했습니다.")
-
-        val storedCookies = cookieQueryRepository.findByAccountId(accountId)
-        val cookies = storedCookies.associate { cookie -> cookie.name to cookieCipher.decrypt(cookie.value) }
-        return imageManager.downloadRequired(imageUrl, cookies)
     }
 
     /**
      * 사용자가 입력한 답안을 HOF 원본 form에 맞춰 제출한다.
      *
-     * challenge row를 비관적으로 잠근 뒤 pending 여부를 검사하므로 동시 제출 중 하나만 HOF를 호출한다.
+     * challenge row를 비관적으로 잠근 뒤 READY 상태와 준비 버전을 검사하므로 동시 제출 중 하나만 HOF를 호출한다.
      * 정상 성공 삭제와 실패 응답의 이미지 교체는 DB commit 후 실행한다. 다만 외부 gateway 자체가
      * 예외를 던진 경우에는 기존 의도대로 재사용 위험이 있는 이미지를 즉시 삭제하며 DB 변경은 rollback한다.
      */
@@ -192,6 +254,7 @@ class CaptchaService(
         accountId: Long,
         challengeId: Long,
         answer: String,
+        preparationVersion: Int,
     ): CaptchaChallengeResponse {
         val normalizedAnswer = answer.trim()
         if (normalizedAnswer.isBlank()) {
@@ -206,8 +269,11 @@ class CaptchaService(
         }
         val challenge = lockedChallenge ?: nonTransactionalFallback
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "캡차 대기 항목을 찾지 못했습니다.")
-        if (challenge.status != STATUS_PENDING) {
-            throw ApiException(ErrorCode.INVALID_REQUEST, "대기 중인 캡차 항목만 제출할 수 있습니다.")
+        if (challenge.status != STATUS_READY) {
+            throw ApiException(ErrorCode.INVALID_REQUEST, "입력할 준비가 된 캡차만 제출할 수 있습니다.")
+        }
+        if (challenge.preparationVersion != preparationVersion) {
+            throw ApiException(ErrorCode.CAPTCHA_STALE, "캡차가 갱신되었습니다. 최신 이미지를 다시 확인해 주세요.")
         }
 
         val storedCookies = cookieQueryRepository.findByAccountId(accountId)
@@ -232,7 +298,7 @@ class CaptchaService(
         val response = runCatching {
             gateway.execute(request, cookies)
         }.getOrElse { error ->
-            imageManager.deleteImmediately(challenge.account.id, challenge.id)
+            imageManager.deleteImmediately(challenge.account.id, challenge.id, challenge.preparationVersion)
             throw ApiException(ErrorCode.HOF_REQUEST_FAILED, "HOF 캡차 답안 제출에 실패했습니다.", error)
         }
         val activeCookies = mergeResponseCookies(
@@ -242,28 +308,40 @@ class CaptchaService(
         )
 
         val responseUrl = response.finalUrl.ifBlank { request.url }
+        val login = loginStateParser.parse(response.body)
+        if (login.hasLoginForm && !login.isLoggedIn) {
+            throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "HOF 로그인 세션이 만료되었습니다.")
+        }
         val document = Jsoup.parse(response.body, responseUrl)
         val pageText = document.text().trim()
         if (!challengeParser.isCaptchaSuccessPage(pageText) && challengeParser.hasCaptchaSignal(document, pageText)) {
             val metadata = extractChallengeMetadata(challenge.account, document, pageText, responseUrl)
-            challenge.status = STATUS_PENDING
+            val imageUrl = metadata.imageUrl
+                ?: throw ApiException(ErrorCode.CAPTCHA_PREPARATION_FAILED, "새 캡차를 준비하지 못했습니다.")
+            val previousVersion = challenge.preparationVersion
+            val nextVersion = previousVersion + 1
+            imageManager.storePrepared(
+                accountId = challenge.account.id,
+                challengeId = challenge.id,
+                preparationVersion = nextVersion,
+                imageUrl = imageUrl,
+                cookies = metadata.imageCookies ?: activeCookies,
+            )
+            deletePreparedVersionAfterRollback(challenge.account.id, challenge.id, nextVersion)
+            challenge.status = STATUS_READY
             challenge.answer = null
             challenge.answeredAt = null
             challenge.applyChallengeMetadata(metadata)
             replaceFormFields(challenge, metadata.formFields)
-            imageManager.replaceAfterCommit(
-                accountId = challenge.account.id,
-                challengeId = challenge.id,
-                imageUrl = metadata.imageUrl,
-                cookies = metadata.imageCookies ?: activeCookies,
-            )
+            challenge.preparationVersion = nextVersion
+            imageManager.deleteAfterCommit(challenge.account.id, challenge.id, previousVersion)
             return challenge.toResponse()
         }
 
         challenge.status = STATUS_ANSWERED
         challenge.answer = normalizedAnswer
         challenge.answeredAt = timeProvider.now()
-        imageManager.deleteAfterCommit(challenge.account.id, challenge.id)
+        imageManager.deleteAfterCommit(challenge.account.id, challenge.id, challenge.preparationVersion)
         automationHook?.answered(challenge)
 
         return challenge.toResponse()
@@ -408,32 +486,6 @@ class CaptchaService(
     }
 
     /**
-     * 기존 challenge에 이미지 파일이 없으면 경찰서 페이지를 다시 확인해 이미지와 form 정보를 채운다.
-     */
-    private fun backfillMissingPoliceCaptcha(challenge: CaptchaChallengeEntity) {
-        if (!challengeParser.isVigilantePassText(challenge.prompt)) {
-            return
-        }
-        if (imageManager.exists(challenge.account.id, challenge.id)) {
-            return
-        }
-
-        val metadata = fetchPoliceChallengeMetadata(
-            account = challenge.account,
-            sourceUrl = challenge.sourceUrl,
-            prompt = challenge.prompt,
-        ) ?: return
-        challenge.applyChallengeMetadata(metadata)
-        replaceFormFields(challenge, metadata.formFields)
-        imageManager.saveAfterCommit(
-            accountId = challenge.account.id,
-            challengeId = challenge.id,
-            imageUrl = metadata.imageUrl,
-            cookies = metadata.imageCookies ?: findCookieMap(challenge.account.id),
-        )
-    }
-
-    /**
      * 새로 찾은 form/image metadata를 기존 challenge row에 반영한다.
      */
     private fun CaptchaChallengeEntity.applyChallengeMetadata(metadata: CaptchaChallengeMetadata) {
@@ -492,11 +544,22 @@ class CaptchaService(
     private fun isTransactionActive(): Boolean =
         TransactionSynchronizationManager.isActualTransactionActive()
 
-    /**
-     * 계정에 저장된 HOF 쿠키를 name/value Map으로 읽는다.
-     */
-    private fun findCookieMap(accountId: Long): Map<String, String> =
-        cookieQueryRepository.findValueMapByAccountId(accountId)
+    private fun deletePreparedVersionAfterRollback(accountId: Long, challengeId: Long, preparationVersion: Int) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive() ||
+            !TransactionSynchronizationManager.isSynchronizationActive()
+        ) {
+            return
+        }
+        TransactionSynchronizationManager.registerSynchronization(
+            object : org.springframework.transaction.support.TransactionSynchronization {
+                override fun afterCompletion(status: Int) {
+                    if (status != org.springframework.transaction.support.TransactionSynchronization.STATUS_COMMITTED) {
+                        imageManager.deleteImmediately(accountId, challengeId, preparationVersion)
+                    }
+                }
+            },
+        )
+    }
 
     /**
      * 저장해 둔 원본 form field에 사용자의 답안 값을 채워 제출용 field Map을 만든다.
@@ -526,8 +589,8 @@ class CaptchaService(
             status = status,
             prompt = if (status == STATUS_ANSWERED) CAPTCHA_SUCCESS_MESSAGE else prompt,
             imageUrl = imageUrl
-                ?.takeIf { status == STATUS_PENDING }
-                ?.let { "/api/captcha/$id/image" },
+                ?.takeIf { status == STATUS_READY }
+                ?.let { "/api/captcha/$id/image?version=$preparationVersion" },
             sourceUrl = sourceUrl,
             preparationVersion = preparationVersion,
             createdAt = createdAt.toString(),
@@ -535,8 +598,11 @@ class CaptchaService(
         )
 
     private companion object {
-        const val STATUS_PENDING = "PENDING"
+        const val STATUS_DETECTED = "DETECTED"
+        const val STATUS_READY = "READY"
         const val STATUS_ANSWERED = "ANSWERED"
+        const val VIGILANTE_PASS_PROMPT = "자경단에서 통행증을 발급받아주세요."
+        const val DEFAULT_PROMPT = "캡차 인증이 필요합니다."
         const val CAPTCHA_SUCCESS_MESSAGE = "캡차 인증이 완료되었습니다."
     }
 }

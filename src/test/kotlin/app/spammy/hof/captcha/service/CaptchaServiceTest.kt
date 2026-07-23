@@ -19,6 +19,7 @@ import app.spammy.hof.external.model.HofBinaryResponse
 import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
+import app.spammy.hof.external.parser.LoginStateParser
 import org.junit.jupiter.api.Test
 import org.mockito.ArgumentCaptor
 import org.mockito.Mockito
@@ -60,6 +61,7 @@ class CaptchaServiceTest {
         cookieCipher = cookieCipher,
         gateway = gateway,
         challengeParser = CaptchaChallengeParser(),
+        loginStateParser = LoginStateParser(),
         imageManager = CaptchaImageManager(binaryGateway, captchaImageFileStore),
         timeProvider = TimeProvider { now },
     )
@@ -115,30 +117,8 @@ class CaptchaServiceTest {
     }
 
     @Test
-    fun detectAndRecordAlwaysFetchesPolicePageForVigilantePassGate() {
-        val imageBytes = byteArrayOf(7, 7, 7)
+    fun detectAndRecordStoresOnlyTheCaptchaSignal() {
         repository.nextId = 7L
-        Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(listOf(cookie()))
-        gateway.response = HofHttpResponse(
-            statusCode = 200,
-            finalUrl = "http://sic.zerosic.com/ZeroHOF/index.php?menu=police",
-            body = """
-                <html><body>
-                  <form action="/ZeroHOF/index.php?menu=police" method="post">
-                    <img src="simple-php-captcha.php?_CAPTCHA=1">
-                    <input type="text" name="AnswerV">
-                    <input type="submit" name="AnswerOut" value="입니다.">
-                  </form>
-                </body></html>
-            """.trimIndent(),
-            setCookies = emptyMap(),
-        )
-        binaryGateway.response = HofBinaryResponse(
-            statusCode = 200,
-            finalUrl = "http://sic.zerosic.com/ZeroHOF/simple-php-captcha.php?_CAPTCHA=1",
-            contentType = "image/png",
-            body = imageBytes,
-        )
 
         val response = assertNotNull(
             service.detectAndRecord(
@@ -159,32 +139,43 @@ class CaptchaServiceTest {
             ),
         )
 
-        assertEquals("PENDING", response.status)
+        assertEquals("DETECTED", response.status)
         assertEquals("자경단에서 통행증을 발급받아주세요.", response.prompt)
-        assertEquals("/api/captcha/7/image", response.imageUrl)
+        assertNull(response.imageUrl)
+        assertEquals(0, response.preparationVersion)
 
         val saved = repository.savedEntities.single()
-        assertEquals("http://sic.zerosic.com/ZeroHOF/simple-php-captcha.php?_CAPTCHA=1", saved.imageUrl)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?menu=police", saved.submitUrl)
+        assertNull(saved.imageUrl)
+        assertNull(saved.submitUrl)
         assertEquals("POST", saved.submitMethod)
-        assertEquals("AnswerV", saved.answerFieldName)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?menu=police", gateway.requests.single().url)
-        assertEquals(listOf("http://sic.zerosic.com/ZeroHOF/simple-php-captcha.php?_CAPTCHA=1"), binaryGateway.urls)
-        assertContentEquals(imageBytes, captchaImageFileStore.files["1:7"]?.bytes)
-
-        assertLatestSavedFields("AnswerV" to "", "AnswerOut" to "입니다.")
+        assertEquals("captcha", saved.answerFieldName)
+        assertEquals(emptyList(), gateway.requests)
+        assertEquals(emptyList(), binaryGateway.urls)
+        assertEquals(emptyList(), formFieldRepository.savedBatches.flatten())
     }
 
     @Test
-    fun detectAndRecordFetchesPoliceCaptchaWhenVigilanteGateHasNoImage() {
-        val imageBytes = byteArrayOf(4, 3, 2, 1)
-        repository.nextId = 17L
+    fun prepareCurrentFetchesTheLatestPoliceFormAndImage() {
+        val challenge = CaptchaChallengeEntity(
+            id = 7L,
+            account = account,
+            status = "DETECTED",
+            prompt = "자경단에서 통행증을 발급받아주세요.",
+            imageUrl = null,
+            sourceUrl = "http://sic.zerosic.com/ZeroHOF/index.php?common=snow22",
+            answer = null,
+            createdAt = now,
+            answeredAt = null,
+        )
+        Mockito.`when`(queryRepository.findAccountByIdForUpdate(1L)).thenReturn(account)
+        Mockito.`when`(queryRepository.findLatestActiveByAccountId(1L)).thenReturn(challenge)
         Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(listOf(cookie()))
         gateway.response = HofHttpResponse(
             statusCode = 200,
             finalUrl = "http://sic.zerosic.com/ZeroHOF/index.php?menu=police",
             body = """
                 <html><body>
+                  <a href="index.php?char=1">character</a>
                   <form action="/ZeroHOF/index.php?menu=police" method="post">
                     <img src="simple-php-captcha.php?_CAPTCHA=1">
                     <input type="text" name="AnswerV">
@@ -197,9 +188,57 @@ class CaptchaServiceTest {
         binaryGateway.response = HofBinaryResponse(
             statusCode = 200,
             finalUrl = "http://sic.zerosic.com/ZeroHOF/simple-php-captcha.php?_CAPTCHA=1",
-            contentType = "image/png; charset=UTF-8",
-            body = imageBytes,
+            contentType = "image/png",
+            body = byteArrayOf(7, 7, 7),
         )
+
+        val response = service.prepareCurrent(account.id)
+
+        assertEquals("READY", response.status)
+        assertEquals(1, response.preparationVersion)
+        assertEquals("/api/captcha/7/image?version=1", response.imageUrl)
+        assertLatestSavedFields("AnswerV" to "", "AnswerOut" to "입니다.")
+        assertContentEquals(byteArrayOf(7, 7, 7), captchaImageFileStore.files["1:7:1"]?.bytes)
+    }
+
+    @Test
+    fun prepareCurrentRejectsLoginPageAsExpiredSession() {
+        val challenge = CaptchaChallengeEntity(
+            id = 8L,
+            account = account,
+            status = "DETECTED",
+            prompt = "캡차 인증이 필요합니다.",
+            imageUrl = null,
+            sourceUrl = "http://sic.zerosic.com/ZeroHOF/index.php?common=snow22",
+            answer = null,
+            createdAt = now,
+            answeredAt = null,
+        )
+        Mockito.`when`(queryRepository.findAccountByIdForUpdate(1L)).thenReturn(account)
+        Mockito.`when`(queryRepository.findLatestActiveByAccountId(1L)).thenReturn(challenge)
+        Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(listOf(cookie()))
+        gateway.response = HofHttpResponse(
+            statusCode = 200,
+            finalUrl = "http://sic.zerosic.com/ZeroHOF/index.php",
+            body = """
+                <html><body><form action="index.php" method="post">
+                  <input type="text" name="id">
+                  <input type="password" name="pass">
+                  <input type="submit" name="Login" value="login">
+                </form></body></html>
+            """.trimIndent(),
+            setCookies = emptyMap(),
+        )
+
+        val error = assertFailsWith<ApiException> { service.prepareCurrent(account.id) }
+
+        assertEquals(ErrorCode.HOF_SESSION_EXPIRED, error.errorCode)
+        assertEquals(emptyList(), binaryGateway.urls)
+    }
+
+    @Test
+    fun detectAndRecordStoresOnlyVigilanteSignalUntilPreparationStarts() {
+        repository.nextId = 17L
 
         val response = assertNotNull(
             service.detectAndRecord(
@@ -214,81 +253,24 @@ class CaptchaServiceTest {
             ),
         )
 
-        assertEquals("/api/captcha/17/image", response.imageUrl)
-        assertEquals(1, gateway.requests.size)
-        assertEquals(HofHttpMethod.GET, gateway.requests.single().method)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?menu=police", gateway.requests.single().url)
-        assertEquals(mapOf("PHPSESSID" to "abc"), gateway.cookies.single())
+        assertEquals("DETECTED", response.status)
+        assertNull(response.imageUrl)
+        assertEquals(0, response.preparationVersion)
+        assertEquals(emptyList(), gateway.requests)
+        assertEquals(emptyList(), binaryGateway.urls)
 
         val saved = repository.savedEntities.single()
         assertEquals("자경단에서 통행증을 발급받아주세요.", saved.prompt)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/simple-php-captcha.php?_CAPTCHA=1", saved.imageUrl)
-        assertEquals("image/png", captchaImageFileStore.files["1:17"]?.contentType)
-        assertContentEquals(imageBytes, captchaImageFileStore.files["1:17"]?.bytes)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?menu=police", saved.sourceUrl)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?menu=police", saved.submitUrl)
+        assertNull(saved.imageUrl)
+        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?common=snow22", saved.sourceUrl)
+        assertNull(saved.submitUrl)
         assertEquals("POST", saved.submitMethod)
-        assertEquals("AnswerV", saved.answerFieldName)
-        assertLatestSavedFields("AnswerV" to "", "AnswerOut" to "입니다.")
-        assertEquals(listOf("http://sic.zerosic.com/ZeroHOF/simple-php-captcha.php?_CAPTCHA=1"), binaryGateway.urls)
+        assertEquals(CaptchaChallengeParser.DEFAULT_ANSWER_FIELD, saved.answerFieldName)
+        assertEquals(emptyList(), formFieldRepository.savedBatches)
     }
 
     @Test
-    fun detectAndRecordUsesPoliceSetCookiesWhenDownloadingCaptchaImage() {
-        val imageBytes = byteArrayOf(9, 9, 1, 1)
-        val sessionCookie = cookie(value = "old-session")
-        repository.nextId = 21L
-        Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(listOf(sessionCookie))
-        gateway.response = HofHttpResponse(
-            statusCode = 200,
-            finalUrl = "http://sic.zerosic.com/ZeroHOF/index.php?menu=police",
-            body = """
-                <html><body>
-                  <form action="/ZeroHOF/index.php?menu=police" method="post">
-                    <img src="simple-php-captcha.php?_CAPTCHA=1">
-                    <input type="text" name="AnswerV">
-                    <input type="submit" name="AnswerOut" value="입니다.">
-                  </form>
-                </body></html>
-            """.trimIndent(),
-            setCookies = mapOf(
-                "PHPSESSID" to "fresh-session",
-                "_CAPTCHA" to "fresh-captcha",
-            ),
-        )
-        binaryGateway.response = HofBinaryResponse(
-            statusCode = 200,
-            finalUrl = "http://sic.zerosic.com/ZeroHOF/simple-php-captcha.php?_CAPTCHA=1",
-            contentType = "image/png",
-            body = imageBytes,
-        )
-
-        service.detectAndRecord(
-            account = account,
-            html = """
-                <html><body>
-                  <font color="red">자경단</font>
-                  <p>자경단에서 통행증을 발급받아주세요.</p>
-                </body></html>
-            """.trimIndent(),
-            sourceUrl = "http://sic.zerosic.com/ZeroHOF/index.php?common=snow22",
-        )
-
-        assertEquals(mapOf("PHPSESSID" to "old-session"), gateway.cookies.single())
-        assertEquals(
-            mapOf("PHPSESSID" to "fresh-session", "_CAPTCHA" to "fresh-captcha"),
-            binaryGateway.cookies.single(),
-        )
-        assertEquals("fresh-session", cookieCipher.decrypt(sessionCookie.value))
-        val cookieCaptor = ArgumentCaptor.forClass(HofCookieEntity::class.java)
-        Mockito.verify(cookieRepository).save(capture(cookieCaptor, cookie()))
-        assertEquals("_CAPTCHA", cookieCaptor.value.name)
-        assertEquals("fresh-captcha", cookieCipher.decrypt(cookieCaptor.value.value))
-        assertContentEquals(imageBytes, captchaImageFileStore.files["1:21"]?.bytes)
-    }
-
-    @Test
-    fun detectAndRecordStoresPendingChallengeWhenCaptchaAppears() {
+    fun detectAndRecordStoresDetectedChallengeWhenCaptchaAppears() {
         repository.nextId = 4L
 
         val response = service.detectAndRecord(
@@ -304,56 +286,29 @@ class CaptchaServiceTest {
         )
 
         assertNotNull(response)
-        assertEquals("PENDING", response.status)
-        assertEquals("통행증을 입력하세요", response.prompt)
-        assertEquals("/api/captcha/4/image", response.imageUrl)
+        assertEquals("DETECTED", response.status)
+        assertEquals("캡차 인증이 필요합니다.", response.prompt)
+        assertNull(response.imageUrl)
     }
 
     @Test
-    fun findCurrentBackfillsPoliceCaptchaWhenPendingVigilanteChallengeHasNoImage() {
-        val imageBytes = byteArrayOf(8, 7, 6, 5)
+    fun findCurrentReturnsDetectedStateWithoutFetchingPolicePage() {
         val challenge = pendingChallenge(
             id = 18L,
             prompt = "자경단에서 통행증을 발급받아주세요.",
             imageUrl = null,
         )
+        challenge.status = "DETECTED"
         Mockito.`when`(queryRepository.findLatestActiveByAccountId(1L))
             .thenReturn(challenge)
         Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(listOf(cookie()))
-        gateway.response = HofHttpResponse(
-            statusCode = 200,
-            finalUrl = "http://sic.zerosic.com/ZeroHOF/index.php?menu=police",
-            body = """
-                <html><body>
-                  <form action="/ZeroHOF/index.php?menu=police" method="post">
-                    <img src="simple-php-captcha.php?_CAPTCHA=1">
-                    <input type="text" name="AnswerV">
-                    <input type="submit" name="AnswerOut" value="입니다.">
-                  </form>
-                </body></html>
-            """.trimIndent(),
-            setCookies = emptyMap(),
-        )
-        binaryGateway.response = HofBinaryResponse(
-            statusCode = 200,
-            finalUrl = "http://sic.zerosic.com/ZeroHOF/simple-php-captcha.php?_CAPTCHA=1",
-            contentType = "image/gif",
-            body = imageBytes,
-        )
 
         val response = assertNotNull(service.findCurrent(1L))
 
-        assertEquals("/api/captcha/18/image", response.imageUrl)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/simple-php-captcha.php?_CAPTCHA=1", challenge.imageUrl)
-        assertEquals("image/gif", captchaImageFileStore.files["1:18"]?.contentType)
-        assertContentEquals(imageBytes, captchaImageFileStore.files["1:18"]?.bytes)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?menu=police", challenge.sourceUrl)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?menu=police", challenge.submitUrl)
-        assertEquals("AnswerV", challenge.answerFieldName)
-        assertLatestSavedFields("AnswerV" to "", "AnswerOut" to "입니다.")
-        assertEquals(1, gateway.requests.size)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?menu=police", gateway.requests.single().url)
-        assertEquals(listOf("http://sic.zerosic.com/ZeroHOF/simple-php-captcha.php?_CAPTCHA=1"), binaryGateway.urls)
+        assertEquals("DETECTED", response.status)
+        assertNull(response.imageUrl)
+        assertEquals(emptyList(), gateway.requests)
+        assertEquals(emptyList(), binaryGateway.urls)
     }
 
     @Test
@@ -365,7 +320,7 @@ class CaptchaServiceTest {
             answerFieldName = "pass_code",
             formFields = linkedMapOf("mode" to "battle", "map" to "snow22", "pass_code" to ""),
         )
-        captchaImageFileStore.files["1:3"] = StoredFile(
+        captchaImageFileStore.files["1:3:1"] = StoredFile(
             contentType = "image/png",
             bytes = byteArrayOf(1, 1, 1),
         )
@@ -383,12 +338,12 @@ class CaptchaServiceTest {
             setCookies = emptyMap(),
         )
 
-        val response = service.submitAnswer(accountId = 1L, challengeId = 3L, answer = "  1234  ")
+        val response = service.submitAnswer(accountId = 1L, challengeId = 3L, answer = "  1234  ", preparationVersion = 1)
 
         assertEquals("ANSWERED", response.status)
         assertEquals("1234", challenge.answer)
         assertEquals(now, challenge.answeredAt)
-        assertEquals(listOf("1:3"), captchaImageFileStore.deletedKeys)
+        assertEquals(listOf("1:3:1"), captchaImageFileStore.deletedKeys)
         assertEquals(1, gateway.requests.size)
         assertEquals(HofHttpMethod.GET, gateway.requests.single().method)
         assertEquals("http://sic.zerosic.com/ZeroHOF/pass_check.php", gateway.requests.single().url)
@@ -414,7 +369,7 @@ class CaptchaServiceTest {
             answerFieldName = "AnswerV",
             formFields = linkedMapOf("AnswerV" to "", "AnswerOut" to "입니다."),
         )
-        captchaImageFileStore.files["1:22"] = StoredFile(
+        captchaImageFileStore.files["1:22:1"] = StoredFile(
             contentType = "image/png",
             bytes = byteArrayOf(3, 2, 1),
         )
@@ -435,7 +390,7 @@ class CaptchaServiceTest {
             setCookies = emptyMap(),
         )
 
-        val response = service.submitAnswer(accountId = 1L, challengeId = 22L, answer = "uEjs5")
+        val response = service.submitAnswer(accountId = 1L, challengeId = 22L, answer = "uEjs5", preparationVersion = 1)
 
         assertEquals("ANSWERED", response.status)
         assertEquals("캡차 인증이 완료되었습니다.", response.prompt)
@@ -443,35 +398,8 @@ class CaptchaServiceTest {
         assertEquals("ANSWERED", challenge.status)
         assertEquals("uEjs5", challenge.answer)
         assertEquals(now, challenge.answeredAt)
-        assertEquals(listOf("1:22"), captchaImageFileStore.deletedKeys)
+        assertEquals(listOf("1:22:1"), captchaImageFileStore.deletedKeys)
         assertEquals(emptyList(), binaryGateway.urls)
-    }
-
-    @Test
-    fun loadImageFetchesPendingChallengeImageWithCookiesAndStripsContentTypeParameters() {
-        val bytes = byteArrayOf(9, 8, 7)
-        val imageUrl = "http://sic.zerosic.com/ZeroHOF/pass_image.php?code=abc"
-        val challenge = pendingChallenge(id = 8L, imageUrl = imageUrl)
-        stubPendingImageChallenge(8L, challenge)
-        Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(
-            listOf(
-                cookie(name = "PHPSESSID", value = "abc"),
-                cookie(name = "NO", value = "1"),
-            ),
-        )
-        binaryGateway.response = HofBinaryResponse(
-            statusCode = 200,
-            finalUrl = imageUrl,
-            contentType = "image/png; charset=UTF-8",
-            body = bytes,
-        )
-
-        val response = service.loadImage(accountId = 1L, challengeId = 8L)
-
-        assertEquals("image/png", response.contentType)
-        assertContentEquals(bytes, response.bytes)
-        assertEquals(listOf(imageUrl), binaryGateway.urls)
-        assertEquals(mapOf("PHPSESSID" to "abc", "NO" to "1"), binaryGateway.cookies.single())
     }
 
     @Test
@@ -481,13 +409,16 @@ class CaptchaServiceTest {
             id = 19L,
             imageUrl = "http://sic.zerosic.com/ZeroHOF/simple-php-captcha.php?_CAPTCHA=1",
         )
-        captchaImageFileStore.files["1:19"] = StoredFile(
+        challenge.status = "READY"
+        challenge.preparationVersion = 2
+        captchaImageFileStore.files["1:19:2"] = StoredFile(
             contentType = "image/png",
             bytes = bytes,
         )
-        stubPendingImageChallenge(19L, challenge)
+        Mockito.`when`(queryRepository.findOwnedByAccountIdAndIdAndStatus(1L, 19L, "READY"))
+            .thenReturn(challenge)
 
-        val response = service.loadImage(accountId = 1L, challengeId = 19L)
+        val response = service.loadImage(accountId = 1L, challengeId = 19L, preparationVersion = 2)
 
         assertEquals("image/png", response.contentType)
         assertContentEquals(bytes, response.bytes)
@@ -496,30 +427,38 @@ class CaptchaServiceTest {
     }
 
     @Test
-    fun loadImageDefaultsContentTypeWhenHeaderIsMissingOrInvalid() {
-        val bytes = byteArrayOf(5, 4, 3)
-        val imageUrl = "http://sic.zerosic.com/ZeroHOF/pass_image.php?code=abc"
-        Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(listOf(cookie()))
+    fun loadImageRejectsAnOlderPreparationVersion() {
+        val challenge = pendingChallenge(id = 23L, status = "READY")
+        challenge.preparationVersion = 2
+        captchaImageFileStore.files["1:23:1"] = StoredFile("image/png", byteArrayOf(1))
+        Mockito.`when`(queryRepository.findOwnedByAccountIdAndIdAndStatus(1L, 23L, "READY"))
+            .thenReturn(challenge)
 
-        for ((challengeId, contentType) in listOf<Pair<Long, String?>>(9L to null, 15L to "not a media type")) {
-            stubPendingImageChallenge(challengeId, pendingChallenge(id = challengeId, imageUrl = imageUrl))
-            binaryGateway.response = HofBinaryResponse(
-                statusCode = 200,
-                finalUrl = imageUrl,
-                contentType = contentType,
-                body = bytes,
-            )
-
-            val response = service.loadImage(accountId = 1L, challengeId = challengeId)
-
-            assertEquals("application/octet-stream", response.contentType, contentType)
-            assertContentEquals(bytes, response.bytes)
+        val exception = assertFailsWith<ApiException> {
+            service.loadImage(accountId = 1L, challengeId = 23L, preparationVersion = 1)
         }
+
+        assertEquals(ErrorCode.CAPTCHA_STALE, exception.errorCode)
+        assertEquals(emptyList(), binaryGateway.urls)
+    }
+
+    @Test
+    fun loadImageRejectsReadyChallengeWhenPreparedFileIsMissing() {
+        val challenge = pendingChallenge(id = 24L, status = "READY")
+        challenge.preparationVersion = 3
+        Mockito.`when`(queryRepository.findOwnedByAccountIdAndIdAndStatus(1L, 24L, "READY"))
+            .thenReturn(challenge)
+
+        val exception = assertFailsWith<ApiException> {
+            service.loadImage(accountId = 1L, challengeId = 24L, preparationVersion = 3)
+        }
+
+        assertEquals(ErrorCode.RESOURCE_NOT_FOUND, exception.errorCode)
     }
 
     @Test
     fun loadImageRejectsUnavailableChallenge() {
-        Mockito.`when`(queryRepository.findOwnedByAccountIdAndIdAndStatus(1L, 88L, "PENDING"))
+        Mockito.`when`(queryRepository.findOwnedByAccountIdAndIdAndStatus(1L, 88L, "READY"))
             .thenReturn(null)
 
         val exception = assertFailsWith<ApiException> {
@@ -529,98 +468,6 @@ class CaptchaServiceTest {
         assertEquals(ErrorCode.RESOURCE_NOT_FOUND, exception.errorCode)
         Mockito.verifyNoInteractions(cookieRepository)
         assertEquals(emptyList(), binaryGateway.urls)
-    }
-
-    @Test
-    fun loadImageRejectsChallengeWithoutImageUrl() {
-        val challenge = pendingChallenge(id = 12L, imageUrl = "   ")
-        stubPendingImageChallenge(12L, challenge)
-
-        val exception = assertFailsWith<ApiException> {
-            service.loadImage(accountId = 1L, challengeId = 12L)
-        }
-
-        assertEquals(ErrorCode.RESOURCE_NOT_FOUND, exception.errorCode)
-        Mockito.verifyNoInteractions(cookieRepository)
-        assertEquals(emptyList(), binaryGateway.urls)
-    }
-
-    @Test
-    fun loadImageRejectsWhenStoredCookiesAreMissing() {
-        val challenge = pendingChallenge(
-            id = 13L,
-            imageUrl = "http://sic.zerosic.com/ZeroHOF/pass_image.php?code=abc",
-        )
-        stubPendingImageChallenge(13L, challenge)
-        Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(emptyList())
-
-        val exception = assertFailsWith<ApiException> {
-            service.loadImage(accountId = 1L, challengeId = 13L)
-        }
-
-        assertEquals(ErrorCode.HOF_SESSION_EXPIRED, exception.errorCode)
-        assertEquals(emptyList(), binaryGateway.urls)
-    }
-
-    @Test
-    fun loadImageWrapsBinaryGatewayFailure() {
-        val cause = IllegalStateException("network down")
-        val challenge = pendingChallenge(
-            id = 14L,
-            imageUrl = "http://sic.zerosic.com/ZeroHOF/pass_image.php?code=abc",
-        )
-        stubPendingImageChallenge(14L, challenge)
-        Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(listOf(cookie()))
-        binaryGateway.failure = cause
-
-        val exception = assertFailsWith<ApiException> {
-            service.loadImage(accountId = 1L, challengeId = 14L)
-        }
-
-        assertEquals(ErrorCode.HOF_REQUEST_FAILED, exception.errorCode)
-        assertEquals(cause, exception.cause)
-    }
-
-    @Test
-    fun loadImageRejectsNonSuccessfulBinaryGatewayResponse() {
-        val imageUrl = "http://sic.zerosic.com/ZeroHOF/pass_image.php?code=abc"
-        val challenge = pendingChallenge(id = 16L, imageUrl = imageUrl)
-        stubPendingImageChallenge(16L, challenge)
-        Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(listOf(cookie()))
-        binaryGateway.response = HofBinaryResponse(
-            statusCode = 403,
-            finalUrl = "http://sic.zerosic.com/ZeroHOF/login.php",
-            contentType = "text/html",
-            body = "<html>denied</html>".toByteArray(),
-        )
-
-        val exception = assertFailsWith<ApiException> {
-            service.loadImage(accountId = 1L, challengeId = 16L)
-        }
-
-        assertEquals(ErrorCode.HOF_REQUEST_FAILED, exception.errorCode)
-        assertEquals(listOf(imageUrl), binaryGateway.urls)
-    }
-
-    @Test
-    fun loadImageRejectsSuccessfulHtmlResponseFromHofImageUrl() {
-        val imageUrl = "http://sic.zerosic.com/ZeroHOF/simple-php-captcha.php?_CAPTCHA=1"
-        val challenge = pendingChallenge(id = 20L, imageUrl = imageUrl)
-        stubPendingImageChallenge(20L, challenge)
-        Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(listOf(cookie()))
-        binaryGateway.response = HofBinaryResponse(
-            statusCode = 200,
-            finalUrl = imageUrl,
-            contentType = "text/html; charset=UTF-8",
-            body = "<br />Undefined index: _CAPTCHA".toByteArray(),
-        )
-
-        val exception = assertFailsWith<ApiException> {
-            service.loadImage(accountId = 1L, challengeId = 20L)
-        }
-
-        assertEquals(ErrorCode.HOF_REQUEST_FAILED, exception.errorCode)
-        assertEquals(listOf(imageUrl), binaryGateway.urls)
     }
 
     @Test
@@ -635,7 +482,7 @@ class CaptchaServiceTest {
         stubOwnedChallenge(4L, challenge)
         Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(listOf(cookie()))
 
-        service.submitAnswer(accountId = 1L, challengeId = 4L, answer = "1234")
+        service.submitAnswer(accountId = 1L, challengeId = 4L, answer = "1234", preparationVersion = 1)
 
         assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?common=snow22", gateway.requests.single().url)
     }
@@ -650,7 +497,7 @@ class CaptchaServiceTest {
             answerFieldName = "pass_code",
             formFields = linkedMapOf("old_token" to "old", "pass_code" to ""),
         )
-        captchaImageFileStore.files["1:5"] = StoredFile(
+        captchaImageFileStore.files["1:5:1"] = StoredFile(
             contentType = "image/png",
             bytes = byteArrayOf(1, 1, 1),
         )
@@ -690,9 +537,10 @@ class CaptchaServiceTest {
             body = refreshedImageBytes,
         )
 
-        val response = service.submitAnswer(accountId = 1L, challengeId = 5L, answer = "wrong")
+        val response = service.submitAnswer(accountId = 1L, challengeId = 5L, answer = "wrong", preparationVersion = 1)
 
-        assertEquals("PENDING", response.status)
+        assertEquals("READY", response.status)
+        assertEquals(2, response.preparationVersion)
         assertEquals(HofHttpMethod.POST, gateway.requests[0].method)
         assertEquals(
             mapOf(
@@ -703,8 +551,8 @@ class CaptchaServiceTest {
         )
         assertEquals(HofHttpMethod.GET, gateway.requests[1].method)
         assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?menu=police", gateway.requests[1].url)
-        assertEquals("/api/captcha/5/image", response.imageUrl)
-        assertEquals("PENDING", challenge.status)
+        assertEquals("/api/captcha/5/image?version=2", response.imageUrl)
+        assertEquals("READY", challenge.status)
         assertNull(challenge.answer)
         assertNull(challenge.answeredAt)
         assertEquals("자경단에서 통행증을 발급받아주세요.", challenge.prompt)
@@ -713,9 +561,9 @@ class CaptchaServiceTest {
         assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?menu=police", challenge.submitUrl)
         assertEquals("POST", challenge.submitMethod)
         assertEquals("AnswerV", challenge.answerFieldName)
-        assertEquals(listOf("1:5"), captchaImageFileStore.deletedKeys)
-        assertEquals("image/png", captchaImageFileStore.files["1:5"]?.contentType)
-        assertContentEquals(refreshedImageBytes, captchaImageFileStore.files["1:5"]?.bytes)
+        assertEquals(listOf("1:5:1"), captchaImageFileStore.deletedKeys)
+        assertEquals("image/png", captchaImageFileStore.files["1:5:2"]?.contentType)
+        assertContentEquals(refreshedImageBytes, captchaImageFileStore.files["1:5:2"]?.bytes)
         assertEquals(listOf("old_token", "pass_code"), formFieldRepository.deletedBatches.single().map { it.fieldName })
         assertEquals(1, formFieldRepository.flushCount)
         assertLatestSavedFields(
@@ -728,7 +576,7 @@ class CaptchaServiceTest {
     @Test
     fun submitAnswerRejectsBlankAnswer() {
         val exception = assertFailsWith<ApiException> {
-            service.submitAnswer(accountId = 1L, challengeId = 3L, answer = "   ")
+            service.submitAnswer(accountId = 1L, challengeId = 3L, answer = "   ", preparationVersion = 1)
         }
 
         assertEquals(ErrorCode.INVALID_REQUEST, exception.errorCode)
@@ -751,7 +599,7 @@ class CaptchaServiceTest {
         Mockito.`when`(queryRepository.findOwnedByAccountIdAndId(1L, 3L)).thenReturn(null)
 
         val exception = assertFailsWith<ApiException> {
-            service.submitAnswer(accountId = 1L, challengeId = 3L, answer = "1234")
+            service.submitAnswer(accountId = 1L, challengeId = 3L, answer = "1234", preparationVersion = 1)
         }
 
         assertEquals(ErrorCode.RESOURCE_NOT_FOUND, exception.errorCode)
@@ -760,16 +608,30 @@ class CaptchaServiceTest {
     }
 
     @Test
-    fun submitAnswerRejectsChallengeThatIsNotPending() {
+    fun submitAnswerRejectsChallengeThatIsNotReady() {
         val challenge = pendingChallenge(id = 3L, status = "ANSWERED")
         stubOwnedChallenge(3L, challenge)
 
         val exception = assertFailsWith<ApiException> {
-            service.submitAnswer(accountId = 1L, challengeId = 3L, answer = "1234")
+            service.submitAnswer(accountId = 1L, challengeId = 3L, answer = "1234", preparationVersion = 1)
         }
 
         assertEquals(ErrorCode.INVALID_REQUEST, exception.errorCode)
         Mockito.verifyNoInteractions(cookieRepository)
+        assertEquals(emptyList(), gateway.requests)
+    }
+
+    @Test
+    fun submitAnswerRejectsAnOlderPreparationVersionBeforeCallingHof() {
+        val challenge = pendingChallenge(id = 25L)
+        challenge.preparationVersion = 3
+        stubOwnedChallenge(25L, challenge)
+
+        val exception = assertFailsWith<ApiException> {
+            service.submitAnswer(accountId = 1L, challengeId = 25L, answer = "old", preparationVersion = 2)
+        }
+
+        assertEquals(ErrorCode.CAPTCHA_STALE, exception.errorCode)
         assertEquals(emptyList(), gateway.requests)
     }
 
@@ -780,7 +642,7 @@ class CaptchaServiceTest {
         Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(emptyList())
 
         val exception = assertFailsWith<ApiException> {
-            service.submitAnswer(accountId = 1L, challengeId = 3L, answer = "1234")
+            service.submitAnswer(accountId = 1L, challengeId = 3L, answer = "1234", preparationVersion = 1)
         }
 
         assertEquals(ErrorCode.HOF_SESSION_EXPIRED, exception.errorCode)
@@ -791,7 +653,7 @@ class CaptchaServiceTest {
     @Test
     fun submitAnswerWrapsGatewayFailure() {
         val challenge = pendingChallenge(id = 3L)
-        captchaImageFileStore.files["1:3"] = StoredFile(
+        captchaImageFileStore.files["1:3:1"] = StoredFile(
             contentType = "image/png",
             bytes = byteArrayOf(1, 1, 1),
         )
@@ -801,20 +663,20 @@ class CaptchaServiceTest {
         gateway.failure = cause
 
         val exception = assertFailsWith<ApiException> {
-            service.submitAnswer(accountId = 1L, challengeId = 3L, answer = "1234")
+            service.submitAnswer(accountId = 1L, challengeId = 3L, answer = "1234", preparationVersion = 1)
         }
 
         assertEquals(ErrorCode.HOF_REQUEST_FAILED, exception.errorCode)
         assertEquals(cause, exception.cause)
-        assertEquals("PENDING", challenge.status)
+        assertEquals("READY", challenge.status)
         assertNull(challenge.answer)
-        assertEquals(listOf("1:3"), captchaImageFileStore.deletedKeys)
+        assertEquals(listOf("1:3:1"), captchaImageFileStore.deletedKeys)
     }
 
     private fun pendingChallenge(
         id: Long,
         owner: HofAccountEntity = account,
-        status: String = "PENDING",
+        status: String = "READY",
         prompt: String = "통행증을 입력하세요",
         imageUrl: String? = null,
         submitUrl: String? = "http://sic.zerosic.com/ZeroHOF/pass_check.php",
@@ -835,6 +697,7 @@ class CaptchaServiceTest {
             submitUrl = submitUrl,
             submitMethod = submitMethod,
             answerFieldName = answerFieldName,
+            preparationVersion = 1,
         )
         Mockito.`when`(queryRepository.findFormFields(id)).thenReturn(
             formFields.entries.mapIndexed { fieldOrder, (fieldName, fieldValue) ->
@@ -910,6 +773,7 @@ class CaptchaServiceTest {
                 submitUrl = entity.submitUrl,
                 submitMethod = entity.submitMethod,
                 answerFieldName = entity.answerFieldName,
+                preparationVersion = entity.preparationVersion,
             )
             savedEntities += saved
             return saved as S

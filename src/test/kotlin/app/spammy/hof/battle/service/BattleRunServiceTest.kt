@@ -101,6 +101,7 @@ class BattleRunServiceTest {
         ),
         gateway = gateway,
         challengeParser = CaptchaChallengeParser(),
+        loginStateParser = LoginStateParser(),
         imageManager = CaptchaImageManager(binaryGateway, captchaImageFileStore),
         timeProvider = TimeProvider { now },
     )
