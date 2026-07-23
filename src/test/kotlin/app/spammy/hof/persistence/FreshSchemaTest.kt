@@ -52,6 +52,7 @@ class FreshSchemaTest {
                 "1" to "initialize schema",
                 "2" to "order party presets",
                 "3" to "add automation work sessions",
+                "4" to "prepare captcha on demand",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -67,6 +68,7 @@ class FreshSchemaTest {
                 "V1__initialize_schema.sql",
                 "V2__order_party_presets.sql",
                 "V3__add_automation_work_sessions.sql",
+                "V4__prepare_captcha_on_demand.sql",
             ),
             migrationNames,
         )
@@ -77,6 +79,7 @@ class FreshSchemaTest {
             }
             assertFalse(connection.columnExists("captcha_challenges", "automation_action_run_id"))
             assertTrue(connection.columnExists("party_presets", "display_order"))
+            assertTrue(connection.columnExists("captcha_challenges", "preparation_version"))
         }
     }
 

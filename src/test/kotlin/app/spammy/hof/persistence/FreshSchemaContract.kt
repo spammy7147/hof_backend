@@ -459,6 +459,7 @@ internal object FreshSchemaContract {
             optionalText("image_url"), requiredText("source_url"), optionalText("answer"),
             requiredInstant("created_at"), optionalInstant("answered_at"), optionalText("submit_url"),
             requiredVarchar("submit_method", 10), requiredVarchar("answer_field_name", 100),
+            requiredInteger("preparation_version"),
         ),
         table(
             "captcha_form_fields",
@@ -955,6 +956,11 @@ internal object FreshSchemaContract {
         check("battle_log_participants", "ck_battle_log_participants_slot", "slot_index >= 0"),
         check("battle_log_loots", "ck_battle_log_loots_order", "display_order >= 0"),
         check("battle_log_loots", "ck_battle_log_loots_quantity", "quantity > 0"),
+        check(
+            "captcha_challenges",
+            "ck_captcha_challenges_preparation_version",
+            "preparation_version >= 0",
+        ),
         check("captcha_form_fields", "ck_captcha_form_fields_order", "field_order >= 0"),
     )
 }

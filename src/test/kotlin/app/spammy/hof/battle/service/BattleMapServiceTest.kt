@@ -374,14 +374,15 @@ class BattleMapServiceTest {
         gateway.defaultBody = directAdventureHtml(sharedCount = 3, includeStale = false)
         Mockito.doReturn(
             CaptchaChallengeResponse(
-                92L,
-                account.id,
-                "PENDING",
-                "captcha",
-                null,
-                "https://example.test/captcha",
-                NOW.toString(),
-                null,
+                id = 92L,
+                accountId = account.id,
+                status = "PENDING",
+                prompt = "captcha",
+                imageUrl = null,
+                sourceUrl = "https://example.test/captcha",
+                preparationVersion = 0,
+                createdAt = NOW.toString(),
+                answeredAt = null,
             ),
         ).`when`(captchaService).detectAndRecord(
             anyAccount(),
@@ -436,14 +437,15 @@ class BattleMapServiceTest {
         gateway.defaultBody = directAdventureHtml(sharedCount = 3, includeStale = false)
         Mockito.doReturn(
             CaptchaChallengeResponse(
-                91L,
-                account.id,
-                "PENDING",
-                "captcha",
-                null,
-                "https://example.test/captcha",
-                NOW.toString(),
-                null,
+                id = 91L,
+                accountId = account.id,
+                status = "PENDING",
+                prompt = "captcha",
+                imageUrl = null,
+                sourceUrl = "https://example.test/captcha",
+                preparationVersion = 0,
+                createdAt = NOW.toString(),
+                answeredAt = null,
             ),
         ).`when`(captchaService).detectAndRecord(
             anyAccount(),

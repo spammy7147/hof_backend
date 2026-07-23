@@ -40,35 +40,35 @@ class CaptchaQueryRepository(
      *
      * 생성 시각이 같은 경우 큰 ID를 우선하는 tie-breaker를 두어 현재 challenge 선택이 흔들리지 않는다.
      */
-    fun findLatestPendingByAccountId(accountId: Long): CaptchaChallengeEntity? =
+    fun findLatestActiveByAccountId(accountId: Long): CaptchaChallengeEntity? =
         queryFactory
             .selectFrom(captchaChallengeEntity)
             .where(
                 captchaChallengeEntity.account.id.eq(accountId),
-                captchaChallengeEntity.status.eq(STATUS_PENDING),
+                captchaChallengeEntity.status.`in`(ACTIVE_STATUSES),
             )
             .orderBy(captchaChallengeEntity.createdAt.desc(), captchaChallengeEntity.id.desc())
             .fetchFirst()
 
     /** 계정의 pending challenge를 최신순으로 모두 읽어 재사용 대상과 과거 중복 row를 함께 찾는다. */
-    fun findPendingByAccountId(accountId: Long): List<CaptchaChallengeEntity> =
+    fun findActiveByAccountId(accountId: Long): List<CaptchaChallengeEntity> =
         queryFactory
             .selectFrom(captchaChallengeEntity)
             .where(
                 captchaChallengeEntity.account.id.eq(accountId),
-                captchaChallengeEntity.status.eq(STATUS_PENDING),
+                captchaChallengeEntity.status.`in`(ACTIVE_STATUSES),
             )
             .orderBy(captchaChallengeEntity.createdAt.desc(), captchaChallengeEntity.id.desc())
             .fetch()
 
     /** 테스트와 운영 무결성 확인을 위해 계정의 pending challenge 수를 DB에서 계산한다. */
-    fun countPendingByAccountId(accountId: Long): Long =
+    fun countActiveByAccountId(accountId: Long): Long =
         queryFactory
             .select(captchaChallengeEntity.count())
             .from(captchaChallengeEntity)
             .where(
                 captchaChallengeEntity.account.id.eq(accountId),
-                captchaChallengeEntity.status.eq(STATUS_PENDING),
+                captchaChallengeEntity.status.`in`(ACTIVE_STATUSES),
             )
             .fetchOne() ?: 0L
 
@@ -151,6 +151,6 @@ class CaptchaQueryRepository(
             .fetchOne() ?: 0L
 
     private companion object {
-        const val STATUS_PENDING = "PENDING"
+        val ACTIVE_STATUSES = listOf("DETECTED", "READY")
     }
 }

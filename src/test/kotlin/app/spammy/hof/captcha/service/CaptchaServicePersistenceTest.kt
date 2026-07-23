@@ -19,6 +19,7 @@ import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.model.HofBinaryResponse
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
+import app.spammy.hof.external.parser.LoginStateParser
 import java.time.Instant
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
@@ -54,6 +55,7 @@ import org.springframework.transaction.support.TransactionTemplate
     CookieQueryRepository::class,
     CaptchaQueryRepository::class,
     CaptchaChallengeParser::class,
+    LoginStateParser::class,
     CaptchaImageManager::class,
     CaptchaService::class,
     CaptchaServicePersistenceTest.BoundaryConfig::class,
@@ -96,13 +98,7 @@ class CaptchaServicePersistenceTest {
     @Test
     fun detectPersistsOrderedFieldsAndSubmitReconstructsMapWithAnswerOverwritten() {
         val account = savedAccountWithCookie("captcha-service-fields")
-        val challenge = assertNotNull(
-            service.detectAndRecord(
-                account = account,
-                html = captchaHtml(tokenName = "token", tokenValue = "abc"),
-                sourceUrl = POLICE_URL,
-            ),
-        )
+        val challenge = detectAndPrepare(account, "token", "abc")
 
         assertEquals(
             listOf(
@@ -122,7 +118,7 @@ class CaptchaServicePersistenceTest {
             setCookies = emptyMap(),
         )
 
-        val answered = service.submitAnswer(account.id, challenge.id, "  7319  ")
+        val answered = service.submitAnswer(account.id, challenge.id, "  7319  ", challenge.preparationVersion)
 
         assertEquals("ANSWERED", answered.status)
         assertEquals("캡차 인증이 완료되었습니다.", answered.prompt)
@@ -139,13 +135,7 @@ class CaptchaServicePersistenceTest {
     @Test
     fun failedSubmissionReplacesOldFieldsInTheSameChallenge() {
         val account = savedAccountWithCookie("captcha-service-replace")
-        val challenge = assertNotNull(
-            service.detectAndRecord(
-                account = account,
-                html = captchaHtml(tokenName = "old_token", tokenValue = "old"),
-                sourceUrl = POLICE_URL,
-            ),
-        )
+        val challenge = detectAndPrepare(account, "old_token", "old")
         imageStore.clearEvents()
         binaryGateway.body = byteArrayOf(9, 8, 7)
         gateway.response = HofHttpResponse(
@@ -155,18 +145,19 @@ class CaptchaServicePersistenceTest {
             setCookies = mapOf("PHPSESSID" to "updated-session"),
         )
 
-        val refreshed = service.submitAnswer(account.id, challenge.id, "wrong")
+        val refreshed = service.submitAnswer(account.id, challenge.id, "wrong", challenge.preparationVersion)
 
         assertEquals(challenge.id, refreshed.id)
-        assertEquals("PENDING", refreshed.status)
+        assertEquals("READY", refreshed.status)
+        assertEquals(2, refreshed.preparationVersion)
         assertEquals(
             listOf("new_token" to "new", "AnswerV" to "", "AnswerOut" to "입니다."),
             queryRepository.findFormFields(challenge.id).map { it.fieldName to it.fieldValue },
         )
         assertEquals(3L, queryRepository.countFormFields(challenge.id))
-        assertContentEquals(byteArrayOf(9, 8, 7), assertNotNull(imageStore.read(account.id, challenge.id)).bytes)
+        assertContentEquals(byteArrayOf(9, 8, 7), assertNotNull(imageStore.read(account.id, challenge.id, 2)).bytes)
         assertEquals(
-            listOf("delete:${account.id}:${challenge.id}", "save:${account.id}:${challenge.id}"),
+            listOf("save:${account.id}:${challenge.id}:2", "delete:${account.id}:${challenge.id}:1"),
             imageStore.events,
         )
     }
@@ -192,26 +183,28 @@ class CaptchaServicePersistenceTest {
     }
 
     @Test
-    fun repeatedDetectionReusesPendingChallengeAndAnsweredChallengeDoesNotResurface() {
+    fun repeatedDetectionReusesChallengeAndClearsPreparedMetadata() {
         val account = savedAccountWithCookie("captcha-service-repeat")
-        val first = assertNotNull(
-            service.detectAndRecord(account, captchaHtml("old_token", "old"), POLICE_URL),
-        )
+        val first = detectAndPrepare(account, "old_token", "old")
+        imageStore.clearEvents()
         val second = assertNotNull(
             service.detectAndRecord(account, captchaHtml("new_token", "new"), POLICE_URL),
         )
 
         assertEquals(first.id, second.id)
-        assertEquals(1L, queryRepository.countPendingByAccountId(account.id))
-        assertEquals(
-            listOf("new_token" to "new", "AnswerV" to "", "AnswerOut" to "입니다."),
-            queryRepository.findFormFields(second.id).map { it.fieldName to it.fieldValue },
-        )
+        assertEquals("DETECTED", second.status)
+        assertEquals(0, second.preparationVersion)
+        assertEquals(1L, queryRepository.countActiveByAccountId(account.id))
+        assertEquals(emptyList(), queryRepository.findFormFields(second.id))
+        assertEquals(listOf("delete:${account.id}:${second.id}:1"), imageStore.events)
 
-        service.submitAnswer(account.id, second.id, "7319")
+        gateway.response = HofHttpResponse(200, POLICE_URL, captchaHtml("new_token", "new"), emptyMap())
+        val prepared = service.prepareCurrent(account.id)
+        gateway.response = HofHttpResponse(200, POLICE_URL, "<html><body>통행증이 발급되었습니다.</body></html>", emptyMap())
+        service.submitAnswer(account.id, prepared.id, "7319", prepared.preparationVersion)
 
         assertNull(service.findCurrent(account.id))
-        assertEquals(0L, queryRepository.countPendingByAccountId(account.id))
+        assertEquals(0L, queryRepository.countActiveByAccountId(account.id))
         assertNull(imageStore.read(account.id, second.id))
     }
 
@@ -226,16 +219,19 @@ class CaptchaServicePersistenceTest {
         )
 
         assertEquals(newest.id, detected.id)
-        assertEquals(1L, queryRepository.countPendingByAccountId(account.id))
+        assertEquals(1L, queryRepository.countActiveByAccountId(account.id))
         assertNull(queryRepository.findOwnedByAccountIdAndId(account.id, stale.id))
 
-        service.submitAnswer(account.id, detected.id, "correct")
+        gateway.response = HofHttpResponse(200, POLICE_URL, captchaHtml("fresh_token", "fresh"), emptyMap())
+        val prepared = service.prepareCurrent(account.id)
+        gateway.response = HofHttpResponse(200, POLICE_URL, "<html><body>통행증이 발급되었습니다.</body></html>", emptyMap())
+        service.submitAnswer(account.id, prepared.id, "correct", prepared.preparationVersion)
 
         assertNull(service.findCurrent(account.id))
     }
 
     @Test
-    fun concurrentDetectionSerializesOnAccountAndKeepsOnePendingChallenge() {
+    fun concurrentDetectionSerializesOnAccountAndKeepsOneDetectedChallenge() {
         val account = savedAccountWithCookie("captcha-service-concurrent-detect")
         val start = CountDownLatch(1)
         val executor = Executors.newFixedThreadPool(2)
@@ -255,10 +251,9 @@ class CaptchaServicePersistenceTest {
             val responses = futures.map { it.get(10, TimeUnit.SECONDS) }
 
             assertEquals(1, responses.map { it.id }.distinct().size)
-            assertEquals(1L, queryRepository.countPendingByAccountId(account.id))
+            assertEquals(1L, queryRepository.countActiveByAccountId(account.id))
             val fields = queryRepository.findFormFields(responses.first().id)
-            assertTrue(fields.first().fieldName in setOf("token_a", "token_b"))
-            assertEquals(listOf("AnswerV", "AnswerOut"), fields.drop(1).map { it.fieldName })
+            assertEquals(emptyList(), fields)
         } finally {
             executor.shutdownNow()
         }
@@ -267,9 +262,8 @@ class CaptchaServicePersistenceTest {
     @Test
     fun concurrentSubmissionCallsHofOnceAndSecondSubmitObservesAnsweredStatus() {
         val account = savedAccountWithCookie("captcha-service-concurrent-submit")
-        val challenge = assertNotNull(
-            service.detectAndRecord(account, captchaHtml("token", "submit"), POLICE_URL),
-        )
+        val challenge = detectAndPrepare(account, "token", "submit")
+        gateway.response = HofHttpResponse(200, POLICE_URL, "<html><body>통행증이 발급되었습니다.</body></html>", emptyMap())
         val gatewayEntered = CountDownLatch(1)
         val releaseGateway = CountDownLatch(1)
         val attemptsStarted = CountDownLatch(2)
@@ -283,7 +277,7 @@ class CaptchaServicePersistenceTest {
             val futures = (1..2).map { attempt ->
                 executor.submit<Result<CaptchaChallengeResponse>> {
                     attemptsStarted.countDown()
-                    runCatching { service.submitAnswer(account.id, challenge.id, "answer-$attempt") }
+                    runCatching { service.submitAnswer(account.id, challenge.id, "answer-$attempt", challenge.preparationVersion) }
                 }
             }
 
@@ -305,7 +299,7 @@ class CaptchaServicePersistenceTest {
     }
 
     @Test
-    fun requiresNewChallengeAndFieldsSurviveOuterRollback() {
+    fun requiresNewDetectedChallengeSurvivesOuterRollbackWithoutPreparingFields() {
         val account = savedAccountWithCookie("captcha-service-requires-new")
         var detected: CaptchaChallengeResponse? = null
 
@@ -314,10 +308,11 @@ class CaptchaServicePersistenceTest {
             transaction.setRollbackOnly()
         }
 
-        val challenge = assertNotNull(queryRepository.findLatestPendingByAccountId(account.id))
+        val challenge = assertNotNull(queryRepository.findLatestActiveByAccountId(account.id))
         assertEquals(assertNotNull(detected).id, challenge.id)
-        assertEquals(3L, queryRepository.countFormFields(challenge.id))
-        assertNotNull(imageStore.read(account.id, challenge.id))
+        assertEquals("DETECTED", challenge.status)
+        assertEquals(0L, queryRepository.countFormFields(challenge.id))
+        assertNull(imageStore.read(account.id, challenge.id))
     }
 
     @Test
@@ -334,7 +329,7 @@ class CaptchaServicePersistenceTest {
             transaction.setRollbackOnly()
         }
 
-        assertNull(queryRepository.findLatestPendingByAccountId(account.id))
+        assertNull(queryRepository.findLatestActiveByAccountId(account.id))
         assertNull(imageStore.read(account.id, assertNotNull(rolledBackChallengeId)))
         assertEquals(emptyList(), imageStore.events)
     }
@@ -342,10 +337,8 @@ class CaptchaServicePersistenceTest {
     @Test
     fun rolledBackFailedRefreshPreservesPriorImageAndFields() {
         val account = savedAccountWithCookie("captcha-service-rollback-refresh")
-        val challenge = assertNotNull(
-            service.detectAndRecord(account, captchaHtml("old_token", "old"), POLICE_URL),
-        )
-        val originalImage = assertNotNull(imageStore.read(account.id, challenge.id)).bytes
+        val challenge = detectAndPrepare(account, "old_token", "old")
+        val originalImage = assertNotNull(imageStore.read(account.id, challenge.id, 1)).bytes
         imageStore.clearEvents()
         binaryGateway.body = byteArrayOf(9, 8, 7)
         gateway.response = HofHttpResponse(
@@ -357,39 +350,41 @@ class CaptchaServicePersistenceTest {
         val target = AopTestUtils.getTargetObject<CaptchaService>(service)
 
         TransactionTemplate(transactionManager).executeWithoutResult { transaction ->
-            target.submitAnswer(account.id, challenge.id, "wrong")
-            assertContentEquals(originalImage, assertNotNull(imageStore.read(account.id, challenge.id)).bytes)
+            target.submitAnswer(account.id, challenge.id, "wrong", challenge.preparationVersion)
+            assertContentEquals(originalImage, assertNotNull(imageStore.read(account.id, challenge.id, 1)).bytes)
             transaction.setRollbackOnly()
         }
 
-        assertContentEquals(originalImage, assertNotNull(imageStore.read(account.id, challenge.id)).bytes)
+        assertContentEquals(originalImage, assertNotNull(imageStore.read(account.id, challenge.id, 1)).bytes)
         assertEquals(
             listOf("old_token" to "old", "AnswerV" to "", "AnswerOut" to "입니다."),
             queryRepository.findFormFields(challenge.id).map { it.fieldName to it.fieldValue },
         )
-        assertEquals(emptyList(), imageStore.events)
+        assertEquals(
+            listOf("save:${account.id}:${challenge.id}:2", "delete:${account.id}:${challenge.id}:2"),
+            imageStore.events,
+        )
     }
 
     @Test
-    fun rolledBackSuccessfulAnswerPreservesPriorImageAndPendingStatus() {
+    fun rolledBackSuccessfulAnswerPreservesPriorImageAndReadyStatus() {
         val account = savedAccountWithCookie("captcha-service-rollback-success")
-        val challenge = assertNotNull(
-            service.detectAndRecord(account, captchaHtml("token", "success-rollback"), POLICE_URL),
-        )
-        val originalImage = assertNotNull(imageStore.read(account.id, challenge.id)).bytes
+        val challenge = detectAndPrepare(account, "token", "success-rollback")
+        gateway.response = HofHttpResponse(200, POLICE_URL, "<html><body>통행증이 발급되었습니다.</body></html>", emptyMap())
+        val originalImage = assertNotNull(imageStore.read(account.id, challenge.id, 1)).bytes
         imageStore.clearEvents()
         val target = AopTestUtils.getTargetObject<CaptchaService>(service)
 
         TransactionTemplate(transactionManager).executeWithoutResult { transaction ->
-            val answered = target.submitAnswer(account.id, challenge.id, "correct")
+            val answered = target.submitAnswer(account.id, challenge.id, "correct", challenge.preparationVersion)
             assertEquals("ANSWERED", answered.status)
-            assertContentEquals(originalImage, assertNotNull(imageStore.read(account.id, challenge.id)).bytes)
+            assertContentEquals(originalImage, assertNotNull(imageStore.read(account.id, challenge.id, 1)).bytes)
             transaction.setRollbackOnly()
         }
 
-        assertContentEquals(originalImage, assertNotNull(imageStore.read(account.id, challenge.id)).bytes)
+        assertContentEquals(originalImage, assertNotNull(imageStore.read(account.id, challenge.id, 1)).bytes)
         assertEquals(
-            "PENDING",
+            "READY",
             assertNotNull(queryRepository.findOwnedByAccountIdAndId(account.id, challenge.id)).status,
         )
         assertEquals(emptyList(), imageStore.events)
@@ -416,6 +411,26 @@ class CaptchaServicePersistenceTest {
         return account
     }
 
+    private fun detectAndPrepare(
+        account: HofAccountEntity,
+        tokenName: String,
+        tokenValue: String,
+    ): CaptchaChallengeResponse {
+        val detected = assertNotNull(
+            service.detectAndRecord(account, captchaHtml(tokenName, tokenValue), POLICE_URL),
+        )
+        gateway.response = HofHttpResponse(
+            statusCode = 200,
+            finalUrl = POLICE_URL,
+            body = captchaHtml(tokenName, tokenValue),
+            setCookies = emptyMap(),
+        )
+        val prepared = service.prepareCurrent(account.id)
+        assertEquals(detected.id, prepared.id)
+        gateway.requests.clear()
+        return prepared
+    }
+
     private fun savedPendingChallenge(
         account: HofAccountEntity,
         createdAt: Instant,
@@ -423,7 +438,7 @@ class CaptchaServicePersistenceTest {
         challengeRepository.save(
             CaptchaChallengeEntity(
                 account = account,
-                status = "PENDING",
+                status = "READY",
                 prompt = "캡차를 입력해주세요.",
                 imageUrl = "http://sic.zerosic.com/ZeroHOF/captcha.png",
                 sourceUrl = POLICE_URL,
@@ -433,6 +448,7 @@ class CaptchaServicePersistenceTest {
                 submitUrl = POLICE_URL,
                 submitMethod = "POST",
                 answerFieldName = "AnswerV",
+                preparationVersion = 1,
             ),
         )
 
@@ -518,25 +534,26 @@ class CaptchaServicePersistenceTest {
     }
 
     class FakeCaptchaImageFileStore : CaptchaImageFileStore {
-        private val files = ConcurrentHashMap<Pair<Long, Long>, StoredCaptchaImage>()
+        private val files = ConcurrentHashMap<Triple<Long, Long, Int>, StoredCaptchaImage>()
         val events = CopyOnWriteArrayList<String>()
 
         override fun save(
             accountId: Long,
             challengeId: Long,
+            preparationVersion: Int,
             contentType: String,
             bytes: ByteArray,
         ) {
-            files[accountId to challengeId] = StoredCaptchaImage(contentType, bytes)
-            events += "save:$accountId:$challengeId"
+            files[Triple(accountId, challengeId, preparationVersion)] = StoredCaptchaImage(contentType, bytes)
+            events += event("save", accountId, challengeId, preparationVersion)
         }
 
-        override fun read(accountId: Long, challengeId: Long): StoredCaptchaImage? =
-            files[accountId to challengeId]
+        override fun read(accountId: Long, challengeId: Long, preparationVersion: Int): StoredCaptchaImage? =
+            files[Triple(accountId, challengeId, preparationVersion)]
 
-        override fun delete(accountId: Long, challengeId: Long) {
-            files.remove(accountId to challengeId)
-            events += "delete:$accountId:$challengeId"
+        override fun delete(accountId: Long, challengeId: Long, preparationVersion: Int) {
+            files.remove(Triple(accountId, challengeId, preparationVersion))
+            events += event("delete", accountId, challengeId, preparationVersion)
         }
 
         fun reset() {
@@ -547,6 +564,13 @@ class CaptchaServicePersistenceTest {
         fun clearEvents() {
             events.clear()
         }
+
+        private fun event(action: String, accountId: Long, challengeId: Long, preparationVersion: Int): String =
+            if (preparationVersion == 0) {
+                "$action:$accountId:$challengeId"
+            } else {
+                "$action:$accountId:$challengeId:$preparationVersion"
+            }
     }
 
     private companion object {

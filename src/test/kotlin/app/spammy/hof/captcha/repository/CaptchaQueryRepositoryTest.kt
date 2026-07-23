@@ -40,34 +40,34 @@ class CaptchaQueryRepositoryTest {
     private lateinit var jdbcTemplate: JdbcTemplate
 
     @Test
-    fun readsLatestPendingAndOwnedChallengeWithoutCrossingAccountBoundary() {
+    fun readsLatestActiveAndOwnedChallengeWithoutCrossingAccountBoundary() {
         val owner = savedAccount("captcha-query-owner")
         val other = savedAccount("captcha-query-other")
-        val olderPending = savedChallenge(owner, "PENDING", CREATED_AT)
+        val olderDetected = savedChallenge(owner, "DETECTED", CREATED_AT)
         savedChallenge(owner, "ANSWERED", CREATED_AT.plusSeconds(30))
-        val latestPending = savedChallenge(owner, "PENDING", CREATED_AT.plusSeconds(20))
-        val foreignPending = savedChallenge(other, "PENDING", CREATED_AT.plusSeconds(40))
+        val latestReady = savedChallenge(owner, "READY", CREATED_AT.plusSeconds(20))
+        val foreignReady = savedChallenge(other, "READY", CREATED_AT.plusSeconds(40))
 
-        assertEquals(latestPending.id, assertNotNull(queryRepository.findLatestPendingByAccountId(owner.id)).id)
+        assertEquals(latestReady.id, assertNotNull(queryRepository.findLatestActiveByAccountId(owner.id)).id)
         assertEquals(owner.id, assertNotNull(queryRepository.findAccountByIdForUpdate(owner.id)).id)
         assertEquals(
-            listOf(latestPending.id, olderPending.id),
-            queryRepository.findPendingByAccountId(owner.id).map { it.id },
+            listOf(latestReady.id, olderDetected.id),
+            queryRepository.findActiveByAccountId(owner.id).map { it.id },
         )
-        assertEquals(2L, queryRepository.countPendingByAccountId(owner.id))
-        assertEquals(latestPending.id, assertNotNull(queryRepository.findOwnedByAccountIdAndId(owner.id, latestPending.id)).id)
+        assertEquals(2L, queryRepository.countActiveByAccountId(owner.id))
+        assertEquals(latestReady.id, assertNotNull(queryRepository.findOwnedByAccountIdAndId(owner.id, latestReady.id)).id)
         assertEquals(
-            latestPending.id,
-            assertNotNull(queryRepository.findOwnedByAccountIdAndIdForUpdate(owner.id, latestPending.id)).id,
+            latestReady.id,
+            assertNotNull(queryRepository.findOwnedByAccountIdAndIdForUpdate(owner.id, latestReady.id)).id,
         )
         assertEquals(
-            latestPending.id,
-            assertNotNull(queryRepository.findOwnedByAccountIdAndIdAndStatus(owner.id, latestPending.id, "PENDING")).id,
+            latestReady.id,
+            assertNotNull(queryRepository.findOwnedByAccountIdAndIdAndStatus(owner.id, latestReady.id, "READY")).id,
         )
-        assertNull(queryRepository.findOwnedByAccountIdAndId(other.id, latestPending.id))
-        assertNull(queryRepository.findOwnedByAccountIdAndIdAndStatus(owner.id, olderPending.id, "ANSWERED"))
-        assertNull(queryRepository.findLatestPendingByAccountId(Long.MAX_VALUE))
-        assertEquals(foreignPending.id, assertNotNull(queryRepository.findLatestPendingByAccountId(other.id)).id)
+        assertNull(queryRepository.findOwnedByAccountIdAndId(other.id, latestReady.id))
+        assertNull(queryRepository.findOwnedByAccountIdAndIdAndStatus(owner.id, olderDetected.id, "READY"))
+        assertNull(queryRepository.findLatestActiveByAccountId(Long.MAX_VALUE))
+        assertEquals(foreignReady.id, assertNotNull(queryRepository.findLatestActiveByAccountId(other.id)).id)
     }
 
     @Test

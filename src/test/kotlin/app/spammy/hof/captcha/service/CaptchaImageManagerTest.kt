@@ -16,6 +16,28 @@ class CaptchaImageManagerTest {
     private val manager = CaptchaImageManager(gateway, store)
 
     @Test
+    fun storesAndReadsOnlyTheRequestedPreparationVersion() {
+        gateway.response = imageResponse(byteArrayOf(1, 2, 3))
+
+        manager.storePrepared(1L, 7L, 1, IMAGE_URL, mapOf("PHPSESSID" to "session-a"))
+
+        assertContentEquals(byteArrayOf(1, 2, 3), manager.readStored(1L, 7L, 1)?.bytes)
+        assertNull(manager.readStored(1L, 7L, 2))
+    }
+
+    @Test
+    fun rejectsHtmlBeforePublishingPreparedVersion() {
+        gateway.response = HofBinaryResponse(200, IMAGE_URL, "text/html", "Notice".toByteArray())
+
+        val error = assertFailsWith<ApiException> {
+            manager.storePrepared(1L, 7L, 2, IMAGE_URL, mapOf("PHPSESSID" to "session-a"))
+        }
+
+        assertEquals(ErrorCode.HOF_REQUEST_FAILED, error.errorCode)
+        assertNull(manager.readStored(1L, 7L, 2))
+    }
+
+    @Test
     fun savesAnImageWithTheCurrentSessionCookies() {
         gateway.response = imageResponse(byteArrayOf(1, 2, 3))
 
@@ -54,17 +76,23 @@ class CaptchaImageManagerTest {
     }
 
     private class MemoryCaptchaImageStore : CaptchaImageFileStore {
-        private val files = mutableMapOf<Pair<Long, Long>, StoredCaptchaImage>()
+        private val files = mutableMapOf<Triple<Long, Long, Int>, StoredCaptchaImage>()
 
-        override fun save(accountId: Long, challengeId: Long, contentType: String, bytes: ByteArray) {
-            files[accountId to challengeId] = StoredCaptchaImage(contentType, bytes)
+        override fun save(
+            accountId: Long,
+            challengeId: Long,
+            preparationVersion: Int,
+            contentType: String,
+            bytes: ByteArray,
+        ) {
+            files[Triple(accountId, challengeId, preparationVersion)] = StoredCaptchaImage(contentType, bytes)
         }
 
-        override fun read(accountId: Long, challengeId: Long): StoredCaptchaImage? =
-            files[accountId to challengeId]
+        override fun read(accountId: Long, challengeId: Long, preparationVersion: Int): StoredCaptchaImage? =
+            files[Triple(accountId, challengeId, preparationVersion)]
 
-        override fun delete(accountId: Long, challengeId: Long) {
-            files.remove(accountId to challengeId)
+        override fun delete(accountId: Long, challengeId: Long, preparationVersion: Int) {
+            files.remove(Triple(accountId, challengeId, preparationVersion))
         }
     }
 
