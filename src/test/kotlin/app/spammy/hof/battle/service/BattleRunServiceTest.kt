@@ -50,6 +50,7 @@ import java.time.Instant
 import java.util.Base64
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class BattleRunServiceTest {
@@ -344,16 +345,6 @@ class BattleRunServiceTest {
               <p>자경단에서 통행증을 발급받아주세요.</p>
             </body></html>
         """.trimIndent()
-        gateway.policeBody = """
-            <html><body>
-              <form action="/ZeroHOF/index.php?menu=police" method="post">
-                <img src="simple-php-captcha.php?_CAPTCHA=1">
-                <input type="text" name="AnswerV">
-                <input type="submit" name="AnswerOut" value="입니다.">
-              </form>
-            </body></html>
-        """.trimIndent()
-
         val exception = assertFailsWith<ApiException> {
             service.runBattle(
                 accountId = 1L,
@@ -372,13 +363,15 @@ class BattleRunServiceTest {
         assertEquals(ErrorCode.CAPTCHA_REQUIRED, exception.errorCode)
         assertTrue(battleLogRepository.savedEntities.isEmpty())
         val savedCaptcha = captchaChallengeRepository.savedEntities.single()
-        assertEquals("PENDING", savedCaptcha.status)
+        assertEquals("DETECTED", savedCaptcha.status)
         assertEquals("자경단에서 통행증을 발급받아주세요.", savedCaptcha.prompt)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?menu=police", savedCaptcha.sourceUrl)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/simple-php-captcha.php?_CAPTCHA=1", savedCaptcha.imageUrl)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?menu=police", savedCaptcha.submitUrl)
+        assertEquals(gateway.requests.last().url, savedCaptcha.sourceUrl)
+        assertNull(savedCaptcha.imageUrl)
+        assertNull(savedCaptcha.submitUrl)
         assertEquals("POST", savedCaptcha.submitMethod)
-        assertEquals("AnswerV", savedCaptcha.answerFieldName)
+        assertEquals("captcha", savedCaptcha.answerFieldName)
+        assertEquals(0, gateway.requests.count { it.url.contains("menu=police") })
+        assertEquals(emptyList(), binaryGateway.urls)
     }
 
     private class RecordingBattleLogRepository : BattleLogRepository {
