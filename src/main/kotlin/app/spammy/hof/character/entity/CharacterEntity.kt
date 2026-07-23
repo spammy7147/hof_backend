@@ -46,4 +46,7 @@ class CharacterEntity(
 
     @Column(name = "updated_at", nullable = false)
     var updatedAt: Instant,
+
+    @Column(name = "detail_synced_at")
+    var detailSyncedAt: Instant? = null,
 )

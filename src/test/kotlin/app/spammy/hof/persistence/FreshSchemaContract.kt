@@ -200,6 +200,7 @@ internal object FreshSchemaContract {
             serialId(), requiredBigint("account_id"), requiredVarchar("hof_character_id", 50),
             requiredVarchar("name", 100), requiredVarchar("job", 100), optionalInteger("level"),
             requiredInteger("pattern_slot_count"), optionalText("image_url"), requiredInstant("updated_at"),
+            optionalInstant("detail_synced_at"),
         ),
         table(
             "character_stats",
@@ -672,6 +673,7 @@ internal object FreshSchemaContract {
         index("refresh_tokens", "idx_refresh_tokens_family_created", "family_id", "created_at", "id"),
         index("refresh_tokens", "idx_refresh_tokens_account_active", "account_id", "revoked_at", "expires_at", "id"),
         index("characters", "idx_characters_account_name", "account_id", "name", "id"),
+        index("characters", "idx_characters_account_detail_synced", "account_id", "detail_synced_at", "id"),
         index("character_sync_jobs", "idx_character_sync_jobs_account_started", "account_id", "started_at", "id"),
         index("battle_map_groups", "idx_battle_map_groups_category_display", "category_id", "display_order", "name", "id"),
         index("battle_maps", "idx_battle_maps_category_display", "category_id", "group_id", "display_order", "name", "id"),
