@@ -20,18 +20,14 @@ import org.springframework.stereotype.Repository
 class PartyPresetQueryRepository(
     private val queryFactory: JPAQueryFactory,
 ) {
-    /**
-     * 계정 프리셋을 최근 수정순으로 조회하고, 수정 시각이 같으면 큰 ID를 먼저 반환한다.
-     *
-     * ID tie-breaker는 같은 트랜잭션에서 연속 생성된 프리셋도 매 호출마다 같은 순서를 유지하게 한다.
-     */
+    /** 계정 프리셋을 저장된 표시 순서로 조회하고, 순서가 같으면 작은 ID를 먼저 반환한다. */
     fun findAllByAccountId(accountId: Long): List<PartyPresetEntity> =
         queryFactory
             .selectFrom(partyPresetEntity)
             .where(partyPresetEntity.account.id.eq(accountId))
             .orderBy(
-                partyPresetEntity.updatedAt.desc(),
-                partyPresetEntity.id.desc(),
+                partyPresetEntity.displayOrder.asc(),
+                partyPresetEntity.id.asc(),
             )
             .fetch()
 

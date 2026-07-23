@@ -46,9 +46,9 @@ class FreshSchemaTest {
     }
 
     @Test
-    fun appliesOnlyTheConsolidatedV1Baseline() {
+    fun appliesBaselineAndOrderedPresetUpgrade() {
         assertEquals(
-            listOf("1" to "initialize schema"),
+            listOf("1" to "initialize schema", "2" to "order party presets"),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
 
@@ -58,13 +58,14 @@ class FreshSchemaTest {
                 .filter { file -> file.isFile && file.extension == "sql" }
                 .map { file -> file.name }
                 .sorted()
-        assertEquals(listOf("V1__initialize_schema.sql"), migrationNames)
+        assertEquals(listOf("V1__initialize_schema.sql", "V2__order_party_presets.sql"), migrationNames)
 
         dataSource.connection.use { connection ->
             LEGACY_AUTOMATION_TABLES.forEach { table ->
                 assertFalse(connection.tableExists(table), "legacy table still exists: $table")
             }
             assertFalse(connection.columnExists("captcha_challenges", "automation_action_run_id"))
+            assertTrue(connection.columnExists("party_presets", "display_order"))
         }
     }
 

@@ -14,6 +14,7 @@ import app.spammy.hof.common.persistence.QueryDslConfig
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.party.dto.CreatePartyPresetRequest
 import app.spammy.hof.party.dto.PartyPresetMemberRequest
+import app.spammy.hof.party.dto.ReorderPartyPresetsRequest
 import app.spammy.hof.party.dto.UpdatePartyPresetRequest
 import app.spammy.hof.party.repository.PartyPresetQueryRepository
 import jakarta.persistence.EntityManager
@@ -109,6 +110,62 @@ class PartyPresetServiceTest {
         assertEquals(listOf(second.id, first.id), responses.map { it.id })
         assertEquals(2L, statistics.prepareStatementCount)
         assertEquals(listOf(0, 1, 2, 3, 4), responses.first().members.map { it.slotIndex })
+    }
+
+    @Test
+    fun createPlacesEachNewPresetAtTheTopWithContiguousOrder() {
+        val account = savedAccount("party-create-order")
+        val first = service.create(account.id, request("첫 번째"))
+        val second = service.create(account.id, request("두 번째"))
+        val third = service.create(account.id, request("세 번째"))
+
+        val responses = service.findAll(account.id)
+
+        assertEquals(listOf(third.id, second.id, first.id), responses.map { it.id })
+        assertEquals(listOf(0, 1, 2), responses.map { it.displayOrder })
+    }
+
+    @Test
+    fun reorderPersistsTheCompleteOwnedPresetOrder() {
+        val account = savedAccount("party-reorder")
+        val first = service.create(account.id, request("첫 번째"))
+        val second = service.create(account.id, request("두 번째"))
+        val third = service.create(account.id, request("세 번째"))
+
+        val reordered = service.reorder(
+            account.id,
+            ReorderPartyPresetsRequest(listOf(first.id, third.id, second.id)),
+        )
+
+        assertEquals(listOf(first.id, third.id, second.id), reordered.map { it.id })
+        assertEquals(listOf(0, 1, 2), reordered.map { it.displayOrder })
+        assertEquals(reordered, service.findAll(account.id))
+    }
+
+    @Test
+    fun reorderRejectsDuplicateMissingUnknownAndForeignIdsWithoutChangingOrder() {
+        val account = savedAccount("party-reorder-invalid")
+        val other = savedAccount("party-reorder-foreign")
+        val first = service.create(account.id, request("첫 번째"))
+        val second = service.create(account.id, request("두 번째"))
+        val foreign = service.create(other.id, request("다른 계정"))
+        val originalIds = service.findAll(account.id).map { it.id }
+        val invalidRequests = listOf(
+            listOf(first.id, first.id),
+            listOf(first.id),
+            listOf(first.id, Long.MAX_VALUE),
+            listOf(first.id, foreign.id),
+        )
+
+        invalidRequests.forEach { presetIds ->
+            val exception = assertFailsWith<ApiException> {
+                service.reorder(account.id, ReorderPartyPresetsRequest(presetIds))
+            }
+            assertEquals(ErrorCode.INVALID_REQUEST, exception.errorCode)
+            assertEquals(originalIds, service.findAll(account.id).map { it.id })
+        }
+
+        assertEquals(setOf(first.id, second.id), originalIds.toSet())
     }
 
     @Test

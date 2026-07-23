@@ -11,6 +11,7 @@ import app.spammy.hof.party.dto.CreatePartyPresetRequest
 import app.spammy.hof.party.dto.PartyPresetMemberRequest
 import app.spammy.hof.party.dto.PartyPresetMemberResponse
 import app.spammy.hof.party.dto.PartyPresetResponse
+import app.spammy.hof.party.dto.ReorderPartyPresetsRequest
 import app.spammy.hof.party.dto.UpdatePartyPresetRequest
 import app.spammy.hof.party.entity.PartyPresetEntity
 import app.spammy.hof.party.entity.PartyPresetMemberEntity
@@ -63,16 +64,42 @@ class PartyPresetService(
         val name = normalizeName(request.name)
         val validatedMembers = validateMembers(accountId, request.members)
         val now = timeProvider.now()
+        presetQueryRepository.findAllByAccountId(accountId).forEach { existing ->
+            existing.displayOrder += 1
+        }
         val preset = presetRepository.save(
             PartyPresetEntity(
                 account = account,
                 name = name,
+                displayOrder = 0,
                 createdAt = now,
                 updatedAt = now,
             ),
         )
         val savedMembers = memberRepository.saveAll(validatedMembers.toEntities(preset))
         return preset.toResponse(savedMembers)
+    }
+
+    /** 계정의 전체 프리셋 집합을 검증한 뒤 요청 배열 순서로 표시 순서를 정규화한다. */
+    @Transactional
+    fun reorder(
+        accountId: Long,
+        request: ReorderPartyPresetsRequest,
+    ): List<PartyPresetResponse> {
+        lockAccountForMutation(accountId)
+        val presets = presetQueryRepository.findAllByAccountId(accountId)
+        val requestedIds = request.presetIds
+        val ownedIds = presets.map { preset -> preset.id }.toSet()
+        if (requestedIds.distinct().size != requestedIds.size || requestedIds.toSet() != ownedIds) {
+            throw ApiException(ErrorCode.INVALID_REQUEST, "현재 계정의 모든 프리셋을 중복 없이 지정해야 합니다.")
+        }
+
+        val presetsById = presets.associateBy { preset -> preset.id }
+        requestedIds.forEachIndexed { displayOrder, presetId ->
+            presetsById.getValue(presetId).displayOrder = displayOrder
+        }
+        presetRepository.flush()
+        return findAll(accountId)
     }
 
     /**
@@ -257,6 +284,7 @@ class PartyPresetService(
             id = id,
             accountId = account.id,
             name = name,
+            displayOrder = displayOrder,
             isPrimary = isPrimary,
             members = members
                 .sortedBy { member -> member.slotIndex }
