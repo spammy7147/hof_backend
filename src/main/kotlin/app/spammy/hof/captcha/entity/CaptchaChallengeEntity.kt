@@ -59,4 +59,7 @@ class CaptchaChallengeEntity(
 
     @Column(name = "answer_field_name", nullable = false, length = 100)
     var answerFieldName: String = "captcha",
+
+    @Column(name = "preparation_version", nullable = false)
+    var preparationVersion: Int = 0,
 )

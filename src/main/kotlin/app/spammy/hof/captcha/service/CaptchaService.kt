@@ -529,6 +529,7 @@ class CaptchaService(
                 ?.takeIf { status == STATUS_PENDING }
                 ?.let { "/api/captcha/$id/image" },
             sourceUrl = sourceUrl,
+            preparationVersion = preparationVersion,
             createdAt = createdAt.toString(),
             answeredAt = answeredAt?.toString(),
         )

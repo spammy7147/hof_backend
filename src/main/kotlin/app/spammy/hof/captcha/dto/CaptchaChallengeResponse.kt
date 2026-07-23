@@ -10,6 +10,7 @@ data class CaptchaChallengeResponse(
     val prompt: String,
     val imageUrl: String?,
     val sourceUrl: String,
+    val preparationVersion: Int,
     val createdAt: String,
     val answeredAt: String?,
 )
@@ -19,4 +20,5 @@ data class CaptchaChallengeResponse(
  */
 data class SubmitCaptchaAnswerRequest(
     val answer: String,
+    val preparationVersion: Int,
 )
