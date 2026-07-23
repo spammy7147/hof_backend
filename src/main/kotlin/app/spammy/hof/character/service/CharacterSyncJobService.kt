@@ -167,6 +167,13 @@ class CharacterSyncJobService(
 
         val homeResponse = gateway.execute(requestFactory.home(), cookies)
         val roster = rosterParser.parse(homeResponse.body)
+        val existingCharacters = characterService.findAll(accountId)
+        if (roster.isEmpty() && existingCharacters.isNotEmpty()) {
+            error("HOF 홈에서 캐릭터 명단을 확인하지 못했습니다.")
+        }
+        if (roster.isNotEmpty()) {
+            characterService.deleteCharactersAbsentFromRoster(accountId, roster.mapTo(linkedSetOf()) { it.id })
+        }
         job.rosterCount = roster.size
         syncJobRepository.save(job)
         eventService.publish(
