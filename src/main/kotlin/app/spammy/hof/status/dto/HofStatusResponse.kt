@@ -13,5 +13,8 @@ data class HofStatusResponse(
     val timeMax: Int?,
     val work: String,
     val auction: String,
+    val totalCharacterCount: Int,
+    val synchronizedCharacterCount: Int,
+    val characterSyncRequired: Boolean,
     val observedAt: Instant,
 )

@@ -6,17 +6,21 @@ import app.spammy.hof.account.repository.CookieQueryRepository
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.character.entity.CharacterEntity
+import app.spammy.hof.character.repository.CharacterQueryRepository
 import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
 import app.spammy.hof.external.parser.HofMainStatusParser
+import app.spammy.hof.external.parser.CharacterRosterParser
 import app.spammy.hof.external.parser.LoginStateParser
 import java.time.Instant
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
 class HofStatusServiceTest {
     private val now = Instant.parse("2026-07-12T00:00:00Z")
@@ -29,6 +33,7 @@ class HofStatusServiceTest {
     private val accountQueryRepository = Mockito.mock(AccountQueryRepository::class.java)
     private val cookieQueryRepository = Mockito.mock(CookieQueryRepository::class.java)
     private val gateway = FakeHofGateway()
+    private val characterQueryRepository = Mockito.mock(CharacterQueryRepository::class.java)
     private val service = HofStatusService(
         accountQueryRepository = accountQueryRepository,
         cookieQueryRepository = cookieQueryRepository,
@@ -36,6 +41,8 @@ class HofStatusServiceTest {
         gateway = gateway,
         loginStateParser = LoginStateParser(),
         statusParser = HofMainStatusParser(),
+        rosterParser = CharacterRosterParser(),
+        characterQueryRepository = characterQueryRepository,
         timeProvider = TimeProvider { now },
     )
 
@@ -44,6 +51,12 @@ class HofStatusServiceTest {
         Mockito.`when`(accountQueryRepository.findById(1L)).thenReturn(account)
         Mockito.`when`(cookieQueryRepository.findValueMapByAccountId(1L))
             .thenReturn(mapOf("PHPSESSID" to "session-value"))
+        Mockito.`when`(characterQueryRepository.findAllByAccountId(1L)).thenReturn(
+            listOf(character("111", now), character("222", null)),
+        )
+        gateway.responseBody += """
+            <a href="?char=111">첫째</a><a href="?char=222">둘째</a>
+        """.trimIndent()
 
         val response = service.fetch(1L)
 
@@ -55,9 +68,39 @@ class HofStatusServiceTest {
         assertEquals("Nothing", response.work)
         assertEquals("item/funds", response.auction)
         assertEquals(now, response.observedAt)
+        assertEquals(2, response.totalCharacterCount)
+        assertEquals(1, response.synchronizedCharacterCount)
+        assertTrue(response.characterSyncRequired)
         assertEquals("http://sic.zerosic.com/ZeroHOF/index.php", gateway.requests.single().url)
         assertEquals(mapOf("PHPSESSID" to "session-value"), gateway.cookies.single())
     }
+
+    @Test
+    fun fetchDoesNotRequireSyncWhenRemoteAndDetailedLocalRostersMatch() {
+        Mockito.`when`(accountQueryRepository.findById(1L)).thenReturn(account)
+        Mockito.`when`(cookieQueryRepository.findValueMapByAccountId(1L))
+            .thenReturn(mapOf("PHPSESSID" to "session-value"))
+        Mockito.`when`(characterQueryRepository.findAllByAccountId(1L)).thenReturn(
+            listOf(character("111", now)),
+        )
+        gateway.responseBody += """<a href="?char=111">첫째</a>"""
+
+        val response = service.fetch(1L)
+
+        assertEquals(1, response.totalCharacterCount)
+        assertEquals(1, response.synchronizedCharacterCount)
+        assertEquals(false, response.characterSyncRequired)
+        assertEquals(1, gateway.requests.size)
+    }
+
+    private fun character(hofId: String, syncedAt: Instant?): CharacterEntity = CharacterEntity(
+        account = account,
+        hofCharacterId = hofId,
+        name = hofId,
+        job = "job",
+        updatedAt = now,
+        detailSyncedAt = syncedAt,
+    )
 
     @Test
     fun fetchRejectsMissingAccountWithExistingErrorContract() {
