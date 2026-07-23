@@ -317,7 +317,7 @@ class CaptchaServiceTest {
             prompt = "자경단에서 통행증을 발급받아주세요.",
             imageUrl = null,
         )
-        Mockito.`when`(queryRepository.findLatestPendingByAccountId(1L))
+        Mockito.`when`(queryRepository.findLatestActiveByAccountId(1L))
             .thenReturn(challenge)
         Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(listOf(cookie()))
         gateway.response = HofHttpResponse(

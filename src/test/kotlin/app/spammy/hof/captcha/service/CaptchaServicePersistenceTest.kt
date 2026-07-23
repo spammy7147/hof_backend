@@ -202,7 +202,7 @@ class CaptchaServicePersistenceTest {
         )
 
         assertEquals(first.id, second.id)
-        assertEquals(1L, queryRepository.countPendingByAccountId(account.id))
+        assertEquals(1L, queryRepository.countActiveByAccountId(account.id))
         assertEquals(
             listOf("new_token" to "new", "AnswerV" to "", "AnswerOut" to "입니다."),
             queryRepository.findFormFields(second.id).map { it.fieldName to it.fieldValue },
@@ -211,7 +211,7 @@ class CaptchaServicePersistenceTest {
         service.submitAnswer(account.id, second.id, "7319")
 
         assertNull(service.findCurrent(account.id))
-        assertEquals(0L, queryRepository.countPendingByAccountId(account.id))
+        assertEquals(0L, queryRepository.countActiveByAccountId(account.id))
         assertNull(imageStore.read(account.id, second.id))
     }
 
@@ -226,7 +226,7 @@ class CaptchaServicePersistenceTest {
         )
 
         assertEquals(newest.id, detected.id)
-        assertEquals(1L, queryRepository.countPendingByAccountId(account.id))
+        assertEquals(1L, queryRepository.countActiveByAccountId(account.id))
         assertNull(queryRepository.findOwnedByAccountIdAndId(account.id, stale.id))
 
         service.submitAnswer(account.id, detected.id, "correct")
@@ -255,7 +255,7 @@ class CaptchaServicePersistenceTest {
             val responses = futures.map { it.get(10, TimeUnit.SECONDS) }
 
             assertEquals(1, responses.map { it.id }.distinct().size)
-            assertEquals(1L, queryRepository.countPendingByAccountId(account.id))
+            assertEquals(1L, queryRepository.countActiveByAccountId(account.id))
             val fields = queryRepository.findFormFields(responses.first().id)
             assertTrue(fields.first().fieldName in setOf("token_a", "token_b"))
             assertEquals(listOf("AnswerV", "AnswerOut"), fields.drop(1).map { it.fieldName })
@@ -314,7 +314,7 @@ class CaptchaServicePersistenceTest {
             transaction.setRollbackOnly()
         }
 
-        val challenge = assertNotNull(queryRepository.findLatestPendingByAccountId(account.id))
+        val challenge = assertNotNull(queryRepository.findLatestActiveByAccountId(account.id))
         assertEquals(assertNotNull(detected).id, challenge.id)
         assertEquals(3L, queryRepository.countFormFields(challenge.id))
         assertNotNull(imageStore.read(account.id, challenge.id))
@@ -334,7 +334,7 @@ class CaptchaServicePersistenceTest {
             transaction.setRollbackOnly()
         }
 
-        assertNull(queryRepository.findLatestPendingByAccountId(account.id))
+        assertNull(queryRepository.findLatestActiveByAccountId(account.id))
         assertNull(imageStore.read(account.id, assertNotNull(rolledBackChallengeId)))
         assertEquals(emptyList(), imageStore.events)
     }

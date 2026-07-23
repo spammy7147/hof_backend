@@ -70,7 +70,7 @@ class CaptchaService(
         val lockedAccount = captchaQueryRepository.findAccountByIdForUpdate(account.id)
             ?: account.takeUnless { isTransactionActive() }
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "캡차를 저장할 계정을 찾지 못했습니다.")
-        val pendingChallenges = captchaQueryRepository.findPendingByAccountId(lockedAccount.id)
+        val pendingChallenges = captchaQueryRepository.findActiveByAccountId(lockedAccount.id)
         val existingChallenge = pendingChallenges.firstOrNull()
         val metadata = extractChallengeMetadata(lockedAccount, document, pageText, sourceUrl)
         val detectedAt = timeProvider.now()
@@ -140,7 +140,7 @@ class CaptchaService(
     @Transactional
     fun findCurrent(accountId: Long): CaptchaChallengeResponse? {
         val challenge = captchaQueryRepository
-            .findLatestPendingByAccountId(accountId)
+            .findLatestActiveByAccountId(accountId)
             ?: return null
 
         backfillMissingPoliceCaptcha(challenge)
