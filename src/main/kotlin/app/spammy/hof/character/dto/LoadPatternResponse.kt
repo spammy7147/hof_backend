@@ -9,4 +9,6 @@ data class LoadPatternResponse(
     val slot: Int,
     val loaded: Boolean,
     val message: String,
+    val characterSynchronized: Boolean,
+    val character: CharacterDetailResponse?,
 )

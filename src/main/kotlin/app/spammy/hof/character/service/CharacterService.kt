@@ -164,6 +164,17 @@ class CharacterService(
         return savedCharacter.toResponse(patternSlots)
     }
 
+    /** 변경 응답에서 파싱한 상세를 저장하고 상세 화면용 최신 snapshot을 반환한다. */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun refreshParsedCharacter(
+        account: HofAccountEntity,
+        detail: HofCharacter,
+    ): CharacterDetailResponse {
+        require(detail.hasParsedDetail()) { "캐릭터 상세 정보를 파싱하지 못했습니다." }
+        upsertCharacterSnapshot(account, rosterCharacter = detail, detail = detail)
+        return findDetail(account.id, detail.id)
+    }
+
     /** 신뢰 가능한 원격 명단에 없는 로컬 캐릭터를 제거한다. */
     @Transactional
     fun deleteCharactersAbsentFromRoster(accountId: Long, rosterIds: Set<String>) {
