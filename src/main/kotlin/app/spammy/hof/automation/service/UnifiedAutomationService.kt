@@ -336,6 +336,13 @@ class UnifiedAutomationService(
             } else {
                 emptyList()
             }
+            val adventureCatalog = if (adventure.isEmpty()) {
+                emptyMap()
+            } else {
+                battleMapQueryRepository.findMapsByCategoryIdAndMapCodePairs(
+                    adventure.map { it.categoryId to it.mapCode }.toSet(),
+                ).associateBy { it.categoryId to it.mapCode }
+            }
             val warnings = typedWarnings(entry, quests, questMaps, battle, adventure, primaryPresetId, validPresetIds)
             TypedAutomationEntryResponse(
                 id = entry.id,
@@ -380,6 +387,7 @@ class UnifiedAutomationService(
                         map.presetMode,
                         map.partyPreset?.id,
                         map.executionOrder,
+                        adventureCatalog[map.categoryId to map.mapCode]?.name,
                     )
                 },
             )

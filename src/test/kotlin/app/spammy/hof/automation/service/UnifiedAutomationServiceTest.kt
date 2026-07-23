@@ -11,6 +11,7 @@ import app.spammy.hof.automation.dto.UpdateBattleMapAutomationRequest
 import app.spammy.hof.automation.dto.UpdateQuestAutomationRequest
 import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.AutomationType
+import app.spammy.hof.automation.entity.AdventureAutomationMapEntity
 import app.spammy.hof.automation.entity.BattleAutomationDailyProgressEntity
 import app.spammy.hof.automation.entity.BattleAutomationMapEntity
 import app.spammy.hof.automation.entity.PresetSelectionMode
@@ -232,6 +233,31 @@ class UnifiedAutomationServiceTest {
 
         assertEquals(emptyList(), response.entries.first().battleMapProgress)
         assertEquals(6, response.entries.last().battleMapProgress.single().successfulRuns)
+    }
+
+    @Test
+    fun `aggregate exposes the catalog display name for a stored adventure map`() {
+        val adventureEntry = entry(93L, AutomationType.ADVENTURE_MAP)
+        val setting = AdventureAutomationMapEntity(
+            id = 301L,
+            entry = adventureEntry,
+            categoryId = "adventure_map",
+            mapCode = "festival01",
+            presetMode = PresetSelectionMode.PRIMARY,
+            executionOrder = 0,
+        )
+        Mockito.`when`(accountQueryRepository.findById(ACCOUNT_ID)).thenReturn(account())
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(adventureEntry))
+        Mockito.`when`(typedQuery.findAdventureSettings(adventureEntry.id)).thenReturn(listOf(setting))
+        Mockito.`when`(
+            battleMapQueryRepository.findMapsByCategoryIdAndMapCodePairs(
+                setOf("adventure_map" to "festival01"),
+            ),
+        ).thenReturn(listOf(battleMap(81L, "adventure_map", "festival01", "Arena- 천년제 무투회")))
+
+        val response = service.getTyped(ACCOUNT_ID)
+
+        assertEquals("Arena- 천년제 무투회", response.entries.single().adventureMaps.single().displayName)
     }
 
     @Test
@@ -514,12 +540,17 @@ class UnifiedAutomationServiceTest {
         priority: Int = 0,
     ) = AutomationEntryEntity(id, account(), type, priority, enabled, NOW, NOW)
 
-    private fun battleMap(id: Long, categoryId: String, mapCode: String) = BattleMapEntity(
+    private fun battleMap(
+        id: Long,
+        categoryId: String,
+        mapCode: String,
+        name: String = mapCode,
+    ) = BattleMapEntity(
         id = id,
         categoryId = categoryId,
         mapCode = mapCode,
-        name = mapCode,
-        normalizedName = mapCode,
+        name = name,
+        normalizedName = name,
         displayOrder = 0,
         createdAt = NOW,
         updatedAt = NOW,

@@ -123,6 +123,7 @@ data class AdventureMapSettingResponse(
     val presetMode: PresetSelectionMode,
     val partyPresetId: Long?,
     val executionOrder: Int,
+    val displayName: String?,
 )
 
 data class TypedAutomationEntryResponse(
