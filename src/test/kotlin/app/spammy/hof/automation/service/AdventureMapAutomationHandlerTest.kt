@@ -12,6 +12,49 @@ class AdventureMapAutomationHandlerTest {
     private val handler = AdventureMapAutomationHandler()
 
     @Test
+    fun `adventure waits for map cost and runs at the exact boundary`() {
+        val waiting = handler.evaluate(snapshot(
+            listOf(setting(1, "costly", 0)),
+            listOf(state("costly", requiredTime = 150)),
+            timeCurrent = 100,
+        ))
+        assertEquals(NOW.plusSeconds(50), assertIs<HandlerEvaluation.Unavailable>(waiting).nextRunAt)
+
+        val action = runnable(handler.evaluate(snapshot(
+            listOf(setting(1, "costly", 0)),
+            listOf(state("costly", requiredTime = 150)),
+            timeCurrent = 150,
+        )))
+        assertEquals("costly", action.mapCode)
+    }
+
+    @Test
+    fun `zero cost map runs without observation and null cost falls back to 100`() {
+        assertEquals("free", runnable(handler.evaluate(snapshot(
+            listOf(setting(1, "free", 0)),
+            listOf(state("free", requiredTime = 0)),
+            timeCurrent = null,
+        ))).mapCode)
+
+        val fallback = handler.evaluate(snapshot(
+            listOf(setting(2, "fallback", 0)),
+            listOf(state("fallback", requiredTime = null)),
+            timeCurrent = 99,
+        ))
+        assertEquals(NOW.plusSeconds(1), assertIs<HandlerEvaluation.Unavailable>(fallback).nextRunAt)
+    }
+
+    @Test
+    fun `temporarily unaffordable map does not hide a later free map`() {
+        val action = runnable(handler.evaluate(snapshot(
+            listOf(setting(1, "costly", 0), setting(2, "free", 1)),
+            listOf(state("costly", requiredTime = 500), state("free", requiredTime = 0)),
+            timeCurrent = 100,
+        )))
+        assertEquals("free", action.mapCode)
+    }
+
+    @Test
     fun `cooldown exhausted and zero key maps are skipped before one runnable battle`() {
         val snapshot = snapshot(
             settings = listOf(setting(1, "cooldown", 0), setting(2, "exhausted", 1), setting(3, "no-key", 2), setting(4, "ready", 3)),
@@ -318,6 +361,7 @@ class AdventureMapAutomationHandlerTest {
         keyCount: Int? = null,
         keyMode: BattleMapKeyMode = if (keyCount == null) BattleMapKeyMode.UNKNOWN else BattleMapKeyMode.LIMITED,
         mapName: String? = null,
+        requiredTime: Int? = null,
     ) = AdventureMapRunnableState(
         categoryId = category,
         mapCode = mapCode,
@@ -332,6 +376,7 @@ class AdventureMapAutomationHandlerTest {
         keyMode = keyMode,
         keyCount = keyCount,
         mapName = mapName,
+        requiredTime = requiredTime,
     )
 
     private fun snapshot(
@@ -342,7 +387,16 @@ class AdventureMapAutomationHandlerTest {
         },
         executionIdentities: Map<Long, String> = settings.associate { it.settingIdentity to "execution-${it.settingIdentity}" },
         now: Instant = NOW,
-    ) = AdventureMapAutomationSnapshot(7, settings, states, resolutions, executionIdentities, now)
+        timeCurrent: Int? = 6000,
+    ) = AdventureMapAutomationSnapshot(
+        7,
+        settings,
+        states,
+        resolutions,
+        executionIdentities,
+        now,
+        timeCurrent?.let { AutomationTimeSnapshot(it, 6000, now) },
+    )
 
     private fun valid(id: Long) = AdventureMapPresetResolution.Valid(id)
     private fun invalid(message: String) = AdventureMapPresetResolution.Invalid(message)

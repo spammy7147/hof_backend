@@ -65,6 +65,7 @@ data class BattleMapAutomationSnapshot(
     /** Deterministic action-time input; the handler derives the Korea calendar date itself. */
     val evaluationInstant: Instant,
     val resolvedParties: Map<Long, ResolvedAutomationParty> = emptyMap(),
+    val timeSnapshot: AutomationTimeSnapshot? = null,
 )
 
 enum class BattleAutomationActionSource {
@@ -269,10 +270,11 @@ sealed interface BattleOutcomeResolution {
 @Service
 class BattleMapAutomationHandler(
     private val progressStore: BattleMapAutomationProgressStore,
+    private val timePolicy: BattleTimePolicy = BattleTimePolicy(),
 ) : AutomationHandler<BattleMapAutomationSnapshot> {
     override fun evaluate(context: BattleMapAutomationSnapshot): HandlerEvaluation {
         val states = context.mapStates.associateBy { BattleMapProgressIdentity(it.categoryId, it.mapCode) }
-        val cooldowns = mutableListOf<Instant>()
+        val waits = mutableListOf<Instant>()
         context.settings
             .asSequence()
             .filter(BattleMapAutomationSetting::enabled)
@@ -289,31 +291,37 @@ class BattleMapAutomationHandler(
                 val state = states[identity]?.takeIf { it.isRunnableIgnoringCooldown() }
                     ?: return@forEach
                 state.cooldownUntil?.takeIf { it.isAfter(context.evaluationInstant) }?.let {
-                    cooldowns += it
+                    waits += it
                     return@forEach
                 }
-                val battleCount = when {
-                    !state.supportsThreeBattles -> 1
-                    remaining == 1 -> 1
-                    !state.hasCapacityForThree() -> 1
-                    else -> 3
+                when (val time = timePolicy.forBattleMap(
+                    snapshot = context.timeSnapshot,
+                    now = context.evaluationInstant,
+                    targetRemaining = remaining,
+                    supportsThreeBattles = state.supportsThreeBattles,
+                    hasCapacityForThree = state.hasCapacityForThree(),
+                )) {
+                    is BattleTimeDecision.Wait -> {
+                        waits += time.nextRunAt
+                        return@forEach
+                    }
+                    is BattleTimeDecision.Run -> return HandlerEvaluation.Runnable(
+                        BattleMapAutomationAction(
+                            accountId = context.accountId,
+                            progressDate = context.evaluationInstant.atZone(KOREA_ZONE).toLocalDate(),
+                            categoryId = setting.categoryId,
+                            mapCode = setting.mapCode,
+                            presetMode = setting.preset.mode,
+                            presetId = presetId,
+                            battleCount = time.battleCount,
+                            executionIdentity = context.executionIdentity,
+                            resolvedParty = context.resolvedParties[presetId],
+                            mapName = state.mapName,
+                        ),
+                    )
                 }
-                return HandlerEvaluation.Runnable(
-                    BattleMapAutomationAction(
-                        accountId = context.accountId,
-                        progressDate = context.evaluationInstant.atZone(KOREA_ZONE).toLocalDate(),
-                        categoryId = setting.categoryId,
-                        mapCode = setting.mapCode,
-                        presetMode = setting.preset.mode,
-                        presetId = presetId,
-                        battleCount = battleCount,
-                        executionIdentity = context.executionIdentity,
-                        resolvedParty = context.resolvedParties[presetId],
-                        mapName = state.mapName,
-                    ),
-                )
             }
-        return cooldowns.minOrNull()?.let(HandlerEvaluation::Unavailable) ?: HandlerEvaluation.Skipped
+        return waits.minOrNull()?.let(HandlerEvaluation::Unavailable) ?: HandlerEvaluation.Skipped
     }
 
     fun onBattleCompleted(

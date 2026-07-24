@@ -17,4 +17,5 @@ data class AutomationMapState(
     val keyMode: BattleMapKeyMode,
     val keyCount: Int?,
     val supportsThreeBattles: Boolean = false,
+    val requiredTime: Int? = null,
 )

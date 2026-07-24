@@ -35,6 +35,7 @@ data class AdventureMapRunnableState(
     val keyMode: BattleMapKeyMode,
     val keyCount: Int? = null,
     val mapName: String? = null,
+    val requiredTime: Int? = null,
 )
 
 sealed interface AdventureMapPresetResolution {
@@ -54,6 +55,7 @@ data class AdventureMapAutomationSnapshot(
      */
     val executionIdentities: Map<Long, String>,
     val evaluationInstant: Instant,
+    val timeSnapshot: AutomationTimeSnapshot? = null,
 )
 
 data class AdventureMapAutomationAction(
@@ -71,7 +73,9 @@ data class AdventureMapAutomationAction(
 
 /** Pure, ordered selection over the latest live adventure-map snapshot. */
 @Service
-class AdventureMapAutomationHandler : AutomationHandler<AdventureMapAutomationSnapshot> {
+class AdventureMapAutomationHandler(
+    private val timePolicy: BattleTimePolicy = BattleTimePolicy(),
+) : AutomationHandler<AdventureMapAutomationSnapshot> {
     override fun evaluate(context: AdventureMapAutomationSnapshot): HandlerEvaluation {
         val stateGroups = context.mapStates.groupBy { it.categoryId to it.mapCode }
         val duplicateStateIdentities = stateGroups.filterValues { it.size > 1 }.keys
@@ -92,7 +96,7 @@ class AdventureMapAutomationHandler : AutomationHandler<AdventureMapAutomationSn
             .filterValues { it > 1 }
             .keys
         var firstWarning: HandlerEvaluation.ConfigurationWarning? = null
-        val cooldowns = mutableListOf<Instant>()
+        val waits = mutableListOf<Instant>()
 
         context.settings
             .asSequence()
@@ -145,27 +149,37 @@ class AdventureMapAutomationHandler : AutomationHandler<AdventureMapAutomationSn
                     ?: return@forEach
                 if (state.hasExhaustedCapacity()) return@forEach
                 state.cooldownUntil?.takeIf { it.isAfter(context.evaluationInstant) }?.let {
-                    cooldowns += it
+                    waits += it
                     return@forEach
                 }
 
-                return HandlerEvaluation.Runnable(
-                    AdventureMapAutomationAction(
-                        accountId = context.accountId,
-                        categoryId = setting.categoryId,
-                        mapCode = setting.mapCode,
-                        presetMode = setting.preset.mode,
-                        presetId = presetId,
-                        settingIdentity = setting.settingIdentity,
-                        executionIdentity = executionIdentity,
-                        resolvedParty = (context.presetResolutions[setting.settingIdentity] as? AdventureMapPresetResolution.Valid)?.resolvedParty,
-                        mapName = state.mapName,
-                    ),
-                )
+                when (val time = timePolicy.forAdventureMap(
+                    snapshot = context.timeSnapshot,
+                    now = context.evaluationInstant,
+                    requiredTime = state.requiredTime,
+                )) {
+                    is BattleTimeDecision.Wait -> {
+                        waits += time.nextRunAt
+                        return@forEach
+                    }
+                    is BattleTimeDecision.Run -> return HandlerEvaluation.Runnable(
+                        AdventureMapAutomationAction(
+                            accountId = context.accountId,
+                            categoryId = setting.categoryId,
+                            mapCode = setting.mapCode,
+                            presetMode = setting.preset.mode,
+                            presetId = presetId,
+                            settingIdentity = setting.settingIdentity,
+                            executionIdentity = executionIdentity,
+                            resolvedParty = (context.presetResolutions[setting.settingIdentity] as? AdventureMapPresetResolution.Valid)?.resolvedParty,
+                            mapName = state.mapName,
+                        ),
+                    )
+                }
             }
 
         firstWarning?.let { return it }
-        cooldowns.minOrNull()?.let { return HandlerEvaluation.Unavailable(it) }
+        waits.minOrNull()?.let { return HandlerEvaluation.Unavailable(it) }
         return HandlerEvaluation.Skipped
     }
 

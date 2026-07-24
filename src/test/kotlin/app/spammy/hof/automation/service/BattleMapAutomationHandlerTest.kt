@@ -24,15 +24,42 @@ class BattleMapAutomationHandlerTest {
     private val handler = BattleMapAutomationHandler(progressStore)
 
     @Test
-    fun selectsThreeBattlesForRemainingTwoOrMoreAndOneForTheLastRun() {
-        assertEquals(3, runnable(target = 10, progress = 8, supportsThree = true).battleCount)
+    fun selectsThreeBattlesForRemainingThreeOrMoreAndOneForSmallerRemainders() {
+        assertEquals(3, runnable(target = 10, progress = 7, supportsThree = true).battleCount)
+        assertEquals(1, runnable(target = 10, progress = 8, supportsThree = true).battleCount)
         assertEquals(1, runnable(target = 10, progress = 9, supportsThree = true).battleCount)
         assertEquals(1, runnable(target = 10, progress = 4, supportsThree = false).battleCount)
     }
 
     @Test
-    fun remainingTwoIntentionallySelectsThreeBattles() {
-        assertEquals(3, runnable(target = 10, progress = 8, supportsThree = true).battleCount)
+    fun `TIME chooses wait one or three battles at exact boundaries`() {
+        val now = Instant.parse("2026-07-15T00:00:00Z")
+        val at99 = handler.evaluate(snapshot(
+            listOf(setting("map", 10)),
+            emptyMap(),
+            listOf(state("map", supportsThree = true)),
+            now,
+            timeCurrent = 99,
+        ))
+        assertEquals(now.plusSeconds(1), assertIs<HandlerEvaluation.Unavailable>(at99).nextRunAt)
+
+        fun actionAt(time: Int) = assertIs<BattleMapAutomationAction>(
+            assertIs<HandlerEvaluation.Runnable>(handler.evaluate(snapshot(
+                listOf(setting("map", 10)),
+                emptyMap(),
+                listOf(state("map", supportsThree = true)),
+                now,
+                timeCurrent = time,
+            ))).action,
+        )
+        assertEquals(1, actionAt(100).battleCount)
+        assertEquals(1, actionAt(299).battleCount)
+        assertEquals(3, actionAt(300).battleCount)
+    }
+
+    @Test
+    fun remainingTwoNeverPreparesAThreeBattleRequest() {
+        assertEquals(1, runnable(target = 10, progress = 8, supportsThree = true).battleCount)
     }
 
     @Test
@@ -352,6 +379,7 @@ class BattleMapAutomationHandlerTest {
         progress: Map<String, Int>,
         states: List<BattleMapRunnableState>,
         evaluationInstant: Instant = Instant.parse("2026-07-15T00:00:00Z"),
+        timeCurrent: Int = 6000,
     ) = BattleMapAutomationSnapshot(
         accountId = 7,
         settings = settings,
@@ -361,6 +389,7 @@ class BattleMapAutomationHandlerTest {
         availablePresetIds = setOf(10L, 20L),
         executionIdentity = "execution-1",
         evaluationInstant = evaluationInstant,
+        timeSnapshot = AutomationTimeSnapshot(timeCurrent, 6000, evaluationInstant),
     )
 
     private fun setting(
