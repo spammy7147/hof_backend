@@ -275,7 +275,12 @@ class BattleMapCatalogTransactionService(
         state.availableCount = observation.availableCount
         state.attemptRemaining = observation.attemptCount
         state.winRemaining = observation.winCount
-        state.cooldownUntil = observation.cooldownRemainingSeconds?.let(now::plusSeconds)
+        val observedCooldown = observation.cooldownRemainingSeconds?.let(now::plusSeconds)
+        state.cooldownUntil = if (map.sharesMinuteCooldown && state.cooldownUntil?.isAfter(now) == true) {
+            listOfNotNull(state.cooldownUntil, observedCooldown).maxOrNull()
+        } else {
+            observedCooldown
+        }
         observation.supportsThreeBattles?.let { state.supportsThreeBattles = it }
         state.rawHref = observation.rawHref
         state.visible = true

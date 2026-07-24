@@ -90,6 +90,60 @@ class BattleMapCatalogServiceBulkTest {
         Mockito.verifyNoMoreInteractions(queryRepository)
     }
 
+    @Test
+    fun `catalog refresh does not erase active projected cooldown for learned member`() {
+        firstMap.sharesMinuteCooldown = true
+        val state = existingState(firstMap, NOW.plusSeconds(40))
+        prepareExistingState(state)
+
+        service.synchronizeCategory(ACCOUNT, CATEGORY, listOf(observation(firstMap)))
+
+        assertEquals(NOW.plusSeconds(40), state.cooldownUntil)
+    }
+
+    @Test
+    fun `catalog refresh still clears stale cooldown for ordinary map`() {
+        val state = existingState(firstMap, NOW.plusSeconds(40))
+        prepareExistingState(state)
+
+        service.synchronizeCategory(ACCOUNT, CATEGORY, listOf(observation(firstMap)))
+
+        assertEquals(null, state.cooldownUntil)
+    }
+
+    private fun prepareExistingState(state: AccountBattleMapStateEntity) {
+        Mockito.`when`(queryRepository.findMapsByCategoryId(CATEGORY)).thenReturn(listOf(firstMap))
+        Mockito.`when`(queryRepository.findGroupsByCategoryId(CATEGORY)).thenReturn(listOf(group))
+        Mockito.`when`(queryRepository.findAliasesByCategoryId(CATEGORY))
+            .thenReturn(aliases.filter { it.battleMap.id == firstMap.id })
+        Mockito.`when`(queryRepository.findStatesByAccountIdAndCategoryId(ACCOUNT.id, CATEGORY))
+            .thenReturn(listOf(state))
+        Mockito.`when`(queryRepository.findUnresolvedByAccountIdAndCategoryId(ACCOUNT.id, CATEGORY))
+            .thenReturn(emptyList())
+        Mockito.`when`(groupRepository.save(anyGroup())).thenAnswer { it.arguments[0] }
+        Mockito.`when`(mapRepository.save(anyMap())).thenAnswer { it.arguments[0] }
+        Mockito.`when`(stateRepository.save(anyState())).thenAnswer { it.arguments[0] }
+    }
+
+    private fun existingState(map: BattleMapEntity, cooldownUntil: Instant) = AccountBattleMapStateEntity(
+        account = ACCOUNT,
+        battleMap = map,
+        cooldownUntil = cooldownUntil,
+        rawHref = "index.php?sp_hunt=${map.mapCode}",
+        lastSeenAt = NOW.minusSeconds(1),
+    )
+
+    private fun observation(map: BattleMapEntity) = HofBattleMap(
+        categoryId = CATEGORY,
+        mapCode = map.mapCode,
+        name = map.name,
+        groupName = group.name,
+        groupOrder = group.displayOrder,
+        mapOrder = map.displayOrder,
+        cooldownRemainingSeconds = null,
+        rawHref = "index.php?sp_hunt=${map.mapCode}",
+    )
+
     private fun map(
         id: Long,
         code: String,
