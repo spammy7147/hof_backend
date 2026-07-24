@@ -6,7 +6,7 @@ import app.spammy.hof.battle.dto.BattleMapResponse
 import app.spammy.hof.battle.model.BattleCategoryId
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
-import app.spammy.hof.external.client.HofGateway
+import app.spammy.hof.external.client.AccountHofGateway
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.HofBattleMap
 import app.spammy.hof.external.model.HofRequestOrigin
@@ -44,7 +44,7 @@ class BattleMapService(
     private val accountQueryRepository: AccountQueryRepository,
     private val cookieQueryRepository: CookieQueryRepository,
     private val requestFactory: HofRequestFactory,
-    private val gateway: HofGateway,
+    private val gateway: AccountHofGateway,
     private val battleMapParser: BattleMapParser,
     private val catalogService: BattleMapCatalogService,
     private val loginStateParser: LoginStateParser,
@@ -133,10 +133,11 @@ class BattleMapService(
             source.mapQuery,
             cookies.keys.sorted(),
         )
-        val response = gateway.execute(requestFactory.battleMapPage(source.pageQuery, origin), cookies)
+        val response = gateway.execute(account.id, requestFactory.battleMapPage(source.pageQuery, origin), cookies)
         val mapPageResponse = source.detailPageQuery
             ?.let { detailPageQuery ->
                 gateway.execute(
+                    accountId = account.id,
                     request = requestFactory.battleMapPage(detailPageQuery, origin),
                     cookies = cookies + response.setCookies,
                 )

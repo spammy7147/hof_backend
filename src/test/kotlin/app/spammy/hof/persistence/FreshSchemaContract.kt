@@ -183,6 +183,12 @@ internal object FreshSchemaContract {
             requiredInstant("created_at"), optionalInstant("last_login_at"),
         ),
         table(
+            "latest_hof_status",
+            serialId(), requiredBigint("account_id"), requiredVarchar("player_name"),
+            requiredBigint("funds"), requiredInteger("time_current"), requiredInteger("time_max"),
+            requiredVarchar("work"), requiredVarchar("auction"), requiredInstant("observed_at"),
+        ),
+        table(
             "hof_cookies",
             serialId(), requiredBigint("account_id"), requiredVarchar("name"), requiredText("cookie_value"),
             optionalVarchar("domain"), optionalVarchar("path"), optionalInstant("expires_at"),
@@ -473,6 +479,7 @@ internal object FreshSchemaContract {
 
     private val UNIQUE_KEYS = listOf(
         key("hof_accounts", "uk_hof_accounts_login_id", "login_id"),
+        key("latest_hof_status", "uk_latest_hof_status_account", "account_id"),
         key("hof_cookies", "uk_hof_cookies_account_name", "account_id", "name"),
         key("refresh_tokens", "uk_refresh_tokens_token_hash", "token_hash"),
         key("characters", "uk_characters_account_hof_character", "account_id", "hof_character_id"),
@@ -553,6 +560,7 @@ internal object FreshSchemaContract {
 
     private val FOREIGN_KEYS = listOf(
         fk("fk_hof_cookies_account", "hof_cookies.account_id", "hof_accounts.id", DeleteAction.CASCADE),
+        fk("fk_latest_hof_status_account", "latest_hof_status.account_id", "hof_accounts.id", DeleteAction.CASCADE),
         fk("fk_refresh_tokens_account", "refresh_tokens.account_id", "hof_accounts.id", DeleteAction.CASCADE),
         fk("fk_characters_account", "characters.account_id", "hof_accounts.id", DeleteAction.CASCADE),
         fk("fk_character_stats_character", "character_stats.character_id", "characters.id", DeleteAction.CASCADE),

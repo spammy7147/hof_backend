@@ -15,11 +15,13 @@ import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.persistence.QueryDslConfig
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.client.HofBinaryGateway
+import app.spammy.hof.external.client.AccountHofGateway
 import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.model.HofBinaryResponse
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
 import app.spammy.hof.external.parser.LoginStateParser
+import app.spammy.hof.status.service.HofStatusSnapshotService
 import java.time.Instant
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
@@ -472,6 +474,13 @@ class CaptchaServicePersistenceTest {
     class BoundaryConfig {
         @Bean
         fun gateway(): FakeHofGateway = FakeHofGateway()
+
+        @Bean
+        fun accountGateway(
+            gateway: FakeHofGateway,
+            timeProvider: TimeProvider,
+        ): AccountHofGateway =
+            AccountHofGateway(gateway, org.mockito.Mockito.mock(HofStatusSnapshotService::class.java), timeProvider)
 
         @Bean
         fun binaryGateway(): FakeHofBinaryGateway = FakeHofBinaryGateway()

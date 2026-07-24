@@ -38,6 +38,7 @@ import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.client.HofBinaryGateway
 import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.client.HofRequestFactory
+import app.spammy.hof.external.client.testAccountHofGateway
 import app.spammy.hof.external.model.HofBattleOutcome
 import app.spammy.hof.external.model.HofBinaryResponse
 import app.spammy.hof.external.model.HofHttpResponse
@@ -91,6 +92,7 @@ class BattleRunServiceTest {
         timeProvider = TimeProvider { now },
     )
     private val gateway = FakeHofGateway()
+    private val accountGateway = testAccountHofGateway(gateway, TimeProvider { now })
     private val binaryGateway = FakeHofBinaryGateway()
     private val captchaImageFileStore = FakeCaptchaImageFileStore()
     private val captchaService = CaptchaService(
@@ -102,7 +104,7 @@ class BattleRunServiceTest {
         cookieCipher = HofCookieCipher(
             Base64.getEncoder().encodeToString(ByteArray(32) { index -> (index + 41).toByte() }),
         ),
-        gateway = gateway,
+        gateway = accountGateway,
         challengeParser = CaptchaChallengeParser(),
         loginStateParser = LoginStateParser(),
         imageManager = CaptchaImageManager(binaryGateway, captchaImageFileStore),
@@ -114,7 +116,7 @@ class BattleRunServiceTest {
         characterQueryRepository = characterQueryRepository,
         battleMapQueryRepository = battleMapQueryRepository,
         requestFactory = HofRequestFactory(),
-        gateway = gateway,
+        gateway = accountGateway,
         loginStateParser = LoginStateParser(),
         sharedBattleCooldownParser = SharedBattleCooldownParser(),
         battleResultParser = BattleResultParser(),

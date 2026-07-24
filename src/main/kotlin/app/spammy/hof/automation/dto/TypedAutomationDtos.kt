@@ -10,6 +10,7 @@ import jakarta.validation.constraints.Min
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Positive
 import jakarta.validation.constraints.Size
+import app.spammy.hof.status.dto.HofObservedStatusResponse
 
 data class CreateAutomationEntryRequest(val type: AutomationType)
 
@@ -174,4 +175,5 @@ data class AdventureDailyRefreshResponse(
 data class TypedAutomationAggregateResponse(
     val entries: List<TypedAutomationEntryResponse>,
     val runtime: TypedAutomationRuntimeResponse,
+    val hofStatus: HofObservedStatusResponse? = null,
 )

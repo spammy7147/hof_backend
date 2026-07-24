@@ -8,7 +8,7 @@ import app.spammy.hof.character.dto.LoadPatternResponse
 import app.spammy.hof.character.repository.CharacterQueryRepository
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
-import app.spammy.hof.external.client.HofGateway
+import app.spammy.hof.external.client.AccountHofGateway
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.parser.LoginStateParser
 import app.spammy.hof.external.parser.CharacterDetailParser
@@ -25,7 +25,7 @@ class CharacterPatternService(
     private val cookieQueryRepository: CookieQueryRepository,
     private val characterQueryRepository: CharacterQueryRepository,
     private val requestFactory: HofRequestFactory,
-    private val gateway: HofGateway,
+    private val gateway: AccountHofGateway,
     private val loginStateParser: LoginStateParser,
     private val detailParser: CharacterDetailParser,
     private val characterService: CharacterService,
@@ -68,7 +68,7 @@ class CharacterPatternService(
             cookies.keys.sorted(),
         )
         val response = sessionPatternLoadTracker.withSession(account.id, cookies) { session ->
-            val hofResponse = gateway.execute(requestFactory.loadPattern(hofCharacterId, slot), cookies)
+            val hofResponse = gateway.execute(account.id, requestFactory.loadPattern(hofCharacterId, slot), cookies)
             val loginState = loginStateParser.parse(hofResponse.body)
             if (loginState.hasLoginForm && !loginState.isLoggedIn) {
                 log.warn(

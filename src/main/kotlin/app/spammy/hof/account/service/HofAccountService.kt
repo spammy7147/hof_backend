@@ -9,13 +9,18 @@ import app.spammy.hof.account.repository.HofCookieRepository
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.external.client.AccountHofGateway
 import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.client.HofRequestFactory
+import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.external.parser.LoginStateParser
+import java.time.Instant
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import org.springframework.transaction.support.TransactionSynchronization
+import org.springframework.transaction.support.TransactionSynchronizationManager
 
 @Service
 /**
@@ -32,6 +37,7 @@ class HofAccountService(
     private val cookieCipher: HofCookieCipher,
     private val requestFactory: HofRequestFactory,
     private val gateway: HofGateway,
+    private val accountGateway: AccountHofGateway,
     private val loginStateParser: LoginStateParser,
     private val timeProvider: TimeProvider,
 ) {
@@ -86,6 +92,7 @@ class HofAccountService(
             initialResponse.statusCode,
             initialResponse.setCookies.keys.sorted(),
         )
+        val loginRequestStartedAt = timeProvider.now()
         val loginResponse = gateway.execute(
             request = requestFactory.login(
                 id = account.loginId,
@@ -109,6 +116,7 @@ class HofAccountService(
             log.warn("HOF login failed accountId={} loginId={}", account.id, account.loginId)
             throw ApiException(ErrorCode.HOF_LOGIN_FAILED, "HOF 로그인에 실패했습니다.")
         }
+        observeAfterTransaction(account.id, loginResponse, loginRequestStartedAt)
 
         val now = timeProvider.now()
         val cookies = initialResponse.setCookies + loginResponse.setCookies
@@ -134,5 +142,23 @@ class HofAccountService(
         log.info("HOF login success accountId={} cookieCount={}", account.id, cookies.size)
 
         return account
+    }
+
+    private fun observeAfterTransaction(
+        accountId: Long,
+        response: HofHttpResponse,
+        requestStartedAt: Instant,
+    ) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            accountGateway.observe(accountId, response, requestStartedAt)
+            return
+        }
+        TransactionSynchronizationManager.registerSynchronization(
+            object : TransactionSynchronization {
+                override fun afterCompletion(status: Int) {
+                    accountGateway.observe(accountId, response, requestStartedAt)
+                }
+            },
+        )
     }
 }

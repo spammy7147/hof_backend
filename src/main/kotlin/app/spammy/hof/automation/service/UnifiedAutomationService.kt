@@ -23,6 +23,7 @@ import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.party.entity.PartyPresetEntity
 import app.spammy.hof.party.repository.PartyPresetQueryRepository
+import app.spammy.hof.status.service.HofStatusSnapshotService
 import java.time.ZoneId
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -43,6 +44,7 @@ class UnifiedAutomationService(
     private val typedAdventureMapRepository: AdventureAutomationMapCommandRepository,
     private val automationOutboxService: AutomationOutboxService,
     private val storedActionCodec: StoredTypedAutomationActionCodec,
+    private val hofStatusSnapshots: HofStatusSnapshotService,
 ) {
     @Transactional(readOnly = true)
     fun getTyped(accountId: Long): TypedAutomationAggregateResponse {
@@ -413,6 +415,7 @@ class UnifiedAutomationService(
         val configWarnings = responses.flatMap(TypedAutomationEntryResponse::warnings)
         return TypedAutomationAggregateResponse(
             entries = responses,
+            hofStatus = hofStatusSnapshots.findLatest(accountId),
             runtime = TypedAutomationRuntimeResponse(
                 lifecycle = runtime?.lifecycleStatus ?: TypedAutomationLifecycle.STOPPED,
                 stopReason = runtime?.stopReason,

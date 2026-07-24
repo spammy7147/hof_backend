@@ -25,11 +25,13 @@ import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.captcha.dto.CaptchaChallengeResponse
 import app.spammy.hof.captcha.service.CaptchaService
 import app.spammy.hof.external.client.HofGateway
+import app.spammy.hof.external.client.AccountHofGateway
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
 import app.spammy.hof.external.parser.BattleMapParser
 import app.spammy.hof.external.parser.LoginStateParser
+import app.spammy.hof.status.service.HofStatusSnapshotService
 import java.io.IOException
 import java.net.http.HttpTimeoutException
 import java.time.Instant
@@ -670,6 +672,10 @@ class BattleMapServiceTest {
 
         @Bean
         fun fakeHofGateway(): FakeHofGateway = FakeHofGateway()
+
+        @Bean
+        fun accountHofGateway(gateway: FakeHofGateway, timeProvider: TimeProvider): AccountHofGateway =
+            AccountHofGateway(gateway, Mockito.mock(HofStatusSnapshotService::class.java), timeProvider)
 
         @Bean
         fun loginStateParser(): LoginStateParser = LoginStateParser()

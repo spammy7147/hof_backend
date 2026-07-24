@@ -15,6 +15,7 @@ import app.spammy.hof.character.repository.CharacterSyncJobRepository
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.client.HofRequestFactory
+import app.spammy.hof.external.client.testAccountHofGateway
 import app.spammy.hof.external.model.HofCharacter
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
@@ -56,7 +57,7 @@ class CharacterSyncJobServiceTest {
         syncJobQueryRepository = syncJobQueryRepository,
         characterService = characterService,
         requestFactory = HofRequestFactory(),
-        gateway = gateway,
+        gateway = testAccountHofGateway(gateway, TimeProvider { now }),
         rosterParser = CharacterRosterParser(),
         detailParser = CharacterDetailParser(),
         eventService = eventService,

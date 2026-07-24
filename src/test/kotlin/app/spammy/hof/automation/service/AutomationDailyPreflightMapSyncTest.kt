@@ -19,11 +19,13 @@ import app.spammy.hof.common.persistence.QueryDslConfig
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.captcha.service.CaptchaService
 import app.spammy.hof.external.client.HofGateway
+import app.spammy.hof.external.client.AccountHofGateway
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
 import app.spammy.hof.external.parser.BattleMapParser
 import app.spammy.hof.external.parser.LoginStateParser
+import app.spammy.hof.status.service.HofStatusSnapshotService
 import jakarta.persistence.EntityManager
 import java.time.Instant
 import java.util.Base64
@@ -141,6 +143,12 @@ class AutomationDailyPreflightMapSyncTest {
     class Config {
         @Bean fun timeProvider(): MutableTimeProvider = MutableTimeProvider(NOW)
         @Bean fun gateway(): BlockingAdventureGateway = BlockingAdventureGateway()
+        @Bean
+        fun accountGateway(
+            gateway: BlockingAdventureGateway,
+            timeProvider: MutableTimeProvider,
+        ): AccountHofGateway =
+            AccountHofGateway(gateway, Mockito.mock(HofStatusSnapshotService::class.java), timeProvider)
         @Bean fun loginStateParser(): LoginStateParser = LoginStateParser()
         @Bean fun captchaService(): CaptchaService = Mockito.mock(CaptchaService::class.java)
         @Bean fun hofAccountService(): HofAccountService = Mockito.mock(HofAccountService::class.java)

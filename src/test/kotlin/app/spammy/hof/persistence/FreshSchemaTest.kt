@@ -56,6 +56,7 @@ class FreshSchemaTest {
                 "5" to "track character detail sync",
                 "6" to "learn shared battle cooldowns",
                 "7" to "add automation wait reason",
+                "8" to "observe latest hof status",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -75,6 +76,7 @@ class FreshSchemaTest {
                 "V5__track_character_detail_sync.sql",
                 "V6__learn_shared_battle_cooldowns.sql",
                 "V7__add_automation_wait_reason.sql",
+                "V8__observe_latest_hof_status.sql",
             ),
             migrationNames,
         )

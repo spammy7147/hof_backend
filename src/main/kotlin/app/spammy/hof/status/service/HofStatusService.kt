@@ -6,7 +6,7 @@ import app.spammy.hof.account.repository.CookieQueryRepository
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
-import app.spammy.hof.external.client.HofGateway
+import app.spammy.hof.external.client.AccountHofGateway
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.parser.HofMainStatusParser
 import app.spammy.hof.external.parser.LoginStateParser
@@ -25,7 +25,7 @@ class HofStatusService(
     private val accountQueryRepository: AccountQueryRepository,
     private val cookieQueryRepository: CookieQueryRepository,
     private val requestFactory: HofRequestFactory,
-    private val gateway: HofGateway,
+    private val gateway: AccountHofGateway,
     private val loginStateParser: LoginStateParser,
     private val statusParser: HofMainStatusParser,
     private val rosterParser: CharacterRosterParser,
@@ -48,7 +48,7 @@ class HofStatusService(
         }
 
         log.info("HOF status requested accountId={} cookieNames={}", account.id, cookies.keys.sorted())
-        val response = gateway.execute(requestFactory.home(), cookies)
+        val response = gateway.execute(account.id, requestFactory.home(), cookies)
         val loginState = loginStateParser.parse(response.body)
         if (!loginState.isLoggedIn) {
             log.warn("HOF status rejected accountId={} reason=session-expired status={}", account.id, response.statusCode)

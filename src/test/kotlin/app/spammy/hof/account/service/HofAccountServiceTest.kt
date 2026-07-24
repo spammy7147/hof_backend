@@ -8,6 +8,7 @@ import app.spammy.hof.account.repository.HofAccountRepository
 import app.spammy.hof.account.repository.HofCookieRepository
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.client.HofGateway
+import app.spammy.hof.external.client.AccountHofGateway
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofHttpResponse
@@ -33,6 +34,7 @@ class HofAccountServiceTest {
     private val accountQueryRepository = Mockito.mock(AccountQueryRepository::class.java)
     private val cookieQueryRepository = Mockito.mock(CookieQueryRepository::class.java)
     private val gateway = FakeHofGateway()
+    private val accountGateway = Mockito.mock(AccountHofGateway::class.java)
     private val service = HofAccountService(
         accountRepository = accountRepository,
         cookieRepository = cookieRepository,
@@ -42,6 +44,7 @@ class HofAccountServiceTest {
         cookieCipher = cookieCipher,
         requestFactory = HofRequestFactory(),
         gateway = gateway,
+        accountGateway = accountGateway,
         loginStateParser = LoginStateParser(),
         timeProvider = TimeProvider { now },
     )

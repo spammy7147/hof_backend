@@ -16,7 +16,7 @@ import app.spammy.hof.character.service.SessionPatternLoadTracker
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
-import app.spammy.hof.external.client.HofGateway
+import app.spammy.hof.external.client.AccountHofGateway
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.HofBattleType
 import app.spammy.hof.external.model.HofHttpResponse
@@ -41,7 +41,7 @@ class BattleRunService(
     private val characterQueryRepository: CharacterQueryRepository,
     private val battleMapQueryRepository: BattleMapQueryRepository,
     private val requestFactory: HofRequestFactory,
-    private val gateway: HofGateway,
+    private val gateway: AccountHofGateway,
     private val loginStateParser: LoginStateParser,
     private val sharedBattleCooldownParser: SharedBattleCooldownParser,
     private val battleResultParser: BattleResultParser,
@@ -120,6 +120,7 @@ class BattleRunService(
                     patternLoad.slot,
                 )
                 val preloadResponse = gateway.execute(
+                    account.id,
                     requestFactory.loadPattern(patternLoad.characterId, patternLoad.slot, origin),
                     cookies,
                 )
@@ -132,6 +133,7 @@ class BattleRunService(
                 }
             }
             gateway.execute(
+                account.id,
                 requestFactory.battle(
                     type = battleType,
                     code = mapCode,

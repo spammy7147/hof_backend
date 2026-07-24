@@ -8,6 +8,7 @@ import app.spammy.hof.character.entity.CharacterEntity
 import app.spammy.hof.character.repository.CharacterQueryRepository
 import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.client.HofRequestFactory
+import app.spammy.hof.external.client.testAccountHofGateway
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
 import app.spammy.hof.external.parser.LoginStateParser
@@ -46,7 +47,7 @@ class CharacterPatternServiceTest {
         cookieQueryRepository = cookieQueryRepository,
         characterQueryRepository = characterQueryRepository,
         requestFactory = HofRequestFactory(),
-        gateway = gateway,
+        gateway = testAccountHofGateway(gateway, app.spammy.hof.common.time.TimeProvider { now }),
         loginStateParser = LoginStateParser(),
         detailParser = CharacterDetailParser(),
         characterService = characterService,

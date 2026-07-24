@@ -41,6 +41,8 @@ import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.party.entity.PartyPresetEntity
 import app.spammy.hof.party.entity.PartyPresetMemberEntity
 import app.spammy.hof.party.repository.PartyPresetQueryRepository
+import app.spammy.hof.status.dto.HofObservedStatusResponse
+import app.spammy.hof.status.service.HofStatusSnapshotService
 import java.time.Instant
 import java.time.LocalDate
 import kotlin.test.Test
@@ -64,6 +66,7 @@ class UnifiedAutomationServiceTest {
     private val adventureSettingRepository = Mockito.mock(AdventureAutomationMapCommandRepository::class.java)
     private val automationOutbox = Mockito.mock(AutomationOutboxService::class.java)
     private val storedActionCodec = Mockito.mock(StoredTypedAutomationActionCodec::class.java)
+    private val statusSnapshots = Mockito.mock(HofStatusSnapshotService::class.java)
     private var currentTime = NOW
     private val service = UnifiedAutomationService(
         accountQueryRepository = accountQueryRepository,
@@ -79,6 +82,7 @@ class UnifiedAutomationServiceTest {
         typedAdventureMapRepository = adventureSettingRepository,
         automationOutboxService = automationOutbox,
         storedActionCodec = storedActionCodec,
+        hofStatusSnapshots = statusSnapshots,
     )
 
     init {
@@ -134,6 +138,23 @@ class UnifiedAutomationServiceTest {
             AutomationWaitReason.HOF_CONNECTION,
             service.getTyped(ACCOUNT_ID).runtime.waitReason,
         )
+    }
+
+    @Test
+    fun `typed aggregate includes the latest observed HOF status`() {
+        Mockito.`when`(accountQueryRepository.findById(ACCOUNT_ID)).thenReturn(account())
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(emptyList())
+        Mockito.`when`(statusSnapshots.findLatest(ACCOUNT_ID)).thenReturn(observedStatus(5700))
+
+        assertEquals(5700, service.getTyped(ACCOUNT_ID).hofStatus?.timeCurrent)
+    }
+
+    @Test
+    fun `typed aggregate allows an account without an observation`() {
+        Mockito.`when`(accountQueryRepository.findById(ACCOUNT_ID)).thenReturn(account())
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(emptyList())
+
+        assertNull(service.getTyped(ACCOUNT_ID).hofStatus)
     }
 
     @Test
@@ -688,6 +709,16 @@ class UnifiedAutomationServiceTest {
         leaseToken = "lease",
         createdAt = NOW,
         updatedAt = NOW,
+    )
+
+    private fun observedStatus(timeCurrent: Int) = HofObservedStatusResponse(
+        playerName = "《얼어붙은 손길》공민이",
+        funds = 331_708_318L,
+        timeCurrent = timeCurrent,
+        timeMax = 6000,
+        work = "Nothing",
+        auction = "Nothing",
+        observedAt = NOW,
     )
 
     private fun anyEntry(): AutomationEntryEntity =

@@ -5,7 +5,7 @@ import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.CookieQueryRepository
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
-import app.spammy.hof.external.client.HofGateway
+import app.spammy.hof.external.client.AccountHofGateway
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.HofRequest
 import app.spammy.hof.external.model.HofRequestOrigin
@@ -19,7 +19,7 @@ class QuestGatewayService(
     private val accountQueryRepository: AccountQueryRepository,
     private val cookieQueryRepository: CookieQueryRepository,
     private val requestFactory: HofRequestFactory,
-    private val gateway: HofGateway,
+    private val gateway: AccountHofGateway,
     private val loginStateParser: LoginStateParser,
     private val parser: QuestPageParser,
 ) {
@@ -49,7 +49,7 @@ class QuestGatewayService(
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
         val cookies = cookieQueryRepository.findValueMapByAccountId(accountId)
         if (cookies.isEmpty()) throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "저장된 HOF 로그인 쿠키가 없습니다.")
-        val response = gateway.execute(request, cookies)
+        val response = gateway.execute(accountId, request, cookies)
         val login = loginStateParser.parse(response.body)
         if (login.hasLoginForm && !login.isLoggedIn) {
             throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "HOF 로그인 세션이 만료되었습니다.")

@@ -15,6 +15,7 @@ import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.client.HofBinaryGateway
 import app.spammy.hof.external.client.HofGateway
+import app.spammy.hof.external.client.testAccountHofGateway
 import app.spammy.hof.external.model.HofBinaryResponse
 import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofHttpResponse
@@ -59,7 +60,7 @@ class CaptchaServiceTest {
         cookieRepository = cookieRepository,
         cookieQueryRepository = cookieQueryRepository,
         cookieCipher = cookieCipher,
-        gateway = gateway,
+        gateway = testAccountHofGateway(gateway, TimeProvider { now }),
         challengeParser = CaptchaChallengeParser(),
         loginStateParser = LoginStateParser(),
         imageManager = CaptchaImageManager(binaryGateway, captchaImageFileStore),

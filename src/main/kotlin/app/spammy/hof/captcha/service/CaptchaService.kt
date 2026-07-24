@@ -14,7 +14,7 @@ import app.spammy.hof.captcha.repository.CaptchaQueryRepository
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
-import app.spammy.hof.external.client.HofGateway
+import app.spammy.hof.external.client.AccountHofGateway
 import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofRequest
 import app.spammy.hof.external.parser.LoginStateParser
@@ -41,7 +41,7 @@ class CaptchaService(
     private val cookieRepository: HofCookieRepository,
     private val cookieQueryRepository: CookieQueryRepository,
     private val cookieCipher: HofCookieCipher,
-    private val gateway: HofGateway,
+    private val gateway: AccountHofGateway,
     private val challengeParser: CaptchaChallengeParser,
     private val loginStateParser: LoginStateParser,
     private val imageManager: CaptchaImageManager,
@@ -140,7 +140,7 @@ class CaptchaService(
         }
         val cookies = storedCookies.associate { cookie -> cookie.name to cookieCipher.decrypt(cookie.value) }
         val policeUrl = challengeParser.buildPoliceUrl(challenge.sourceUrl)
-        val response = gateway.execute(HofRequest(HofHttpMethod.GET, policeUrl), cookies)
+        val response = gateway.execute(account.id, HofRequest(HofHttpMethod.GET, policeUrl), cookies)
         val login = loginStateParser.parse(response.body)
         if (login.hasLoginForm && !login.isLoggedIn) {
             throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "HOF 로그인 세션이 만료되었습니다.")
@@ -296,7 +296,7 @@ class CaptchaService(
             ),
         )
         val response = runCatching {
-            gateway.execute(request, cookies)
+            gateway.execute(challenge.account.id, request, cookies)
         }.getOrElse { error ->
             imageManager.deleteImmediately(challenge.account.id, challenge.id, challenge.preparationVersion)
             throw ApiException(ErrorCode.HOF_REQUEST_FAILED, "HOF 캡차 답안 제출에 실패했습니다.", error)
@@ -395,6 +395,7 @@ class CaptchaService(
         val policeUrl = challengeParser.buildPoliceUrl(sourceUrl)
         val response = runCatching {
             gateway.execute(
+                account.id,
                 HofRequest(
                     method = HofHttpMethod.GET,
                     url = policeUrl,

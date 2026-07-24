@@ -15,7 +15,7 @@ import app.spammy.hof.character.repository.CharacterSyncJobRepository
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
-import app.spammy.hof.external.client.HofGateway
+import app.spammy.hof.external.client.AccountHofGateway
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.HofCharacter
 import app.spammy.hof.external.parser.CharacterDetailParser
@@ -41,7 +41,7 @@ class CharacterSyncJobService(
     private val syncJobQueryRepository: CharacterSyncJobQueryRepository,
     private val characterService: CharacterService,
     private val requestFactory: HofRequestFactory,
-    private val gateway: HofGateway,
+    private val gateway: AccountHofGateway,
     private val rosterParser: CharacterRosterParser,
     private val detailParser: CharacterDetailParser,
     private val eventService: CharacterSyncEventService,
@@ -174,7 +174,7 @@ class CharacterSyncJobService(
             ),
         )
 
-        val homeResponse = gateway.execute(requestFactory.home(), cookies)
+        val homeResponse = gateway.execute(account.id, requestFactory.home(), cookies)
         val roster = rosterParser.parse(homeResponse.body)
         val existingCharacters = characterService.findAll(accountId)
         if (roster.isEmpty() && existingCharacters.isNotEmpty()) {
@@ -195,7 +195,7 @@ class CharacterSyncJobService(
 
         roster.forEach { rosterCharacter ->
             val character = runCatching {
-                val detailResponse = gateway.execute(requestFactory.characterPage(rosterCharacter.id), cookies)
+                val detailResponse = gateway.execute(account.id, requestFactory.characterPage(rosterCharacter.id), cookies)
                 val detail = detailParser.parse(rosterCharacter.id, detailResponse.body)
                 characterService.upsertCharacterSnapshot(
                     account = account,
