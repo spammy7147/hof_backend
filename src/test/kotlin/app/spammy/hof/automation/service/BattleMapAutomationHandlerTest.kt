@@ -91,6 +91,46 @@ class BattleMapAutomationHandlerTest {
     }
 
     @Test
+    fun `only incomplete cooling settings return their earliest expiry`() {
+        val now = Instant.parse("2026-07-15T00:00:00Z")
+        val result = handler.evaluate(snapshot(
+            settings = listOf(
+                setting("complete", target = 1, order = 0),
+                setting("later", target = 1, order = 1),
+                setting("earlier", target = 1, order = 2),
+            ),
+            progress = mapOf("complete" to 1),
+            states = listOf(
+                state("complete", cooldownUntil = now.plusSeconds(5)),
+                state("later", cooldownUntil = now.plusSeconds(50)),
+                state("earlier", cooldownUntil = now.plusSeconds(30)),
+            ),
+            evaluationInstant = now,
+        ))
+
+        assertEquals(now.plusSeconds(30), assertIs<HandlerEvaluation.Unavailable>(result).nextRunAt)
+    }
+
+    @Test
+    fun `later runnable map still wins over earlier cooling setting`() {
+        val now = Instant.parse("2026-07-15T00:00:00Z")
+        val result = handler.evaluate(snapshot(
+            settings = listOf(setting("cooling", 1, order = 0), setting("ready", 1, order = 1)),
+            progress = emptyMap(),
+            states = listOf(
+                state("cooling", cooldownUntil = now.plusSeconds(30)),
+                state("ready"),
+            ),
+            evaluationInstant = now,
+        ))
+
+        assertEquals(
+            "ready",
+            assertIs<BattleMapAutomationAction>(assertIs<HandlerEvaluation.Runnable>(result).action).mapCode,
+        )
+    }
+
+    @Test
     fun countsZeroThroughThreeVictoriesOnlyFromCompleteTerminalResults() {
         val action = runnable(target = 10, progress = 0, supportsThree = true)
         listOf(0, 1, 2, 3).forEach { victoryCount ->
@@ -340,8 +380,10 @@ class BattleMapAutomationHandlerTest {
         keyCount: Int? = null,
         keyMode: BattleMapKeyMode = if (keyCount == null) BattleMapKeyMode.UNKNOWN else BattleMapKeyMode.LIMITED,
         mapName: String? = null,
+        cooldownUntil: Instant? = null,
     ) = BattleMapRunnableState(
         "battle_map", mapCode, visible, enabled = true, supportsThreeBattles = supportsThree,
+        cooldownUntil = cooldownUntil,
         availableCount = availableCount, attemptRemaining = attemptRemaining, winRemaining = winRemaining,
         keyMode = keyMode, keyCount = keyCount, mapName = mapName,
     )

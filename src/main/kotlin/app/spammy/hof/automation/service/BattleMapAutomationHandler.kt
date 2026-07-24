@@ -272,6 +272,7 @@ class BattleMapAutomationHandler(
 ) : AutomationHandler<BattleMapAutomationSnapshot> {
     override fun evaluate(context: BattleMapAutomationSnapshot): HandlerEvaluation {
         val states = context.mapStates.associateBy { BattleMapProgressIdentity(it.categoryId, it.mapCode) }
+        val cooldowns = mutableListOf<Instant>()
         context.settings
             .asSequence()
             .filter(BattleMapAutomationSetting::enabled)
@@ -285,7 +286,12 @@ class BattleMapAutomationHandler(
                 val remaining = setting.dailyTargetCount - (context.successfulRuns[identity] ?: 0)
                 if (remaining <= 0) return@forEach
                 val presetId = setting.preset.resolvePreset(context) ?: return@forEach
-                val state = states[identity]?.takeIf { it.isRunnable(context.evaluationInstant) } ?: return@forEach
+                val state = states[identity]?.takeIf { it.isRunnableIgnoringCooldown() }
+                    ?: return@forEach
+                state.cooldownUntil?.takeIf { it.isAfter(context.evaluationInstant) }?.let {
+                    cooldowns += it
+                    return@forEach
+                }
                 val battleCount = when {
                     !state.supportsThreeBattles -> 1
                     remaining == 1 -> 1
@@ -307,7 +313,7 @@ class BattleMapAutomationHandler(
                     ),
                 )
             }
-        return HandlerEvaluation.Skipped
+        return cooldowns.minOrNull()?.let(HandlerEvaluation::Unavailable) ?: HandlerEvaluation.Skipped
     }
 
     fun onBattleCompleted(
@@ -367,8 +373,8 @@ class BattleMapAutomationHandler(
         PresetSelectionMode.EXPLICIT -> presetId?.takeIf(context.availablePresetIds::contains)
     }
 
-    private fun BattleMapRunnableState.isRunnable(now: Instant): Boolean =
-        visible && enabled && keyMode.hasUsableKey(keyCount) && cooldownUntil?.isAfter(now) != true &&
+    private fun BattleMapRunnableState.isRunnableIgnoringCooldown(): Boolean =
+        visible && enabled && keyMode.hasUsableKey(keyCount) &&
             listOf(availableCount, attemptRemaining, winRemaining).none { it != null && it <= 0 }
 
     private fun BattleMapRunnableState.hasCapacityForThree(): Boolean =
