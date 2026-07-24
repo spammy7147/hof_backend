@@ -42,8 +42,10 @@ import app.spammy.hof.external.model.HofBattleOutcome
 import app.spammy.hof.external.model.HofBinaryResponse
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
+import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.external.parser.BattleResultParser
 import app.spammy.hof.external.parser.LoginStateParser
+import app.spammy.hof.external.parser.SharedBattleCooldownParser
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito
 import java.time.Instant
@@ -114,6 +116,7 @@ class BattleRunServiceTest {
         requestFactory = HofRequestFactory(),
         gateway = gateway,
         loginStateParser = LoginStateParser(),
+        sharedBattleCooldownParser = SharedBattleCooldownParser(),
         battleResultParser = BattleResultParser(),
         battleLogService = battleLogService,
         captchaService = captchaService,
@@ -248,6 +251,33 @@ class BattleRunServiceTest {
         assertEquals("battle_map", savedLog.categoryIdSnapshot)
         assertEquals("snow22", savedLog.mapCodeSnapshot)
         assertEquals("VICTORY", savedLog.outcome)
+    }
+
+    @Test
+    fun `automation cooldown response is typed and never parsed or logged as battle`() {
+        prepareRunnableBattle()
+        gateway.nextBattleBody = largeRaidCooldownHtml(56)
+
+        val error = assertFailsWith<SharedBattleCooldownRejectedException> {
+            service.runBattle(1L, runRequest(), HofRequestOrigin.AUTOMATION)
+        }
+
+        assertEquals(now.plusSeconds(56), error.retryAt)
+        assertTrue(battleLogRepository.savedEntities.isEmpty())
+    }
+
+    @Test
+    fun `interactive cooldown response exposes retry seconds as invalid request`() {
+        prepareRunnableBattle()
+        gateway.nextBattleBody = largeRaidCooldownHtml(56)
+
+        val error = assertFailsWith<ApiException> {
+            service.runBattle(1L, runRequest(), HofRequestOrigin.INTERACTIVE)
+        }
+
+        assertEquals(ErrorCode.INVALID_REQUEST, error.errorCode)
+        assertEquals(56, error.retryAfterSeconds)
+        assertTrue(battleLogRepository.savedEntities.isEmpty())
     }
 
     @Test
@@ -478,6 +508,24 @@ class BattleRunServiceTest {
             mapCode = "snow22",
             characterIds = listOf(characters.first().hofCharacterId),
         )
+
+    private fun prepareRunnableBattle() {
+        Mockito.`when`(accountQueryRepository.findById(1L)).thenReturn(account)
+        Mockito.`when`(cookieQueryRepository.findValueMapByAccountId(1L))
+            .thenReturn(mapOf("PHPSESSID" to "abc"))
+        Mockito.`when`(
+            characterQueryRepository.findByAccountIdAndHofCharacterIds(
+                1L,
+                listOf(characters.first().hofCharacterId),
+            ),
+        ).thenReturn(listOf(characters.first()))
+    }
+
+    private fun largeRaidCooldownHtml(seconds: Int): String = """
+        <html><body><div class="error">
+          대형 레이드를 잇는 전투를 실행한 상태입니다. (${seconds}초 후 전투 가능)
+        </div></body></html>
+    """.trimIndent()
 
     private fun battleMapState(
         mapCode: String = "snow22",

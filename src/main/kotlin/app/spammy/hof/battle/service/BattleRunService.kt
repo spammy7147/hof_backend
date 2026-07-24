@@ -23,6 +23,8 @@ import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.external.parser.BattleResultParser
 import app.spammy.hof.external.parser.LoginStateParser
+import app.spammy.hof.external.parser.SharedBattleCooldownParser
+import java.time.Instant
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.springframework.transaction.support.TransactionSynchronizationManager
@@ -41,6 +43,7 @@ class BattleRunService(
     private val requestFactory: HofRequestFactory,
     private val gateway: HofGateway,
     private val loginStateParser: LoginStateParser,
+    private val sharedBattleCooldownParser: SharedBattleCooldownParser,
     private val battleResultParser: BattleResultParser,
     private val battleLogService: BattleLogService,
     private val captchaService: CaptchaService,
@@ -159,6 +162,18 @@ class BattleRunService(
             throw ApiException(ErrorCode.CAPTCHA_REQUIRED, "캡차 또는 통행증 입력이 필요합니다.")
         }
 
+        sharedBattleCooldownParser.parse(battleResponse.body)?.let { notice ->
+            val retryAt = timeProvider.now().plusSeconds(notice.remainingSeconds)
+            if (origin == HofRequestOrigin.AUTOMATION) {
+                throw SharedBattleCooldownRejectedException(retryAt)
+            }
+            throw ApiException(
+                errorCode = ErrorCode.INVALID_REQUEST,
+                message = "대형 레이드 공유 쿨타임이 남아 있습니다.",
+                retryAfterSeconds = notice.remainingSeconds,
+            )
+        }
+
         val results = battleResultParser.parseAll(
             html = battleResponse.body,
             allyNames = characters.map { character -> character.name },
@@ -273,3 +288,7 @@ class BattleRunService(
         }
 
 }
+
+class SharedBattleCooldownRejectedException(
+    val retryAt: Instant,
+) : RuntimeException("Shared battle cooldown is active until $retryAt")
