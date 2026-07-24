@@ -54,6 +54,7 @@ class FreshSchemaTest {
                 "3" to "add automation work sessions",
                 "4" to "prepare captcha on demand",
                 "5" to "track character detail sync",
+                "6" to "learn shared battle cooldowns",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -71,6 +72,7 @@ class FreshSchemaTest {
                 "V3__add_automation_work_sessions.sql",
                 "V4__prepare_captcha_on_demand.sql",
                 "V5__track_character_detail_sync.sql",
+                "V6__learn_shared_battle_cooldowns.sql",
             ),
             migrationNames,
         )
@@ -83,6 +85,7 @@ class FreshSchemaTest {
             assertTrue(connection.columnExists("party_presets", "display_order"))
             assertTrue(connection.columnExists("captcha_challenges", "preparation_version"))
             assertTrue(connection.columnExists("characters", "detail_synced_at"))
+            assertTrue(connection.columnExists("battle_maps", "shares_minute_cooldown"))
         }
     }
 

@@ -269,7 +269,8 @@ internal object FreshSchemaContract {
             serialId(), requiredVarchar("category_id", 50), requiredVarchar("map_code", 100),
             optionalBigint("group_id"), requiredVarchar("name", 300), requiredVarchar("normalized_name", 300),
             requiredInteger("display_order"), optionalInteger("required_time"), optionalText("icon_url"),
-            requiredBoolean("enabled"), requiredInstant("created_at"), requiredInstant("updated_at"),
+            requiredBoolean("enabled"), requiredBoolean("shares_minute_cooldown"),
+            requiredInstant("created_at"), requiredInstant("updated_at"),
         ),
         table(
             "battle_map_aliases",

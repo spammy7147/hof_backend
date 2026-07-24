@@ -53,6 +53,9 @@ class BattleMapEntity(
     @Column(name = "enabled", nullable = false)
     var enabled: Boolean = true,
 
+    @Column(name = "shares_minute_cooldown", nullable = false)
+    var sharesMinuteCooldown: Boolean = false,
+
     @Column(name = "created_at", nullable = false)
     var createdAt: Instant,
 
