@@ -27,11 +27,16 @@ class UnifiedAutomationRunnerTest {
     private val coordinator = Mockito.mock(AutomationCoordinator::class.java)
     private val executor = Mockito.mock(TypedAutomationActionExecutor::class.java)
     private val wakeup = Mockito.mock(AutomationWakeupPort::class.java)
+    private val sharedCooldowns = Mockito.mock(SharedBattleCooldownService::class.java)
     private val codec = StoredTypedAutomationActionCodec(jacksonObjectMapper())
-    private val runner = UnifiedAutomationRunner(preflight, runtime, loader, coordinator, executor, codec, wakeup)
+    private val runner = UnifiedAutomationRunner(
+        preflight, runtime, loader, coordinator, executor, codec, wakeup, sharedCooldowns,
+    )
 
     init {
         Mockito.`when`(runtime.isRunning(7)).thenReturn(true)
+        Mockito.`when`(executor.execute(Mockito.eq(7L), anyStoredAction()))
+            .thenReturn(TypedAutomationExecution.Completed)
     }
 
     @Test
@@ -46,7 +51,9 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(decisions.select(7)).thenReturn(AutomationCoordination.Runnable(10, action, emptyList()))
         Mockito.`when`(runtime.prepare(Mockito.eq(7L), eqString("token"), anyStoredAction())).thenReturn(row)
         Mockito.`when`(runtime.markSubmitting(7, "token", 88L)).thenReturn(true)
-        val scopedRunner = UnifiedAutomationRunner(preflight, runtime, decisions, workTracker, executor, codec, wakeup)
+        val scopedRunner = UnifiedAutomationRunner(
+            preflight, runtime, decisions, workTracker, executor, codec, wakeup, sharedCooldowns,
+        )
 
         scopedRunner.runOne(7)
 
@@ -81,6 +88,8 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(coordinator.coordinate(snapshot)).thenReturn(AutomationCoordination.Runnable(12, action, emptyList()))
         Mockito.`when`(runtime.prepare(Mockito.eq(7L), eqString("token"), anyStoredAction())).thenReturn(row)
         Mockito.`when`(runtime.markSubmitting(7, "token", 88L)).thenReturn(true)
+        Mockito.`when`(executor.execute(Mockito.eq(7L), anyStoredAction()))
+            .thenReturn(TypedAutomationExecution.BattleCompleted("battle_map", "gb0"))
 
         runner.runOne(7)
 
@@ -88,7 +97,50 @@ class UnifiedAutomationRunnerTest {
         Mockito.verify(executor).execute(Mockito.eq(7L), capture(storedCaptor))
         assertEquals(StoredActionDisplay(mapName = "거대 보스"), storedCaptor.value.payload.display)
         Mockito.verify(runtime).recordWarnings(7, "token", emptyList())
+        Mockito.verify(sharedCooldowns).applyAfterSuccessfulBattle(7, "battle_map", "gb0")
         Mockito.verify(runtime).succeedAndEnqueueWake(7, "token", 88L, "TYPED_ACTION_COMPLETED")
+    }
+
+    @Test
+    fun `shared cooldown learns map completes prepared action and wakes fresh evaluation`() {
+        val retryAt = Instant.parse("2026-07-24T00:00:56Z")
+        val stored = StoredTypedAutomationActionV1(
+            12,
+            "execution-1",
+            StoredTypedActionPayload.BattleMap(
+                LocalDate.parse("2026-07-24"),
+                "raid",
+                "castle",
+                PresetSelectionMode.PRIMARY,
+                301L,
+                1,
+                app.spammy.hof.battle.dto.RunBattleRequest(
+                    "raid", "castle", listOf("character-1"),
+                    listOf(BattlePatternLoadRequest("character-1", 1)), 1,
+                ),
+            ),
+        )
+        val encoded = codec.encode(stored)
+        val owner = HofAccountEntity(7, "login", "encrypted", Instant.EPOCH)
+        val entry = AutomationEntryEntity(12, owner, AutomationType.BATTLE_MAP, 0, true, Instant.EPOCH, Instant.EPOCH)
+        val row = TypedAutomationActionRunEntity(
+            88, owner, entry, stored.executionIdentity, stored.payload.kind(), 1, encoded.json,
+            encoded.fingerprint, TypedAutomationActionStatus.PREPARED, leaseToken = "token",
+            createdAt = Instant.EPOCH, updatedAt = Instant.EPOCH,
+        )
+        Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
+        Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token", row))
+        Mockito.`when`(runtime.markSubmitting(7, "token", 88)).thenReturn(true)
+        Mockito.`when`(executor.execute(Mockito.eq(7L), anyStoredAction())).thenReturn(
+            TypedAutomationExecution.SharedCooldown("raid", "castle", retryAt),
+        )
+
+        runner.runOne(7)
+
+        Mockito.verify(sharedCooldowns).learnAndApply(7, "raid", "castle", retryAt)
+        Mockito.verify(runtime).succeedAndEnqueueWake(7, "token", 88, "TYPED_SHARED_COOLDOWN_SKIPPED")
+        assertTrue(Mockito.mockingDetails(runtime).invocations.none { it.method.name == "stop" })
+        Mockito.verifyNoInteractions(wakeup)
     }
 
     @Test
@@ -430,6 +482,7 @@ class UnifiedAutomationRunnerTest {
                 caseExecutor,
                 codec,
                 wakeup,
+                sharedCooldowns,
             )
             Mockito.`when`(casePreflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
             Mockito.`when`(caseRuntime.isRunning(7)).thenReturn(true)

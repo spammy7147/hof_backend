@@ -20,6 +20,7 @@ class UnifiedAutomationRunner @Autowired constructor(
     private val typedActionExecutor: TypedAutomationActionExecutor,
     private val typedCodec: StoredTypedAutomationActionCodec,
     private val wakeupPort: AutomationWakeupPort,
+    private val sharedBattleCooldowns: SharedBattleCooldownService,
 ) {
     constructor(
         dailyPreflight: AutomationDailyPreflight,
@@ -29,6 +30,7 @@ class UnifiedAutomationRunner @Autowired constructor(
         typedActionExecutor: TypedAutomationActionExecutor,
         typedCodec: StoredTypedAutomationActionCodec,
         wakeupPort: AutomationWakeupPort,
+        sharedBattleCooldowns: SharedBattleCooldownService,
     ) : this(
         dailyPreflight,
         typedRuntime,
@@ -37,6 +39,7 @@ class UnifiedAutomationRunner @Autowired constructor(
         typedActionExecutor,
         typedCodec,
         wakeupPort,
+        sharedBattleCooldowns,
     )
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -152,8 +155,28 @@ class UnifiedAutomationRunner @Autowired constructor(
             return
         }
         try {
-            typedActionExecutor.execute(accountId, stored)
-            typedRuntime.succeedAndEnqueueWake(accountId, token, row.id, "TYPED_ACTION_COMPLETED")
+            val execution = typedActionExecutor.execute(accountId, stored)
+            val wakeReason = when (execution) {
+                TypedAutomationExecution.Completed -> "TYPED_ACTION_COMPLETED"
+                is TypedAutomationExecution.BattleCompleted -> {
+                    sharedBattleCooldowns.applyAfterSuccessfulBattle(
+                        accountId,
+                        execution.categoryId,
+                        execution.mapCode,
+                    )
+                    "TYPED_ACTION_COMPLETED"
+                }
+                is TypedAutomationExecution.SharedCooldown -> {
+                    sharedBattleCooldowns.learnAndApply(
+                        accountId,
+                        execution.categoryId,
+                        execution.mapCode,
+                        execution.retryAt,
+                    )
+                    "TYPED_SHARED_COOLDOWN_SKIPPED"
+                }
+            }
+            typedRuntime.succeedAndEnqueueWake(accountId, token, row.id, wakeReason)
         } catch (error: Throwable) {
             error.findHofAutomationDeferral()?.let { deferred ->
                 if (typedRuntime.deferSubmittedAction(
