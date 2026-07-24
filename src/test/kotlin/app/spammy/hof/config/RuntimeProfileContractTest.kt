@@ -17,6 +17,7 @@ import app.spammy.hof.push.service.FirebaseAndroidMessageSender
 import app.spammy.hof.push.service.OutboxCaptchaNotificationGateway
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
+import kotlin.test.assertFalse
 import org.springframework.context.annotation.Profile
 
 class RuntimeProfileContractTest {
@@ -55,6 +56,16 @@ class RuntimeProfileContractTest {
             AndroidPushService::class.java,
             FirebaseAndroidMessageSender::class.java,
         ).forEach { assertProfiles(it, "prod") }
+    }
+
+    @Test
+    fun `repository documentation does not advertise removed runtime profiles`() {
+        listOf(".env.example", "README.md").forEach { path ->
+            val source = java.nio.file.Path.of(path).toFile().readText()
+            assertFalse(source.contains("SPRING_PROFILES_ACTIVE=kafka"), path)
+            assertFalse(source.contains("`docker` profile"), path)
+            assertFalse(source.contains("`kafka` profile"), path)
+        }
     }
 
     private fun assertProfiles(type: Class<*>, vararg expected: String) {
