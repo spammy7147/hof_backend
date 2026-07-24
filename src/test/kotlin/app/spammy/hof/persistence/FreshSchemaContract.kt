@@ -818,7 +818,7 @@ internal object FreshSchemaContract {
         ),
         check("typed_automation_runtime_states", "ck_typed_runtime_lease", "(lease_token is null and lease_until is null) or (lease_token is not null and lease_until is not null)"),
         check("typed_automation_runtime_states", "ck_typed_runtime_stop_action", "lifecycle_status = 'STOPPED' or stop_action_id is null"),
-        check("typed_automation_action_runs", "ck_typed_action_status", "locate(',' || status || ',', ',PREPARED,SUBMITTING,SUCCEEDED,FAILED,AMBIGUOUS,') > 0"),
+        check("typed_automation_action_runs", "ck_typed_action_status", "locate(',' || status || ',', ',PREPARED,SUBMITTING,RECONCILING,SUCCEEDED,FAILED,AMBIGUOUS,') > 0"),
         check("typed_automation_action_runs", "ck_typed_action_schema", "schema_version > 0"),
         check("typed_automation_action_runs", "ck_typed_action_retry", "retry_attempt >= 0"),
         check("typed_automation_action_runs", "ck_typed_action_fingerprint", "char_length(action_fingerprint) = 64"),

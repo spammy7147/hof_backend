@@ -60,11 +60,10 @@ class TypedAutomationRuntimeService(
         if (state.leaseUntil?.isAfter(now) == true) return TypedRuntimeClaim.Busy
         val active = queryRepository.findActiveTypedAction(accountId)
         if (active?.status == TypedAutomationActionStatus.SUBMITTING) {
-            active.status = TypedAutomationActionStatus.AMBIGUOUS
-            active.finishedAt = now
+            active.status = TypedAutomationActionStatus.RECONCILING
+            active.finishedAt = null
+            active.lastError = "A submitted action lost its lease; verify its authoritative state."
             active.updatedAt = now
-            stopState(state, AutomationStopReason.NETWORK, now, active.id)
-            return TypedRuntimeClaim.AmbiguousRecovered("A submitted action lost its lease; outcome is ambiguous.")
         }
         state.nextAttemptAt = null
         state.waitReason = null
@@ -145,6 +144,131 @@ class TypedAutomationRuntimeService(
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun markReconcilingAndEnqueueWake(
+        accountId: Long,
+        token: String,
+        actionId: Long,
+        message: String,
+    ): Boolean {
+        val state = fencedState(accountId, token) ?: return false
+        val action = queryRepository.lockTypedAction(actionId) ?: return false
+        if (
+            action.account.id != accountId ||
+            action.leaseToken != token ||
+            action.status != TypedAutomationActionStatus.SUBMITTING
+        ) return false
+        val now = timeProvider.now()
+        val diagnostic = sanitizeDiagnostic(message)
+        action.status = TypedAutomationActionStatus.RECONCILING
+        action.nextAttemptAt = null
+        action.finishedAt = null
+        action.lastError = diagnostic
+        action.updatedAt = now
+        state.leaseToken = null
+        state.leaseUntil = null
+        state.nextAttemptAt = null
+        state.waitReason = null
+        state.lastError = diagnostic
+        state.updatedAt = now
+        outbox.enqueue(accountId, "TYPED_AMBIGUOUS_RECONCILE")
+        return true
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun retryReconciledSubmission(
+        accountId: Long,
+        token: String,
+        actionId: Long,
+        reason: String,
+    ): Boolean {
+        val state = fencedState(accountId, token) ?: return false
+        val action = queryRepository.lockTypedAction(actionId) ?: return false
+        if (
+            action.account.id != accountId ||
+            action.leaseToken != token ||
+            action.status != TypedAutomationActionStatus.RECONCILING
+        ) return false
+        val now = timeProvider.now()
+        action.status = TypedAutomationActionStatus.PREPARED
+        action.retryAttempt += 1
+        action.nextAttemptAt = null
+        action.submittedAt = null
+        action.finishedAt = null
+        action.lastError = null
+        action.updatedAt = now
+        state.leaseToken = null
+        state.leaseUntil = null
+        state.nextAttemptAt = null
+        state.waitReason = null
+        state.lastError = null
+        state.updatedAt = now
+        outbox.enqueue(accountId, reason)
+        return true
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun deferReconciliation(
+        accountId: Long,
+        token: String,
+        actionId: Long,
+        retryAt: Instant,
+        reason: String,
+    ): Boolean {
+        val state = fencedState(accountId, token) ?: return false
+        val action = queryRepository.lockTypedAction(actionId) ?: return false
+        if (
+            action.account.id != accountId ||
+            action.leaseToken != token ||
+            action.status != TypedAutomationActionStatus.RECONCILING
+        ) return false
+        val now = timeProvider.now()
+        val diagnostic = sanitizeDiagnostic(reason)
+        action.retryAttempt += 1
+        action.nextAttemptAt = retryAt
+        action.lastError = diagnostic
+        action.updatedAt = now
+        state.leaseToken = null
+        state.leaseUntil = null
+        state.nextAttemptAt = retryAt
+        state.waitReason = AutomationWaitReason.HOF_CONNECTION
+        state.lastError = diagnostic
+        state.updatedAt = now
+        return true
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun succeedReconciliation(
+        accountId: Long,
+        token: String,
+        actionId: Long,
+        reason: String,
+    ): Boolean {
+        val state = fencedState(accountId, token) ?: return false
+        val action = queryRepository.lockTypedAction(actionId) ?: return false
+        if (
+            action.account.id != accountId ||
+            action.leaseToken != token ||
+            action.status != TypedAutomationActionStatus.RECONCILING
+        ) return false
+        val now = timeProvider.now()
+        action.status = TypedAutomationActionStatus.SUCCEEDED
+        action.lastError = null
+        action.finishedAt = now
+        action.updatedAt = now
+        state.retryAttempt = 0
+        state.nextAttemptAt = null
+        state.waitReason = null
+        state.leaseToken = null
+        state.leaseUntil = null
+        state.warningText = null
+        state.lastError = null
+        state.stopActionId = null
+        state.updatedAt = now
+        outbox.enqueue(accountId, reason)
+        return true
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun succeed(accountId: Long, token: String, actionId: Long): Boolean = finish(accountId, token, actionId, TypedAutomationActionStatus.SUCCEEDED, null)
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -166,12 +290,17 @@ class TypedAutomationRuntimeService(
             }
         }
         stoppedAction?.apply {
-            status = if (status == TypedAutomationActionStatus.SUBMITTING && reason == AutomationStopReason.NETWORK) {
-                TypedAutomationActionStatus.AMBIGUOUS
+            status = if (
+                status == TypedAutomationActionStatus.SUBMITTING &&
+                reason in setOf(AutomationStopReason.NETWORK, AutomationStopReason.CAPTCHA)
+            ) {
+                TypedAutomationActionStatus.RECONCILING
             } else {
                 TypedAutomationActionStatus.FAILED
             }
-            lastError = message.take(2000); finishedAt = now; updatedAt = now
+            lastError = message.take(2000)
+            finishedAt = now.takeUnless { status == TypedAutomationActionStatus.RECONCILING }
+            updatedAt = now
         }
         state.lastError = sanitizeDiagnostic(message)
         stopState(state, reason, now, stoppedAction?.id)
