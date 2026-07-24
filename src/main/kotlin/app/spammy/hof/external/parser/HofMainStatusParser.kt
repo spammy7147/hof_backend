@@ -2,7 +2,6 @@ package app.spammy.hof.external.parser
 
 import app.spammy.hof.external.model.HofMainStatus
 import org.jsoup.Jsoup
-import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import org.springframework.stereotype.Component
 
@@ -15,15 +14,16 @@ class HofMainStatusParser {
      * 플레이어명, Funds, Time, Work, Auction 값을 읽는다.
      */
     fun parse(html: String): HofMainStatus {
-        val document = Jsoup.parse(html)
-        val ownTexts = document.allElements
+        val statusContainer = Jsoup.parse(html).selectFirst("#menu2")
+            ?: return incompleteStatus()
+        val ownTexts = statusContainer.allElements
             .map { element -> element.ownText().normalizeSpaces() }
             .filter { text -> text.isNotBlank() }
-        val fullText = document.text().normalizeSpaces()
-        val statusOwnerText = findStatusOwnerText(document).orEmpty()
+        val fullText = statusContainer.text().normalizeSpaces()
+        val statusOwnerText = findStatusOwnerText(statusContainer).orEmpty()
 
         return HofMainStatus(
-            playerName = findMenuPlayerName(document) ?: parsePlayerName(statusOwnerText),
+            playerName = findMenuPlayerName(statusContainer) ?: parsePlayerName(statusOwnerText),
             funds = firstMatch(ownTexts, fullText, FUNDS_REGEX) { it.toLongNumberOrNull() },
             timeCurrent = firstMatch(ownTexts, fullText, TIME_REGEX) { it.toIntOrNull() },
             timeMax = firstMatch(ownTexts, fullText, TIME_REGEX, groupIndex = 2) { it.toIntOrNull() },
@@ -32,13 +32,21 @@ class HofMainStatusParser {
         )
     }
 
+    private fun incompleteStatus(): HofMainStatus = HofMainStatus(
+        playerName = UNKNOWN_VALUE,
+        funds = null,
+        timeCurrent = null,
+        timeMax = null,
+        work = UNKNOWN_VALUE,
+        auction = UNKNOWN_VALUE,
+    )
+
     /**
      * 인증 상태바인 `#menu2`의 첫 번째 열에서 플레이어 표시명을 읽는다.
      */
-    private fun findMenuPlayerName(document: Document): String? {
-        val statusRow = document.selectFirst("#menu2")
-            ?.children()
-            ?.firstOrNull(::containsStatusMarkers)
+    private fun findMenuPlayerName(statusContainer: Element): String? {
+        val statusRow = statusContainer.children()
+            .firstOrNull(::containsStatusMarkers)
             ?: return null
         val candidate = statusRow.children().firstOrNull()
             ?.text()
@@ -63,19 +71,23 @@ class HofMainStatusParser {
     /**
      * Funds와 Time을 함께 소유한 상태 영역을 찾는다.
      */
-    private fun findStatusOwnerText(document: Document): String? =
-        findMinimalStatusCandidate(document.select("tr"))
+    private fun findStatusOwnerText(statusContainer: Element): String? =
+        findMinimalStatusCandidate(statusContainer.select("tr"))
             ?.text()
             ?.normalizeSpaces()
             ?: findMinimalStatusCandidate(
-                document.allElements.filter { element ->
-                    element !== document.body() && element.isNamedStatusContainer()
+                statusContainer.allElements.filter { element ->
+                    element !== statusContainer && element.isNamedStatusContainer()
                 },
             )
                 ?.text()
                 ?.normalizeSpaces()
-            ?: document.body()
+            ?: statusContainer
                 .ownText()
+                .normalizeSpaces()
+                .takeIf(::containsStatusMarkers)
+            ?: statusContainer
+                .text()
                 .normalizeSpaces()
                 .takeIf(::containsStatusMarkers)
 

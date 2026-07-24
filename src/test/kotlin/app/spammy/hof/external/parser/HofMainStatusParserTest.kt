@@ -2,6 +2,7 @@ package app.spammy.hof.external.parser
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 
 class HofMainStatusParserTest {
     private val parser = HofMainStatusParser()
@@ -9,7 +10,7 @@ class HofMainStatusParserTest {
     @Test
     fun parsesMainStatusValuesFromHeaderTable() {
         val html = """
-            <table>
+            <table id="menu2">
               <tr>
                 <td>《얼어붙은 손길》공민이</td>
                 <td>Funds : $ 309,385,362<br>Work : Nothing</td>
@@ -30,13 +31,13 @@ class HofMainStatusParserTest {
     }
 
     @Test
-    fun fallsBackToFullTextWhenStatusIsFlattened() {
+    fun parsesFlattenedTextWithinMenu2() {
         val html = """
-            <body>
+            <div id="menu2">
               Hall of Fame Ver ZeroHOF Top자격단전투모험시나리오아이템마을설정로그BBSCHAT
               《얼어붙은 손길》공민이 Funds : $ 1,720 Time : 4100/6000 Work : 12:34 Auction : Nothing
               소셜 Lv.60 Social Knight
-            </body>
+            </div>
         """.trimIndent()
 
         val status = parser.parse(html)
@@ -53,7 +54,7 @@ class HofMainStatusParserTest {
     fun prefersPlayerNameInStatusRowOverEarlierPublicName() {
         val html = """
             <div class="ranking">《순금 120%》켄류</div>
-            <table>
+            <table id="menu2">
               <tr>
                 <td>《얼어붙은 손길》공민이</td>
                 <td>Funds : ${'$'} 309,385,362<br>Work : Nothing</td>
@@ -71,7 +72,7 @@ class HofMainStatusParserTest {
     fun returnsUnknownWhenStatusRowHasNoPlayerName() {
         val html = """
             <div class="ranking">《순금 120%》켄류</div>
-            <table>
+            <table id="menu2">
               <tr>
                 <td>Funds : ${'$'} 309,385,362<br>Work : Nothing</td>
                 <td>Time : 6000/6000<br>Auction : item/funds</td>
@@ -87,7 +88,7 @@ class HofMainStatusParserTest {
     @Test
     fun parsesWorkAndAuctionOutsidePlayerStatusRow() {
         val html = """
-            <table>
+            <table id="menu2">
               <tr>
                 <td>《얼어붙은 손길》공민이</td>
                 <td>Funds : ${'$'} 309,385,362</td>
@@ -109,11 +110,11 @@ class HofMainStatusParserTest {
     @Test
     fun ignoresNestedPublicNameInsideFlattenedStatusBody() {
         val html = """
-            <body>
+            <div id="menu2">
               《얼어붙은 손길》공민이
               <div class="ranking">《순금 120%》켄류</div>
               Funds : ${'$'} 1,720 Time : 4100/6000 Work : 12:34 Auction : Nothing
-            </body>
+            </div>
         """.trimIndent()
 
         val status = parser.parse(html)
@@ -124,7 +125,7 @@ class HofMainStatusParserTest {
     @Test
     fun ignoresPublicNameInOuterRowWhenNestedStatusRowIsAnonymous() {
         val html = """
-            <table>
+            <table id="menu2">
               <tr>
                 <td>《순금 120%》켄류</td>
                 <td>
@@ -147,7 +148,7 @@ class HofMainStatusParserTest {
     @Test
     fun selectsAuthenticatedNameInNestedStatusRow() {
         val html = """
-            <table>
+            <table id="menu2">
               <tr>
                 <td>《순금 120%》켄류</td>
                 <td>
@@ -171,7 +172,7 @@ class HofMainStatusParserTest {
     @Test
     fun ignoresPublicNameInHeaderWhenNestedStatusContainerIsAnonymous() {
         val html = """
-            <header>
+            <header id="menu2">
               <div class="ranking">《순금 120%》켄류</div>
               <div class="status">
                 <span>Funds : ${'$'} 1,720</span>
@@ -188,7 +189,7 @@ class HofMainStatusParserTest {
     @Test
     fun selectsAuthenticatedNameInNestedStatusContainer() {
         val html = """
-            <header>
+            <header id="menu2">
               <div class="ranking">《순금 120%》켄류</div>
               <div class="status">
                 <span>《얼어붙은 손길》공민이</span>
@@ -201,6 +202,83 @@ class HofMainStatusParserTest {
         val status = parser.parse(html)
 
         assertEquals("《얼어붙은 손길》공민이", status.playerName)
+    }
+
+    @Test
+    fun ignoresPageContentAfterMenu2StatusBar() {
+        val html = """
+            <div id="menu2">
+              <div style="width:100%">
+                <div style="width:33%;float:left">《얼어붙은 손길》공민이</div>
+                <div style="width:67%;float:right">
+                  <div><span class="bold">Funds</span> : ${'$'}&nbsp;343,509,180</div>
+                  <div><span class="bold">Time</span> : 4522/6000</div>
+                  <div><span class="bold">Work</span> : Nothing</div>
+                  <div><span class="bold">Auction</span> : Nothing</div>
+                </div>
+              </div>
+            </div>
+            <div>Pattern Load Character Settings Battle Configuration</div>
+        """.trimIndent()
+
+        val status = parser.parse(html)
+
+        assertEquals("《얼어붙은 손길》공민이", status.playerName)
+        assertEquals(343509180L, status.funds)
+        assertEquals(4522, status.timeCurrent)
+        assertEquals(6000, status.timeMax)
+        assertEquals("Nothing", status.work)
+        assertEquals("Nothing", status.auction)
+    }
+
+    @Test
+    fun ignoresStatusLookalikesOutsideMenu2() {
+        val html = """
+            <div>
+              《가짜 타이틀》가짜이름
+              Funds : ${'$'} 999 Time : 999/999 Work : Pattern Load Auction : Character Settings
+            </div>
+            <div id="menu2">
+              <div>
+                <div>《얼어붙은 손길》공민이</div>
+                <div>
+                  <div><span>Funds</span> : ${'$'} 343,509,180</div>
+                  <div><span>Time</span> : 4522/6000</div>
+                  <div><span>Work</span> : Nothing</div>
+                  <div><span>Auction</span> : Nothing</div>
+                </div>
+              </div>
+            </div>
+            <div>Funds : ${'$'} 111 Time : 111/111 Work : Battle Auction : Configuration</div>
+        """.trimIndent()
+
+        val status = parser.parse(html)
+
+        assertEquals("《얼어붙은 손길》공민이", status.playerName)
+        assertEquals(343509180L, status.funds)
+        assertEquals(4522, status.timeCurrent)
+        assertEquals(6000, status.timeMax)
+        assertEquals("Nothing", status.work)
+        assertEquals("Nothing", status.auction)
+    }
+
+    @Test
+    fun returnsIncompleteStatusWhenMenu2IsMissing() {
+        val status = parser.parse(
+            """
+                <main>
+                  《가짜 타이틀》가짜이름
+                  Funds : ${'$'} 999 Time : 999/999 Work : Pattern Load Auction : Character Settings
+                </main>
+            """.trimIndent(),
+        )
+
+        assertEquals("Unknown", status.playerName)
+        assertNull(status.funds)
+        assertNull(status.timeCurrent)
+        assertNull(status.timeMax)
+        assertEquals("Unknown", status.work)
+        assertEquals("Unknown", status.auction)
     }
 
     @Test

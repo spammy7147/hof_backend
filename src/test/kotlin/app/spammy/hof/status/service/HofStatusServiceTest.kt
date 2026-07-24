@@ -150,7 +150,7 @@ class HofStatusServiceTest {
         val requests = mutableListOf<HofRequest>()
         val cookies = mutableListOf<Map<String, String>>()
         var responseBody = """
-            <table>
+            <table id="menu2">
               <tr>
                 <td>《얼어붙은 손길》공민이</td>
                 <td>Funds : ${'$'} 309,385,362<br>Work : Nothing</td>
