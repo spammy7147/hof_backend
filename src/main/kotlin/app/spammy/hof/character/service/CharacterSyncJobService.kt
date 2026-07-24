@@ -27,6 +27,7 @@ import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.core.task.TaskExecutor
 import org.springframework.stereotype.Service
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter
+import org.springframework.transaction.annotation.Transactional
 
 @Service
 /**
@@ -57,12 +58,20 @@ class CharacterSyncJobService(
      *
      * 실제 파싱은 SSE 연결 뒤 시작해 앱이 증분 이벤트를 놓치지 않게 한다.
      */
+    @Transactional
     fun startSyncJob(accountId: Long): CharacterSyncJobResponse {
-        val account = accountQueryRepository.findById(accountId)
+        val account = accountQueryRepository.findByIdForUpdate(accountId)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
         val cookies = cookieQueryRepository.findValueMapByAccountId(accountId)
         if (cookies.isEmpty()) {
             throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "저장된 HOF 로그인 쿠키가 없습니다.")
+        }
+
+        syncJobQueryRepository.findNewestActiveByAccountId(accountId)?.let { active ->
+            return active.toResponse(
+                characters = characterService.findAll(accountId),
+                failedCharacterIds = syncJobQueryRepository.findFailuresByJobId(active.id).toFailedCharacterIds(),
+            )
         }
 
         val job = syncJobRepository.save(
@@ -167,6 +176,13 @@ class CharacterSyncJobService(
 
         val homeResponse = gateway.execute(requestFactory.home(), cookies)
         val roster = rosterParser.parse(homeResponse.body)
+        val existingCharacters = characterService.findAll(accountId)
+        if (roster.isEmpty() && existingCharacters.isNotEmpty()) {
+            error("HOF 홈에서 캐릭터 명단을 확인하지 못했습니다.")
+        }
+        if (roster.isNotEmpty()) {
+            characterService.deleteCharactersAbsentFromRoster(accountId, roster.mapTo(linkedSetOf()) { it.id })
+        }
         job.rosterCount = roster.size
         syncJobRepository.save(job)
         eventService.publish(

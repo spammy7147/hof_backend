@@ -129,6 +129,7 @@ class CharacterService(
                 character.level = detail.level
                 character.patternSlotCount = detail.patternSlots.size
                 character.imageUrl = detail.imageUrl.ifBlank { null }
+                character.detailSyncedAt = now
             }
 
             existing == null -> {
@@ -161,6 +162,26 @@ class CharacterService(
 
         val patternSlots = characterQueryRepository.findPatternSlotsByCharacterIds(listOf(savedCharacter.id))
         return savedCharacter.toResponse(patternSlots)
+    }
+
+    /** 변경 응답에서 파싱한 상세를 저장하고 상세 화면용 최신 snapshot을 반환한다. */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun refreshParsedCharacter(
+        account: HofAccountEntity,
+        detail: HofCharacter,
+    ): CharacterDetailResponse {
+        require(detail.hasParsedDetail()) { "캐릭터 상세 정보를 파싱하지 못했습니다." }
+        upsertCharacterSnapshot(account, rosterCharacter = detail, detail = detail)
+        return findDetail(account.id, detail.id)
+    }
+
+    /** 신뢰 가능한 원격 명단에 없는 로컬 캐릭터를 제거한다. */
+    @Transactional
+    fun deleteCharactersAbsentFromRoster(accountId: Long, rosterIds: Set<String>) {
+        require(rosterIds.isNotEmpty()) { "빈 캐릭터 명단으로 로컬 상태를 정리할 수 없습니다." }
+        val stale = characterQueryRepository.findAllByAccountId(accountId)
+            .filterNot { it.hofCharacterId in rosterIds }
+        characterRepository.deleteAll(stale)
     }
 
     private fun replaceStatusLines(

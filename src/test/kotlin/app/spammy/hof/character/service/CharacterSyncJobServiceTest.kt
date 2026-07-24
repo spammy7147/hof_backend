@@ -65,6 +65,17 @@ class CharacterSyncJobServiceTest {
     )
 
     @Test
+    fun startSyncJobReusesTheActiveAccountJob() {
+        arrangeRepositories()
+
+        val first = service.startSyncJob(1L)
+        val second = service.startSyncJob(1L)
+
+        assertEquals(first.jobId, second.jobId)
+        Mockito.verify(syncJobRepository, Mockito.times(1)).save(anySyncJob())
+    }
+
+    @Test
     fun streamSyncJobEventsStartsParsingAndPublishesCharactersOneByOne() {
         arrangeRepositories()
 
@@ -159,6 +170,7 @@ class CharacterSyncJobServiceTest {
             null
         }.`when`(eventService).publish(anySyncEvent())
         Mockito.`when`(accountQueryRepository.findById(1L)).thenReturn(account)
+        Mockito.`when`(accountQueryRepository.findByIdForUpdate(1L)).thenReturn(account)
         Mockito.`when`(cookieQueryRepository.findValueMapByAccountId(1L))
             .thenReturn(mapOf("PHPSESSID" to "abc"))
         Mockito.`when`(syncJobRepository.save(anySyncJob()))
@@ -182,6 +194,9 @@ class CharacterSyncJobServiceTest {
                 savedJob
             }
         Mockito.`when`(syncJobQueryRepository.findById(12L)).thenAnswer { savedJobs[12L] }
+        Mockito.`when`(syncJobQueryRepository.findNewestActiveByAccountId(1L)).thenAnswer {
+            savedJobs.values.lastOrNull { it.status == CharacterSyncJobStatus.PENDING || it.status == CharacterSyncJobStatus.RUNNING }
+        }
         Mockito.`when`(syncJobQueryRepository.findByAccountIdAndId(1L, 12L)).thenAnswer { savedJobs[12L] }
         Mockito.`when`(syncJobQueryRepository.findFailuresByJobId(12L)).thenAnswer {
             savedFailures.sortedWith(compareBy(CharacterSyncFailureEntity::failureOrder, CharacterSyncFailureEntity::id))

@@ -95,6 +95,7 @@ class CharacterQueryRepositoryTest {
         )
         val characterIds = listOf(character.id)
 
+        assertEquals(NOW, character.detailSyncedAt)
         assertEquals(1L, characterQueryRepository.countByAccountId(account.id))
         assertEquals(parsed.statusLines, characterQueryRepository.findStatusLinesByCharacterIds(characterIds).map { it.content })
         assertEquals(listOf("0", "1"), characterQueryRepository.findPatternSlotsByCharacterIds(characterIds).map { it.slotCode })
@@ -344,6 +345,7 @@ class CharacterQueryRepositoryTest {
         assertEquals(roster.imageUrl, detail.imageUrl)
         assertEquals(emptyList(), detail.patternSlots)
         assertTrue(normalizedChildIds(character.id).values.all { it.isEmpty() })
+        assertNull(character.detailSyncedAt)
     }
 
     @Test

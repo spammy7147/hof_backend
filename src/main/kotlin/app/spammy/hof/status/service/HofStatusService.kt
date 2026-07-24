@@ -11,6 +11,8 @@ import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.parser.HofMainStatusParser
 import app.spammy.hof.external.parser.LoginStateParser
 import app.spammy.hof.status.dto.HofStatusResponse
+import app.spammy.hof.character.repository.CharacterQueryRepository
+import app.spammy.hof.external.parser.CharacterRosterParser
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -26,6 +28,8 @@ class HofStatusService(
     private val gateway: HofGateway,
     private val loginStateParser: LoginStateParser,
     private val statusParser: HofMainStatusParser,
+    private val rosterParser: CharacterRosterParser,
+    private val characterQueryRepository: CharacterQueryRepository,
     private val timeProvider: TimeProvider,
 ) {
     private val log = LoggerFactory.getLogger(HofStatusService::class.java)
@@ -51,6 +55,10 @@ class HofStatusService(
             throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "HOF 로그인 세션이 만료되었습니다.")
         }
         val parsed = statusParser.parse(response.body)
+        val remoteIds = rosterParser.parse(response.body).mapTo(linkedSetOf()) { it.id }
+        val localByHofId = characterQueryRepository.findAllByAccountId(account.id).associateBy { it.hofCharacterId }
+        val synchronizedCount = remoteIds.count { localByHofId[it]?.detailSyncedAt != null }
+        val characterSyncRequired = remoteIds != localByHofId.keys || synchronizedCount != remoteIds.size
         log.info(
             "HOF status parsed accountId={} status={} playerName={} funds={} time={}/{} work={} auction={}",
             account.id,
@@ -71,6 +79,9 @@ class HofStatusService(
             timeMax = parsed.timeMax,
             work = parsed.work,
             auction = parsed.auction,
+            totalCharacterCount = remoteIds.size,
+            synchronizedCharacterCount = synchronizedCount,
+            characterSyncRequired = characterSyncRequired,
             observedAt = timeProvider.now(),
         )
     }

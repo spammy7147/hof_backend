@@ -11,6 +11,7 @@ import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.parser.LoginStateParser
+import app.spammy.hof.external.parser.CharacterDetailParser
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -26,6 +27,8 @@ class CharacterPatternService(
     private val requestFactory: HofRequestFactory,
     private val gateway: HofGateway,
     private val loginStateParser: LoginStateParser,
+    private val detailParser: CharacterDetailParser,
+    private val characterService: CharacterService,
     private val sessionPatternLoadTracker: SessionPatternLoadTracker,
 ) {
     private val log = LoggerFactory.getLogger(CharacterPatternService::class.java)
@@ -84,6 +87,24 @@ class CharacterPatternService(
         }
 
         val loaded = response.statusCode in 200..399
+        val refreshedCharacter = if (loaded) {
+            runCatching {
+                characterService.refreshParsedCharacter(
+                    account,
+                    detailParser.parse(hofCharacterId, response.body),
+                )
+            }.onFailure { error ->
+                log.warn(
+                    "Character pattern load detail sync failed accountId={} characterId={} slot={} error={}",
+                    account.id,
+                    hofCharacterId,
+                    slot,
+                    error.message,
+                )
+            }.getOrNull()
+        } else {
+            null
+        }
         log.info(
             "Character pattern load complete accountId={} characterId={} slot={} status={} loaded={}",
             account.id,
@@ -99,6 +120,8 @@ class CharacterPatternService(
             slot = slot,
             loaded = loaded,
             message = if (loaded) "패턴 로드 완료" else "HOF 응답 상태 ${response.statusCode}",
+            characterSynchronized = refreshedCharacter != null,
+            character = refreshedCharacter,
         )
     }
 
