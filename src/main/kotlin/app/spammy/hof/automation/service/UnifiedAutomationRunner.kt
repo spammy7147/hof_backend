@@ -22,6 +22,7 @@ class UnifiedAutomationRunner @Autowired constructor(
     private val typedCodec: StoredTypedAutomationActionCodec,
     private val wakeupPort: AutomationWakeupPort,
     private val sharedBattleCooldowns: SharedBattleCooldownService,
+    private val ambiguousReconciler: AutomationAmbiguousActionReconciler,
 ) {
     constructor(
         dailyPreflight: AutomationDailyPreflight,
@@ -32,6 +33,7 @@ class UnifiedAutomationRunner @Autowired constructor(
         typedCodec: StoredTypedAutomationActionCodec,
         wakeupPort: AutomationWakeupPort,
         sharedBattleCooldowns: SharedBattleCooldownService,
+        ambiguousReconciler: AutomationAmbiguousActionReconciler,
     ) : this(
         dailyPreflight,
         typedRuntime,
@@ -41,6 +43,7 @@ class UnifiedAutomationRunner @Autowired constructor(
         typedCodec,
         wakeupPort,
         sharedBattleCooldowns,
+        ambiguousReconciler,
     )
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -162,6 +165,38 @@ class UnifiedAutomationRunner @Autowired constructor(
             typedRuntime.releaseAndEnqueueWake(accountId, token, "TYPED_CONFIG_RELOAD")
             return
         }
+        if (row.status == app.spammy.hof.automation.entity.TypedAutomationActionStatus.RECONCILING) {
+            when (val resolution = ambiguousReconciler.reconcile(accountId, stored)) {
+                is AmbiguousActionResolution.Applied -> {
+                    applyRecoveredExecution(accountId, resolution.execution)
+                    typedRuntime.succeedReconciliation(
+                        accountId,
+                        token,
+                        row.id,
+                        recoveredWakeReason(resolution.execution),
+                    )
+                }
+                AmbiguousActionResolution.Resubmit -> typedRuntime.retryReconciledSubmission(
+                    accountId,
+                    token,
+                    row.id,
+                    "TYPED_RECONCILED_RESUBMIT",
+                )
+                is AmbiguousActionResolution.VerifyLater -> {
+                    if (typedRuntime.deferReconciliation(
+                            accountId,
+                            token,
+                            row.id,
+                            resolution.retryAt,
+                            resolution.reason,
+                        )
+                    ) {
+                        wakeupPort.schedule(accountId, resolution.retryAt, "TYPED_RECONCILE_RETRY")
+                    }
+                }
+            }
+            return
+        }
         if (!typedRuntime.markSubmitting(accountId, token, row.id)) {
             typedRuntime.releaseAndEnqueueWake(accountId, token, "TYPED_CONFIG_RELOAD")
             return
@@ -203,6 +238,15 @@ class UnifiedAutomationRunner @Autowired constructor(
                 }
                 return
             }
+            error.findAmbiguousSubmission()?.let { ambiguous ->
+                typedRuntime.markReconcilingAndEnqueueWake(
+                    accountId,
+                    token,
+                    row.id,
+                    ambiguous.message ?: "Automation submission outcome is ambiguous.",
+                )
+                return
+            }
             log.warn("Typed automation action stopped accountId={} actionId={} errorType={}", accountId, row.id, error.javaClass.name)
             typedRuntime.stop(
                 accountId,
@@ -234,6 +278,33 @@ class UnifiedAutomationRunner @Autowired constructor(
     private fun Throwable.findHofAutomationDeferral(): HofAutomationDeferredException? =
         generateSequence(this) { it.cause }.filterIsInstance<HofAutomationDeferredException>().firstOrNull()
 
+    private fun Throwable.findAmbiguousSubmission(): AmbiguousAutomationSubmissionException? =
+        generateSequence(this) { it.cause }.filterIsInstance<AmbiguousAutomationSubmissionException>().firstOrNull()
+
+    private fun applyRecoveredExecution(accountId: Long, execution: TypedAutomationExecution) {
+        when (execution) {
+            TypedAutomationExecution.Completed -> Unit
+            is TypedAutomationExecution.BattleCompleted -> sharedBattleCooldowns.applyAfterSuccessfulBattle(
+                accountId,
+                execution.categoryId,
+                execution.mapCode,
+            )
+            is TypedAutomationExecution.SharedCooldown -> sharedBattleCooldowns.learnAndApply(
+                accountId,
+                execution.categoryId,
+                execution.mapCode,
+                execution.retryAt,
+            )
+        }
+    }
+
+    private fun recoveredWakeReason(execution: TypedAutomationExecution): String =
+        if (execution is TypedAutomationExecution.SharedCooldown) {
+            "TYPED_SHARED_COOLDOWN_SKIPPED"
+        } else {
+            "TYPED_ACTION_COMPLETED"
+        }
+
     private fun toStored(entryId: Long, action: PreparedAutomationAction): StoredTypedAutomationActionV1 {
         val executionId = when (action) {
             is BattleMapAutomationAction -> action.executionIdentity
@@ -259,6 +330,8 @@ class UnifiedAutomationRunner @Autowired constructor(
                     action.missionRequired,
                     action.mapName,
                 ),
+                observedCurrent = action.missionCurrent,
+                observedRequired = action.missionRequired,
             )
             is BattleMapAutomationAction -> StoredTypedActionPayload.BattleMap(
                 action.progressDate, action.categoryId, action.mapCode, action.presetMode,

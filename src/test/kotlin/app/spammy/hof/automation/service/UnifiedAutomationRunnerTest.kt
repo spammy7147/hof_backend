@@ -29,9 +29,10 @@ class UnifiedAutomationRunnerTest {
     private val executor = Mockito.mock(TypedAutomationActionExecutor::class.java)
     private val wakeup = Mockito.mock(AutomationWakeupPort::class.java)
     private val sharedCooldowns = Mockito.mock(SharedBattleCooldownService::class.java)
+    private val ambiguousReconciler = Mockito.mock(AutomationAmbiguousActionReconciler::class.java)
     private val codec = StoredTypedAutomationActionCodec(jacksonObjectMapper())
     private val runner = UnifiedAutomationRunner(
-        preflight, runtime, loader, coordinator, executor, codec, wakeup, sharedCooldowns,
+        preflight, runtime, loader, coordinator, executor, codec, wakeup, sharedCooldowns, ambiguousReconciler,
     )
 
     init {
@@ -53,7 +54,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(runtime.prepare(Mockito.eq(7L), eqString("token"), anyStoredAction())).thenReturn(row)
         Mockito.`when`(runtime.markSubmitting(7, "token", 88L)).thenReturn(true)
         val scopedRunner = UnifiedAutomationRunner(
-            preflight, runtime, decisions, workTracker, executor, codec, wakeup, sharedCooldowns,
+            preflight, runtime, decisions, workTracker, executor, codec, wakeup, sharedCooldowns, ambiguousReconciler,
         )
 
         scopedRunner.runOne(7)
@@ -349,25 +350,50 @@ class UnifiedAutomationRunnerTest {
     }
 
     @Test
-    fun `ambiguous submission stops typed runtime for network without replay`() {
-        preparedActionFailure(
+    fun `ambiguous submission enters reconciliation without stopping runtime`() {
+        ambiguousActionFailure(
             IllegalStateException(
                 "wrapped ambiguous outcome",
                 AmbiguousAutomationSubmissionException("unknown outcome"),
             ),
-            AutomationStopReason.NETWORK,
         )
     }
 
     @Test
-    fun `ambiguous quest side effect is checkpointed as network stop for manual resume`() {
-        preparedActionFailure(
+    fun `ambiguous quest side effect is checkpointed for automatic verification`() {
+        ambiguousActionFailure(
             AmbiguousAutomationSubmissionException(
                 "Quest side-effect request outcome is not provable; it will not be resent.",
                 IOException("connection reset"),
             ),
-            AutomationStopReason.NETWORK,
         )
+    }
+
+    @Test
+    fun `reconciling applied action succeeds without external resubmission`() {
+        val stored = StoredTypedAutomationActionV1(
+            12,
+            "execution-1",
+            StoredTypedActionPayload.QuestAccept("quest", "accept-no"),
+        )
+        val encoded = codec.encode(stored)
+        val owner = HofAccountEntity(7, "login", "encrypted", Instant.EPOCH)
+        val entry = AutomationEntryEntity(12, owner, AutomationType.QUEST, 0, true, Instant.EPOCH, Instant.EPOCH)
+        val row = TypedAutomationActionRunEntity(
+            88, owner, entry, stored.executionIdentity, stored.payload.kind(), 1, encoded.json,
+            encoded.fingerprint, TypedAutomationActionStatus.RECONCILING, leaseToken = "token",
+            createdAt = Instant.EPOCH, updatedAt = Instant.EPOCH,
+        )
+        Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
+        Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token", row))
+        Mockito.`when`(ambiguousReconciler.reconcile(7, stored))
+            .thenReturn(AmbiguousActionResolution.Applied())
+
+        runner.runOne(7)
+
+        Mockito.verify(ambiguousReconciler).reconcile(7, stored)
+        Mockito.verify(runtime).succeedReconciliation(7, "token", 88, "TYPED_ACTION_COMPLETED")
+        Mockito.verifyNoInteractions(executor)
     }
 
     @Test
@@ -488,6 +514,7 @@ class UnifiedAutomationRunnerTest {
                 codec,
                 wakeup,
                 sharedCooldowns,
+                ambiguousReconciler,
             )
             Mockito.`when`(casePreflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
             Mockito.`when`(caseRuntime.isRunning(7)).thenReturn(true)
@@ -552,6 +579,36 @@ class UnifiedAutomationRunnerTest {
             eqValue(expectedReason),
             anyStringValue(),
         )
+    }
+
+    private fun ambiguousActionFailure(error: Throwable) {
+        val stored = StoredTypedAutomationActionV1(
+            12,
+            "execution-ambiguous",
+            StoredTypedActionPayload.QuestClaim("quest", "claim"),
+        )
+        val encoded = codec.encode(stored)
+        val owner = HofAccountEntity(7, "login-ambiguous", "encrypted", Instant.EPOCH)
+        val entry = AutomationEntryEntity(12, owner, AutomationType.QUEST, 0, true, Instant.EPOCH, Instant.EPOCH)
+        val row = TypedAutomationActionRunEntity(
+            89, owner, entry, stored.executionIdentity, stored.payload.kind(), 1, encoded.json,
+            encoded.fingerprint, TypedAutomationActionStatus.PREPARED, leaseToken = "token",
+            createdAt = Instant.EPOCH, updatedAt = Instant.EPOCH,
+        )
+        Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
+        Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token", row))
+        Mockito.`when`(runtime.markSubmitting(7, "token", row.id)).thenReturn(true)
+        Mockito.doThrow(error).`when`(executor).execute(7, stored)
+
+        runner.runOne(7)
+
+        Mockito.verify(runtime).markReconcilingAndEnqueueWake(
+            Mockito.eq(7L),
+            eqString("token"),
+            Mockito.eq(row.id),
+            anyStringValue(),
+        )
+        assertTrue(Mockito.mockingDetails(runtime).invocations.none { it.method.name == "stop" })
     }
 
     private fun <T> eqValue(value: T): T = Mockito.eq(value) ?: value
