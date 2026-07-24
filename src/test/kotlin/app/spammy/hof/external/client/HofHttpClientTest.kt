@@ -10,6 +10,7 @@ import app.spammy.hof.external.model.HofRequestOrigin
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import java.net.InetSocketAddress
+import java.net.http.HttpRequest
 import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.CountDownLatch
@@ -24,6 +25,23 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class HofHttpClientTest {
+    @Test
+    fun `HOF requests allow up to 90 seconds for a response`() {
+        val buildHttpRequest = HofHttpClient::class.java.getDeclaredMethod(
+            "buildHttpRequest",
+            HofRequest::class.java,
+            Map::class.java,
+        ).apply { isAccessible = true }
+
+        val request = buildHttpRequest.invoke(
+            client(),
+            HofRequest(HofHttpMethod.GET, "https://hof.example/test"),
+            emptyMap<String, String>(),
+        ) as HttpRequest
+
+        assertEquals(Duration.ofSeconds(90), request.timeout().orElseThrow())
+    }
+
     @Test
     fun decodesEucKrBody() {
         val bytes = "소셜".toByteArray(charset("EUC-KR"))

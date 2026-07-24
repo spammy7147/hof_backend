@@ -93,7 +93,7 @@ class HofHttpClient private constructor(
             HofHttpMethod.POST -> request.url
         }
         val builder = HttpRequest.newBuilder(URI.create(requestUrl))
-            .timeout(Duration.ofSeconds(30))
+            .timeout(Duration.ofSeconds(90))
             .header("User-Agent", USER_AGENT)
             .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
             .header("Accept-Language", "ko-KR,ko;q=0.9,en-US;q=0.5,en;q=0.3")
