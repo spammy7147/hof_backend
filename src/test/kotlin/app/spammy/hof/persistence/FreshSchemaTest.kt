@@ -55,6 +55,7 @@ class FreshSchemaTest {
                 "4" to "prepare captcha on demand",
                 "5" to "track character detail sync",
                 "6" to "learn shared battle cooldowns",
+                "7" to "add automation wait reason",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -73,6 +74,7 @@ class FreshSchemaTest {
                 "V4__prepare_captcha_on_demand.sql",
                 "V5__track_character_detail_sync.sql",
                 "V6__learn_shared_battle_cooldowns.sql",
+                "V7__add_automation_wait_reason.sql",
             ),
             migrationNames,
         )

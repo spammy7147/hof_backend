@@ -59,6 +59,12 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
     @Test
     fun `resume atomically updates typed and preflight state and persists durable wake`() {
         val accountId = seed("commit")
+        TransactionTemplate(transactionManager).executeWithoutResult {
+            requireNotNull(typedQuery.lockRuntimeState(accountId)).apply {
+                nextAttemptAt = NOW.plusSeconds(300)
+                waitReason = AutomationWaitReason.SCHEDULED
+            }
+        }
 
         TransactionTemplate(transactionManager).executeWithoutResult {
             bridge.resume(accountId, "USER_RESUME")
@@ -68,6 +74,8 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
         assertEquals(TypedAutomationLifecycle.RUNNING, typed.lifecycleStatus)
         assertNull(typed.stopReason)
         assertNull(typed.stopActionId)
+        assertNull(typed.nextAttemptAt)
+        assertNull(typed.waitReason)
         assertNull(typed.leaseToken)
         val preflight = requireNotNull(preflightQuery.findState(accountId))
         assertEquals(0, preflight.failedAttempts)
@@ -119,6 +127,12 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
     @Test
     fun `manual stop clears a previous action stop context`() {
         val accountId = seed("manual-stop")
+        TransactionTemplate(transactionManager).executeWithoutResult {
+            requireNotNull(typedQuery.lockRuntimeState(accountId)).apply {
+                nextAttemptAt = NOW.plusSeconds(300)
+                waitReason = AutomationWaitReason.HOF_CONNECTION
+            }
+        }
 
         TransactionTemplate(transactionManager).executeWithoutResult {
             bridge.stop(accountId, AutomationStopReason.MANUAL_STOP, "USER_STOP")
@@ -128,6 +142,8 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
         assertEquals(TypedAutomationLifecycle.STOPPED, state.lifecycleStatus)
         assertEquals(AutomationStopReason.MANUAL_STOP.name, state.stopReason)
         assertNull(state.stopActionId)
+        assertNull(state.nextAttemptAt)
+        assertNull(state.waitReason)
     }
 
     @Test

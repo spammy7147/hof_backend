@@ -411,7 +411,8 @@ internal object FreshSchemaContract {
         table(
             "typed_automation_runtime_states",
             requiredBigint("account_id"), requiredVarchar("lifecycle_status", 20), optionalVarchar("stop_reason", 30),
-            requiredInteger("retry_attempt"), optionalInstant("next_attempt_at"), optionalVarchar("lease_token", 128),
+            requiredInteger("retry_attempt"), optionalInstant("next_attempt_at"), optionalVarchar("wait_reason", 30),
+            optionalVarchar("lease_token", 128),
             optionalInstant("lease_until"), optionalBigint("stop_action_id"), optionalText("warning_text"), optionalText("last_error"),
             requiredInstant("created_at"), requiredInstant("updated_at"), requiredBigint("version"),
             primaryKey = listOf("account_id"),
@@ -802,6 +803,11 @@ internal object FreshSchemaContract {
         check("typed_automation_runtime_states", "ck_typed_runtime_lifecycle", "locate(',' || lifecycle_status || ',', ',RUNNING,PAUSED,STOPPED,') > 0"),
         check("typed_automation_runtime_states", "ck_typed_runtime_stop", "(lifecycle_status = 'STOPPED' and stop_reason is not null) or (lifecycle_status <> 'STOPPED' and stop_reason is null)"),
         check("typed_automation_runtime_states", "ck_typed_runtime_retry", "retry_attempt >= 0"),
+        check(
+            "typed_automation_runtime_states",
+            "ck_typed_runtime_wait_reason",
+            "wait_reason is null or locate(',' || wait_reason || ',', ',SCHEDULED,HOF_CONNECTION,') > 0",
+        ),
         check("typed_automation_runtime_states", "ck_typed_runtime_lease", "(lease_token is null and lease_until is null) or (lease_token is not null and lease_until is not null)"),
         check("typed_automation_runtime_states", "ck_typed_runtime_stop_action", "lifecycle_status = 'STOPPED' or stop_action_id is null"),
         check("typed_automation_action_runs", "ck_typed_action_status", "locate(',' || status || ',', ',PREPARED,SUBMITTING,SUCCEEDED,FAILED,AMBIGUOUS,') > 0"),

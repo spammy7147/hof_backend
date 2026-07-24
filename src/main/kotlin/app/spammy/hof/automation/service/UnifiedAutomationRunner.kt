@@ -1,5 +1,6 @@
 package app.spammy.hof.automation.service
 
+import app.spammy.hof.automation.entity.AutomationWaitReason
 import app.spammy.hof.automation.port.AutomationWakeupPort
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
@@ -54,7 +55,12 @@ class UnifiedAutomationRunner @Autowired constructor(
             AutomationDailyPreflight.Result.Ready -> Unit
             is AutomationDailyPreflight.Result.Busy -> { wakeupPort.schedule(accountId, preflight.retryAt, "DAILY_PREFLIGHT_BUSY"); return }
             is AutomationDailyPreflight.Result.RetryScheduled -> {
-                if (typedRuntime.deferUntil(accountId, preflight.nextAttemptAt)) {
+                if (typedRuntime.deferUntil(
+                        accountId,
+                        preflight.nextAttemptAt,
+                        AutomationWaitReason.HOF_CONNECTION,
+                    )
+                ) {
                     wakeupPort.schedule(accountId, preflight.nextAttemptAt, "DAILY_PREFLIGHT_RETRY")
                 }
                 return
@@ -88,7 +94,13 @@ class UnifiedAutomationRunner @Autowired constructor(
                 typedRuntime.releaseAndEnqueueWake(accountId, token, "TYPED_CONFIG_RELOAD")
                 return
             } catch (error: HofAutomationDeferredException) {
-                if (typedRuntime.release(accountId, token, error.retryAt)) {
+                if (typedRuntime.release(
+                        accountId,
+                        token,
+                        error.retryAt,
+                        AutomationWaitReason.HOF_CONNECTION,
+                    )
+                ) {
                     wakeupPort.schedule(accountId, error.retryAt, HOF_COOLDOWN_WAKE_REASON)
                 }
                 return
