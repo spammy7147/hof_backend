@@ -13,6 +13,7 @@ import app.spammy.hof.captcha.service.NoOpCaptchaNotificationGateway
 import app.spammy.hof.push.config.FirebaseConfig
 import app.spammy.hof.push.kafka.PushRequestConsumer
 import app.spammy.hof.push.service.AndroidPushService
+import app.spammy.hof.push.service.FirebaseAndroidMessageSender
 import app.spammy.hof.push.service.OutboxCaptchaNotificationGateway
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -52,6 +53,7 @@ class RuntimeProfileContractTest {
             FirebaseConfig::class.java,
             PushRequestConsumer::class.java,
             AndroidPushService::class.java,
+            FirebaseAndroidMessageSender::class.java,
         ).forEach { assertProfiles(it, "prod") }
     }
 
