@@ -634,7 +634,10 @@ class UnifiedAutomationService(
 
     private fun enqueueSettingsWake(accountId: Long) {
         typedAutomationQueryRepository.lockRuntimeState(accountId)?.let { runtime ->
+            runtime.nextAttemptAt = null
+            runtime.waitReason = null
             runtime.warningText = null
+            runtime.lastError = null
             runtime.updatedAt = timeProvider.now()
         }
         automationOutboxService.enqueue(accountId, "SETTINGS_UPDATED")

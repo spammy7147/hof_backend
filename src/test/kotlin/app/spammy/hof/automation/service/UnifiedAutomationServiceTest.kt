@@ -11,6 +11,7 @@ import app.spammy.hof.automation.dto.UpdateBattleMapAutomationRequest
 import app.spammy.hof.automation.dto.UpdateQuestAutomationRequest
 import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.AutomationType
+import app.spammy.hof.automation.entity.AutomationWaitReason
 import app.spammy.hof.automation.entity.AdventureAutomationMapEntity
 import app.spammy.hof.automation.entity.BattleAutomationDailyProgressEntity
 import app.spammy.hof.automation.entity.BattleAutomationMapEntity
@@ -87,7 +88,19 @@ class UnifiedAutomationServiceTest {
     @Test
     fun `created entry is disabled appended and emits durable wake`() {
         val persisted = entry(91L, AutomationType.QUEST)
+        val runtime = TypedAutomationRuntimeStateEntity(
+            ACCOUNT_ID,
+            account(),
+            TypedAutomationLifecycle.RUNNING,
+            nextAttemptAt = NOW.plusSeconds(1800),
+            waitReason = AutomationWaitReason.SCHEDULED,
+            warningText = "stale warning",
+            lastError = "stale error",
+            createdAt = NOW,
+            updatedAt = NOW,
+        )
         Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(emptyList(), listOf(persisted))
+        Mockito.`when`(typedQuery.lockRuntimeState(ACCOUNT_ID)).thenReturn(runtime)
         Mockito.`when`(entryRepository.save(anyEntry())).thenReturn(persisted)
 
         val response = service.createEntry(ACCOUNT_ID, CreateAutomationEntryRequest(AutomationType.QUEST))
@@ -95,6 +108,10 @@ class UnifiedAutomationServiceTest {
         assertEquals(listOf(AutomationType.QUEST), response.entries.map { it.type })
         assertFalse(response.entries.single().enabled)
         assertEquals(0, response.entries.single().priority)
+        assertNull(runtime.nextAttemptAt)
+        assertNull(runtime.waitReason)
+        assertNull(runtime.warningText)
+        assertNull(runtime.lastError)
         Mockito.verify(automationOutbox).enqueue(ACCOUNT_ID, "SETTINGS_UPDATED")
     }
 

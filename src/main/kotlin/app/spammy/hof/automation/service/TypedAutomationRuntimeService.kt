@@ -199,7 +199,7 @@ class TypedAutomationRuntimeService(
     fun deferUntil(
         accountId: Long,
         retryAt: Instant,
-        reason: AutomationWaitReason = AutomationWaitReason.SCHEDULED,
+        reason: AutomationWaitReason,
     ): Boolean {
         val state = queryRepository.lockRuntimeState(accountId)
             ?.takeIf { it.lifecycleStatus == TypedAutomationLifecycle.RUNNING }

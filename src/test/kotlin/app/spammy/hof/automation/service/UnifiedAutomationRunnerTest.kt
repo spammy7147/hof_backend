@@ -3,6 +3,7 @@ package app.spammy.hof.automation.service
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.AutomationType
+import app.spammy.hof.automation.entity.AutomationWaitReason
 import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.automation.entity.TypedAutomationActionRunEntity
 import app.spammy.hof.automation.entity.TypedAutomationActionStatus
@@ -301,11 +302,13 @@ class UnifiedAutomationRunnerTest {
         val retryAt = Instant.parse("2026-07-23T00:00:30Z")
         Mockito.`when`(preflight.ensureReady(7))
             .thenReturn(AutomationDailyPreflight.Result.RetryScheduled(retryAt, 0))
-        Mockito.`when`(runtime.deferUntil(7, retryAt)).thenReturn(true)
+        Mockito.`when`(
+            runtime.deferUntil(7, retryAt, AutomationWaitReason.HOF_CONNECTION),
+        ).thenReturn(true)
 
         runner.runOne(7)
 
-        Mockito.verify(runtime).deferUntil(7, retryAt)
+        Mockito.verify(runtime).deferUntil(7, retryAt, AutomationWaitReason.HOF_CONNECTION)
         Mockito.verify(wakeup).schedule(7, retryAt, "DAILY_PREFLIGHT_RETRY")
         Mockito.verify(runtime, Mockito.never()).claim(7)
     }
@@ -373,11 +376,13 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
         Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token"))
         Mockito.`when`(loader.loadTyped(7)).thenThrow(HofAutomationDeferredException(retryAt, 1))
-        Mockito.`when`(runtime.release(7, "token", retryAt)).thenReturn(true)
+        Mockito.`when`(
+            runtime.release(7, "token", retryAt, AutomationWaitReason.HOF_CONNECTION),
+        ).thenReturn(true)
 
         runner.runOne(7)
 
-        Mockito.verify(runtime).release(7, "token", retryAt)
+        Mockito.verify(runtime).release(7, "token", retryAt, AutomationWaitReason.HOF_CONNECTION)
         Mockito.verify(wakeup).schedule(7, retryAt, "HOF_503_COOLDOWN")
         assertTrue(Mockito.mockingDetails(runtime).invocations.none { it.method.name == "stop" })
     }
