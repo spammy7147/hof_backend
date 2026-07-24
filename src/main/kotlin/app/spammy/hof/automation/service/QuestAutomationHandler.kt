@@ -101,6 +101,7 @@ data class QuestAutomationSnapshot(
     val now: Instant,
     val primaryPresetId: Long? = null,
     val primaryParty: ResolvedAutomationParty? = null,
+    val timeSnapshot: AutomationTimeSnapshot? = null,
 )
 
 internal fun QuestMission.displayLabel(): String {

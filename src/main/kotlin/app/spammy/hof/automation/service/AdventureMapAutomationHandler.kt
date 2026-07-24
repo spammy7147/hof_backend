@@ -35,6 +35,7 @@ data class AdventureMapRunnableState(
     val keyMode: BattleMapKeyMode,
     val keyCount: Int? = null,
     val mapName: String? = null,
+    val requiredTime: Int? = null,
 )
 
 sealed interface AdventureMapPresetResolution {
@@ -54,6 +55,7 @@ data class AdventureMapAutomationSnapshot(
      */
     val executionIdentities: Map<Long, String>,
     val evaluationInstant: Instant,
+    val timeSnapshot: AutomationTimeSnapshot? = null,
 )
 
 data class AdventureMapAutomationAction(

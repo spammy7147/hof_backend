@@ -65,6 +65,7 @@ data class BattleMapAutomationSnapshot(
     /** Deterministic action-time input; the handler derives the Korea calendar date itself. */
     val evaluationInstant: Instant,
     val resolvedParties: Map<Long, ResolvedAutomationParty> = emptyMap(),
+    val timeSnapshot: AutomationTimeSnapshot? = null,
 )
 
 enum class BattleAutomationActionSource {

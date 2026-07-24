@@ -19,6 +19,8 @@ import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.party.repository.PartyPresetQueryRepository
 import app.spammy.hof.quest.service.QuestGatewayService
+import app.spammy.hof.status.dto.HofObservedStatusResponse
+import app.spammy.hof.status.service.HofStatusSnapshotService
 import java.time.Instant
 import kotlin.test.Test
 import org.mockito.Mockito
@@ -55,6 +57,7 @@ class TypedLiveAutomationSnapshotLoaderTest {
             mapService,
             TimeProvider { now },
             HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
+            Mockito.mock(HofStatusSnapshotService::class.java),
         )
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(questEntry, battleEntry, adventureEntry))
         Mockito.`when`(typed.findQuestSelectionsByEntryIds(listOf(10))).thenReturn(listOf(selection))
@@ -141,9 +144,11 @@ class TypedLiveAutomationSnapshotLoaderTest {
         val presets = Mockito.mock(PartyPresetQueryRepository::class.java)
         val quest = Mockito.mock(QuestGatewayService::class.java)
         val identities = Mockito.mock(BattleMapIdentityResolver::class.java)
+        val status = Mockito.mock(HofStatusSnapshotService::class.java)
         val loader = TypedLiveAutomationSnapshotLoader(
             quest, typed, mapQuery, presets, identities, mapService, TimeProvider { now },
             HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
+            status,
         )
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(questEntry, battleEntry, adventureEntry))
         Mockito.`when`(typed.findQuestSelectionsByEntryIds(listOf(10))).thenReturn(listOf(selection))
@@ -152,6 +157,10 @@ class TypedLiveAutomationSnapshotLoaderTest {
         Mockito.`when`(typed.findAdventureSettingsByEntryIds(listOf(12))).thenReturn(listOf(AdventureAutomationMapEntity(23, adventureEntry, "adventure_map", "amap", PresetSelectionMode.EXPLICIT, explicitX, 0)))
         Mockito.`when`(quest.load(7, HofRequestOrigin.AUTOMATION)).thenReturn(emptyList())
         Mockito.`when`(mapQuery.findAllStatesForExecution(7)).thenReturn(listOf(liveState))
+        liveMap.requiredTime = 75
+        Mockito.`when`(status.findLatest(7)).thenReturn(
+            HofObservedStatusResponse("player", 1L, 250, 6000, "Nothing", "Nothing", now.minusSeconds(30)),
+        )
         Mockito.`when`(presets.findAllByAccountId(7)).thenReturn(listOf(primaryA, primaryB, explicitX))
         Mockito.`when`(presets.findPrimaryByAccountId(7)).thenReturn(primaryA, primaryA, primaryB, primaryB)
         Mockito.`when`(presets.findMembersByPresetIds(listOf(101L, 102L, 103L))).thenReturn(
@@ -170,9 +179,13 @@ class TypedLiveAutomationSnapshotLoaderTest {
         assertEquals(BattleMapKeyMode.UNLIMITED, firstQuest.mapStates.single().keyMode)
         assertEquals("qmap", firstQuest.mapStates.single().mapCode)
         assertEquals("Live map", firstQuest.mapStates.single().mapName)
+        val expectedTime = AutomationTimeSnapshot(250, 6000, now.minusSeconds(30))
+        assertEquals(expectedTime, firstQuest.timeSnapshot)
+        assertEquals(75, firstQuest.mapStates.single().requiredTime)
         assertEquals("qmap", firstQuest.selections.single().maps.single().mapCode)
         assertEquals(BattleMapKeyMode.UNLIMITED, firstBattle.mapStates.single().keyMode)
         assertEquals("Live map", firstBattle.mapStates.single().mapName)
+        assertEquals(expectedTime, firstBattle.timeSnapshot)
         assertEquals(101, firstBattle.primaryPresetId); assertEquals(102, secondBattle.primaryPresetId)
         assertNotEquals(firstBattle.executionIdentity, secondBattle.executionIdentity)
         assertTrue(firstBattle.executionIdentity.isNotBlank() && firstBattle.executionIdentity.length <= 128)
@@ -184,6 +197,8 @@ class TypedLiveAutomationSnapshotLoaderTest {
         assertEquals((0..4).map { "X-$it" }, secondResolution.resolvedParty?.characterIds)
         assertEquals(BattleMapKeyMode.UNLIMITED, firstAdventure.mapStates.single().keyMode)
         assertEquals("Live map", firstAdventure.mapStates.single().mapName)
+        assertEquals(expectedTime, firstAdventure.timeSnapshot)
+        assertEquals(75, firstAdventure.mapStates.single().requiredTime)
         assertEquals(firstAdventure.executionIdentities.getValue(23), firstAdventure.executionIdentities.getValue(23))
         assertNotEquals(firstAdventure.executionIdentities.getValue(23), secondAdventure.executionIdentities.getValue(23))
         assertTrue(secondAdventure.executionIdentities.getValue(23).length <= 128)
@@ -210,6 +225,7 @@ class TypedLiveAutomationSnapshotLoaderTest {
             mapService,
             TimeProvider { now },
             HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
+            Mockito.mock(HofStatusSnapshotService::class.java),
         )
         val configuredMembers = members(primary, "member", account, now).take(3)
         val emptyMembers = (3..4).map { PartyPresetMemberEntity(primary, it) }
@@ -247,6 +263,7 @@ class TypedLiveAutomationSnapshotLoaderTest {
         val loader = TypedLiveAutomationSnapshotLoader(
             quest, typed, mapQuery, presets, identities, mapService, TimeProvider { now },
             HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
+            Mockito.mock(HofStatusSnapshotService::class.java),
             DataSourceTransactionManager(database),
         )
         val categoryA = BattleAutomationMapEntity(21, entry, "category-a", "map", 1, PresetSelectionMode.PRIMARY, null, 0)
@@ -290,6 +307,7 @@ class TypedLiveAutomationSnapshotLoaderTest {
         val loader = TypedLiveAutomationSnapshotLoader(
             quest, typed, mapQuery, presets, identities, mapService, TimeProvider { now },
             HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
+            Mockito.mock(HofStatusSnapshotService::class.java),
         )
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(entry))
         Mockito.`when`(typed.findQuestSelectionsByEntryIds(listOf(10))).thenReturn(listOf(selection))
@@ -323,6 +341,7 @@ class TypedLiveAutomationSnapshotLoaderTest {
         val loader = TypedLiveAutomationSnapshotLoader(
             quest, typed, mapQuery, presets, identities, mapService, TimeProvider { now },
             HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
+            Mockito.mock(HofStatusSnapshotService::class.java),
         )
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(questEntry))
         Mockito.`when`(typed.findQuestSelectionsByEntryIds(listOf(10))).thenReturn(listOf(enabledSelection, disabledSelection))
@@ -360,6 +379,7 @@ class TypedLiveAutomationSnapshotLoaderTest {
         val loader = TypedLiveAutomationSnapshotLoader(
             quest, typed, mapQuery, presets, Mockito.mock(BattleMapIdentityResolver::class.java), mapService,
             TimeProvider { now }, HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
+            Mockito.mock(HofStatusSnapshotService::class.java),
         )
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(questEntry, battleEntry, adventureEntry, disabledBattleEntry))
         Mockito.`when`(typed.findQuestSelectionsByEntryIds(listOf(10))).thenReturn(listOf(questSelection))
@@ -402,6 +422,7 @@ class TypedLiveAutomationSnapshotLoaderTest {
         val loader = TypedLiveAutomationSnapshotLoader(
             quest, typed, mapQuery, presets, Mockito.mock(BattleMapIdentityResolver::class.java), mapService,
             TimeProvider { now }, HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
+            Mockito.mock(HofStatusSnapshotService::class.java),
         )
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(entry))
         Mockito.`when`(typed.findQuestSelectionsByEntryIds(listOf(10))).thenReturn(selections)
@@ -450,6 +471,7 @@ class TypedLiveAutomationSnapshotLoaderTest {
             Mockito.mock(BattleMapService::class.java),
             TimeProvider { now },
             HofSessionRecoveryExecutor(HofSessionRecoveryService(accountService)),
+            Mockito.mock(HofStatusSnapshotService::class.java),
         )
         return LiveFailureFixture(loader, quest, accountService)
     }

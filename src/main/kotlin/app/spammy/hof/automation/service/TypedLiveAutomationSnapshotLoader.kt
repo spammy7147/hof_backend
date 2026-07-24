@@ -16,12 +16,14 @@ import app.spammy.hof.external.client.HofAutomationDeferredException
 import app.spammy.hof.party.repository.PartyPresetQueryRepository
 import app.spammy.hof.quest.model.QuestSnapshot
 import app.spammy.hof.quest.service.QuestGatewayService
+import app.spammy.hof.status.service.HofStatusSnapshotService
 import java.io.IOException
 import java.security.MessageDigest
 import java.time.Instant
 import java.time.ZoneId
 import java.util.HexFormat
 import java.util.UUID
+import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
 import org.springframework.transaction.PlatformTransactionManager
 import org.springframework.transaction.support.TransactionSynchronizationManager
@@ -39,6 +41,7 @@ class TypedLiveAutomationSnapshotLoader(
     private val battleMapService: BattleMapService,
     private val timeProvider: TimeProvider,
     private val sessionRecovery: HofSessionRecoveryExecutor,
+    private val hofStatusSnapshots: HofStatusSnapshotService,
     transactionManager: PlatformTransactionManager? = null,
 ) : TypedAutomationSnapshotLoader {
     private val readTransaction = transactionManager?.let { TransactionTemplate(it).apply { isReadOnly = true } }
@@ -177,14 +180,17 @@ class TypedLiveAutomationSnapshotLoader(
         val now = timeProvider.now()
         val states = maps.findAllStatesForExecution(accountId)
         val aliases = states.map { it.battleMap.categoryId }.distinct().flatMap(identities::loadAliasCandidates)
+        val timeSnapshot = hofStatusSnapshots.findLatest(accountId)?.let {
+            AutomationTimeSnapshot(it.timeCurrent, it.timeMax, it.observedAt)
+        }
         return AutomationCoordinatorSnapshot(config.entries.filter { it.enabled }.map { entry -> when (entry.type) {
-            AutomationType.QUEST -> AutomationCoordinatorEntry(entry.id, entry.type, quest = questSnapshot(accountId, entry, quests, states, aliases, config, now))
-            AutomationType.BATTLE_MAP -> AutomationCoordinatorEntry(entry.id, entry.type, battle = battleSnapshot(accountId, entry, states, config, now))
-            AutomationType.ADVENTURE_MAP -> AutomationCoordinatorEntry(entry.id, entry.type, adventure = adventureSnapshot(accountId, entry, states, config, now))
+            AutomationType.QUEST -> AutomationCoordinatorEntry(entry.id, entry.type, quest = questSnapshot(accountId, entry, quests, states, aliases, config, now, timeSnapshot))
+            AutomationType.BATTLE_MAP -> AutomationCoordinatorEntry(entry.id, entry.type, battle = battleSnapshot(accountId, entry, states, config, now, timeSnapshot))
+            AutomationType.ADVENTURE_MAP -> AutomationCoordinatorEntry(entry.id, entry.type, adventure = adventureSnapshot(accountId, entry, states, config, now, timeSnapshot))
         } })
     }
 
-    private fun questSnapshot(accountId: Long, entry: DetachedEntry, quests: List<QuestSnapshot>, states: List<AccountBattleMapStateEntity>, aliases: List<BattleMapIdentityCandidate>, config: DetachedConfiguration, now: Instant): QuestAutomationSnapshot {
+    private fun questSnapshot(accountId: Long, entry: DetachedEntry, quests: List<QuestSnapshot>, states: List<AccountBattleMapStateEntity>, aliases: List<BattleMapIdentityCandidate>, config: DetachedConfiguration, now: Instant, timeSnapshot: AutomationTimeSnapshot?): QuestAutomationSnapshot {
         val selections = entry.quest.map { selection -> QuestAutomationSelection(selection.questCode, selection.enabled, selection.maps.map { map ->
             val resolved = when (map.presetMode) {
                 PresetSelectionMode.PRIMARY -> config.primary
@@ -204,10 +210,10 @@ class TypedLiveAutomationSnapshotLoader(
             val key = QuestCounterKey(selection.questCode, cycles.getValue(selection.questCode), map.missionKey, map.categoryId, map.mapCode)
             counters[key] = persistedCounters[key]?.successfulRuns ?: 0
         } }
-        return QuestAutomationSnapshot(accountId, quests, selections, states.map(::questState), cycles, counters, aliases, now, config.primary, config.primary?.let(config.parties::get))
+        return QuestAutomationSnapshot(accountId, quests, selections, states.map(::questState), cycles, counters, aliases, now, config.primary, config.primary?.let(config.parties::get), timeSnapshot)
     }
 
-    private fun battleSnapshot(accountId: Long, entry: DetachedEntry, states: List<AccountBattleMapStateEntity>, config: DetachedConfiguration, now: Instant): BattleMapAutomationSnapshot {
+    private fun battleSnapshot(accountId: Long, entry: DetachedEntry, states: List<AccountBattleMapStateEntity>, config: DetachedConfiguration, now: Instant, timeSnapshot: AutomationTimeSnapshot?): BattleMapAutomationSnapshot {
         val settings = entry.battle.map { BattleMapAutomationSetting(true, it.categoryId, it.mapCode, it.dailyTargetCount, BattleMapPresetSelection(it.presetMode, it.presetId), it.executionOrder) }
         val date = now.atZone(ZoneId.of("Asia/Seoul")).toLocalDate()
         val progressRows = typed.findBattleProgressRows(accountId, date, BATTLE_MAP_PROGRESS_SOURCE)
@@ -216,16 +222,28 @@ class TypedLiveAutomationSnapshotLoader(
             val key = BattleMapProgressIdentity(setting.categoryId, setting.mapCode)
             key to (progressRows[key]?.successfulRuns ?: 0)
         }
-        return BattleMapAutomationSnapshot(accountId, settings, states.map(::battleState), progress, config.primary, config.availablePresetIds, UUID.randomUUID().toString(), now, config.parties)
+        return BattleMapAutomationSnapshot(accountId, settings, states.map(::battleState), progress, config.primary, config.availablePresetIds, UUID.randomUUID().toString(), now, config.parties, timeSnapshot)
     }
 
-    private fun adventureSnapshot(accountId: Long, entry: DetachedEntry, states: List<AccountBattleMapStateEntity>, config: DetachedConfiguration, now: Instant): AdventureMapAutomationSnapshot {
+    private fun adventureSnapshot(accountId: Long, entry: DetachedEntry, states: List<AccountBattleMapStateEntity>, config: DetachedConfiguration, now: Instant, timeSnapshot: AutomationTimeSnapshot?): AdventureMapAutomationSnapshot {
         val settings = entry.adventure.map { AdventureMapAutomationSetting(it.id, true, it.categoryId, it.mapCode, AdventureMapPresetSelection(it.presetMode, it.presetId), it.executionOrder) }
+        val statesByIdentity = states.associateBy { it.battleMap.categoryId to it.battleMap.mapCode }
+        settings.filter(AdventureMapAutomationSetting::enabled).forEach { setting ->
+            val state = statesByIdentity[setting.categoryId to setting.mapCode]
+            if (state?.battleMap?.requiredTime == null) {
+                log.warn(
+                    "Automation adventure TIME cost missing accountId={} categoryId={} mapCode={} fallbackTime=100",
+                    accountId,
+                    setting.categoryId,
+                    setting.mapCode,
+                )
+            }
+        }
         val resolutions = entry.adventure.associate { row -> row.id to when (row.presetMode) {
             PresetSelectionMode.PRIMARY -> config.primary?.let { AdventureMapPresetResolution.Valid(it, config.parties[it]) } ?: AdventureMapPresetResolution.Invalid("Select a primary party preset.")
             PresetSelectionMode.EXPLICIT -> row.presetId?.takeIf { it in config.availablePresetIds }?.let { AdventureMapPresetResolution.Valid(it, config.parties[it]) } ?: AdventureMapPresetResolution.Invalid("The explicit party preset is missing.")
         } }
-        return AdventureMapAutomationSnapshot(accountId, settings, states.map(::adventureState), resolutions, entry.adventure.associate { it.id to UUID.randomUUID().toString() }, now)
+        return AdventureMapAutomationSnapshot(accountId, settings, states.map(::adventureState), resolutions, entry.adventure.associate { it.id to UUID.randomUUID().toString() }, now, timeSnapshot)
     }
 
     private fun <T> inReadTransaction(block: () -> T): T = readTransaction?.execute { block() } ?: block()
@@ -253,9 +271,9 @@ class TypedLiveAutomationSnapshotLoader(
         }
     }.filter(String::isNotBlank).distinct()
 
-    private fun questState(state: AccountBattleMapStateEntity) = AutomationMapState(state.battleMap.categoryId, state.battleMap.mapCode, state.battleMap.name, state.visible, state.battleMap.enabled, state.cooldownUntil, state.winRemaining, state.attemptRemaining, state.availableCount, state.keyMode, state.keyCount, state.supportsThreeBattles)
+    private fun questState(state: AccountBattleMapStateEntity) = AutomationMapState(state.battleMap.categoryId, state.battleMap.mapCode, state.battleMap.name, state.visible, state.battleMap.enabled, state.cooldownUntil, state.winRemaining, state.attemptRemaining, state.availableCount, state.keyMode, state.keyCount, state.supportsThreeBattles, state.battleMap.requiredTime)
     private fun battleState(state: AccountBattleMapStateEntity) = BattleMapRunnableState(state.battleMap.categoryId, state.battleMap.mapCode, state.visible, state.battleMap.enabled, state.supportsThreeBattles, state.cooldownUntil, state.availableCount, state.attemptRemaining, state.winRemaining, state.keyMode, state.keyCount, state.battleMap.name)
-    private fun adventureState(state: AccountBattleMapStateEntity) = AdventureMapRunnableState(state.battleMap.categoryId, state.battleMap.mapCode, true, state.visible, state.battleMap.enabled, state.cooldownUntil, null, state.attemptRemaining, state.winRemaining, state.availableCount, state.keyMode, state.keyCount, state.battleMap.name)
+    private fun adventureState(state: AccountBattleMapStateEntity) = AdventureMapRunnableState(state.battleMap.categoryId, state.battleMap.mapCode, true, state.visible, state.battleMap.enabled, state.cooldownUntil, null, state.attemptRemaining, state.winRemaining, state.availableCount, state.keyMode, state.keyCount, state.battleMap.name, state.battleMap.requiredTime)
 
     private data class DetachedConfiguration(val entries: List<DetachedEntry>, val primary: Long?, val availablePresetIds: Set<Long>, val parties: Map<Long, ResolvedAutomationParty>, val categories: List<String>, val version: String)
     private data class DetachedEntry(val id: Long, val type: AutomationType, val priority: Int, val enabled: Boolean, val quest: List<DetachedQuestSelection>, val battle: List<DetachedBattleSetting>, val adventure: List<DetachedAdventureSetting>)
@@ -265,4 +283,7 @@ class TypedLiveAutomationSnapshotLoader(
     private data class DetachedAdventureSetting(val id: Long, val categoryId: String, val mapCode: String, val presetMode: PresetSelectionMode, val presetId: Long?, val executionOrder: Int)
     private data class DetachedMember(val presetId: Long, val slotIndex: Int, val characterId: String?, val patternSlot: String?, val canLoad: Boolean)
 
+    private companion object {
+        val log = LoggerFactory.getLogger(TypedLiveAutomationSnapshotLoader::class.java)
+    }
 }
