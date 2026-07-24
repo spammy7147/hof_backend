@@ -13,6 +13,7 @@ import app.spammy.hof.battle.service.BattleMapAliasResolution
 import app.spammy.hof.battle.service.BattleMapIdentityCandidate
 import app.spammy.hof.battle.service.resolveBattleMapAlias
 import app.spammy.hof.battle.model.hasUsableKey
+import app.spammy.hof.battle.model.BattleMapKeyMode
 import app.spammy.hof.quest.model.QuestMission
 import app.spammy.hof.quest.model.QuestMissionType
 import app.spammy.hof.quest.model.QuestSnapshot
@@ -267,6 +268,7 @@ class JpaQuestAutomationProgressStore(
 @Service
 class QuestAutomationHandler(
     private val progressStore: QuestAutomationProgressStore,
+    private val timePolicy: BattleTimePolicy = BattleTimePolicy(),
 ) : AutomationHandler<QuestAutomationSnapshot> {
     override fun evaluate(context: QuestAutomationSnapshot): HandlerEvaluation {
         val selections = context.selections
@@ -378,7 +380,14 @@ class QuestAutomationHandler(
             }.thenBy(QuestAutomationMapSelection::executionOrder),
         )!!
         val selectedState = stateByMap.getValue(selected.categoryId to selected.mapCode)
-        return selected.toBattleEvaluation(quest, cycle, mission, selectedState)
+        return selected.toBattleEvaluation(
+            quest,
+            cycle,
+            mission,
+            selectedState,
+            context.timeSnapshot,
+            context.now,
+        )
     }
 
     private fun mapClearAction(
@@ -451,6 +460,8 @@ class QuestAutomationHandler(
             context.currentCycles[quest.questId] ?: INITIAL_CYCLE,
             mission,
             state,
+            context.timeSnapshot,
+            context.now,
         )
     }
 
@@ -464,12 +475,32 @@ class QuestAutomationHandler(
         cycle: String,
         mission: QuestMission,
         liveMapState: AutomationMapState,
+        timeSnapshot: AutomationTimeSnapshot?,
+        now: Instant,
     ): HandlerEvaluation {
         if (!hasValidPreset()) {
             return HandlerEvaluation.ConfigurationWarning(
                 "Quest ${quest.questId} mission ${mission.key} has an invalid preset selection.",
             )
         }
+        val remaining = mission.progress?.let {
+            (it.required - it.current).coerceAtLeast(0)
+        } ?: 1
+        val decision = if (categoryId == ADVENTURE_MAP_CATEGORY) {
+            timePolicy.forAdventureMap(timeSnapshot, now, liveMapState.requiredTime)
+        } else {
+            timePolicy.forBattleMap(
+                timeSnapshot,
+                now,
+                remaining,
+                liveMapState.supportsThreeBattles,
+                liveMapState.hasCapacityForThree(),
+            )
+        }
+        if (decision is BattleTimeDecision.Wait) {
+            return HandlerEvaluation.Unavailable(decision.nextRunAt)
+        }
+        val run = decision as BattleTimeDecision.Run
         return HandlerEvaluation.Runnable(
             QuestAction.Battle(
                 quest.questId,
@@ -480,7 +511,7 @@ class QuestAutomationHandler(
                 mapCode,
                 liveMapState.displayName(),
                 preset,
-                battleCount = mission.battleCount(liveMapState.supportsThreeBattles),
+                battleCount = run.battleCount,
                 questName = quest.name,
                 missionLabel = mission.displayLabel(),
                 missionCurrent = mission.progress?.current,
@@ -489,18 +520,22 @@ class QuestAutomationHandler(
         )
     }
 
-    private fun QuestMission.battleCount(supportsThreeBattles: Boolean): Int {
-        val progress = progress ?: return 1
-        val remaining = (progress.required - progress.current).coerceAtLeast(0)
-        return if (supportsThreeBattles && remaining >= 3) 3 else 1
-    }
-
     private fun AutomationMapState.isRunnable(now: Instant): Boolean =
         visible && enabled && keyMode.hasUsableKey(keyCount) &&
             (cooldownUntil == null || !cooldownUntil.isAfter(now)) &&
             (winRemaining == null || winRemaining > 0) &&
             (attemptRemaining == null || attemptRemaining > 0) &&
             (availableCount == null || availableCount > 0)
+
+    private fun AutomationMapState.hasCapacityForThree(): Boolean =
+        listOf(availableCount, attemptRemaining, winRemaining).none { it != null && it < 3 } &&
+            when (keyMode) {
+                BattleMapKeyMode.LIMITED -> keyCount != null && keyCount >= 3
+                BattleMapKeyMode.NOT_REQUIRED,
+                BattleMapKeyMode.UNLIMITED,
+                BattleMapKeyMode.UNKNOWN,
+                -> true
+            }
 
     private fun AutomationMapState.displayName(): String? = mapName.trim().takeIf(String::isNotBlank)
 
@@ -513,5 +548,6 @@ class QuestAutomationHandler(
     private companion object {
         const val INITIAL_CYCLE = "0"
         const val DEFAULT_BATTLE_CATEGORY = "battle_map"
+        const val ADVENTURE_MAP_CATEGORY = "adventure_map"
     }
 }

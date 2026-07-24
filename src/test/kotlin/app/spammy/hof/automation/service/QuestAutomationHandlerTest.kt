@@ -32,6 +32,43 @@ class QuestAutomationHandlerTest {
     private val handler = QuestAutomationHandler(progress)
 
     @Test
+    fun `quest battle map follows shared 100 and 300 TIME rules`() {
+        fun actionAt(timeCurrent: Int) = battle(handler.evaluate(snapshot(
+            quests = listOf(quest(
+                "q",
+                QuestState.ACTIVE,
+                0,
+                QuestMission("kill", QuestMissionType.MONSTER_KILL, "monster", QuestProgress(0, 10), false),
+            )),
+            selections = listOf(selection("q", maps = listOf(map("kill", "common", 0, category = "battle_map")))),
+            states = listOf(state("common", category = "battle_map", supportsThreeBattles = true)),
+            timeCurrent = timeCurrent,
+        )))
+
+        assertEquals(1, actionAt(100).battleCount)
+        assertEquals(3, actionAt(300).battleCount)
+    }
+
+    @Test
+    fun `quest adventure map uses map cost and null fallback`() {
+        val waiting = handler.evaluate(snapshot(
+            quests = listOf(quest("q", QuestState.ACTIVE, 0, monster("kill"))),
+            selections = listOf(selection("q", maps = listOf(map("kill", "adventure", 0, category = "adventure_map")))),
+            states = listOf(state("adventure", category = "adventure_map", requiredTime = 50)),
+            timeCurrent = 49,
+        ))
+        assertEquals(NOW.plusSeconds(1), assertIs<HandlerEvaluation.Unavailable>(waiting).nextRunAt)
+
+        val fallback = battle(handler.evaluate(snapshot(
+            quests = listOf(quest("q", QuestState.ACTIVE, 0, monster("kill"))),
+            selections = listOf(selection("q", maps = listOf(map("kill", "adventure", 0, category = "adventure_map")))),
+            states = listOf(state("adventure", category = "adventure_map", requiredTime = null)),
+            timeCurrent = 100,
+        )))
+        assertEquals(1, fallback.battleCount)
+    }
+
+    @Test
     fun availableQuestIsAcceptedBeforeClaimableQuest() {
         val result = handler.evaluate(snapshot(
             quests = listOf(
@@ -506,7 +543,18 @@ class QuestAutomationHandlerTest {
         cycles: Map<String, String> = emptyMap(),
         counters: Map<QuestCounterKey, Int> = emptyMap(),
         identities: List<BattleMapIdentityCandidate> = emptyList(),
-    ) = QuestAutomationSnapshot(ACCOUNT_ID, quests, selections, states, cycles, counters, identities, NOW)
+        timeCurrent: Int? = 6000,
+    ) = QuestAutomationSnapshot(
+        ACCOUNT_ID,
+        quests,
+        selections,
+        states,
+        cycles,
+        counters,
+        identities,
+        NOW,
+        timeSnapshot = timeCurrent?.let { AutomationTimeSnapshot(it, 6000, NOW) },
+    )
 
     private fun quest(code: String, state: QuestState, order: Int, vararg missions: QuestMission) =
         QuestSnapshot(code, code, state, if (state == QuestState.AVAILABLE) QuestSection.AVAILABLE else QuestSection.ACTIVE, order, missions.toList(), "$code-action")
@@ -526,7 +574,8 @@ class QuestAutomationHandlerTest {
         manual: Boolean = false,
         presetMode: PresetSelectionMode = PresetSelectionMode.PRIMARY,
         presetId: Long? = null,
-    ) = QuestAutomationMapSelection(mission, "battle_map", code, QuestPresetSelection(presetMode, presetId), order, manual)
+        category: String = "battle_map",
+    ) = QuestAutomationMapSelection(mission, category, code, QuestPresetSelection(presetMode, presetId), order, manual)
 
     private fun state(
         code: String,
@@ -536,9 +585,11 @@ class QuestAutomationHandlerTest {
         keyMode: BattleMapKeyMode = if (keyCount == null) BattleMapKeyMode.UNKNOWN else BattleMapKeyMode.LIMITED,
         cooldownUntil: Instant? = null,
         supportsThreeBattles: Boolean = false,
+        category: String = "battle_map",
+        requiredTime: Int? = null,
     ) = AutomationMapState(
-        "battle_map", code, mapName, visible, true, cooldownUntil, null, null, null, keyMode, keyCount,
-        supportsThreeBattles,
+        category, code, mapName, visible, true, cooldownUntil, null, null, null, keyMode, keyCount,
+        supportsThreeBattles, requiredTime,
     )
 
     private fun counterKey(quest: String, cycle: String, mission: String, map: String) =
