@@ -61,7 +61,7 @@ class BattleMapService(
     ): List<BattleMapResponse> {
         val snapshot = fetchMapSnapshot(accountId, categoryId, requireObservations = false, origin)
         if (snapshot.observations.isEmpty()) {
-            return catalogService.findVisibleByCategory(accountId, snapshot.category.value).map(BattleMapResponse::from)
+            return catalogService.findObservedByCategory(accountId, snapshot.category.value).map(BattleMapResponse::from)
         }
         return synchronizeSnapshot(snapshot)
     }

@@ -47,12 +47,12 @@ class BattleMapCatalogService(
             transactionService.synchronizeCategory(account, categoryId, observations)
         }
 
-    /** 외부 HOF 호출 없이 마지막으로 저장된 계정별 visible 맵 tree를 조회한다. */
-    fun findVisibleByCategory(
+    /** 외부 HOF 호출 없이 계정에서 코드까지 확인한 맵과 현재 visible 미해결 맵 tree를 조회한다. */
+    fun findObservedByCategory(
         accountId: Long,
         categoryId: String,
     ): List<HofBattleMap> =
-        transactionService.findVisibleByCategory(accountId, categoryId)
+        transactionService.findObservedByCategory(accountId, categoryId)
 
     companion object {
         private val SYNCHRONIZATION_LOCK = ReentrantLock(true)
@@ -91,8 +91,8 @@ class BattleMapCatalogTransactionService(
         val now = timeProvider.now()
         val index = preloadIndex(account.id, categoryId)
         if (observations.isEmpty()) {
-            return assembleVisibleTree(
-                states = index.states().filter(AccountBattleMapStateEntity::visible),
+            return assembleObservedTree(
+                states = index.states(),
                 unresolved = index.unresolvedRows().filter(UnresolvedBattleMapEntity::visible),
                 now = now,
             )
@@ -119,8 +119,8 @@ class BattleMapCatalogTransactionService(
 
         stateRepository.flush()
         unresolvedRepository.flush()
-        val result = assembleVisibleTree(
-            states = index.states().filter(AccountBattleMapStateEntity::visible),
+        val result = assembleObservedTree(
+            states = index.states(),
             unresolved = index.unresolvedRows().filter(UnresolvedBattleMapEntity::visible),
             now = now,
         )
@@ -134,13 +134,17 @@ class BattleMapCatalogTransactionService(
         return result
     }
 
-    /** 원본 호출 없이 DB에 현재 보이는 계정별 맵 트리를 조회한다. */
+    /** 원본 호출 없이 DB에 저장된 resolved 이력과 현재 visible 미해결 맵 트리를 조회한다. */
     @Transactional(readOnly = true)
-    fun findVisibleByCategory(
+    fun findObservedByCategory(
         accountId: Long,
         categoryId: String,
     ): List<HofBattleMap> =
-        loadVisibleTree(accountId, categoryId, timeProvider.now())
+        assembleObservedTree(
+            states = queryRepository.findStatesByAccountIdAndCategoryId(accountId, categoryId),
+            unresolved = queryRepository.findVisibleUnresolvedByAccountIdAndCategoryId(accountId, categoryId),
+            now = timeProvider.now(),
+        )
 
     private fun preloadIndex(
         accountId: Long,
@@ -333,17 +337,7 @@ class BattleMapCatalogTransactionService(
             ?.let(unresolvedRepository::delete)
     }
 
-    private fun loadVisibleTree(
-        accountId: Long,
-        categoryId: String,
-        now: Instant,
-    ): List<HofBattleMap> {
-        val states = queryRepository.findVisibleStatesByAccountIdAndCategoryId(accountId, categoryId)
-        val unresolved = queryRepository.findVisibleUnresolvedByAccountIdAndCategoryId(accountId, categoryId)
-        return assembleVisibleTree(states, unresolved, now)
-    }
-
-    private fun assembleVisibleTree(
+    private fun assembleObservedTree(
         states: List<AccountBattleMapStateEntity>,
         unresolved: List<UnresolvedBattleMapEntity>,
         now: Instant,

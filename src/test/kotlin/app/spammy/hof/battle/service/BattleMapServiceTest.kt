@@ -316,7 +316,7 @@ class BattleMapServiceTest {
     }
 
     @Test
-    fun marksOnlyRefreshingAccountsStaleStateInvisibleWithoutDeletingStaticCatalog() {
+    fun keepsPreviouslyObservedResolvedMapsInTheCatalogButDisablesThem() {
         val firstAccount = savedAccount("battle-map-state-first")
         val secondAccount = savedAccount("battle-map-state-second")
         gateway.defaultBody = directAdventureHtml(sharedCount = 3, includeStale = true)
@@ -327,7 +327,9 @@ class BattleMapServiceTest {
         gateway.defaultBody = directAdventureHtml(sharedCount = 1, includeStale = false)
         val refreshed = service.findMaps(firstAccount.id, ADVENTURE)
 
-        assertEquals(listOf("shared01"), refreshed.map { it.mapCode })
+        assertEquals(listOf("shared01", "stale01"), refreshed.map { it.mapCode })
+        assertTrue(refreshed.single { it.mapCode == "shared01" }.enabled)
+        assertFalse(refreshed.single { it.mapCode == "stale01" }.enabled)
         val staleMap = assertNotNull(queryRepository.findMapByCategoryIdAndMapCode(ADVENTURE, "stale01"))
         val staleState = assertNotNull(queryRepository.findStateByAccountIdAndMapId(firstAccount.id, staleMap.id))
         assertFalse(staleState.visible)
@@ -338,6 +340,9 @@ class BattleMapServiceTest {
         assertEquals(1, queryRepository.findStateByAccountIdAndMapId(firstAccount.id, sharedMap.id)?.availableCount)
         assertEquals(7, queryRepository.findStateByAccountIdAndMapId(secondAccount.id, sharedMap.id)?.availableCount)
         assertTrue(assertNotNull(queryRepository.findStateByAccountIdAndMapId(secondAccount.id, sharedMap.id)).visible)
+
+        gateway.defaultBody = directAdventureHtml(sharedCount = 7, includeStale = false)
+        assertEquals(listOf("shared01"), service.findMaps(secondAccount.id, ADVENTURE).map { it.mapCode })
     }
 
     @Test
