@@ -28,6 +28,7 @@ import app.spammy.hof.party.entity.*
 import app.spammy.hof.character.entity.*
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.test.assertFailsWith
 import org.springframework.jdbc.datasource.DataSourceTransactionManager
@@ -134,6 +135,7 @@ class TypedLiveAutomationSnapshotLoaderTest {
             battleMap = liveMap,
             keyMode = BattleMapKeyMode.UNLIMITED,
             keyCount = null,
+            supportsThreeBattles = true,
             rawHref = "index.php?common=qmap",
             lastSeenAt = now,
         )
@@ -153,13 +155,14 @@ class TypedLiveAutomationSnapshotLoaderTest {
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(questEntry, battleEntry, adventureEntry))
         Mockito.`when`(typed.findQuestSelectionsByEntryIds(listOf(10))).thenReturn(listOf(selection))
         Mockito.`when`(typed.findQuestMaps(listOf(20))).thenReturn(listOf(QuestAutomationMapEntity(21, selection, "m", "battle_map", "qmap", PresetSelectionMode.PRIMARY, null, 0, true)))
-        Mockito.`when`(typed.findBattleSettingsByEntryIds(listOf(11))).thenReturn(listOf(BattleAutomationMapEntity(22, battleEntry, "battle_map", "bmap", 1, PresetSelectionMode.PRIMARY, null, 0)))
+        Mockito.`when`(typed.findBattleSettingsByEntryIds(listOf(11))).thenReturn(listOf(BattleAutomationMapEntity(22, battleEntry, "battle_map", "qmap", 10, PresetSelectionMode.PRIMARY, null, 0)))
         Mockito.`when`(typed.findAdventureSettingsByEntryIds(listOf(12))).thenReturn(listOf(AdventureAutomationMapEntity(23, adventureEntry, "adventure_map", "amap", PresetSelectionMode.EXPLICIT, explicitX, 0)))
         Mockito.`when`(quest.load(7, HofRequestOrigin.AUTOMATION)).thenReturn(emptyList())
         Mockito.`when`(mapQuery.findAllStatesForExecution(7)).thenReturn(listOf(liveState))
         liveMap.requiredTime = 75
         Mockito.`when`(status.findLatest(7)).thenReturn(
-            HofObservedStatusResponse("player", 1L, 250, 6000, "Nothing", "Nothing", now.minusSeconds(30)),
+            HofObservedStatusResponse("player", 1L, 250, 6000, "Nothing", "Nothing", now.minusSeconds(50)),
+            HofObservedStatusResponse("player", 1L, 249, 6000, "Nothing", "Nothing", now.minusSeconds(50)),
         )
         Mockito.`when`(presets.findAllByAccountId(7)).thenReturn(listOf(primaryA, primaryB, explicitX))
         Mockito.`when`(presets.findPrimaryByAccountId(7)).thenReturn(primaryA, primaryA, primaryB, primaryB)
@@ -179,13 +182,25 @@ class TypedLiveAutomationSnapshotLoaderTest {
         assertEquals(BattleMapKeyMode.UNLIMITED, firstQuest.mapStates.single().keyMode)
         assertEquals("qmap", firstQuest.mapStates.single().mapCode)
         assertEquals("Live map", firstQuest.mapStates.single().mapName)
-        val expectedTime = AutomationTimeSnapshot(250, 6000, now.minusSeconds(30))
-        assertEquals(expectedTime, firstQuest.timeSnapshot)
+        val firstTime = AutomationTimeSnapshot(250, 6000, now.minusSeconds(50))
+        val secondTime = AutomationTimeSnapshot(249, 6000, now.minusSeconds(50))
+        assertEquals(firstTime, firstQuest.timeSnapshot)
+        assertEquals(secondTime, secondQuest.timeSnapshot)
         assertEquals(75, firstQuest.mapStates.single().requiredTime)
         assertEquals("qmap", firstQuest.selections.single().maps.single().mapCode)
         assertEquals(BattleMapKeyMode.UNLIMITED, firstBattle.mapStates.single().keyMode)
         assertEquals("Live map", firstBattle.mapStates.single().mapName)
-        assertEquals(expectedTime, firstBattle.timeSnapshot)
+        assertEquals(firstTime, firstBattle.timeSnapshot)
+        assertEquals(secondTime, secondBattle.timeSnapshot)
+        val battleHandler = BattleMapAutomationHandler(Mockito.mock(BattleMapAutomationProgressStore::class.java))
+        val firstAction = assertIs<BattleMapAutomationAction>(
+            assertIs<HandlerEvaluation.Runnable>(battleHandler.evaluate(firstBattle)).action,
+        )
+        val secondAction = assertIs<BattleMapAutomationAction>(
+            assertIs<HandlerEvaluation.Runnable>(battleHandler.evaluate(secondBattle)).action,
+        )
+        assertEquals(3, firstAction.battleCount)
+        assertEquals(1, secondAction.battleCount)
         assertEquals(101, firstBattle.primaryPresetId); assertEquals(102, secondBattle.primaryPresetId)
         assertNotEquals(firstBattle.executionIdentity, secondBattle.executionIdentity)
         assertTrue(firstBattle.executionIdentity.isNotBlank() && firstBattle.executionIdentity.length <= 128)
@@ -197,7 +212,8 @@ class TypedLiveAutomationSnapshotLoaderTest {
         assertEquals((0..4).map { "X-$it" }, secondResolution.resolvedParty?.characterIds)
         assertEquals(BattleMapKeyMode.UNLIMITED, firstAdventure.mapStates.single().keyMode)
         assertEquals("Live map", firstAdventure.mapStates.single().mapName)
-        assertEquals(expectedTime, firstAdventure.timeSnapshot)
+        assertEquals(firstTime, firstAdventure.timeSnapshot)
+        assertEquals(secondTime, secondAdventure.timeSnapshot)
         assertEquals(75, firstAdventure.mapStates.single().requiredTime)
         assertEquals(firstAdventure.executionIdentities.getValue(23), firstAdventure.executionIdentities.getValue(23))
         assertNotEquals(firstAdventure.executionIdentities.getValue(23), secondAdventure.executionIdentities.getValue(23))
