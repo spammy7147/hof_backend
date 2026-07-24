@@ -13,10 +13,6 @@ import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 
-class AutomationWorkConfigurationChangedException : RuntimeException(
-    "Automation configuration changed while a work session was parked.",
-)
-
 fun interface AutomationWorkTracker {
     fun ensureForAction(
         accountId: Long,
@@ -36,6 +32,12 @@ interface AutomationWorkLifecycle {
     fun waitForCooldown(accountId: Long, sessionId: Long, nextCheckAt: java.time.Instant)
     fun complete(accountId: Long, sessionId: Long)
     fun completeAdventureAction(accountId: Long, entryId: Long, categoryId: String, mapCode: String)
+    fun stopForConfigurationChange(
+        accountId: Long,
+        entryId: Long,
+        targetKeys: Set<String>,
+        wholeEntry: Boolean,
+    )
 }
 
 @Service
@@ -46,23 +48,12 @@ class AutomationWorkSessionService(
     private val timeProvider: TimeProvider,
     private val properties: AutomationSessionProperties = AutomationSessionProperties(),
 ) : AutomationWorkTracker, AutomationWorkLifecycle {
-    @Transactional(
-        propagation = Propagation.REQUIRES_NEW,
-        noRollbackFor = [AutomationWorkConfigurationChangedException::class],
-    )
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     override fun resumeForCheck(accountId: Long, sessionId: Long) {
         requireRunningRuntime(accountId)
         val session = requireSession(accountId, sessionId)
-        val entry = typed.findEntry(accountId, session.entry.id)
+        typed.findEntry(accountId, session.entry.id)
             ?: throw AutomationConfigurationException("Automation entry ${session.entry.id} is missing.")
-        if (session.configVersion != entry.updatedAt.toString()) {
-            val now = timeProvider.now()
-            session.status = AutomationWorkStatus.STOPPED
-            session.finishedAt = now
-            session.updatedAt = now
-            commands.save(session)
-            throw AutomationWorkConfigurationChangedException()
-        }
         require(
             session.status == AutomationWorkStatus.YIELDED_PRIORITY ||
                 session.status == AutomationWorkStatus.WAITING_COOLDOWN ||
@@ -268,32 +259,23 @@ class AutomationWorkSessionService(
         commands.save(session)
     }
 
-    @Transactional(
-        propagation = Propagation.REQUIRES_NEW,
-        noRollbackFor = [AutomationWorkConfigurationChangedException::class],
-    )
-    fun resume(accountId: Long, sessionId: Long, configVersion: String): AutomationWorkSessionEntity {
-        requireRunningRuntime(accountId)
-        val session = requireSession(accountId, sessionId)
-        if (session.configVersion != configVersion) {
-            val now = timeProvider.now()
-            session.status = AutomationWorkStatus.STOPPED
-            session.finishedAt = now
-            session.updatedAt = now
-            commands.save(session)
-            throw AutomationWorkConfigurationChangedException()
-        }
-        require(
-            session.status == AutomationWorkStatus.YIELDED_PRIORITY ||
-                session.status == AutomationWorkStatus.WAITING_COOLDOWN ||
-                session.status == AutomationWorkStatus.WAITING_RESOURCE,
-        ) { "Only a parked work session may be resumed." }
-        session.status = AutomationWorkStatus.RUNNING
-        session.nextCheckAt = null
-        session.finishedAt = null
-        session.updatedAt = timeProvider.now()
-        commands.save(session)
-        return session
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    override fun stopForConfigurationChange(
+        accountId: Long,
+        entryId: Long,
+        targetKeys: Set<String>,
+        wholeEntry: Boolean,
+    ) {
+        val now = timeProvider.now()
+        queries.lockOpen(accountId)
+            .filter { it.entry.id == entryId && (wholeEntry || it.targetKey in targetKeys) }
+            .forEach { session ->
+                session.status = AutomationWorkStatus.STOPPED
+                session.nextCheckAt = null
+                session.finishedAt = now
+                session.updatedAt = now
+                commands.save(session)
+            }
     }
 
     private fun requireRunningRuntime(accountId: Long) {

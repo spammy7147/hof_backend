@@ -45,6 +45,7 @@ class UnifiedAutomationService(
     private val automationOutboxService: AutomationOutboxService,
     private val storedActionCodec: StoredTypedAutomationActionCodec,
     private val hofStatusSnapshots: HofStatusSnapshotService,
+    private val workLifecycle: AutomationWorkLifecycle,
 ) {
     @Transactional(readOnly = true)
     fun getTyped(accountId: Long): TypedAutomationAggregateResponse {
@@ -83,6 +84,7 @@ class UnifiedAutomationService(
         lockTypedAccount(accountId)
         val target = typedAutomationQueryRepository.findEntry(accountId, entryId)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "자동화 항목을 찾지 못했습니다.")
+        workLifecycle.stopForConfigurationChange(accountId, target.id, emptySet(), wholeEntry = true)
         typedEntryRepository.delete(target)
         typedEntryRepository.flush()
         val now = timeProvider.now()
@@ -130,6 +132,45 @@ class UnifiedAutomationService(
         val presets = validateMapAndPresetReferences(accountId, normalized.flatMap { it.maps }.map(::mapReference))
         val oldSelections = typedAutomationQueryRepository.findQuestSelections(entry.id)
         val oldMaps = typedAutomationQueryRepository.findQuestMaps(oldSelections.map { it.id })
+        val oldMapsBySelection = oldMaps.groupBy { it.questSelection.id }
+        val oldConfig = oldSelections.associate { selection ->
+            selection.questCode to QuestTargetConfig(
+                selection.enabled,
+                oldMapsBySelection[selection.id].orEmpty()
+                    .sortedBy { it.executionOrder }
+                    .map { map ->
+                        QuestMapTargetConfig(
+                            map.missionKey,
+                            map.categoryId,
+                            map.mapCode,
+                            map.presetMode,
+                            map.partyPreset?.id,
+                            map.manuallyOverridden,
+                        )
+                    },
+            )
+        }
+        val newConfig = normalized.associate { selection ->
+            selection.questCode to QuestTargetConfig(
+                selection.enabled,
+                selection.maps.map { map ->
+                    QuestMapTargetConfig(
+                        map.missionKey,
+                        map.categoryId,
+                        map.mapCode,
+                        map.presetMode,
+                        map.partyPresetId,
+                        map.manuallyOverridden,
+                    )
+                },
+            )
+        }
+        workLifecycle.stopForConfigurationChange(
+            accountId,
+            entry.id,
+            changedKeys(oldConfig, newConfig),
+            wholeEntry = entry.enabled && !request.enabled,
+        )
         if (oldMaps.isNotEmpty()) {
             typedQuestMapRepository.deleteAll(oldMaps)
             typedQuestMapRepository.flush()
@@ -191,6 +232,26 @@ class UnifiedAutomationService(
         }
         val presets = validateMapAndPresetReferences(accountId, normalized.map(::mapReference))
         val old = typedAutomationQueryRepository.findBattleSettings(entry.id)
+        val oldConfig = old.associate { setting ->
+            "${setting.categoryId}/${setting.mapCode}" to BattleTargetConfig(
+                setting.dailyTargetCount,
+                setting.presetMode,
+                setting.partyPreset?.id,
+            )
+        }
+        val newConfig = normalized.associate { setting ->
+            "${setting.categoryId}/${setting.mapCode}" to BattleTargetConfig(
+                setting.dailyTargetCount,
+                setting.presetMode,
+                setting.partyPresetId,
+            )
+        }
+        workLifecycle.stopForConfigurationChange(
+            accountId,
+            entry.id,
+            changedKeys(oldConfig, newConfig),
+            wholeEntry = entry.enabled && !request.enabled,
+        )
         if (old.isNotEmpty()) {
             typedBattleMapRepository.deleteAll(old)
             typedBattleMapRepository.flush()
@@ -235,6 +296,24 @@ class UnifiedAutomationService(
         }
         val presets = validateMapAndPresetReferences(accountId, normalized.map(::mapReference))
         val old = typedAutomationQueryRepository.findAdventureSettings(entry.id)
+        val oldConfig = old.associate { setting ->
+            "${setting.categoryId}/${setting.mapCode}" to AdventureTargetConfig(
+                setting.presetMode,
+                setting.partyPreset?.id,
+            )
+        }
+        val newConfig = normalized.associate { setting ->
+            "${setting.categoryId}/${setting.mapCode}" to AdventureTargetConfig(
+                setting.presetMode,
+                setting.partyPresetId,
+            )
+        }
+        workLifecycle.stopForConfigurationChange(
+            accountId,
+            entry.id,
+            changedKeys(oldConfig, newConfig),
+            wholeEntry = entry.enabled && !request.enabled,
+        )
         if (old.isNotEmpty()) {
             typedAdventureMapRepository.deleteAll(old)
             typedAdventureMapRepository.flush()
@@ -652,6 +731,34 @@ class UnifiedAutomationService(
     }
 
     private fun invalid(message: String): Nothing = throw ApiException(ErrorCode.INVALID_REQUEST, message)
+
+    private fun <T> changedKeys(old: Map<String, T>, new: Map<String, T>): Set<String> =
+        (old.keys + new.keys).filterTo(linkedSetOf()) { old[it] != new[it] }
+
+    private data class BattleTargetConfig(
+        val dailyTargetCount: Int,
+        val presetMode: PresetSelectionMode,
+        val presetId: Long?,
+    )
+
+    private data class AdventureTargetConfig(
+        val presetMode: PresetSelectionMode,
+        val presetId: Long?,
+    )
+
+    private data class QuestTargetConfig(
+        val enabled: Boolean,
+        val maps: List<QuestMapTargetConfig>,
+    )
+
+    private data class QuestMapTargetConfig(
+        val missionKey: String,
+        val categoryId: String,
+        val mapCode: String,
+        val presetMode: PresetSelectionMode,
+        val presetId: Long?,
+        val manuallyOverridden: Boolean,
+    )
 
     private fun invalid(message: String, cause: Throwable): Nothing =
         throw ApiException(ErrorCode.INVALID_REQUEST, message, cause)
