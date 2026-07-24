@@ -66,6 +66,8 @@ class TypedAutomationRuntimeService(
             stopState(state, AutomationStopReason.NETWORK, now, active.id)
             return TypedRuntimeClaim.AmbiguousRecovered("A submitted action lost its lease; outcome is ambiguous.")
         }
+        state.nextAttemptAt = null
+        state.waitReason = null
         val token = UUID.randomUUID().toString()
         state.leaseToken = token
         state.leaseUntil = now.plus(LEASE_DURATION)
@@ -134,6 +136,7 @@ class TypedAutomationRuntimeService(
         action.updatedAt = now
 
         state.nextAttemptAt = retryAt
+        state.waitReason = AutomationWaitReason.HOF_CONNECTION
         state.leaseToken = null
         state.leaseUntil = null
         state.lastError = diagnostic
@@ -186,39 +189,68 @@ class TypedAutomationRuntimeService(
             stopState(state, AutomationStopReason.NETWORK, now)
             return null
         }
-        return now.plusSeconds(RETRY_SECONDS[state.retryAttempt - 1]).also { state.nextAttemptAt = it }
+        return now.plusSeconds(RETRY_SECONDS[state.retryAttempt - 1]).also {
+            state.nextAttemptAt = it
+            state.waitReason = AutomationWaitReason.HOF_CONNECTION
+        }
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun deferUntil(accountId: Long, retryAt: Instant): Boolean {
+    fun deferUntil(
+        accountId: Long,
+        retryAt: Instant,
+        reason: AutomationWaitReason = AutomationWaitReason.SCHEDULED,
+    ): Boolean {
         val state = queryRepository.lockRuntimeState(accountId)
             ?.takeIf { it.lifecycleStatus == TypedAutomationLifecycle.RUNNING }
             ?: return false
         state.nextAttemptAt = retryAt
+        state.waitReason = reason
         state.updatedAt = timeProvider.now()
         return true
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun release(accountId: Long, token: String, nextRunAt: Instant? = null): Boolean {
-        return releaseCore(accountId, token, nextRunAt, emptyList())
+    fun release(
+        accountId: Long,
+        token: String,
+        nextRunAt: Instant? = null,
+        waitReason: AutomationWaitReason? = null,
+    ): Boolean {
+        return releaseCore(accountId, token, nextRunAt, waitReason, emptyList())
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun releaseWithDiagnostics(accountId: Long, token: String, nextRunAt: Instant?, warnings: List<String>): Boolean {
-        return releaseCore(accountId, token, nextRunAt, warnings)
+        return releaseCore(
+            accountId,
+            token,
+            nextRunAt,
+            nextRunAt?.let { AutomationWaitReason.SCHEDULED },
+            warnings,
+        )
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun releaseAndEnqueueWake(accountId: Long, token: String, reason: String): Boolean {
-        val released = releaseCore(accountId, token, null, emptyList())
+        val released = releaseCore(accountId, token, null, null, emptyList())
         if (released) outbox.enqueue(accountId, reason)
         return released
     }
 
-    private fun releaseCore(accountId: Long, token: String, nextRunAt: Instant?, warnings: List<String>): Boolean {
+    private fun releaseCore(
+        accountId: Long,
+        token: String,
+        nextRunAt: Instant?,
+        waitReason: AutomationWaitReason?,
+        warnings: List<String>,
+    ): Boolean {
+        require((nextRunAt == null) == (waitReason == null)) {
+            "nextRunAt and waitReason must either both be null or both be present."
+        }
         val state = fencedState(accountId, token) ?: return false
-        state.leaseToken = null; state.leaseUntil = null; state.nextAttemptAt = nextRunAt; state.updatedAt = timeProvider.now()
+        state.leaseToken = null; state.leaseUntil = null; state.nextAttemptAt = nextRunAt; state.waitReason = waitReason
+        state.updatedAt = timeProvider.now()
         state.warningText = warnings.takeIf { it.isNotEmpty() }?.joinToString("\n") { sanitizeDiagnostic(it) }
         state.lastError = null
         return true
@@ -228,7 +260,8 @@ class TypedAutomationRuntimeService(
     fun deferForConfiguration(accountId: Long, token: String, warnings: List<String>): Instant? {
         val state = fencedState(accountId, token) ?: return null
         val next = timeProvider.now().plus(CONFIG_RECHECK)
-        state.leaseToken = null; state.leaseUntil = null; state.nextAttemptAt = next; state.updatedAt = timeProvider.now()
+        state.leaseToken = null; state.leaseUntil = null; state.nextAttemptAt = next
+        state.waitReason = AutomationWaitReason.SCHEDULED; state.updatedAt = timeProvider.now()
         state.warningText = warnings.joinToString("\n") { sanitizeDiagnostic(it) }
         state.lastError = null
         return next
@@ -248,7 +281,8 @@ class TypedAutomationRuntimeService(
         if (action.account.id != accountId || action.leaseToken != token || action.status != TypedAutomationActionStatus.SUBMITTING) return false
         val now = timeProvider.now()
         action.status = status; action.lastError = error; action.finishedAt = now; action.updatedAt = now
-        state.retryAttempt = 0; state.nextAttemptAt = null; state.leaseToken = null; state.leaseUntil = null; state.updatedAt = now
+        state.retryAttempt = 0; state.nextAttemptAt = null; state.waitReason = null
+        state.leaseToken = null; state.leaseUntil = null; state.updatedAt = now
         state.warningText = null; state.lastError = null
         state.stopActionId = null
         return true
@@ -265,7 +299,8 @@ class TypedAutomationRuntimeService(
     ) {
         state.lifecycleStatus = TypedAutomationLifecycle.STOPPED; state.stopReason = reason.name
         state.stopActionId = stopActionId
-        state.nextAttemptAt = null; state.leaseToken = null; state.leaseUntil = null; state.updatedAt = now
+        state.nextAttemptAt = null; state.waitReason = null
+        state.leaseToken = null; state.leaseUntil = null; state.updatedAt = now
     }
 
     private fun sanitizeDiagnostic(value: String): String = value

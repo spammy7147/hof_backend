@@ -100,6 +100,7 @@ class TypedAutomationRuntimeServiceTest {
 
         assertEquals(TypedAutomationLifecycle.RUNNING, state.lifecycleStatus)
         assertEquals(retryAt, state.nextAttemptAt)
+        assertEquals(AutomationWaitReason.HOF_CONNECTION, state.waitReason)
         assertNull(state.leaseToken)
         assertEquals("password=[redacted] 503", state.lastError)
         assertEquals(TypedAutomationActionStatus.PREPARED, action.status)
@@ -185,6 +186,7 @@ class TypedAutomationRuntimeServiceTest {
         service.scheduleSafeRetry(7, "token", "password=secret\nnetwork failed")
 
         assertEquals("password=[redacted] network failed", state.lastError)
+        assertEquals(AutomationWaitReason.HOF_CONNECTION, state.waitReason)
         assertNull(state.leaseToken)
         state.leaseToken = "token"
         state.leaseUntil = now.plusSeconds(300)
@@ -193,8 +195,29 @@ class TypedAutomationRuntimeServiceTest {
 
         assertEquals(now.plusSeconds(300), next)
         assertEquals(next, state.nextAttemptAt)
+        assertEquals(AutomationWaitReason.SCHEDULED, state.waitReason)
         assertNull(state.leaseToken)
         assertTrue(requireNotNull(state.warningText).contains("missing primary"))
+    }
+
+    @Test
+    fun `normal schedules are labeled and due claim clears stale wait metadata`() {
+        val state = state().apply {
+            leaseToken = "token"
+            leaseUntil = now.plusSeconds(300)
+        }
+        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
+
+        val scheduledAt = now.plusSeconds(300)
+        assertTrue(service.releaseWithDiagnostics(7, "token", scheduledAt, emptyList()))
+        assertEquals(scheduledAt, state.nextAttemptAt)
+        assertEquals(AutomationWaitReason.SCHEDULED, state.waitReason)
+
+        now = scheduledAt
+        Mockito.`when`(query.findActiveTypedAction(7)).thenReturn(null)
+        assertIs<TypedRuntimeClaim.Acquired>(service.claim(7))
+        assertNull(state.nextAttemptAt)
+        assertNull(state.waitReason)
     }
 
     private fun state() = TypedAutomationRuntimeStateEntity(7, account, TypedAutomationLifecycle.RUNNING, createdAt = now, updatedAt = now)

@@ -59,6 +59,8 @@ class TypedAutomationLifecycleBridge(
                 it.lifecycleStatus = TypedAutomationLifecycle.PAUSED
                 it.stopReason = null
                 it.stopActionId = null
+                it.nextAttemptAt = null
+                it.waitReason = null
                 it.leaseToken = null
                 it.leaseUntil = null
                 it.updatedAt = timeProvider.now()
@@ -114,6 +116,7 @@ class TypedAutomationLifecycleBridge(
             it.stopReason = reason.name
             it.stopActionId = null
             it.nextAttemptAt = null
+            it.waitReason = null
             it.leaseToken = null
             it.leaseUntil = null
             it.updatedAt = now
@@ -126,6 +129,7 @@ class TypedAutomationLifecycleBridge(
         state.stopActionId = null
         state.retryAttempt = 0
         state.nextAttemptAt = null
+        state.waitReason = null
         state.leaseToken = null
         state.leaseUntil = null
         state.warningText = null
