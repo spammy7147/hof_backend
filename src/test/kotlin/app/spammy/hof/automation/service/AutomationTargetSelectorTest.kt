@@ -3,10 +3,10 @@ package app.spammy.hof.automation.service
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.AutomationType
-import app.spammy.hof.automation.entity.AutomationWorkSessionEntity
 import app.spammy.hof.automation.entity.AutomationWorkStatus
 import app.spammy.hof.automation.entity.AutomationWorkType
 import app.spammy.hof.automation.repository.AutomationWorkSessionQueryRepository
+import app.spammy.hof.automation.repository.AutomationWorkSessionView
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.quest.model.QuestMission
@@ -55,17 +55,7 @@ class AutomationTargetSelectorTest {
 
     @Test
     fun `running quest session stays sticky to its target`() {
-        val session = AutomationWorkSessionEntity(
-            id = 21,
-            account = account,
-            entry = questEntry,
-            workType = AutomationWorkType.QUEST,
-            targetKey = "quest-1",
-            status = AutomationWorkStatus.RUNNING,
-            configVersion = "config-v1",
-            createdAt = now,
-            updatedAt = now,
-        )
+        val session = session(21, questEntry, AutomationWorkType.QUEST, "quest-1", AutomationWorkStatus.RUNNING)
         val questSnapshot = AutomationCoordinatorEntry(10, AutomationType.QUEST)
         val action = QuestAction.Battle(
             questCode = "quest-1",
@@ -91,17 +81,7 @@ class AutomationTargetSelectorTest {
 
     @Test
     fun `incomplete material quest parks resource wait and releases lower priorities`() {
-        val session = AutomationWorkSessionEntity(
-            id = 21,
-            account = account,
-            entry = questEntry,
-            workType = AutomationWorkType.QUEST,
-            targetKey = "quest-1",
-            status = AutomationWorkStatus.RUNNING,
-            configVersion = "config-v1",
-            createdAt = now,
-            updatedAt = now,
-        )
+        val session = session(21, questEntry, AutomationWorkType.QUEST, "quest-1", AutomationWorkStatus.RUNNING)
         val quest = QuestSnapshot(
             questId = "quest-1",
             name = "재료 수집",
@@ -143,20 +123,16 @@ class AutomationTargetSelectorTest {
 
     @Test
     fun `map clear below optimistic target reuses session progress instead of refreshing quests`() {
-        val session = AutomationWorkSessionEntity(
+        val session = session(
             id = 25,
-            account = account,
             entry = questEntry,
             workType = AutomationWorkType.QUEST,
             targetKey = "quest-1",
             status = AutomationWorkStatus.RUNNING,
-            configVersion = "config-v1",
             missionKey = "clear-map",
             missionType = QuestMissionType.MAP_CLEAR.name,
             observedCurrent = 3,
             observedRequired = 5,
-            createdAt = now,
-            updatedAt = now,
         )
         val entrySnapshot = AutomationCoordinatorEntry(10, AutomationType.QUEST)
         val optimisticQuest = QuestSnapshot(
@@ -198,20 +174,16 @@ class AutomationTargetSelectorTest {
 
     @Test
     fun `authoritative map clear mismatch replaces optimistic progress before continuing`() {
-        val session = AutomationWorkSessionEntity(
+        val session = session(
             id = 26,
-            account = account,
             entry = questEntry,
             workType = AutomationWorkType.QUEST,
             targetKey = "quest-1",
             status = AutomationWorkStatus.RUNNING,
-            configVersion = "config-v1",
             missionKey = "clear-map",
             missionType = QuestMissionType.MAP_CLEAR.name,
             observedCurrent = 5,
             observedRequired = 5,
-            createdAt = now,
-            updatedAt = now,
         )
         val entrySnapshot = AutomationCoordinatorEntry(10, AutomationType.QUEST)
         val action = QuestAction.Battle(
@@ -238,17 +210,13 @@ class AutomationTargetSelectorTest {
 
     @Test
     fun `parked higher priority target is not probed before its next check`() {
-        val waiting = AutomationWorkSessionEntity(
+        val waiting = session(
             id = 27,
-            account = account,
             entry = questEntry,
             workType = AutomationWorkType.QUEST,
             targetKey = "quest-1",
             status = AutomationWorkStatus.WAITING_RESOURCE,
-            configVersion = "config-v1",
             nextCheckAt = now.plusSeconds(1800),
-            createdAt = now,
-            updatedAt = now,
         )
         val battleSnapshot = AutomationCoordinatorEntry(11, AutomationType.BATTLE_MAP)
         val battleAction = BattleMapAutomationAction(
@@ -275,17 +243,7 @@ class AutomationTargetSelectorTest {
 
     @Test
     fun `repeat quest waiting after completion is parked instead of completed`() {
-        val session = AutomationWorkSessionEntity(
-            id = 28,
-            account = account,
-            entry = questEntry,
-            workType = AutomationWorkType.QUEST,
-            targetKey = "quest-1",
-            status = AutomationWorkStatus.RUNNING,
-            configVersion = "config-v1",
-            createdAt = now,
-            updatedAt = now,
-        )
+        val session = session(28, questEntry, AutomationWorkType.QUEST, "quest-1", AutomationWorkStatus.RUNNING)
         val entrySnapshot = AutomationCoordinatorEntry(
             id = 10,
             type = AutomationType.QUEST,
@@ -322,4 +280,32 @@ class AutomationTargetSelectorTest {
         Mockito.verify(lifecycle).waitForUnknownCooldown(7, 28)
         Mockito.verify(lifecycle, Mockito.never()).complete(7, 28)
     }
+
+    private fun session(
+        id: Long,
+        entry: AutomationEntryEntity,
+        workType: AutomationWorkType,
+        targetKey: String,
+        status: AutomationWorkStatus,
+        missionKey: String? = null,
+        missionType: String? = null,
+        observedCurrent: Int? = null,
+        observedRequired: Int? = null,
+        materialName: String? = null,
+        nextCheckAt: Instant? = null,
+    ) = AutomationWorkSessionView(
+        id = id,
+        accountId = account.id,
+        entryId = entry.id,
+        entryPriority = entry.priority,
+        workType = workType,
+        targetKey = targetKey,
+        status = status,
+        missionKey = missionKey,
+        missionType = missionType,
+        observedCurrent = observedCurrent,
+        observedRequired = observedRequired,
+        materialName = materialName,
+        nextCheckAt = nextCheckAt,
+    )
 }

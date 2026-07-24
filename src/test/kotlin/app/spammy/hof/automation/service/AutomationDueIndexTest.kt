@@ -8,6 +8,7 @@ import app.spammy.hof.automation.entity.AutomationWorkStatus
 import app.spammy.hof.automation.entity.AutomationWorkType
 import app.spammy.hof.automation.repository.AutomationWorkSessionCommandRepository
 import app.spammy.hof.automation.repository.AutomationWorkSessionQueryRepository
+import app.spammy.hof.automation.repository.AutomationWorkSessionView
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -46,7 +47,25 @@ class AutomationDueIndexTest {
     @Test
     fun `due query maps persistent sessions to targets`() {
         session.nextCheckAt = now
-        Mockito.`when`(queries.findDue(now, 100)).thenReturn(listOf(session))
+        Mockito.`when`(queries.findDue(now, 100)).thenReturn(
+            listOf(
+                AutomationWorkSessionView(
+                    id = session.id,
+                    accountId = account.id,
+                    entryId = entry.id,
+                    entryPriority = entry.priority,
+                    workType = session.workType,
+                    targetKey = session.targetKey,
+                    status = session.status,
+                    missionKey = null,
+                    missionType = null,
+                    observedCurrent = null,
+                    observedRequired = null,
+                    materialName = null,
+                    nextCheckAt = now,
+                ),
+            ),
+        )
 
         assertEquals(
             listOf(AutomationDueTarget(7, 21, AutomationWorkType.QUEST, "quest-1")),

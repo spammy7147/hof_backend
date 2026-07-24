@@ -50,7 +50,7 @@ class AutomationExecutionSignalService(
             return false
         }
         val now = timeProvider.now()
-        val higherWaits = queries.findWaiting(accountId).filter { it.entry.priority < running.entry.priority }
+        val higherWaits = queries.findWaiting(accountId).filter { it.entryPriority < running.entryPriority }
         val relatedMaterialWaits = higherWaits
             .asSequence()
             .filter { it.status == AutomationWorkStatus.WAITING_RESOURCE }
@@ -62,7 +62,7 @@ class AutomationExecutionSignalService(
             .toList()
         val relatedMaterial = relatedMaterialWaits.isNotEmpty()
         val higherDue = higherWaits.any { it.nextCheckAt?.let { due -> !due.isAfter(now) } == true }
-        val questChanged = running.entry.priority > 0 && questTexts.any(String::isNotBlank)
+        val questChanged = running.entryPriority > 0 && questTexts.any(String::isNotBlank)
         if (!relatedMaterial && !higherDue && !questChanged) return false
         relatedMaterialWaits.forEach { lifecycle.triggerCheck(accountId, it.id) }
         return lifecycle.yieldForPriority(accountId, running.id)

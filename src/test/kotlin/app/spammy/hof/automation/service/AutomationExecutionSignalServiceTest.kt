@@ -7,6 +7,7 @@ import app.spammy.hof.automation.entity.AutomationWorkSessionEntity
 import app.spammy.hof.automation.entity.AutomationWorkStatus
 import app.spammy.hof.automation.entity.AutomationWorkType
 import app.spammy.hof.automation.repository.AutomationWorkSessionQueryRepository
+import app.spammy.hof.automation.repository.AutomationWorkSessionView
 import app.spammy.hof.common.time.TimeProvider
 import java.time.Instant
 import kotlin.test.Test
@@ -31,9 +32,10 @@ class AutomationExecutionSignalServiceTest {
     @Test
     fun `matching material loot yields running battle map after its response`() {
         val running = session(21, battleEntry, AutomationWorkType.BATTLE_MAP, "battle_map/map", AutomationWorkStatus.RUNNING)
-        val waiting = session(22, questEntry, AutomationWorkType.QUEST, "quest-1", AutomationWorkStatus.WAITING_RESOURCE).apply {
-            materialName = "steel ingot"
-        }
+        val waiting = session(
+            22, questEntry, AutomationWorkType.QUEST, "quest-1", AutomationWorkStatus.WAITING_RESOURCE,
+            materialName = "steel ingot",
+        )
         Mockito.`when`(queries.findRunning(7)).thenReturn(running)
         Mockito.`when`(queries.findWaiting(7)).thenReturn(listOf(waiting))
         Mockito.`when`(lifecycle.yieldForPriority(7, 21)).thenReturn(true)
@@ -54,9 +56,10 @@ class AutomationExecutionSignalServiceTest {
     @Test
     fun `unrelated loot does not yield battle session`() {
         val running = session(21, battleEntry, AutomationWorkType.BATTLE_MAP, "battle_map/map", AutomationWorkStatus.RUNNING)
-        val waiting = session(22, questEntry, AutomationWorkType.QUEST, "quest-1", AutomationWorkStatus.WAITING_RESOURCE).apply {
-            materialName = "steel ingot"
-        }
+        val waiting = session(
+            22, questEntry, AutomationWorkType.QUEST, "quest-1", AutomationWorkStatus.WAITING_RESOURCE,
+            materialName = "steel ingot",
+        )
         Mockito.`when`(queries.findRunning(7)).thenReturn(running)
         Mockito.`when`(queries.findWaiting(7)).thenReturn(listOf(waiting))
 
@@ -74,11 +77,12 @@ class AutomationExecutionSignalServiceTest {
 
     @Test
     fun `quest map clear records only terminal victories without yielding`() {
-        val running = session(23, questEntry, AutomationWorkType.QUEST, "quest-1", AutomationWorkStatus.RUNNING).apply {
-            missionType = app.spammy.hof.quest.model.QuestMissionType.MAP_CLEAR.name
-            observedCurrent = 3
-            observedRequired = 5
-        }
+        val running = session(
+            23, questEntry, AutomationWorkType.QUEST, "quest-1", AutomationWorkStatus.RUNNING,
+            missionType = app.spammy.hof.quest.model.QuestMissionType.MAP_CLEAR.name,
+            observedCurrent = 3,
+            observedRequired = 5,
+        )
         Mockito.`when`(queries.findRunning(7)).thenReturn(running)
 
         assertFalse(
@@ -101,15 +105,23 @@ class AutomationExecutionSignalServiceTest {
         type: AutomationWorkType,
         targetKey: String,
         status: AutomationWorkStatus,
-    ) = AutomationWorkSessionEntity(
+        missionType: String? = null,
+        observedCurrent: Int? = null,
+        observedRequired: Int? = null,
+        materialName: String? = null,
+    ) = AutomationWorkSessionView(
         id = id,
-        account = account,
-        entry = entry,
+        accountId = account.id,
+        entryId = entry.id,
+        entryPriority = entry.priority,
         workType = type,
         targetKey = targetKey,
         status = status,
-        configVersion = "config-v1",
-        createdAt = now,
-        updatedAt = now,
+        missionKey = null,
+        missionType = missionType,
+        observedCurrent = observedCurrent,
+        observedRequired = observedRequired,
+        materialName = materialName,
+        nextCheckAt = null,
     )
 }

@@ -49,7 +49,7 @@ class DatabaseAutomationDueStore(
     @Transactional(readOnly = true, propagation = Propagation.REQUIRES_NEW)
     fun dueAtOrBefore(now: Instant, limit: Int = 100): List<AutomationDueTarget> =
         queries.findDue(now, limit).map { session ->
-            AutomationDueTarget(session.account.id, session.id, session.workType, session.targetKey)
+            AutomationDueTarget(session.accountId, session.id, session.workType, session.targetKey)
         }
 }
 
@@ -68,4 +68,3 @@ class DatabaseAutomationDueIndex(
     override fun dueAtOrBefore(now: Instant, limit: Int): List<AutomationDueTarget> =
         store.dueAtOrBefore(now, limit)
 }
-

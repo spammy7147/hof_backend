@@ -83,7 +83,9 @@ class AutomationWorkSessionPersistenceTest {
         val persistedRunning = queries.findRunning(account.id)
 
         assertEquals(running.id, persistedRunning?.id)
-        assertEquals(12, persistedRunning?.confirmedCount)
+        assertEquals(account.id, persistedRunning?.accountId)
+        assertEquals(battleEntry.id, persistedRunning?.entryId)
+        assertEquals(1, persistedRunning?.entryPriority)
         assertEquals(
             listOf(AutomationWorkStatus.WAITING_RESOURCE, AutomationWorkStatus.WAITING_COOLDOWN),
             queries.findWaiting(account.id).map { it.status },

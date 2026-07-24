@@ -1,6 +1,7 @@
 package app.spammy.hof.automation.service
 
 import app.spammy.hof.automation.repository.AutomationWorkSessionQueryRepository
+import app.spammy.hof.automation.repository.AutomationWorkSessionView
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.quest.model.QuestMission
@@ -33,10 +34,10 @@ class AutomationTargetSelector(
 
     private fun selectSession(
         accountId: Long,
-        session: app.spammy.hof.automation.entity.AutomationWorkSessionEntity,
+        session: AutomationWorkSessionView,
     ): AutomationCoordination {
         val optimisticQuest = session.optimisticMapClearQuest()
-        val entry = loader.loadEntry(accountId, session.entry.id, session.targetKey, optimisticQuest)
+        val entry = loader.loadEntry(accountId, session.entryId, session.targetKey, optimisticQuest)
         return when (val result = coordinate(entry)) {
                 is AutomationCoordination.Runnable -> {
                     val battle = result.action as? QuestAction.Battle
@@ -91,7 +92,7 @@ class AutomationTargetSelector(
         val warnings = initialWarnings.toMutableList()
         var earliest: Instant? = null
         val now = timeProvider.now()
-        val waitsByEntry = work.findWaiting(accountId).groupBy { it.entry.id }
+        val waitsByEntry = work.findWaiting(accountId).groupBy { it.entryId }
         typed.findEntries(accountId)
             .asSequence()
             .filter { it.enabled }
@@ -130,7 +131,7 @@ class AutomationTargetSelector(
     private fun coordinate(entry: AutomationCoordinatorEntry): AutomationCoordination =
         coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(entry)))
 
-    private fun app.spammy.hof.automation.entity.AutomationWorkSessionEntity.optimisticMapClearQuest(): List<QuestSnapshot>? {
+    private fun AutomationWorkSessionView.optimisticMapClearQuest(): List<QuestSnapshot>? {
         val current = observedCurrent ?: return null
         val required = observedRequired ?: return null
         val mapMissionKey = missionKey ?: return null
