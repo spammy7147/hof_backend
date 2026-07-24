@@ -66,6 +66,30 @@ class AutomationWorkSessionServiceTest {
     }
 
     @Test
+    fun `matching adventure action completes its one battle work unit`() {
+        val adventureEntry = AutomationEntryEntity(12, account, AutomationType.ADVENTURE_MAP, 2, true, now, now)
+        val session = AutomationWorkSessionEntity(
+            id = 23,
+            account = account,
+            entry = adventureEntry,
+            workType = AutomationWorkType.ADVENTURE_MAP,
+            targetKey = "sp_hunt/map-1",
+            status = AutomationWorkStatus.RUNNING,
+            configVersion = "config-v1",
+            createdAt = now,
+            updatedAt = now,
+        )
+        Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
+        Mockito.`when`(queries.lockOpen(7)).thenReturn(listOf(session))
+
+        service.completeAdventureAction(7, 12, "sp_hunt", "map-1")
+
+        assertEquals(AutomationWorkStatus.COMPLETED, session.status)
+        assertEquals(now, session.finishedAt)
+        Mockito.verify(commands).save(session)
+    }
+
+    @Test
     fun `configuration mismatch stops stale session instead of resuming it`() {
         val session = battleSession(status = AutomationWorkStatus.YIELDED_PRIORITY, confirmedCount = 4)
         Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
