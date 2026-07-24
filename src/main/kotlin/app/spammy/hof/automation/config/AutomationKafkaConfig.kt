@@ -8,7 +8,7 @@ import org.springframework.kafka.core.ConsumerFactory
 import org.springframework.kafka.listener.ContainerProperties
 
 @Configuration
-@Profile("docker | kafka")
+@Profile("dev | prod")
 class AutomationKafkaConfig {
     @Bean
     fun automationKafkaListenerFactory(

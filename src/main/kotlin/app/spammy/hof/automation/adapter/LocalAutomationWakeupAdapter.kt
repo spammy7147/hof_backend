@@ -15,7 +15,7 @@ import org.springframework.context.annotation.Profile
 import org.springframework.stereotype.Component
 
 @Component
-@Profile("!docker & !kafka")
+@Profile("test")
 class UnifiedAutomationLocalWakeExecutor(
     private val runner: UnifiedAutomationRunner,
 ) : LocalAutomationWakeExecutor {
@@ -25,7 +25,7 @@ class UnifiedAutomationLocalWakeExecutor(
 }
 
 @Component
-@Profile("!docker & !kafka")
+@Profile("test")
 class LocalAutomationWakeupAdapter(
     private val runnerProvider: ObjectProvider<UnifiedAutomationRunner>,
 ) : AutomationWakeupPort {

@@ -4,18 +4,17 @@ import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.automation.service.TypedAutomationRuntimeService
 import app.spammy.hof.automation.service.TypedCaptchaAutomationResumeService
 import app.spammy.hof.captcha.entity.CaptchaChallengeEntity
-import app.spammy.hof.push.service.PushOutboxService
 import java.time.Instant
 import kotlin.test.Test
 import org.mockito.Mockito
 import org.springframework.transaction.support.TransactionSynchronizationManager
 
 class CaptchaAutomationHookTest {
-    private val pushes = Mockito.mock(PushOutboxService::class.java)
+    private val notifications = Mockito.mock(CaptchaNotificationGateway::class.java)
     private val typedRuntime = Mockito.mock(TypedAutomationRuntimeService::class.java)
     private val typedResume = Mockito.mock(TypedCaptchaAutomationResumeService::class.java)
     private val hook = CaptchaAutomationHook(
-        pushes,
+        notifications,
         typedRuntime,
         typedResume,
     )
@@ -27,7 +26,7 @@ class CaptchaAutomationHookTest {
 
         hook.detected(challenge)
 
-        Mockito.verify(pushes).enqueueCaptchaRequired(challenge.account, challenge.id)
+        Mockito.verify(notifications).captchaRequired(challenge.account, challenge.id)
     }
 
     @Test
@@ -37,7 +36,12 @@ class CaptchaAutomationHookTest {
 
         hook.detected(challenge)
 
-        Mockito.verifyNoInteractions(pushes)
+        Mockito.verifyNoInteractions(notifications)
+    }
+
+    @Test
+    fun `development gateway ignores captcha notification`() {
+        NoOpCaptchaNotificationGateway().captchaRequired(challenge().account, 91L)
     }
 
     @Test

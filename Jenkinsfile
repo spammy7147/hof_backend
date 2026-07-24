@@ -16,6 +16,7 @@ pipeline {
         GITHUB_CREDENTIAL_ID = 'SPAMMY-github-token'
         SSH_CREDENTIAL_ID = 'hof-deploy-ssh'
         ENV_FILE_CREDENTIAL_ID = 'hof-spammy-backend-env'
+        FIREBASE_CREDENTIAL_ID = 'hof-spammy-fcm'
         DEPLOY_TARGET = 'spammy@192.168.50.202'
         DEPLOY_HOST_IP = '192.168.50.202'
         SSH_KNOWN_HOSTS_FILE = "${WORKSPACE}/.jenkins/known_hosts"
@@ -44,6 +45,7 @@ pipeline {
                     env.IMAGE_TAG = "${BUILD_NUMBER}-${env.GIT_SHORT}"
                     env.IMAGE = "${IMAGE_REPOSITORY}:${env.IMAGE_TAG}"
                     env.REMOTE_ENV_FILE = "/tmp/hof-backend-env-${BUILD_NUMBER}"
+                    env.REMOTE_FIREBASE_FILE = "/tmp/hof-firebase-${BUILD_NUMBER}.json"
                 }
             }
         }
@@ -129,25 +131,35 @@ pipeline {
                         credentialsId: "${ENV_FILE_CREDENTIAL_ID}",
                         variable: 'HOF_ENV_FILE',
                     ),
+                    file(
+                        credentialsId: "${FIREBASE_CREDENTIAL_ID}",
+                        variable: 'HOF_FIREBASE_FILE',
+                    ),
                 ]) {
                         sh(script: '''#!/usr/bin/env bash
                             set -Eeuo pipefail
                             scp -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes \
                               -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
                               "$HOF_ENV_FILE" "$DEPLOY_TARGET:$REMOTE_ENV_FILE"
+                            scp -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes \
+                              -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
+                              "$HOF_FIREBASE_FILE" "$DEPLOY_TARGET:$REMOTE_FIREBASE_FILE"
                             ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes \
                               -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
                               "$DEPLOY_TARGET" \
-                              "IMAGE='$IMAGE' IMAGE_REPOSITORY='$IMAGE_REPOSITORY' CONTAINER_NAME='$CONTAINER_NAME' DEPLOY_HOST_IP='$DEPLOY_HOST_IP' HOST_PORT='$HOST_PORT' CONTAINER_PORT='$CONTAINER_PORT' REMOTE_ENV_FILE='$REMOTE_ENV_FILE' bash -s" <<'REMOTE_SCRIPT'
+                              "IMAGE='$IMAGE' IMAGE_REPOSITORY='$IMAGE_REPOSITORY' CONTAINER_NAME='$CONTAINER_NAME' DEPLOY_HOST_IP='$DEPLOY_HOST_IP' HOST_PORT='$HOST_PORT' CONTAINER_PORT='$CONTAINER_PORT' REMOTE_ENV_FILE='$REMOTE_ENV_FILE' REMOTE_FIREBASE_FILE='$REMOTE_FIREBASE_FILE' BUILD_NUMBER='$BUILD_NUMBER' bash -s" <<'REMOTE_SCRIPT'
                             set -Eeuo pipefail
 
                             rollback_name="${CONTAINER_NAME}-rollback"
                             had_previous=0
                             previous_image=''
                             previous_image_id=''
+                            previous_secret_path=''
+                            secret_dir="$HOME/.config/hof/secrets"
+                            secret_path="$secret_dir/firebase-service-account-${BUILD_NUMBER}.json"
 
-                            cleanup_env() {
-                                rm -f "$REMOTE_ENV_FILE"
+                            cleanup_transfers() {
+                                rm -f -- "$REMOTE_ENV_FILE" "$REMOTE_FIREBASE_FILE" "${secret_path}.tmp"
                             }
 
                             restore_previous() {
@@ -158,8 +170,12 @@ pipeline {
                                 fi
                             }
 
-                            trap cleanup_env EXIT
+                            trap cleanup_transfers EXIT
                             chmod 600 "$REMOTE_ENV_FILE"
+                            test -s "$REMOTE_FIREBASE_FILE"
+                            install -d -m 700 "$secret_dir"
+                            install -m 600 "$REMOTE_FIREBASE_FILE" "${secret_path}.tmp"
+                            mv -f "${secret_path}.tmp" "$secret_path"
 
                             if docker container inspect "$rollback_name" >/dev/null 2>&1; then
                                 if docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
@@ -174,6 +190,7 @@ pipeline {
                                 had_previous=1
                                 previous_image="$(docker container inspect --format '{{.Config.Image}}' "$CONTAINER_NAME")"
                                 previous_image_id="$(docker container inspect --format '{{.Image}}' "$CONTAINER_NAME")"
+                                previous_secret_path="$(docker container inspect --format '{{range .Mounts}}{{if eq .Destination "/run/secrets/firebase-service-account.json"}}{{.Source}}{{end}}{{end}}' "$CONTAINER_NAME")"
                                 docker stop "$CONTAINER_NAME" >/dev/null
                                 docker rename "$CONTAINER_NAME" "$rollback_name"
                             fi
@@ -182,9 +199,12 @@ pipeline {
                                 --name "$CONTAINER_NAME" \
                                 --publish "$DEPLOY_HOST_IP:$HOST_PORT:$CONTAINER_PORT" \
                                 --env-file "$REMOTE_ENV_FILE" \
+                                --mount "type=bind,src=$secret_path,dst=/run/secrets/firebase-service-account.json,readonly" \
+                                --env "GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/firebase-service-account.json" \
                                 --restart unless-stopped \
                                 "$IMAGE" >/dev/null; then
                                 restore_previous
+                                rm -f -- "$secret_path"
                                 exit 1
                             fi
 
@@ -202,6 +222,7 @@ pipeline {
                             if [ "$healthy" -ne 1 ]; then
                                 docker logs --tail 100 "$CONTAINER_NAME" || true
                                 restore_previous
+                                rm -f -- "$secret_path"
                                 exit 1
                             fi
 
@@ -211,6 +232,12 @@ pipeline {
                                 if [ "$previous_image" != "${IMAGE_REPOSITORY}:rollback" ]; then
                                     docker image rm "$previous_image" >/dev/null 2>&1 || true
                                 fi
+                            fi
+                            if [ -n "$previous_secret_path" ] && [ "$previous_secret_path" != "$secret_path" ]; then
+                                case "$previous_secret_path" in
+                                    "$secret_dir"/firebase-service-account-*.json) rm -f -- "$previous_secret_path" ;;
+                                    *) echo "Refusing to remove unexpected previous Firebase secret path" >&2 ;;
+                                esac
                             fi
                             docker image prune -f >/dev/null
 REMOTE_SCRIPT
@@ -226,7 +253,7 @@ REMOTE_SCRIPT
                 if (env.IMAGE?.trim()) {
                     sh 'docker image rm "$IMAGE" >/dev/null 2>&1 || true'
                 }
-                if (env.REMOTE_ENV_FILE?.trim()) {
+                if (env.REMOTE_ENV_FILE?.trim() || env.REMOTE_FIREBASE_FILE?.trim()) {
                     withCredentials([
                         sshUserPrivateKey(
                             credentialsId: "${SSH_CREDENTIAL_ID}",
@@ -237,7 +264,7 @@ REMOTE_SCRIPT
                             ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes \
                               -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
                               "$DEPLOY_TARGET" \
-                              "rm -f '$REMOTE_ENV_FILE'" >/dev/null 2>&1 || true
+                              "rm -f -- '$REMOTE_ENV_FILE' '$REMOTE_FIREBASE_FILE'" >/dev/null 2>&1 || true
                         '''
                     }
                 }

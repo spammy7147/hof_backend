@@ -1,22 +1,20 @@
 package app.spammy.hof.push.service
 
-import com.google.firebase.messaging.AndroidConfig
-import com.google.firebase.messaging.AndroidNotification
-import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.messaging.FirebaseMessagingException
-import com.google.firebase.messaging.Message
 import com.google.firebase.messaging.MessagingErrorCode
-import com.google.firebase.messaging.Notification
+import org.slf4j.LoggerFactory
 import org.springframework.context.annotation.Profile
 import org.springframework.stereotype.Service
 
 @Service
-@Profile("docker")
+@Profile("prod")
 class AndroidPushService(
-    private val firebaseMessaging: FirebaseMessaging,
+    private val sender: FirebaseAndroidMessageSender,
     private val queryRepository: app.spammy.hof.push.repository.DevicePushTargetQueryRepository,
     private val targetService: DevicePushTargetService,
 ) {
+    private val log = LoggerFactory.getLogger(javaClass)
+
     fun sendCaptchaRequired(accountId: Long, challengeId: Long) {
         send(
             accountId = accountId,
@@ -41,27 +39,37 @@ class AndroidPushService(
         body: String,
         data: Map<String, String>,
     ) {
-        queryRepository.findActiveByAccountId(accountId).forEach { target ->
-            val message = Message.builder()
-                .setToken(target.targetValue)
-                .setNotification(Notification.builder().setTitle(title).setBody(body).build())
-                .putAllData(data)
-                .setAndroidConfig(
-                    AndroidConfig.builder()
-                        .setNotification(AndroidNotification.builder().setChannelId(CHANNEL_ID).build())
-                        .build(),
-                )
-                .build()
+        val targets = queryRepository.findActiveByAccountId(accountId)
+        var sent = 0
+        var deactivated = 0
+        var transientFailures = 0
+        var firstTransientFailure: FirebaseMessagingException? = null
+        targets.forEach { target ->
             try {
-                firebaseMessaging.send(message)
+                sender.send(target.targetValue, title, body, data)
+                sent += 1
             } catch (error: FirebaseMessagingException) {
-                if (error.messagingErrorCode in PERMANENT_TOKEN_ERRORS) targetService.deactivate(target) else throw error
+                if (error.messagingErrorCode in PERMANENT_TOKEN_ERRORS) {
+                    targetService.deactivate(target)
+                    deactivated += 1
+                } else {
+                    transientFailures += 1
+                    if (firstTransientFailure == null) firstTransientFailure = error
+                }
             }
         }
+        log.info(
+            "Android push fan-out accountId={} activeTargets={} sent={} deactivated={} transientFailures={}",
+            accountId,
+            targets.size,
+            sent,
+            deactivated,
+            transientFailures,
+        )
+        firstTransientFailure?.let { throw it }
     }
 
     private companion object {
-        const val CHANNEL_ID = "automation-alerts"
         val PERMANENT_TOKEN_ERRORS = setOf(MessagingErrorCode.UNREGISTERED, MessagingErrorCode.INVALID_ARGUMENT)
     }
 }
