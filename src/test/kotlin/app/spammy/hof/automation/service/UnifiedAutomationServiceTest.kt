@@ -116,6 +116,27 @@ class UnifiedAutomationServiceTest {
     }
 
     @Test
+    fun `aggregate exposes the persisted wait reason`() {
+        val runtime = TypedAutomationRuntimeStateEntity(
+            ACCOUNT_ID,
+            account(),
+            TypedAutomationLifecycle.RUNNING,
+            nextAttemptAt = NOW.plusSeconds(30),
+            waitReason = AutomationWaitReason.HOF_CONNECTION,
+            createdAt = NOW,
+            updatedAt = NOW,
+        )
+        Mockito.`when`(accountQueryRepository.findById(ACCOUNT_ID)).thenReturn(account())
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(emptyList())
+        Mockito.`when`(typedQuery.findRuntimeState(ACCOUNT_ID)).thenReturn(runtime)
+
+        assertEquals(
+            AutomationWaitReason.HOF_CONNECTION,
+            service.getTyped(ACCOUNT_ID).runtime.waitReason,
+        )
+    }
+
+    @Test
     fun `entry type is a singleton and reorder requires every owned id`() {
         val quest = entry(91L, AutomationType.QUEST)
         val battle = entry(92L, AutomationType.BATTLE_MAP, priority = 1)

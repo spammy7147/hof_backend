@@ -417,6 +417,7 @@ class UnifiedAutomationService(
                 lifecycle = runtime?.lifecycleStatus ?: TypedAutomationLifecycle.STOPPED,
                 stopReason = runtime?.stopReason,
                 nextAttemptAt = runtime?.nextAttemptAt?.toString(),
+                waitReason = runtime?.waitReason,
                 warnings = (persistedWarnings + configWarnings).distinct(),
                 lastError = runtime?.lastError,
                 currentAction = currentAction,

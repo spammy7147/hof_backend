@@ -1,6 +1,7 @@
 package app.spammy.hof.automation.dto
 
 import app.spammy.hof.automation.entity.AutomationType
+import app.spammy.hof.automation.entity.AutomationWaitReason
 import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.automation.entity.TypedAutomationLifecycle
 import jakarta.validation.Valid
@@ -145,6 +146,7 @@ data class TypedAutomationRuntimeResponse(
     val lifecycle: TypedAutomationLifecycle,
     val stopReason: String? = null,
     val nextAttemptAt: String? = null,
+    val waitReason: AutomationWaitReason? = null,
     val warnings: List<String> = emptyList(),
     val lastError: String? = null,
     val currentAction: TypedAutomationCurrentActionResponse? = null,
