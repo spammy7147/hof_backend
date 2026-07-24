@@ -74,7 +74,10 @@ class BattleMapParser {
                     return@mapNotNull null
                 }
                 val parsedKey = parseKey(displayName)
-                val name = displayName.withoutKeySuffix().ifBlank { mapCode.orEmpty() }
+                val name = displayName
+                    .withoutKeySuffix()
+                    .withoutTrailingMapState()
+                    .ifBlank { mapCode.orEmpty() }
                 if (name.isBlank()) return@mapNotNull null
 
                 val isNewObservation = if (mapCode == null) {
@@ -424,6 +427,10 @@ class BattleMapParser {
     private fun String.withoutKeySuffix(): String =
         replace(KEY_ADVERTISEMENT_PATTERN, "").normalizedText()
 
+    /** 코드 없는 링크 이름 끝에 포함된 쿨다운과 Time 상태를 별칭 비교 전에 제거한다. */
+    private fun String.withoutTrailingMapState(): String =
+        replace(TRAILING_COOLDOWN_STATE_PATTERN, "").normalizedText()
+
     /**
      * mapgroupN id에서 그룹 순서를 읽는다.
      */
@@ -472,6 +479,10 @@ class BattleMapParser {
         val COOLDOWN_REMAINING_PATTERN =
             Regex("""\(\s*((?:([\d,]+)\s*시간(?:\s*([\d,]+)\s*분)?)|([\d,]+)\s*분)\s*\)\s*남음""")
         val COOLDOWN_ADVERTISEMENT_PATTERN = Regex("""\([^)]*(?:시간|분)[^)]*\)\s*남음""")
+        val TRAILING_COOLDOWN_STATE_PATTERN = Regex(
+            """\s*\(\s*(?:(?:[\d,]+\s*시간(?:\s*[\d,]+\s*분)?)|(?:[\d,]+\s*분))\s*\)\s*남음(?:\s*\([^)]*(?:Time|타임)[^)]*\))?\s*$""",
+            RegexOption.IGNORE_CASE,
+        )
         val ATTEMPT_ADVERTISEMENT_PATTERN = Regex("""도전[^)\r\n]*?회""")
         val WIN_ADVERTISEMENT_PATTERN = Regex("""승리[^)\r\n]*?회""")
         val REQUIRED_TIME_PATTERN =
