@@ -163,13 +163,14 @@ class BattleRunService(
         }
 
         sharedBattleCooldownParser.parse(battleResponse.body)?.let { notice ->
-            val retryAt = timeProvider.now().plusSeconds(notice.remainingSeconds)
             if (origin == HofRequestOrigin.AUTOMATION) {
+                val retryAt = timeProvider.now()
+                    .plusSeconds(notice.remainingSeconds + SHARED_COOLDOWN_SCHEDULING_BUFFER_SECONDS)
                 throw SharedBattleCooldownRejectedException(retryAt)
             }
             throw ApiException(
                 errorCode = ErrorCode.INVALID_REQUEST,
-                message = "대형 레이드 공유 쿨타임이 남아 있습니다.",
+                message = "1분 공유 쿨타임이 남아 있습니다.",
                 retryAfterSeconds = notice.remainingSeconds,
             )
         }
@@ -287,6 +288,9 @@ class BattleRunService(
             BattleCategoryId.RAID -> HofBattleType.RAID
         }
 
+    private companion object {
+        const val SHARED_COOLDOWN_SCHEDULING_BUFFER_SECONDS = 2L
+    }
 }
 
 class SharedBattleCooldownRejectedException(

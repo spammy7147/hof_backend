@@ -254,22 +254,35 @@ class BattleRunServiceTest {
     }
 
     @Test
-    fun `automation cooldown response is typed and never parsed or logged as battle`() {
+    fun `automation cooldown response is typed buffered and never parsed or logged`() {
         prepareRunnableBattle()
-        gateway.nextBattleBody = largeRaidCooldownHtml(56)
+        gateway.nextBattleBody = sharedCooldownHtml("56초 후 전투 가능")
 
         val error = assertFailsWith<SharedBattleCooldownRejectedException> {
             service.runBattle(1L, runRequest(), HofRequestOrigin.AUTOMATION)
         }
 
-        assertEquals(now.plusSeconds(56), error.retryAt)
+        assertEquals(now.plusSeconds(58), error.retryAt)
         assertTrue(battleLogRepository.savedEntities.isEmpty())
     }
 
     @Test
-    fun `interactive cooldown response exposes retry seconds as invalid request`() {
+    fun `automation confirmed cooldown without countdown uses buffered fallback`() {
         prepareRunnableBattle()
-        gateway.nextBattleBody = largeRaidCooldownHtml(56)
+        gateway.nextBattleBody = sharedCooldownHtml("곧 전투 가능")
+
+        val error = assertFailsWith<SharedBattleCooldownRejectedException> {
+            service.runBattle(1L, runRequest(), HofRequestOrigin.AUTOMATION)
+        }
+
+        assertEquals(now.plusSeconds(62), error.retryAt)
+        assertTrue(battleLogRepository.savedEntities.isEmpty())
+    }
+
+    @Test
+    fun `interactive cooldown exposes source retry seconds`() {
+        prepareRunnableBattle()
+        gateway.nextBattleBody = sharedCooldownHtml("56초 후 전투 가능")
 
         val error = assertFailsWith<ApiException> {
             service.runBattle(1L, runRequest(), HofRequestOrigin.INTERACTIVE)
@@ -277,6 +290,7 @@ class BattleRunServiceTest {
 
         assertEquals(ErrorCode.INVALID_REQUEST, error.errorCode)
         assertEquals(56, error.retryAfterSeconds)
+        assertEquals("1분 공유 쿨타임이 남아 있습니다.", error.message)
         assertTrue(battleLogRepository.savedEntities.isEmpty())
     }
 
@@ -521,9 +535,9 @@ class BattleRunServiceTest {
         ).thenReturn(listOf(characters.first()))
     }
 
-    private fun largeRaidCooldownHtml(seconds: Int): String = """
+    private fun sharedCooldownHtml(countdown: String): String = """
         <html><body><div class="error">
-          대형 레이드를 잇는 전투를 실행한 상태입니다. (${seconds}초 후 전투 가능)
+          대형 데이터를 읽는 전투를 실행한 상태입니다. ($countdown)
         </div></body></html>
     """.trimIndent()
 
