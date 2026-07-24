@@ -6,6 +6,8 @@ import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.battle.dto.BattlePatternLoadRequest
 import app.spammy.hof.battle.dto.RunBattleRequest
 import app.spammy.hof.battle.service.BattleMapService
+import app.spammy.hof.battle.dto.BattleMapResponse
+import app.spammy.hof.battle.model.BattleMapKeyMode
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.quest.model.QuestSection
@@ -25,12 +27,14 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
     private val questGateway = Mockito.mock(QuestGatewayService::class.java)
     private val battleMapService = Mockito.mock(BattleMapService::class.java)
     private val battleHandler = Mockito.mock(BattleMapAutomationHandler::class.java)
+    private val workLifecycle = Mockito.mock(AutomationWorkLifecycle::class.java)
     private val reconciler = DefaultAutomationAmbiguousActionReconciler(
         questGateway,
         battleMapService,
         battleHandler,
         HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
         TimeProvider { now },
+        workLifecycle,
     )
 
     @Test
@@ -107,6 +111,33 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
         assertIs<AmbiguousActionResolution.Resubmit>(reconciler.reconcile(7, questBattle(2)))
     }
 
+    @Test
+    fun `new cooldown confirms ambiguous adventure battle`() {
+        Mockito.`when`(battleMapService.findMaps(7, "adventure_map", HofRequestOrigin.AUTOMATION))
+            .thenReturn(listOf(mapResponse(cooldownSeconds = 300, attemptCount = 2)))
+
+        assertIs<AmbiguousActionResolution.Applied>(reconciler.reconcile(7, adventureAction(attemptCount = 3)))
+    }
+
+    @Test
+    fun `unchanged runnable adventure map resubmits ambiguous battle`() {
+        Mockito.`when`(battleMapService.findMaps(7, "adventure_map", HofRequestOrigin.AUTOMATION))
+            .thenReturn(listOf(mapResponse(cooldownSeconds = null, attemptCount = 3)))
+
+        assertIs<AmbiguousActionResolution.Resubmit>(reconciler.reconcile(7, adventureAction(attemptCount = 3)))
+    }
+
+    @Test
+    fun `ambiguous battle map is conservatively applied without remote retry`() {
+        Mockito.`when`(battleHandler.confirmAmbiguousSuccess(anyBattleAction()))
+            .thenReturn(BattleOutcomeResolution.Applied("battle-1", 3))
+
+        assertIs<AmbiguousActionResolution.Applied>(reconciler.reconcile(7, battleMapAction()))
+
+        Mockito.verify(battleHandler).confirmAmbiguousSuccess(anyBattleAction())
+        Mockito.verifyNoInteractions(battleMapService)
+    }
+
     private fun questAccept() = StoredTypedAutomationActionV1(
         10,
         "accept-1",
@@ -131,6 +162,69 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
             observedRequired = 5,
         ),
     )
+
+    private fun adventureAction(attemptCount: Int) = StoredTypedAutomationActionV1(
+        11,
+        "adventure-1",
+        StoredTypedActionPayload.AdventureMap(
+            categoryId = "adventure_map",
+            mapCode = "map-1",
+            presetMode = PresetSelectionMode.PRIMARY,
+            presetId = 301,
+            battleCount = 1,
+            settingIdentity = 99,
+            battleRequest = battleRequest("adventure_map", "map-1"),
+            observedAttemptRemaining = attemptCount,
+        ),
+    )
+
+    private fun battleMapAction() = StoredTypedAutomationActionV1(
+        12,
+        "battle-1",
+        StoredTypedActionPayload.BattleMap(
+            progressDate = java.time.LocalDate.parse("2026-07-25"),
+            categoryId = "battle_map",
+            mapCode = "map-1",
+            presetMode = PresetSelectionMode.PRIMARY,
+            presetId = 301,
+            battleCount = 3,
+            battleRequest = battleRequest("battle_map", "map-1", 3),
+        ),
+    )
+
+    private fun mapResponse(cooldownSeconds: Long?, attemptCount: Int?) = BattleMapResponse(
+        categoryId = "adventure_map",
+        mapCode = "map-1",
+        name = "Adventure",
+        groupName = null,
+        groupOrder = 0,
+        mapOrder = 0,
+        recommendedLevel = null,
+        availableCount = null,
+        attemptCount = attemptCount,
+        winCount = null,
+        cooldownRemainingText = cooldownSeconds?.let { "${it}s" },
+        cooldownRemainingSeconds = cooldownSeconds,
+        keyMode = BattleMapKeyMode.UNLIMITED,
+        keyCount = null,
+        requiredTime = 0,
+        enabled = true,
+        resolved = true,
+        iconUrl = null,
+        rawHref = "?map=map-1",
+    )
+
+    private fun anyBattleAction(): BattleMapAutomationAction =
+        Mockito.any(BattleMapAutomationAction::class.java) ?: BattleMapAutomationAction(
+            accountId = 7,
+            progressDate = java.time.LocalDate.parse("2026-07-25"),
+            categoryId = "battle_map",
+            mapCode = "map-1",
+            presetMode = PresetSelectionMode.PRIMARY,
+            presetId = 301,
+            battleCount = 3,
+            executionIdentity = "matcher",
+        )
 
     private fun quest(code: String, state: QuestState, actionNo: String?) = QuestSnapshot(
         questId = code,

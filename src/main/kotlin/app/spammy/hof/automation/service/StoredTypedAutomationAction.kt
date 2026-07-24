@@ -7,6 +7,7 @@ import com.fasterxml.jackson.annotation.JsonSubTypes
 import com.fasterxml.jackson.annotation.JsonTypeInfo
 import java.security.MessageDigest
 import java.time.LocalDate
+import java.time.Instant
 import java.util.HexFormat
 import java.nio.charset.StandardCharsets
 import org.springframework.stereotype.Component
@@ -79,6 +80,10 @@ sealed interface StoredTypedActionPayload {
         val settingIdentity: Long,
         val battleRequest: RunBattleRequest,
         override val display: StoredActionDisplay? = null,
+        val observedCooldownUntil: Instant? = null,
+        val observedAttemptRemaining: Int? = null,
+        val observedWinRemaining: Int? = null,
+        val observedAvailableCount: Int? = null,
     ) : StoredTypedActionPayload
 }
 

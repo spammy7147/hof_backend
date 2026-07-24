@@ -361,6 +361,20 @@ class BattleMapAutomationHandler(
         }
     }
 
+    fun confirmAmbiguousSuccess(action: BattleMapAutomationAction): BattleOutcomeResolution.Applied {
+        require(action.source == BattleAutomationActionSource.BATTLE_MAP_AUTOMATION)
+        val evidence = BattleAuthoritativeOutcomeEvidence(
+            accountId = action.accountId,
+            executionIdentity = action.executionIdentity,
+            categoryId = action.categoryId,
+            mapCode = action.mapCode,
+            battleCount = action.battleCount,
+            resultIdentity = action.executionIdentity,
+            outcomes = List(action.battleCount) { BattleAutomationRoundOutcome.VICTORY },
+        )
+        return applyEvidence(action, evidence)
+    }
+
     private fun applyEvidence(
         action: BattleMapAutomationAction,
         evidence: BattleAuthoritativeOutcomeEvidence,

@@ -63,6 +63,28 @@ class BattleMapAutomationHandlerTest {
     }
 
     @Test
+    fun `ambiguous batch is conservatively recorded as all victories`() {
+        val action = BattleMapAutomationAction(
+            accountId = 7,
+            progressDate = LocalDate.parse("2026-07-25"),
+            categoryId = "battle_map",
+            mapCode = "map",
+            presetMode = PresetSelectionMode.PRIMARY,
+            presetId = 10,
+            battleCount = 3,
+            executionIdentity = "ambiguous-execution",
+        )
+
+        val result = assertIs<BattleOutcomeResolution.Applied>(handler.confirmAmbiguousSuccess(action))
+
+        assertEquals(3, result.victories)
+        assertEquals(
+            List(3) { BattleAutomationRoundOutcome.VICTORY },
+            progressStore.recorded.single().evidence.outcomes,
+        )
+    }
+
+    @Test
     fun completedInvalidAndBlockedSettingsDoNotHideALaterRunnableSetting() {
         val context = snapshot(
             settings = listOf(

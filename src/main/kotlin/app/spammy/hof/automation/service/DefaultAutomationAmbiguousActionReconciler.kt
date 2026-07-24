@@ -14,6 +14,7 @@ class DefaultAutomationAmbiguousActionReconciler(
     private val battleHandler: BattleMapAutomationHandler,
     private val sessionRecovery: HofSessionRecoveryExecutor,
     private val timeProvider: TimeProvider,
+    private val workLifecycle: AutomationWorkLifecycle,
 ) : AutomationAmbiguousActionReconciler {
     override fun reconcile(
         accountId: Long,
@@ -22,10 +23,8 @@ class DefaultAutomationAmbiguousActionReconciler(
         is StoredTypedActionPayload.QuestAccept -> reconcileQuestAccept(accountId, payload)
         is StoredTypedActionPayload.QuestClaim -> reconcileQuestClaim(accountId, payload)
         is StoredTypedActionPayload.QuestBattle -> reconcileQuestBattle(accountId, payload)
-        else -> AmbiguousActionResolution.VerifyLater(
-            retryAt(),
-            "Authoritative reconciliation is not available for ${payload.kind()} yet.",
-        )
+        is StoredTypedActionPayload.AdventureMap -> reconcileAdventure(accountId, action.entryId, payload)
+        is StoredTypedActionPayload.BattleMap -> reconcileBattleMap(accountId, action.executionIdentity, payload)
     }
 
     private fun reconcileQuestAccept(
@@ -109,6 +108,66 @@ class DefaultAutomationAmbiguousActionReconciler(
 
     private fun loadQuests(accountId: Long) = sessionRecovery.execute(accountId) {
         questGateway.load(accountId, HofRequestOrigin.AUTOMATION)
+    }
+
+    private fun reconcileAdventure(
+        accountId: Long,
+        entryId: Long,
+        payload: StoredTypedActionPayload.AdventureMap,
+    ): AmbiguousActionResolution {
+        val current = sessionRecovery.execute(accountId) {
+            battleMapService.findMaps(accountId, payload.categoryId, HofRequestOrigin.AUTOMATION)
+        }.singleOrNull { it.mapCode == payload.mapCode }
+            ?: return AmbiguousActionResolution.VerifyLater(
+                retryAt(),
+                "Adventure map ${payload.categoryId}/${payload.mapCode} is absent.",
+            )
+        val decreased = listOf(
+            payload.observedAttemptRemaining to current.attemptCount,
+            payload.observedWinRemaining to current.winCount,
+            payload.observedAvailableCount to current.availableCount,
+        ).any { (before, after) -> before != null && after != null && after < before }
+        val cooldownStarted = current.cooldownRemainingSeconds?.let { it > 0 } == true
+        if (decreased || cooldownStarted) {
+            workLifecycle.completeAdventureAction(accountId, entryId, payload.categoryId, payload.mapCode)
+            return AmbiguousActionResolution.Applied(
+                TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode),
+            )
+        }
+        val exhausted = listOf(current.attemptCount, current.winCount, current.availableCount)
+            .any { it != null && it <= 0 }
+        val runnable = current.resolved && current.enabled && !exhausted &&
+            current.keyCount != 0 && (current.cooldownRemainingSeconds ?: 0) <= 0
+        if (runnable) return AmbiguousActionResolution.Resubmit
+        val retryAt = current.cooldownRemainingSeconds
+            ?.takeIf { it > 0 }
+            ?.let { timeProvider.now().plusSeconds(it) }
+            ?: retryAt()
+        return AmbiguousActionResolution.VerifyLater(
+            retryAt,
+            "Adventure map outcome is not yet authoritative.",
+        )
+    }
+
+    private fun reconcileBattleMap(
+        accountId: Long,
+        executionIdentity: String,
+        payload: StoredTypedActionPayload.BattleMap,
+    ): AmbiguousActionResolution {
+        val action = BattleMapAutomationAction(
+            accountId = accountId,
+            progressDate = payload.progressDate,
+            categoryId = payload.categoryId,
+            mapCode = payload.mapCode,
+            presetMode = payload.presetMode,
+            presetId = payload.presetId,
+            battleCount = payload.battleCount,
+            executionIdentity = executionIdentity,
+        )
+        battleHandler.confirmAmbiguousSuccess(action)
+        return AmbiguousActionResolution.Applied(
+            TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode),
+        )
     }
 
     private fun retryAt() = timeProvider.now().plusSeconds(10)

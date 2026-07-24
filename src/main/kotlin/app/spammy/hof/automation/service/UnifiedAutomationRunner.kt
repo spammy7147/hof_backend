@@ -344,6 +344,10 @@ class UnifiedAutomationRunner @Autowired constructor(
                 action.battleCount, action.settingIdentity,
                 action.resolvedParty.toRequest(action.categoryId, action.mapCode, action.battleCount),
                 StoredActionDisplay(mapName = action.mapName),
+                observedCooldownUntil = action.observedCooldownUntil,
+                observedAttemptRemaining = action.observedAttemptRemaining,
+                observedWinRemaining = action.observedWinRemaining,
+                observedAvailableCount = action.observedAvailableCount,
             )
         }
         return StoredTypedAutomationActionV1(entryId, executionId, payload)
