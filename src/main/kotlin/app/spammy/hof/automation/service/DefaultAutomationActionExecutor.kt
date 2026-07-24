@@ -2,6 +2,7 @@ package app.spammy.hof.automation.service
 
 import app.spammy.hof.battle.dto.RunBattleRequest
 import app.spammy.hof.battle.service.BattleRunService
+import app.spammy.hof.battle.service.SharedBattleCooldownRejectedException
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.model.HofRequestOrigin
@@ -20,17 +21,21 @@ class DefaultAutomationActionExecutor(
     private val sessionRecovery: HofSessionRecoveryExecutor,
     private val executionSignals: AutomationExecutionSignals,
 ) : TypedAutomationActionExecutor {
-    override fun execute(accountId: Long, action: StoredTypedAutomationActionV1) {
-        when (val payload = action.payload) {
-                is StoredTypedActionPayload.QuestClaim ->
+    override fun execute(accountId: Long, action: StoredTypedAutomationActionV1): TypedAutomationExecution =
+        try {
+            when (val payload = action.payload) {
+                is StoredTypedActionPayload.QuestClaim -> {
                     runQuestMutation(accountId) {
                         questGatewayService.claim(accountId, payload.actionNo, HofRequestOrigin.AUTOMATION)
                     }
+                    TypedAutomationExecution.Completed
+                }
                 is StoredTypedActionPayload.QuestAccept -> {
                     runQuestMutation(accountId) {
                         questGatewayService.accept(accountId, payload.actionNo, HofRequestOrigin.AUTOMATION)
                     }
                     questHandler.onAcceptSucceeded(accountId, action.executionIdentity, QuestAction.Accept(payload.questCode, payload.actionNo))
+                    TypedAutomationExecution.Completed
                 }
                 is StoredTypedActionPayload.QuestBattle -> {
                     val result = runTypedBattle(accountId, payload.battleRequest)
@@ -56,6 +61,7 @@ class DefaultAutomationActionExecutor(
                         questTexts = signalRounds?.mapNotNull { it.quest?.takeIf(String::isNotBlank) }
                             ?: listOfNotNull(result.quest?.takeIf(String::isNotBlank)),
                     )
+                    TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode)
                 }
                 is StoredTypedActionPayload.BattleMap -> {
                     val result = runTypedBattle(accountId, payload.battleRequest)
@@ -81,13 +87,19 @@ class DefaultAutomationActionExecutor(
                         questTexts = signalRounds?.mapNotNull { it.quest?.takeIf(String::isNotBlank) }
                             ?: listOfNotNull(result.quest?.takeIf(String::isNotBlank)),
                     )
+                    TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode)
                 }
                 is StoredTypedActionPayload.AdventureMap -> {
                     val result = runTypedBattle(accountId, payload.battleRequest)
                     exactTerminalProof(accountId, action.executionIdentity, payload.battleRequest, result, BattleAutomationActionSource.ADVENTURE_AUTOMATION)
+                    TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode)
                 }
+            }
+        } catch (cooldown: SharedBattleCooldownRejectedException) {
+            val request = action.payload.battleRequestOrNull()
+                ?: throw IllegalStateException("Non-battle action returned a battle cooldown.", cooldown)
+            TypedAutomationExecution.SharedCooldown(request.categoryId, request.mapCode, cooldown.retryAt)
         }
-    }
 
     private fun <T> runQuestMutation(accountId: Long, operation: () -> T): T =
         try {
@@ -131,6 +143,10 @@ class DefaultAutomationActionExecutor(
             battleRunService.runBattle(accountId, request, HofRequestOrigin.AUTOMATION)
         } catch (error: Exception) {
             generateSequence<Throwable>(error) { it.cause }
+                .filterIsInstance<SharedBattleCooldownRejectedException>()
+                .firstOrNull()
+                ?.let { throw it }
+            generateSequence<Throwable>(error) { it.cause }
                 .filterIsInstance<HofAutomationDeferredException>()
                 .firstOrNull()
                 ?.let { throw it }
@@ -149,6 +165,15 @@ class DefaultAutomationActionExecutor(
 
     private fun Throwable.findApiException(): ApiException? =
         generateSequence(this) { it.cause }.filterIsInstance<ApiException>().firstOrNull()
+
+    private fun StoredTypedActionPayload.battleRequestOrNull(): RunBattleRequest? = when (this) {
+        is StoredTypedActionPayload.QuestBattle -> battleRequest
+        is StoredTypedActionPayload.BattleMap -> battleRequest
+        is StoredTypedActionPayload.AdventureMap -> battleRequest
+        is StoredTypedActionPayload.QuestClaim,
+        is StoredTypedActionPayload.QuestAccept,
+        -> null
+    }
 
     private fun exactTerminalProof(
         accountId: Long,

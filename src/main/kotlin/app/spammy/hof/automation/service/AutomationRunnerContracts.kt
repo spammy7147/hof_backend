@@ -1,6 +1,7 @@
 package app.spammy.hof.automation.service
 
 import app.spammy.hof.quest.model.QuestSnapshot
+import java.time.Instant
 
 interface TypedAutomationSnapshotLoader {
     fun loadTyped(accountId: Long): AutomationCoordinatorSnapshot
@@ -13,7 +14,22 @@ interface TypedAutomationSnapshotLoader {
 }
 
 fun interface TypedAutomationActionExecutor {
-    fun execute(accountId: Long, action: StoredTypedAutomationActionV1)
+    fun execute(accountId: Long, action: StoredTypedAutomationActionV1): TypedAutomationExecution
+}
+
+sealed interface TypedAutomationExecution {
+    data object Completed : TypedAutomationExecution
+
+    data class BattleCompleted(
+        val categoryId: String,
+        val mapCode: String,
+    ) : TypedAutomationExecution
+
+    data class SharedCooldown(
+        val categoryId: String,
+        val mapCode: String,
+        val retryAt: Instant,
+    ) : TypedAutomationExecution
 }
 
 class SafeRetryableAutomationException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)

@@ -6,12 +6,15 @@ import app.spammy.hof.account.service.HofSessionRecoveryService
 import app.spammy.hof.battle.dto.BattlePatternLoadRequest
 import app.spammy.hof.battle.dto.RunBattleRequest
 import app.spammy.hof.battle.service.BattleRunService
+import app.spammy.hof.battle.service.SharedBattleCooldownRejectedException
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.quest.model.QuestMissionType
 import app.spammy.hof.quest.service.QuestGatewayService
 import java.io.IOException
+import java.time.Instant
+import java.time.LocalDate
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -45,8 +48,9 @@ class DefaultAutomationActionExecutorTest {
             ),
         )
 
-        executor.execute(7L, action)
+        val execution = executor.execute(7L, action)
 
+        assertEquals(TypedAutomationExecution.Completed, execution)
         Mockito.verify(questGateway, Mockito.times(1)).accept(7L, "accept-no", HofRequestOrigin.AUTOMATION)
         Mockito.verify(questHandler).onAcceptSucceeded(
             7L,
@@ -184,8 +188,12 @@ class DefaultAutomationActionExecutorTest {
             ),
         )
 
-        executor.execute(7L, action)
+        val execution = executor.execute(7L, action)
 
+        assertEquals(
+            TypedAutomationExecution.BattleCompleted(request.categoryId, request.mapCode),
+            execution,
+        )
         Mockito.verify(questHandler).onBattleCompleted(
             7L,
             "quest-battle-3",
@@ -264,6 +272,44 @@ class DefaultAutomationActionExecutorTest {
     }
 
     @Test
+    fun `all automation battle payloads return shared cooldown without progress callbacks`() {
+        val request = battleRequest()
+        val retryAt = Instant.parse("2026-07-24T00:00:56Z")
+        Mockito.`when`(battleRun.runBattle(7L, request, HofRequestOrigin.AUTOMATION))
+            .thenThrow(SharedBattleCooldownRejectedException(retryAt))
+        val payloads = listOf<StoredTypedActionPayload>(
+            StoredTypedActionPayload.QuestBattle(
+                "Q-1", "2", "kill", QuestMissionType.MONSTER_KILL,
+                request.categoryId, request.mapCode, PresetSelectionMode.PRIMARY, 301L, 3, request,
+            ),
+            StoredTypedActionPayload.BattleMap(
+                LocalDate.parse("2026-07-24"), request.categoryId, request.mapCode,
+                PresetSelectionMode.PRIMARY, 301L, 3, request,
+            ),
+            StoredTypedActionPayload.AdventureMap(
+                request.categoryId, request.mapCode, PresetSelectionMode.PRIMARY,
+                301L, 3, 99L, request,
+            ),
+        )
+
+        payloads.forEachIndexed { index, payload ->
+            val result = executor.execute(
+                7L,
+                StoredTypedAutomationActionV1(11L, "cooldown-$index", payload),
+            )
+
+            assertEquals(
+                TypedAutomationExecution.SharedCooldown(request.categoryId, request.mapCode, retryAt),
+                result,
+            )
+        }
+
+        Mockito.verify(battleRun, Mockito.times(3))
+            .runBattle(7L, request, HofRequestOrigin.AUTOMATION)
+        Mockito.verifyNoInteractions(questHandler, battleHandler, reconciler, executionSignals)
+    }
+
+    @Test
     fun `battle map terminal rounds are handed to the required progress handler`() {
         val request = battleRequest()
         val result = Mockito.mock(app.spammy.hof.battle.dto.BattleResultResponse::class.java)
@@ -308,8 +354,12 @@ class DefaultAutomationActionExecutorTest {
             ),
         )
 
-        executor.execute(7L, action)
+        val execution = executor.execute(7L, action)
 
+        assertEquals(
+            TypedAutomationExecution.BattleCompleted(request.categoryId, request.mapCode),
+            execution,
+        )
         Mockito.verify(battleHandler).onBattleCompleted(
             anyBattleAction(),
             eqValue(BattleAutomationActionSource.BATTLE_MAP_AUTOMATION),
