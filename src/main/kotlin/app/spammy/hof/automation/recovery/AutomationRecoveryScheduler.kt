@@ -22,7 +22,7 @@ class AutomationRecoveryDueAccountQuery(
 }
 
 @Component
-@Profile("docker | kafka")
+@Profile("dev | prod")
 class AutomationRecoveryScheduler(
     private val dueAccounts: AutomationRecoveryDueAccountQuery,
     private val wakeupPort: AutomationWakeupPort,

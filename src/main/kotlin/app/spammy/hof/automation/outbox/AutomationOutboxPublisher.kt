@@ -20,7 +20,7 @@ fun interface LocalAutomationWakeExecutor {
 }
 
 @Component
-@Profile("!docker & !kafka")
+@Profile("test")
 class LocalAutomationOutboxTransport(
     private val executor: LocalAutomationWakeExecutor,
     private val objectMapper: ObjectMapper,
@@ -34,7 +34,7 @@ class LocalAutomationOutboxTransport(
 }
 
 @Component
-@Profile("docker | kafka")
+@Profile("dev | prod")
 class KafkaAutomationOutboxTransport(
     private val kafkaTemplate: KafkaTemplate<String, String>,
 ) : AutomationOutboxTransport {

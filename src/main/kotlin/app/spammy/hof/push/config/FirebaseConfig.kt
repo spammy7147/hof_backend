@@ -9,7 +9,7 @@ import org.springframework.context.annotation.Configuration
 import org.springframework.context.annotation.Profile
 
 @Configuration
-@Profile("docker")
+@Profile("prod")
 class FirebaseConfig {
     @Bean
     fun firebaseApp(): FirebaseApp = FirebaseApp.getApps().firstOrNull() ?: FirebaseApp.initializeApp(

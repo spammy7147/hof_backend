@@ -10,7 +10,7 @@ import org.springframework.stereotype.Component
 import tools.jackson.databind.ObjectMapper
 
 @Component
-@Profile("docker")
+@Profile("prod")
 class PushRequestConsumer(
     private val objectMapper: ObjectMapper,
     private val consumedEventService: AutomationConsumedEventService,

@@ -11,7 +11,7 @@ import org.springframework.context.annotation.Profile
 import org.springframework.stereotype.Service
 
 @Service
-@Profile("docker")
+@Profile("prod")
 class AndroidPushService(
     private val firebaseMessaging: FirebaseMessaging,
     private val queryRepository: app.spammy.hof.push.repository.DevicePushTargetQueryRepository,

@@ -14,7 +14,7 @@ import org.springframework.stereotype.Component
  * accounts whose persistent session is due.
  */
 @Component
-@Profile("docker | kafka")
+@Profile("dev | prod")
 class AutomationSessionReconciliationScheduler(
     private val dueIndex: AutomationDueIndex,
     private val wakeups: AutomationWakeupPort,
