@@ -166,7 +166,32 @@ class UnifiedAutomationRunner @Autowired constructor(
             return
         }
         if (row.status == app.spammy.hof.automation.entity.TypedAutomationActionStatus.RECONCILING) {
-            when (val resolution = ambiguousReconciler.reconcile(accountId, stored)) {
+            val resolution = try {
+                ambiguousReconciler.reconcile(accountId, stored)
+            } catch (error: Throwable) {
+                error.findHofAutomationDeferral()?.let { deferred ->
+                    val message = deferred.message ?: "HOF server returned 503 while verifying an ambiguous action."
+                    if (typedRuntime.deferReconciliation(accountId, token, row.id, deferred.retryAt, message)) {
+                        wakeupPort.schedule(accountId, deferred.retryAt, HOF_COOLDOWN_WAKE_REASON)
+                    }
+                    return
+                }
+                log.warn(
+                    "Typed automation reconciliation stopped accountId={} actionId={} errorType={}",
+                    accountId,
+                    row.id,
+                    error.javaClass.name,
+                )
+                typedRuntime.stop(
+                    accountId,
+                    token,
+                    row.id,
+                    classifyActionStop(error),
+                    error.message ?: error.javaClass.simpleName,
+                )
+                return
+            }
+            when (resolution) {
                 is AmbiguousActionResolution.Applied -> {
                     applyRecoveredExecution(accountId, resolution.execution)
                     typedRuntime.succeedReconciliation(

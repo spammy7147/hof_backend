@@ -371,19 +371,7 @@ class UnifiedAutomationRunnerTest {
 
     @Test
     fun `reconciling applied action succeeds without external resubmission`() {
-        val stored = StoredTypedAutomationActionV1(
-            12,
-            "execution-1",
-            StoredTypedActionPayload.QuestAccept("quest", "accept-no"),
-        )
-        val encoded = codec.encode(stored)
-        val owner = HofAccountEntity(7, "login", "encrypted", Instant.EPOCH)
-        val entry = AutomationEntryEntity(12, owner, AutomationType.QUEST, 0, true, Instant.EPOCH, Instant.EPOCH)
-        val row = TypedAutomationActionRunEntity(
-            88, owner, entry, stored.executionIdentity, stored.payload.kind(), 1, encoded.json,
-            encoded.fingerprint, TypedAutomationActionStatus.RECONCILING, leaseToken = "token",
-            createdAt = Instant.EPOCH, updatedAt = Instant.EPOCH,
-        )
+        val (stored, row) = reconcilingQuestAction()
         Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
         Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token", row))
         Mockito.`when`(ambiguousReconciler.reconcile(7, stored))
@@ -393,6 +381,45 @@ class UnifiedAutomationRunnerTest {
 
         Mockito.verify(ambiguousReconciler).reconcile(7, stored)
         Mockito.verify(runtime).succeedReconciliation(7, "token", 88, "TYPED_ACTION_COMPLETED")
+        Mockito.verifyNoInteractions(executor)
+    }
+
+    @Test
+    fun `503 while reconciling preserves action and schedules authoritative recheck`() {
+        val retryAt = Instant.parse("2026-07-25T00:00:30Z")
+        val (stored, row) = reconcilingQuestAction()
+        Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
+        Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token", row))
+        Mockito.`when`(ambiguousReconciler.reconcile(7, stored))
+            .thenThrow(HofAutomationDeferredException(retryAt, 1))
+        Mockito.`when`(
+            runtime.deferReconciliation(7, "token", 88, retryAt, "HOF automation requests are deferred until $retryAt"),
+        ).thenReturn(true)
+
+        runner.runOne(7)
+
+        Mockito.verify(runtime).deferReconciliation(
+            7,
+            "token",
+            88,
+            retryAt,
+            "HOF automation requests are deferred until $retryAt",
+        )
+        Mockito.verify(wakeup).schedule(7, retryAt, "HOF_503_COOLDOWN")
+        assertTrue(Mockito.mockingDetails(runtime).invocations.none { it.method.name == "stop" })
+    }
+
+    @Test
+    fun `captcha while reconciling stops runtime but preserves reconciling action`() {
+        val (stored, row) = reconcilingQuestAction()
+        Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
+        Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token", row))
+        Mockito.`when`(ambiguousReconciler.reconcile(7, stored))
+            .thenThrow(ApiException(ErrorCode.CAPTCHA_REQUIRED, "captcha"))
+
+        runner.runOne(7)
+
+        Mockito.verify(runtime).stop(7, "token", 88, AutomationStopReason.CAPTCHA, "captcha")
         Mockito.verifyNoInteractions(executor)
     }
 
@@ -541,6 +568,22 @@ class UnifiedAutomationRunnerTest {
         captor.capture() ?: StoredTypedAutomationActionV1(1, "capture", StoredTypedActionPayload.QuestClaim("q", "a"))
 
     private fun eqString(value: String): String = Mockito.eq(value) ?: value
+
+    private fun reconcilingQuestAction(): Pair<StoredTypedAutomationActionV1, TypedAutomationActionRunEntity> {
+        val stored = StoredTypedAutomationActionV1(
+            12,
+            "execution-1",
+            StoredTypedActionPayload.QuestAccept("quest", "accept-no"),
+        )
+        val encoded = codec.encode(stored)
+        val owner = HofAccountEntity(7, "login", "encrypted", Instant.EPOCH)
+        val entry = AutomationEntryEntity(12, owner, AutomationType.QUEST, 0, true, Instant.EPOCH, Instant.EPOCH)
+        return stored to TypedAutomationActionRunEntity(
+            88, owner, entry, stored.executionIdentity, stored.payload.kind(), 1, encoded.json,
+            encoded.fingerprint, TypedAutomationActionStatus.RECONCILING, leaseToken = "token",
+            createdAt = Instant.EPOCH, updatedAt = Instant.EPOCH,
+        )
+    }
 
     private fun preparedActionFailure(error: Throwable, expectedReason: AutomationStopReason) {
         val stored = StoredTypedAutomationActionV1(
