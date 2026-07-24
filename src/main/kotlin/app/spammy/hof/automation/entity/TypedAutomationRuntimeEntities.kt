@@ -6,6 +6,7 @@ import java.time.Instant
 
 enum class TypedAutomationLifecycle { RUNNING, PAUSED, STOPPED }
 enum class TypedAutomationActionStatus { PREPARED, SUBMITTING, SUCCEEDED, FAILED, AMBIGUOUS }
+enum class AutomationWaitReason { SCHEDULED, HOF_CONNECTION }
 
 @Entity
 @Table(name = "typed_automation_runtime_states")
@@ -17,6 +18,7 @@ class TypedAutomationRuntimeStateEntity(
     @Column(name = "stop_action_id") var stopActionId: Long? = null,
     @Column(name = "retry_attempt") var retryAttempt: Int = 0,
     @Column(name = "next_attempt_at") var nextAttemptAt: Instant? = null,
+    @Enumerated(EnumType.STRING) @Column(name = "wait_reason", length = 30) var waitReason: AutomationWaitReason? = null,
     @Column(name = "lease_token") var leaseToken: String? = null,
     @Column(name = "lease_until") var leaseUntil: Instant? = null,
     @Column(name = "warning_text", columnDefinition = "text") var warningText: String? = null,
