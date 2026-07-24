@@ -24,10 +24,10 @@ class QuestPageParserTest {
     fun sectionHeadingsDetermineMembershipInsteadOfMissionProgress() {
         val byId = quests.associateBy { it.questId }
 
-        assertEquals(QuestSection.ACTIVE, byId.getValue("0571").section)
-        assertEquals(QuestState.ACTIVE, byId.getValue("0571").state)
-        assertEquals(QuestSection.AVAILABLE, byId.getValue("0171").section)
-        assertEquals(QuestState.AVAILABLE, byId.getValue("0171").state)
+        assertEquals(QuestSection.ACTIVE, byId.getValue("571").section)
+        assertEquals(QuestState.ACTIVE, byId.getValue("571").state)
+        assertEquals(QuestSection.AVAILABLE, byId.getValue("171").section)
+        assertEquals(QuestState.AVAILABLE, byId.getValue("171").state)
         assertEquals(QuestSection.WAITING, byId.getValue("0999").section)
         assertEquals(QuestState.UNAVAILABLE, byId.getValue("0999").state)
         assertEquals(QuestProgress(12, 30), byId.getValue("0999").missions.single().progress)
@@ -36,17 +36,17 @@ class QuestPageParserTest {
     @Test
     fun preservesOriginalQuestAndMissionOrderWithStableKeys() {
         assertEquals(
-            listOf("0571", "0563", "0800", "0801", "0810", "WRP1", "0171", "FORM", "0999", "0351"),
+            listOf("571", "east-key", "0800", "0801", "0810", "wrapper-link", "171", "form+raw", "0999", "0351", "0171"),
             quests.map { it.questId },
         )
-        assertEquals((0..9).toList(), quests.map { it.sourceOrder })
+        assertEquals((0..9).toList() + 11, quests.map { it.sourceOrder })
         assertTrue(quests.none { it.questId == "NAV0" })
         assertNotEquals("0571:0", quests.first().missions.single().key)
     }
 
     @Test
     fun capturesNormalizedQuestNameAndActionInformation() {
-        val quest = quests.single { it.questId == "0563" }
+        val quest = quests.single { it.questId == "east-key" }
 
         assertEquals("저택 동관 열쇠 수집", quest.name)
         assertEquals("east-key", quest.actionNo)
@@ -54,8 +54,49 @@ class QuestPageParserTest {
     }
 
     @Test
+    fun usesQuestActionNumberAsIdentityAndKeepsPlaceholderRowsDistinct() {
+        val parsed = parser.parse(
+            """
+            <div id="contents">
+              <h4>진행중인 퀘스트</h4>
+              <table>
+                <tr>
+                  <td class="td7s">[0915] 수련 - 고대의 태양신 정복</td>
+                  <td>미션 : 즉시 완료</td>
+                  <td><a href="?menu=quest&amp;action=get&amp;no=915">수락</a></td>
+                </tr>
+                <tr>
+                  <td class="td7s">[0915] 동일한 표시 코드를 쓰는 다른 퀘스트</td>
+                  <td>미션 : 즉시 완료</td>
+                  <td><a href="?menu=quest&amp;action=get&amp;no=916">수락</a></td>
+                </tr>
+                <tr>
+                  <td class="td7s">[0000] 중앙 마력로의 열쇠(제 1탑)</td>
+                  <td>미션 : 맵 클리어( Castle In The Sky- 천공성(제 1탑) )</td>
+                  <td><a href="?menu=quest&amp;action=complete&amp;no=R610">보상받기</a></td>
+                </tr>
+                <tr>
+                  <td class="td7s">[0000] 중앙 마력로의 열쇠(제 3탑)</td>
+                  <td>미션 : 맵 클리어( Castle In The Sky- 천공성(제 3탑) )</td>
+                  <td><a href="?menu=quest&amp;action=complete&amp;no=R612">보상받기</a></td>
+                </tr>
+                <tr>
+                  <td class="td7s">[0000] 중앙 마력로의 열쇠(제 4탑)</td>
+                  <td>미션 : 맵 클리어( Castle In The Sky- 천공성(제 4탑) ) - [ 0 / 1 ]</td>
+                  <td>-</td>
+                </tr>
+              </table>
+            </div>
+            """.trimIndent(),
+        )
+
+        assertEquals(listOf("915", "916", "R610", "R612", "R613"), parsed.map { it.questId })
+        assertEquals(listOf("915", "916", "R610", "R612", null), parsed.map { it.actionNo })
+    }
+
+    @Test
     fun parsesMonsterProgressAndPreservesNormalizedTargetText() {
-        val mission = quests.single { it.questId == "0571" }.missions.single()
+        val mission = quests.single { it.questId == "571" }.missions.single()
 
         assertEquals(QuestMissionType.MONSTER_KILL, mission.type)
         assertEquals("Killer Maid", mission.target)
@@ -72,10 +113,10 @@ class QuestPageParserTest {
                 "아이템( Red Potion(99회 사용가능) ) x2",
                 "아이템( Blue Potion(99회 사용가능) ) x2",
             ),
-            byId.getValue("0571").rewards,
+            byId.getValue("571").rewards,
         )
         assertTrue(byId.getValue("0801").rewards.isEmpty())
-        assertTrue(byId.getValue("0571").rewards.none { it.contains("미션") || it.contains("길드 마스터") })
+        assertTrue(byId.getValue("571").rewards.none { it.contains("미션") || it.contains("길드 마스터") })
     }
 
     @Test
@@ -180,7 +221,7 @@ class QuestPageParserTest {
 
     @Test
     fun parsesHeaderlessLegacyRewardColumnWithoutTreatingRewardTextAsMission() {
-        val quest = productionRewardQuests().single { it.questId == "LGCY" }
+        val quest = productionRewardQuests().single { it.questId == "legacy-reward" }
 
         assertEquals(listOf("Gold x10", "미션 포인트 x1"), quest.rewards)
         assertTrue(quest.missions.isEmpty())
@@ -207,7 +248,7 @@ class QuestPageParserTest {
         val parsed = productionRowBlockQuests()
         val byId = parsed.associateBy { it.questId }
 
-        assertEquals(listOf("0105", "0571", "0900", "0901", "0902"), parsed.map { it.questId })
+        assertEquals(listOf("0105", "maid", "after-idless-cell", "0901", "classless-start"), parsed.map { it.questId })
 
         val support = byId.getValue("0105")
         assertEquals("포션 지원", support.name)
@@ -216,7 +257,7 @@ class QuestPageParserTest {
         assertEquals("Potion Bottle", support.missions.single().target)
         assertEquals(QuestProgress(0, 1), support.missions.single().progress)
 
-        val maid = byId.getValue("0571")
+        val maid = byId.getValue("maid")
         assertEquals("메이드 토벌", maid.name)
         assertEquals(listOf("Fund $15,000", "미션 포인트 x3"), maid.rewards)
         assertEquals(
@@ -234,9 +275,9 @@ class QuestPageParserTest {
     fun excludesDialogueRewardsAndNestedRowsFromSiblingBlockMissions() {
         val byId = productionRowBlockQuests().associateBy { it.questId }
 
-        assertEquals(setOf("0105", "0571", "0900", "0901", "0902"), byId.keys)
+        assertEquals(setOf("0105", "maid", "after-idless-cell", "0901", "classless-start"), byId.keys)
         assertEquals(1, byId.getValue("0105").missions.size)
-        assertEquals(2, byId.getValue("0571").missions.size)
+        assertEquals(2, byId.getValue("maid").missions.size)
         assertTrue(
             byId.values
                 .flatMap { it.missions }
@@ -248,7 +289,7 @@ class QuestPageParserTest {
     fun appendsHeaderlessExplicitContinuationRewardOnlyToOwningBlock() {
         val byId = productionRowBlockQuests().associateBy { it.questId }
 
-        assertEquals(listOf("Gold x10"), byId.getValue("0900").rewards)
+        assertEquals(listOf("Gold x10"), byId.getValue("after-idless-cell").rewards)
         assertTrue(byId.getValue("0901").rewards.isEmpty())
         assertTrue(
             byId.values
@@ -259,7 +300,7 @@ class QuestPageParserTest {
 
     @Test
     fun idlessQuestStyleCellDoesNotEndOwningSiblingBlock() {
-        val quest = productionRowBlockQuests().single { it.questId == "0900" }
+        val quest = productionRowBlockQuests().single { it.questId == "after-idless-cell" }
 
         assertEquals(listOf(QuestMissionType.IMMEDIATE), quest.missions.map { it.type })
         assertEquals("after-idless-cell", quest.actionNo)
@@ -275,7 +316,7 @@ class QuestPageParserTest {
         assertTrue(prior.rewards.isEmpty())
         assertNull(prior.actionNo)
 
-        val classless = byId.getValue("0902")
+        val classless = byId.getValue("classless-start")
         assertEquals("클래스 없는 시작", classless.name)
         assertEquals(listOf(QuestMissionType.ITEM_TURN_IN), classless.missions.map { it.type })
         assertEquals("Classless Token", classless.missions.single().target)
@@ -299,8 +340,8 @@ class QuestPageParserTest {
 
     @Test
     fun classifiesItemTurnInAndImmediateCompletableSemantics() {
-        val itemMission = quests.single { it.questId == "0563" }.missions.single()
-        val immediateMission = quests.single { it.questId == "0171" }.missions.single()
+        val itemMission = quests.single { it.questId == "east-key" }.missions.single()
+        val immediateMission = quests.single { it.questId == "171" }.missions.single()
 
         assertEquals(QuestMissionType.ITEM_TURN_IN, itemMission.type)
         assertEquals("Silver Key", itemMission.target)
@@ -413,7 +454,7 @@ class QuestPageParserTest {
         assertFalse(Regex("\\d{12,}").containsMatchIn(html))
         assertFalse(html.contains("PHPSESSID", ignoreCase = true))
         assertTrue(parsed.none { it.questId == "NAV0" })
-        assertEquals("0571", parsed.first().questId)
+        assertEquals("571", parsed.first().questId)
         assertEquals(0, parsed.first().sourceOrder)
         assertEquals(QuestSection.WAITING, parsed.single { it.questId == "0999" }.section)
         assertEquals(QuestSection.COMPLETED, parsed.single { it.questId == "0351" }.section)
@@ -438,9 +479,9 @@ class QuestPageParserTest {
             """.trimIndent(),
         ).associateBy { it.questId }
 
-        assertEquals("raw+value%ZZ", parsed.getValue("FORM").actionNo)
-        assertEquals("quest+key space", parsed.getValue("URL1").actionNo)
-        assertEquals("bad%ZZ", parsed.getValue("URL2").actionNo)
+        assertEquals("raw+value%ZZ", parsed.getValue("raw+value%ZZ").actionNo)
+        assertEquals("quest+key space", parsed.getValue("quest+key space").actionNo)
+        assertEquals("bad%ZZ", parsed.getValue("bad%ZZ").actionNo)
     }
 
     @Test
@@ -456,8 +497,8 @@ class QuestPageParserTest {
         assertEquals(QuestProgress(12, 30), active.missions[0].progress)
         assertEquals("Castle In The Sky- 천공성(제 2탑)", active.missions[1].target)
         assertEquals("Silver Key", active.missions[2].target)
-        assertEquals("claim-form", active.actionNo)
-        assertEquals("accept-form", parsed.getValue("DUPA").actionNo)
+        assertEquals("DUPB", active.actionNo)
+        assertEquals("DUPA", parsed.getValue("DUPA").actionNo)
     }
 
     @Test
@@ -465,7 +506,7 @@ class QuestPageParserTest {
         val parsed = edgeCaseQuests()
         val byId = parsed.associateBy { it.questId }
 
-        assertEquals(listOf("DONE", "WRAP", "OUTER", "DUPA", "DUPB"), parsed.map { it.questId })
+        assertEquals(listOf("DONE", "wrapper-link", "OUTER", "DUPA", "DUPB"), parsed.map { it.questId })
         assertEquals(listOf(1, 2, 4, 5, 6), parsed.map { it.sourceOrder })
         assertEquals(QuestSection.COMPLETED, byId.getValue("DONE").section)
         assertEquals(QuestSection.AVAILABLE, byId.getValue("DUPA").section)
