@@ -28,7 +28,7 @@ class HofRequestGovernorTest {
         governor.execute(HofRequestOrigin.INTERACTIVE) { response(200) }
         governor.execute(HofRequestOrigin.AUTOMATION) { response(200) }
 
-        assertEquals(listOf(Duration.ofMillis(100)), waiter.waits)
+        assertEquals(listOf(Duration.ofMillis(250)), waiter.waits)
     }
 
     @Test
@@ -97,7 +97,7 @@ class HofRequestGovernorTest {
         }
         governor.execute(HofRequestOrigin.AUTOMATION) { response(200) }
 
-        assertEquals(listOf(Duration.ofMillis(100)), waiter.waits)
+        assertEquals(listOf(Duration.ofMillis(250)), waiter.waits)
     }
 
     @Test

@@ -5,7 +5,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties
 
 @ConfigurationProperties("hof.request")
 data class HofRequestProperties(
-    val minimumInterval: Duration = Duration.ofMillis(100),
+    val minimumInterval: Duration = Duration.ofMillis(250),
     val shortCooldown: Duration = Duration.ofSeconds(30),
     val longCooldown: Duration = Duration.ofMinutes(3),
     val longCooldownThreshold: Int = 3,
