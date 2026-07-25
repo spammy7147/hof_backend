@@ -1,5 +1,6 @@
 package app.spammy.hof.automation.service
 
+import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.repository.AutomationWorkSessionQueryRepository
 import app.spammy.hof.automation.repository.AutomationWorkSessionView
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
@@ -105,7 +106,7 @@ class AutomationTargetSelector(
                 }
                 if (waiting.isNotEmpty() && !hasDueTarget) {
                     if (blockedUntil != null && (earliest == null || blockedUntil < earliest)) earliest = blockedUntil
-                    return@forEach
+                    if (entry.type != AutomationType.QUEST) return@forEach
                 }
                 waiting.firstOrNull {
                     it.status == app.spammy.hof.automation.entity.AutomationWorkStatus.YIELDED_PRIORITY ||
@@ -114,7 +115,10 @@ class AutomationTargetSelector(
                     lifecycle.resumeForCheck(accountId, due.id)
                     return selectSession(accountId, due)
                 }
-                when (val result = coordinate(loader.loadEntry(accountId, entry.id))) {
+                val snapshot = loader.loadEntry(accountId, entry.id).excludingWaitingQuests(
+                    waiting.map(AutomationWorkSessionView::targetKey).toSet(),
+                )
+                when (val result = coordinate(snapshot)) {
                     is AutomationCoordination.Runnable -> return result.copy(warnings = warnings + result.warnings)
                     is AutomationCoordination.Fatal -> return result.copy(warnings = warnings + result.warnings)
                     is AutomationCoordination.Unavailable -> {
@@ -130,6 +134,17 @@ class AutomationTargetSelector(
 
     private fun coordinate(entry: AutomationCoordinatorEntry): AutomationCoordination =
         coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(entry)))
+
+    private fun AutomationCoordinatorEntry.excludingWaitingQuests(
+        targetKeys: Set<String>,
+    ): AutomationCoordinatorEntry {
+        if (type != AutomationType.QUEST || targetKeys.isEmpty()) return this
+        return copy(
+            quest = quest?.copy(
+                selections = quest.selections.filterNot { it.questCode in targetKeys },
+            ),
+        )
+    }
 
     private fun AutomationWorkSessionView.optimisticMapClearQuest(): List<QuestSnapshot>? {
         val current = observedCurrent ?: return null

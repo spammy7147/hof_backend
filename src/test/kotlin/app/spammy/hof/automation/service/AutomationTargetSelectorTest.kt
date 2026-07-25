@@ -209,7 +209,7 @@ class AutomationTargetSelectorTest {
     }
 
     @Test
-    fun `parked higher priority target is not probed before its next check`() {
+    fun `parked quest target does not block another runnable quest in the same entry`() {
         val waiting = session(
             id = 27,
             entry = questEntry,
@@ -217,6 +217,65 @@ class AutomationTargetSelectorTest {
             targetKey = "quest-1",
             status = AutomationWorkStatus.WAITING_RESOURCE,
             nextCheckAt = now.plusSeconds(1800),
+        )
+        val questSnapshot = AutomationCoordinatorEntry(
+            10,
+            AutomationType.QUEST,
+            quest = QuestAutomationSnapshot(
+                accountId = 7,
+                quests = emptyList(),
+                selections = listOf(selection("quest-1"), selection("quest-2")),
+                mapStates = emptyList(),
+                currentCycles = emptyMap(),
+                counters = emptyMap(),
+                mapIdentityCandidates = emptyList(),
+                now = now,
+            ),
+        )
+        val runnableSnapshot = questSnapshot.copy(
+            quest = requireNotNull(questSnapshot.quest).copy(selections = listOf(selection("quest-2"))),
+        )
+        val questAction = QuestAction.Accept("quest-2", "accept-2")
+        Mockito.`when`(work.findRunning(7)).thenReturn(null)
+        Mockito.`when`(work.findWaiting(7)).thenReturn(listOf(waiting))
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(questEntry))
+        Mockito.`when`(loader.loadEntry(7, 10, null, null)).thenReturn(questSnapshot)
+        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(runnableSnapshot))))
+            .thenReturn(AutomationCoordination.Runnable(10, questAction, emptyList()))
+
+        val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
+
+        assertEquals("quest-2", assertIs<QuestAction.Accept>(selected.action).questCode)
+        Mockito.verify(loader).loadEntry(7, 10, null, null)
+        Mockito.verify(coordinator).coordinate(AutomationCoordinatorSnapshot(listOf(runnableSnapshot)))
+    }
+
+    @Test
+    fun `parked quest target releases a lower priority entry when no other quest is runnable`() {
+        val waiting = session(
+            id = 29,
+            entry = questEntry,
+            workType = AutomationWorkType.QUEST,
+            targetKey = "quest-1",
+            status = AutomationWorkStatus.WAITING_COOLDOWN,
+            nextCheckAt = now.plusSeconds(1800),
+        )
+        val questSnapshot = AutomationCoordinatorEntry(
+            10,
+            AutomationType.QUEST,
+            quest = QuestAutomationSnapshot(
+                accountId = 7,
+                quests = emptyList(),
+                selections = listOf(selection("quest-1")),
+                mapStates = emptyList(),
+                currentCycles = emptyMap(),
+                counters = emptyMap(),
+                mapIdentityCandidates = emptyList(),
+                now = now,
+            ),
+        )
+        val idleQuestSnapshot = questSnapshot.copy(
+            quest = requireNotNull(questSnapshot.quest).copy(selections = emptyList()),
         )
         val battleSnapshot = AutomationCoordinatorEntry(11, AutomationType.BATTLE_MAP)
         val battleAction = BattleMapAutomationAction(
@@ -232,13 +291,19 @@ class AutomationTargetSelectorTest {
         Mockito.`when`(work.findRunning(7)).thenReturn(null)
         Mockito.`when`(work.findWaiting(7)).thenReturn(listOf(waiting))
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(questEntry, battleEntry))
+        Mockito.`when`(loader.loadEntry(7, 10, null, null)).thenReturn(questSnapshot)
+        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(idleQuestSnapshot))))
+            .thenReturn(AutomationCoordination.Idle(emptyList()))
         Mockito.`when`(loader.loadEntry(7, 11, null, null)).thenReturn(battleSnapshot)
         Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(battleSnapshot))))
             .thenReturn(AutomationCoordination.Runnable(11, battleAction, emptyList()))
 
-        assertIs<AutomationCoordination.Runnable>(selector.select(7))
+        val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
 
-        Mockito.verify(loader, Mockito.never()).loadEntry(7, 10, null, null)
+        assertEquals(11, selected.entryId)
+        Mockito.verify(lifecycle, Mockito.never()).resumeForCheck(7, 29)
+        Mockito.verify(coordinator).coordinate(AutomationCoordinatorSnapshot(listOf(idleQuestSnapshot)))
+        Mockito.verify(loader).loadEntry(7, 11, null, null)
     }
 
     @Test
@@ -307,5 +372,11 @@ class AutomationTargetSelectorTest {
         observedRequired = observedRequired,
         materialName = materialName,
         nextCheckAt = nextCheckAt,
+    )
+
+    private fun selection(questCode: String) = QuestAutomationSelection(
+        questCode = questCode,
+        enabled = true,
+        maps = emptyList(),
     )
 }
