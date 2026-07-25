@@ -24,24 +24,34 @@ class BattleResultParser {
      */
     fun parse(
         html: String,
-        allyNames: List<String>,
+        playerName: String?,
     ): HofBattleResult =
-        parseAll(html = html, allyNames = allyNames).first()
+        parseAll(html = html, playerName = playerName).first()
 
     /**
      * 3회 전투처럼 한 HTML에 여러 결과 블록이 있는 경우 모든 라운드를 파싱한다.
      */
     fun parseAll(
         html: String,
-        allyNames: List<String>,
+        playerName: String?,
     ): List<HofBattleResult> {
         val document = Jsoup.parse(html)
         val documentLines = DomLineCollector().collect(document)
 
         return splitRoundLines(documentLines).map { roundLines ->
-            parseRoundLines(lines = roundLines, allyNames = allyNames)
+            parseRoundLines(lines = roundLines, playerName = playerName)
         }
     }
+
+    /**
+     * Keeps existing callers source-compatible until they provide the authoritative player name.
+     */
+    @Deprecated("Use parseAll(html, playerName) with the authoritative player name")
+    fun parseAll(
+        html: String,
+        allyNames: List<String>,
+    ): List<HofBattleResult> =
+        parseAll(html = html, playerName = allyNames.firstOrNull())
 
     /**
      * DOM 순서와 줄 경계를 보존한 라운드에서 제목, URL, 보상, 아군/적군 상태를 읽는다.
@@ -51,7 +61,7 @@ class BattleResultParser {
      */
     private fun parseRoundLines(
         lines: List<DomLine>,
-        allyNames: List<String>,
+        playerName: String?,
     ): HofBattleResult {
         val text = lines.joinToString(" ") { line -> line.text }.normalized()
         val title = findTitle(text)
@@ -62,9 +72,7 @@ class BattleResultParser {
         return HofBattleResult(
             outcome = parseOutcome(
                 title = title,
-                allyNames = allyNames,
-                enemySide = enemySide,
-                allySide = allySide,
+                playerName = playerName,
             ),
             title = title,
             turns = TURN_PATTERN.find(text)?.groupValues?.getOrNull(1)?.toNumberOrNull(),
@@ -113,27 +121,25 @@ class BattleResultParser {
     }
 
     /**
-     * 승리/패배/무승부를 판단한다.
-     *
-     * 같은 `승리했다!` 문구라도 내 캐릭터명, 생존자 수, 아군/적군 위치를 함께 보고 판단한다.
+     * 승리/패배/무승부를 전투 결과 제목과 권위 있는 플레이어 이름으로 판단한다.
      */
     private fun parseOutcome(
         title: String,
-        allyNames: List<String>,
-        enemySide: HofBattleSide,
-        allySide: HofBattleSide,
-    ): HofBattleOutcome =
-        when {
-            title.contains("무승부") -> HofBattleOutcome.DRAW
-            title.contains("승리했다") && enemySide.survivorsAlive == 0 && (allySide.survivorsAlive ?: 0) > 0 ->
-                HofBattleOutcome.VICTORY
-            title.contains("승리했다") && allySide.survivorsAlive == 0 && (enemySide.survivorsAlive ?: 0) > 0 ->
-                HofBattleOutcome.DEFEAT
-            title.contains("승리했다") && allyNames.any { allyName -> allyName.isNotBlank() && title.contains(allyName) } ->
-                HofBattleOutcome.VICTORY
+        playerName: String?,
+    ): HofBattleOutcome {
+        if (title.contains("무승부")) return HofBattleOutcome.DRAW
+
+        val normalizedPlayerName = playerName
+            ?.normalized()
+            ?.takeUnless { name -> name.isBlank() || name.equals("Unknown", ignoreCase = true) }
+            ?: return HofBattleOutcome.UNKNOWN
+
+        return when {
+            title.contains("승리했다") && title.contains(normalizedPlayerName) -> HofBattleOutcome.VICTORY
             title.contains("승리했다") -> HofBattleOutcome.DEFEAT
             else -> HofBattleOutcome.UNKNOWN
         }
+    }
 
     private fun parseFunds(text: String): Int? =
         FUNDS_PATTERN.find(text)?.groupValues?.getOrNull(1)?.toNumberOrNull()
