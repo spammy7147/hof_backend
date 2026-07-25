@@ -7,6 +7,29 @@ class BattleMapParserTest {
     private val parser = BattleMapParser()
 
     @Test
+    fun `completed catacomb has no victories remaining while unattempted next map stays available`() {
+        val html = """
+            <div>HOF 마을 지하 묘지(적정 레벨 : 45-60)( 6 )</div>
+            <div id="mapgroup9">
+              <div>
+                <a href="index.php?sp_common=Conc001">Catacomb- 지하 묘소 - 열기가 느껴지는 묘소</a>
+                [ 승리!(총 2회 도전) ] (타임 소모 : 0)
+              </div>
+              <div>
+                <a href="index.php?sp_common=Conc002">Catacomb- 지하 묘소 - 차갑게 얼어붙은 묘소</a>
+                [ 0회 도전함 ] (타임 소모 : 0)
+              </div>
+            </div>
+        """.trimIndent()
+
+        val maps = parser.parse("adventure_map", "sp_common", html)
+
+        assertEquals(listOf("Conc001", "Conc002"), maps.map { it.mapCode })
+        assertEquals(listOf(0, null), maps.map { it.winCount })
+        assertEquals(listOf(null, null), maps.map { it.cooldownRemainingSeconds })
+    }
+
+    @Test
     fun `separates trailing cooldown state from normal and easy placeholder names`() {
         val html = """
             <div>천공성 이지 모드 (적정 레벨 : 50-60) (1)</div>

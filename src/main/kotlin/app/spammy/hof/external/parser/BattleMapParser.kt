@@ -333,12 +333,17 @@ class BattleMapParser {
 
     /**
      * `( 도전 15회 , 승리 5회 ) 남음` 형식에서 하루 남은 승리 가능 횟수를 읽는다.
+     * `승리!(총 2회 도전)`은 해당 맵의 당일 승리가 이미 완료됐다는 뜻이므로 0으로 정규화한다.
      */
     private fun parseWinCount(text: String): Int? =
-        WIN_COUNT_PATTERN.find(text)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.toNumberOrNull()
+        if (DAILY_VICTORY_COMPLETE_PATTERN.containsMatchIn(text)) {
+            0
+        } else {
+            WIN_COUNT_PATTERN.find(text)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.toNumberOrNull()
+        }
 
     /**
      * HOF의 `(시간 분) 남음` 표기를 절대 만료 시각 계산에 쓸 초 단위로 바꾼다.
@@ -476,6 +481,9 @@ class BattleMapParser {
         val AVAILABLE_COUNT_PATTERN = Regex("""([\d,]+)\s*가능""")
         val ATTEMPT_COUNT_PATTERN = Regex("""도전\s*([\d,]+)\s*회""")
         val WIN_COUNT_PATTERN = Regex("""승리\s*([\d,]+)\s*회""")
+        val DAILY_VICTORY_COMPLETE_PATTERN = Regex(
+            """승리\s*!\s*\(\s*총\s*[\d,]+\s*회\s*도전\s*\)""",
+        )
         val COOLDOWN_REMAINING_PATTERN =
             Regex("""\(\s*((?:([\d,]+)\s*시간(?:\s*([\d,]+)\s*분)?)|([\d,]+)\s*분)\s*\)\s*남음""")
         val COOLDOWN_ADVERTISEMENT_PATTERN = Regex("""\([^)]*(?:시간|분)[^)]*\)\s*남음""")
