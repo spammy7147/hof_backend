@@ -18,6 +18,8 @@ Backend 또는 Kafka가 재시작되면 DB recovery scan이 `PENDING`, `RUNNING`
 
 자동화는 퀘스트·전투맵·모험맵의 논리 작업을 DB 세션으로 유지한다. 재료나 쿨타임을 기다리는 대상은 `nextCheckAt` 전까지 HOF를 조회하지 않으며, 관련 전리품 신호가 들어오거나 기본 30분 보정 시각이 되면 해당 대상만 다시 확인한다. Redis는 정확성의 원본이 아닌 만기 인덱스 가속 용도다.
 
+전투맵 작업 단위는 설정 목표 전체가 아니라 HOF의 1회 또는 3회 전투 요청 한 번이다. 결과와 승리 진행량을 확정한 뒤 세션을 완료하고 전체 모듈 우선순위를 처음부터 다시 평가한다. 추정 TIME이 1500 이하이면 전투맵만 1501 도달 예상 시각까지 대기하며, 퀘스트와 모험맵은 계속 평가한다.
+
 - `HOF_AUTOMATION_REDIS_ENABLED=false` (기본값): Redis 연결 없이 DB 인덱스만 사용한다.
 - `HOF_AUTOMATION_REDIS_ENABLED=true`: Spring Data Redis 접속 정보를 설정하며, 만기 시각을 `hof:automation:due` Sorted Set에 미러링한다. 반환 대상은 실행 전 DB에서 다시 검증한다.
 - `HOF_AUTOMATION_RECONCILIATION_INTERVAL=30m`: 재료 및 알 수 없는 퀘스트 쿨타임의 전체 보정 간격이다.
