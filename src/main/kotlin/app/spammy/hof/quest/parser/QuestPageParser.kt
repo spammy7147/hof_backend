@@ -58,10 +58,10 @@ class QuestPageParser {
     private fun isQuestStart(element: Element): Boolean = element.hasAttr("data-quest-id") ||
         (
             element.tagName().equals("tr", ignoreCase = true) &&
-                directCells(element).any(::containsOwnedQuestId)
+                directCells(element).any(::containsOwnedDisplayCode)
             )
 
-    private fun containsOwnedQuestId(cell: Element): Boolean {
+    private fun containsOwnedDisplayCode(cell: Element): Boolean {
         return QUEST_ID.containsMatchIn(ownedCellText(cell))
     }
 
@@ -94,17 +94,17 @@ class QuestPageParser {
         val start = block.start
         val startCells = directCells(start)
         val nameCell = startCells.firstOrNull { it.hasClass("td7s") }
-            ?: startCells.firstOrNull(::containsOwnedQuestId)
+            ?: startCells.firstOrNull(::containsOwnedDisplayCode)
         val nameText = nameCell?.let(::ownedCellText)
             ?: start.selectFirst("h1, h2, h3, h4, [data-quest-name]")?.text()
             ?: start.text()
-        val sourceQuestId = start.attr("data-quest-id").ifBlank {
+        val displayCode = start.attr("data-quest-id").ifBlank {
             QUEST_ID.find(nameText)?.groupValues?.get(1).orEmpty()
         }
-        if (sourceQuestId.isBlank()) return null
+        if (displayCode.isBlank()) return null
 
         val normalizedName = normalize(nameText.replace(QUEST_ID, ""))
-        val identity = QuestIdentityFactory.create(sourceQuestId, normalizedName)
+        val identity = QuestIdentityFactory.create(displayCode, normalizedName)
         val actionHref = block.nodes.firstNotNullOfOrNull { node ->
             selectOwnedFirst(node, "a[href*='action=']")?.attr("href")
         }.orEmpty()
@@ -434,37 +434,6 @@ class QuestPageParser {
 
     private companion object {
         val QUEST_ID = Regex("\\[([A-Za-z0-9_-]{4,})]")
-        val KNOWN_QUEST_CODES = mapOf(
-            "수련 - 고대의 태양신 정복" to "15007",
-            "숲에서 무슨일이?" to "400",
-            "일일 퀘스트 수주" to "90",
-            "주단위 퀘스트 수주" to "91",
-            "퀘스트 스크롤 추가 구입" to "93",
-            "지하유적 지하 조사 시작" to "250",
-            "도전자!" to "301",
-            "본선 도전권(A)" to "310",
-            "본선 도전권(B)" to "311",
-            "천년제 종료...?" to "322",
-            "저택 동관 조사(반복)" to "557",
-            "저택 동관 열쇠 수집" to "563",
-            "저택 서관 열쇠 수집" to "571",
-            "마도사의 은신처 조사 지원" to "171",
-            "중앙 마력로의 열쇠(제 1탑 EASY)" to "610",
-            "중앙 마력로의 열쇠(제 1탑)" to "R610",
-            "중앙 마력로의 열쇠(제 2탑 EASY)" to "611",
-            "중앙 마력로의 열쇠(제 2탑)" to "R611",
-            "중앙 마력로의 열쇠(제 3탑 EASY)" to "612",
-            "중앙 마력로의 열쇠(제 3탑)" to "R612",
-            "중앙 마력로의 열쇠(제 4탑 EASY)" to "613",
-            "중앙 마력로의 열쇠(제 4탑)" to "R613",
-            "마당 빗자루 제작" to "HQ1",
-            "마당 청소" to "HQ2",
-            "옷감 만들기 - 희귀 옷감과 교환" to "HQ2250",
-            "옷감 만들기 - 옷본과 교환" to "HQ2251",
-            "옷감 만들기 - 통행증과 교환" to "HQ2252",
-            "옷감 만들기 - 통행증과 교환(2)" to "HQ2254",
-            "옷감 만들기 - 통행증과 교환(3)" to "HQ2255",
-        )
         val PROGRESS = Regex("\\[\\s*(\\d+)\\s*/\\s*(\\d+)\\s*]")
         val ACTION = Regex("[?&]action=(get|complete)(?:[&#]|$)")
         val NO_PARAMETER = Regex("[?&]no=([^&\"'#\\s]+)")
