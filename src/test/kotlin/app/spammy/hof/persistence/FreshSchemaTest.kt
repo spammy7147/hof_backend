@@ -58,6 +58,7 @@ class FreshSchemaTest {
                 "7" to "add automation wait reason",
                 "8" to "observe latest hof status",
                 "9" to "reconcile ambiguous automation actions",
+                "10" to "stabilize quest identity",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -70,6 +71,7 @@ class FreshSchemaTest {
                 .sorted()
         assertEquals(
             listOf(
+                "V10__stabilize_quest_identity.sql",
                 "V1__initialize_schema.sql",
                 "V2__order_party_presets.sql",
                 "V3__add_automation_work_sessions.sql",
@@ -92,6 +94,8 @@ class FreshSchemaTest {
             assertTrue(connection.columnExists("captcha_challenges", "preparation_version"))
             assertTrue(connection.columnExists("characters", "detail_synced_at"))
             assertTrue(connection.columnExists("battle_maps", "shares_minute_cooldown"))
+            assertTrue(connection.columnExists("quest_automation_selections", "display_code"))
+            assertTrue(connection.columnExists("quest_automation_selections", "quest_name"))
         }
     }
 

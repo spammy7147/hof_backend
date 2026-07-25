@@ -348,6 +348,7 @@ internal object FreshSchemaContract {
             "quest_automation_selections",
             serialId(), requiredBigint("automation_entry_id"), requiredVarchar("quest_code", 100),
             requiredBoolean("enabled"), requiredInteger("source_order"),
+            requiredVarchar("display_code", 100), requiredVarchar("quest_name", 255),
         ),
         table(
             "quest_automation_maps",
