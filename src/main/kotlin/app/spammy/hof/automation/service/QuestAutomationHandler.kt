@@ -489,7 +489,7 @@ class QuestAutomationHandler(
         val decision = if (categoryId == ADVENTURE_MAP_CATEGORY) {
             timePolicy.forAdventureMap(timeSnapshot, now, liveMapState.requiredTime)
         } else {
-            timePolicy.forBattleMap(
+            timePolicy.forQuestCombat(
                 timeSnapshot,
                 now,
                 remaining,

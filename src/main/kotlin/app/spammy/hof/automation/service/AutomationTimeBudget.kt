@@ -1,5 +1,6 @@
 package app.spammy.hof.automation.service
 
+import app.spammy.hof.automation.config.AutomationSessionProperties
 import java.time.Duration
 import java.time.Instant
 import org.springframework.stereotype.Component
@@ -38,18 +39,61 @@ sealed interface BattleTimeDecision {
 }
 
 @Component
-class BattleTimePolicy {
+class BattleTimePolicy(
+    private val sessionProperties: AutomationSessionProperties = AutomationSessionProperties(),
+) {
     fun forBattleMap(
         snapshot: AutomationTimeSnapshot?,
         now: Instant,
         targetRemaining: Int,
         supportsThreeBattles: Boolean,
         hasCapacityForThree: Boolean,
+    ): BattleTimeDecision = forCombat(
+        snapshot = snapshot,
+        now = now,
+        targetRemaining = targetRemaining,
+        supportsThreeBattles = supportsThreeBattles,
+        hasCapacityForThree = hasCapacityForThree,
+        minimumExecutionTime = BATTLE_MAP_MINIMUM_EXECUTION_TIME,
+        unreachableRetryAt = snapshot
+            ?.takeIf { it.max < BATTLE_MAP_MINIMUM_EXECUTION_TIME }
+            ?.let { now.plus(sessionProperties.reconciliationInterval) },
+    )
+
+    fun forQuestCombat(
+        snapshot: AutomationTimeSnapshot?,
+        now: Instant,
+        targetRemaining: Int,
+        supportsThreeBattles: Boolean,
+        hasCapacityForThree: Boolean,
+    ): BattleTimeDecision = forCombat(
+        snapshot = snapshot,
+        now = now,
+        targetRemaining = targetRemaining,
+        supportsThreeBattles = supportsThreeBattles,
+        hasCapacityForThree = hasCapacityForThree,
+        minimumExecutionTime = BATTLE_TIME_PER_ROUND,
+        unreachableRetryAt = null,
+    )
+
+    private fun forCombat(
+        snapshot: AutomationTimeSnapshot?,
+        now: Instant,
+        targetRemaining: Int,
+        supportsThreeBattles: Boolean,
+        hasCapacityForThree: Boolean,
+        minimumExecutionTime: Int,
+        unreachableRetryAt: Instant?,
     ): BattleTimeDecision {
         val estimated = snapshot?.estimateAt(now)
-            ?: return missingObservation(now, BATTLE_TIME_PER_ROUND)
-        if (estimated < BATTLE_TIME_PER_ROUND) {
-            return wait(now, estimated, BATTLE_TIME_PER_ROUND, false)
+            ?: return missingObservation(now, minimumExecutionTime)
+        if (estimated < minimumExecutionTime) {
+            return BattleTimeDecision.Wait(
+                nextRunAt = unreachableRetryAt
+                    ?: now.plusSeconds((minimumExecutionTime - estimated).toLong()),
+                estimatedTime = estimated,
+                requiredTime = minimumExecutionTime,
+            )
         }
         val count = if (
             estimated >= THREE_BATTLE_TIME &&
@@ -108,6 +152,7 @@ class BattleTimePolicy {
 
     private companion object {
         const val BATTLE_TIME_PER_ROUND = 100
+        const val BATTLE_MAP_MINIMUM_EXECUTION_TIME = 1501
         const val THREE_BATTLE_COUNT = 3
         const val THREE_BATTLE_TIME = 300
         const val MISSING_OBSERVATION_RETRY_SECONDS = 10L

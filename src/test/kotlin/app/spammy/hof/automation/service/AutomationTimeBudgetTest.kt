@@ -1,5 +1,6 @@
 package app.spammy.hof.automation.service
 
+import java.time.Duration
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -18,18 +19,36 @@ class AutomationTimeBudgetTest {
     }
 
     @Test
-    fun `battle map uses exact 100 and 300 boundaries`() {
-        assertIs<BattleTimeDecision.Wait>(policy.forBattleMap(time(99), NOW, 10, true, true))
-        assertEquals(1, run(policy.forBattleMap(time(100), NOW, 10, true, true)).battleCount)
-        assertEquals(1, run(policy.forBattleMap(time(299), NOW, 10, true, true)).battleCount)
-        assertEquals(3, run(policy.forBattleMap(time(300), NOW, 10, true, true)).battleCount)
+    fun `battle map preserves 1500 TIME and chooses one or three only above the reserve`() {
+        assertEquals(
+            NOW.plusSeconds(1),
+            assertIs<BattleTimeDecision.Wait>(
+                policy.forBattleMap(time(1500), NOW, 10, true, true),
+            ).nextRunAt,
+        )
+        assertEquals(3, run(policy.forBattleMap(time(1501), NOW, 10, true, true)).battleCount)
+        assertEquals(1, run(policy.forBattleMap(time(1501), NOW, 2, true, true)).battleCount)
+        assertEquals(1, run(policy.forBattleMap(time(1501), NOW, 10, false, true)).battleCount)
+        assertEquals(1, run(policy.forBattleMap(time(1501), NOW, 10, true, false)).battleCount)
     }
 
     @Test
-    fun `battle map lowers to one when target or map capacity cannot support three`() {
-        assertEquals(1, run(policy.forBattleMap(time(300), NOW, 2, true, true)).battleCount)
-        assertEquals(1, run(policy.forBattleMap(time(300), NOW, 10, false, true)).battleCount)
-        assertEquals(1, run(policy.forBattleMap(time(300), NOW, 10, true, false)).battleCount)
+    fun `quest combat keeps exact round cost boundaries`() {
+        assertIs<BattleTimeDecision.Wait>(policy.forQuestCombat(time(99), NOW, 10, true, true))
+        assertEquals(1, run(policy.forQuestCombat(time(100), NOW, 10, true, true)).battleCount)
+        assertEquals(1, run(policy.forQuestCombat(time(299), NOW, 10, true, true)).battleCount)
+        assertEquals(3, run(policy.forQuestCombat(time(300), NOW, 10, true, true)).battleCount)
+    }
+
+    @Test
+    fun `battle map with maximum TIME at the reserve uses the reconciliation interval`() {
+        val constrained = AutomationTimeSnapshot(current = 1500, max = 1500, observedAt = NOW)
+
+        val waiting = assertIs<BattleTimeDecision.Wait>(
+            policy.forBattleMap(constrained, NOW, 10, true, true),
+        )
+
+        assertEquals(NOW.plus(Duration.ofMinutes(30)), waiting.nextRunAt)
     }
 
     @Test

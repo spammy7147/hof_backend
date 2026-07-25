@@ -32,16 +32,16 @@ class BattleMapAutomationHandlerTest {
     }
 
     @Test
-    fun `TIME chooses wait one or three battles at exact boundaries`() {
+    fun `battle map waits through 1500 TIME and chooses rounds above the reserve`() {
         val now = Instant.parse("2026-07-15T00:00:00Z")
-        val at99 = handler.evaluate(snapshot(
+        val at1500 = handler.evaluate(snapshot(
             listOf(setting("map", 10)),
             emptyMap(),
             listOf(state("map", supportsThree = true)),
             now,
-            timeCurrent = 99,
+            timeCurrent = 1500,
         ))
-        assertEquals(now.plusSeconds(1), assertIs<HandlerEvaluation.Unavailable>(at99).nextRunAt)
+        assertEquals(now.plusSeconds(1), assertIs<HandlerEvaluation.Unavailable>(at1500).nextRunAt)
 
         fun actionAt(time: Int) = assertIs<BattleMapAutomationAction>(
             assertIs<HandlerEvaluation.Runnable>(handler.evaluate(snapshot(
@@ -52,9 +52,7 @@ class BattleMapAutomationHandlerTest {
                 timeCurrent = time,
             ))).action,
         )
-        assertEquals(1, actionAt(100).battleCount)
-        assertEquals(1, actionAt(299).battleCount)
-        assertEquals(3, actionAt(300).battleCount)
+        assertEquals(3, actionAt(1501).battleCount)
     }
 
     @Test

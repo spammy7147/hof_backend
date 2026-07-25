@@ -5,6 +5,7 @@ import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.entity.AutomationWorkStatus
 import app.spammy.hof.automation.entity.AutomationWorkType
+import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.automation.repository.AutomationWorkSessionQueryRepository
 import app.spammy.hof.automation.repository.AutomationWorkSessionView
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
@@ -51,6 +52,35 @@ class AutomationTargetSelectorTest {
         assertEquals(10, selected.entryId)
         Mockito.verify(loader, Mockito.never()).loadEntry(7, 11, null)
         Mockito.verify(loader, Mockito.never()).loadEntry(7, 12, null)
+    }
+
+    @Test
+    fun `unavailable battle map does not block a lower priority adventure entry`() {
+        val battleSnapshot = AutomationCoordinatorEntry(11, AutomationType.BATTLE_MAP)
+        val adventureSnapshot = AutomationCoordinatorEntry(12, AutomationType.ADVENTURE_MAP)
+        val retryAt = now.plusSeconds(501)
+        val adventureAction = AdventureMapAutomationAction(
+            accountId = 7,
+            categoryId = "adventure_map",
+            mapCode = "map-1",
+            presetMode = PresetSelectionMode.PRIMARY,
+            presetId = 3,
+            settingIdentity = 30,
+            executionIdentity = "adventure-1",
+        )
+        Mockito.`when`(work.findRunning(7)).thenReturn(null)
+        Mockito.`when`(work.findWaiting(7)).thenReturn(emptyList())
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(battleEntry, adventureEntry))
+        Mockito.`when`(loader.loadEntry(7, 11, null, null)).thenReturn(battleSnapshot)
+        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(battleSnapshot))))
+            .thenReturn(AutomationCoordination.Unavailable(retryAt, emptyList()))
+        Mockito.`when`(loader.loadEntry(7, 12, null, null)).thenReturn(adventureSnapshot)
+        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(adventureSnapshot))))
+            .thenReturn(AutomationCoordination.Runnable(12, adventureAction, emptyList()))
+
+        val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
+
+        assertEquals(12, selected.entryId)
     }
 
     @Test
