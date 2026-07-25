@@ -135,9 +135,14 @@ class UnifiedAutomationRunner @Autowired constructor(
             }
             when (decision) {
                 is AutomationCoordination.Runnable -> {
-                    typedRuntime.recordWarnings(accountId, token, decision.warnings)
-                    workTracker.ensureForAction(accountId, decision.entryId, decision.action)
-                    toStored(decision.entryId, decision.action)
+                    try {
+                        typedRuntime.recordWarnings(accountId, token, decision.warnings)
+                        workTracker.ensureForAction(accountId, decision.entryId, decision.action)
+                        toStored(decision.entryId, decision.action)
+                    } catch (error: Throwable) {
+                        stopPreparationFailure(accountId, token, decision.entryId, "BUILD", error)
+                        return
+                    }
                 }
                 is AutomationCoordination.Fatal -> {
                     typedRuntime.recordWarnings(accountId, token, decision.warnings)
@@ -161,9 +166,17 @@ class UnifiedAutomationRunner @Autowired constructor(
                 }
             }
         }
-        val row = claim.preparedAction ?: typedRuntime.prepare(accountId, token, stored) ?: run {
-            typedRuntime.releaseAndEnqueueWake(accountId, token, "TYPED_CONFIG_RELOAD")
-            return
+        val row = claim.preparedAction ?: run {
+            val prepared = try {
+                typedRuntime.prepare(accountId, token, stored)
+            } catch (error: Throwable) {
+                stopPreparationFailure(accountId, token, stored.entryId, "PERSIST", error)
+                return
+            }
+            prepared ?: run {
+                typedRuntime.releaseAndEnqueueWake(accountId, token, "TYPED_CONFIG_RELOAD")
+                return
+            }
         }
         if (row.status == app.spammy.hof.automation.entity.TypedAutomationActionStatus.RECONCILING) {
             val resolution = try {
@@ -298,6 +311,30 @@ class UnifiedAutomationRunner @Autowired constructor(
         } else {
             AutomationStopReason.FATAL
         }
+    }
+
+    private fun stopPreparationFailure(
+        accountId: Long,
+        token: String,
+        entryId: Long,
+        stage: String,
+        error: Throwable,
+    ) {
+        log.error(
+            "Typed automation preparation failed accountId={} entryId={} stage={} errorType={}",
+            accountId,
+            entryId,
+            stage,
+            error.javaClass.name,
+            error,
+        )
+        typedRuntime.stop(
+            accountId,
+            token,
+            null,
+            AutomationStopReason.FATAL,
+            error.message ?: error.javaClass.simpleName,
+        )
     }
 
     private fun Throwable.findHofAutomationDeferral(): HofAutomationDeferredException? =

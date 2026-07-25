@@ -65,6 +65,32 @@ class UnifiedAutomationRunnerTest {
     }
 
     @Test
+    fun `prepare failure stops the claimed action before external execution`() {
+        val decisions = Mockito.mock(AutomationDecisionSource::class.java)
+        val workTracker = Mockito.mock(AutomationWorkTracker::class.java)
+        val action = QuestAction.Accept("quest-1", "accept-1")
+        Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
+        Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token"))
+        Mockito.`when`(decisions.select(7)).thenReturn(AutomationCoordination.Runnable(10, action, emptyList()))
+        Mockito.`when`(runtime.prepare(Mockito.eq(7L), eqString("token"), anyStoredAction()))
+            .thenThrow(IllegalArgumentException("invalid stored action"))
+        val scopedRunner = UnifiedAutomationRunner(
+            preflight, runtime, decisions, workTracker, executor, codec, wakeup, sharedCooldowns, ambiguousReconciler,
+        )
+
+        scopedRunner.runOne(7)
+
+        Mockito.verify(runtime).stop(
+            Mockito.eq(7L),
+            eqString("token"),
+            Mockito.isNull(),
+            eqValue(AutomationStopReason.FATAL),
+            eqString("invalid stored action"),
+        )
+        Mockito.verifyNoInteractions(executor)
+    }
+
+    @Test
     fun `runner persists submits and checkpoints one action then wakes a fresh evaluation`() {
         val snapshot = AutomationCoordinatorSnapshot(emptyList())
         val action = BattleMapAutomationAction(
@@ -163,6 +189,7 @@ class UnifiedAutomationRunnerTest {
             missionLabel = "몬스터 처치 · 슬라임",
             missionCurrent = 2,
             missionRequired = 5,
+            battleCount = 3,
         )
         val row = Mockito.mock(TypedAutomationActionRunEntity::class.java)
         Mockito.`when`(row.id).thenReturn(88L)
@@ -181,6 +208,7 @@ class UnifiedAutomationRunnerTest {
             StoredActionDisplay("초보자 임무", "몬스터 처치 · 슬라임", 2, 5, "푸른 초원"),
             storedCaptor.value.payload.display,
         )
+        assertEquals(3, (storedCaptor.value.payload as StoredTypedActionPayload.QuestBattle).battleCount)
     }
 
     @Test
