@@ -55,7 +55,7 @@ class QuestControllerTest {
         mockMvc.perform(get("/api/quests"))
             .andExpect(status().isOk)
             .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-            .andExpect(jsonPath("$[0].questId").value("0571"))
+            .andExpect(jsonPath("$[0].questKey").value("0571"))
             .andExpect(jsonPath("$[0].section").value("ACTIVE"))
             .andExpect(jsonPath("$[0].missions[0].type").value("MONSTER_KILL"))
             .andExpect(jsonPath("$[0].missions[0].progress.current").value(12))
@@ -98,7 +98,7 @@ class QuestControllerTest {
         .build()
 
     private fun snapshot() = QuestSnapshot(
-        questId = "0571",
+        questKey = "0571",
         name = "저택 서관 열쇠 수집",
         state = QuestState.ACTIVE,
         section = QuestSection.ACTIVE,

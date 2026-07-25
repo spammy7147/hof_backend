@@ -154,7 +154,7 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
         10,
         "quest-battle-1",
         StoredTypedActionPayload.QuestBattle(
-            questCode = "Q-1",
+            questKey = "Q-1",
             questCycle = "1",
             missionKey = "kill",
             missionType = QuestMissionType.MONSTER_KILL,
@@ -233,7 +233,7 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
         )
 
     private fun quest(code: String, state: QuestState, actionNo: String?) = QuestSnapshot(
-        questId = code,
+        questKey = code,
         name = code,
         state = state,
         section = when (state) {

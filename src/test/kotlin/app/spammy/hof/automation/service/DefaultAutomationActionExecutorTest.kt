@@ -177,7 +177,7 @@ class DefaultAutomationActionExecutorTest {
             entryId = 11L,
             executionIdentity = "quest-battle-3",
             payload = StoredTypedActionPayload.QuestBattle(
-                questCode = "Q-1",
+                questKey = "Q-1",
                 questCycle = "2",
                 missionKey = "kill",
                 missionType = QuestMissionType.MONSTER_KILL,

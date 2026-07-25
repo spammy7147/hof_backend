@@ -338,13 +338,13 @@ class UnifiedAutomationRunner @Autowired constructor(
         }
         val payload = when (action) {
             is QuestAction.Claim -> StoredTypedActionPayload.QuestClaim(
-                action.questCode, action.actionNo, StoredActionDisplay(questName = action.questName),
+                action.questKey, action.actionNo, StoredActionDisplay(questName = action.questName),
             )
             is QuestAction.Accept -> StoredTypedActionPayload.QuestAccept(
-                action.questCode, action.actionNo, StoredActionDisplay(questName = action.questName),
+                action.questKey, action.actionNo, StoredActionDisplay(questName = action.questName),
             )
             is QuestAction.Battle -> StoredTypedActionPayload.QuestBattle(
-                action.questCode, action.questCycle, action.missionKey, action.missionType,
+                action.questKey, action.questCycle, action.missionKey, action.missionType,
                 action.categoryId, action.mapCode, action.preset.mode,
                 action.preset.resolvedPresetId ?: action.preset.presetId ?: throw AutomationConfigurationException(), action.battleCount,
                 action.resolvedParty.toRequest(action.categoryId, action.mapCode, action.battleCount),

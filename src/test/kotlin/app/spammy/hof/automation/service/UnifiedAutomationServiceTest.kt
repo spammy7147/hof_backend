@@ -531,7 +531,7 @@ class UnifiedAutomationServiceTest {
     @Test
     fun `current quest battle exposes exact structured display snapshot`() {
         val payload = StoredTypedActionPayload.QuestBattle(
-            questCode = "quest-raw-code",
+            questKey = "quest-raw-code",
             questCycle = "1",
             missionKey = "mission-raw-key",
             missionType = app.spammy.hof.quest.model.QuestMissionType.MAP_CLEAR,

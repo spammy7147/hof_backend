@@ -64,7 +64,7 @@ class AutomationTargetSelector(
                 }
                 is AutomationCoordination.Idle -> {
                     val selectedQuest = entry.quest?.quests
-                        ?.singleOrNull { it.questId == session.targetKey }
+                        ?.singleOrNull { it.questKey == session.targetKey }
                     val material = selectedQuest
                         ?.missions
                         ?.firstOrNull { it.type == QuestMissionType.ITEM_TURN_IN && !it.completable }
@@ -141,7 +141,7 @@ class AutomationTargetSelector(
         if (type != AutomationType.QUEST || targetKeys.isEmpty()) return this
         return copy(
             quest = quest?.copy(
-                selections = quest.selections.filterNot { it.questCode in targetKeys },
+                selections = quest.selections.filterNot { it.questKey in targetKeys },
             ),
         )
     }
@@ -153,7 +153,8 @@ class AutomationTargetSelector(
         if (missionType != QuestMissionType.MAP_CLEAR.name || current >= required) return null
         return listOf(
             QuestSnapshot(
-                questId = targetKey,
+                questKey = targetKey,
+                displayCode = targetKey,
                 name = targetKey,
                 state = QuestState.ACTIVE,
                 section = QuestSection.ACTIVE,

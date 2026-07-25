@@ -36,10 +36,10 @@ class DefaultAutomationAmbiguousActionReconciler(
         accountId: Long,
         payload: StoredTypedActionPayload.QuestAccept,
     ): AmbiguousActionResolution {
-        val quest = loadQuests(accountId).singleOrNull { it.questId == payload.questCode }
+        val quest = loadQuests(accountId).singleOrNull { it.questKey == payload.questKey }
             ?: return AmbiguousActionResolution.VerifyLater(
                 retryAt(),
-                "Quest ${payload.questCode} is absent from the authoritative page.",
+                "Quest ${payload.questKey} is absent from the authoritative page.",
             )
         return when {
             quest.state in setOf(QuestState.ACTIVE, QuestState.CLAIMABLE, QuestState.COMPLETED) ->
@@ -57,7 +57,7 @@ class DefaultAutomationAmbiguousActionReconciler(
         accountId: Long,
         payload: StoredTypedActionPayload.QuestClaim,
     ): AmbiguousActionResolution {
-        val quest = loadQuests(accountId).singleOrNull { it.questId == payload.questCode }
+        val quest = loadQuests(accountId).singleOrNull { it.questKey == payload.questKey }
             ?: return AmbiguousActionResolution.Applied()
         return when {
             quest.state == QuestState.COMPLETED -> AmbiguousActionResolution.Applied()
@@ -74,10 +74,10 @@ class DefaultAutomationAmbiguousActionReconciler(
         accountId: Long,
         payload: StoredTypedActionPayload.QuestBattle,
     ): AmbiguousActionResolution {
-        val quest = loadQuests(accountId).singleOrNull { it.questId == payload.questCode }
+        val quest = loadQuests(accountId).singleOrNull { it.questKey == payload.questKey }
             ?: return AmbiguousActionResolution.VerifyLater(
                 retryAt(),
-                "Quest ${payload.questCode} is absent from the authoritative page.",
+                "Quest ${payload.questKey} is absent from the authoritative page.",
             )
         if (quest.state in setOf(QuestState.CLAIMABLE, QuestState.COMPLETED)) {
             return AmbiguousActionResolution.Applied(

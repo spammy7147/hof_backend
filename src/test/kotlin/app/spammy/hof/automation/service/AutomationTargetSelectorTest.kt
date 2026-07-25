@@ -88,7 +88,7 @@ class AutomationTargetSelectorTest {
         val session = session(21, questEntry, AutomationWorkType.QUEST, "quest-1", AutomationWorkStatus.RUNNING)
         val questSnapshot = AutomationCoordinatorEntry(10, AutomationType.QUEST)
         val action = QuestAction.Battle(
-            questCode = "quest-1",
+            questKey = "quest-1",
             questCycle = "1",
             missionKey = "mission",
             missionType = app.spammy.hof.quest.model.QuestMissionType.MONSTER_KILL,
@@ -104,7 +104,7 @@ class AutomationTargetSelectorTest {
 
         val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
 
-        assertEquals("quest-1", (selected.action as QuestAction.Battle).questCode)
+        assertEquals("quest-1", (selected.action as QuestAction.Battle).questKey)
         Mockito.verify(typed, Mockito.never()).findEntries(7)
         Mockito.verify(loader).loadEntry(7, 10, "quest-1")
     }
@@ -113,7 +113,7 @@ class AutomationTargetSelectorTest {
     fun `incomplete material quest parks resource wait and releases lower priorities`() {
         val session = session(21, questEntry, AutomationWorkType.QUEST, "quest-1", AutomationWorkStatus.RUNNING)
         val quest = QuestSnapshot(
-            questId = "quest-1",
+            questKey = "quest-1",
             name = "재료 수집",
             state = QuestState.ACTIVE,
             section = QuestSection.ACTIVE,
@@ -166,7 +166,7 @@ class AutomationTargetSelectorTest {
         )
         val entrySnapshot = AutomationCoordinatorEntry(10, AutomationType.QUEST)
         val optimisticQuest = QuestSnapshot(
-            questId = "quest-1",
+            questKey = "quest-1",
             name = "quest-1",
             state = QuestState.ACTIVE,
             section = QuestSection.ACTIVE,
@@ -183,7 +183,7 @@ class AutomationTargetSelectorTest {
             actionNo = null,
         )
         val action = QuestAction.Battle(
-            questCode = "quest-1",
+            questKey = "quest-1",
             questCycle = "1",
             missionKey = "clear-map",
             missionType = QuestMissionType.MAP_CLEAR,
@@ -217,7 +217,7 @@ class AutomationTargetSelectorTest {
         )
         val entrySnapshot = AutomationCoordinatorEntry(10, AutomationType.QUEST)
         val action = QuestAction.Battle(
-            questCode = "quest-1",
+            questKey = "quest-1",
             questCycle = "1",
             missionKey = "clear-map",
             missionType = QuestMissionType.MAP_CLEAR,
@@ -275,7 +275,7 @@ class AutomationTargetSelectorTest {
 
         val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
 
-        assertEquals("quest-2", assertIs<QuestAction.Accept>(selected.action).questCode)
+        assertEquals("quest-2", assertIs<QuestAction.Accept>(selected.action).questKey)
         Mockito.verify(loader).loadEntry(7, 10, null, null)
         Mockito.verify(coordinator).coordinate(AutomationCoordinatorSnapshot(listOf(runnableSnapshot)))
     }
@@ -346,7 +346,7 @@ class AutomationTargetSelectorTest {
                 accountId = 7,
                 quests = listOf(
                     QuestSnapshot(
-                        questId = "quest-1",
+                        questKey = "quest-1",
                         name = "quest-1",
                         state = QuestState.UNAVAILABLE,
                         section = QuestSection.WAITING,
@@ -404,8 +404,8 @@ class AutomationTargetSelectorTest {
         nextCheckAt = nextCheckAt,
     )
 
-    private fun selection(questCode: String) = QuestAutomationSelection(
-        questCode = questCode,
+    private fun selection(questKey: String) = QuestAutomationSelection(
+        questKey = questKey,
         enabled = true,
         maps = emptyList(),
     )

@@ -146,7 +146,7 @@ class TypedLiveAutomationSnapshotLoader(
             val quest = if (entry.type == AutomationType.QUEST) {
                 val selections = selectionsByEntry[entry.id].orEmpty()
                 selections.map { selection ->
-                    DetachedQuestSelection(selection.questCode, selection.enabled, selection.sourceOrder,
+                    DetachedQuestSelection(selection.questKey, selection.enabled, selection.sourceOrder,
                         mapsBySelection[selection.id].orEmpty().map { map ->
                             DetachedQuestMap(map.missionKey, map.categoryId, map.mapCode, map.presetMode, map.partyPreset?.id, map.executionOrder, map.manuallyOverridden)
                         })
@@ -191,7 +191,7 @@ class TypedLiveAutomationSnapshotLoader(
     }
 
     private fun questSnapshot(accountId: Long, entry: DetachedEntry, quests: List<QuestSnapshot>, states: List<AccountBattleMapStateEntity>, aliases: List<BattleMapIdentityCandidate>, config: DetachedConfiguration, now: Instant, timeSnapshot: AutomationTimeSnapshot?): QuestAutomationSnapshot {
-        val selections = entry.quest.map { selection -> QuestAutomationSelection(selection.questCode, selection.enabled, selection.maps.map { map ->
+        val selections = entry.quest.map { selection -> QuestAutomationSelection(selection.questKey, selection.enabled, selection.maps.map { map ->
             val resolved = when (map.presetMode) {
                 PresetSelectionMode.PRIMARY -> config.primary
                 PresetSelectionMode.EXPLICIT -> map.presetId?.takeIf { it in config.availablePresetIds }
@@ -199,15 +199,15 @@ class TypedLiveAutomationSnapshotLoader(
             QuestAutomationMapSelection(map.missionKey, map.categoryId, map.mapCode,
                 QuestPresetSelection(map.presetMode, map.presetId, resolved, true, resolved?.let(config.parties::get)), map.executionOrder, map.manuallyOverridden)
         }) }
-        val questCodes = selections.map { it.questCode }.toSet()
-        val persistedCycles = typed.findQuestCycles(accountId, questCodes).associateBy { it.questCode }
-        val cycles = selections.associate { it.questCode to (persistedCycles[it.questCode]?.currentCycle?.toString() ?: "0") }
-        val persistedCounters = typed.findQuestMapCounters(accountId, questCodes).associateBy {
-            QuestCounterKey(it.questCode, it.questCycle, it.missionKey, it.categoryId, it.mapCode)
+        val questKeys = selections.map { it.questKey }.toSet()
+        val persistedCycles = typed.findQuestCycles(accountId, questKeys).associateBy { it.questKey }
+        val cycles = selections.associate { it.questKey to (persistedCycles[it.questKey]?.currentCycle?.toString() ?: "0") }
+        val persistedCounters = typed.findQuestMapCounters(accountId, questKeys).associateBy {
+            QuestCounterKey(it.questKey, it.questCycle, it.missionKey, it.categoryId, it.mapCode)
         }
         val counters = linkedMapOf<QuestCounterKey, Int>()
         selections.forEach { selection -> selection.maps.forEach { map ->
-            val key = QuestCounterKey(selection.questCode, cycles.getValue(selection.questCode), map.missionKey, map.categoryId, map.mapCode)
+            val key = QuestCounterKey(selection.questKey, cycles.getValue(selection.questKey), map.missionKey, map.categoryId, map.mapCode)
             counters[key] = persistedCounters[key]?.successfulRuns ?: 0
         } }
         return QuestAutomationSnapshot(accountId, quests, selections, states.map(::questState), cycles, counters, aliases, now, config.primary, config.primary?.let(config.parties::get), timeSnapshot)
@@ -257,7 +257,7 @@ class TypedLiveAutomationSnapshotLoader(
     }
 
     private fun DetachedEntry.scopedToTarget(targetKey: String): DetachedEntry = when (type) {
-        AutomationType.QUEST -> copy(quest = quest.filter { it.questCode == targetKey })
+        AutomationType.QUEST -> copy(quest = quest.filter { it.questKey == targetKey })
         AutomationType.BATTLE_MAP -> copy(battle = battle.filter { "${it.categoryId}/${it.mapCode}" == targetKey })
         AutomationType.ADVENTURE_MAP -> copy(adventure = adventure.filter { "${it.categoryId}/${it.mapCode}" == targetKey })
     }
@@ -277,7 +277,7 @@ class TypedLiveAutomationSnapshotLoader(
 
     private data class DetachedConfiguration(val entries: List<DetachedEntry>, val primary: Long?, val availablePresetIds: Set<Long>, val parties: Map<Long, ResolvedAutomationParty>, val categories: List<String>, val version: String)
     private data class DetachedEntry(val id: Long, val type: AutomationType, val priority: Int, val enabled: Boolean, val quest: List<DetachedQuestSelection>, val battle: List<DetachedBattleSetting>, val adventure: List<DetachedAdventureSetting>)
-    private data class DetachedQuestSelection(val questCode: String, val enabled: Boolean, val order: Int, val maps: List<DetachedQuestMap>)
+    private data class DetachedQuestSelection(val questKey: String, val enabled: Boolean, val order: Int, val maps: List<DetachedQuestMap>)
     private data class DetachedQuestMap(val missionKey: String, val categoryId: String, val mapCode: String, val presetMode: PresetSelectionMode, val presetId: Long?, val executionOrder: Int, val manuallyOverridden: Boolean)
     private data class DetachedBattleSetting(val categoryId: String, val mapCode: String, val dailyTargetCount: Int, val presetMode: PresetSelectionMode, val presetId: Long?, val executionOrder: Int)
     private data class DetachedAdventureSetting(val id: Long, val categoryId: String, val mapCode: String, val presetMode: PresetSelectionMode, val presetId: Long?, val executionOrder: Int)

@@ -37,17 +37,17 @@ sealed interface StoredTypedActionPayload {
     val display: StoredActionDisplay?
 
     data class QuestClaim(
-        val questCode: String,
+        val questKey: String,
         val actionNo: String,
         override val display: StoredActionDisplay? = null,
     ) : StoredTypedActionPayload
     data class QuestAccept(
-        val questCode: String,
+        val questKey: String,
         val actionNo: String,
         override val display: StoredActionDisplay? = null,
     ) : StoredTypedActionPayload
     data class QuestBattle(
-        val questCode: String,
+        val questKey: String,
         val questCycle: String,
         val missionKey: String,
         val missionType: QuestMissionType,
@@ -131,8 +131,8 @@ class StoredTypedAutomationActionCodec(private val objectMapper: ObjectMapper) {
 
     private fun validate(action: StoredTypedAutomationActionV1) {
         when (val payload = action.payload) {
-            is StoredTypedActionPayload.QuestClaim -> require(payload.questCode.isNotBlank() && payload.actionNo.isNotBlank())
-            is StoredTypedActionPayload.QuestAccept -> require(payload.questCode.isNotBlank() && payload.actionNo.isNotBlank())
+            is StoredTypedActionPayload.QuestClaim -> require(payload.questKey.isNotBlank() && payload.actionNo.isNotBlank())
+            is StoredTypedActionPayload.QuestAccept -> require(payload.questKey.isNotBlank() && payload.actionNo.isNotBlank())
             is StoredTypedActionPayload.QuestBattle -> {
                 require(payload.battleCount == 1)
                 require(payload.observedCurrent == null || payload.observedCurrent >= 0)

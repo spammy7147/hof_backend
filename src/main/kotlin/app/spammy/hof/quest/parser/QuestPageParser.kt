@@ -124,12 +124,11 @@ class QuestPageParser {
             actionHref = actionHref,
             formAction = formAction,
         )
-        val questId = actionNo ?: KNOWN_QUEST_CODES[normalizedName] ?: sourceQuestId
         val resolvedSection = section ?: sectionFromAction(action)
         val missionTexts = block.nodes.flatMap(::missionTexts)
         val missions = missionTexts.map { text ->
             parseMission(
-                questId = identity.questKey,
+                questKey = identity.questKey,
                 text = text,
                 hasCompleteAction = action == "complete",
             )
@@ -143,7 +142,7 @@ class QuestPageParser {
         }
 
         return QuestSnapshot(
-            questId = questId,
+            questKey = identity.questKey,
             name = normalizedName,
             state = state,
             section = resolvedSection,
@@ -152,7 +151,6 @@ class QuestPageParser {
             actionNo = actionNo,
             rewards = rewardTexts(block),
             displayCode = identity.displayCode,
-            questKey = identity.questKey,
         )
     }
 
@@ -344,7 +342,7 @@ class QuestPageParser {
     }
 
     private fun parseMission(
-        questId: String,
+        questKey: String,
         text: String,
         hasCompleteAction: Boolean,
     ): QuestMission {
@@ -373,7 +371,7 @@ class QuestPageParser {
         )
 
         return QuestMission(
-            key = semanticMissionKey(questId, type, stableDescriptor),
+            key = semanticMissionKey(questKey, type, stableDescriptor),
             type = type,
             target = target,
             progress = progress,
@@ -382,7 +380,7 @@ class QuestPageParser {
     }
 
     private fun semanticMissionKey(
-        questId: String,
+        questKey: String,
         type: QuestMissionType,
         stableDescriptor: String,
     ): String {
@@ -392,7 +390,7 @@ class QuestPageParser {
             .digest(normalizedIdentity.toByteArray(StandardCharsets.UTF_8))
             .joinToString("") { byte -> "%02x".format(byte) }
             .take(16)
-        return "$questId:${type.name.lowercase(Locale.ROOT)}:$digest"
+        return "$questKey:${type.name.lowercase(Locale.ROOT)}:$digest"
     }
 
     private fun extractTarget(description: String): String? {

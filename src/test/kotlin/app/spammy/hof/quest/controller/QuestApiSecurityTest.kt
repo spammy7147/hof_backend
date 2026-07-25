@@ -60,14 +60,14 @@ class QuestApiSecurityTest(
                 .header(HttpHeaders.AUTHORIZATION, "Bearer $accessToken"),
         )
             .andExpect(status().isOk)
-            .andExpect(jsonPath("$[0].questId").value("0571"))
+            .andExpect(jsonPath("$[0].questKey").value("0571"))
             .andExpect(jsonPath("$[0].missions[0].type").value("MONSTER_KILL"))
 
         Mockito.verify(gateway).load(42L)
     }
 
     private fun snapshot() = QuestSnapshot(
-        questId = "0571",
+        questKey = "0571",
         name = "저택 서관 열쇠 수집",
         state = QuestState.ACTIVE,
         section = QuestSection.ACTIVE,

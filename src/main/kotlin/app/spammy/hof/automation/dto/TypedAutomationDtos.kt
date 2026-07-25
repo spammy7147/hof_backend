@@ -32,10 +32,12 @@ data class UpdateQuestAutomationRequest(
 }
 
 data class QuestSelectionRequest(
-    @field:NotBlank @field:Size(max = 100) val questCode: String,
+    @field:NotBlank @field:Size(max = 100) val questKey: String,
     val enabled: Boolean,
     @field:Min(0) val sourceOrder: Int,
     @field:Valid @field:Size(max = 100) val maps: List<@Valid QuestMapSettingRequest>,
+    @field:NotBlank @field:Size(max = 100) val displayCode: String = questKey,
+    @field:NotBlank @field:Size(max = 255) val questName: String = questKey,
 ) {
     @get:AssertTrue(message = "퀘스트 맵 실행 순서를 중복해서 사용할 수 없습니다.")
     val hasUniqueMapExecutionOrders: Boolean
@@ -100,10 +102,12 @@ data class QuestMapSettingResponse(
 )
 
 data class QuestSelectionResponse(
-    val questCode: String,
+    val questKey: String,
     val enabled: Boolean,
     val sourceOrder: Int,
     val maps: List<QuestMapSettingResponse>,
+    val displayCode: String,
+    val questName: String,
 )
 
 data class BattleMapSettingResponse(

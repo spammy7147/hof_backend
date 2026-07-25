@@ -46,11 +46,15 @@ class QuestAutomationSelectionEntity(
     @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "automation_entry_id", nullable = false)
     var entry: AutomationEntryEntity,
     @Column(name = "quest_code", nullable = false, length = 100)
-    var questCode: String,
+    var questKey: String,
     @Column(name = "enabled", nullable = false)
     var enabled: Boolean,
     @Column(name = "source_order", nullable = false)
     var sourceOrder: Int,
+    @Column(name = "display_code", nullable = false, length = 100)
+    var displayCode: String = questKey,
+    @Column(name = "quest_name", nullable = false, length = 255)
+    var questName: String = questKey,
 )
 
 @Entity

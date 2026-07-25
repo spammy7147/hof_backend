@@ -121,9 +121,9 @@ class UnifiedAutomationApiSecurityTest(
         val token = jwtTokenService.issue(42L).value
         val invalidRequests = listOf(
             "/api/automation/unified/quest" to
-                """{"enabled":false,"quests":[{"questCode":"Q-1","enabled":true,"sourceOrder":-1,"maps":[]}]}""",
+                """{"enabled":false,"quests":[{"questKey":"Q-1","enabled":true,"sourceOrder":-1,"maps":[]}]}""",
             "/api/automation/unified/quest" to
-                """{"enabled":false,"quests":[{"questCode":"Q-1","enabled":true,"sourceOrder":0,"maps":[{"missionKey":"mission","categoryId":"battle_map","mapCode":"gb0","presetMode":"PRIMARY","partyPresetId":null,"executionOrder":-1,"manuallyOverridden":false}]}]}""",
+                """{"enabled":false,"quests":[{"questKey":"Q-1","enabled":true,"sourceOrder":0,"maps":[{"missionKey":"mission","categoryId":"battle_map","mapCode":"gb0","presetMode":"PRIMARY","partyPresetId":null,"executionOrder":-1,"manuallyOverridden":false}]}]}""",
             "/api/automation/unified/battle-maps" to
                 """{"enabled":false,"maps":[{"categoryId":"battle_map","mapCode":"gb0","dailyTargetCount":1,"presetMode":"PRIMARY","partyPresetId":null,"executionOrder":-1}]}""",
             "/api/automation/unified/adventure-maps" to
@@ -153,15 +153,15 @@ class UnifiedAutomationApiSecurityTest(
         val secondQuestMaps = questMaps("b", 50)
         val invalidRequests = listOf(
             "/api/automation/unified/quest" to
-                """{"enabled":false,"quests":[{"questCode":"Q-1","enabled":true,"sourceOrder":0,"maps":[]},{"questCode":"Q-2","enabled":true,"sourceOrder":0,"maps":[]}]}""",
+                """{"enabled":false,"quests":[{"questKey":"Q-1","enabled":true,"sourceOrder":0,"maps":[]},{"questKey":"Q-2","enabled":true,"sourceOrder":0,"maps":[]}]}""",
             "/api/automation/unified/quest" to
-                """{"enabled":false,"quests":[{"questCode":"Q-1","enabled":true,"sourceOrder":0,"maps":[{"missionKey":"m1","categoryId":"battle_map","mapCode":"a","presetMode":"PRIMARY","partyPresetId":null,"executionOrder":0,"manuallyOverridden":false},{"missionKey":"m1","categoryId":"battle_map","mapCode":"b","presetMode":"PRIMARY","partyPresetId":null,"executionOrder":0,"manuallyOverridden":false}]}]}""",
+                """{"enabled":false,"quests":[{"questKey":"Q-1","enabled":true,"sourceOrder":0,"maps":[{"missionKey":"m1","categoryId":"battle_map","mapCode":"a","presetMode":"PRIMARY","partyPresetId":null,"executionOrder":0,"manuallyOverridden":false},{"missionKey":"m1","categoryId":"battle_map","mapCode":"b","presetMode":"PRIMARY","partyPresetId":null,"executionOrder":0,"manuallyOverridden":false}]}]}""",
             "/api/automation/unified/battle-maps" to
                 """{"enabled":false,"maps":[{"categoryId":"battle_map","mapCode":"a","dailyTargetCount":1,"presetMode":"PRIMARY","partyPresetId":null,"executionOrder":0},{"categoryId":"battle_map","mapCode":"b","dailyTargetCount":1,"presetMode":"PRIMARY","partyPresetId":null,"executionOrder":0}]}""",
             "/api/automation/unified/adventure-maps" to
                 """{"enabled":false,"maps":[{"categoryId":"adventure_map","mapCode":"a","presetMode":"PRIMARY","partyPresetId":null,"executionOrder":0},{"categoryId":"adventure_map","mapCode":"b","presetMode":"PRIMARY","partyPresetId":null,"executionOrder":0}]}""",
             "/api/automation/unified/quest" to
-                """{"enabled":false,"quests":[{"questCode":"Q-1","enabled":true,"sourceOrder":0,"maps":[$firstQuestMaps]},{"questCode":"Q-2","enabled":true,"sourceOrder":1,"maps":[$secondQuestMaps]}]}""",
+                """{"enabled":false,"quests":[{"questKey":"Q-1","enabled":true,"sourceOrder":0,"maps":[$firstQuestMaps]},{"questKey":"Q-2","enabled":true,"sourceOrder":1,"maps":[$secondQuestMaps]}]}""",
         )
         invalidRequests.forEach { (path, body) ->
             mockMvc.perform(
@@ -183,7 +183,7 @@ class UnifiedAutomationApiSecurityTest(
                 .header(HttpHeaders.AUTHORIZATION, "Bearer ${jwtTokenService.issue(42L).value}")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(
-                    """{"enabled":false,"quests":[{"questCode":"Q-1","enabled":true,"sourceOrder":0,"maps":[{"missionKey":"m1","categoryId":"battle_map","mapCode":"a","presetMode":"PRIMARY","partyPresetId":null,"executionOrder":0,"manuallyOverridden":false},{"missionKey":"m2","categoryId":"battle_map","mapCode":"a","presetMode":"PRIMARY","partyPresetId":null,"executionOrder":0,"manuallyOverridden":false}]}]}""",
+                    """{"enabled":false,"quests":[{"questKey":"Q-1","enabled":true,"sourceOrder":0,"maps":[{"missionKey":"m1","categoryId":"battle_map","mapCode":"a","presetMode":"PRIMARY","partyPresetId":null,"executionOrder":0,"manuallyOverridden":false},{"missionKey":"m2","categoryId":"battle_map","mapCode":"a","presetMode":"PRIMARY","partyPresetId":null,"executionOrder":0,"manuallyOverridden":false}]}]}""",
                 ),
         ).andExpect(status().isOk)
     }

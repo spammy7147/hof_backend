@@ -78,7 +78,7 @@ class QuestAutomationHandlerTest {
             selections = listOf(selection("available"), selection("claimable")),
         ))
 
-        assertEquals("available", assertIs<QuestAction.Accept>(assertIs<HandlerEvaluation.Runnable>(result).action).questCode)
+        assertEquals("available", assertIs<QuestAction.Accept>(assertIs<HandlerEvaluation.Runnable>(result).action).questKey)
     }
 
     @Test
@@ -95,7 +95,7 @@ class QuestAutomationHandlerTest {
             states = listOf(state("combat-map")),
         ))
 
-        assertEquals("turn-in", assertIs<QuestAction.Accept>(assertIs<HandlerEvaluation.Runnable>(result).action).questCode)
+        assertEquals("turn-in", assertIs<QuestAction.Accept>(assertIs<HandlerEvaluation.Runnable>(result).action).questKey)
     }
 
     @Test
@@ -243,7 +243,7 @@ class QuestAutomationHandlerTest {
             selections = listOf(selection("q")),
         ))
 
-        assertEquals("q", assertIs<QuestAction.Accept>(assertIs<HandlerEvaluation.Runnable>(result).action).questCode)
+        assertEquals("q", assertIs<QuestAction.Accept>(assertIs<HandlerEvaluation.Runnable>(result).action).questKey)
     }
 
     @Test
@@ -281,7 +281,7 @@ class QuestAutomationHandlerTest {
 
         assertEquals(
             "unsupported",
-            assertIs<QuestAction.Accept>(assertIs<HandlerEvaluation.Runnable>(result).action).questCode,
+            assertIs<QuestAction.Accept>(assertIs<HandlerEvaluation.Runnable>(result).action).questKey,
         )
     }
 
@@ -301,7 +301,7 @@ class QuestAutomationHandlerTest {
 
         assertEquals(
             "available-clear",
-            assertIs<QuestAction.Accept>(assertIs<HandlerEvaluation.Runnable>(result).action).questCode,
+            assertIs<QuestAction.Accept>(assertIs<HandlerEvaluation.Runnable>(result).action).questKey,
         )
     }
 
@@ -319,7 +319,7 @@ class QuestAutomationHandlerTest {
             states = listOf(state("clear-map"), state("monster-map")),
         ))
 
-        assertEquals("monster", battle(result).questCode)
+        assertEquals("monster", battle(result).questKey)
     }
 
     @Test
@@ -601,8 +601,8 @@ class QuestAutomationHandlerTest {
     private class RecordingProgressStore : QuestAutomationProgressStore {
         val cycles = mutableMapOf<Pair<Long, String>, String>()
         val results = mutableListOf<Pair<QuestAction.Battle, Int>>()
-        override fun startNewCycle(accountId: Long, resultId: String, questCode: String): String {
-            val key = accountId to questCode
+        override fun startNewCycle(accountId: Long, resultId: String, questKey: String): String {
+            val key = accountId to questKey
             return ((cycles[key]?.toLongOrNull() ?: 0) + 1).toString().also { cycles[key] = it }
         }
         override fun recordBattleResult(accountId: Long, resultId: String, action: QuestAction.Battle, victoryCount: Int) {

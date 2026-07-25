@@ -33,7 +33,7 @@ class QuestAutomationCycleEntity(
     @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "account_id", nullable = false)
     var account: HofAccountEntity,
     @Column(name = "quest_code", nullable = false, length = 100)
-    var questCode: String,
+    var questKey: String,
     @Column(name = "current_cycle", nullable = false)
     var currentCycle: Long,
 )
@@ -99,7 +99,7 @@ class QuestMapExecutionCounterEntity(
     @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "account_id", nullable = false)
     var account: HofAccountEntity,
     @Column(name = "quest_code", nullable = false, length = 100)
-    var questCode: String,
+    var questKey: String,
     @Column(name = "quest_cycle", nullable = false, length = 100)
     var questCycle: String,
     @Column(name = "mission_key", nullable = false, length = 100)

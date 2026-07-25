@@ -37,7 +37,7 @@ data class QuestMission(
 )
 
 data class QuestSnapshot(
-    val questId: String,
+    val questKey: String,
     val name: String,
     val state: QuestState,
     val section: QuestSection,
@@ -45,18 +45,17 @@ data class QuestSnapshot(
     val missions: List<QuestMission>,
     val actionNo: String?,
     val rewards: List<String> = emptyList(),
-    val displayCode: String = questId,
-    val questKey: String = QuestIdentityFactory.create(displayCode, name).questKey,
+    val displayCode: String = questKey,
 ) {
     /** Keeps policy fixtures source-compatible while quest parsing moves to the richer model. */
     constructor(
-        questId: String,
+        questKey: String,
         name: String,
         state: QuestState,
         progress: QuestProgress?,
         actionNo: String?,
     ) : this(
-        questId = questId,
+        questKey = questKey,
         name = name,
         state = state,
         section = when (state) {
@@ -69,7 +68,7 @@ data class QuestSnapshot(
         missions = progress?.let {
             listOf(
                 QuestMission(
-                    key = "$questId:0",
+                    key = "$questKey:0",
                     type = QuestMissionType.OTHER,
                     target = null,
                     progress = it,

@@ -244,29 +244,29 @@ class TypedAutomationQueryRepository(
             .setLockMode(LockModeType.PESSIMISTIC_WRITE)
             .fetchOne() ?: error("Account $accountId does not exist.")
 
-    fun findQuestCycle(accountId: Long, questCode: String): QuestAutomationCycleEntity? =
+    fun findQuestCycle(accountId: Long, questKey: String): QuestAutomationCycleEntity? =
         queryFactory.selectFrom(questAutomationCycleEntity)
             .where(
                 questAutomationCycleEntity.account.id.eq(accountId),
-                questAutomationCycleEntity.questCode.eq(questCode),
+                questAutomationCycleEntity.questKey.eq(questKey),
             )
             .fetchOne()
 
-    fun findQuestCycles(accountId: Long, questCodes: Collection<String>): List<QuestAutomationCycleEntity> {
-        if (questCodes.isEmpty()) return emptyList()
+    fun findQuestCycles(accountId: Long, questKeys: Collection<String>): List<QuestAutomationCycleEntity> {
+        if (questKeys.isEmpty()) return emptyList()
         return queryFactory.selectFrom(questAutomationCycleEntity)
             .where(
                 questAutomationCycleEntity.account.id.eq(accountId),
-                questAutomationCycleEntity.questCode.`in`(questCodes.toSet()),
+                questAutomationCycleEntity.questKey.`in`(questKeys.toSet()),
             ).fetch()
     }
 
-    fun findQuestMapCounters(accountId: Long, questCodes: Collection<String>): List<QuestMapExecutionCounterEntity> {
-        if (questCodes.isEmpty()) return emptyList()
+    fun findQuestMapCounters(accountId: Long, questKeys: Collection<String>): List<QuestMapExecutionCounterEntity> {
+        if (questKeys.isEmpty()) return emptyList()
         return queryFactory.selectFrom(questMapExecutionCounterEntity)
             .where(
                 questMapExecutionCounterEntity.account.id.eq(accountId),
-                questMapExecutionCounterEntity.questCode.`in`(questCodes.toSet()),
+                questMapExecutionCounterEntity.questKey.`in`(questKeys.toSet()),
             ).fetch()
     }
 
@@ -291,7 +291,7 @@ class TypedAutomationQueryRepository(
 
     fun findQuestCounter(
         accountId: Long,
-        questCode: String,
+        questKey: String,
         questCycle: String,
         missionKey: String,
         categoryId: String,
@@ -300,7 +300,7 @@ class TypedAutomationQueryRepository(
         queryFactory.selectFrom(questMapExecutionCounterEntity)
             .where(
                 questMapExecutionCounterEntity.account.id.eq(accountId),
-                questMapExecutionCounterEntity.questCode.eq(questCode),
+                questMapExecutionCounterEntity.questKey.eq(questKey),
                 questMapExecutionCounterEntity.questCycle.eq(questCycle),
                 questMapExecutionCounterEntity.missionKey.eq(missionKey),
                 questMapExecutionCounterEntity.categoryId.eq(categoryId),
@@ -310,12 +310,12 @@ class TypedAutomationQueryRepository(
 
     fun findQuestMapWins(
         accountId: Long,
-        questCode: String,
+        questKey: String,
         questCycle: String,
         missionKey: String,
         categoryId: String,
         mapCode: String,
-    ): Int = findQuestCounter(accountId, questCode, questCycle, missionKey, categoryId, mapCode)?.successfulRuns ?: 0
+    ): Int = findQuestCounter(accountId, questKey, questCycle, missionKey, categoryId, mapCode)?.successfulRuns ?: 0
 
     companion object {
         const val BATTLE_MAP_CATEGORY = "battle_map"

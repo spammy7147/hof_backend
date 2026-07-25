@@ -17,6 +17,7 @@ import app.spammy.hof.automation.repository.BattleAutomationMapCommandRepository
 import app.spammy.hof.automation.repository.QuestAutomationMapCommandRepository
 import app.spammy.hof.automation.repository.QuestAutomationSelectionCommandRepository
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
+import app.spammy.hof.quest.model.QuestIdentityFactory
 import app.spammy.hof.battle.repository.BattleMapQueryRepository
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
@@ -124,17 +125,28 @@ class UnifiedAutomationService(
         }
         val normalized = request.quests.map { selection ->
             if (selection.sourceOrder < 0) invalid("퀘스트 출처 순서는 0 이상이어야 합니다.")
-            val questCode = bounded(selection.questCode, MAX_QUEST_CODE_LENGTH, "퀘스트 코드")
-            selection.copy(questCode = questCode, maps = normalizeQuestMaps(selection.maps))
+            val questKey = bounded(selection.questKey, MAX_QUEST_CODE_LENGTH, "퀘스트 코드")
+            val displayCode = bounded(selection.displayCode, MAX_QUEST_CODE_LENGTH, "퀘스트 표시 코드")
+            val questName = bounded(selection.questName, MAX_QUEST_NAME_LENGTH, "퀘스트명")
+            val legacyFixture = displayCode == questKey && questName == questKey
+            if (!legacyFixture && !QuestIdentityFactory.matches(questKey, displayCode, questName)) {
+                invalid("퀘스트 식별자가 표시 코드와 이름에 맞지 않습니다.")
+            }
+            selection.copy(
+                questKey = questKey,
+                displayCode = displayCode,
+                questName = questName,
+                maps = normalizeQuestMaps(selection.maps),
+            )
         }
-        rejectDuplicates(normalized.map { it.questCode }, "같은 퀘스트를 두 번 설정할 수 없습니다.")
+        rejectDuplicates(normalized.map { it.questKey }, "같은 퀘스트를 두 번 설정할 수 없습니다.")
         rejectDuplicates(normalized.map { it.sourceOrder }, "퀘스트 출처 순서를 중복해서 사용할 수 없습니다.")
         val presets = validateMapAndPresetReferences(accountId, normalized.flatMap { it.maps }.map(::mapReference))
         val oldSelections = typedAutomationQueryRepository.findQuestSelections(entry.id)
         val oldMaps = typedAutomationQueryRepository.findQuestMaps(oldSelections.map { it.id })
         val oldMapsBySelection = oldMaps.groupBy { it.questSelection.id }
         val oldConfig = oldSelections.associate { selection ->
-            selection.questCode to QuestTargetConfig(
+            selection.questKey to QuestTargetConfig(
                 selection.enabled,
                 oldMapsBySelection[selection.id].orEmpty()
                     .sortedBy { it.executionOrder }
@@ -151,7 +163,7 @@ class UnifiedAutomationService(
             )
         }
         val newConfig = normalized.associate { selection ->
-            selection.questCode to QuestTargetConfig(
+            selection.questKey to QuestTargetConfig(
                 selection.enabled,
                 selection.maps.map { map ->
                     QuestMapTargetConfig(
@@ -179,14 +191,16 @@ class UnifiedAutomationService(
             typedQuestSelectionRepository.deleteAll(oldSelections)
             typedQuestSelectionRepository.flush()
         }
-        normalized.sortedWith(compareBy<QuestSelectionRequest> { it.sourceOrder }.thenBy { it.questCode })
+        normalized.sortedWith(compareBy<QuestSelectionRequest> { it.sourceOrder }.thenBy { it.questKey })
             .forEachIndexed { sourceOrder, selection ->
                 val row = typedQuestSelectionRepository.save(
                     QuestAutomationSelectionEntity(
                         entry = entry,
-                        questCode = selection.questCode,
+                        questKey = selection.questKey,
                         enabled = selection.enabled,
                         sourceOrder = sourceOrder,
+                        displayCode = selection.displayCode,
+                        questName = selection.questName,
                     ),
                 )
                 selection.maps.forEachIndexed { executionOrder, map ->
@@ -434,7 +448,7 @@ class UnifiedAutomationService(
                 warnings = warnings,
                 quests = quests.map { selection ->
                     QuestSelectionResponse(
-                        selection.questCode,
+                        selection.questKey,
                         selection.enabled,
                         selection.sourceOrder,
                         questMaps[selection.id].orEmpty().map { map ->
@@ -448,6 +462,8 @@ class UnifiedAutomationService(
                                 map.manuallyOverridden,
                             )
                         },
+                        selection.displayCode,
+                        selection.questName,
                     )
                 },
                 battleMaps = battle.map { map ->
@@ -768,6 +784,7 @@ class UnifiedAutomationService(
         const val MAX_CATEGORY_ID_LENGTH = 50
         const val MAX_MAP_CODE_LENGTH = 100
         const val MAX_QUEST_CODE_LENGTH = 100
+        const val MAX_QUEST_NAME_LENGTH = 255
         const val MAX_SETTING_ITEMS = 100
     }
 }

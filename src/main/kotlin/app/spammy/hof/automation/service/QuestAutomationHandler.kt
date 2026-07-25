@@ -36,22 +36,22 @@ data class QuestPresetSelection(
 )
 
 sealed interface QuestAction : PreparedAutomationAction {
-    val questCode: String
+    val questKey: String
 
     data class Claim(
-        override val questCode: String,
+        override val questKey: String,
         val actionNo: String,
         val questName: String? = null,
     ) : QuestAction
 
     data class Accept(
-        override val questCode: String,
+        override val questKey: String,
         val actionNo: String,
         val questName: String? = null,
     ) : QuestAction
 
     data class Battle(
-        override val questCode: String,
+        override val questKey: String,
         val questCycle: String,
         val missionKey: String,
         val missionType: QuestMissionType,
@@ -78,13 +78,13 @@ data class QuestAutomationMapSelection(
 )
 
 data class QuestAutomationSelection(
-    val questCode: String,
+    val questKey: String,
     val enabled: Boolean,
     val maps: List<QuestAutomationMapSelection>,
 )
 
 data class QuestCounterKey(
-    val questCode: String,
+    val questKey: String,
     val questCycle: String,
     val missionKey: String,
     val categoryId: String,
@@ -117,7 +117,7 @@ internal fun QuestMission.displayLabel(): String {
 }
 
 interface QuestAutomationProgressStore {
-    fun startNewCycle(accountId: Long, resultId: String, questCode: String): String
+    fun startNewCycle(accountId: Long, resultId: String, questKey: String): String
     fun recordBattleResult(accountId: Long, resultId: String, action: QuestAction.Battle, victoryCount: Int)
 }
 
@@ -134,17 +134,17 @@ class JpaQuestAutomationProgressStore(
     private val counterRepository: QuestMapExecutionCounterCommandRepository,
 ) : QuestAutomationProgressStore {
     @Transactional
-    override fun startNewCycle(accountId: Long, resultId: String, questCode: String): String {
+    override fun startNewCycle(accountId: Long, resultId: String, questKey: String): String {
         validateResultIdentity(resultId)
-        val fingerprint = actionFingerprint(QuestAutomationResultKind.ACCEPT, listOf(questCode))
+        val fingerprint = actionFingerprint(QuestAutomationResultKind.ACCEPT, listOf(questKey))
         val account = queryRepository.lockAccount(accountId)
         queryRepository.findQuestProcessedResult(accountId, resultId)?.let {
             it.requireReplayMatches(resultId, QuestAutomationResultKind.ACCEPT, fingerprint)
             return requireNotNull(it.resultValue) { "Processed accept result $resultId has no cycle value." }
         }
-        val cycle = queryRepository.findQuestCycle(accountId, questCode)
+        val cycle = queryRepository.findQuestCycle(accountId, questKey)
         val nextCycle = if (cycle == null) {
-            cycleRepository.save(QuestAutomationCycleEntity(account = account, questCode = questCode, currentCycle = 1))
+            cycleRepository.save(QuestAutomationCycleEntity(account = account, questKey = questKey, currentCycle = 1))
             1L
         } else {
             cycle.currentCycle += 1
@@ -178,7 +178,7 @@ class JpaQuestAutomationProgressStore(
         val fingerprint = actionFingerprint(
             QuestAutomationResultKind.BATTLE_VICTORY,
             listOf(
-                action.questCode,
+                action.questKey,
                 action.questCycle,
                 action.missionKey,
                 action.categoryId,
@@ -204,7 +204,7 @@ class JpaQuestAutomationProgressStore(
         if (victoryCount == 0) return
         val counter = queryRepository.findQuestCounter(
             accountId,
-            action.questCode,
+            action.questKey,
             action.questCycle,
             action.missionKey,
             action.categoryId,
@@ -214,7 +214,7 @@ class JpaQuestAutomationProgressStore(
             counterRepository.save(
                 QuestMapExecutionCounterEntity(
                     account = account,
-                    questCode = action.questCode,
+                    questKey = action.questKey,
                     questCycle = action.questCycle,
                     missionKey = action.missionKey,
                     categoryId = action.categoryId,
@@ -274,19 +274,19 @@ class QuestAutomationHandler(
         val selections = context.selections
             .asSequence()
             .filter(QuestAutomationSelection::enabled)
-            .associateBy(QuestAutomationSelection::questCode)
+            .associateBy(QuestAutomationSelection::questKey)
         val candidates = context.quests
-            .filter { it.questId in selections }
+            .filter { it.questKey in selections }
             .sortedBy(QuestSnapshot::sourceOrder)
 
         candidates.firstOrNull { it.state == QuestState.AVAILABLE }?.let { quest ->
-            return quest.actionNo?.let { HandlerEvaluation.Runnable(QuestAction.Accept(quest.questId, it, quest.name)) }
-                ?: HandlerEvaluation.ConfigurationWarning("Quest ${quest.questId} has no accept action.")
+            return quest.actionNo?.let { HandlerEvaluation.Runnable(QuestAction.Accept(quest.questKey, it, quest.name)) }
+                ?: HandlerEvaluation.ConfigurationWarning("Quest ${quest.questKey} has no accept action.")
         }
 
         candidates.firstOrNull { it.state == QuestState.CLAIMABLE }?.let { quest ->
-            return quest.actionNo?.let { HandlerEvaluation.Runnable(QuestAction.Claim(quest.questId, it, quest.name)) }
-                ?: HandlerEvaluation.ConfigurationWarning("Quest ${quest.questId} has no claim action.")
+            return quest.actionNo?.let { HandlerEvaluation.Runnable(QuestAction.Claim(quest.questKey, it, quest.name)) }
+                ?: HandlerEvaluation.ConfigurationWarning("Quest ${quest.questKey} has no claim action.")
         }
 
         evaluateCombat(candidates, selections, context, QuestMissionType.MONSTER_KILL)?.let { return it }
@@ -295,7 +295,7 @@ class QuestAutomationHandler(
     }
 
     fun onAcceptSucceeded(accountId: Long, resultId: String, action: QuestAction.Accept): String =
-        progressStore.startNewCycle(accountId, resultId, action.questCode)
+        progressStore.startNewCycle(accountId, resultId, action.questKey)
 
     fun onBattleCompleted(
         accountId: Long,
@@ -330,7 +330,7 @@ class QuestAutomationHandler(
         val evaluations = mutableListOf<HandlerEvaluation>()
         quests.filter { it.state == QuestState.ACTIVE }.forEach { quest ->
             quest.missions.filter { it.type == missionType && !it.completable }.forEach { mission ->
-                val selection = selections.getValue(quest.questId)
+                val selection = selections.getValue(quest.questKey)
                 val result = when (missionType) {
                     QuestMissionType.MONSTER_KILL -> monsterAction(quest, mission, selection, context)
                     QuestMissionType.MAP_CLEAR -> mapClearAction(quest, mission, selection, context)
@@ -365,7 +365,7 @@ class QuestAutomationHandler(
         if (ready.isEmpty()) {
             if (invalidPresetExists) {
                 return HandlerEvaluation.ConfigurationWarning(
-                    "Quest ${quest.questId} mission ${mission.key} has an invalid preset selection.",
+                    "Quest ${quest.questKey} mission ${mission.key} has an invalid preset selection.",
                 )
             }
             val next = validConfigured.mapNotNull { stateByMap[it.categoryId to it.mapCode]?.cooldownUntil }
@@ -373,10 +373,10 @@ class QuestAutomationHandler(
                 .minOrNull()
             return next?.let(HandlerEvaluation::Unavailable) ?: HandlerEvaluation.Skipped
         }
-        val cycle = context.currentCycles[quest.questId] ?: INITIAL_CYCLE
+        val cycle = context.currentCycles[quest.questKey] ?: INITIAL_CYCLE
         val selected = ready.minWithOrNull(
             compareBy<QuestAutomationMapSelection> {
-                context.counters[QuestCounterKey(quest.questId, cycle, mission.key, it.categoryId, it.mapCode)] ?: 0
+                context.counters[QuestCounterKey(quest.questKey, cycle, mission.key, it.categoryId, it.mapCode)] ?: 0
             }.thenBy(QuestAutomationMapSelection::executionOrder),
         )!!
         val selectedState = stateByMap.getValue(selected.categoryId to selected.mapCode)
@@ -407,7 +407,7 @@ class QuestAutomationHandler(
             } ?: run {
                 if (manual.any { !it.hasValidPreset() }) {
                     return HandlerEvaluation.ConfigurationWarning(
-                        "Quest ${quest.questId} mission ${mission.key} has an invalid preset selection.",
+                        "Quest ${quest.questKey} mission ${mission.key} has an invalid preset selection.",
                     )
                 }
                 val next = manual.mapNotNull { states[it.categoryId to it.mapCode]?.cooldownUntil }
@@ -457,7 +457,7 @@ class QuestAutomationHandler(
         }
         return selected.toBattleEvaluation(
             quest,
-            context.currentCycles[quest.questId] ?: INITIAL_CYCLE,
+            context.currentCycles[quest.questKey] ?: INITIAL_CYCLE,
             mission,
             state,
             context.timeSnapshot,
@@ -480,7 +480,7 @@ class QuestAutomationHandler(
     ): HandlerEvaluation {
         if (!hasValidPreset()) {
             return HandlerEvaluation.ConfigurationWarning(
-                "Quest ${quest.questId} mission ${mission.key} has an invalid preset selection.",
+                "Quest ${quest.questKey} mission ${mission.key} has an invalid preset selection.",
             )
         }
         val remaining = mission.progress?.let {
@@ -503,7 +503,7 @@ class QuestAutomationHandler(
         val run = decision as BattleTimeDecision.Run
         return HandlerEvaluation.Runnable(
             QuestAction.Battle(
-                quest.questId,
+                quest.questKey,
                 cycle,
                 mission.key,
                 mission.type,

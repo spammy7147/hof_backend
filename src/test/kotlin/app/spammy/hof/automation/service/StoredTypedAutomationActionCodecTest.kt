@@ -40,7 +40,7 @@ class StoredTypedAutomationActionCodecTest {
 
     @Test
     fun `legacy payloads without display decode with null display`() {
-        val legacyJson = """{"entryId":12,"executionIdentity":"execution","payload":{"kind":"QUEST_CLAIM","questCode":"quest","actionNo":"claim"}}"""
+        val legacyJson = """{"entryId":12,"executionIdentity":"execution","payload":{"kind":"QUEST_CLAIM","questKey":"quest","actionNo":"claim"}}"""
 
         val decoded = codec.decode(1, legacyJson)
 

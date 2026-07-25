@@ -495,7 +495,7 @@ class UnifiedAutomationRunnerTest {
             Corruption("whitespace-bytes", json = "  ${encoded.json}\n"),
             Corruption(
                 "reordered-bytes",
-                json = "{\"executionIdentity\":\"execution-1\",\"entryId\":12,\"payload\":{\"kind\":\"QUEST_CLAIM\",\"questCode\":\"quest\",\"actionNo\":\"claim\"}}",
+                json = "{\"executionIdentity\":\"execution-1\",\"entryId\":12,\"payload\":{\"kind\":\"QUEST_CLAIM\",\"questKey\":\"quest\",\"actionNo\":\"claim\"}}",
             ),
             Corruption("fingerprint", fingerprint = "0".repeat(64)),
             Corruption("kind", kind = "QUEST_ACCEPT"),

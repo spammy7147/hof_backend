@@ -35,14 +35,14 @@ class DefaultAutomationActionExecutor(
                     runQuestMutation(accountId) {
                         questGatewayService.accept(accountId, payload.actionNo, HofRequestOrigin.AUTOMATION)
                     }
-                    questHandler.onAcceptSucceeded(accountId, action.executionIdentity, QuestAction.Accept(payload.questCode, payload.actionNo))
+                    questHandler.onAcceptSucceeded(accountId, action.executionIdentity, QuestAction.Accept(payload.questKey, payload.actionNo))
                     TypedAutomationExecution.Completed
                 }
                 is StoredTypedActionPayload.QuestBattle -> {
                     val result = runTypedBattle(accountId, payload.battleRequest)
                     val proof = exactTerminalProof(accountId, action.executionIdentity, payload.battleRequest, result, BattleAutomationActionSource.QUEST_AUTOMATION)
                     val questAction = QuestAction.Battle(
-                        payload.questCode, payload.questCycle, payload.missionKey, payload.missionType,
+                        payload.questKey, payload.questCycle, payload.missionKey, payload.missionType,
                         payload.categoryId, payload.mapCode, payload.mapCode,
                         QuestPresetSelection(payload.presetMode, payload.presetId), payload.battleCount,
                     )
