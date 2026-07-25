@@ -89,6 +89,33 @@ class AutomationWorkSessionServiceTest {
     }
 
     @Test
+    fun `matching battle map action completes its one request work unit`() {
+        val matching = battleSession(status = AutomationWorkStatus.RUNNING, confirmedCount = 0)
+        val other = AutomationWorkSessionEntity(
+            id = 26,
+            account = account,
+            entry = entry,
+            workType = AutomationWorkType.BATTLE_MAP,
+            targetKey = "battle_map/map-2",
+            status = AutomationWorkStatus.WAITING_COOLDOWN,
+            configVersion = "config-v1",
+            targetCount = 20,
+            createdAt = now,
+            updatedAt = now,
+        )
+        Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
+        Mockito.`when`(queries.lockOpen(7)).thenReturn(listOf(matching, other))
+
+        service.completeBattleMapAction(7, 11, "battle_map", "map-1")
+
+        assertEquals(AutomationWorkStatus.COMPLETED, matching.status)
+        assertEquals(now, matching.finishedAt)
+        assertEquals(AutomationWorkStatus.WAITING_COOLDOWN, other.status)
+        Mockito.verify(commands).save(matching)
+        Mockito.verify(commands, Mockito.never()).save(other)
+    }
+
+    @Test
     fun `configuration change stops only matching target sessions`() {
         val matching = battleSession(status = AutomationWorkStatus.RUNNING, confirmedCount = 5)
         val other = AutomationWorkSessionEntity(

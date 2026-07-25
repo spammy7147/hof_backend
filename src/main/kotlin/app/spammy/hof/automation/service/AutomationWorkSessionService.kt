@@ -31,6 +31,7 @@ interface AutomationWorkLifecycle {
     fun waitForUnknownCooldown(accountId: Long, sessionId: Long)
     fun waitForCooldown(accountId: Long, sessionId: Long, nextCheckAt: java.time.Instant)
     fun complete(accountId: Long, sessionId: Long)
+    fun completeBattleMapAction(accountId: Long, entryId: Long, categoryId: String, mapCode: String)
     fun completeAdventureAction(accountId: Long, entryId: Long, categoryId: String, mapCode: String)
     fun stopForConfigurationChange(
         accountId: Long,
@@ -228,6 +229,29 @@ class AutomationWorkSessionService(
         val session = requireSession(accountId, sessionId)
         if (session.status == AutomationWorkStatus.COMPLETED) return
         require(session.status in OPEN_SESSION_STATUSES)
+        val now = timeProvider.now()
+        session.status = AutomationWorkStatus.COMPLETED
+        session.nextCheckAt = null
+        session.finishedAt = now
+        session.updatedAt = now
+        commands.save(session)
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    override fun completeBattleMapAction(
+        accountId: Long,
+        entryId: Long,
+        categoryId: String,
+        mapCode: String,
+    ) {
+        requireRunningRuntime(accountId)
+        val targetKey = "$categoryId/$mapCode"
+        val session = queries.lockOpen(accountId).singleOrNull {
+            it.status == AutomationWorkStatus.RUNNING &&
+                it.entry.id == entryId &&
+                it.workType == AutomationWorkType.BATTLE_MAP &&
+                it.targetKey == targetKey
+        } ?: return
         val now = timeProvider.now()
         session.status = AutomationWorkStatus.COMPLETED
         session.nextCheckAt = null
