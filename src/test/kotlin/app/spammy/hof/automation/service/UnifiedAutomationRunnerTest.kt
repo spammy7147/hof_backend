@@ -91,6 +91,66 @@ class UnifiedAutomationRunnerTest {
     }
 
     @Test
+    fun `work tracking failure stops before persistence or external execution`() {
+        val decisions = Mockito.mock(AutomationDecisionSource::class.java)
+        val workTracker = Mockito.mock(AutomationWorkTracker::class.java)
+        val action = QuestAction.Accept("quest-1", "accept-1")
+        Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
+        Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token"))
+        Mockito.`when`(decisions.select(7)).thenReturn(AutomationCoordination.Runnable(10, action, emptyList()))
+        Mockito.doThrow(IllegalStateException("failed to track work"))
+            .`when`(workTracker).ensureForAction(7, 10, action)
+        val scopedRunner = UnifiedAutomationRunner(
+            preflight, runtime, decisions, workTracker, executor, codec, wakeup, sharedCooldowns, ambiguousReconciler,
+        )
+
+        scopedRunner.runOne(7)
+
+        Mockito.verify(runtime).stop(
+            Mockito.eq(7L),
+            eqString("token"),
+            Mockito.isNull(),
+            eqValue(AutomationStopReason.FATAL),
+            eqString("failed to track work"),
+        )
+        Mockito.verify(runtime, Mockito.never())
+            .prepare(Mockito.eq(7L), eqString("token"), anyStoredAction())
+        Mockito.verifyNoInteractions(executor)
+    }
+
+    @Test
+    fun `interrupted preparation restores the thread interrupt flag before returning`() {
+        val decisions = Mockito.mock(AutomationDecisionSource::class.java)
+        val workTracker = Mockito.mock(AutomationWorkTracker::class.java)
+        val action = QuestAction.Accept("quest-1", "accept-1")
+        Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
+        Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token"))
+        Mockito.`when`(decisions.select(7)).thenReturn(AutomationCoordination.Runnable(10, action, emptyList()))
+        Mockito.`when`(runtime.prepare(Mockito.eq(7L), eqString("token"), anyStoredAction())).thenThrow(
+            IllegalStateException("interrupted preparation", InterruptedException("interrupted")),
+        )
+        val scopedRunner = UnifiedAutomationRunner(
+            preflight, runtime, decisions, workTracker, executor, codec, wakeup, sharedCooldowns, ambiguousReconciler,
+        )
+
+        try {
+            scopedRunner.runOne(7)
+
+            assertTrue(Thread.currentThread().isInterrupted)
+            Mockito.verify(runtime).stop(
+                Mockito.eq(7L),
+                eqString("token"),
+                Mockito.isNull(),
+                eqValue(AutomationStopReason.FATAL),
+                eqString("interrupted preparation"),
+            )
+            Mockito.verifyNoInteractions(executor)
+        } finally {
+            Thread.interrupted()
+        }
+    }
+
+    @Test
     fun `runner persists submits and checkpoints one action then wakes a fresh evaluation`() {
         val snapshot = AutomationCoordinatorSnapshot(emptyList())
         val action = BattleMapAutomationAction(

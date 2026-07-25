@@ -139,7 +139,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                         typedRuntime.recordWarnings(accountId, token, decision.warnings)
                         workTracker.ensureForAction(accountId, decision.entryId, decision.action)
                         toStored(decision.entryId, decision.action)
-                    } catch (error: Throwable) {
+                    } catch (error: Exception) {
                         stopPreparationFailure(accountId, token, decision.entryId, "BUILD", error)
                         return
                     }
@@ -169,7 +169,7 @@ class UnifiedAutomationRunner @Autowired constructor(
         val row = claim.preparedAction ?: run {
             val prepared = try {
                 typedRuntime.prepare(accountId, token, stored)
-            } catch (error: Throwable) {
+            } catch (error: Exception) {
                 stopPreparationFailure(accountId, token, stored.entryId, "PERSIST", error)
                 return
             }
@@ -318,8 +318,10 @@ class UnifiedAutomationRunner @Autowired constructor(
         token: String,
         entryId: Long,
         stage: String,
-        error: Throwable,
+        error: Exception,
     ) {
+        val interrupted = generateSequence<Throwable>(error) { it.cause }
+            .any { it is InterruptedException }
         log.error(
             "Typed automation preparation failed accountId={} entryId={} stage={} errorType={}",
             accountId,
@@ -328,13 +330,17 @@ class UnifiedAutomationRunner @Autowired constructor(
             error.javaClass.name,
             error,
         )
-        typedRuntime.stop(
-            accountId,
-            token,
-            null,
-            AutomationStopReason.FATAL,
-            error.message ?: error.javaClass.simpleName,
-        )
+        try {
+            typedRuntime.stop(
+                accountId,
+                token,
+                null,
+                AutomationStopReason.FATAL,
+                error.message ?: error.javaClass.simpleName,
+            )
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt()
+        }
     }
 
     private fun Throwable.findHofAutomationDeferral(): HofAutomationDeferredException? =
