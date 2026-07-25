@@ -457,6 +457,34 @@ class BattleMapAutomationProgressStorePersistenceTest {
     @Autowired private lateinit var accountRepository: HofAccountRepository
     @Autowired private lateinit var progressStore: JpaBattleMapAutomationProgressStore
     @Autowired private lateinit var queryRepository: TypedAutomationQueryRepository
+    @Autowired private lateinit var handler: BattleMapAutomationHandler
+
+    @Test
+    fun `ambiguous recovery reuses an authoritative mixed result saved before session completion`() {
+        val account = accountRepository.save(
+            HofAccountEntity(loginId = "battle-recovery-${System.nanoTime()}", encryptedPassword = "encrypted", createdAt = NOW),
+        )
+        val action = action(account.id, "mixed-execution")
+        val authoritative = assertIs<BattleOutcomeResolution.Applied>(
+            handler.onBattleCompleted(
+                action = action,
+                source = BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
+                resultIdentity = "authoritative-result",
+                outcomes = listOf(
+                    BattleAutomationRoundOutcome.VICTORY,
+                    BattleAutomationRoundOutcome.DEFEAT,
+                    BattleAutomationRoundOutcome.DRAW,
+                ),
+                reconciler = BattleOutcomeReconciler { error("Complete evidence must not be reconciled") },
+            ),
+        )
+
+        val recovered = handler.confirmAmbiguousSuccess(action)
+
+        assertEquals(BattleOutcomeResolution.Applied("authoritative-result", 1), authoritative)
+        assertEquals(authoritative, recovered)
+        assertEquals(1, queryRepository.findBattleWins(account.id, DATE, "battle_map", "map"))
+    }
 
     @Test
     fun concurrentReplayCountsOnceDifferentResultsCountAndConflictingReuseIsRejected() {
@@ -587,6 +615,8 @@ class BattleMapAutomationProgressStorePersistenceTest {
 
 private class RecordingBattleProgressStore : BattleMapAutomationProgressStore {
     val recorded = mutableListOf<Recorded>()
+
+    override fun findRecordedResult(action: BattleMapAutomationAction): BattleMapRecordedResult? = null
 
     override fun recordResult(
         action: BattleMapAutomationAction,

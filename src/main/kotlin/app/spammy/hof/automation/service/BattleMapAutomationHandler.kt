@@ -118,11 +118,18 @@ data class BattleAuthoritativeOutcomeEvidence(
 }
 
 interface BattleMapAutomationProgressStore {
+    fun findRecordedResult(action: BattleMapAutomationAction): BattleMapRecordedResult?
+
     fun recordResult(
         action: BattleMapAutomationAction,
         evidence: BattleAuthoritativeOutcomeEvidence,
     )
 }
+
+data class BattleMapRecordedResult(
+    val resultIdentity: String,
+    val victoryCount: Int,
+)
 
 class BattleMapAutomationResultConflictException(resultIdentity: String) : IllegalStateException(
     "Battle result identity '$resultIdentity' is already bound to a different execution or outcome.",
@@ -135,6 +142,16 @@ class JpaBattleMapAutomationProgressStore(
     private val processedResultRepository: BattleAutomationProcessedResultCommandRepository,
     private val timeProvider: TimeProvider,
 ) : BattleMapAutomationProgressStore {
+    @Transactional(readOnly = true)
+    override fun findRecordedResult(action: BattleMapAutomationAction): BattleMapRecordedResult? {
+        val prior = queryRepository.findBattleProcessedExecution(action.accountId, action.executionIdentity)
+            ?: return null
+        if (prior.actionFingerprint != actionFingerprint(action)) {
+            throw BattleMapAutomationResultConflictException(prior.resultIdentity)
+        }
+        return BattleMapRecordedResult(prior.resultIdentity, prior.victoryCount)
+    }
+
     @Transactional
     override fun recordResult(
         action: BattleMapAutomationAction,
@@ -363,6 +380,9 @@ class BattleMapAutomationHandler(
 
     fun confirmAmbiguousSuccess(action: BattleMapAutomationAction): BattleOutcomeResolution.Applied {
         require(action.source == BattleAutomationActionSource.BATTLE_MAP_AUTOMATION)
+        progressStore.findRecordedResult(action)?.let { recorded ->
+            return BattleOutcomeResolution.Applied(recorded.resultIdentity, recorded.victoryCount)
+        }
         val evidence = BattleAuthoritativeOutcomeEvidence(
             accountId = action.accountId,
             executionIdentity = action.executionIdentity,
