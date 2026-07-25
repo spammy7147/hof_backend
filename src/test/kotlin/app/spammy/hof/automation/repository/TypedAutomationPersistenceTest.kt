@@ -182,7 +182,8 @@ class TypedAutomationPersistenceTest {
         actionRepository.save(
             TypedAutomationActionRunEntity(
                 account = account, entry = entry, executionIdentity = stored.executionIdentity,
-                actionKind = "QUEST_CLAIM", schemaVersion = 1, payloadJson = encoded.json,
+                actionKind = "QUEST_CLAIM", schemaVersion = StoredTypedAutomationActionCodec.SCHEMA_VERSION,
+                payloadJson = encoded.json,
                 actionFingerprint = encoded.fingerprint, status = TypedAutomationActionStatus.PREPARED,
                 leaseToken = "old-token", createdAt = now, updatedAt = now,
             ),
@@ -213,7 +214,8 @@ class TypedAutomationPersistenceTest {
         val actionId = actionRepository.save(
             TypedAutomationActionRunEntity(
                 account = account, entry = entry, executionIdentity = stored.executionIdentity,
-                actionKind = "QUEST_CLAIM", schemaVersion = 1, payloadJson = encoded.json,
+                actionKind = "QUEST_CLAIM", schemaVersion = StoredTypedAutomationActionCodec.SCHEMA_VERSION,
+                payloadJson = encoded.json,
                 actionFingerprint = encoded.fingerprint, status = TypedAutomationActionStatus.SUBMITTING,
                 leaseToken = "token", createdAt = now, updatedAt = now,
             ),
@@ -395,7 +397,7 @@ class TypedAutomationPersistenceTest {
         entry = entry,
         executionIdentity = identity,
         actionKind = entry.type.name,
-        schemaVersion = 1,
+        schemaVersion = StoredTypedAutomationActionCodec.SCHEMA_VERSION,
         payloadJson = "{}",
         actionFingerprint = identity.padEnd(64, 'a').take(64),
         status = status,

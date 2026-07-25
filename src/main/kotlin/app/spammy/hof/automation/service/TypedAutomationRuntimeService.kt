@@ -87,7 +87,8 @@ class TypedAutomationRuntimeService(
         return actionRepository.save(
             TypedAutomationActionRunEntity(
                 account = entry.account, entry = entry, executionIdentity = action.executionIdentity,
-                actionKind = action.payload.kind(), schemaVersion = 1, payloadJson = encoded.json,
+                actionKind = action.payload.kind(), schemaVersion = StoredTypedAutomationActionCodec.SCHEMA_VERSION,
+                payloadJson = encoded.json,
                 actionFingerprint = encoded.fingerprint, status = TypedAutomationActionStatus.PREPARED,
                 leaseToken = token, createdAt = now, updatedAt = now,
             ),

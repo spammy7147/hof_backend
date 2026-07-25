@@ -157,7 +157,7 @@ class StoredTypedAutomationActionCodec(private val objectMapper: ObjectMapper) {
         require(request.patternLoads.map { it.characterId } == request.characterIds)
     }
 
-    companion object { const val SCHEMA_VERSION = 1 }
+    companion object { const val SCHEMA_VERSION = 2 }
 }
 
 internal fun StoredTypedActionPayload.kind(): String = when (this) {

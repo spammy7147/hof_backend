@@ -128,8 +128,7 @@ class UnifiedAutomationService(
             val questKey = bounded(selection.questKey, MAX_QUEST_CODE_LENGTH, "퀘스트 코드")
             val displayCode = bounded(selection.displayCode, MAX_QUEST_CODE_LENGTH, "퀘스트 표시 코드")
             val questName = bounded(selection.questName, MAX_QUEST_NAME_LENGTH, "퀘스트명")
-            val legacyFixture = displayCode == questKey && questName == questKey
-            if (!legacyFixture && !QuestIdentityFactory.matches(questKey, displayCode, questName)) {
+            if (!QuestIdentityFactory.matches(questKey, displayCode, questName)) {
                 invalid("퀘스트 식별자가 표시 코드와 이름에 맞지 않습니다.")
             }
             selection.copy(

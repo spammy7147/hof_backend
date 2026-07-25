@@ -29,7 +29,7 @@ class StoredTypedAutomationActionCodecTest {
             ),
         )
         val encoded = codec.encode(action)
-        assertEquals(action, codec.decode(1, encoded.json))
+        assertEquals(action, codec.decode(StoredTypedAutomationActionCodec.SCHEMA_VERSION, encoded.json))
         assertEquals(encoded.fingerprint, codec.encode(action).fingerprint)
         assertEquals(64, encoded.fingerprint.length)
         val changed = action.copy(payload = (action.payload as StoredTypedActionPayload.BattleMap).copy(
@@ -39,10 +39,10 @@ class StoredTypedAutomationActionCodecTest {
     }
 
     @Test
-    fun `legacy payloads without display decode with null display`() {
-        val legacyJson = """{"entryId":12,"executionIdentity":"execution","payload":{"kind":"QUEST_CLAIM","questKey":"quest","actionNo":"claim"}}"""
+    fun `current payloads without display decode with null display`() {
+        val jsonWithoutDisplay = """{"entryId":12,"executionIdentity":"execution","payload":{"kind":"QUEST_CLAIM","questKey":"quest","actionNo":"claim"}}"""
 
-        val decoded = codec.decode(1, legacyJson)
+        val decoded = codec.decode(StoredTypedAutomationActionCodec.SCHEMA_VERSION, jsonWithoutDisplay)
 
         assertNull((decoded.payload as StoredTypedActionPayload.QuestClaim).display)
     }
@@ -70,8 +70,8 @@ class StoredTypedAutomationActionCodecTest {
 
         payloads.forEachIndexed { index, payload ->
             val encoded = codec.encode(StoredTypedAutomationActionV1(12, "execution-$index", payload))
-            val legacyJson = encoded.json.replace(Regex(",?\\\"display\\\":null"), "")
-            assertNull(codec.decode(1, legacyJson).payload.display)
+            val jsonWithoutDisplay = encoded.json.replace(Regex(",?\\\"display\\\":null"), "")
+            assertNull(codec.decode(StoredTypedAutomationActionCodec.SCHEMA_VERSION, jsonWithoutDisplay).payload.display)
         }
     }
 
@@ -98,13 +98,13 @@ class StoredTypedAutomationActionCodecTest {
             ),
         )
 
-        assertEquals(questDisplay, (codec.decode(1, codec.encode(claim).json).payload as StoredTypedActionPayload.QuestClaim).display)
-        assertEquals("푸른 초원", (codec.decode(1, codec.encode(battle).json).payload as StoredTypedActionPayload.BattleMap).display?.mapName)
+        assertEquals(questDisplay, (codec.decode(StoredTypedAutomationActionCodec.SCHEMA_VERSION, codec.encode(claim).json).payload as StoredTypedActionPayload.QuestClaim).display)
+        assertEquals("푸른 초원", (codec.decode(StoredTypedAutomationActionCodec.SCHEMA_VERSION, codec.encode(battle).json).payload as StoredTypedActionPayload.BattleMap).display?.mapName)
     }
 
     @Test
     fun `rejects unknown schema versions`() {
-        assertFailsWith<IllegalArgumentException> { codec.decode(2, "{}") }
+        assertFailsWith<IllegalArgumentException> { codec.decode(1, "{}") }
     }
 
     @Test
@@ -114,7 +114,8 @@ class StoredTypedAutomationActionCodecTest {
         val account = HofAccountEntity(7, "login", "encrypted", Instant.EPOCH)
         val entry = AutomationEntryEntity(12, account, AutomationType.QUEST, 0, true, Instant.EPOCH, Instant.EPOCH)
         val row = TypedAutomationActionRunEntity(
-            1, account, entry, action.executionIdentity, "QUEST_CLAIM", 1, encoded.json, encoded.fingerprint,
+            1, account, entry, action.executionIdentity, "QUEST_CLAIM",
+            StoredTypedAutomationActionCodec.SCHEMA_VERSION, encoded.json, encoded.fingerprint,
             TypedAutomationActionStatus.PREPARED, leaseToken = "token", createdAt = Instant.EPOCH, updatedAt = Instant.EPOCH,
         )
         val alternateMapper = jacksonMapperBuilder().enable(SerializationFeature.INDENT_OUTPUT).build()

@@ -238,7 +238,7 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
                 entry = entry,
                 executionIdentity = "stopped-action-$suffix",
                 actionKind = "BATTLE_MAP",
-                schemaVersion = 1,
+                schemaVersion = StoredTypedAutomationActionCodec.SCHEMA_VERSION,
                 payloadJson = "{}",
                 actionFingerprint = "a".repeat(64),
                 status = TypedAutomationActionStatus.FAILED,

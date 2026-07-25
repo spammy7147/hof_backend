@@ -30,6 +30,7 @@ import app.spammy.hof.automation.repository.BattleAutomationMapCommandRepository
 import app.spammy.hof.automation.repository.QuestAutomationMapCommandRepository
 import app.spammy.hof.automation.repository.QuestAutomationSelectionCommandRepository
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
+import app.spammy.hof.quest.model.QuestIdentityFactory
 import app.spammy.hof.battle.entity.BattleMapEntity
 import app.spammy.hof.battle.dto.BattlePatternLoadRequest
 import app.spammy.hof.battle.dto.RunBattleRequest
@@ -201,14 +202,14 @@ class UnifiedAutomationServiceTest {
         val duplicateSource = UpdateQuestAutomationRequest(
             false,
             listOf(
-                QuestSelectionRequest("Q-1", true, 0, emptyList()),
-                QuestSelectionRequest("Q-2", true, 0, emptyList()),
+                questSelection("Q-1", true, 0, emptyList()),
+                questSelection("Q-2", true, 0, emptyList()),
             ),
         )
         val duplicateMapOrder = UpdateQuestAutomationRequest(
             false,
             listOf(
-                QuestSelectionRequest(
+                questSelection(
                     "Q-1",
                     true,
                     0,
@@ -230,22 +231,48 @@ class UnifiedAutomationServiceTest {
     }
 
     @Test
+    fun `quest update rejects keys that do not match the display code and name`() {
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(entry(91L, AutomationType.QUEST)))
+        val valid = questSelection("0351", true, 0, emptyList(), "마을 지하 수로")
+        val invalidSelections = listOf(
+            valid.copy(questName = "다른 이름"),
+            valid.copy(questKey = "351"),
+        )
+
+        invalidSelections.forEach { selection ->
+            val error = assertFailsWith<ApiException> {
+                service.updateQuest(ACCOUNT_ID, UpdateQuestAutomationRequest(false, listOf(selection)))
+            }
+            assertEquals(ErrorCode.INVALID_REQUEST, error.errorCode)
+        }
+
+        Mockito.verifyNoInteractions(battleMapQueryRepository)
+    }
+
+    @Test
     fun `quest update permits the same execution order across different missions`() {
         val questEntry = entry(91L, AutomationType.QUEST)
-        val savedSelection = QuestAutomationSelectionEntity(301L, questEntry, "Q-1", true, 0)
+        val selection = questSelection(
+            "Q-1",
+            true,
+            0,
+            listOf(
+                questMap("m1", 0).copy(mapCode = "shared"),
+                questMap("m2", 0).copy(mapCode = "shared"),
+            ),
+        )
+        val savedSelection = QuestAutomationSelectionEntity(
+            301L,
+            questEntry,
+            selection.questKey,
+            true,
+            0,
+            selection.displayCode,
+            selection.questName,
+        )
         val request = UpdateQuestAutomationRequest(
             false,
-            listOf(
-                QuestSelectionRequest(
-                    "Q-1",
-                    true,
-                    0,
-                    listOf(
-                        questMap("m1", 0).copy(mapCode = "shared"),
-                        questMap("m2", 0).copy(mapCode = "shared"),
-                    ),
-                ),
-            ),
+            listOf(selection),
         )
         Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(questEntry))
         Mockito.`when`(
@@ -344,7 +371,16 @@ class UnifiedAutomationServiceTest {
     @Test
     fun `changing current quest selection stops that quest session`() {
         val questEntry = entry(91L, AutomationType.QUEST).also { it.enabled = true }
-        val old = QuestAutomationSelectionEntity(301L, questEntry, "Q-1", true, 0)
+        val selection = questSelection("Q-1", false, 0, emptyList())
+        val old = QuestAutomationSelectionEntity(
+            301L,
+            questEntry,
+            selection.questKey,
+            true,
+            0,
+            selection.displayCode,
+            selection.questName,
+        )
         Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(questEntry))
         Mockito.`when`(typedQuery.findQuestSelections(questEntry.id)).thenReturn(listOf(old))
         Mockito.`when`(typedQuery.findQuestMaps(listOf(old.id))).thenReturn(emptyList())
@@ -354,14 +390,14 @@ class UnifiedAutomationServiceTest {
             ACCOUNT_ID,
             UpdateQuestAutomationRequest(
                 enabled = true,
-                quests = listOf(QuestSelectionRequest("Q-1", false, 0, emptyList())),
+                quests = listOf(selection),
             ),
         )
 
         Mockito.verify(workLifecycle).stopForConfigurationChange(
             ACCOUNT_ID,
             questEntry.id,
-            setOf("Q-1"),
+            setOf(selection.questKey),
             false,
         )
     }
@@ -478,7 +514,7 @@ class UnifiedAutomationServiceTest {
             entry = null,
             executionIdentity = "failed-adventure-action",
             actionKind = "ADVENTURE_MAP",
-            schemaVersion = 1,
+            schemaVersion = StoredTypedAutomationActionCodec.SCHEMA_VERSION,
             payloadJson = "{}",
             actionFingerprint = "b".repeat(64),
             status = TypedAutomationActionStatus.FAILED,
@@ -775,6 +811,24 @@ class UnifiedAutomationServiceTest {
         false,
     )
 
+    private fun questSelection(
+        displayCode: String,
+        enabled: Boolean,
+        sourceOrder: Int,
+        maps: List<QuestMapSettingRequest>,
+        questName: String = displayCode,
+    ): QuestSelectionRequest {
+        val identity = QuestIdentityFactory.create(displayCode, questName)
+        return QuestSelectionRequest(
+            identity.questKey,
+            identity.displayCode,
+            identity.name,
+            enabled,
+            sourceOrder,
+            maps,
+        )
+    }
+
     private fun battleRequest(categoryId: String, mapCode: String) = RunBattleRequest(
         categoryId,
         mapCode,
@@ -820,7 +874,7 @@ class UnifiedAutomationServiceTest {
         entry = actionEntry,
         executionIdentity = executionIdentity,
         actionKind = actionKind,
-        schemaVersion = 1,
+        schemaVersion = StoredTypedAutomationActionCodec.SCHEMA_VERSION,
         payloadJson = "{}",
         actionFingerprint = "a".repeat(64),
         status = TypedAutomationActionStatus.SUBMITTING,

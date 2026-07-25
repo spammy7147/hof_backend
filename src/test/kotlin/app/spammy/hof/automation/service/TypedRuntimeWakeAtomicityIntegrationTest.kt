@@ -112,7 +112,8 @@ class TypedRuntimeWakeAtomicityIntegrationTest {
         val encoded = codec.encode(stored)
         val action = actions.save(TypedAutomationActionRunEntity(
             account = account, entry = entry, executionIdentity = stored.executionIdentity, actionKind = "QUEST_CLAIM",
-            schemaVersion = 1, payloadJson = encoded.json, actionFingerprint = encoded.fingerprint, status = status,
+            schemaVersion = StoredTypedAutomationActionCodec.SCHEMA_VERSION,
+            payloadJson = encoded.json, actionFingerprint = encoded.fingerprint, status = status,
             leaseToken = TOKEN, createdAt = NOW, submittedAt = NOW.takeIf { status == TypedAutomationActionStatus.SUBMITTING }, updatedAt = NOW,
         ))
         entityManager.flush()

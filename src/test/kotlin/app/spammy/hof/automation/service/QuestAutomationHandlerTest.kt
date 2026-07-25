@@ -82,6 +82,28 @@ class QuestAutomationHandlerTest {
     }
 
     @Test
+    fun `configured waiting quest with no action number still matches by stable key`() {
+        val questKey = "q:stable-quest-key"
+        val waiting = QuestSnapshot(
+            questKey = questKey,
+            name = "마을 지하 수로",
+            state = QuestState.UNAVAILABLE,
+            section = QuestSection.WAITING,
+            sourceOrder = 0,
+            missions = emptyList(),
+            actionNo = null,
+            displayCode = "0351",
+        )
+
+        val result = handler.evaluate(snapshot(
+            quests = listOf(waiting),
+            selections = listOf(selection(questKey)),
+        ))
+
+        assertIs<HandlerEvaluation.Skipped>(result)
+    }
+
+    @Test
     fun immediatelyCompletableAcceptBeatsCombat() {
         val result = handler.evaluate(snapshot(
             quests = listOf(
