@@ -47,6 +47,8 @@ import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.external.parser.BattleResultParser
 import app.spammy.hof.external.parser.LoginStateParser
 import app.spammy.hof.external.parser.SharedBattleCooldownParser
+import app.spammy.hof.status.entity.HofStatusSnapshotEntity
+import app.spammy.hof.status.repository.HofStatusSnapshotQueryRepository
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito
 import java.time.Instant
@@ -65,7 +67,7 @@ class BattleRunServiceTest {
         createdAt = now,
     )
     private val characters = listOf(
-        testCharacter(id = 10L, hofCharacterId = "1683198503393759", name = "《얼어붙은 손길》공민이", job = "Social Knight"),
+        testCharacter(id = 10L, hofCharacterId = "1683198503393759", name = "소셜2", job = "Social Knight"),
         testCharacter(id = 11L, hofCharacterId = "1683198503393760", name = "사제", job = "Cardinal"),
         testCharacter(id = 12L, hofCharacterId = "1683198503393761", name = "총잡이", job = "Desperado"),
         testCharacter(id = 13L, hofCharacterId = "1683198503393762", name = "수학자", job = "Mathematician"),
@@ -76,6 +78,7 @@ class BattleRunServiceTest {
     private val cookieQueryRepository = Mockito.mock(CookieQueryRepository::class.java)
     private val characterQueryRepository = Mockito.mock(CharacterQueryRepository::class.java)
     private val battleMapQueryRepository = Mockito.mock(BattleMapQueryRepository::class.java)
+    private val hofStatusSnapshotQueryRepository = Mockito.mock(HofStatusSnapshotQueryRepository::class.java)
     private val battleLogRepository = RecordingBattleLogRepository()
     private val participantRepository = RecordingBattleLogParticipantRepository()
     private val lootRepository = RecordingBattleLogLootRepository()
@@ -115,6 +118,7 @@ class BattleRunServiceTest {
         cookieQueryRepository = cookieQueryRepository,
         characterQueryRepository = characterQueryRepository,
         battleMapQueryRepository = battleMapQueryRepository,
+        hofStatusSnapshotQueryRepository = hofStatusSnapshotQueryRepository,
         requestFactory = HofRequestFactory(),
         gateway = accountGateway,
         loginStateParser = LoginStateParser(),
@@ -130,6 +134,18 @@ class BattleRunServiceTest {
         Mockito.`when`(
             battleMapQueryRepository.findStateForExecution(1L, "battle_map", "snow22"),
         ).thenReturn(battleMapState())
+        Mockito.`when`(hofStatusSnapshotQueryRepository.findByAccountId(1L)).thenReturn(
+            HofStatusSnapshotEntity(
+                account = account,
+                playerName = "《얼어붙은 손길》공민이",
+                funds = 331_708_318L,
+                timeCurrent = 6000,
+                timeMax = 6000,
+                work = "Nothing",
+                auction = "Nothing",
+                observedAt = now,
+            ),
+        )
     }
 
     @Test
@@ -253,6 +269,25 @@ class BattleRunServiceTest {
         assertEquals("battle_map", savedLog.categoryIdSnapshot)
         assertEquals("snow22", savedLog.mapCodeSnapshot)
         assertEquals("VICTORY", savedLog.outcome)
+    }
+
+    @Test
+    fun runBattleUsesStoredPlayerNameForOneSideVictoryOutcome() {
+        prepareRunnableBattle()
+        gateway.nextBattleBody = """
+            <html><body>
+              <h1>《얼어붙은 손길》공민이은(는) 승리했다!</h1>
+              <div>
+                남은 HP : 25955/26197<br>
+                생존자 : 5/5<br>
+                총 데미지 : 365247
+              </div>
+            </body></html>
+        """.trimIndent()
+
+        val response = service.runBattle(1L, runRequest())
+
+        assertEquals(HofBattleOutcome.VICTORY.name, response.outcome)
     }
 
     @Test

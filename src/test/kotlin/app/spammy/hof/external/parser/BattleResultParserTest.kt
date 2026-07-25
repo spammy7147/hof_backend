@@ -35,7 +35,7 @@ class BattleResultParserTest {
                   </div>
                 </body></html>
             """.trimIndent(),
-            allyNames = listOf("《얼어붙은 손길》공민이"),
+            playerName = "《얼어붙은 손길》공민이",
         )
 
         assertEquals(HofBattleOutcome.VICTORY, result.outcome)
@@ -86,7 +86,7 @@ class BattleResultParserTest {
                   </div>
                 </body></html>
             """.trimIndent(),
-            allyNames = listOf("《얼어붙은 손길》공민이"),
+            playerName = "《얼어붙은 손길》공민이",
         )
 
         assertEquals(HofBattleOutcome.VICTORY, result.outcome)
@@ -107,7 +107,7 @@ class BattleResultParserTest {
     }
 
     @Test
-    fun parsesVictoryFromSideRowsWhenWinnerTitleDoesNotContainAllyCharacterName() {
+    fun parsesVictoryWhenPlayerNameAppearsInTitle() {
         val result = parser.parse(
             html = """
                 <html><body>
@@ -131,13 +131,128 @@ class BattleResultParserTest {
                   </div>
                 </body></html>
             """.trimIndent(),
-            allyNames = listOf("2탑전용", "골용비테", "남세이지", "낫망네크", "니트로맨"),
+            playerName = "《얼어붙은 손길》공민이",
         )
 
         assertEquals(HofBattleOutcome.VICTORY, result.outcome)
         assertEquals("《얼어붙은 손길》공민이은(는) 승리했다!", result.title)
         assertEquals(0, result.enemySide.survivorsAlive)
         assertEquals(5, result.allySide.survivorsAlive)
+    }
+
+    @Test
+    fun parsesPlayerVictoryFromTitleWithOnlyOneSideBlock() {
+        val result = parser.parse(
+            html = """
+                <html><body>
+                  <h1>《얼어붙은 손길》공민이은(는) 승리했다!</h1>
+                  <div>
+                    남은 HP : 25955/26197<br>
+                    생존자 : 5/5<br>
+                    총 데미지 : 365247
+                  </div>
+                </body></html>
+            """.trimIndent(),
+            playerName = " \n 《얼어붙은   손길》공민이 \t",
+        )
+
+        assertEquals(HofBattleOutcome.VICTORY, result.outcome)
+    }
+
+    @Test
+    fun parsesNonPlayerVictoryAsDefeatRegardlessOfSideBlocks() {
+        val result = parser.parse(
+            html = """
+                <html><body>
+                  <h1>Frosty Mountain- 대충산(마도사의 은신처)은(는) 승리했다!</h1>
+                  <div>
+                    남은 HP : 0/41070<br>
+                    생존자 : 0/2<br>
+                    총 데미지 : 3676
+                  </div>
+                  <div>
+                    남은 HP : 2071/2071<br>
+                    생존자 : 1/1<br>
+                    총 데미지 : 100
+                  </div>
+                </body></html>
+            """.trimIndent(),
+            playerName = "《얼어붙은 손길》공민이",
+        )
+
+        assertEquals(HofBattleOutcome.DEFEAT, result.outcome)
+    }
+
+    @Test
+    fun givesDrawTitlePrecedenceOverVictoryPhrase() {
+        val result = parser.parse(
+            html = "<h1>무승부 결과로 《얼어붙은 손길》공민이은(는) 승리했다!</h1>",
+            playerName = "《얼어붙은 손길》공민이",
+        )
+
+        assertEquals(HofBattleOutcome.DRAW, result.outcome)
+    }
+
+    @Test
+    fun parsesVictoryTitleWithNullPlayerNameAsUnknown() {
+        val result = parser.parse(
+            html = "<h1>《얼어붙은 손길》공민이은(는) 승리했다!</h1>",
+            playerName = null,
+        )
+
+        assertEquals(HofBattleOutcome.UNKNOWN, result.outcome)
+    }
+
+    @Test
+    fun parsesVictoryTitleWithUnknownPlayerNameAsUnknown() {
+        val result = parser.parse(
+            html = "<h1>《얼어붙은 손길》공민이은(는) 승리했다!</h1>",
+            playerName = "Unknown",
+        )
+
+        assertEquals(HofBattleOutcome.UNKNOWN, result.outcome)
+    }
+
+    @Test
+    fun parsesVictoryTitleWithBlankPlayerNameAsUnknown() {
+        listOf("", " \n\t ").forEach { playerName ->
+            val result = parser.parse(
+                html = "<h1>《얼어붙은 손길》공민이은(는) 승리했다!</h1>",
+                playerName = playerName,
+            )
+
+            assertEquals(HofBattleOutcome.UNKNOWN, result.outcome)
+        }
+    }
+
+    @Test
+    fun parsesVictoryTitleWithPaddedMixedCaseUnknownPlayerNameAsUnknown() {
+        val result = parser.parse(
+            html = "<h1>《얼어붙은 손길》공민이은(는) 승리했다!</h1>",
+            playerName = "  uNkNoWn  ",
+        )
+
+        assertEquals(HofBattleOutcome.UNKNOWN, result.outcome)
+    }
+
+    @Test
+    fun parsesEquivalentPlayerAndTitleNamesAcrossUnicodeSeparatorWhitespace() {
+        val result = parser.parse(
+            html = "<h1>《얼어붙은&nbsp;손길》공민이은(는) 승리했다!</h1>",
+            playerName = "《얼어붙은\u2003손길》공민이",
+        )
+
+        assertEquals(HofBattleOutcome.VICTORY, result.outcome)
+    }
+
+    @Test
+    fun parsesTitleWithoutTerminalPhraseAsUnknown() {
+        val result = parser.parse(
+            html = "<h1>《얼어붙은 손길》공민이의 전투 결과</h1>",
+            playerName = "《얼어붙은 손길》공민이",
+        )
+
+        assertEquals(HofBattleOutcome.UNKNOWN, result.outcome)
     }
 
     @Test
@@ -197,7 +312,7 @@ class BattleResultParserTest {
                   </div>
                 </body></html>
             """.trimIndent(),
-            allyNames = listOf("2탑전용", "골용비테", "남세이지", "낫망네크", "니트로맨"),
+            playerName = "《얼어붙은 손길》공민이",
         )
 
         assertEquals(3, results.size)
@@ -220,11 +335,11 @@ class BattleResultParserTest {
     fun parsesCaseInsensitiveTrailingQuantityAndFallsBackForUnsuffixedLoot() {
         val quantified = parser.parse(
             html = victoryHtmlWithLoot("Steel Ingot X 2"),
-            allyNames = listOf("소셜"),
+            playerName = "소셜",
         )
         val unsuffixed = parser.parse(
             html = victoryHtmlWithLoot("Mysterious Relic"),
-            allyNames = listOf("소셜"),
+            playerName = "소셜",
         )
 
         assertEquals(
@@ -261,7 +376,7 @@ class BattleResultParserTest {
                   </div>
                 </body></html>
             """.trimIndent(),
-            allyNames = listOf("소셜"),
+            playerName = "소셜",
         )
 
         assertEquals(
@@ -294,7 +409,7 @@ class BattleResultParserTest {
                   </div>
                 </body></html>
             """.trimIndent(),
-            allyNames = listOf("소셜"),
+            playerName = "소셜",
         )
 
         assertEquals(HofBattleOutcome.DEFEAT, result.outcome)
@@ -325,7 +440,7 @@ class BattleResultParserTest {
                   </div>
                 </body></html>
             """.trimIndent(),
-            allyNames = listOf("소셜"),
+            playerName = "소셜",
         )
 
         assertEquals(HofBattleOutcome.DRAW, result.outcome)

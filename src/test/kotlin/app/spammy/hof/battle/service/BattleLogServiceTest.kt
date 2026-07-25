@@ -106,6 +106,7 @@ class BattleLogServiceTest {
             assertEquals(listOf("Steel Ingot x 2", "Bone"), stored.loots.map { it.rawText })
             assertEquals(5L, queryRepository.countParticipants(stored.log.id))
         }
+        assertEquals("Frosty Mountain", response.mapName)
         assertEquals(characters.map { it.hofCharacterId }, response.characterIds)
         assertEquals(characters.map { it.name }, response.characterNames)
         assertEquals("VICTORY", response.outcome)
@@ -133,12 +134,14 @@ class BattleLogServiceTest {
             ),
         )
 
-        service.record(
+        val response = service.record(
             account = account,
             request = request("unknown_category", "unknown-code", listOf(character)),
             characters = listOf(character),
             result = result(HofBattleOutcome.UNKNOWN),
         )
+
+        assertEquals("unknown-code", response.mapName)
 
         inTransaction {
             val stored = queryRepository.findRecent(account.id, 1).single().log

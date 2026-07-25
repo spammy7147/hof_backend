@@ -156,6 +156,7 @@ class BattleLogService(
             accountId = account.id,
             categoryId = categoryIdSnapshot,
             mapCode = mapCodeSnapshot,
+            mapName = mapNameSnapshot,
             characterIds = participants.map { participant -> participant.hofCharacterIdSnapshot },
             characterNames = participants.map { participant -> participant.characterNameSnapshot },
             outcome = outcome,
