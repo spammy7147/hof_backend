@@ -126,7 +126,8 @@ class UnifiedAutomationRunnerTest {
         val owner = HofAccountEntity(7, "login", "encrypted", Instant.EPOCH)
         val entry = AutomationEntryEntity(12, owner, AutomationType.BATTLE_MAP, 0, true, Instant.EPOCH, Instant.EPOCH)
         val row = TypedAutomationActionRunEntity(
-            88, owner, entry, stored.executionIdentity, stored.payload.kind(), 1, encoded.json,
+            88, owner, entry, stored.executionIdentity, stored.payload.kind(),
+            StoredTypedAutomationActionCodec.SCHEMA_VERSION, encoded.json,
             encoded.fingerprint, TypedAutomationActionStatus.PREPARED, leaseToken = "token",
             createdAt = Instant.EPOCH, updatedAt = Instant.EPOCH,
         )
@@ -450,7 +451,8 @@ class UnifiedAutomationRunnerTest {
         val owner = HofAccountEntity(7, "login", "encrypted", Instant.EPOCH)
         val entry = AutomationEntryEntity(12, owner, AutomationType.QUEST, 0, true, Instant.EPOCH, Instant.EPOCH)
         val row = TypedAutomationActionRunEntity(
-            88, owner, entry, stored.executionIdentity, stored.payload.kind(), 1, encoded.json,
+            88, owner, entry, stored.executionIdentity, stored.payload.kind(),
+            StoredTypedAutomationActionCodec.SCHEMA_VERSION, encoded.json,
             encoded.fingerprint, TypedAutomationActionStatus.PREPARED, leaseToken = "token",
             createdAt = Instant.EPOCH, updatedAt = Instant.EPOCH,
         )
@@ -579,7 +581,8 @@ class UnifiedAutomationRunnerTest {
         val owner = HofAccountEntity(7, "login", "encrypted", Instant.EPOCH)
         val entry = AutomationEntryEntity(12, owner, AutomationType.QUEST, 0, true, Instant.EPOCH, Instant.EPOCH)
         return stored to TypedAutomationActionRunEntity(
-            88, owner, entry, stored.executionIdentity, stored.payload.kind(), 1, encoded.json,
+            88, owner, entry, stored.executionIdentity, stored.payload.kind(),
+            StoredTypedAutomationActionCodec.SCHEMA_VERSION, encoded.json,
             encoded.fingerprint, TypedAutomationActionStatus.RECONCILING, leaseToken = "token",
             createdAt = Instant.EPOCH, updatedAt = Instant.EPOCH,
         )
@@ -600,7 +603,7 @@ class UnifiedAutomationRunnerTest {
             entry,
             stored.executionIdentity,
             stored.payload.kind(),
-            1,
+            StoredTypedAutomationActionCodec.SCHEMA_VERSION,
             encoded.json,
             encoded.fingerprint,
             TypedAutomationActionStatus.PREPARED,
@@ -634,7 +637,8 @@ class UnifiedAutomationRunnerTest {
         val owner = HofAccountEntity(7, "login-ambiguous", "encrypted", Instant.EPOCH)
         val entry = AutomationEntryEntity(12, owner, AutomationType.QUEST, 0, true, Instant.EPOCH, Instant.EPOCH)
         val row = TypedAutomationActionRunEntity(
-            89, owner, entry, stored.executionIdentity, stored.payload.kind(), 1, encoded.json,
+            89, owner, entry, stored.executionIdentity, stored.payload.kind(),
+            StoredTypedAutomationActionCodec.SCHEMA_VERSION, encoded.json,
             encoded.fingerprint, TypedAutomationActionStatus.PREPARED, leaseToken = "token",
             createdAt = Instant.EPOCH, updatedAt = Instant.EPOCH,
         )
