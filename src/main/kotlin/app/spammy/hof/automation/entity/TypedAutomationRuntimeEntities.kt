@@ -37,7 +37,6 @@ class TypedAutomationActionRunEntity(
     @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "automation_entry_id") val entry: AutomationEntryEntity?,
     @Column(name = "execution_identity") val executionIdentity: String,
     @Column(name = "action_kind") val actionKind: String,
-    @Column(name = "schema_version") val schemaVersion: Int,
     @Column(name = "payload_json", columnDefinition = "text") val payloadJson: String,
     @Column(name = "action_fingerprint") val actionFingerprint: String,
     @Enumerated(EnumType.STRING) @Column(name = "status") var status: TypedAutomationActionStatus,

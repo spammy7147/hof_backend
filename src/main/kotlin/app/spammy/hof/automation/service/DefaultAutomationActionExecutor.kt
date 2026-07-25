@@ -22,7 +22,7 @@ class DefaultAutomationActionExecutor(
     private val executionSignals: AutomationExecutionSignals,
     private val workLifecycle: AutomationWorkLifecycle,
 ) : TypedAutomationActionExecutor {
-    override fun execute(accountId: Long, action: StoredTypedAutomationActionV1): TypedAutomationExecution =
+    override fun execute(accountId: Long, action: StoredTypedAutomationAction): TypedAutomationExecution =
         try {
             when (val payload = action.payload) {
                 is StoredTypedActionPayload.QuestClaim -> {

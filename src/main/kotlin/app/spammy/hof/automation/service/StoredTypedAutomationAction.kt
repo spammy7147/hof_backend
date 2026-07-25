@@ -14,7 +14,7 @@ import org.springframework.stereotype.Component
 import tools.jackson.databind.ObjectMapper
 import app.spammy.hof.automation.entity.TypedAutomationActionRunEntity
 
-data class StoredTypedAutomationActionV1(
+data class StoredTypedAutomationAction(
     val entryId: Long,
     val executionIdentity: String,
     val payload: StoredTypedActionPayload,
@@ -99,22 +99,20 @@ data class EncodedTypedAutomationAction(val json: String, val fingerprint: Strin
 
 @Component
 class StoredTypedAutomationActionCodec(private val objectMapper: ObjectMapper) {
-    fun encode(action: StoredTypedAutomationActionV1): EncodedTypedAutomationAction {
+    fun encode(action: StoredTypedAutomationAction): EncodedTypedAutomationAction {
         validate(action)
         val json = objectMapper.writeValueAsString(action)
         val fingerprint = fingerprint(json)
         return EncodedTypedAutomationAction(json, fingerprint)
     }
 
-    fun decode(schemaVersion: Int, json: String): StoredTypedAutomationActionV1 {
-        require(schemaVersion == SCHEMA_VERSION) { "Unsupported typed automation action schema version: $schemaVersion" }
-        return objectMapper.readValue(json, StoredTypedAutomationActionV1::class.java).also(::validate)
-    }
+    fun decode(json: String): StoredTypedAutomationAction =
+        objectMapper.readValue(json, StoredTypedAutomationAction::class.java).also(::validate)
 
     /** Verifies every duplicated persistence discriminator before a stored request may be submitted. */
-    fun verifyPersisted(row: TypedAutomationActionRunEntity, expectedAccountId: Long): StoredTypedAutomationActionV1 {
+    fun verifyPersisted(row: TypedAutomationActionRunEntity, expectedAccountId: Long): StoredTypedAutomationAction {
         require(fingerprint(row.payloadJson) == row.actionFingerprint) { "Stored action fingerprint mismatch." }
-        val decoded = decode(row.schemaVersion, row.payloadJson)
+        val decoded = decode(row.payloadJson)
         require(row.actionKind == decoded.payload.kind()) { "Stored action kind mismatch." }
         require(row.account.id == expectedAccountId) { "Stored action account mismatch." }
         row.entry?.let { entry ->
@@ -129,7 +127,7 @@ class StoredTypedAutomationActionCodec(private val objectMapper: ObjectMapper) {
         MessageDigest.getInstance("SHA-256").digest(json.toByteArray(StandardCharsets.UTF_8)),
     )
 
-    private fun validate(action: StoredTypedAutomationActionV1) {
+    private fun validate(action: StoredTypedAutomationAction) {
         when (val payload = action.payload) {
             is StoredTypedActionPayload.QuestClaim -> require(payload.questKey.isNotBlank() && payload.actionNo.isNotBlank())
             is StoredTypedActionPayload.QuestAccept -> require(payload.questKey.isNotBlank() && payload.actionNo.isNotBlank())
@@ -156,8 +154,6 @@ class StoredTypedAutomationActionCodec(private val objectMapper: ObjectMapper) {
         require(request.patternLoads.size == request.characterIds.size)
         require(request.patternLoads.map { it.characterId } == request.characterIds)
     }
-
-    companion object { const val SCHEMA_VERSION = 2 }
 }
 
 internal fun StoredTypedActionPayload.kind(): String = when (this) {

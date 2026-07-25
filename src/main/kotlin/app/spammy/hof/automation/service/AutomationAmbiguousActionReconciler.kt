@@ -16,5 +16,5 @@ sealed interface AmbiguousActionResolution {
 }
 
 fun interface AutomationAmbiguousActionReconciler {
-    fun reconcile(accountId: Long, action: StoredTypedAutomationActionV1): AmbiguousActionResolution
+    fun reconcile(accountId: Long, action: StoredTypedAutomationAction): AmbiguousActionResolution
 }

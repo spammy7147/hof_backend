@@ -18,7 +18,7 @@ class DefaultAutomationAmbiguousActionReconciler(
 ) : AutomationAmbiguousActionReconciler {
     override fun reconcile(
         accountId: Long,
-        action: StoredTypedAutomationActionV1,
+        action: StoredTypedAutomationAction,
     ): AmbiguousActionResolution = when (val payload = action.payload) {
         is StoredTypedActionPayload.QuestAccept -> reconcileQuestAccept(accountId, payload)
         is StoredTypedActionPayload.QuestClaim -> reconcileQuestClaim(accountId, payload)

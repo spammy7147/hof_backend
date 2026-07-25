@@ -427,7 +427,7 @@ internal object FreshSchemaContract {
         table(
             "typed_automation_action_runs",
             serialId(), requiredBigint("account_id"), optionalBigint("automation_entry_id"),
-            requiredVarchar("execution_identity", 128), requiredVarchar("action_kind", 30), requiredInteger("schema_version"),
+            requiredVarchar("execution_identity", 128), requiredVarchar("action_kind", 30),
             requiredText("payload_json"), requiredVarchar("action_fingerprint", 64), requiredVarchar("status", 20),
             requiredInteger("retry_attempt"), optionalInstant("next_attempt_at"), requiredVarchar("lease_token", 128),
             optionalText("last_error"), requiredInstant("created_at"), optionalInstant("submitted_at"),
@@ -820,7 +820,6 @@ internal object FreshSchemaContract {
         check("typed_automation_runtime_states", "ck_typed_runtime_lease", "(lease_token is null and lease_until is null) or (lease_token is not null and lease_until is not null)"),
         check("typed_automation_runtime_states", "ck_typed_runtime_stop_action", "lifecycle_status = 'STOPPED' or stop_action_id is null"),
         check("typed_automation_action_runs", "ck_typed_action_status", "locate(',' || status || ',', ',PREPARED,SUBMITTING,RECONCILING,SUCCEEDED,FAILED,AMBIGUOUS,') > 0"),
-        check("typed_automation_action_runs", "ck_typed_action_schema", "schema_version > 0"),
         check("typed_automation_action_runs", "ck_typed_action_retry", "retry_attempt >= 0"),
         check("typed_automation_action_runs", "ck_typed_action_fingerprint", "char_length(action_fingerprint) = 64"),
         check("character_status_lines", "ck_character_status_lines_order", "line_order >= 0"),

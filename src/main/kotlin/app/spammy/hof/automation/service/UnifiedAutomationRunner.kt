@@ -87,7 +87,7 @@ class UnifiedAutomationRunner @Autowired constructor(
         val stored = claim.preparedAction?.let {
             runCatching { typedCodec.verifyPersisted(it, accountId) }.getOrElse { error ->
                 log.warn("Stored typed action integrity failure accountId={} actionId={} errorType={}", accountId, it.id, error.javaClass.name)
-                typedRuntime.stop(accountId, token, it.id, AutomationStopReason.FATAL, "Stored typed action integrity check failed.")
+                typedRuntime.stopForIntegrityFailure(accountId, token, it.id, "Stored typed action integrity check failed.")
                 return
             }
         } ?: run {
@@ -330,7 +330,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             "TYPED_ACTION_COMPLETED"
         }
 
-    private fun toStored(entryId: Long, action: PreparedAutomationAction): StoredTypedAutomationActionV1 {
+    private fun toStored(entryId: Long, action: PreparedAutomationAction): StoredTypedAutomationAction {
         val executionId = when (action) {
             is BattleMapAutomationAction -> action.executionIdentity
             is AdventureMapAutomationAction -> action.executionIdentity
@@ -375,7 +375,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                 observedAvailableCount = action.observedAvailableCount,
             )
         }
-        return StoredTypedAutomationActionV1(entryId, executionId, payload)
+        return StoredTypedAutomationAction(entryId, executionId, payload)
     }
 
     private fun ResolvedAutomationParty?.toRequest(categoryId: String, mapCode: String, battleCount: Int) =

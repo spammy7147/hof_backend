@@ -54,7 +54,7 @@ class TypedAutomationRuntimeServiceTest {
         val state = state().apply { leaseToken = "old"; leaseUntil = now.minusSeconds(1) }
         val entry = AutomationEntryEntity(9, account, AutomationType.BATTLE_MAP, 0, true, now, now)
         val action = TypedAutomationActionRunEntity(
-            11, account, entry, "execution", "BATTLE_MAP", 1, "{}", "a".repeat(64),
+            11, account, entry, "execution", "BATTLE_MAP", "{}", "a".repeat(64),
             TypedAutomationActionStatus.SUBMITTING, leaseToken = "old", createdAt = now, updatedAt = now,
         )
         Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
@@ -72,7 +72,7 @@ class TypedAutomationRuntimeServiceTest {
         val state = state().apply { leaseToken = "token"; leaseUntil = now.plusSeconds(300) }
         val entry = AutomationEntryEntity(9, account, AutomationType.BATTLE_MAP, 0, true, now, now)
         val action = TypedAutomationActionRunEntity(
-            11, account, entry, "execution", "BATTLE_MAP", 1, "{}", "a".repeat(64),
+            11, account, entry, "execution", "BATTLE_MAP", "{}", "a".repeat(64),
             TypedAutomationActionStatus.SUBMITTING, leaseToken = "token", createdAt = now, updatedAt = now,
         )
         Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
@@ -85,6 +85,42 @@ class TypedAutomationRuntimeServiceTest {
     }
 
     @Test
+    fun `integrity failure marks a prepared action failed`() {
+        val state = state().apply { leaseToken = "token"; leaseUntil = now.plusSeconds(300) }
+        val entry = AutomationEntryEntity(9, account, AutomationType.BATTLE_MAP, 0, true, now, now)
+        val action = TypedAutomationActionRunEntity(
+            18, account, entry, "prepared-integrity", "BATTLE_MAP", "{}", "a".repeat(64),
+            TypedAutomationActionStatus.PREPARED, leaseToken = "token", createdAt = now, updatedAt = now,
+        )
+        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
+        Mockito.`when`(query.lockTypedAction(action.id)).thenReturn(action)
+
+        assertTrue(service.stopForIntegrityFailure(7, "token", action.id, "integrity"))
+
+        assertEquals(TypedAutomationActionStatus.FAILED, action.status)
+        assertEquals(TypedAutomationLifecycle.STOPPED, state.lifecycleStatus)
+        assertEquals(action.id, state.stopActionId)
+    }
+
+    @Test
+    fun `integrity failure isolates a reconciling action as ambiguous`() {
+        val state = state().apply { leaseToken = "token"; leaseUntil = now.plusSeconds(300) }
+        val entry = AutomationEntryEntity(9, account, AutomationType.BATTLE_MAP, 0, true, now, now)
+        val action = TypedAutomationActionRunEntity(
+            19, account, entry, "reconciling-integrity", "BATTLE_MAP", "{}", "b".repeat(64),
+            TypedAutomationActionStatus.RECONCILING, leaseToken = "token", createdAt = now, updatedAt = now,
+        )
+        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
+        Mockito.`when`(query.lockTypedAction(action.id)).thenReturn(action)
+
+        assertTrue(service.stopForIntegrityFailure(7, "token", action.id, "integrity"))
+
+        assertEquals(TypedAutomationActionStatus.AMBIGUOUS, action.status)
+        assertEquals(TypedAutomationLifecycle.STOPPED, state.lifecycleStatus)
+        assertEquals(action.id, state.stopActionId)
+    }
+
+    @Test
     fun `503 deferral returns submitted action to prepared and keeps runtime running`() {
         val retryAt = now.plusSeconds(30)
         val state = state().apply {
@@ -93,7 +129,7 @@ class TypedAutomationRuntimeServiceTest {
         }
         val entry = AutomationEntryEntity(9, account, AutomationType.BATTLE_MAP, 0, true, now, now)
         val action = TypedAutomationActionRunEntity(
-            15, account, entry, "retry-execution", "BATTLE_MAP", 1, "{}", "e".repeat(64),
+            15, account, entry, "retry-execution", "BATTLE_MAP", "{}", "e".repeat(64),
             TypedAutomationActionStatus.SUBMITTING, leaseToken = "token", createdAt = now,
             submittedAt = now, updatedAt = now,
         )
@@ -120,7 +156,7 @@ class TypedAutomationRuntimeServiceTest {
         val state = state().apply { leaseToken = "token"; leaseUntil = now.plusSeconds(300) }
         val entry = AutomationEntryEntity(9, account, AutomationType.QUEST, 0, true, now, now)
         val action = TypedAutomationActionRunEntity(
-            16, account, entry, "quest-accept", "QUEST_ACCEPT", 1, "{}", "f".repeat(64),
+            16, account, entry, "quest-accept", "QUEST_ACCEPT", "{}", "f".repeat(64),
             TypedAutomationActionStatus.SUBMITTING, leaseToken = "token", createdAt = now, updatedAt = now,
         )
         Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
@@ -139,7 +175,7 @@ class TypedAutomationRuntimeServiceTest {
         val state = state().apply { leaseToken = "token"; leaseUntil = now.plusSeconds(300) }
         val entry = AutomationEntryEntity(9, account, AutomationType.QUEST, 0, true, now, now)
         val action = TypedAutomationActionRunEntity(
-            17, account, entry, "quest-accept", "QUEST_ACCEPT", 1, "{}", "a".repeat(64),
+            17, account, entry, "quest-accept", "QUEST_ACCEPT", "{}", "a".repeat(64),
             TypedAutomationActionStatus.RECONCILING, leaseToken = "token", createdAt = now, updatedAt = now,
         )
         Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
@@ -168,7 +204,7 @@ class TypedAutomationRuntimeServiceTest {
         val state = state().apply { leaseToken = "token"; leaseUntil = now.plusSeconds(300) }
         val entry = AutomationEntryEntity(9, account, AutomationType.BATTLE_MAP, 0, true, now, now)
         val action = TypedAutomationActionRunEntity(
-            14, account, entry, "captcha-execution", "BATTLE_MAP", 1, "{}", "d".repeat(64),
+            14, account, entry, "captcha-execution", "BATTLE_MAP", "{}", "d".repeat(64),
             TypedAutomationActionStatus.SUBMITTING, leaseToken = "token", createdAt = now, updatedAt = now,
         )
         Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
@@ -201,7 +237,7 @@ class TypedAutomationRuntimeServiceTest {
         val otherAccount = HofAccountEntity(8, "other", "encrypted", now)
         val otherEntry = AutomationEntryEntity(10, otherAccount, AutomationType.BATTLE_MAP, 0, true, now, now)
         val otherAction = TypedAutomationActionRunEntity(
-            12, otherAccount, otherEntry, "other-execution", "BATTLE_MAP", 1, "{}", "b".repeat(64),
+            12, otherAccount, otherEntry, "other-execution", "BATTLE_MAP", "{}", "b".repeat(64),
             TypedAutomationActionStatus.SUBMITTING, leaseToken = "token", createdAt = now, updatedAt = now,
         )
         Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
@@ -218,7 +254,7 @@ class TypedAutomationRuntimeServiceTest {
         val state = state().apply { leaseToken = "token"; leaseUntil = now.plusSeconds(300) }
         val entry = AutomationEntryEntity(9, account, AutomationType.BATTLE_MAP, 0, true, now, now)
         val completed = TypedAutomationActionRunEntity(
-            13, account, entry, "completed-execution", "BATTLE_MAP", 1, "{}", "c".repeat(64),
+            13, account, entry, "completed-execution", "BATTLE_MAP", "{}", "c".repeat(64),
             TypedAutomationActionStatus.SUCCEEDED, leaseToken = "token", createdAt = now, updatedAt = now,
         )
         Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)

@@ -514,7 +514,6 @@ class UnifiedAutomationServiceTest {
             entry = null,
             executionIdentity = "failed-adventure-action",
             actionKind = "ADVENTURE_MAP",
-            schemaVersion = StoredTypedAutomationActionCodec.SCHEMA_VERSION,
             payloadJson = "{}",
             actionFingerprint = "b".repeat(64),
             status = TypedAutomationActionStatus.FAILED,
@@ -531,7 +530,7 @@ class UnifiedAutomationServiceTest {
             createdAt = NOW,
             updatedAt = NOW,
         )
-        val stored = StoredTypedAutomationActionV1(
+        val stored = StoredTypedAutomationAction(
             91L,
             action.executionIdentity,
             StoredTypedActionPayload.AdventureMap(
@@ -667,7 +666,7 @@ class UnifiedAutomationServiceTest {
         val displayedUnknownRow = actionRow("FUTURE_ACTION", "displayed-future", entry(91L, AutomationType.QUEST))
         Mockito.`when`(typedQuery.findActiveTypedAction(ACCOUNT_ID)).thenReturn(displayedUnknownRow)
         Mockito.`when`(storedActionCodec.verifyPersisted(displayedUnknownRow, ACCOUNT_ID)).thenReturn(
-            StoredTypedAutomationActionV1(
+            StoredTypedAutomationAction(
                 91L,
                 displayedUnknownRow.executionIdentity,
                 StoredTypedActionPayload.QuestClaim(
@@ -859,7 +858,7 @@ class UnifiedAutomationServiceTest {
         )
         rows.zip(actions).forEach { (row, action) ->
             Mockito.`when`(storedActionCodec.verifyPersisted(row, ACCOUNT_ID)).thenReturn(
-                StoredTypedAutomationActionV1(91L, row.executionIdentity, action.second),
+                StoredTypedAutomationAction(91L, row.executionIdentity, action.second),
             )
         }
     }
@@ -874,7 +873,6 @@ class UnifiedAutomationServiceTest {
         entry = actionEntry,
         executionIdentity = executionIdentity,
         actionKind = actionKind,
-        schemaVersion = StoredTypedAutomationActionCodec.SCHEMA_VERSION,
         payloadJson = "{}",
         actionFingerprint = "a".repeat(64),
         status = TypedAutomationActionStatus.SUBMITTING,

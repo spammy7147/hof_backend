@@ -60,7 +60,7 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
         assertIs<AmbiguousActionResolution.Applied>(
             reconciler.reconcile(
                 7,
-                StoredTypedAutomationActionV1(
+                StoredTypedAutomationAction(
                     10,
                     "claim-1",
                     StoredTypedActionPayload.QuestClaim("Q-1", "claim-no"),
@@ -144,13 +144,13 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
         Mockito.verifyNoInteractions(battleMapService)
     }
 
-    private fun questAccept() = StoredTypedAutomationActionV1(
+    private fun questAccept() = StoredTypedAutomationAction(
         10,
         "accept-1",
         StoredTypedActionPayload.QuestAccept("Q-1", "accept-no"),
     )
 
-    private fun questBattle(observedCurrent: Int) = StoredTypedAutomationActionV1(
+    private fun questBattle(observedCurrent: Int) = StoredTypedAutomationAction(
         10,
         "quest-battle-1",
         StoredTypedActionPayload.QuestBattle(
@@ -169,7 +169,7 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
         ),
     )
 
-    private fun adventureAction(attemptCount: Int) = StoredTypedAutomationActionV1(
+    private fun adventureAction(attemptCount: Int) = StoredTypedAutomationAction(
         11,
         "adventure-1",
         StoredTypedActionPayload.AdventureMap(
@@ -184,7 +184,7 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
         ),
     )
 
-    private fun battleMapAction() = StoredTypedAutomationActionV1(
+    private fun battleMapAction() = StoredTypedAutomationAction(
         12,
         "battle-1",
         StoredTypedActionPayload.BattleMap(

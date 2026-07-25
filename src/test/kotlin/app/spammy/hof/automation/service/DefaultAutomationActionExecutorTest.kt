@@ -42,7 +42,7 @@ class DefaultAutomationActionExecutorTest {
 
     @Test
     fun `quest accept posts once and records its exact execution identity`() {
-        val action = StoredTypedAutomationActionV1(
+        val action = StoredTypedAutomationAction(
             entryId = 11L,
             executionIdentity = "quest-accept-1",
             payload = StoredTypedActionPayload.QuestAccept(
@@ -63,7 +63,7 @@ class DefaultAutomationActionExecutorTest {
 
     @Test
     fun `expired session reauthenticates then replays the exact action once`() {
-        val action = StoredTypedAutomationActionV1(
+        val action = StoredTypedAutomationAction(
             entryId = 11L,
             executionIdentity = "quest-accept-recovery",
             payload = StoredTypedActionPayload.QuestAccept("Q-1", "accept-no"),
@@ -85,7 +85,7 @@ class DefaultAutomationActionExecutorTest {
 
     @Test
     fun `invalid stored credentials surface authentication without replay`() {
-        val action = StoredTypedAutomationActionV1(
+        val action = StoredTypedAutomationAction(
             entryId = 11L,
             executionIdentity = "quest-accept-auth",
             payload = StoredTypedActionPayload.QuestAccept("Q-1", "accept-no"),
@@ -105,7 +105,7 @@ class DefaultAutomationActionExecutorTest {
 
     @Test
     fun `ambiguous quest accept transport failure is never replayed`() {
-        val action = StoredTypedAutomationActionV1(
+        val action = StoredTypedAutomationAction(
             entryId = 11L,
             executionIdentity = "quest-accept-ambiguous",
             payload = StoredTypedActionPayload.QuestAccept("Q-1", "accept-no"),
@@ -123,7 +123,7 @@ class DefaultAutomationActionExecutorTest {
 
     @Test
     fun `ambiguous quest claim request failure is never replayed`() {
-        val action = StoredTypedAutomationActionV1(
+        val action = StoredTypedAutomationAction(
             entryId = 11L,
             executionIdentity = "quest-claim-ambiguous",
             payload = StoredTypedActionPayload.QuestClaim("Q-1", "claim-no"),
@@ -141,7 +141,7 @@ class DefaultAutomationActionExecutorTest {
 
     @Test
     fun `post success bookkeeping failure never replays the external quest action`() {
-        val action = StoredTypedAutomationActionV1(
+        val action = StoredTypedAutomationAction(
             entryId = 11L,
             executionIdentity = "quest-accept-bookkeeping",
             payload = StoredTypedActionPayload.QuestAccept("Q-1", "accept-no"),
@@ -173,7 +173,7 @@ class DefaultAutomationActionExecutorTest {
         Mockito.`when`(round3.outcome).thenReturn("VICTORY")
         Mockito.`when`(result.rounds).thenReturn(listOf(round1, round2, round3))
         Mockito.`when`(battleRun.runBattle(7L, request, HofRequestOrigin.AUTOMATION)).thenReturn(result)
-        val action = StoredTypedAutomationActionV1(
+        val action = StoredTypedAutomationAction(
             entryId = 11L,
             executionIdentity = "quest-battle-3",
             payload = StoredTypedActionPayload.QuestBattle(
@@ -221,7 +221,7 @@ class DefaultAutomationActionExecutorTest {
     @Test
     fun `captcha battle is classified without ambiguous wrapping or replay`() {
         val request = battleRequest()
-        val action = StoredTypedAutomationActionV1(
+        val action = StoredTypedAutomationAction(
             entryId = 12L,
             executionIdentity = "battle-captcha",
             payload = StoredTypedActionPayload.BattleMap(
@@ -249,7 +249,7 @@ class DefaultAutomationActionExecutorTest {
     @Test
     fun `ambiguous battle submission is surfaced and never blindly retried`() {
         val request = battleRequest()
-        val action = StoredTypedAutomationActionV1(
+        val action = StoredTypedAutomationAction(
             entryId = 12L,
             executionIdentity = "battle-1",
             payload = StoredTypedActionPayload.BattleMap(
@@ -281,7 +281,7 @@ class DefaultAutomationActionExecutorTest {
         Mockito.`when`(round.outcome).thenReturn(BattleAutomationRoundOutcome.VICTORY.name)
         Mockito.`when`(result.rounds).thenReturn(listOf(round))
         Mockito.`when`(battleRun.runBattle(7L, request, HofRequestOrigin.AUTOMATION)).thenReturn(result)
-        val action = StoredTypedAutomationActionV1(
+        val action = StoredTypedAutomationAction(
             entryId = 13L,
             executionIdentity = "adventure-1",
             payload = StoredTypedActionPayload.AdventureMap(
@@ -325,7 +325,7 @@ class DefaultAutomationActionExecutorTest {
         payloads.forEachIndexed { index, payload ->
             val result = executor.execute(
                 7L,
-                StoredTypedAutomationActionV1(11L, "cooldown-$index", payload),
+                StoredTypedAutomationAction(11L, "cooldown-$index", payload),
             )
 
             assertEquals(
@@ -376,7 +376,7 @@ class DefaultAutomationActionExecutorTest {
                 eqValue(reconciler),
             ),
         ).thenReturn(BattleOutcomeResolution.Applied("battle-1", 1))
-        val action = StoredTypedAutomationActionV1(
+        val action = StoredTypedAutomationAction(
             entryId = 12L,
             executionIdentity = "battle-1",
             payload = StoredTypedActionPayload.BattleMap(

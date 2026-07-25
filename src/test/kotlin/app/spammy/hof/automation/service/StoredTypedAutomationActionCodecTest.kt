@@ -19,8 +19,8 @@ class StoredTypedAutomationActionCodecTest {
     private val codec = StoredTypedAutomationActionCodec(jacksonObjectMapper())
 
     @Test
-    fun `round trips a versioned battle action with stable fingerprint`() {
-        val action = StoredTypedAutomationActionV1(
+    fun `round trips the current battle action format with stable fingerprint`() {
+        val action = StoredTypedAutomationAction(
             entryId = 12,
             executionIdentity = "execution-1",
             payload = StoredTypedActionPayload.BattleMap(
@@ -29,7 +29,7 @@ class StoredTypedAutomationActionCodecTest {
             ),
         )
         val encoded = codec.encode(action)
-        assertEquals(action, codec.decode(StoredTypedAutomationActionCodec.SCHEMA_VERSION, encoded.json))
+        assertEquals(action, codec.decode(encoded.json))
         assertEquals(encoded.fingerprint, codec.encode(action).fingerprint)
         assertEquals(64, encoded.fingerprint.length)
         val changed = action.copy(payload = (action.payload as StoredTypedActionPayload.BattleMap).copy(
@@ -42,7 +42,7 @@ class StoredTypedAutomationActionCodecTest {
     fun `current payloads without display decode with null display`() {
         val jsonWithoutDisplay = """{"entryId":12,"executionIdentity":"execution","payload":{"kind":"QUEST_CLAIM","questKey":"quest","actionNo":"claim"}}"""
 
-        val decoded = codec.decode(StoredTypedAutomationActionCodec.SCHEMA_VERSION, jsonWithoutDisplay)
+        val decoded = codec.decode(jsonWithoutDisplay)
 
         assertNull((decoded.payload as StoredTypedActionPayload.QuestClaim).display)
     }
@@ -69,9 +69,9 @@ class StoredTypedAutomationActionCodecTest {
         )
 
         payloads.forEachIndexed { index, payload ->
-            val encoded = codec.encode(StoredTypedAutomationActionV1(12, "execution-$index", payload))
+            val encoded = codec.encode(StoredTypedAutomationAction(12, "execution-$index", payload))
             val jsonWithoutDisplay = encoded.json.replace(Regex(",?\\\"display\\\":null"), "")
-            assertNull(codec.decode(StoredTypedAutomationActionCodec.SCHEMA_VERSION, jsonWithoutDisplay).payload.display)
+            assertNull(codec.decode(jsonWithoutDisplay).payload.display)
         }
     }
 
@@ -84,38 +84,38 @@ class StoredTypedAutomationActionCodecTest {
             missionRequired = 5,
             mapName = "푸른 초원",
         )
-        val claim = StoredTypedAutomationActionV1(
+        val claim = StoredTypedAutomationAction(
             12, "claim-display", StoredTypedActionPayload.QuestClaim("quest", "claim", questDisplay),
         )
         val request = RunBattleRequest(
             "battle_map", "gb0", listOf("c1"),
             listOf(app.spammy.hof.battle.dto.BattlePatternLoadRequest("c1", 2)), 1,
         )
-        val battle = StoredTypedAutomationActionV1(
+        val battle = StoredTypedAutomationAction(
             13, "battle-display", StoredTypedActionPayload.BattleMap(
                 LocalDate.parse("2026-07-16"), "battle_map", "gb0", PresetSelectionMode.PRIMARY, 44, 1, request,
                 StoredActionDisplay(mapName = "푸른 초원"),
             ),
         )
 
-        assertEquals(questDisplay, (codec.decode(StoredTypedAutomationActionCodec.SCHEMA_VERSION, codec.encode(claim).json).payload as StoredTypedActionPayload.QuestClaim).display)
-        assertEquals("푸른 초원", (codec.decode(StoredTypedAutomationActionCodec.SCHEMA_VERSION, codec.encode(battle).json).payload as StoredTypedActionPayload.BattleMap).display?.mapName)
+        assertEquals(questDisplay, (codec.decode(codec.encode(claim).json).payload as StoredTypedActionPayload.QuestClaim).display)
+        assertEquals("푸른 초원", (codec.decode(codec.encode(battle).json).payload as StoredTypedActionPayload.BattleMap).display?.mapName)
     }
 
     @Test
-    fun `rejects unknown schema versions`() {
-        assertFailsWith<IllegalArgumentException> { codec.decode(1, "{}") }
+    fun `rejects payloads outside the current stored action format`() {
+        assertFailsWith<Exception> { codec.decode("{}") }
     }
 
     @Test
     fun `verifies original payload bytes even when verifier serialization settings differ`() {
-        val action = StoredTypedAutomationActionV1(12, "execution", StoredTypedActionPayload.QuestClaim("quest", "claim"))
+        val action = StoredTypedAutomationAction(12, "execution", StoredTypedActionPayload.QuestClaim("quest", "claim"))
         val encoded = codec.encode(action)
         val account = HofAccountEntity(7, "login", "encrypted", Instant.EPOCH)
         val entry = AutomationEntryEntity(12, account, AutomationType.QUEST, 0, true, Instant.EPOCH, Instant.EPOCH)
         val row = TypedAutomationActionRunEntity(
             1, account, entry, action.executionIdentity, "QUEST_CLAIM",
-            StoredTypedAutomationActionCodec.SCHEMA_VERSION, encoded.json, encoded.fingerprint,
+            encoded.json, encoded.fingerprint,
             TypedAutomationActionStatus.PREPARED, leaseToken = "token", createdAt = Instant.EPOCH, updatedAt = Instant.EPOCH,
         )
         val alternateMapper = jacksonMapperBuilder().enable(SerializationFeature.INDENT_OUTPUT).build()

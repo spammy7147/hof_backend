@@ -95,7 +95,7 @@ class UnifiedAutomationRunnerTest {
 
         runner.runOne(7)
 
-        val storedCaptor = org.mockito.ArgumentCaptor.forClass(StoredTypedAutomationActionV1::class.java)
+        val storedCaptor = org.mockito.ArgumentCaptor.forClass(StoredTypedAutomationAction::class.java)
         Mockito.verify(executor).execute(Mockito.eq(7L), capture(storedCaptor))
         assertEquals(StoredActionDisplay(mapName = "거대 보스"), storedCaptor.value.payload.display)
         Mockito.verify(runtime).recordWarnings(7, "token", emptyList())
@@ -106,7 +106,7 @@ class UnifiedAutomationRunnerTest {
     @Test
     fun `shared cooldown learns map completes prepared action and wakes fresh evaluation`() {
         val retryAt = Instant.parse("2026-07-24T00:00:56Z")
-        val stored = StoredTypedAutomationActionV1(
+        val stored = StoredTypedAutomationAction(
             12,
             "execution-1",
             StoredTypedActionPayload.BattleMap(
@@ -127,7 +127,7 @@ class UnifiedAutomationRunnerTest {
         val entry = AutomationEntryEntity(12, owner, AutomationType.BATTLE_MAP, 0, true, Instant.EPOCH, Instant.EPOCH)
         val row = TypedAutomationActionRunEntity(
             88, owner, entry, stored.executionIdentity, stored.payload.kind(),
-            StoredTypedAutomationActionCodec.SCHEMA_VERSION, encoded.json,
+            encoded.json,
             encoded.fingerprint, TypedAutomationActionStatus.PREPARED, leaseToken = "token",
             createdAt = Instant.EPOCH, updatedAt = Instant.EPOCH,
         )
@@ -175,7 +175,7 @@ class UnifiedAutomationRunnerTest {
 
         runner.runOne(7)
 
-        val storedCaptor = org.mockito.ArgumentCaptor.forClass(StoredTypedAutomationActionV1::class.java)
+        val storedCaptor = org.mockito.ArgumentCaptor.forClass(StoredTypedAutomationAction::class.java)
         Mockito.verify(executor).execute(Mockito.eq(7L), capture(storedCaptor))
         assertEquals(
             StoredActionDisplay("초보자 임무", "몬스터 처치 · 슬라임", 2, 5, "푸른 초원"),
@@ -224,7 +224,7 @@ class UnifiedAutomationRunnerTest {
 
         repeat(actions.size) { runner.runOne(7) }
 
-        val storedCaptor = org.mockito.ArgumentCaptor.forClass(StoredTypedAutomationActionV1::class.java)
+        val storedCaptor = org.mockito.ArgumentCaptor.forClass(StoredTypedAutomationAction::class.java)
         Mockito.verify(executor, Mockito.times(3)).execute(Mockito.eq(7L), capture(storedCaptor))
         assertEquals(
             listOf(
@@ -444,7 +444,7 @@ class UnifiedAutomationRunnerTest {
     @Test
     fun `503 after submission returns action to prepared and schedules exact retry`() {
         val retryAt = Instant.parse("2026-07-23T00:03:00Z")
-        val stored = StoredTypedAutomationActionV1(
+        val stored = StoredTypedAutomationAction(
             12, "execution-1", StoredTypedActionPayload.QuestClaim("quest", "claim"),
         )
         val encoded = codec.encode(stored)
@@ -452,7 +452,7 @@ class UnifiedAutomationRunnerTest {
         val entry = AutomationEntryEntity(12, owner, AutomationType.QUEST, 0, true, Instant.EPOCH, Instant.EPOCH)
         val row = TypedAutomationActionRunEntity(
             88, owner, entry, stored.executionIdentity, stored.payload.kind(),
-            StoredTypedAutomationActionCodec.SCHEMA_VERSION, encoded.json,
+            encoded.json,
             encoded.fingerprint, TypedAutomationActionStatus.PREPARED, leaseToken = "token",
             createdAt = Instant.EPOCH, updatedAt = Instant.EPOCH,
         )
@@ -473,7 +473,7 @@ class UnifiedAutomationRunnerTest {
 
     @Test
     fun `tampered stored envelopes stop fatally before submitting or posting`() {
-        val stored = StoredTypedAutomationActionV1(
+        val stored = StoredTypedAutomationAction(
             12,
             "execution-1",
             StoredTypedActionPayload.QuestClaim("quest", "claim"),
@@ -485,7 +485,6 @@ class UnifiedAutomationRunnerTest {
             val entryId: Long = 12,
             val execution: String = "execution-1",
             val kind: String = "QUEST_CLAIM",
-            val schema: Int = 1,
             val json: String = encoded.json,
             val fingerprint: String = encoded.fingerprint,
         )
@@ -504,7 +503,6 @@ class UnifiedAutomationRunnerTest {
             Corruption("account", accountId = 8),
             Corruption("entry", entryId = 13),
             Corruption("execution", execution = "different"),
-            Corruption("schema", schema = 99),
         )
         cases.forEach { corruption ->
             val casePreflight = Mockito.mock(AutomationDailyPreflight::class.java)
@@ -526,7 +524,6 @@ class UnifiedAutomationRunnerTest {
                 entry,
                 corruption.execution,
                 corruption.kind,
-                corruption.schema,
                 corruption.json,
                 corruption.fingerprint,
                 TypedAutomationActionStatus.PREPARED,
@@ -551,28 +548,27 @@ class UnifiedAutomationRunnerTest {
 
             caseRunner.runOne(7)
 
-            Mockito.verify(caseRuntime).stop(
+            Mockito.verify(caseRuntime).stopForIntegrityFailure(
                 7,
                 "token",
                 88,
-                AutomationStopReason.FATAL,
                 "Stored typed action integrity check failed.",
             )
             Mockito.verifyNoInteractions(caseExecutor)
         }
     }
 
-    private fun anyStoredAction(): StoredTypedAutomationActionV1 =
-        Mockito.any(StoredTypedAutomationActionV1::class.java)
-            ?: StoredTypedAutomationActionV1(1, "any", StoredTypedActionPayload.QuestClaim("q", "a"))
+    private fun anyStoredAction(): StoredTypedAutomationAction =
+        Mockito.any(StoredTypedAutomationAction::class.java)
+            ?: StoredTypedAutomationAction(1, "any", StoredTypedActionPayload.QuestClaim("q", "a"))
 
-    private fun capture(captor: org.mockito.ArgumentCaptor<StoredTypedAutomationActionV1>): StoredTypedAutomationActionV1 =
-        captor.capture() ?: StoredTypedAutomationActionV1(1, "capture", StoredTypedActionPayload.QuestClaim("q", "a"))
+    private fun capture(captor: org.mockito.ArgumentCaptor<StoredTypedAutomationAction>): StoredTypedAutomationAction =
+        captor.capture() ?: StoredTypedAutomationAction(1, "capture", StoredTypedActionPayload.QuestClaim("q", "a"))
 
     private fun eqString(value: String): String = Mockito.eq(value) ?: value
 
-    private fun reconcilingQuestAction(): Pair<StoredTypedAutomationActionV1, TypedAutomationActionRunEntity> {
-        val stored = StoredTypedAutomationActionV1(
+    private fun reconcilingQuestAction(): Pair<StoredTypedAutomationAction, TypedAutomationActionRunEntity> {
+        val stored = StoredTypedAutomationAction(
             12,
             "execution-1",
             StoredTypedActionPayload.QuestAccept("quest", "accept-no"),
@@ -582,14 +578,14 @@ class UnifiedAutomationRunnerTest {
         val entry = AutomationEntryEntity(12, owner, AutomationType.QUEST, 0, true, Instant.EPOCH, Instant.EPOCH)
         return stored to TypedAutomationActionRunEntity(
             88, owner, entry, stored.executionIdentity, stored.payload.kind(),
-            StoredTypedAutomationActionCodec.SCHEMA_VERSION, encoded.json,
+            encoded.json,
             encoded.fingerprint, TypedAutomationActionStatus.RECONCILING, leaseToken = "token",
             createdAt = Instant.EPOCH, updatedAt = Instant.EPOCH,
         )
     }
 
     private fun preparedActionFailure(error: Throwable, expectedReason: AutomationStopReason) {
-        val stored = StoredTypedAutomationActionV1(
+        val stored = StoredTypedAutomationAction(
             12,
             "execution-1",
             StoredTypedActionPayload.QuestClaim("quest", "claim"),
@@ -603,7 +599,6 @@ class UnifiedAutomationRunnerTest {
             entry,
             stored.executionIdentity,
             stored.payload.kind(),
-            StoredTypedAutomationActionCodec.SCHEMA_VERSION,
             encoded.json,
             encoded.fingerprint,
             TypedAutomationActionStatus.PREPARED,
@@ -628,7 +623,7 @@ class UnifiedAutomationRunnerTest {
     }
 
     private fun ambiguousActionFailure(error: Throwable) {
-        val stored = StoredTypedAutomationActionV1(
+        val stored = StoredTypedAutomationAction(
             12,
             "execution-ambiguous",
             StoredTypedActionPayload.QuestClaim("quest", "claim"),
@@ -638,7 +633,7 @@ class UnifiedAutomationRunnerTest {
         val entry = AutomationEntryEntity(12, owner, AutomationType.QUEST, 0, true, Instant.EPOCH, Instant.EPOCH)
         val row = TypedAutomationActionRunEntity(
             89, owner, entry, stored.executionIdentity, stored.payload.kind(),
-            StoredTypedAutomationActionCodec.SCHEMA_VERSION, encoded.json,
+            encoded.json,
             encoded.fingerprint, TypedAutomationActionStatus.PREPARED, leaseToken = "token",
             createdAt = Instant.EPOCH, updatedAt = Instant.EPOCH,
         )

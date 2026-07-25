@@ -25,6 +25,7 @@ class StableQuestIdentityMigrationTest {
         Flyway.configure()
             .dataSource(url, "sa", "")
             .locations("filesystem:src/main/resources/db/migration")
+            .target("10")
             .load()
             .migrate()
 

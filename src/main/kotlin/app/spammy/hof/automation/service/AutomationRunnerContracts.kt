@@ -14,7 +14,7 @@ interface TypedAutomationSnapshotLoader {
 }
 
 fun interface TypedAutomationActionExecutor {
-    fun execute(accountId: Long, action: StoredTypedAutomationActionV1): TypedAutomationExecution
+    fun execute(accountId: Long, action: StoredTypedAutomationAction): TypedAutomationExecution
 }
 
 sealed interface TypedAutomationExecution {

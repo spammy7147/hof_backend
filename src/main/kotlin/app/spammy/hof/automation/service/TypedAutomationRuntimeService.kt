@@ -77,7 +77,7 @@ class TypedAutomationRuntimeService(
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun prepare(accountId: Long, token: String, action: StoredTypedAutomationActionV1): TypedAutomationActionRunEntity? {
+    fun prepare(accountId: Long, token: String, action: StoredTypedAutomationAction): TypedAutomationActionRunEntity? {
         val state = fencedState(accountId, token) ?: return null
         queryRepository.findActiveTypedAction(accountId)?.let { return it }
         val entry = queryRepository.findEntry(accountId, action.entryId) ?: return null
@@ -87,8 +87,7 @@ class TypedAutomationRuntimeService(
         return actionRepository.save(
             TypedAutomationActionRunEntity(
                 account = entry.account, entry = entry, executionIdentity = action.executionIdentity,
-                actionKind = action.payload.kind(), schemaVersion = StoredTypedAutomationActionCodec.SCHEMA_VERSION,
-                payloadJson = encoded.json,
+                actionKind = action.payload.kind(), payloadJson = encoded.json,
                 actionFingerprint = encoded.fingerprint, status = TypedAutomationActionStatus.PREPARED,
                 leaseToken = token, createdAt = now, updatedAt = now,
             ),
@@ -305,6 +304,26 @@ class TypedAutomationRuntimeService(
         }
         state.lastError = sanitizeDiagnostic(message)
         stopState(state, reason, now, stoppedAction?.id)
+        return true
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun stopForIntegrityFailure(accountId: Long, token: String, actionId: Long, message: String): Boolean {
+        val state = fencedState(accountId, token) ?: return false
+        val action = queryRepository.lockTypedAction(actionId) ?: return false
+        if (action.account.id != accountId || action.leaseToken != token) return false
+        val terminalStatus = when (action.status) {
+            TypedAutomationActionStatus.PREPARED -> TypedAutomationActionStatus.FAILED
+            TypedAutomationActionStatus.RECONCILING -> TypedAutomationActionStatus.AMBIGUOUS
+            else -> return false
+        }
+        val now = timeProvider.now()
+        action.status = terminalStatus
+        action.lastError = message.take(2000)
+        action.finishedAt = now
+        action.updatedAt = now
+        state.lastError = sanitizeDiagnostic(message)
+        stopState(state, AutomationStopReason.FATAL, now, action.id)
         return true
     }
 

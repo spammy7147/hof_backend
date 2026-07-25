@@ -14,7 +14,7 @@ import app.spammy.hof.automation.entity.TypedAutomationRuntimeStateEntity
 import app.spammy.hof.automation.outbox.AutomationOutboxService
 import app.spammy.hof.automation.service.StoredTypedActionPayload
 import app.spammy.hof.automation.service.StoredTypedAutomationActionCodec
-import app.spammy.hof.automation.service.StoredTypedAutomationActionV1
+import app.spammy.hof.automation.service.StoredTypedAutomationAction
 import app.spammy.hof.automation.service.TypedAutomationLifecycleBridge
 import app.spammy.hof.automation.service.TypedAutomationRuntimeService
 import app.spammy.hof.automation.service.TypedRuntimeClaim
@@ -177,13 +177,12 @@ class TypedAutomationPersistenceTest {
         val entry = entryRepository.save(newEntry(account, AutomationType.QUEST, 0, now))
         runtimeRepository.save(TypedAutomationRuntimeStateEntity(account.id, account, TypedAutomationLifecycle.RUNNING, createdAt = now, updatedAt = now))
         val codec = StoredTypedAutomationActionCodec(jacksonObjectMapper())
-        val stored = StoredTypedAutomationActionV1(entry.id, "detached-execution", StoredTypedActionPayload.QuestClaim("quest", "claim"))
+        val stored = StoredTypedAutomationAction(entry.id, "detached-execution", StoredTypedActionPayload.QuestClaim("quest", "claim"))
         val encoded = codec.encode(stored)
         actionRepository.save(
             TypedAutomationActionRunEntity(
                 account = account, entry = entry, executionIdentity = stored.executionIdentity,
-                actionKind = "QUEST_CLAIM", schemaVersion = StoredTypedAutomationActionCodec.SCHEMA_VERSION,
-                payloadJson = encoded.json,
+                actionKind = "QUEST_CLAIM", payloadJson = encoded.json,
                 actionFingerprint = encoded.fingerprint, status = TypedAutomationActionStatus.PREPARED,
                 leaseToken = "old-token", createdAt = now, updatedAt = now,
             ),
@@ -209,13 +208,12 @@ class TypedAutomationPersistenceTest {
         val account = newAccount("typed-delete-active", now)
         val entry = entryRepository.save(newEntry(account, AutomationType.QUEST, 0, now))
         val codec = StoredTypedAutomationActionCodec(jacksonObjectMapper())
-        val stored = StoredTypedAutomationActionV1(entry.id, "delete-active", StoredTypedActionPayload.QuestClaim("quest", "claim"))
+        val stored = StoredTypedAutomationAction(entry.id, "delete-active", StoredTypedActionPayload.QuestClaim("quest", "claim"))
         val encoded = codec.encode(stored)
         val actionId = actionRepository.save(
             TypedAutomationActionRunEntity(
                 account = account, entry = entry, executionIdentity = stored.executionIdentity,
-                actionKind = "QUEST_CLAIM", schemaVersion = StoredTypedAutomationActionCodec.SCHEMA_VERSION,
-                payloadJson = encoded.json,
+                actionKind = "QUEST_CLAIM", payloadJson = encoded.json,
                 actionFingerprint = encoded.fingerprint, status = TypedAutomationActionStatus.SUBMITTING,
                 leaseToken = "token", createdAt = now, updatedAt = now,
             ),
@@ -397,7 +395,6 @@ class TypedAutomationPersistenceTest {
         entry = entry,
         executionIdentity = identity,
         actionKind = entry.type.name,
-        schemaVersion = StoredTypedAutomationActionCodec.SCHEMA_VERSION,
         payloadJson = "{}",
         actionFingerprint = identity.padEnd(64, 'a').take(64),
         status = status,

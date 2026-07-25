@@ -59,6 +59,7 @@ class FreshSchemaTest {
                 "8" to "observe latest hof status",
                 "9" to "reconcile ambiguous automation actions",
                 "10" to "stabilize quest identity",
+                "11" to "remove typed action schema version",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -72,6 +73,7 @@ class FreshSchemaTest {
         assertEquals(
             listOf(
                 "V10__stabilize_quest_identity.sql",
+                "V11__remove_typed_action_schema_version.sql",
                 "V1__initialize_schema.sql",
                 "V2__order_party_presets.sql",
                 "V3__add_automation_work_sessions.sql",

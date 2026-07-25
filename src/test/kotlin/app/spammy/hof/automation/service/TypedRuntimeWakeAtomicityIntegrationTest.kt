@@ -108,11 +108,10 @@ class TypedRuntimeWakeAtomicityIntegrationTest {
         val account = accounts.save(HofAccountEntity(loginId = login, encryptedPassword = "encrypted", createdAt = NOW))
         val entry = entries.save(AutomationEntryEntity(account = account, type = AutomationType.QUEST, priority = 0, enabled = true, createdAt = NOW, updatedAt = NOW))
         states.save(TypedAutomationRuntimeStateEntity(account.id, account, TypedAutomationLifecycle.RUNNING, leaseToken = TOKEN, leaseUntil = NOW.plusSeconds(300), createdAt = NOW, updatedAt = NOW))
-        val stored = StoredTypedAutomationActionV1(entry.id, "execution-$login", StoredTypedActionPayload.QuestClaim("quest", "claim"))
+        val stored = StoredTypedAutomationAction(entry.id, "execution-$login", StoredTypedActionPayload.QuestClaim("quest", "claim"))
         val encoded = codec.encode(stored)
         val action = actions.save(TypedAutomationActionRunEntity(
             account = account, entry = entry, executionIdentity = stored.executionIdentity, actionKind = "QUEST_CLAIM",
-            schemaVersion = StoredTypedAutomationActionCodec.SCHEMA_VERSION,
             payloadJson = encoded.json, actionFingerprint = encoded.fingerprint, status = status,
             leaseToken = TOKEN, createdAt = NOW, submittedAt = NOW.takeIf { status == TypedAutomationActionStatus.SUBMITTING }, updatedAt = NOW,
         ))
