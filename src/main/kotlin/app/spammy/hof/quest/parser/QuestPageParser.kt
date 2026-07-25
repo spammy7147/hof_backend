@@ -3,6 +3,7 @@ package app.spammy.hof.quest.parser
 import app.spammy.hof.quest.model.QuestMission
 import app.spammy.hof.quest.model.QuestMissionType
 import app.spammy.hof.quest.model.QuestProgress
+import app.spammy.hof.quest.model.QuestIdentityFactory
 import app.spammy.hof.quest.model.QuestSection
 import app.spammy.hof.quest.model.QuestSnapshot
 import app.spammy.hof.quest.model.QuestState
@@ -29,7 +30,7 @@ class QuestPageParser {
             }
 
         return occurrences
-            .groupBy(QuestSnapshot::questId)
+            .groupBy(QuestSnapshot::questKey)
             .map { (_, duplicates) -> duplicates.maxBy(::occurrencePriority) }
             .sortedBy(QuestSnapshot::sourceOrder)
     }
@@ -103,6 +104,7 @@ class QuestPageParser {
         if (sourceQuestId.isBlank()) return null
 
         val normalizedName = normalize(nameText.replace(QUEST_ID, ""))
+        val identity = QuestIdentityFactory.create(sourceQuestId, normalizedName)
         val actionHref = block.nodes.firstNotNullOfOrNull { node ->
             selectOwnedFirst(node, "a[href*='action=']")?.attr("href")
         }.orEmpty()
@@ -127,7 +129,7 @@ class QuestPageParser {
         val missionTexts = block.nodes.flatMap(::missionTexts)
         val missions = missionTexts.map { text ->
             parseMission(
-                questId = questId,
+                questId = identity.questKey,
                 text = text,
                 hasCompleteAction = action == "complete",
             )
@@ -149,6 +151,8 @@ class QuestPageParser {
             missions = missions,
             actionNo = actionNo,
             rewards = rewardTexts(block),
+            displayCode = identity.displayCode,
+            questKey = identity.questKey,
         )
     }
 

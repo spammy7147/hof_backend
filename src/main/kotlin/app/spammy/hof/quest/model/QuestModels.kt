@@ -45,6 +45,8 @@ data class QuestSnapshot(
     val missions: List<QuestMission>,
     val actionNo: String?,
     val rewards: List<String> = emptyList(),
+    val displayCode: String = questId,
+    val questKey: String = QuestIdentityFactory.create(displayCode, name).questKey,
 ) {
     /** Keeps policy fixtures source-compatible while quest parsing moves to the richer model. */
     constructor(
