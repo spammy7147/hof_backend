@@ -39,6 +39,44 @@ class StoredTypedAutomationActionCodecTest {
     }
 
     @Test
+    fun `round trips a triple quest battle action`() {
+        val action = StoredTypedAutomationAction(
+            entryId = 12,
+            executionIdentity = "quest-battle-3",
+            payload = StoredTypedActionPayload.QuestBattle(
+                "quest", "1", "mission", app.spammy.hof.quest.model.QuestMissionType.MONSTER_KILL,
+                "battle_map", "gb0", PresetSelectionMode.PRIMARY, 44, 3,
+                RunBattleRequest(
+                    "battle_map", "gb0", listOf("c1"),
+                    listOf(app.spammy.hof.battle.dto.BattlePatternLoadRequest("c1", 2)), 3,
+                ),
+                observedCurrent = 0,
+                observedRequired = 5,
+            ),
+        )
+
+        assertEquals(action, codec.decode(codec.encode(action).json))
+    }
+
+    @Test
+    fun `rejects a quest battle action with an unsupported battle count`() {
+        val action = StoredTypedAutomationAction(
+            entryId = 12,
+            executionIdentity = "quest-battle-2",
+            payload = StoredTypedActionPayload.QuestBattle(
+                "quest", "1", "mission", app.spammy.hof.quest.model.QuestMissionType.MONSTER_KILL,
+                "battle_map", "gb0", PresetSelectionMode.PRIMARY, 44, 2,
+                RunBattleRequest(
+                    "battle_map", "gb0", listOf("c1"),
+                    listOf(app.spammy.hof.battle.dto.BattlePatternLoadRequest("c1", 2)), 2,
+                ),
+            ),
+        )
+
+        assertFailsWith<IllegalArgumentException> { codec.encode(action) }
+    }
+
+    @Test
     fun `current payloads without display decode with null display`() {
         val jsonWithoutDisplay = """{"entryId":12,"executionIdentity":"execution","payload":{"kind":"QUEST_CLAIM","questKey":"quest","actionNo":"claim"}}"""
 

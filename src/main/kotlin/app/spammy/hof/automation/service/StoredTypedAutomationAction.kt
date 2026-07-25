@@ -132,7 +132,6 @@ class StoredTypedAutomationActionCodec(private val objectMapper: ObjectMapper) {
             is StoredTypedActionPayload.QuestClaim -> require(payload.questKey.isNotBlank() && payload.actionNo.isNotBlank())
             is StoredTypedActionPayload.QuestAccept -> require(payload.questKey.isNotBlank() && payload.actionNo.isNotBlank())
             is StoredTypedActionPayload.QuestBattle -> {
-                require(payload.battleCount == 1)
                 require(payload.observedCurrent == null || payload.observedCurrent >= 0)
                 require(payload.observedRequired == null || payload.observedRequired >= 0)
                 require(
