@@ -8,6 +8,7 @@ data class BattleLogResponse(
     val accountId: Long,
     val categoryId: String,
     val mapCode: String,
+    val mapName: String,
     val characterIds: List<String>,
     val characterNames: List<String>,
     val outcome: String,
