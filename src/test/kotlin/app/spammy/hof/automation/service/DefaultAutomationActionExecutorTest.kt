@@ -337,6 +337,12 @@ class DefaultAutomationActionExecutorTest {
         Mockito.verify(battleRun, Mockito.times(3))
             .runBattle(7L, request, HofRequestOrigin.AUTOMATION)
         Mockito.verifyNoInteractions(questHandler, battleHandler, reconciler, executionSignals)
+        Mockito.verify(workLifecycle, Mockito.never()).completeBattleMapAction(
+            Mockito.anyLong(),
+            Mockito.anyLong(),
+            Mockito.anyString(),
+            Mockito.anyString(),
+        )
     }
 
     @Test
@@ -413,6 +419,12 @@ class DefaultAutomationActionExecutorTest {
             ),
             listOf("Steel Ingot x 2"),
             listOf("퀘스트 진행 4/5"),
+        )
+        Mockito.verify(workLifecycle).completeBattleMapAction(
+            7L,
+            12L,
+            request.categoryId,
+            request.mapCode,
         )
     }
 

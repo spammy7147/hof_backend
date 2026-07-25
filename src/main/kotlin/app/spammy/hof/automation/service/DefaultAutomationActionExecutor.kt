@@ -78,6 +78,12 @@ class DefaultAutomationActionExecutor(
                         outcomes, battleOutcomeReconciler,
                     )
                     if (resolution is BattleOutcomeResolution.Fatal) throw AmbiguousAutomationSubmissionException(resolution.evaluation.message)
+                    workLifecycle.completeBattleMapAction(
+                        accountId,
+                        action.entryId,
+                        payload.categoryId,
+                        payload.mapCode,
+                    )
                     val signalRounds = result.rounds.takeIf(List<*>::isNotEmpty)
                     executionSignals.afterBattle(
                         accountId = accountId,

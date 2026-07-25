@@ -135,6 +135,12 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
         assertIs<AmbiguousActionResolution.Applied>(reconciler.reconcile(7, battleMapAction()))
 
         Mockito.verify(battleHandler).confirmAmbiguousSuccess(anyBattleAction())
+        Mockito.verify(workLifecycle).completeBattleMapAction(
+            7,
+            12,
+            "battle_map",
+            "map-1",
+        )
         Mockito.verifyNoInteractions(battleMapService)
     }
 

@@ -24,7 +24,12 @@ class DefaultAutomationAmbiguousActionReconciler(
         is StoredTypedActionPayload.QuestClaim -> reconcileQuestClaim(accountId, payload)
         is StoredTypedActionPayload.QuestBattle -> reconcileQuestBattle(accountId, payload)
         is StoredTypedActionPayload.AdventureMap -> reconcileAdventure(accountId, action.entryId, payload)
-        is StoredTypedActionPayload.BattleMap -> reconcileBattleMap(accountId, action.executionIdentity, payload)
+        is StoredTypedActionPayload.BattleMap -> reconcileBattleMap(
+            accountId,
+            action.entryId,
+            action.executionIdentity,
+            payload,
+        )
     }
 
     private fun reconcileQuestAccept(
@@ -151,6 +156,7 @@ class DefaultAutomationAmbiguousActionReconciler(
 
     private fun reconcileBattleMap(
         accountId: Long,
+        entryId: Long,
         executionIdentity: String,
         payload: StoredTypedActionPayload.BattleMap,
     ): AmbiguousActionResolution {
@@ -165,6 +171,12 @@ class DefaultAutomationAmbiguousActionReconciler(
             executionIdentity = executionIdentity,
         )
         battleHandler.confirmAmbiguousSuccess(action)
+        workLifecycle.completeBattleMapAction(
+            accountId,
+            entryId,
+            payload.categoryId,
+            payload.mapCode,
+        )
         return AmbiguousActionResolution.Applied(
             TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode),
         )
