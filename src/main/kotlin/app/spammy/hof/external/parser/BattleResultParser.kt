@@ -44,16 +44,6 @@ class BattleResultParser {
     }
 
     /**
-     * Keeps existing callers source-compatible until they provide the authoritative player name.
-     */
-    @Deprecated("Use parseAll(html, playerName) with the authoritative player name")
-    fun parseAll(
-        html: String,
-        allyNames: List<String>,
-    ): List<HofBattleResult> =
-        parseAll(html = html, playerName = allyNames.firstOrNull())
-
-    /**
      * DOM 순서와 줄 경계를 보존한 라운드에서 제목, URL, 보상, 아군/적군 상태를 읽는다.
      *
      * 기존 scalar 정규식에는 이 라운드의 텍스트만 평탄화해 전달한다. 전리품은 평탄화하지 않은 줄 목록을
@@ -317,7 +307,7 @@ class BattleResultParser {
         replace(",", "").replace("$", "").trim().toIntOrNull()
 
     private fun String.normalized(): String =
-        replace(Regex("""\s+"""), " ").trim()
+        replace(WHITESPACE_PATTERN, " ").trim()
 
     private fun String.cleanTitlePrefix(): String =
         replace(Regex("""^[)\]\s-]+"""), "").trim()
@@ -333,7 +323,7 @@ class BattleResultParser {
         val REWARD_EXPERIENCE_PATTERN = Regex("""경험치\s*([\d,]+)""")
         val LOOT_QUANTITY_SUFFIX_PATTERN = Regex("""\s+x\s*([\d,]+)$""", RegexOption.IGNORE_CASE)
         val QUEST_PATTERN = Regex("""\[\s*퀘스트\s*정보\s*갱신\s*]\s*.+?\(\s*\d+\s*/\s*\d+\s*\)""")
-        val WHITESPACE_PATTERN = Regex("""\s+""")
+        val WHITESPACE_PATTERN = Regex("""[\s\p{Z}]+""")
         val SIDE_PATTERN = Regex(
             """남은\s*HP\s*:\s*([\d,]+)\s*/\s*([\d,]+)\s+생존자\s*:\s*([\d,]+)\s*/\s*([\d,]+)\s+총\s*데미지\s*:\s*([\d,]+)(?:\s+턴\s*:\s*([\d,]+)\s*/\s*([\d,]+))?""",
         )

@@ -24,6 +24,7 @@ import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.external.parser.BattleResultParser
 import app.spammy.hof.external.parser.LoginStateParser
 import app.spammy.hof.external.parser.SharedBattleCooldownParser
+import app.spammy.hof.status.repository.HofStatusSnapshotQueryRepository
 import java.time.Instant
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
@@ -40,6 +41,7 @@ class BattleRunService(
     private val cookieQueryRepository: CookieQueryRepository,
     private val characterQueryRepository: CharacterQueryRepository,
     private val battleMapQueryRepository: BattleMapQueryRepository,
+    private val hofStatusSnapshotQueryRepository: HofStatusSnapshotQueryRepository,
     private val requestFactory: HofRequestFactory,
     private val gateway: AccountHofGateway,
     private val loginStateParser: LoginStateParser,
@@ -79,6 +81,7 @@ class BattleRunService(
 
         val account = accountQueryRepository.findById(accountId)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
+        val playerName = hofStatusSnapshotQueryRepository.findByAccountId(account.id)?.playerName
         val mapState = battleMapQueryRepository.findStateForExecution(account.id, category.value, mapCode)
             ?: throw ApiException(ErrorCode.INVALID_REQUEST, "해결된 계정 전투 맵 상태가 없습니다.")
         validateMapState(mapState, battleCount)
@@ -179,7 +182,7 @@ class BattleRunService(
 
         val results = battleResultParser.parseAll(
             html = battleResponse.body,
-            allyNames = characters.map { character -> character.name },
+            playerName = playerName,
         )
         val result = results.first()
         log.info(

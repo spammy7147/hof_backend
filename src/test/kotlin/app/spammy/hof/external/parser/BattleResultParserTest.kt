@@ -214,6 +214,38 @@ class BattleResultParserTest {
     }
 
     @Test
+    fun parsesVictoryTitleWithBlankPlayerNameAsUnknown() {
+        listOf("", " \n\t ").forEach { playerName ->
+            val result = parser.parse(
+                html = "<h1>《얼어붙은 손길》공민이은(는) 승리했다!</h1>",
+                playerName = playerName,
+            )
+
+            assertEquals(HofBattleOutcome.UNKNOWN, result.outcome)
+        }
+    }
+
+    @Test
+    fun parsesVictoryTitleWithPaddedMixedCaseUnknownPlayerNameAsUnknown() {
+        val result = parser.parse(
+            html = "<h1>《얼어붙은 손길》공민이은(는) 승리했다!</h1>",
+            playerName = "  uNkNoWn  ",
+        )
+
+        assertEquals(HofBattleOutcome.UNKNOWN, result.outcome)
+    }
+
+    @Test
+    fun parsesEquivalentPlayerAndTitleNamesAcrossUnicodeSeparatorWhitespace() {
+        val result = parser.parse(
+            html = "<h1>《얼어붙은&nbsp;손길》공민이은(는) 승리했다!</h1>",
+            playerName = "《얼어붙은\u2003손길》공민이",
+        )
+
+        assertEquals(HofBattleOutcome.VICTORY, result.outcome)
+    }
+
+    @Test
     fun parsesTitleWithoutTerminalPhraseAsUnknown() {
         val result = parser.parse(
             html = "<h1>《얼어붙은 손길》공민이의 전투 결과</h1>",
