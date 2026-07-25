@@ -12,7 +12,6 @@ import app.spammy.hof.common.time.TimeProvider
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertFalse
-import kotlin.test.assertTrue
 import org.mockito.Mockito
 
 class AutomationExecutionSignalServiceTest {
@@ -30,7 +29,7 @@ class AutomationExecutionSignalServiceTest {
     )
 
     @Test
-    fun `matching material loot yields running battle map after its response`() {
+    fun `matching material loot rechecks quest without yielding running battle map`() {
         val running = session(21, battleEntry, AutomationWorkType.BATTLE_MAP, "battle_map/map", AutomationWorkStatus.RUNNING)
         val waiting = session(
             22, questEntry, AutomationWorkType.QUEST, "quest-1", AutomationWorkStatus.WAITING_RESOURCE,
@@ -38,8 +37,6 @@ class AutomationExecutionSignalServiceTest {
         )
         Mockito.`when`(queries.findRunning(7)).thenReturn(running)
         Mockito.`when`(queries.findWaiting(7)).thenReturn(listOf(waiting))
-        Mockito.`when`(lifecycle.yieldForPriority(7, 21)).thenReturn(true)
-
         val yielded = service.afterBattle(
             accountId = 7,
             source = BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
@@ -48,9 +45,9 @@ class AutomationExecutionSignalServiceTest {
             questTexts = emptyList(),
         )
 
-        assertTrue(yielded)
+        assertFalse(yielded)
         Mockito.verify(lifecycle).triggerCheck(7, 22)
-        Mockito.verify(lifecycle).yieldForPriority(7, 21)
+        Mockito.verify(lifecycle, Mockito.never()).yieldForPriority(7, 21)
     }
 
     @Test

@@ -8,6 +8,7 @@ import app.spammy.hof.automation.dto.QuestMapSettingRequest
 import app.spammy.hof.automation.dto.QuestSelectionRequest
 import app.spammy.hof.automation.dto.ReorderAutomationEntriesRequest
 import app.spammy.hof.automation.dto.UpdateBattleMapAutomationRequest
+import app.spammy.hof.automation.dto.UpdateAdventureMapAutomationRequest
 import app.spammy.hof.automation.dto.UpdateQuestAutomationRequest
 import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.AutomationType
@@ -59,6 +60,7 @@ class UnifiedAutomationServiceTest {
     private val partyPresetQueryRepository = Mockito.mock(PartyPresetQueryRepository::class.java)
     private val typedQuery = Mockito.mock(TypedAutomationQueryRepository::class.java)
     private val lifecycle = Mockito.mock(TypedAutomationLifecycleBridge::class.java)
+    private val workLifecycle = Mockito.mock(AutomationWorkLifecycle::class.java)
     private val entryRepository = Mockito.mock(AutomationEntryCommandRepository::class.java)
     private val questSelectionRepository = Mockito.mock(QuestAutomationSelectionCommandRepository::class.java)
     private val questMapRepository = Mockito.mock(QuestAutomationMapCommandRepository::class.java)
@@ -83,6 +85,7 @@ class UnifiedAutomationServiceTest {
         automationOutboxService = automationOutbox,
         storedActionCodec = storedActionCodec,
         hofStatusSnapshots = statusSnapshots,
+        workLifecycle = workLifecycle,
     )
 
     init {
@@ -295,6 +298,121 @@ class UnifiedAutomationServiceTest {
         )
 
         Mockito.verify(battleSettingRepository, Mockito.times(2)).save(anyBattleSetting())
+    }
+
+    @Test
+    fun `changing current battle target stops only that target session`() {
+        val battleEntry = entry(92L, AutomationType.BATTLE_MAP)
+        val old = BattleAutomationMapEntity(
+            id = 401L,
+            entry = battleEntry,
+            categoryId = "battle_map",
+            mapCode = "map-1",
+            dailyTargetCount = 30,
+            presetMode = PresetSelectionMode.PRIMARY,
+            executionOrder = 0,
+        )
+        val request = UpdateBattleMapAutomationRequest(
+            enabled = true,
+            maps = listOf(
+                BattleMapSettingRequest(
+                    categoryId = "battle_map",
+                    mapCode = "map-1",
+                    dailyTargetCount = 40,
+                    presetMode = PresetSelectionMode.PRIMARY,
+                    partyPresetId = null,
+                    executionOrder = 0,
+                ),
+            ),
+        )
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(battleEntry))
+        Mockito.`when`(typedQuery.findBattleSettings(battleEntry.id)).thenReturn(listOf(old))
+        Mockito.`when`(
+            battleMapQueryRepository.findMapsByCategoryIdAndMapCodePairs(setOf("battle_map" to "map-1")),
+        ).thenReturn(listOf(battleMap(1L, "battle_map", "map-1")))
+
+        service.updateBattleMaps(ACCOUNT_ID, request)
+
+        Mockito.verify(workLifecycle).stopForConfigurationChange(
+            ACCOUNT_ID,
+            battleEntry.id,
+            setOf("battle_map/map-1"),
+            false,
+        )
+    }
+
+    @Test
+    fun `changing current quest selection stops that quest session`() {
+        val questEntry = entry(91L, AutomationType.QUEST).also { it.enabled = true }
+        val old = QuestAutomationSelectionEntity(301L, questEntry, "Q-1", true, 0)
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(questEntry))
+        Mockito.`when`(typedQuery.findQuestSelections(questEntry.id)).thenReturn(listOf(old))
+        Mockito.`when`(typedQuery.findQuestMaps(listOf(old.id))).thenReturn(emptyList())
+        Mockito.`when`(questSelectionRepository.save(anyQuestSelection())).thenAnswer { invocation -> invocation.arguments[0] }
+
+        service.updateQuest(
+            ACCOUNT_ID,
+            UpdateQuestAutomationRequest(
+                enabled = true,
+                quests = listOf(QuestSelectionRequest("Q-1", false, 0, emptyList())),
+            ),
+        )
+
+        Mockito.verify(workLifecycle).stopForConfigurationChange(
+            ACCOUNT_ID,
+            questEntry.id,
+            setOf("Q-1"),
+            false,
+        )
+    }
+
+    @Test
+    fun `changing current adventure target stops that map session`() {
+        val adventureEntry = entry(93L, AutomationType.ADVENTURE_MAP).also { it.enabled = true }
+        val old = AdventureAutomationMapEntity(
+            id = 501L,
+            entry = adventureEntry,
+            categoryId = "adventure_map",
+            mapCode = "map-1",
+            presetMode = PresetSelectionMode.PRIMARY,
+            executionOrder = 0,
+        )
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(adventureEntry))
+        Mockito.`when`(typedQuery.findAdventureSettings(adventureEntry.id)).thenReturn(listOf(old))
+        Mockito.`when`(
+            battleMapQueryRepository.findMapsByCategoryIdAndMapCodePairs(setOf("adventure_map" to "map-1")),
+        ).thenReturn(listOf(battleMap(1L, "adventure_map", "map-1")))
+
+        service.updateAdventureMaps(
+            ACCOUNT_ID,
+            UpdateAdventureMapAutomationRequest(
+                enabled = true,
+                maps = emptyList(),
+            ),
+        )
+
+        Mockito.verify(workLifecycle).stopForConfigurationChange(
+            ACCOUNT_ID,
+            adventureEntry.id,
+            setOf("adventure_map/map-1"),
+            false,
+        )
+    }
+
+    @Test
+    fun `deleting entry stops all of its open work sessions`() {
+        val battleEntry = entry(92L, AutomationType.BATTLE_MAP)
+        Mockito.`when`(typedQuery.findEntry(ACCOUNT_ID, battleEntry.id)).thenReturn(battleEntry)
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(emptyList())
+
+        service.deleteEntry(ACCOUNT_ID, battleEntry.id)
+
+        Mockito.verify(workLifecycle).stopForConfigurationChange(
+            ACCOUNT_ID,
+            battleEntry.id,
+            emptySet(),
+            true,
+        )
     }
 
     @Test

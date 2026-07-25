@@ -97,7 +97,11 @@ class TypedAutomationQueryRepository(
             .leftJoin(actionEntry.account, actionEntryAccount).fetchJoin()
             .where(
                 typedAutomationActionRunEntity.account.id.eq(accountId),
-                typedAutomationActionRunEntity.status.`in`(TypedAutomationActionStatus.PREPARED, TypedAutomationActionStatus.SUBMITTING),
+                typedAutomationActionRunEntity.status.`in`(
+                    TypedAutomationActionStatus.PREPARED,
+                    TypedAutomationActionStatus.SUBMITTING,
+                    TypedAutomationActionStatus.RECONCILING,
+                ),
             )
             .orderBy(typedAutomationActionRunEntity.id.desc()).fetchFirst()
 

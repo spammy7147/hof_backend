@@ -5,7 +5,7 @@ import jakarta.persistence.*
 import java.time.Instant
 
 enum class TypedAutomationLifecycle { RUNNING, PAUSED, STOPPED }
-enum class TypedAutomationActionStatus { PREPARED, SUBMITTING, SUCCEEDED, FAILED, AMBIGUOUS }
+enum class TypedAutomationActionStatus { PREPARED, SUBMITTING, RECONCILING, SUCCEEDED, FAILED, AMBIGUOUS }
 enum class AutomationWaitReason { SCHEDULED, HOF_CONNECTION }
 
 @Entity

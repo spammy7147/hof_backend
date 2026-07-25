@@ -49,7 +49,6 @@ class AutomationExecutionSignalService(
         if (source != BattleAutomationActionSource.BATTLE_MAP_AUTOMATION || running.workType != AutomationWorkType.BATTLE_MAP) {
             return false
         }
-        val now = timeProvider.now()
         val higherWaits = queries.findWaiting(accountId).filter { it.entryPriority < running.entryPriority }
         val relatedMaterialWaits = higherWaits
             .asSequence()
@@ -60,11 +59,7 @@ class AutomationExecutionSignalService(
                 } == true
             }
             .toList()
-        val relatedMaterial = relatedMaterialWaits.isNotEmpty()
-        val higherDue = higherWaits.any { it.nextCheckAt?.let { due -> !due.isAfter(now) } == true }
-        val questChanged = running.entryPriority > 0 && questTexts.any(String::isNotBlank)
-        if (!relatedMaterial && !higherDue && !questChanged) return false
         relatedMaterialWaits.forEach { lifecycle.triggerCheck(accountId, it.id) }
-        return lifecycle.yieldForPriority(accountId, running.id)
+        return false
     }
 }

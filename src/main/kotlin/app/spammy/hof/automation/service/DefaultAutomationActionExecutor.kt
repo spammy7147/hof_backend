@@ -20,6 +20,7 @@ class DefaultAutomationActionExecutor(
     private val battleOutcomeReconciler: BattleOutcomeReconciler,
     private val sessionRecovery: HofSessionRecoveryExecutor,
     private val executionSignals: AutomationExecutionSignals,
+    private val workLifecycle: AutomationWorkLifecycle,
 ) : TypedAutomationActionExecutor {
     override fun execute(accountId: Long, action: StoredTypedAutomationActionV1): TypedAutomationExecution =
         try {
@@ -92,6 +93,12 @@ class DefaultAutomationActionExecutor(
                 is StoredTypedActionPayload.AdventureMap -> {
                     val result = runTypedBattle(accountId, payload.battleRequest)
                     exactTerminalProof(accountId, action.executionIdentity, payload.battleRequest, result, BattleAutomationActionSource.ADVENTURE_AUTOMATION)
+                    workLifecycle.completeAdventureAction(
+                        accountId,
+                        action.entryId,
+                        payload.categoryId,
+                        payload.mapCode,
+                    )
                     TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode)
                 }
             }

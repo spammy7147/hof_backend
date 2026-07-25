@@ -7,6 +7,7 @@ import com.fasterxml.jackson.annotation.JsonSubTypes
 import com.fasterxml.jackson.annotation.JsonTypeInfo
 import java.security.MessageDigest
 import java.time.LocalDate
+import java.time.Instant
 import java.util.HexFormat
 import java.nio.charset.StandardCharsets
 import org.springframework.stereotype.Component
@@ -57,6 +58,8 @@ sealed interface StoredTypedActionPayload {
         val battleCount: Int,
         val battleRequest: RunBattleRequest,
         override val display: StoredActionDisplay? = null,
+        val observedCurrent: Int? = null,
+        val observedRequired: Int? = null,
     ) : StoredTypedActionPayload
     data class BattleMap(
         val progressDate: LocalDate,
@@ -77,6 +80,10 @@ sealed interface StoredTypedActionPayload {
         val settingIdentity: Long,
         val battleRequest: RunBattleRequest,
         override val display: StoredActionDisplay? = null,
+        val observedCooldownUntil: Instant? = null,
+        val observedAttemptRemaining: Int? = null,
+        val observedWinRemaining: Int? = null,
+        val observedAvailableCount: Int? = null,
     ) : StoredTypedActionPayload
 }
 
@@ -128,6 +135,13 @@ class StoredTypedAutomationActionCodec(private val objectMapper: ObjectMapper) {
             is StoredTypedActionPayload.QuestAccept -> require(payload.questCode.isNotBlank() && payload.actionNo.isNotBlank())
             is StoredTypedActionPayload.QuestBattle -> {
                 require(payload.battleCount == 1)
+                require(payload.observedCurrent == null || payload.observedCurrent >= 0)
+                require(payload.observedRequired == null || payload.observedRequired >= 0)
+                require(
+                    payload.observedCurrent == null ||
+                        payload.observedRequired == null ||
+                        payload.observedCurrent <= payload.observedRequired
+                )
                 validateBattle(payload.presetId, payload.battleCount, payload.categoryId, payload.mapCode, payload.battleRequest)
             }
             is StoredTypedActionPayload.BattleMap -> validateBattle(payload.presetId, payload.battleCount, payload.categoryId, payload.mapCode, payload.battleRequest)

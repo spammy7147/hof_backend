@@ -73,6 +73,10 @@ class AdventureMapAutomationHandlerTest {
         assertEquals(4, action.settingIdentity)
         assertEquals("execution-4", action.executionIdentity)
         assertEquals("Ready map", action.mapName)
+        assertEquals(null, action.observedCooldownUntil)
+        assertEquals(null, action.observedAttemptRemaining)
+        assertEquals(null, action.observedWinRemaining)
+        assertEquals(null, action.observedAvailableCount)
     }
 
     @Test

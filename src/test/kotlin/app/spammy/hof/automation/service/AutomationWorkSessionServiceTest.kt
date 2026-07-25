@@ -17,7 +17,6 @@ import app.spammy.hof.common.time.TimeProvider
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import org.mockito.Mockito
 
 class AutomationWorkSessionServiceTest {
@@ -32,16 +31,16 @@ class AutomationWorkSessionServiceTest {
 
     @Test
     fun `yielded battle session resumes with confirmed wins intact`() {
-        val session = battleSession(status = AutomationWorkStatus.RUNNING, confirmedCount = 12)
+        val session = battleSession(status = AutomationWorkStatus.YIELDED_PRIORITY, confirmedCount = 12)
         Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
         Mockito.`when`(queries.lockById(7, 21)).thenReturn(session)
+        Mockito.`when`(typed.findEntry(7, entry.id)).thenReturn(entry)
 
-        assertEquals(true, service.yieldForPriority(7, 21))
-        val resumed = service.resume(7, 21, "config-v1")
+        service.resumeForCheck(7, 21)
 
-        assertEquals(12, resumed.confirmedCount)
-        assertEquals(AutomationWorkStatus.RUNNING, resumed.status)
-        assertEquals(null, resumed.nextCheckAt)
+        assertEquals(12, session.confirmedCount)
+        assertEquals(AutomationWorkStatus.RUNNING, session.status)
+        assertEquals(null, session.nextCheckAt)
     }
 
     @Test
@@ -60,23 +59,71 @@ class AutomationWorkSessionServiceTest {
         Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
         Mockito.`when`(queries.lockById(7, 22)).thenReturn(session)
 
-        assertFailsWith<IllegalArgumentException> {
+        kotlin.test.assertFailsWith<IllegalArgumentException> {
             service.yieldForPriority(7, 22)
         }
     }
 
     @Test
-    fun `configuration mismatch stops stale session instead of resuming it`() {
+    fun `matching adventure action completes its one battle work unit`() {
+        val adventureEntry = AutomationEntryEntity(12, account, AutomationType.ADVENTURE_MAP, 2, true, now, now)
+        val session = AutomationWorkSessionEntity(
+            id = 23,
+            account = account,
+            entry = adventureEntry,
+            workType = AutomationWorkType.ADVENTURE_MAP,
+            targetKey = "sp_hunt/map-1",
+            status = AutomationWorkStatus.RUNNING,
+            configVersion = "config-v1",
+            createdAt = now,
+            updatedAt = now,
+        )
+        Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
+        Mockito.`when`(queries.lockOpen(7)).thenReturn(listOf(session))
+
+        service.completeAdventureAction(7, 12, "sp_hunt", "map-1")
+
+        assertEquals(AutomationWorkStatus.COMPLETED, session.status)
+        assertEquals(now, session.finishedAt)
+        Mockito.verify(commands).save(session)
+    }
+
+    @Test
+    fun `configuration change stops only matching target sessions`() {
+        val matching = battleSession(status = AutomationWorkStatus.RUNNING, confirmedCount = 5)
+        val other = AutomationWorkSessionEntity(
+            id = 25,
+            account = account,
+            entry = entry,
+            workType = AutomationWorkType.BATTLE_MAP,
+            targetKey = "battle_map/map-2",
+            status = AutomationWorkStatus.WAITING_COOLDOWN,
+            configVersion = "config-v1",
+            createdAt = now,
+            updatedAt = now,
+        )
+        Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
+        Mockito.`when`(queries.lockOpen(7)).thenReturn(listOf(matching, other))
+
+        service.stopForConfigurationChange(7, entry.id, setOf("battle_map/map-1"), false)
+
+        assertEquals(AutomationWorkStatus.STOPPED, matching.status)
+        assertEquals(AutomationWorkStatus.WAITING_COOLDOWN, other.status)
+        Mockito.verify(commands).save(matching)
+        Mockito.verify(commands, Mockito.never()).save(other)
+    }
+
+    @Test
+    fun `entry version change alone does not stop a parked target`() {
         val session = battleSession(status = AutomationWorkStatus.YIELDED_PRIORITY, confirmedCount = 4)
         Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
         Mockito.`when`(queries.lockById(7, 21)).thenReturn(session)
+        Mockito.`when`(typed.findEntry(7, entry.id)).thenReturn(entry)
 
-        assertFailsWith<AutomationWorkConfigurationChangedException> {
-            service.resume(7, 21, "config-v2")
-        }
+        service.resumeForCheck(7, 21)
 
-        assertEquals(AutomationWorkStatus.STOPPED, session.status)
-        assertEquals(now, session.finishedAt)
+        assertEquals(AutomationWorkStatus.RUNNING, session.status)
+        assertEquals(null, session.finishedAt)
     }
 
     @Test

@@ -14,7 +14,7 @@ import app.spammy.hof.common.persistence.QueryDslConfig
 import app.spammy.hof.common.time.TimeProvider
 import java.time.Instant
 import kotlin.test.Test
-import kotlin.test.assertTrue
+import kotlin.test.assertFalse
 import org.mockito.Mockito
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
@@ -95,7 +95,6 @@ class AutomationExecutionSignalPersistenceTest {
             Fixture(account.id, running.id, waiting.id)
         })
         val lifecycle = Mockito.mock(AutomationWorkLifecycle::class.java)
-        Mockito.`when`(lifecycle.yieldForPriority(fixture.accountId, fixture.runningSessionId)).thenReturn(true)
         val service = AutomationExecutionSignalService(
             queries,
             lifecycle,
@@ -111,9 +110,9 @@ class AutomationExecutionSignalPersistenceTest {
             questTexts = emptyList(),
         )
 
-        assertTrue(yielded)
+        assertFalse(yielded)
         Mockito.verify(lifecycle).triggerCheck(fixture.accountId, fixture.waitingSessionId)
-        Mockito.verify(lifecycle).yieldForPriority(fixture.accountId, fixture.runningSessionId)
+        Mockito.verify(lifecycle, Mockito.never()).yieldForPriority(fixture.accountId, fixture.runningSessionId)
     }
 
     private data class Fixture(

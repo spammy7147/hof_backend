@@ -69,6 +69,10 @@ data class AdventureMapAutomationAction(
     val executionIdentity: String,
     val resolvedParty: ResolvedAutomationParty? = null,
     val mapName: String? = null,
+    val observedCooldownUntil: Instant? = null,
+    val observedAttemptRemaining: Int? = null,
+    val observedWinRemaining: Int? = null,
+    val observedAvailableCount: Int? = null,
 ) : PreparedAutomationAction
 
 /** Pure, ordered selection over the latest live adventure-map snapshot. */
@@ -173,6 +177,10 @@ class AdventureMapAutomationHandler(
                             executionIdentity = executionIdentity,
                             resolvedParty = (context.presetResolutions[setting.settingIdentity] as? AdventureMapPresetResolution.Valid)?.resolvedParty,
                             mapName = state.mapName,
+                            observedCooldownUntil = state.cooldownUntil,
+                            observedAttemptRemaining = state.attemptRemaining,
+                            observedWinRemaining = state.winRemaining,
+                            observedAvailableCount = state.availableCount,
                         ),
                     )
                 }

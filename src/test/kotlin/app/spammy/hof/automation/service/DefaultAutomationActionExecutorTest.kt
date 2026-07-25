@@ -28,6 +28,7 @@ class DefaultAutomationActionExecutorTest {
     private val battleHandler = Mockito.mock(BattleMapAutomationHandler::class.java)
     private val reconciler = Mockito.mock(BattleOutcomeReconciler::class.java)
     private val executionSignals = Mockito.mock(AutomationExecutionSignals::class.java)
+    private val workLifecycle = Mockito.mock(AutomationWorkLifecycle::class.java)
     private val executor = DefaultAutomationActionExecutor(
         questGateway,
         battleRun,
@@ -36,6 +37,7 @@ class DefaultAutomationActionExecutorTest {
         reconciler,
         HofSessionRecoveryExecutor(HofSessionRecoveryService(accountService)),
         executionSignals,
+        workLifecycle,
     )
 
     @Test
@@ -269,6 +271,34 @@ class DefaultAutomationActionExecutorTest {
         Mockito.verify(battleRun, Mockito.times(1)).runBattle(7L, request, HofRequestOrigin.AUTOMATION)
         Mockito.verifyNoInteractions(accountService)
         Mockito.verifyNoInteractions(battleHandler)
+    }
+
+    @Test
+    fun `proven adventure battle completes its one battle work unit`() {
+        val request = battleRequest().copy(categoryId = "sp_hunt", mapCode = "map-1", battleCount = 1)
+        val result = Mockito.mock(app.spammy.hof.battle.dto.BattleResultResponse::class.java)
+        val round = Mockito.mock(app.spammy.hof.battle.dto.BattleRoundResponse::class.java)
+        Mockito.`when`(round.outcome).thenReturn(BattleAutomationRoundOutcome.VICTORY.name)
+        Mockito.`when`(result.rounds).thenReturn(listOf(round))
+        Mockito.`when`(battleRun.runBattle(7L, request, HofRequestOrigin.AUTOMATION)).thenReturn(result)
+        val action = StoredTypedAutomationActionV1(
+            entryId = 13L,
+            executionIdentity = "adventure-1",
+            payload = StoredTypedActionPayload.AdventureMap(
+                categoryId = request.categoryId,
+                mapCode = request.mapCode,
+                presetMode = PresetSelectionMode.PRIMARY,
+                presetId = 301L,
+                battleCount = 1,
+                settingIdentity = 99L,
+                battleRequest = request,
+            ),
+        )
+
+        val execution = executor.execute(7L, action)
+
+        assertEquals(TypedAutomationExecution.BattleCompleted("sp_hunt", "map-1"), execution)
+        Mockito.verify(workLifecycle).completeAdventureAction(7L, 13L, "sp_hunt", "map-1")
     }
 
     @Test
