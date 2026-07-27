@@ -8,10 +8,14 @@ import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.persistence.QueryDslConfig
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.party.dto.CreatePartyPresetRequest
+import app.spammy.hof.party.dto.PartyPresetCatalogResponse
 import app.spammy.hof.party.dto.PartyPresetMemberRequest
 import app.spammy.hof.party.dto.PartyPresetResponse
 import app.spammy.hof.party.dto.ReorderPartyPresetsRequest
 import app.spammy.hof.party.dto.UpdatePartyPresetRequest
+import app.spammy.hof.party.entity.PartyPresetFolderEntity
+import app.spammy.hof.party.repository.PartyPresetFolderQueryRepository
+import app.spammy.hof.party.repository.PartyPresetFolderRepository
 import app.spammy.hof.party.repository.PartyPresetQueryRepository
 import java.time.Instant
 import java.util.concurrent.CountDownLatch
@@ -41,7 +45,9 @@ import org.springframework.transaction.support.TransactionTemplate
     AccountQueryRepository::class,
     CharacterQueryRepository::class,
     PartyPresetQueryRepository::class,
+    PartyPresetFolderQueryRepository::class,
     PartyPresetResponseMapper::class,
+    PartyPresetCatalogService::class,
     PartyPresetService::class,
     PartyPresetConcurrencyTest.ClockConfig::class,
 )
@@ -50,7 +56,13 @@ class PartyPresetConcurrencyTest {
     private lateinit var accountRepository: HofAccountRepository
 
     @Autowired
+    private lateinit var accountQueryRepository: AccountQueryRepository
+
+    @Autowired
     private lateinit var presetQueryRepository: PartyPresetQueryRepository
+
+    @Autowired
+    private lateinit var folderRepository: PartyPresetFolderRepository
 
     @Autowired
     private lateinit var service: PartyPresetService
@@ -163,10 +175,10 @@ class PartyPresetConcurrencyTest {
                 check(start.await(10, TimeUnit.SECONDS))
                 service.create(accountId, request("세 번째"))
             }
-            val reorderFuture = executor.submit<List<PartyPresetResponse>> {
+            val reorderFuture = executor.submit<PartyPresetCatalogResponse> {
                 ready.countDown()
                 check(start.await(10, TimeUnit.SECONDS))
-                service.reorder(accountId, ReorderPartyPresetsRequest(listOf(first.id, second.id)))
+                service.reorder(accountId, ReorderPartyPresetsRequest(folderId = null, presetIds = listOf(first.id, second.id)))
             }
             check(ready.await(10, TimeUnit.SECONDS))
             start.countDown()
@@ -185,6 +197,95 @@ class PartyPresetConcurrencyTest {
         }
     }
 
+    @Test
+    fun concurrentCreateAndReorderInSameFolderSerializeAndRejectStaleMembership() {
+        val accountId = savedAccount("party-folder-create-reorder-lock")
+        val folderId = savedFolder(accountId, "폴더")
+        val first = service.create(accountId, request("첫 번째", folderId))
+        val second = service.create(accountId, request("두 번째", folderId))
+        val ready = CountDownLatch(2)
+        val start = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
+
+        try {
+            val createFuture = executor.submit<PartyPresetResponse> {
+                ready.countDown()
+                check(start.await(10, TimeUnit.SECONDS))
+                service.create(accountId, request("세 번째", folderId))
+            }
+            val reorderFuture = executor.submit<PartyPresetCatalogResponse> {
+                ready.countDown()
+                check(start.await(10, TimeUnit.SECONDS))
+                service.reorder(accountId, ReorderPartyPresetsRequest(folderId, listOf(first.id, second.id)))
+            }
+            check(ready.await(10, TimeUnit.SECONDS))
+            start.countDown()
+            createFuture.get(10, TimeUnit.SECONDS)
+            val reorderFailed = try {
+                reorderFuture.get(10, TimeUnit.SECONDS)
+                false
+            } catch (error: ExecutionException) {
+                assertTrue(error.cause is ApiException)
+                true
+            }
+
+            val siblings = service.findAll(accountId).filter { it.folderId == folderId }
+            assertEquals(3, siblings.map { it.id }.toSet().size)
+            assertEquals(listOf(0, 1, 2), siblings.map { it.displayOrder })
+            if (reorderFailed) assertEquals(setOf(first.id, second.id), siblings.drop(1).map { it.id }.toSet())
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun concurrentMoveAndDestinationReorderSerializeWithoutOverwritingNewMembership() {
+        val accountId = savedAccount("party-move-reorder-lock")
+        val sourceId = savedFolder(accountId, "출발")
+        val destinationId = savedFolder(accountId, "도착")
+        val moving = service.create(accountId, request("이동", sourceId))
+        val sourcePeer = service.create(accountId, request("출발 형제", sourceId))
+        val destinationFirst = service.create(accountId, request("도착 첫째", destinationId))
+        val destinationSecond = service.create(accountId, request("도착 둘째", destinationId))
+        val ready = CountDownLatch(2)
+        val start = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
+
+        try {
+            val moveFuture = executor.submit<PartyPresetResponse> {
+                ready.countDown()
+                check(start.await(10, TimeUnit.SECONDS))
+                service.update(accountId, moving.id, UpdatePartyPresetRequest("이동 완료", members(), destinationId))
+            }
+            val reorderFuture = executor.submit<PartyPresetCatalogResponse> {
+                ready.countDown()
+                check(start.await(10, TimeUnit.SECONDS))
+                service.reorder(
+                    accountId,
+                    ReorderPartyPresetsRequest(destinationId, listOf(destinationFirst.id, destinationSecond.id)),
+                )
+            }
+            check(ready.await(10, TimeUnit.SECONDS))
+            start.countDown()
+            moveFuture.get(10, TimeUnit.SECONDS)
+            try {
+                reorderFuture.get(10, TimeUnit.SECONDS)
+            } catch (error: ExecutionException) {
+                assertTrue(error.cause is ApiException)
+            }
+
+            val stored = service.findAll(accountId)
+            val source = stored.filter { it.folderId == sourceId }
+            val destination = stored.filter { it.folderId == destinationId }
+            assertEquals(listOf(sourcePeer.id), source.map { it.id })
+            assertEquals(listOf(0), source.map { it.displayOrder })
+            assertEquals(setOf(moving.id, destinationFirst.id, destinationSecond.id), destination.map { it.id }.toSet())
+            assertEquals(listOf(0, 1, 2), destination.map { it.displayOrder })
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
     private fun savedAccount(loginId: String): Long =
         requireNotNull(TransactionTemplate(transactionManager).execute {
             accountRepository.save(
@@ -196,8 +297,22 @@ class PartyPresetConcurrencyTest {
             ).also { accountRepository.flush() }.id
         })
 
-    private fun request(name: String): CreatePartyPresetRequest =
-        CreatePartyPresetRequest(name = name, members = members())
+    private fun request(name: String, folderId: Long? = null): CreatePartyPresetRequest =
+        CreatePartyPresetRequest(name = name, members = members(), folderId = folderId)
+
+    private fun savedFolder(accountId: Long, name: String): Long =
+        requireNotNull(TransactionTemplate(transactionManager).execute {
+            val account = requireNotNull(accountQueryRepository.findById(accountId))
+            folderRepository.save(
+                PartyPresetFolderEntity(
+                    account = account,
+                    name = name,
+                    displayOrder = 0,
+                    createdAt = NOW,
+                    updatedAt = NOW,
+                ),
+            ).also { folderRepository.flush() }.id
+        })
 
     private fun members(): List<PartyPresetMemberRequest> =
         (0..4).map { slotIndex ->

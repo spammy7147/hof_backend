@@ -44,13 +44,13 @@ class PartyPresetController(
     ): PartyPresetResponse =
         presetService.create(accountId = accountId, request = request)
 
-    /** 계정의 모든 파티 프리셋을 요청한 순서로 저장한다. */
+    /** 요청한 nullable 폴더의 모든 파티 프리셋을 전달된 순서로 저장한다. */
     @PutMapping("/order")
     fun reorder(
         @CurrentAccountId accountId: Long,
         @RequestBody request: ReorderPartyPresetsRequest,
     ): List<PartyPresetResponse> =
-        presetService.reorder(accountId = accountId, request = request)
+        presetService.reorder(accountId = accountId, request = request).presets
 
     /**
      * 기존 파티 프리셋 이름과 슬롯 정보를 수정한다.

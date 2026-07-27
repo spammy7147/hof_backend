@@ -21,4 +21,14 @@ class PartyPresetFolderQueryRepository(
                 partyPresetFolderEntity.id.asc(),
             )
             .fetch()
+
+    /** PK와 계정 FK를 한 조건으로 조회해 다른 계정의 폴더를 노출하지 않는다. */
+    fun findOwnedByAccountIdAndId(accountId: Long, folderId: Long): PartyPresetFolderEntity? =
+        queryFactory
+            .selectFrom(partyPresetFolderEntity)
+            .where(
+                partyPresetFolderEntity.account.id.eq(accountId),
+                partyPresetFolderEntity.id.eq(folderId),
+            )
+            .fetchOne()
 }

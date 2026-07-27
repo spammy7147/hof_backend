@@ -8,12 +8,15 @@ import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.party.dto.CreatePartyPresetRequest
+import app.spammy.hof.party.dto.PartyPresetCatalogResponse
 import app.spammy.hof.party.dto.PartyPresetMemberRequest
 import app.spammy.hof.party.dto.PartyPresetResponse
 import app.spammy.hof.party.dto.ReorderPartyPresetsRequest
 import app.spammy.hof.party.dto.UpdatePartyPresetRequest
 import app.spammy.hof.party.entity.PartyPresetEntity
+import app.spammy.hof.party.entity.PartyPresetFolderEntity
 import app.spammy.hof.party.entity.PartyPresetMemberEntity
+import app.spammy.hof.party.repository.PartyPresetFolderQueryRepository
 import app.spammy.hof.party.repository.PartyPresetMemberCommandRepository
 import app.spammy.hof.party.repository.PartyPresetQueryRepository
 import app.spammy.hof.party.repository.PartyPresetRepository
@@ -33,8 +36,10 @@ class PartyPresetService(
     private val presetRepository: PartyPresetRepository,
     private val memberRepository: PartyPresetMemberCommandRepository,
     private val presetQueryRepository: PartyPresetQueryRepository,
+    private val folderQueryRepository: PartyPresetFolderQueryRepository,
     private val timeProvider: TimeProvider,
     private val responseMapper: PartyPresetResponseMapper,
+    private val catalogService: PartyPresetCatalogService,
 ) {
     /**
      * 부모 목록과 전체 슬롯 목록을 각각 한 번씩 조회해 최근 수정순 응답을 조립한다.
@@ -61,17 +66,19 @@ class PartyPresetService(
         request: CreatePartyPresetRequest,
     ): PartyPresetResponse {
         val account = lockAccountForMutation(accountId)
+        val folder = resolveOwnedFolder(accountId, request.folderId)
         val name = normalizeName(request.name)
         val validatedMembers = validateMembers(accountId, request.members)
         val now = timeProvider.now()
-        presetQueryRepository.findAllByAccountId(accountId).forEach { existing ->
-            existing.displayOrder += 1
+        presetQueryRepository.findAllByAccountIdAndFolderId(accountId, request.folderId).forEachIndexed { index, sibling ->
+            sibling.displayOrder = index + 1
         }
         val preset = presetRepository.save(
             PartyPresetEntity(
                 account = account,
                 name = name,
                 displayOrder = 0,
+                folder = folder,
                 createdAt = now,
                 updatedAt = now,
             ),
@@ -80,18 +87,19 @@ class PartyPresetService(
         return responseMapper.toPresetResponse(preset, savedMembers)
     }
 
-    /** 계정의 전체 프리셋 집합을 검증한 뒤 요청 배열 순서로 표시 순서를 정규화한다. */
+    /** nullable 폴더의 전체 프리셋 집합을 검증한 뒤 요청 배열 순서로 표시 순서를 정규화한다. */
     @Transactional
     fun reorder(
         accountId: Long,
         request: ReorderPartyPresetsRequest,
-    ): List<PartyPresetResponse> {
+    ): PartyPresetCatalogResponse {
         lockAccountForMutation(accountId)
-        val presets = presetQueryRepository.findAllByAccountId(accountId)
+        resolveOwnedFolder(accountId, request.folderId)
+        val presets = presetQueryRepository.findAllByAccountIdAndFolderId(accountId, request.folderId)
         val requestedIds = request.presetIds
         val ownedIds = presets.map { preset -> preset.id }.toSet()
         if (requestedIds.distinct().size != requestedIds.size || requestedIds.toSet() != ownedIds) {
-            throw ApiException(ErrorCode.INVALID_REQUEST, "현재 계정의 모든 프리셋을 중복 없이 지정해야 합니다.")
+            throw ApiException(ErrorCode.INVALID_REQUEST, "현재 폴더의 모든 프리셋을 중복 없이 지정해야 합니다.")
         }
 
         val presetsById = presets.associateBy { preset -> preset.id }
@@ -99,7 +107,7 @@ class PartyPresetService(
             presetsById.getValue(presetId).displayOrder = displayOrder
         }
         presetRepository.flush()
-        return findAll(accountId)
+        return catalogService.find(accountId)
     }
 
     /**
@@ -112,9 +120,24 @@ class PartyPresetService(
         request: UpdatePartyPresetRequest,
     ): PartyPresetResponse {
         lockAccountForMutation(accountId)
+        val destinationFolder = resolveOwnedFolder(accountId, request.folderId)
         val preset = findOwnedPreset(accountId = accountId, presetId = presetId)
         val name = normalizeName(request.name)
         val validatedMembers = validateMembers(accountId, request.members)
+        val sourceFolderId = preset.folder?.id
+        if (sourceFolderId != request.folderId) {
+            val sourceSiblings = presetQueryRepository
+                .findAllByAccountIdAndFolderId(accountId, sourceFolderId)
+                .filterNot { sibling -> sibling.id == preset.id }
+            sourceSiblings.forEachIndexed { index, sibling -> sibling.displayOrder = index }
+
+            val destinationSiblings = presetQueryRepository
+                .findAllByAccountIdAndFolderId(accountId, request.folderId)
+                .filterNot { sibling -> sibling.id == preset.id }
+            destinationSiblings.forEachIndexed { index, sibling -> sibling.displayOrder = index + 1 }
+            preset.folder = destinationFolder
+            preset.displayOrder = 0
+        }
         val existingMembers = presetQueryRepository.findMembersByPresetIds(listOf(preset.id))
         if (existingMembers.isNotEmpty()) {
             memberRepository.deleteAll(existingMembers)
@@ -189,6 +212,12 @@ class PartyPresetService(
     ): PartyPresetEntity =
         presetQueryRepository.findOwnedByAccountIdAndId(accountId = accountId, presetId = presetId)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "파티 프리셋을 찾지 못했습니다.")
+
+    private fun resolveOwnedFolder(accountId: Long, folderId: Long?): PartyPresetFolderEntity? =
+        folderId?.let {
+            folderQueryRepository.findOwnedByAccountIdAndId(accountId, it)
+                ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "프리셋 폴더를 찾지 못했습니다.")
+        }
 
     /**
      * 프리셋 이름을 검증하고 앞뒤 공백을 제거한다.
