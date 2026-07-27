@@ -118,6 +118,7 @@ tasks.register<Test>("fastTest") {
 		"**/PartyPresetFolderQueryRepositoryTest*.class",
 		"**/PartyPresetConcurrencyTest*.class",
 		"**/PartyPresetCatalogServiceTest*.class",
+		"**/PartyPresetFolderServiceTest*.class",
 		"**/PartyPresetServiceTest*.class",
 		"**/FreshSchemaTest*.class",
 		"**/QuestApiSecurityTest*.class",

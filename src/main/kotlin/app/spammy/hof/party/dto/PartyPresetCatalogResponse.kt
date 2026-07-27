@@ -15,3 +15,22 @@ data class PartyPresetFolderResponse(
     val createdAt: String,
     val updatedAt: String,
 )
+
+data class CreatePartyPresetFolderRequest(
+    val name: String,
+    val parentFolderId: Long?,
+)
+
+data class RenamePartyPresetFolderRequest(
+    val name: String,
+)
+
+data class ReorderPartyPresetFoldersRequest(
+    val parentFolderId: Long?,
+    val folderIds: List<Long>,
+)
+
+data class MovePartyPresetFolderRequest(
+    val parentFolderId: Long?,
+    val displayOrder: Int,
+)
