@@ -4,6 +4,8 @@ import app.spammy.hof.common.security.CurrentAccountIdArgumentResolver
 import app.spammy.hof.party.dto.CreatePartyPresetFolderRequest
 import app.spammy.hof.party.dto.MovePartyPresetFolderRequest
 import app.spammy.hof.party.dto.PartyPresetCatalogResponse
+import app.spammy.hof.party.dto.PartyPresetFolderResponse
+import app.spammy.hof.party.dto.PartyPresetResponse
 import app.spammy.hof.party.dto.RenamePartyPresetFolderRequest
 import app.spammy.hof.party.dto.ReorderPartyPresetFoldersRequest
 import app.spammy.hof.party.service.PartyPresetFolderService
@@ -22,6 +24,7 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
+import org.springframework.test.web.servlet.ResultActions
 import org.springframework.test.web.servlet.setup.MockMvcBuilders
 
 class PartyPresetFolderControllerTest {
@@ -39,13 +42,13 @@ class PartyPresetFolderControllerTest {
     @Test
     fun createBindsExactRequestAndReturnsAuthoritativeCatalog() {
         val request = CreatePartyPresetFolderRequest(name = "레이드", parentFolderId = 3L)
-        Mockito.`when`(folderService.create(42L, request)).thenReturn(emptyCatalog())
+        Mockito.`when`(folderService.create(42L, request)).thenReturn(catalog(10L))
         authenticate()
 
-        performJson(post("/api/party-preset-folders"), """{"name":"레이드","parentFolderId":3}""")
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.folders").isArray)
-            .andExpect(jsonPath("$.presets").isArray)
+        expectCatalog(
+            performJson(post("/api/party-preset-folders"), """{"name":"레이드","parentFolderId":3}"""),
+            seed = 10L,
+        )
 
         Mockito.verify(folderService).create(42L, request)
     }
@@ -53,11 +56,13 @@ class PartyPresetFolderControllerTest {
     @Test
     fun renameBindsExactRequestAndForwardsFolderAndAccountIds() {
         val request = RenamePartyPresetFolderRequest(name = "보스")
-        Mockito.`when`(folderService.rename(42L, 7L, request)).thenReturn(emptyCatalog())
+        Mockito.`when`(folderService.rename(42L, 7L, request)).thenReturn(catalog(20L))
         authenticate()
 
-        performJson(patch("/api/party-preset-folders/7"), """{"name":"보스"}""")
-            .andExpect(status().isOk)
+        expectCatalog(
+            performJson(patch("/api/party-preset-folders/7"), """{"name":"보스"}"""),
+            seed = 20L,
+        )
 
         Mockito.verify(folderService).rename(42L, 7L, request)
     }
@@ -65,13 +70,16 @@ class PartyPresetFolderControllerTest {
     @Test
     fun reorderBindsExactRequestAndForwardsCurrentAccountId() {
         val request = ReorderPartyPresetFoldersRequest(parentFolderId = null, folderIds = listOf(7L, 8L))
-        Mockito.`when`(folderService.reorder(42L, request)).thenReturn(emptyCatalog())
+        Mockito.`when`(folderService.reorder(42L, request)).thenReturn(catalog(30L))
         authenticate()
 
-        performJson(
-            put("/api/party-preset-folders/order"),
-            """{"parentFolderId":null,"folderIds":[7,8]}""",
-        ).andExpect(status().isOk)
+        expectCatalog(
+            performJson(
+                put("/api/party-preset-folders/order"),
+                """{"parentFolderId":null,"folderIds":[7,8]}""",
+            ),
+            seed = 30L,
+        )
 
         Mockito.verify(folderService).reorder(42L, request)
     }
@@ -79,26 +87,26 @@ class PartyPresetFolderControllerTest {
     @Test
     fun moveBindsExactRequestAndForwardsFolderAndAccountIds() {
         val request = MovePartyPresetFolderRequest(parentFolderId = 3L, displayOrder = 1)
-        Mockito.`when`(folderService.move(42L, 7L, request)).thenReturn(emptyCatalog())
+        Mockito.`when`(folderService.move(42L, 7L, request)).thenReturn(catalog(40L))
         authenticate()
 
-        performJson(
-            put("/api/party-preset-folders/7/location"),
-            """{"parentFolderId":3,"displayOrder":1}""",
-        ).andExpect(status().isOk)
+        expectCatalog(
+            performJson(
+                put("/api/party-preset-folders/7/location"),
+                """{"parentFolderId":3,"displayOrder":1}""",
+            ),
+            seed = 40L,
+        )
 
         Mockito.verify(folderService).move(42L, 7L, request)
     }
 
     @Test
     fun deleteReturnsAuthoritativeCatalogAndForwardsFolderAndAccountIds() {
-        Mockito.`when`(folderService.delete(42L, 7L)).thenReturn(emptyCatalog())
+        Mockito.`when`(folderService.delete(42L, 7L)).thenReturn(catalog(50L))
         authenticate()
 
-        mockMvc.perform(delete("/api/party-preset-folders/7"))
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.folders").isArray)
-            .andExpect(jsonPath("$.presets").isArray)
+        expectCatalog(mockMvc.perform(delete("/api/party-preset-folders/7")), seed = 50L)
 
         Mockito.verify(folderService).delete(42L, 7L)
     }
@@ -112,7 +120,43 @@ class PartyPresetFolderControllerTest {
         SecurityContextHolder.getContext().authentication = TestingAuthenticationToken(jwt("42"), null)
     }
 
-    private fun emptyCatalog() = PartyPresetCatalogResponse(folders = emptyList(), presets = emptyList())
+    private fun expectCatalog(result: ResultActions, seed: Long) {
+        result
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.folders[0].id").value(seed))
+            .andExpect(jsonPath("$.folders[0].name").value("folder-$seed"))
+            .andExpect(jsonPath("$.folders[0].parentFolderId").value(seed + 1))
+            .andExpect(jsonPath("$.folders[0].displayOrder").value(seed.toInt()))
+            .andExpect(jsonPath("$.presets[0].id").value(seed + 2))
+            .andExpect(jsonPath("$.presets[0].name").value("preset-$seed"))
+            .andExpect(jsonPath("$.presets[0].folderId").value(seed))
+    }
+
+    private fun catalog(seed: Long) = PartyPresetCatalogResponse(
+        folders = listOf(
+            PartyPresetFolderResponse(
+                id = seed,
+                name = "folder-$seed",
+                parentFolderId = seed + 1,
+                displayOrder = seed.toInt(),
+                createdAt = "2026-07-27T00:00:00Z",
+                updatedAt = "2026-07-27T01:00:00Z",
+            ),
+        ),
+        presets = listOf(
+            PartyPresetResponse(
+                id = seed + 2,
+                accountId = 42L,
+                name = "preset-$seed",
+                displayOrder = seed.toInt() + 1,
+                isPrimary = false,
+                members = emptyList(),
+                createdAt = "2026-07-27T02:00:00Z",
+                updatedAt = "2026-07-27T03:00:00Z",
+                folderId = seed,
+            ),
+        ),
+    )
 
     private fun jwt(subject: String): Jwt = Jwt.withTokenValue("token")
         .header("alg", "none")

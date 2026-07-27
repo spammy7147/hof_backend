@@ -2,6 +2,8 @@ package app.spammy.hof.party.controller
 
 import app.spammy.hof.common.security.CurrentAccountIdArgumentResolver
 import app.spammy.hof.party.dto.PartyPresetCatalogResponse
+import app.spammy.hof.party.dto.PartyPresetFolderResponse
+import app.spammy.hof.party.dto.PartyPresetResponse
 import app.spammy.hof.party.dto.ReorderPartyPresetsRequest
 import app.spammy.hof.party.service.PartyPresetCatalogService
 import app.spammy.hof.party.service.PartyPresetService
@@ -63,7 +65,7 @@ class PartyPresetControllerTest {
     @Test
     fun reorderAcceptsOmittedFolderIdAndReturnsTopLevelArray() {
         Mockito.`when`(presetService.reorder(42L, ReorderPartyPresetsRequest(folderId = null, presetIds = emptyList())))
-            .thenReturn(emptyCatalog())
+            .thenReturn(catalog(70L))
         authenticate(42L)
 
         mockMvc.perform(
@@ -72,7 +74,11 @@ class PartyPresetControllerTest {
                 .content("""{"presetIds":[]}"""),
         )
             .andExpect(status().isOk)
-            .andExpect(content().json("[]"))
+            .andExpect(jsonPath("$").isArray)
+            .andExpect(jsonPath("$[0].id").value(72L))
+            .andExpect(jsonPath("$[0].name").value("preset-70"))
+            .andExpect(jsonPath("$[0].folderId").value(70L))
+            .andExpect(jsonPath("$.presets").doesNotExist())
 
         Mockito.verify(presetService).reorder(
             42L,
@@ -83,7 +89,7 @@ class PartyPresetControllerTest {
     @Test
     fun reorderAcceptsNullFolderIdAndReturnsTopLevelArray() {
         val request = ReorderPartyPresetsRequest(folderId = null, presetIds = listOf(9L))
-        Mockito.`when`(presetService.reorder(42L, request)).thenReturn(emptyCatalog())
+        Mockito.`when`(presetService.reorder(42L, request)).thenReturn(catalog(80L))
         authenticate(42L)
 
         mockMvc.perform(
@@ -92,7 +98,11 @@ class PartyPresetControllerTest {
                 .content("""{"folderId":null,"presetIds":[9]}"""),
         )
             .andExpect(status().isOk)
-            .andExpect(content().json("[]"))
+            .andExpect(jsonPath("$").isArray)
+            .andExpect(jsonPath("$[0].id").value(82L))
+            .andExpect(jsonPath("$[0].name").value("preset-80"))
+            .andExpect(jsonPath("$[0].folderId").value(80L))
+            .andExpect(jsonPath("$.presets").doesNotExist())
 
         Mockito.verify(presetService).reorder(42L, request)
     }
@@ -113,6 +123,32 @@ class PartyPresetControllerTest {
     }
 
     private fun emptyCatalog() = PartyPresetCatalogResponse(folders = emptyList(), presets = emptyList())
+
+    private fun catalog(seed: Long) = PartyPresetCatalogResponse(
+        folders = listOf(
+            PartyPresetFolderResponse(
+                id = seed,
+                name = "folder-$seed",
+                parentFolderId = null,
+                displayOrder = 0,
+                createdAt = "2026-07-27T00:00:00Z",
+                updatedAt = "2026-07-27T01:00:00Z",
+            ),
+        ),
+        presets = listOf(
+            PartyPresetResponse(
+                id = seed + 2,
+                accountId = 42L,
+                name = "preset-$seed",
+                displayOrder = 1,
+                isPrimary = false,
+                members = emptyList(),
+                createdAt = "2026-07-27T02:00:00Z",
+                updatedAt = "2026-07-27T03:00:00Z",
+                folderId = seed,
+            ),
+        ),
+    )
 
     private fun jwt(subject: String): Jwt = Jwt.withTokenValue("token")
         .header("alg", "none")
