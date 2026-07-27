@@ -388,6 +388,41 @@ class PartyPresetFolderServiceTest {
     }
 
     @Test
+    fun deletesEmptyNestedFolderWithoutAffectingParentSiblingsOrUnrelatedCatalogEntries() {
+        val account = account("delete-empty-nested")
+        val parent = folder(account, "parent", 0)
+        val unrelatedRoot = folder(account, "unrelated-root", 5)
+        val siblingA = folder(account, "sibling-a", 2, parent)
+        val deleting = folder(account, "deleting", 4, parent)
+        val siblingB = folder(account, "sibling-b", 8, parent)
+        val unrelatedPreset = preset(account, "unrelated-preset", order = 6, folder = unrelatedRoot)
+
+        val response = service.delete(account.id, deleting.id)
+
+        assertTrue(response.folders.none { it.id == deleting.id })
+        assertEquals(parent.id, response.folders.single { it.id == parent.id }.id)
+        assertEquals(
+            listOf(siblingA.id, siblingB.id),
+            response.folders.filter { it.parentFolderId == parent.id }.map { it.id },
+        )
+        assertEquals(listOf(0, 1), response.folders.filter { it.parentFolderId == parent.id }.map { it.displayOrder })
+        assertEquals(0, response.folders.single { it.id == parent.id }.displayOrder)
+        assertEquals(5, response.folders.single { it.id == unrelatedRoot.id }.displayOrder)
+        val presetResponse = response.presets.single()
+        assertEquals(unrelatedPreset.id, presetResponse.id)
+        assertEquals(unrelatedRoot.id, presetResponse.folderId)
+        assertEquals(6, presetResponse.displayOrder)
+        assertEquals("unrelated-preset", presetResponse.name)
+        entityManager.flush()
+        entityManager.clear()
+        assertEquals(
+            setOf(parent.id, unrelatedRoot.id, siblingA.id, siblingB.id),
+            folderQueries.findAllByAccountId(account.id).map { it.id }.toSet(),
+        )
+        assertEquals(unrelatedRoot.id, presetQueries.findAllByAccountId(account.id).single().folder?.id)
+    }
+
+    @Test
     fun deletesEmptyFolderAndRejectsForeignOrMissingFolderWithoutMutation() {
         val owner = account("delete-owner")
         val foreign = account("delete-foreign")
