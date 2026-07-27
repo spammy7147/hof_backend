@@ -60,6 +60,7 @@ class FreshSchemaTest {
                 "9" to "reconcile ambiguous automation actions",
                 "10" to "stabilize quest identity",
                 "11" to "remove typed action schema version",
+                "12" to "add party preset folders",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -74,6 +75,7 @@ class FreshSchemaTest {
             listOf(
                 "V10__stabilize_quest_identity.sql",
                 "V11__remove_typed_action_schema_version.sql",
+                "V12__add_party_preset_folders.sql",
                 "V1__initialize_schema.sql",
                 "V2__order_party_presets.sql",
                 "V3__add_automation_work_sessions.sql",
@@ -93,6 +95,8 @@ class FreshSchemaTest {
             }
             assertFalse(connection.columnExists("captcha_challenges", "automation_action_run_id"))
             assertTrue(connection.columnExists("party_presets", "display_order"))
+            assertTrue(connection.tableExists("party_preset_folders"))
+            assertTrue(connection.columnExists("party_presets", "folder_id"))
             assertTrue(connection.columnExists("captcha_challenges", "preparation_version"))
             assertTrue(connection.columnExists("characters", "detail_synced_at"))
             assertTrue(connection.columnExists("battle_maps", "shares_minute_cooldown"))

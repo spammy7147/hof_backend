@@ -303,8 +303,15 @@ internal object FreshSchemaContract {
             requiredText("raw_href"), requiredBoolean("visible"), requiredInstant("last_seen_at"),
         ),
         table(
+            "party_preset_folders",
+            serialId(), requiredBigint("account_id"), optionalBigint("parent_folder_id"),
+            requiredVarchar("name", 100), requiredInteger("display_order"),
+            requiredInstant("created_at"), requiredInstant("updated_at"),
+        ),
+        table(
             "party_presets",
-            serialId(), requiredBigint("account_id"), requiredVarchar("name"), requiredInstant("created_at"),
+            serialId(), requiredBigint("account_id"), optionalBigint("folder_id"),
+            requiredVarchar("name"), requiredInstant("created_at"),
             requiredInstant("updated_at"), requiredBoolean("is_primary"), optionalInteger("primary_marker"),
             requiredInteger("display_order"),
         ),
@@ -579,7 +586,13 @@ internal object FreshSchemaContract {
         fk("fk_account_battle_map_states_account", "account_battle_map_states.account_id", "hof_accounts.id", DeleteAction.CASCADE),
         fk("fk_account_battle_map_states_map", "account_battle_map_states.battle_map_id", "battle_maps.id", DeleteAction.CASCADE),
         fk("fk_unresolved_battle_maps_account", "unresolved_battle_maps.account_id", "hof_accounts.id", DeleteAction.CASCADE),
+        fk("fk_party_preset_folders_account", "party_preset_folders.account_id", "hof_accounts.id", DeleteAction.CASCADE),
+        fk(
+            "fk_party_preset_folders_parent", "party_preset_folders.parent_folder_id",
+            "party_preset_folders.id", DeleteAction.CASCADE,
+        ),
         fk("fk_party_presets_account", "party_presets.account_id", "hof_accounts.id", DeleteAction.CASCADE),
+        fk("fk_party_presets_folder", "party_presets.folder_id", "party_preset_folders.id", DeleteAction.SET_NULL),
         fk("fk_party_preset_members_preset", "party_preset_members.preset_id", "party_presets.id", DeleteAction.CASCADE),
         fk("fk_party_preset_members_character", "party_preset_members.character_id", "characters.id", DeleteAction.SET_NULL),
         fk(
@@ -696,7 +709,14 @@ internal object FreshSchemaContract {
             "group_display_order", "map_display_order", "observed_name", "id",
         ),
         index("party_presets", "idx_party_presets_account_updated", "account_id", "updated_at", "id"),
-        index("party_presets", "idx_party_presets_account_order", "account_id", "display_order", "id"),
+        index(
+            "party_preset_folders", "idx_party_preset_folders_account_parent_order",
+            "account_id", "parent_folder_id", "display_order", "id",
+        ),
+        index(
+            "party_presets", "idx_party_presets_account_folder_order",
+            "account_id", "folder_id", "display_order", "id",
+        ),
         index("party_preset_members", "idx_party_preset_members_character", "character_id"),
         index("party_preset_members", "idx_party_preset_members_pattern_slot", "pattern_slot_id"),
         index(
@@ -887,6 +907,7 @@ internal object FreshSchemaContract {
         ),
         check("party_preset_members", "ck_party_preset_members_slot", "slot_index between 0 and 4"),
         check("party_presets", "ck_party_presets_display_order", "display_order >= 0"),
+        check("party_preset_folders", "ck_party_preset_folders_display_order", "display_order >= 0"),
         check(
             "party_presets", "ck_party_presets_primary_marker",
             "(is_primary and primary_marker = 1) or (is_primary = false and primary_marker is null)",

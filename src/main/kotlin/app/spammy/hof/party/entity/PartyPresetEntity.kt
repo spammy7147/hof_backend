@@ -42,6 +42,10 @@ class PartyPresetEntity(
     @Column(name = "display_order", nullable = false)
     var displayOrder: Int = 0,
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "folder_id")
+    var folder: PartyPresetFolderEntity? = null,
+
     isPrimary: Boolean = false,
 ) {
     @Column(name = "is_primary", nullable = false)
