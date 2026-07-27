@@ -29,7 +29,7 @@ data class UpdatePartyPresetRequest(
 
 /** nullable 폴더에 속한 모든 프리셋 ID를 원하는 표시 순서대로 전달한다. */
 data class ReorderPartyPresetsRequest(
-    val folderId: Long?,
+    val folderId: Long? = null,
     val presetIds: List<Long>,
 )
 

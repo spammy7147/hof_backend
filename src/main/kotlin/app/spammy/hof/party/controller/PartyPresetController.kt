@@ -1,9 +1,11 @@
 package app.spammy.hof.party.controller
 
 import app.spammy.hof.party.dto.CreatePartyPresetRequest
+import app.spammy.hof.party.dto.PartyPresetCatalogResponse
 import app.spammy.hof.party.dto.PartyPresetResponse
 import app.spammy.hof.party.dto.ReorderPartyPresetsRequest
 import app.spammy.hof.party.dto.UpdatePartyPresetRequest
+import app.spammy.hof.party.service.PartyPresetCatalogService
 import app.spammy.hof.party.service.PartyPresetService
 import app.spammy.hof.common.security.CurrentAccountId
 import org.springframework.http.ResponseEntity
@@ -24,6 +26,7 @@ import org.springframework.web.bind.annotation.PutMapping
  */
 class PartyPresetController(
     private val presetService: PartyPresetService,
+    private val catalogService: PartyPresetCatalogService,
 ) {
     /**
      * 계정에 저장된 파티 프리셋 목록을 조회한다.
@@ -33,6 +36,13 @@ class PartyPresetController(
         @CurrentAccountId accountId: Long,
     ): List<PartyPresetResponse> =
         presetService.findAll(accountId)
+
+    /** 계정의 폴더와 프리셋을 authoritative catalog로 조회한다. */
+    @GetMapping("/catalog")
+    fun findCatalog(
+        @CurrentAccountId accountId: Long,
+    ): PartyPresetCatalogResponse =
+        catalogService.find(accountId)
 
     /**
      * 새 파티 프리셋을 저장한다.
