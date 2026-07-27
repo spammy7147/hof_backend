@@ -5,6 +5,7 @@ import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.HofAccountRepository
 import app.spammy.hof.character.repository.CharacterQueryRepository
 import app.spammy.hof.common.error.ApiException
+import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.persistence.QueryDslConfig
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.party.dto.CreatePartyPresetRequest
@@ -19,11 +20,12 @@ import app.spammy.hof.party.repository.PartyPresetFolderRepository
 import app.spammy.hof.party.repository.PartyPresetQueryRepository
 import java.time.Instant
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.Executors
 import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import org.springframework.beans.factory.annotation.Autowired
@@ -32,10 +34,12 @@ import org.springframework.boot.test.context.TestConfiguration
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Import
 import org.springframework.test.context.ActiveProfiles
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean
 import org.springframework.transaction.PlatformTransactionManager
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.transaction.support.TransactionTemplate
+import org.mockito.Mockito.doAnswer
 
 @DataJpaTest
 @ActiveProfiles("test")
@@ -55,7 +59,7 @@ class PartyPresetConcurrencyTest {
     @Autowired
     private lateinit var accountRepository: HofAccountRepository
 
-    @Autowired
+    @MockitoSpyBean
     private lateinit var accountQueryRepository: AccountQueryRepository
 
     @Autowired
@@ -161,79 +165,45 @@ class PartyPresetConcurrencyTest {
     }
 
     @Test
-    fun concurrentCreateAndReorderLeaveACompleteContiguousOrder() {
-        val accountId = savedAccount("party-create-reorder-lock")
-        val first = service.create(accountId, request("첫 번째"))
-        val second = service.create(accountId, request("두 번째"))
-        val ready = CountDownLatch(2)
-        val start = CountDownLatch(1)
-        val executor = Executors.newFixedThreadPool(2)
-
-        try {
-            val createFuture = executor.submit<PartyPresetResponse> {
-                ready.countDown()
-                check(start.await(10, TimeUnit.SECONDS))
-                service.create(accountId, request("세 번째"))
-            }
-            val reorderFuture = executor.submit<PartyPresetCatalogResponse> {
-                ready.countDown()
-                check(start.await(10, TimeUnit.SECONDS))
-                service.reorder(accountId, ReorderPartyPresetsRequest(folderId = null, presetIds = listOf(first.id, second.id)))
-            }
-            check(ready.await(10, TimeUnit.SECONDS))
-            start.countDown()
-            createFuture.get(10, TimeUnit.SECONDS)
-            try {
-                reorderFuture.get(10, TimeUnit.SECONDS)
-            } catch (error: ExecutionException) {
-                assertTrue(error.cause is ApiException)
-            }
-
-            val stored = service.findAll(accountId)
-            assertEquals(3, stored.map { preset -> preset.id }.toSet().size)
-            assertEquals(listOf(0, 1, 2), stored.map { preset -> preset.displayOrder })
-        } finally {
-            executor.shutdownNow()
-        }
-    }
-
-    @Test
     fun concurrentCreateAndReorderInSameFolderSerializeAndRejectStaleMembership() {
         val accountId = savedAccount("party-folder-create-reorder-lock")
         val folderId = savedFolder(accountId, "폴더")
         val first = service.create(accountId, request("첫 번째", folderId))
         val second = service.create(accountId, request("두 번째", folderId))
-        val ready = CountDownLatch(2)
-        val start = CountDownLatch(1)
+        val createReturned = CountDownLatch(1)
+        val allowCreateCommit = CountDownLatch(1)
+        val reorderReachedAccountLock = CountDownLatch(1)
         val executor = Executors.newFixedThreadPool(2)
 
         try {
             val createFuture = executor.submit<PartyPresetResponse> {
-                ready.countDown()
-                check(start.await(10, TimeUnit.SECONDS))
-                service.create(accountId, request("세 번째", folderId))
+                requireNotNull(TransactionTemplate(transactionManager).execute {
+                    service.create(accountId, request("세 번째", folderId)).also {
+                        createReturned.countDown()
+                        check(allowCreateCommit.await(10, TimeUnit.SECONDS))
+                    }
+                })
             }
+            check(createReturned.await(10, TimeUnit.SECONDS))
+            doAnswer { invocation ->
+                reorderReachedAccountLock.countDown()
+                invocation.callRealMethod()
+            }.`when`(accountQueryRepository).findByIdForUpdate(accountId)
             val reorderFuture = executor.submit<PartyPresetCatalogResponse> {
-                ready.countDown()
-                check(start.await(10, TimeUnit.SECONDS))
                 service.reorder(accountId, ReorderPartyPresetsRequest(folderId, listOf(first.id, second.id)))
             }
-            check(ready.await(10, TimeUnit.SECONDS))
-            start.countDown()
-            createFuture.get(10, TimeUnit.SECONDS)
-            val reorderFailed = try {
-                reorderFuture.get(10, TimeUnit.SECONDS)
-                false
-            } catch (error: ExecutionException) {
-                assertTrue(error.cause is ApiException)
-                true
-            }
+            check(reorderReachedAccountLock.await(10, TimeUnit.SECONDS))
+            allowCreateCommit.countDown()
+            val created = createFuture.get(10, TimeUnit.SECONDS)
+            val error = assertExecutionApiException(reorderFuture)
+            assertEquals(ErrorCode.INVALID_REQUEST, error.errorCode)
 
             val siblings = service.findAll(accountId).filter { it.folderId == folderId }
-            assertEquals(3, siblings.map { it.id }.toSet().size)
+            assertEquals(setOf(created.id, first.id, second.id), siblings.map { it.id }.toSet())
             assertEquals(listOf(0, 1, 2), siblings.map { it.displayOrder })
-            if (reorderFailed) assertEquals(setOf(first.id, second.id), siblings.drop(1).map { it.id }.toSet())
+            assertEquals(created.id, siblings.first().id)
         } finally {
+            allowCreateCommit.countDown()
             executor.shutdownNow()
         }
     }
@@ -247,32 +217,36 @@ class PartyPresetConcurrencyTest {
         val sourcePeer = service.create(accountId, request("출발 형제", sourceId))
         val destinationFirst = service.create(accountId, request("도착 첫째", destinationId))
         val destinationSecond = service.create(accountId, request("도착 둘째", destinationId))
-        val ready = CountDownLatch(2)
-        val start = CountDownLatch(1)
+        val moveReturned = CountDownLatch(1)
+        val allowMoveCommit = CountDownLatch(1)
+        val reorderReachedAccountLock = CountDownLatch(1)
         val executor = Executors.newFixedThreadPool(2)
 
         try {
             val moveFuture = executor.submit<PartyPresetResponse> {
-                ready.countDown()
-                check(start.await(10, TimeUnit.SECONDS))
-                service.update(accountId, moving.id, UpdatePartyPresetRequest("이동 완료", members(), destinationId))
+                requireNotNull(TransactionTemplate(transactionManager).execute {
+                    service.update(accountId, moving.id, UpdatePartyPresetRequest("이동 완료", members(), destinationId)).also {
+                        moveReturned.countDown()
+                        check(allowMoveCommit.await(10, TimeUnit.SECONDS))
+                    }
+                })
             }
+            check(moveReturned.await(10, TimeUnit.SECONDS))
+            doAnswer { invocation ->
+                reorderReachedAccountLock.countDown()
+                invocation.callRealMethod()
+            }.`when`(accountQueryRepository).findByIdForUpdate(accountId)
             val reorderFuture = executor.submit<PartyPresetCatalogResponse> {
-                ready.countDown()
-                check(start.await(10, TimeUnit.SECONDS))
                 service.reorder(
                     accountId,
                     ReorderPartyPresetsRequest(destinationId, listOf(destinationFirst.id, destinationSecond.id)),
                 )
             }
-            check(ready.await(10, TimeUnit.SECONDS))
-            start.countDown()
+            check(reorderReachedAccountLock.await(10, TimeUnit.SECONDS))
+            allowMoveCommit.countDown()
             moveFuture.get(10, TimeUnit.SECONDS)
-            try {
-                reorderFuture.get(10, TimeUnit.SECONDS)
-            } catch (error: ExecutionException) {
-                assertTrue(error.cause is ApiException)
-            }
+            val error = assertExecutionApiException(reorderFuture)
+            assertEquals(ErrorCode.INVALID_REQUEST, error.errorCode)
 
             val stored = service.findAll(accountId)
             val source = stored.filter { it.folderId == sourceId }
@@ -282,8 +256,14 @@ class PartyPresetConcurrencyTest {
             assertEquals(setOf(moving.id, destinationFirst.id, destinationSecond.id), destination.map { it.id }.toSet())
             assertEquals(listOf(0, 1, 2), destination.map { it.displayOrder })
         } finally {
+            allowMoveCommit.countDown()
             executor.shutdownNow()
         }
+    }
+
+    private fun assertExecutionApiException(future: java.util.concurrent.Future<*>): ApiException {
+        val error = assertFailsWith<ExecutionException> { future.get(10, TimeUnit.SECONDS) }
+        return error.cause as ApiException
     }
 
     private fun savedAccount(loginId: String): Long =

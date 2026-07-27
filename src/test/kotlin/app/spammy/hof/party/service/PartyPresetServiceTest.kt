@@ -318,6 +318,23 @@ class PartyPresetServiceTest {
     }
 
     @Test
+    fun reorderRejectsEmptyListWhenFolderHasPresetWithoutChangingOrder() {
+        val account = savedAccount("party-nonempty-folder-empty-reorder")
+        val folder = savedFolder(account, "프리셋 있음")
+        val first = service.create(account.id, request("첫 번째", folderId = folder.id))
+        val second = service.create(account.id, request("두 번째", folderId = folder.id))
+        val before = service.findAll(account.id).filter { it.folderId == folder.id }
+
+        val exception = assertFailsWith<ApiException> {
+            service.reorder(account.id, ReorderPartyPresetsRequest(folder.id, emptyList()))
+        }
+
+        assertEquals(ErrorCode.INVALID_REQUEST, exception.errorCode)
+        assertEquals(listOf(second.id, first.id), before.map { it.id })
+        assertEquals(before, service.findAll(account.id).filter { it.folderId == folder.id })
+    }
+
+    @Test
     fun listMapsNonnumericStoredPatternSlotCodeToNull() {
         val account = savedAccount("party-nonnumeric-pattern")
         val character = savedCharacter(account, "char-nonnumeric-pattern")
@@ -420,8 +437,16 @@ class PartyPresetServiceTest {
     @Test
     fun movingPresetPreservesStoredExplicitAutomationReference() {
         val account = savedAccount("party-move-automation-reference")
-        val folder = savedFolder(account, "폴더")
-        val preset = service.create(account.id, request("자동화 프리셋"))
+        val source = savedFolder(account, "출발")
+        val destination = savedFolder(account, "도착")
+        val character = savedCharacter(account, "automation-character")
+        savedPatternSlot(character, 2)
+        val requestedMembers = members(character.hofCharacterId, 2)
+        val preset = service.create(
+            account.id,
+            CreatePartyPresetRequest("자동화 프리셋", requestedMembers, source.id),
+        )
+        service.makePrimary(account.id, preset.id)
         val entry = automationEntries.save(
             AutomationEntryEntity(
                 account = account,
@@ -445,10 +470,24 @@ class PartyPresetServiceTest {
         )
         entityManager.flush()
 
-        service.update(account.id, preset.id, UpdatePartyPresetRequest("이동됨", members(), folder.id))
+        val moved = service.update(
+            account.id,
+            preset.id,
+            UpdatePartyPresetRequest("이동됨", requestedMembers, destination.id),
+        )
         entityManager.flush()
         entityManager.clear()
 
+        assertEquals(preset.id, moved.id)
+        assertEquals(destination.id, moved.folderId)
+        assertEquals(true, moved.isPrimary)
+        assertEquals((0..4).toList(), moved.members.map { it.slotIndex })
+        assertEquals(character.hofCharacterId, moved.members.first().characterId)
+        assertEquals(2, moved.members.first().patternSlot)
+        val persisted = service.findAll(account.id).single()
+        assertEquals(moved, persisted)
+        assertEquals(character.hofCharacterId, persisted.members.first().characterId)
+        assertEquals(2, persisted.members.first().patternSlot)
         assertEquals(
             preset.id,
             entityManager.createNativeQuery("select party_preset_id from battle_automation_maps where id = :id")
