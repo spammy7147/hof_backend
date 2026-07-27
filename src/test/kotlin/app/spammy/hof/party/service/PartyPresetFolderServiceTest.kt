@@ -11,10 +11,14 @@ import app.spammy.hof.party.dto.CreatePartyPresetFolderRequest
 import app.spammy.hof.party.dto.MovePartyPresetFolderRequest
 import app.spammy.hof.party.dto.RenamePartyPresetFolderRequest
 import app.spammy.hof.party.dto.ReorderPartyPresetFoldersRequest
+import app.spammy.hof.party.entity.PartyPresetEntity
 import app.spammy.hof.party.entity.PartyPresetFolderEntity
 import app.spammy.hof.party.repository.PartyPresetFolderQueryRepository
 import app.spammy.hof.party.repository.PartyPresetFolderRepository
+import app.spammy.hof.party.repository.PartyPresetQueryRepository
+import app.spammy.hof.party.repository.PartyPresetRepository
 import jakarta.persistence.EntityManager
+import java.time.Duration
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -31,7 +35,9 @@ import org.springframework.test.context.bean.override.mockito.MockitoSpyBean
 import org.mockito.Mockito.clearInvocations
 import org.mockito.Mockito.inOrder
 import org.mockito.Mockito.never
+import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
+import org.junit.jupiter.api.assertTimeout
 
 @DataJpaTest
 @ActiveProfiles("test")
@@ -39,13 +45,16 @@ import org.mockito.Mockito.verify
     QueryDslConfig::class,
     AccountQueryRepository::class,
     PartyPresetFolderQueryRepository::class,
+    PartyPresetQueryRepository::class,
     PartyPresetResponseMapper::class,
+    PartyPresetCatalogService::class,
     PartyPresetFolderService::class,
     PartyPresetFolderServiceTest.FixedTimeConfiguration::class,
 )
 class PartyPresetFolderServiceTest {
     @Autowired private lateinit var accounts: HofAccountRepository
     @Autowired private lateinit var folders: PartyPresetFolderRepository
+    @Autowired private lateinit var presets: PartyPresetRepository
     @MockitoSpyBean private lateinit var folderQueries: PartyPresetFolderQueryRepository
     @MockitoSpyBean private lateinit var accountQueries: AccountQueryRepository
     @Autowired private lateinit var service: PartyPresetFolderService
@@ -55,9 +64,13 @@ class PartyPresetFolderServiceTest {
     fun createsTrimmedRootAndChildFirstAndPersistsOrderAndTimestamps() {
         val account = account("create")
         val oldRoot = folder(account, "기존 루트", 0)
-        val root = service.create(account.id, CreatePartyPresetFolderRequest("  새 루트  ", null))
-        val child = service.create(account.id, CreatePartyPresetFolderRequest(" 자식 ", root.id))
-        val secondChild = service.create(account.id, CreatePartyPresetFolderRequest("둘째", root.id))
+        val preset = preset(account, "프리셋")
+        val rootCatalog = service.create(account.id, CreatePartyPresetFolderRequest("  새 루트  ", null))
+        val root = rootCatalog.folders.single { it.name == "새 루트" }
+        val childCatalog = service.create(account.id, CreatePartyPresetFolderRequest(" 자식 ", root.id))
+        val child = childCatalog.folders.single { it.name == "자식" }
+        val finalCatalog = service.create(account.id, CreatePartyPresetFolderRequest("둘째", root.id))
+        val secondChild = finalCatalog.folders.single { it.name == "둘째" }
         entityManager.flush()
         entityManager.clear()
 
@@ -71,6 +84,8 @@ class PartyPresetFolderServiceTest {
         assertEquals(0, persisted.getValue(secondChild.id).displayOrder)
         assertEquals(NOW, persisted.getValue(root.id).createdAt)
         assertEquals(NOW, persisted.getValue(root.id).updatedAt)
+        assertEquals(listOf(preset.id), rootCatalog.presets.map { it.id })
+        assertEquals(listOf(0, 1), rootCatalog.folders.filter { it.parentFolderId == null }.map { it.displayOrder })
     }
 
     @Test
@@ -83,10 +98,15 @@ class PartyPresetFolderServiceTest {
         invalid { service.create(account.id, CreatePartyPresetFolderRequest("   ", null)) }
         invalid { service.create(account.id, CreatePartyPresetFolderRequest("x".repeat(101), null)) }
         invalid { service.create(account.id, CreatePartyPresetFolderRequest(" alpha ", null)) }
-        assertEquals("alpha", service.rename(account.id, root.id, RenamePartyPresetFolderRequest(" alpha ")).name)
+        val renamed = service.rename(account.id, root.id, RenamePartyPresetFolderRequest(" alpha "))
+            .folders.single { it.id == root.id }
+        assertEquals("alpha", renamed.name)
+        assertEquals(NOW.toString(), renamed.updatedAt)
         invalid { service.rename(account.id, other.id, RenamePartyPresetFolderRequest(" ALPHA ")) }
-        assertEquals("alpha", service.rename(account.id, child.id, RenamePartyPresetFolderRequest(" alpha ")).name)
+        assertEquals("alpha", service.rename(account.id, child.id, RenamePartyPresetFolderRequest(" alpha ")).folders.single { it.id == child.id }.name)
         invalid { service.rename(account.id, child.id, RenamePartyPresetFolderRequest(" ")) }
+        assertEquals("x".repeat(100), service.rename(account.id, other.id, RenamePartyPresetFolderRequest("x".repeat(100))).folders.single { it.id == other.id }.name)
+        invalid { service.rename(account.id, other.id, RenamePartyPresetFolderRequest("x".repeat(101))) }
     }
 
     @Test
@@ -119,7 +139,7 @@ class PartyPresetFolderServiceTest {
         val child = folder(account, "child", 0, parent)
 
         val reordered = service.reorder(account.id, ReorderPartyPresetFoldersRequest(null, listOf(parent.id, b.id, a.id)))
-        assertEquals(listOf(parent.id, b.id, a.id), reordered.map { it.id })
+        assertEquals(listOf(parent.id, b.id, a.id), reordered.folders.filter { it.parentFolderId == null }.map { it.id })
         entityManager.flush()
         assertEquals(listOf(0, 1, 2), listOf(parent, b, a).map { it.displayOrder })
         invalid { service.reorder(account.id, ReorderPartyPresetFoldersRequest(null, listOf(a.id, a.id, parent.id))) }
@@ -137,6 +157,7 @@ class PartyPresetFolderServiceTest {
         val foreignChild = folder(foreign, "foreign child", 0, foreignParent)
 
         notFound { service.reorder(owner.id, ReorderPartyPresetFoldersRequest(foreignParent.id, listOf(foreignChild.id))) }
+        notFound { service.reorder(owner.id, ReorderPartyPresetFoldersRequest(Long.MAX_VALUE, emptyList())) }
         invalid { service.reorder(owner.id, ReorderPartyPresetFoldersRequest(null, listOf(owned.id, foreignParent.id))) }
     }
 
@@ -148,15 +169,24 @@ class PartyPresetFolderServiceTest {
         val rootTail = folder(account, "tail", 2)
         val existingChild = folder(account, "existing", 0, destination)
 
-        service.move(account.id, moving.id, MovePartyPresetFolderRequest(destination.id, 1))
+        val childCatalog = service.move(account.id, moving.id, MovePartyPresetFolderRequest(destination.id, 1))
         assertEquals(destination.id, moving.parent?.id)
         assertEquals(listOf(0, 1), listOf(existingChild, moving).map { it.displayOrder })
         assertEquals(listOf(0, 1), listOf(destination, rootTail).map { it.displayOrder })
+        assertEquals(
+            listOf(destination.id to 0, rootTail.id to 1, existingChild.id to 0, moving.id to 1),
+            childCatalog.folders.map { it.id to it.displayOrder },
+        )
+        assertEquals(NOW.toString(), childCatalog.folders.single { it.id == moving.id }.updatedAt)
 
-        service.move(account.id, moving.id, MovePartyPresetFolderRequest(null, 1))
+        val rootCatalog = service.move(account.id, moving.id, MovePartyPresetFolderRequest(null, 1))
         assertNull(moving.parent)
         assertEquals(listOf(0, 1, 2), listOf(destination, moving, rootTail).map { it.displayOrder })
         assertEquals(0, existingChild.displayOrder)
+        assertEquals(
+            listOf(destination.id to 0, moving.id to 1, rootTail.id to 2, existingChild.id to 0),
+            rootCatalog.folders.map { it.id to it.displayOrder },
+        )
     }
 
     @Test
@@ -168,7 +198,7 @@ class PartyPresetFolderServiceTest {
 
         val response = service.move(account.id, a.id, MovePartyPresetFolderRequest(null, 2))
 
-        assertEquals(listOf(b.id, c.id, a.id), response.map { it.id })
+        assertEquals(listOf(b.id, c.id, a.id), response.folders.map { it.id })
         assertEquals(listOf(0, 1, 2), listOf(b, c, a).map { it.displayOrder })
     }
 
@@ -210,6 +240,22 @@ class PartyPresetFolderServiceTest {
     }
 
     @Test
+    fun corruptedExistingCycleTerminatesWithApiException() {
+        val account = account("corrupted-cycle")
+        val root = folder(account, "root", 0)
+        val child = folder(account, "child", 0, root)
+        entityManager.flush()
+        entityManager.createNativeQuery(
+            "update party_preset_folders set parent_folder_id = :childId where id = :rootId",
+        ).setParameter("childId", child.id).setParameter("rootId", root.id).executeUpdate()
+        entityManager.clear()
+
+        assertTimeout(Duration.ofSeconds(1)) {
+            invalid { service.move(account.id, root.id, MovePartyPresetFolderRequest(null, 0)) }
+        }
+    }
+
+    @Test
     fun missingAccountFailsBeforeAnyFolderMutation() {
         clearInvocations(accountQueries, folderQueries)
         val error = assertFailsWith<ApiException> {
@@ -222,16 +268,22 @@ class PartyPresetFolderServiceTest {
     }
 
     @Test
-    fun accountLockIsAcquiredBeforeFolderStateIsLoadedForAWrite() {
+    fun accountLockIsAcquiredBeforeFolderStateIsLoadedForEveryWrite() {
         val account = account("lock-boundary")
         val folder = folder(account, "folder", 0)
+        assertLockBeforeLoad(account.id) { service.create(account.id, CreatePartyPresetFolderRequest("created", null)) }
+        assertLockBeforeLoad(account.id) { service.rename(account.id, folder.id, RenamePartyPresetFolderRequest("renamed")) }
+        val rootIds = folderQueries.findAllByAccountId(account.id).filter { it.parent == null }.map { it.id }
+        assertLockBeforeLoad(account.id) { service.reorder(account.id, ReorderPartyPresetFoldersRequest(null, rootIds)) }
+        assertLockBeforeLoad(account.id) { service.move(account.id, folder.id, MovePartyPresetFolderRequest(null, 1)) }
+    }
+
+    private fun assertLockBeforeLoad(accountId: Long, block: () -> Unit) {
         clearInvocations(accountQueries, folderQueries)
-
-        service.rename(account.id, folder.id, RenamePartyPresetFolderRequest("renamed"))
-
+        block()
         inOrder(accountQueries, folderQueries).apply {
-            verify(accountQueries).findByIdForUpdate(account.id)
-            verify(folderQueries).findAllByAccountId(account.id)
+            verify(accountQueries).findByIdForUpdate(accountId)
+            verify(folderQueries, times(2)).findAllByAccountId(accountId)
         }
     }
 
@@ -243,6 +295,10 @@ class PartyPresetFolderServiceTest {
         order: Int,
         parent: PartyPresetFolderEntity? = null,
     ) = folders.save(PartyPresetFolderEntity(account = account, parent = parent, name = name, displayOrder = order, createdAt = EARLIER, updatedAt = EARLIER))
+
+    private fun preset(account: HofAccountEntity, name: String) = presets.save(
+        PartyPresetEntity(account = account, name = name, displayOrder = 0, createdAt = EARLIER, updatedAt = EARLIER),
+    )
 
     private fun invalid(block: () -> Unit) = assertEquals(ErrorCode.INVALID_REQUEST, assertFailsWith<ApiException> { block() }.errorCode)
     private fun notFound(block: () -> Unit) = assertEquals(ErrorCode.RESOURCE_NOT_FOUND, assertFailsWith<ApiException> { block() }.errorCode)

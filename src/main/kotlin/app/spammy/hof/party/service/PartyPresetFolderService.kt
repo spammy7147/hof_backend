@@ -7,7 +7,7 @@ import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.party.dto.CreatePartyPresetFolderRequest
 import app.spammy.hof.party.dto.MovePartyPresetFolderRequest
-import app.spammy.hof.party.dto.PartyPresetFolderResponse
+import app.spammy.hof.party.dto.PartyPresetCatalogResponse
 import app.spammy.hof.party.dto.RenamePartyPresetFolderRequest
 import app.spammy.hof.party.dto.ReorderPartyPresetFoldersRequest
 import app.spammy.hof.party.entity.PartyPresetFolderEntity
@@ -24,11 +24,11 @@ class PartyPresetFolderService(
     private val folderQueryRepository: PartyPresetFolderQueryRepository,
     private val folderRepository: PartyPresetFolderRepository,
     private val timeProvider: TimeProvider,
-    private val responseMapper: PartyPresetResponseMapper,
+    private val catalogService: PartyPresetCatalogService,
 ) {
     /** 목적지 형제의 맨 앞에 폴더를 만들고 계층 깊이와 이름 고유성을 검증한다. */
     @Transactional
-    fun create(accountId: Long, request: CreatePartyPresetFolderRequest): PartyPresetFolderResponse {
+    fun create(accountId: Long, request: CreatePartyPresetFolderRequest): PartyPresetCatalogResponse {
         val state = lockAndLoad(accountId)
         val parent = request.parentFolderId?.let { state.ownedFolder(it) }
         if (parent != null && depthOf(parent.id, state.byId) >= MAX_LEVEL) levelError()
@@ -38,35 +38,36 @@ class PartyPresetFolderService(
         val siblings = state.childrenByParent[request.parentFolderId].orEmpty().sortedByOrder()
         siblings.forEachIndexed { index, sibling -> sibling.displayOrder = index + 1 }
         val now = timeProvider.now()
-        return responseMapper.toFolderResponse(
-            folderRepository.save(
-                PartyPresetFolderEntity(
-                    account = state.account,
-                    parent = parent,
-                    name = name,
-                    displayOrder = 0,
-                    createdAt = now,
-                    updatedAt = now,
-                ),
+        folderRepository.save(
+            PartyPresetFolderEntity(
+                account = state.account,
+                parent = parent,
+                name = name,
+                displayOrder = 0,
+                createdAt = now,
+                updatedAt = now,
             ),
         )
+        folderRepository.flush()
+        return catalogService.find(accountId)
     }
 
     /** 같은 부모 아래의 다른 폴더와 충돌하지 않는 정규화된 이름으로 변경한다. */
     @Transactional
-    fun rename(accountId: Long, folderId: Long, request: RenamePartyPresetFolderRequest): PartyPresetFolderResponse {
+    fun rename(accountId: Long, folderId: Long, request: RenamePartyPresetFolderRequest): PartyPresetCatalogResponse {
         val state = lockAndLoad(accountId)
         val folder = state.ownedFolder(folderId)
         val name = normalizeName(request.name)
         ensureUniqueName(name, folder.parent?.id, state.childrenByParent, excludingId = folder.id)
         folder.name = name
         folder.updatedAt = timeProvider.now()
-        return responseMapper.toFolderResponse(folder)
+        folderRepository.flush()
+        return catalogService.find(accountId)
     }
 
     /** 요청 부모의 현재 형제 ID 전체 집합을 검증하고 요청 배열 순서로 0-based 순서를 저장한다. */
     @Transactional
-    fun reorder(accountId: Long, request: ReorderPartyPresetFoldersRequest): List<PartyPresetFolderResponse> {
+    fun reorder(accountId: Long, request: ReorderPartyPresetFoldersRequest): PartyPresetCatalogResponse {
         val state = lockAndLoad(accountId)
         if (request.parentFolderId != null) state.ownedFolder(request.parentFolderId)
         val siblings = state.childrenByParent[request.parentFolderId].orEmpty()
@@ -77,12 +78,12 @@ class PartyPresetFolderService(
         val byId = siblings.associateBy { it.id }
         request.folderIds.forEachIndexed { order, id -> byId.getValue(id).displayOrder = order }
         folderRepository.flush()
-        return request.folderIds.map { responseMapper.toFolderResponse(byId.getValue(it)) }
+        return catalogService.find(accountId)
     }
 
     /** 폴더의 전체 subtree를 보존해 목적지로 옮기고 출발지와 목적지 형제 순서를 함께 정규화한다. */
     @Transactional
-    fun move(accountId: Long, folderId: Long, request: MovePartyPresetFolderRequest): List<PartyPresetFolderResponse> {
+    fun move(accountId: Long, folderId: Long, request: MovePartyPresetFolderRequest): PartyPresetCatalogResponse {
         val state = lockAndLoad(accountId)
         val moving = state.ownedFolder(folderId)
         val destination = request.parentFolderId?.let { state.ownedFolder(it) }
@@ -112,7 +113,7 @@ class PartyPresetFolderService(
         moving.parent = destination
         moving.updatedAt = timeProvider.now()
         folderRepository.flush()
-        return destinationSiblings.map(responseMapper::toFolderResponse)
+        return catalogService.find(accountId)
     }
 
     private fun lockAndLoad(accountId: Long): FolderState {
