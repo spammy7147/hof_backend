@@ -41,6 +41,7 @@ import org.springframework.transaction.support.TransactionTemplate
     AccountQueryRepository::class,
     CharacterQueryRepository::class,
     PartyPresetQueryRepository::class,
+    PartyPresetResponseMapper::class,
     PartyPresetService::class,
     PartyPresetConcurrencyTest.ClockConfig::class,
 )

@@ -51,4 +51,5 @@ data class PartyPresetResponse(
     val members: List<PartyPresetMemberResponse>,
     val createdAt: String,
     val updatedAt: String,
+    val folderId: Long? = null,
 )

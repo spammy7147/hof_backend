@@ -40,6 +40,7 @@ import org.springframework.test.context.ActiveProfiles
     AccountQueryRepository::class,
     CharacterQueryRepository::class,
     PartyPresetQueryRepository::class,
+    PartyPresetResponseMapper::class,
     PartyPresetService::class,
     PartyPresetServiceTest.ClockConfig::class,
 )

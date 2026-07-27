@@ -9,7 +9,6 @@ import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.party.dto.CreatePartyPresetRequest
 import app.spammy.hof.party.dto.PartyPresetMemberRequest
-import app.spammy.hof.party.dto.PartyPresetMemberResponse
 import app.spammy.hof.party.dto.PartyPresetResponse
 import app.spammy.hof.party.dto.ReorderPartyPresetsRequest
 import app.spammy.hof.party.dto.UpdatePartyPresetRequest
@@ -35,6 +34,7 @@ class PartyPresetService(
     private val memberRepository: PartyPresetMemberCommandRepository,
     private val presetQueryRepository: PartyPresetQueryRepository,
     private val timeProvider: TimeProvider,
+    private val responseMapper: PartyPresetResponseMapper,
 ) {
     /**
      * 부모 목록과 전체 슬롯 목록을 각각 한 번씩 조회해 최근 수정순 응답을 조립한다.
@@ -48,7 +48,7 @@ class PartyPresetService(
             .findMembersByPresetIds(presets.map { preset -> preset.id })
             .groupBy { member -> member.preset.id }
         return presets.map { preset ->
-            preset.toResponse(membersByPresetId[preset.id].orEmpty())
+            responseMapper.toPresetResponse(preset, membersByPresetId[preset.id].orEmpty())
         }
     }
 
@@ -77,7 +77,7 @@ class PartyPresetService(
             ),
         )
         val savedMembers = memberRepository.saveAll(validatedMembers.toEntities(preset))
-        return preset.toResponse(savedMembers)
+        return responseMapper.toPresetResponse(preset, savedMembers)
     }
 
     /** 계정의 전체 프리셋 집합을 검증한 뒤 요청 배열 순서로 표시 순서를 정규화한다. */
@@ -124,7 +124,7 @@ class PartyPresetService(
         val replacements = memberRepository.saveAll(validatedMembers.toEntities(preset))
         preset.name = name
         preset.updatedAt = timeProvider.now()
-        return preset.toResponse(replacements)
+        return responseMapper.toPresetResponse(preset, replacements)
     }
 
     /**
@@ -148,7 +148,7 @@ class PartyPresetService(
         selected.markPrimary()
         selected.updatedAt = timeProvider.now()
         val members = presetQueryRepository.findMembersByPresetIds(listOf(selected.id))
-        return selected.toResponse(members)
+        return responseMapper.toPresetResponse(selected, members)
     }
 
     /**
@@ -277,29 +277,6 @@ class PartyPresetService(
                 patternSlot = member.patternSlot,
             )
         }
-
-    /** 부모와 정렬된 슬롯 entity를 기존 API 응답 배열로 조립한다. */
-    private fun PartyPresetEntity.toResponse(members: List<PartyPresetMemberEntity>): PartyPresetResponse =
-        PartyPresetResponse(
-            id = id,
-            accountId = account.id,
-            name = name,
-            displayOrder = displayOrder,
-            isPrimary = isPrimary,
-            members = members
-                .sortedBy { member -> member.slotIndex }
-                .map { member -> member.toResponse() },
-            createdAt = createdAt.toString(),
-            updatedAt = updatedAt.toString(),
-        )
-
-    /** DB의 HOF 캐릭터 ID와 문자열 슬롯 코드를 기존 nullable API 필드로 되돌린다. */
-    private fun PartyPresetMemberEntity.toResponse(): PartyPresetMemberResponse =
-        PartyPresetMemberResponse(
-            slotIndex = slotIndex,
-            characterId = character?.hofCharacterId,
-            patternSlot = patternSlot?.slotCode?.toIntOrNull(),
-        )
 
     private data class NormalizedMember(
         val slotIndex: Int,
