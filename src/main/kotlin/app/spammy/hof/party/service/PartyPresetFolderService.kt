@@ -10,9 +10,12 @@ import app.spammy.hof.party.dto.MovePartyPresetFolderRequest
 import app.spammy.hof.party.dto.PartyPresetCatalogResponse
 import app.spammy.hof.party.dto.RenamePartyPresetFolderRequest
 import app.spammy.hof.party.dto.ReorderPartyPresetFoldersRequest
+import app.spammy.hof.party.entity.PartyPresetEntity
 import app.spammy.hof.party.entity.PartyPresetFolderEntity
 import app.spammy.hof.party.repository.PartyPresetFolderQueryRepository
 import app.spammy.hof.party.repository.PartyPresetFolderRepository
+import app.spammy.hof.party.repository.PartyPresetQueryRepository
+import app.spammy.hof.party.repository.PartyPresetRepository
 import java.util.Locale
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -23,6 +26,8 @@ class PartyPresetFolderService(
     private val accountQueryRepository: AccountQueryRepository,
     private val folderQueryRepository: PartyPresetFolderQueryRepository,
     private val folderRepository: PartyPresetFolderRepository,
+    private val presetQueryRepository: PartyPresetQueryRepository,
+    private val presetRepository: PartyPresetRepository,
     private val timeProvider: TimeProvider,
     private val catalogService: PartyPresetCatalogService,
 ) {
@@ -116,6 +121,40 @@ class PartyPresetFolderService(
         return catalogService.find(accountId)
     }
 
+    /** 폴더만 삭제하고 직속 프리셋과 자식 폴더는 각각 미분류와 삭제 폴더의 부모 끝으로 옮긴다. */
+    @Transactional
+    fun delete(accountId: Long, folderId: Long): PartyPresetCatalogResponse {
+        val state = lockAndLoad(accountId)
+        val deleting = state.ownedFolder(folderId)
+        val parentId = deleting.parent?.id
+
+        val unassigned = presetQueryRepository.findAllByAccountIdAndFolderId(accountId, null)
+        val directPresets = presetQueryRepository.findAllByAccountIdAndFolderId(accountId, deleting.id)
+        val finalUnassigned = unassigned.sortedPresetsByOrder() + directPresets.sortedPresetsByOrder()
+
+        val destinationSiblings = state.childrenByParent[parentId]
+            .orEmpty()
+            .filterNot { it.id == deleting.id }
+            .sortedByOrder()
+        val immediateChildren = state.childrenByParent[deleting.id].orEmpty().sortedByOrder()
+        val finalDestinationSiblings = destinationSiblings + immediateChildren
+
+        finalUnassigned.forEachIndexed { index, preset ->
+            preset.folder = null
+            preset.displayOrder = index
+        }
+        finalDestinationSiblings.forEachIndexed { index, folder ->
+            folder.displayOrder = index
+        }
+        immediateChildren.forEach { child -> child.parent = deleting.parent }
+
+        presetRepository.flush()
+        folderRepository.flush()
+        folderRepository.delete(deleting)
+        folderRepository.flush()
+        return catalogService.find(accountId)
+    }
+
     private fun lockAndLoad(accountId: Long): FolderState {
         val account = accountQueryRepository.findByIdForUpdate(accountId)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
@@ -190,6 +229,8 @@ class PartyPresetFolderService(
     }
 
     private fun List<PartyPresetFolderEntity>.sortedByOrder() = sortedWith(compareBy({ it.displayOrder }, { it.id }))
+    private fun List<PartyPresetEntity>.sortedPresetsByOrder() =
+        sortedWith(compareBy({ it.displayOrder }, { it.id }))
 
     private fun FolderState.ownedFolder(id: Long): PartyPresetFolderEntity =
         byId[id] ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "파티 프리셋 폴더를 찾지 못했습니다.")

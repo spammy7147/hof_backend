@@ -3,6 +3,12 @@ package app.spammy.hof.party.service
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.HofAccountRepository
+import app.spammy.hof.automation.entity.AutomationEntryEntity
+import app.spammy.hof.automation.entity.AutomationType
+import app.spammy.hof.automation.entity.BattleAutomationMapEntity
+import app.spammy.hof.automation.entity.PresetSelectionMode
+import app.spammy.hof.automation.repository.AutomationEntryCommandRepository
+import app.spammy.hof.automation.repository.BattleAutomationMapCommandRepository
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.persistence.QueryDslConfig
@@ -13,8 +19,10 @@ import app.spammy.hof.party.dto.RenamePartyPresetFolderRequest
 import app.spammy.hof.party.dto.ReorderPartyPresetFoldersRequest
 import app.spammy.hof.party.entity.PartyPresetEntity
 import app.spammy.hof.party.entity.PartyPresetFolderEntity
+import app.spammy.hof.party.entity.PartyPresetMemberEntity
 import app.spammy.hof.party.repository.PartyPresetFolderQueryRepository
 import app.spammy.hof.party.repository.PartyPresetFolderRepository
+import app.spammy.hof.party.repository.PartyPresetMemberCommandRepository
 import app.spammy.hof.party.repository.PartyPresetQueryRepository
 import app.spammy.hof.party.repository.PartyPresetRepository
 import jakarta.persistence.EntityManager
@@ -32,7 +40,11 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Import
 import org.springframework.test.context.ActiveProfiles
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean
+import org.springframework.transaction.annotation.Propagation
+import org.springframework.transaction.annotation.Transactional
 import org.mockito.Mockito.clearInvocations
+import org.mockito.Mockito.doCallRealMethod
+import org.mockito.Mockito.doThrow
 import org.mockito.Mockito.inOrder
 import org.mockito.Mockito.never
 import org.mockito.Mockito.times
@@ -55,8 +67,13 @@ class PartyPresetFolderServiceTest {
     @Autowired private lateinit var accounts: HofAccountRepository
     @Autowired private lateinit var folders: PartyPresetFolderRepository
     @Autowired private lateinit var presets: PartyPresetRepository
+    @MockitoSpyBean private lateinit var presetQueries: PartyPresetQueryRepository
+    @Autowired private lateinit var presetMembers: PartyPresetMemberCommandRepository
+    @Autowired private lateinit var automationEntries: AutomationEntryCommandRepository
+    @Autowired private lateinit var battleMaps: BattleAutomationMapCommandRepository
     @MockitoSpyBean private lateinit var folderQueries: PartyPresetFolderQueryRepository
     @MockitoSpyBean private lateinit var accountQueries: AccountQueryRepository
+    @MockitoSpyBean private lateinit var catalogService: PartyPresetCatalogService
     @Autowired private lateinit var service: PartyPresetFolderService
     @Autowired private lateinit var entityManager: EntityManager
 
@@ -276,6 +293,152 @@ class PartyPresetFolderServiceTest {
         val rootIds = folderQueries.findAllByAccountId(account.id).filter { it.parent == null }.map { it.id }
         assertLockBeforeLoad(account.id) { service.reorder(account.id, ReorderPartyPresetFoldersRequest(null, rootIds)) }
         assertLockBeforeLoad(account.id) { service.move(account.id, folder.id, MovePartyPresetFolderRequest(null, 1)) }
+        assertLockBeforeLoad(account.id) { service.delete(account.id, folder.id) }
+    }
+
+    @Test
+    fun deletesRootByUnassigningDirectPresetsAndPromotingOnlyImmediateChildrenWithoutLosingReferences() {
+        val account = account("delete-root")
+        val existingRoot = folder(account, "existing-root", 0)
+        val deleting = folder(account, "deleting", 4)
+        val rootTail = folder(account, "root-tail", 8)
+        val childB = folder(account, "child-b", 7, deleting)
+        val childA = folder(account, "child-a", 7, deleting)
+        val grandchild = folder(account, "grandchild", 3, childA)
+        val existingUnassigned = preset(account, "existing-unassigned", order = 9)
+        val directB = preset(account, "direct-b", order = 5, folder = deleting)
+        val directA = preset(account, "direct-a", order = 5, folder = deleting, primary = true)
+        val untouched = preset(account, "untouched", order = 11, folder = existingRoot)
+        presetMembers.saveAll((0..4).map { PartyPresetMemberEntity(directA, it) })
+        val automationEntry = automationEntries.save(
+            AutomationEntryEntity(
+                account = account,
+                type = AutomationType.BATTLE_MAP,
+                priority = 0,
+                enabled = true,
+                createdAt = EARLIER,
+                updatedAt = EARLIER,
+            ),
+        )
+        val automationMap = battleMaps.save(
+            BattleAutomationMapEntity(
+                entry = automationEntry,
+                categoryId = "battle_map",
+                mapCode = "gb0",
+                dailyTargetCount = 1,
+                presetMode = PresetSelectionMode.EXPLICIT,
+                partyPreset = directA,
+                executionOrder = 0,
+            ),
+        )
+        entityManager.flush()
+
+        val response = service.delete(account.id, deleting.id)
+        entityManager.flush()
+        entityManager.clear()
+
+        assertEquals(
+            listOf(existingRoot.id, rootTail.id, childB.id, childA.id),
+            response.folders.filter { it.parentFolderId == null }.map { it.id },
+        )
+        assertEquals(listOf(0, 1, 2, 3), response.folders.filter { it.parentFolderId == null }.map { it.displayOrder })
+        assertEquals(childA.id, response.folders.single { it.id == grandchild.id }.parentFolderId)
+        assertEquals(
+            listOf(existingUnassigned.id, directB.id, directA.id),
+            response.presets.filter { it.folderId == null }.map { it.id },
+        )
+        assertEquals(listOf(0, 1, 2), response.presets.filter { it.folderId == null }.map { it.displayOrder })
+        val primaryResponse = response.presets.single { it.id == directA.id }
+        assertEquals("direct-a", primaryResponse.name)
+        assertTrue(primaryResponse.isPrimary)
+        assertEquals((0..4).toList(), primaryResponse.members.map { it.slotIndex })
+        assertEquals(EARLIER.toString(), primaryResponse.createdAt)
+        assertEquals(EARLIER.toString(), primaryResponse.updatedAt)
+        assertEquals(existingRoot.id, response.presets.single { it.id == untouched.id }.folderId)
+        assertEquals(4, presetQueries.findAllByAccountId(account.id).size)
+        assertEquals(5L, entityManager.createNativeQuery("select count(*) from party_preset_members where preset_id = :id")
+            .setParameter("id", directA.id).singleResult.toString().toLong())
+        assertEquals(directA.id, entityManager.createNativeQuery("select party_preset_id from battle_automation_maps where id = :id")
+            .setParameter("id", automationMap.id).singleResult.toString().toLong())
+    }
+
+    @Test
+    fun deletesNestedFolderByAppendingChildrenToParentSiblingsAndPreservingGrandchildren() {
+        val account = account("delete-nested")
+        val parent = folder(account, "parent", 0)
+        val existingA = folder(account, "existing-a", 2, parent)
+        val deleting = folder(account, "deleting", 4, parent)
+        val existingB = folder(account, "existing-b", 8, parent)
+        val childB = folder(account, "child-b", 6, deleting)
+        val childA = folder(account, "child-a", 6, deleting)
+        val grandchild = folder(account, "grandchild", 0, childB)
+        val directB = preset(account, "direct-b", order = 9, folder = deleting)
+        val directA = preset(account, "direct-a", order = 9, folder = deleting)
+
+        val response = service.delete(account.id, deleting.id)
+
+        assertEquals(
+            listOf(existingA.id, existingB.id, childB.id, childA.id),
+            response.folders.filter { it.parentFolderId == parent.id }.map { it.id },
+        )
+        assertEquals(listOf(0, 1, 2, 3), response.folders.filter { it.parentFolderId == parent.id }.map { it.displayOrder })
+        assertEquals(childB.id, response.folders.single { it.id == grandchild.id }.parentFolderId)
+        assertEquals(listOf(directB.id, directA.id), response.presets.filter { it.folderId == null }.map { it.id })
+        assertEquals(listOf(0, 1), response.presets.filter { it.folderId == null }.map { it.displayOrder })
+    }
+
+    @Test
+    fun deletesEmptyFolderAndRejectsForeignOrMissingFolderWithoutMutation() {
+        val owner = account("delete-owner")
+        val foreign = account("delete-foreign")
+        val empty = folder(owner, "empty", 0)
+        val survivor = folder(owner, "survivor", 1)
+        val foreignFolder = folder(foreign, "foreign", 0)
+
+        val response = service.delete(owner.id, empty.id)
+        assertEquals(listOf(survivor.id), response.folders.map { it.id })
+        assertEquals(0, response.folders.single().displayOrder)
+        notFound { service.delete(owner.id, foreignFolder.id) }
+        notFound { service.delete(owner.id, Long.MAX_VALUE) }
+        assertEquals(listOf(survivor.id), folderQueries.findAllByAccountId(owner.id).map { it.id })
+        assertEquals(listOf(foreignFolder.id), folderQueries.findAllByAccountId(foreign.id).map { it.id })
+    }
+
+    @Test
+    fun deleteLocksAccountBeforeLoadingFoldersOrPresets() {
+        val account = account("delete-lock")
+        val deleting = folder(account, "deleting", 0)
+        clearInvocations(accountQueries, folderQueries, presetQueries)
+
+        service.delete(account.id, deleting.id)
+
+        inOrder(accountQueries, folderQueries, presetQueries).apply {
+            verify(accountQueries).findByIdForUpdate(account.id)
+            verify(folderQueries).findAllByAccountId(account.id)
+            verify(presetQueries).findAllByAccountIdAndFolderId(account.id, null)
+        }
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    fun rollsBackAllWritesWhenAuthoritativeCatalogLoadingFails() {
+        val account = account("delete-rollback")
+        val deleting = folder(account, "deleting", 3)
+        val child = folder(account, "child", 5, deleting)
+        val direct = preset(account, "direct", order = 7, folder = deleting)
+        doThrow(IllegalStateException("forced catalog failure"))
+            .doCallRealMethod()
+            .`when`(catalogService).find(account.id)
+
+        assertFailsWith<IllegalStateException> { service.delete(account.id, deleting.id) }
+        entityManager.clear()
+
+        val persistedFolders = folderQueries.findAllByAccountId(account.id).associateBy { it.id }
+        val persistedPreset = presetQueries.findAllByAccountId(account.id).single()
+        assertEquals(deleting.id, persistedFolders.getValue(child.id).parent?.id)
+        assertEquals(5, persistedFolders.getValue(child.id).displayOrder)
+        assertEquals(deleting.id, persistedPreset.folder?.id)
+        assertEquals(7, persistedPreset.displayOrder)
     }
 
     private fun assertLockBeforeLoad(accountId: Long, block: () -> Unit) {
@@ -296,8 +459,22 @@ class PartyPresetFolderServiceTest {
         parent: PartyPresetFolderEntity? = null,
     ) = folders.save(PartyPresetFolderEntity(account = account, parent = parent, name = name, displayOrder = order, createdAt = EARLIER, updatedAt = EARLIER))
 
-    private fun preset(account: HofAccountEntity, name: String) = presets.save(
-        PartyPresetEntity(account = account, name = name, displayOrder = 0, createdAt = EARLIER, updatedAt = EARLIER),
+    private fun preset(
+        account: HofAccountEntity,
+        name: String,
+        order: Int = 0,
+        folder: PartyPresetFolderEntity? = null,
+        primary: Boolean = false,
+    ) = presets.save(
+        PartyPresetEntity(
+            account = account,
+            name = name,
+            displayOrder = order,
+            folder = folder,
+            isPrimary = primary,
+            createdAt = EARLIER,
+            updatedAt = EARLIER,
+        ),
     )
 
     private fun invalid(block: () -> Unit) = assertEquals(ErrorCode.INVALID_REQUEST, assertFailsWith<ApiException> { block() }.errorCode)
