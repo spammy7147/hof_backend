@@ -50,6 +50,7 @@ class CaptchaServiceTest {
     private val gateway = FakeHofGateway()
     private val binaryGateway = FakeHofBinaryGateway()
     private val captchaImageFileStore = FakeCaptchaImageFileStore()
+    private val automationHook = Mockito.mock(CaptchaAutomationHook::class.java)
     private val cookieCipher = HofCookieCipher(
         Base64.getEncoder().encodeToString(ByteArray(32) { index -> (index + 41).toByte() }),
     )
@@ -65,6 +66,7 @@ class CaptchaServiceTest {
         loginStateParser = LoginStateParser(),
         imageManager = CaptchaImageManager(binaryGateway, captchaImageFileStore),
         timeProvider = TimeProvider { now },
+        automationHook = automationHook,
     )
 
     @Test
@@ -200,6 +202,34 @@ class CaptchaServiceTest {
         assertEquals("/api/captcha/7/image?version=1", response.imageUrl)
         assertLatestSavedFields("AnswerV" to "", "AnswerOut" to "입니다.")
         assertContentEquals(byteArrayOf(7, 7, 7), captchaImageFileStore.files["1:7:1"]?.bytes)
+    }
+
+    @Test
+    fun prepareCurrentMarksChallengeAnsweredWhenCaptchaWasCompletedOnOriginalSite() {
+        val challenge = pendingChallenge(id = 26L, status = "DETECTED")
+        Mockito.`when`(queryRepository.findAccountByIdForUpdate(1L)).thenReturn(account)
+        Mockito.`when`(queryRepository.findLatestActiveByAccountId(1L)).thenReturn(challenge)
+        Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(listOf(cookie()))
+        gateway.response = HofHttpResponse(
+            statusCode = 200,
+            finalUrl = "http://sic.zerosic.com/ZeroHOF/index.php?menu=police",
+            body = """
+                <html><body>
+                  <a href="index.php?char=1">character</a>
+                  <p>통행증이 발급되었습니다.(30분 지속)</p>
+                </body></html>
+            """.trimIndent(),
+            setCookies = emptyMap(),
+        )
+
+        val response = service.prepareCurrent(account.id)
+
+        assertEquals("ANSWERED", response.status)
+        assertEquals("ANSWERED", challenge.status)
+        assertNull(challenge.answer)
+        assertEquals(now, challenge.answeredAt)
+        assertEquals(emptyList(), binaryGateway.urls)
+        Mockito.verify(automationHook).answered(challenge)
     }
 
     @Test

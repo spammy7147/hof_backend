@@ -152,13 +152,22 @@ class CaptchaService(
         val activeCookies = mergeResponseCookies(account, storedCookies, response.setCookies)
         val responseUrl = response.finalUrl.ifBlank { policeUrl }
         val document = Jsoup.parse(response.body, responseUrl)
+        val pageText = document.text().trim()
+        if (challengeParser.isCaptchaSuccessPage(pageText)) {
+            challenge.status = STATUS_ANSWERED
+            challenge.answer = null
+            challenge.answeredAt = timeProvider.now()
+            imageManager.deleteAfterCommit(accountId, challenge.id, challenge.preparationVersion)
+            automationHook?.answered(challenge)
+            return challenge.toResponse()
+        }
         val hasSimpleCaptcha = response.body.contains(
             CaptchaChallengeParser.SIMPLE_CAPTCHA_SCRIPT,
             ignoreCase = true,
         )
         val metadata = challengeParser.extractDocumentMetadata(
             document = document,
-            pageText = document.text().trim(),
+            pageText = pageText,
             sourceUrl = responseUrl,
             defaultAnswerField = if (hasSimpleCaptcha) {
                 CaptchaChallengeParser.SIMPLE_CAPTCHA_ANSWER_FIELD
