@@ -1,9 +1,11 @@
 package app.spammy.hof.party.controller
 
 import app.spammy.hof.party.dto.CreatePartyPresetRequest
+import app.spammy.hof.party.dto.PartyPresetCatalogResponse
 import app.spammy.hof.party.dto.PartyPresetResponse
 import app.spammy.hof.party.dto.ReorderPartyPresetsRequest
 import app.spammy.hof.party.dto.UpdatePartyPresetRequest
+import app.spammy.hof.party.service.PartyPresetCatalogService
 import app.spammy.hof.party.service.PartyPresetService
 import app.spammy.hof.common.security.CurrentAccountId
 import org.springframework.http.ResponseEntity
@@ -24,6 +26,7 @@ import org.springframework.web.bind.annotation.PutMapping
  */
 class PartyPresetController(
     private val presetService: PartyPresetService,
+    private val catalogService: PartyPresetCatalogService,
 ) {
     /**
      * 계정에 저장된 파티 프리셋 목록을 조회한다.
@@ -33,6 +36,13 @@ class PartyPresetController(
         @CurrentAccountId accountId: Long,
     ): List<PartyPresetResponse> =
         presetService.findAll(accountId)
+
+    /** 계정의 폴더와 프리셋을 authoritative catalog로 조회한다. */
+    @GetMapping("/catalog")
+    fun findCatalog(
+        @CurrentAccountId accountId: Long,
+    ): PartyPresetCatalogResponse =
+        catalogService.find(accountId)
 
     /**
      * 새 파티 프리셋을 저장한다.
@@ -44,13 +54,13 @@ class PartyPresetController(
     ): PartyPresetResponse =
         presetService.create(accountId = accountId, request = request)
 
-    /** 계정의 모든 파티 프리셋을 요청한 순서로 저장한다. */
+    /** 요청한 nullable 폴더의 모든 파티 프리셋을 전달된 순서로 저장한다. */
     @PutMapping("/order")
     fun reorder(
         @CurrentAccountId accountId: Long,
         @RequestBody request: ReorderPartyPresetsRequest,
     ): List<PartyPresetResponse> =
-        presetService.reorder(accountId = accountId, request = request)
+        presetService.reorder(accountId = accountId, request = request).presets
 
     /**
      * 기존 파티 프리셋 이름과 슬롯 정보를 수정한다.

@@ -8,6 +8,12 @@ import app.spammy.hof.character.entity.CharacterPatternSlotEntity
 import app.spammy.hof.character.repository.CharacterPatternSlotCommandRepository
 import app.spammy.hof.character.repository.CharacterQueryRepository
 import app.spammy.hof.character.repository.CharacterRepository
+import app.spammy.hof.automation.entity.AutomationEntryEntity
+import app.spammy.hof.automation.entity.AutomationType
+import app.spammy.hof.automation.entity.BattleAutomationMapEntity
+import app.spammy.hof.automation.entity.PresetSelectionMode
+import app.spammy.hof.automation.repository.AutomationEntryCommandRepository
+import app.spammy.hof.automation.repository.BattleAutomationMapCommandRepository
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.persistence.QueryDslConfig
@@ -16,6 +22,9 @@ import app.spammy.hof.party.dto.CreatePartyPresetRequest
 import app.spammy.hof.party.dto.PartyPresetMemberRequest
 import app.spammy.hof.party.dto.ReorderPartyPresetsRequest
 import app.spammy.hof.party.dto.UpdatePartyPresetRequest
+import app.spammy.hof.party.entity.PartyPresetFolderEntity
+import app.spammy.hof.party.repository.PartyPresetFolderQueryRepository
+import app.spammy.hof.party.repository.PartyPresetFolderRepository
 import app.spammy.hof.party.repository.PartyPresetQueryRepository
 import jakarta.persistence.EntityManager
 import jakarta.persistence.EntityManagerFactory
@@ -32,6 +41,9 @@ import org.springframework.boot.test.context.TestConfiguration
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Import
 import org.springframework.test.context.ActiveProfiles
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean
+import org.mockito.Mockito.clearInvocations
+import org.mockito.Mockito.inOrder
 
 @DataJpaTest
 @ActiveProfiles("test")
@@ -40,6 +52,9 @@ import org.springframework.test.context.ActiveProfiles
     AccountQueryRepository::class,
     CharacterQueryRepository::class,
     PartyPresetQueryRepository::class,
+    PartyPresetFolderQueryRepository::class,
+    PartyPresetResponseMapper::class,
+    PartyPresetCatalogService::class,
     PartyPresetService::class,
     PartyPresetServiceTest.ClockConfig::class,
 )
@@ -53,8 +68,23 @@ class PartyPresetServiceTest {
     @Autowired
     private lateinit var patternSlotRepository: CharacterPatternSlotCommandRepository
 
-    @Autowired
+    @MockitoSpyBean
+    private lateinit var accountQueries: AccountQueryRepository
+
+    @MockitoSpyBean
+    private lateinit var folderQueries: PartyPresetFolderQueryRepository
+
+    @MockitoSpyBean
     private lateinit var queryRepository: PartyPresetQueryRepository
+
+    @Autowired
+    private lateinit var folderRepository: PartyPresetFolderRepository
+
+    @Autowired
+    private lateinit var automationEntries: AutomationEntryCommandRepository
+
+    @Autowired
+    private lateinit var battleMaps: BattleAutomationMapCommandRepository
 
     @Autowired
     private lateinit var service: PartyPresetService
@@ -126,16 +156,84 @@ class PartyPresetServiceTest {
     }
 
     @Test
+    fun createInFolderShiftsOnlyDestinationSiblingsAndMapsFolder() {
+        val account = savedAccount("party-create-folder")
+        val folder = savedFolder(account, "공격대")
+        val otherFolder = savedFolder(account, "일일")
+        val unassigned = service.create(account.id, request("미분류"))
+        val other = service.create(account.id, request("다른 폴더", folderId = otherFolder.id))
+        val first = service.create(account.id, request("첫 번째", folderId = folder.id))
+
+        val second = service.create(account.id, request("두 번째", folderId = folder.id))
+
+        val stored = service.findAll(account.id)
+        assertEquals(folder.id, second.folderId)
+        assertEquals(
+            listOf(second.id to 0, first.id to 1),
+            stored.filter { it.folderId == folder.id }.map { it.id to it.displayOrder },
+        )
+        assertEquals(listOf(other.id to 0), stored.filter { it.folderId == otherFolder.id }.map { it.id to it.displayOrder })
+        assertEquals(listOf(unassigned.id to 0), stored.filter { it.folderId == null }.map { it.id to it.displayOrder })
+    }
+
+    @Test
+    fun createRejectsMissingAndForeignFolderWithoutChangingSiblingOrder() {
+        val account = savedAccount("party-create-folder-owner")
+        val foreignAccount = savedAccount("party-create-folder-foreign")
+        val foreignFolder = savedFolder(foreignAccount, "외부")
+        val existing = service.create(account.id, request("기존"))
+
+        listOf(Long.MAX_VALUE, foreignFolder.id).forEach { folderId ->
+            val exception = assertFailsWith<ApiException> {
+                service.create(account.id, request("생성 금지", folderId = folderId))
+            }
+            assertEquals(ErrorCode.RESOURCE_NOT_FOUND, exception.errorCode)
+            assertEquals(listOf(existing.id to 0), service.findAll(account.id).map { it.id to it.displayOrder })
+        }
+    }
+
+    @Test
+    fun accountLockPrecedesFolderAndPresetReadsForCreateUpdateAndReorder() {
+        val account = savedAccount("party-lock-order")
+        val folder = savedFolder(account, "폴더")
+
+        clearInvocations(accountQueries, folderQueries, queryRepository)
+        val created = service.create(account.id, request("생성", folderId = folder.id))
+        inOrder(accountQueries, folderQueries, queryRepository).apply {
+            verify(accountQueries).findByIdForUpdate(account.id)
+            verify(folderQueries).findOwnedByAccountIdAndId(account.id, folder.id)
+            verify(queryRepository).findAllByAccountIdAndFolderId(account.id, folder.id)
+        }
+
+        clearInvocations(accountQueries, folderQueries, queryRepository)
+        service.update(account.id, created.id, UpdatePartyPresetRequest("수정", members(), folder.id))
+        inOrder(accountQueries, folderQueries, queryRepository).apply {
+            verify(accountQueries).findByIdForUpdate(account.id)
+            verify(folderQueries).findOwnedByAccountIdAndId(account.id, folder.id)
+            verify(queryRepository).findOwnedByAccountIdAndId(account.id, created.id)
+        }
+
+        clearInvocations(accountQueries, folderQueries, queryRepository)
+        service.reorder(account.id, ReorderPartyPresetsRequest(folder.id, listOf(created.id)))
+        inOrder(accountQueries, folderQueries, queryRepository).apply {
+            verify(accountQueries).findByIdForUpdate(account.id)
+            verify(folderQueries).findOwnedByAccountIdAndId(account.id, folder.id)
+            verify(queryRepository).findAllByAccountIdAndFolderId(account.id, folder.id)
+        }
+    }
+
+    @Test
     fun reorderPersistsTheCompleteOwnedPresetOrder() {
         val account = savedAccount("party-reorder")
         val first = service.create(account.id, request("첫 번째"))
         val second = service.create(account.id, request("두 번째"))
         val third = service.create(account.id, request("세 번째"))
 
-        val reordered = service.reorder(
+        val catalog = service.reorder(
             account.id,
-            ReorderPartyPresetsRequest(listOf(first.id, third.id, second.id)),
+            ReorderPartyPresetsRequest(folderId = null, presetIds = listOf(first.id, third.id, second.id)),
         )
+        val reordered = catalog.presets.filter { it.folderId == null }
 
         assertEquals(listOf(first.id, third.id, second.id), reordered.map { it.id })
         assertEquals(listOf(0, 1, 2), reordered.map { it.displayOrder })
@@ -159,13 +257,81 @@ class PartyPresetServiceTest {
 
         invalidRequests.forEach { presetIds ->
             val exception = assertFailsWith<ApiException> {
-                service.reorder(account.id, ReorderPartyPresetsRequest(presetIds))
+                service.reorder(account.id, ReorderPartyPresetsRequest(folderId = null, presetIds = presetIds))
             }
             assertEquals(ErrorCode.INVALID_REQUEST, exception.errorCode)
             assertEquals(originalIds, service.findAll(account.id).map { it.id })
         }
 
         assertEquals(setOf(first.id, second.id), originalIds.toSet())
+    }
+
+    @Test
+    fun reorderIsExactAndScopedToRequestedFolderAndReturnsCatalog() {
+        val account = savedAccount("party-folder-reorder")
+        val folder = savedFolder(account, "폴더")
+        val otherFolder = savedFolder(account, "다른 폴더")
+        val first = service.create(account.id, request("첫 번째", folderId = folder.id))
+        val second = service.create(account.id, request("두 번째", folderId = folder.id))
+        val unassigned = service.create(account.id, request("미분류"))
+        val other = service.create(account.id, request("다른 폴더 프리셋", folderId = otherFolder.id))
+
+        val catalog = service.reorder(
+            account.id,
+            ReorderPartyPresetsRequest(folderId = folder.id, presetIds = listOf(first.id, second.id)),
+        )
+
+        assertEquals(listOf(first.id, second.id), catalog.presets.filter { it.folderId == folder.id }.map { it.id })
+        assertEquals(listOf(0, 1), catalog.presets.filter { it.folderId == folder.id }.map { it.displayOrder })
+        assertEquals(listOf(unassigned.id to 0), catalog.presets.filter { it.folderId == null }.map { it.id to it.displayOrder })
+        assertEquals(listOf(other.id to 0), catalog.presets.filter { it.folderId == otherFolder.id }.map { it.id to it.displayOrder })
+        assertEquals(setOf(folder.id, otherFolder.id), catalog.folders.map { it.id }.toSet())
+
+        listOf(
+            listOf(first.id, first.id),
+            listOf(first.id),
+            listOf(first.id, second.id, Long.MAX_VALUE),
+            listOf(first.id, other.id),
+            listOf(first.id, unassigned.id),
+        ).forEach { invalidIds ->
+            val exception = assertFailsWith<ApiException> {
+                service.reorder(account.id, ReorderPartyPresetsRequest(folder.id, invalidIds))
+            }
+            assertEquals(ErrorCode.INVALID_REQUEST, exception.errorCode)
+        }
+    }
+
+    @Test
+    fun reorderAllowsEmptyOnlyForEmptyOwnedFolderAndHidesForeignFolder() {
+        val account = savedAccount("party-empty-folder-reorder")
+        val empty = savedFolder(account, "빈 폴더")
+        val foreignAccount = savedAccount("party-empty-folder-foreign")
+        val foreign = savedFolder(foreignAccount, "외부 폴더")
+
+        assertEquals(empty.id, service.reorder(account.id, ReorderPartyPresetsRequest(empty.id, emptyList())).folders.single().id)
+        listOf(foreign.id, Long.MAX_VALUE).forEach { folderId ->
+            val exception = assertFailsWith<ApiException> {
+                service.reorder(account.id, ReorderPartyPresetsRequest(folderId, emptyList()))
+            }
+            assertEquals(ErrorCode.RESOURCE_NOT_FOUND, exception.errorCode)
+        }
+    }
+
+    @Test
+    fun reorderRejectsEmptyListWhenFolderHasPresetWithoutChangingOrder() {
+        val account = savedAccount("party-nonempty-folder-empty-reorder")
+        val folder = savedFolder(account, "프리셋 있음")
+        val first = service.create(account.id, request("첫 번째", folderId = folder.id))
+        val second = service.create(account.id, request("두 번째", folderId = folder.id))
+        val before = service.findAll(account.id).filter { it.folderId == folder.id }
+
+        val exception = assertFailsWith<ApiException> {
+            service.reorder(account.id, ReorderPartyPresetsRequest(folder.id, emptyList()))
+        }
+
+        assertEquals(ErrorCode.INVALID_REQUEST, exception.errorCode)
+        assertEquals(listOf(second.id, first.id), before.map { it.id })
+        assertEquals(before, service.findAll(account.id).filter { it.folderId == folder.id })
     }
 
     @Test
@@ -218,6 +384,135 @@ class PartyPresetServiceTest {
             listOf("char-after", null, null, null, null),
             queryRepository.findMembersByPresetIds(listOf(created.id)).map { it.character?.hofCharacterId },
         )
+    }
+
+    @Test
+    fun updateMovesPresetAcrossNullableFoldersAndNormalizesBothSides() {
+        val account = savedAccount("party-move-folders")
+        val folderA = savedFolder(account, "A")
+        val folderB = savedFolder(account, "B")
+        val unassignedPeer = service.create(account.id, request("미분류 형제"))
+        val moving = service.create(account.id, request("이동", folderId = folderA.id))
+        val sourcePeer = service.create(account.id, request("출발 형제", folderId = folderA.id))
+        val destinationPeer = service.create(account.id, request("도착 형제", folderId = folderB.id))
+        service.makePrimary(account.id, moving.id)
+        val createdAt = moving.createdAt
+
+        val movedToB = service.update(
+            account.id,
+            moving.id,
+            UpdatePartyPresetRequest("B로", members(), folderB.id),
+        )
+        assertEquals(moving.id, movedToB.id)
+        assertEquals(true, movedToB.isPrimary)
+        assertEquals(createdAt, movedToB.createdAt)
+        assertEquals(folderB.id, movedToB.folderId)
+        assertEquals(listOf(sourcePeer.id to 0), service.findAll(account.id).filter { it.folderId == folderA.id }.map { it.id to it.displayOrder })
+        assertEquals(listOf(moving.id to 0, destinationPeer.id to 1), service.findAll(account.id).filter { it.folderId == folderB.id }.map { it.id to it.displayOrder })
+
+        val movedToNull = service.update(account.id, moving.id, UpdatePartyPresetRequest("미분류로", members(), null))
+        assertNull(movedToNull.folderId)
+        assertEquals(listOf(destinationPeer.id to 0), service.findAll(account.id).filter { it.folderId == folderB.id }.map { it.id to it.displayOrder })
+        assertEquals(listOf(moving.id to 0, unassignedPeer.id to 1), service.findAll(account.id).filter { it.folderId == null }.map { it.id to it.displayOrder })
+
+        val movedToA = service.update(account.id, moving.id, UpdatePartyPresetRequest("A로", members(), folderA.id))
+        assertEquals(folderA.id, movedToA.folderId)
+        assertEquals(listOf(moving.id to 0, sourcePeer.id to 1), service.findAll(account.id).filter { it.folderId == folderA.id }.map { it.id to it.displayOrder })
+        assertEquals(listOf(unassignedPeer.id to 0), service.findAll(account.id).filter { it.folderId == null }.map { it.id to it.displayOrder })
+    }
+
+    @Test
+    fun updateInSameFolderPreservesDisplayOrder() {
+        val account = savedAccount("party-same-folder")
+        val folder = savedFolder(account, "폴더")
+        val older = service.create(account.id, request("기존", folderId = folder.id))
+        service.create(account.id, request("앞 프리셋", folderId = folder.id))
+
+        val updated = service.update(account.id, older.id, UpdatePartyPresetRequest("이름 변경", members(), folder.id))
+
+        assertEquals(1, updated.displayOrder)
+        assertEquals(listOf(0, 1), service.findAll(account.id).filter { it.folderId == folder.id }.map { it.displayOrder })
+    }
+
+    @Test
+    fun movingPresetPreservesStoredExplicitAutomationReference() {
+        val account = savedAccount("party-move-automation-reference")
+        val source = savedFolder(account, "출발")
+        val destination = savedFolder(account, "도착")
+        val character = savedCharacter(account, "automation-character")
+        savedPatternSlot(character, 2)
+        val requestedMembers = members(character.hofCharacterId, 2)
+        val preset = service.create(
+            account.id,
+            CreatePartyPresetRequest("자동화 프리셋", requestedMembers, source.id),
+        )
+        service.makePrimary(account.id, preset.id)
+        val entry = automationEntries.save(
+            AutomationEntryEntity(
+                account = account,
+                type = AutomationType.BATTLE_MAP,
+                priority = 0,
+                enabled = true,
+                createdAt = NOW,
+                updatedAt = NOW,
+            ),
+        )
+        val automationMap = battleMaps.save(
+            BattleAutomationMapEntity(
+                entry = entry,
+                categoryId = "battle_map",
+                mapCode = "gb0",
+                dailyTargetCount = 1,
+                presetMode = PresetSelectionMode.EXPLICIT,
+                partyPreset = requireNotNull(queryRepository.findOwnedByAccountIdAndId(account.id, preset.id)),
+                executionOrder = 0,
+            ),
+        )
+        entityManager.flush()
+
+        val moved = service.update(
+            account.id,
+            preset.id,
+            UpdatePartyPresetRequest("이동됨", requestedMembers, destination.id),
+        )
+        entityManager.flush()
+        entityManager.clear()
+
+        assertEquals(preset.id, moved.id)
+        assertEquals(destination.id, moved.folderId)
+        assertEquals(true, moved.isPrimary)
+        assertEquals((0..4).toList(), moved.members.map { it.slotIndex })
+        assertEquals(character.hofCharacterId, moved.members.first().characterId)
+        assertEquals(2, moved.members.first().patternSlot)
+        val persisted = service.findAll(account.id).single()
+        assertEquals(moved, persisted)
+        assertEquals(character.hofCharacterId, persisted.members.first().characterId)
+        assertEquals(2, persisted.members.first().patternSlot)
+        assertEquals(
+            preset.id,
+            entityManager.createNativeQuery("select party_preset_id from battle_automation_maps where id = :id")
+                .setParameter("id", automationMap.id)
+                .singleResult.toString().toLong(),
+        )
+    }
+
+    @Test
+    fun invalidFolderOrMemberUpdateLeavesFolderOrderNameAndMembersUntouched() {
+        val account = savedAccount("party-folder-update-rollback")
+        val folder = savedFolder(account, "폴더")
+        val character = savedCharacter(account, "selected")
+        savedPatternSlot(character, 0)
+        val moving = service.create(account.id, request("원본", "selected", 0))
+        val before = service.findAll(account.id).single()
+
+        val invalidRequests = listOf(
+            UpdatePartyPresetRequest("폴더 오류", members("selected", 0), Long.MAX_VALUE),
+            UpdatePartyPresetRequest("멤버 오류", members("selected", 1), folder.id),
+        )
+        invalidRequests.forEach { request ->
+            assertFailsWith<ApiException> { service.update(account.id, moving.id, request) }
+            assertEquals(before, service.findAll(account.id).single())
+        }
     }
 
     @Test
@@ -435,10 +730,23 @@ class PartyPresetServiceTest {
         name: String,
         characterId: String? = null,
         patternSlot: Int? = null,
+        folderId: Long? = null,
     ): CreatePartyPresetRequest =
         CreatePartyPresetRequest(
             name = name,
             members = members(characterId = characterId, patternSlot = patternSlot),
+            folderId = folderId,
+        )
+
+    private fun savedFolder(account: HofAccountEntity, name: String): PartyPresetFolderEntity =
+        folderRepository.save(
+            PartyPresetFolderEntity(
+                account = account,
+                name = name,
+                displayOrder = 0,
+                createdAt = NOW,
+                updatedAt = NOW,
+            ),
         )
 
     private fun members(

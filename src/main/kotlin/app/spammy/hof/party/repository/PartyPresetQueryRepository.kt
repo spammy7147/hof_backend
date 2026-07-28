@@ -20,11 +20,33 @@ import org.springframework.stereotype.Repository
 class PartyPresetQueryRepository(
     private val queryFactory: JPAQueryFactory,
 ) {
-    /** 계정 프리셋을 저장된 표시 순서로 조회하고, 순서가 같으면 작은 ID를 먼저 반환한다. */
+    /** 미분류 프리셋을 먼저 두고 폴더 ID, 표시 순서, ID 순으로 안정적으로 반환한다. */
     fun findAllByAccountId(accountId: Long): List<PartyPresetEntity> =
         queryFactory
             .selectFrom(partyPresetEntity)
             .where(partyPresetEntity.account.id.eq(accountId))
+            .orderBy(
+                partyPresetEntity.folder.id.asc().nullsFirst(),
+                partyPresetEntity.displayOrder.asc(),
+                partyPresetEntity.id.asc(),
+            )
+            .fetch()
+
+    /** nullable 폴더 조건에 속한 계정 프리셋을 표시 순서와 ID 순으로 반환한다. */
+    fun findAllByAccountIdAndFolderId(
+        accountId: Long,
+        folderId: Long?,
+    ): List<PartyPresetEntity> =
+        queryFactory
+            .selectFrom(partyPresetEntity)
+            .where(
+                partyPresetEntity.account.id.eq(accountId),
+                if (folderId == null) {
+                    partyPresetEntity.folder.isNull
+                } else {
+                    partyPresetEntity.folder.id.eq(folderId)
+                },
+            )
             .orderBy(
                 partyPresetEntity.displayOrder.asc(),
                 partyPresetEntity.id.asc(),

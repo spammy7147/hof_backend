@@ -8,6 +8,7 @@ import app.spammy.hof.character.repository.CharacterPatternSlotCommandRepository
 import app.spammy.hof.character.repository.CharacterRepository
 import app.spammy.hof.common.persistence.QueryDslConfig
 import app.spammy.hof.party.entity.PartyPresetEntity
+import app.spammy.hof.party.entity.PartyPresetFolderEntity
 import app.spammy.hof.party.entity.PartyPresetMemberEntity
 import java.time.Instant
 import kotlin.test.Test
@@ -39,6 +40,9 @@ class PartyPresetQueryRepositoryTest {
 
     @Autowired
     private lateinit var presetRepository: PartyPresetRepository
+
+    @Autowired
+    private lateinit var folderRepository: PartyPresetFolderRepository
 
     @Autowired
     private lateinit var memberRepository: PartyPresetMemberCommandRepository
@@ -87,6 +91,38 @@ class PartyPresetQueryRepositoryTest {
         assertEquals("2", membersByPreset.getValue(firstTie.id).first().patternSlot?.slotCode)
         assertEquals(5L, queryRepository.countMembers(firstTie.id))
         assertTrue(queryRepository.findMembersByPresetIds(emptyList()).isEmpty())
+    }
+
+    @Test
+    fun ordersUnassignedBeforeAssignedAndFiltersByNullableFolder() {
+        val account = savedAccount("party-query-folder-owner")
+        val otherAccount = savedAccount("party-query-folder-other")
+        val firstFolder = savedFolder(account, "첫 폴더")
+        val secondFolder = savedFolder(account, "둘째 폴더")
+        val foreignFolder = savedFolder(otherAccount, "다른 계정 폴더")
+        val unassignedSecond = savedPreset(account, "미분류 둘째", UPDATED_LATER, displayOrder = 1)
+        val unassignedFirst = savedPreset(account, "미분류 첫째", UPDATED_LATER, displayOrder = 0)
+        val assignedFirst = savedPreset(account, "첫 폴더", UPDATED_LATER, displayOrder = 0, folder = firstFolder)
+        val assignedFirstTie = savedPreset(account, "첫 폴더 동률", UPDATED_LATER, displayOrder = 0, folder = firstFolder)
+        val assignedSecond = savedPreset(account, "둘째 폴더", UPDATED_LATER, displayOrder = 0, folder = secondFolder)
+        savedPreset(otherAccount, "다른 계정", UPDATED_LATER, displayOrder = 0, folder = foreignFolder)
+
+        assertEquals(
+            listOf(unassignedFirst.id, unassignedSecond.id, assignedFirst.id, assignedFirstTie.id, assignedSecond.id),
+            queryRepository.findAllByAccountId(account.id).map { preset -> preset.id },
+        )
+        assertEquals(
+            listOf(unassignedFirst.id, unassignedSecond.id),
+            queryRepository.findAllByAccountIdAndFolderId(account.id, null).map { preset -> preset.id },
+        )
+        assertEquals(
+            listOf(assignedFirst.id, assignedFirstTie.id),
+            queryRepository.findAllByAccountIdAndFolderId(account.id, firstFolder.id).map { preset -> preset.id },
+        )
+        assertEquals(
+            emptyList(),
+            queryRepository.findAllByAccountIdAndFolderId(otherAccount.id, firstFolder.id),
+        )
     }
 
     @Test
@@ -187,14 +223,29 @@ class PartyPresetQueryRepositoryTest {
         name: String,
         updatedAt: Instant,
         displayOrder: Int,
+        folder: PartyPresetFolderEntity? = null,
     ): PartyPresetEntity =
         presetRepository.save(
             PartyPresetEntity(
                 account = account,
+                folder = folder,
                 name = name,
                 displayOrder = displayOrder,
                 createdAt = CREATED_AT,
                 updatedAt = updatedAt,
+            ),
+        )
+
+    private fun savedFolder(
+        account: HofAccountEntity,
+        name: String,
+    ): PartyPresetFolderEntity =
+        folderRepository.save(
+            PartyPresetFolderEntity(
+                account = account,
+                name = name,
+                createdAt = CREATED_AT,
+                updatedAt = CREATED_AT,
             ),
         )
 

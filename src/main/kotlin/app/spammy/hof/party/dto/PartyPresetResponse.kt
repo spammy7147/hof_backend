@@ -15,6 +15,7 @@ data class PartyPresetMemberRequest(
 data class CreatePartyPresetRequest(
     val name: String,
     val members: List<PartyPresetMemberRequest>,
+    val folderId: Long? = null,
 )
 
 /**
@@ -23,10 +24,12 @@ data class CreatePartyPresetRequest(
 data class UpdatePartyPresetRequest(
     val name: String,
     val members: List<PartyPresetMemberRequest>,
+    val folderId: Long? = null,
 )
 
-/** 계정의 모든 프리셋 ID를 원하는 표시 순서대로 전달한다. */
+/** nullable 폴더에 속한 모든 프리셋 ID를 원하는 표시 순서대로 전달한다. */
 data class ReorderPartyPresetsRequest(
+    val folderId: Long? = null,
     val presetIds: List<Long>,
 )
 
@@ -51,4 +54,5 @@ data class PartyPresetResponse(
     val members: List<PartyPresetMemberResponse>,
     val createdAt: String,
     val updatedAt: String,
+    val folderId: Long? = null,
 )
