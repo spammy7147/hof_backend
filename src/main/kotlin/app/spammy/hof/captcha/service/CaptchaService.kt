@@ -226,13 +226,15 @@ class CaptchaService(
         accountId: Long,
         challengeId: Long,
         consumedPreparationVersion: Int,
+        requestCookies: Map<String, String>,
         responseSetCookies: Map<String, String>,
     ) {
         val account = captchaQueryRepository.findAccountByIdForUpdate(accountId) ?: return
+        val challenge = captchaQueryRepository.findOwnedByAccountIdAndIdForUpdate(accountId, challengeId)
         val storedCookies = cookieQueryRepository.findByAccountId(accountId)
-        mergeResponseCookies(account, storedCookies, responseSetCookies)
+        mergeResponseCookiesConditionally(account, storedCookies, requestCookies, responseSetCookies)
 
-        val challenge = captchaQueryRepository.findOwnedByAccountIdAndIdForUpdate(accountId, challengeId) ?: return
+        challenge ?: return
         if (challenge.status != STATUS_READY || challenge.preparationVersion != consumedPreparationVersion) return
 
         resetPreparation(challenge)
@@ -292,6 +294,10 @@ class CaptchaService(
             throw ApiException(ErrorCode.INVALID_REQUEST, "캡차 답안을 입력해야 합니다.")
         }
 
+        val lockedAccount = captchaQueryRepository.findAccountByIdForUpdate(accountId)
+        if (lockedAccount == null && isTransactionActive()) {
+            throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
+        }
         val lockedChallenge = captchaQueryRepository.findOwnedByAccountIdAndIdForUpdate(accountId, challengeId)
         val nonTransactionalFallback = if (!isTransactionActive()) {
             captchaQueryRepository.findOwnedByAccountIdAndId(accountId, challengeId)
@@ -351,7 +357,7 @@ class CaptchaService(
                 extractChallengeMetadata(challenge.account, document, pageText, responseUrl)
             } catch (error: Throwable) {
                 if (error.isHofControlSignal()) {
-                    throw CaptchaPreparationConsumedException.from(error, response.setCookies)
+                    throw CaptchaPreparationConsumedException.from(error, cookies, response.setCookies)
                 }
                 throw error
             }
@@ -527,6 +533,43 @@ class CaptchaService(
         }
 
         return currentCookies + setCookies
+    }
+
+    private fun mergeResponseCookiesConditionally(
+        account: HofAccountEntity,
+        storedCookies: List<HofCookieEntity>,
+        requestCookies: Map<String, String>,
+        responseSetCookies: Map<String, String>,
+    ) {
+        if (responseSetCookies.isEmpty()) return
+
+        val now = timeProvider.now()
+        val cookiesByName = storedCookies.associateBy { cookie -> cookie.name }
+        responseSetCookies.forEach { (name, value) ->
+            val existingCookie = cookiesByName[name]
+            val unchangedSinceRequest = if (requestCookies.containsKey(name)) {
+                existingCookie != null && cookieCipher.decrypt(existingCookie.value) == requestCookies[name]
+            } else {
+                existingCookie == null
+            }
+            if (!unchangedSinceRequest) return@forEach
+
+            if (existingCookie != null) {
+                existingCookie.value = cookieCipher.encrypt(value)
+                existingCookie.updatedAt = now
+            } else {
+                cookieRepository.save(
+                    HofCookieEntity(
+                        account = account,
+                        name = name,
+                        value = cookieCipher.encrypt(value),
+                        domain = "sic.zerosic.com",
+                        path = "/ZeroHOF",
+                        updatedAt = now,
+                    ),
+                )
+            }
+        }
     }
 
     /**

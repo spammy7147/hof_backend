@@ -15,7 +15,6 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -129,14 +128,7 @@ class HofBinaryHttpClientTest {
         val releaseHtml = CountDownLatch(1)
         val server = HttpServer.create(InetSocketAddress(0), 0)
         val serverExecutor = Executors.newCachedThreadPool()
-        val workerNumber = AtomicInteger(0)
-        val secondWorker = AtomicReference<Thread>()
-        val requestExecutor = Executors.newFixedThreadPool(2) { task ->
-            val number = workerNumber.incrementAndGet()
-            Thread(task, "hof-binary-http-client-test-$number").also { worker ->
-                if (number == 2) secondWorker.set(worker)
-            }
-        }
+        val requestExecutor = Executors.newFixedThreadPool(2)
         server.executor = serverExecutor
         server.createContext("/html") { exchange ->
             val current = active.incrementAndGet()
@@ -161,6 +153,11 @@ class HofBinaryHttpClientTest {
         }
         server.start()
         val governor = governor()
+        val queuedRequests = AtomicInteger()
+        val secondQueued = CountDownLatch(1)
+        governor.queueObserver = HofRequestQueueObserver { accountId, _ ->
+            if (accountId == ACCOUNT_ID && queuedRequests.incrementAndGet() == 2) secondQueued.countDown()
+        }
         val htmlClient = HofHttpClient(governor)
         val binaryClient = HofBinaryHttpClient(HofCookieHeaderBuilder(), governor)
         val baseUrl = "http://localhost:${server.address.port}"
@@ -178,7 +175,7 @@ class HofBinaryHttpClientTest {
                 )
             }
 
-            awaitGovernorQueue(checkNotNull(secondWorker.get()))
+            assertTrue(secondQueued.await(2, TimeUnit.SECONDS))
             assertEquals(1, maximumActive.get())
             releaseHtml.countDown()
             html.get(2, TimeUnit.SECONDS)
@@ -250,24 +247,6 @@ class HofBinaryHttpClientTest {
         timeProvider = TimeProvider { Instant.now() },
         waiter = HofRequestWaiter { },
     )
-
-    private fun awaitGovernorQueue(worker: Thread) {
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
-        while (System.nanoTime() < deadline) {
-            val waitingInGovernor = worker.state == Thread.State.WAITING &&
-                worker.stackTrace.any { frame ->
-                    frame.className == HofRequestGovernor::class.java.name &&
-                        frame.methodName == "acquireExecutionSlot"
-                }
-            if (waitingInGovernor) return
-            Thread.yield()
-        }
-
-        throw AssertionError(
-            "Binary request worker did not enter the HOF governor queue: " +
-                "state=${worker.state}, stack=${worker.stackTrace.joinToString()}",
-        )
-    }
 
     private fun HttpExchange.sendBinary(statusCode: Int, body: ByteArray) {
         sendResponseHeaders(statusCode, body.size.toLong())

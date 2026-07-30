@@ -52,6 +52,7 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Import
 import org.springframework.test.util.AopTestUtils
 import org.springframework.test.context.ActiveProfiles
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean
 import org.springframework.transaction.PlatformTransactionManager
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
@@ -83,7 +84,7 @@ class CaptchaServicePersistenceTest {
     @Autowired
     private lateinit var cookieCipher: HofCookieCipher
 
-    @Autowired
+    @MockitoSpyBean
     private lateinit var queryRepository: CaptchaQueryRepository
 
     @Autowired
@@ -482,12 +483,31 @@ class CaptchaServicePersistenceTest {
         val fieldsBeforeRecovery = queryRepository.findFormFields(consumed.id)
             .map { field -> Triple(field.fieldOrder, field.fieldName, field.fieldValue) }
         imageStore.clearEvents()
+        val currentSession = cookieQueryRepository.findByAccountId(account.id)
+            .single { cookie -> cookie.name == "PHPSESSID" }
+        currentSession.value = cookieCipher.encrypt("newer-session")
+        cookieRepository.save(currentSession)
+        cookieRepository.save(
+            HofCookieEntity(
+                account = account,
+                name = "NEW_SESSION",
+                value = cookieCipher.encrypt("newer-cookie"),
+                domain = "sic.zerosic.com",
+                path = "/ZeroHOF",
+                updatedAt = NOW.plusSeconds(1),
+            ),
+        )
 
         service.recoverConsumedPreparation(
             account.id,
             consumed.id,
             consumed.preparationVersion,
-            mapOf("PHPSESSID" to "rotated-session", "NEW_SESSION" to "new-cookie"),
+            mapOf("PHPSESSID" to "session"),
+            mapOf(
+                "PHPSESSID" to "stale-rotation",
+                "NEW_SESSION" to "stale-new-cookie",
+                "RECOVERABLE" to "recovered-cookie",
+            ),
         )
 
         val stored = assertNotNull(queryRepository.findOwnedByAccountIdAndId(account.id, consumed.id))
@@ -502,10 +522,79 @@ class CaptchaServicePersistenceTest {
         assertNotNull(imageStore.read(account.id, consumed.id, newer.preparationVersion))
         assertEquals(emptyList(), imageStore.events)
         assertEquals(
-            mapOf("NEW_SESSION" to "new-cookie", "PHPSESSID" to "rotated-session"),
+            mapOf(
+                "NEW_SESSION" to "newer-cookie",
+                "PHPSESSID" to "newer-session",
+                "RECOVERABLE" to "recovered-cookie",
+            ),
             cookieQueryRepository.findByAccountId(account.id)
                 .associate { cookie -> cookie.name to cookieCipher.decrypt(cookie.value) },
         )
+    }
+
+    @Test
+    fun submitAndConsumedRecoveryUseTheSameAccountThenChallengeLockOrder() {
+        val account = savedAccountWithCookie("captcha-service-lock-order")
+        val challenge = detectAndPrepare(account, "token", "lock-order")
+        imageStore.clearEvents()
+        val recoveryReachedChallenge = CountDownLatch(1)
+        val allowRecoveryChallengeLock = CountDownLatch(1)
+        val submitAttemptedAccountLock = CountDownLatch(1)
+        Mockito.doAnswer { invocation ->
+            if (Thread.currentThread().name == "captcha-recovery-lock-test") {
+                recoveryReachedChallenge.countDown()
+                check(allowRecoveryChallengeLock.await(5, TimeUnit.SECONDS))
+            }
+            invocation.callRealMethod()
+        }.`when`(queryRepository).findOwnedByAccountIdAndIdForUpdate(account.id, challenge.id)
+        Mockito.doAnswer { invocation ->
+            if (Thread.currentThread().name == "captcha-submit-lock-test") {
+                submitAttemptedAccountLock.countDown()
+            }
+            invocation.callRealMethod()
+        }.`when`(queryRepository).findAccountByIdForUpdate(account.id)
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            val recovery = executor.submit<Unit> {
+                Thread.currentThread().name = "captcha-recovery-lock-test"
+                service.recoverConsumedPreparation(
+                    account.id,
+                    challenge.id,
+                    challenge.preparationVersion,
+                    mapOf("PHPSESSID" to "session"),
+                    mapOf("PHPSESSID" to "rotated-session"),
+                )
+            }
+            assertTrue(recoveryReachedChallenge.await(5, TimeUnit.SECONDS))
+            val submit = executor.submit<Result<CaptchaChallengeResponse>> {
+                Thread.currentThread().name = "captcha-submit-lock-test"
+                runCatching {
+                    service.submitAnswer(account.id, challenge.id, "answer", challenge.preparationVersion)
+                }
+            }
+            assertTrue(submitAttemptedAccountLock.await(5, TimeUnit.SECONDS))
+            allowRecoveryChallengeLock.countDown()
+
+            recovery.get(10, TimeUnit.SECONDS)
+            val submitFailure = assertNotNull(submit.get(10, TimeUnit.SECONDS).exceptionOrNull())
+            assertTrue(submitFailure is ApiException)
+            assertEquals(ErrorCode.INVALID_REQUEST, submitFailure.errorCode)
+            val stored = assertNotNull(queryRepository.findOwnedByAccountIdAndId(account.id, challenge.id))
+            assertEquals("DETECTED", stored.status)
+            assertEquals(0, stored.preparationVersion)
+            assertEquals(emptyList(), gateway.requests)
+            assertEquals(
+                "rotated-session",
+                cookieCipher.decrypt(
+                    cookieQueryRepository.findByAccountId(account.id)
+                        .single { cookie -> cookie.name == "PHPSESSID" }
+                        .value,
+                ),
+            )
+        } finally {
+            allowRecoveryChallengeLock.countDown()
+            executor.shutdownNow()
+        }
     }
 
     private fun savedAccountWithCookie(loginId: String): HofAccountEntity {

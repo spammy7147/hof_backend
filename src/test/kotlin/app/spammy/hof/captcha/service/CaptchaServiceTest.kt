@@ -75,24 +75,36 @@ class CaptchaServiceTest {
     @Test
     fun consumedPreparationMarkerRejectsOrdinaryRuntimeFailure() {
         assertFailsWith<IllegalArgumentException> {
-            CaptchaPreparationConsumedException.from(IllegalStateException("ordinary failure"), emptyMap())
+            CaptchaPreparationConsumedException.from(
+                IllegalStateException("ordinary failure"),
+                emptyMap(),
+                emptyMap(),
+            )
         }
     }
 
     @Test
     fun consumedPreparationMarkerCopiesResponseCookies() {
+        val requestCookies = linkedMapOf("PHPSESSID" to "initial")
         val responseSetCookies = linkedMapOf("PHPSESSID" to "rotated")
         val marker = CaptchaPreparationConsumedException.from(
             ApiException(ErrorCode.HOF_TEMPORARILY_UNAVAILABLE, "retry later"),
+            requestCookies,
             responseSetCookies,
         )
 
+        requestCookies.clear()
         responseSetCookies.clear()
 
+        assertEquals(mapOf("PHPSESSID" to "initial"), marker.requestCookies)
         assertEquals(mapOf("PHPSESSID" to "rotated"), marker.responseSetCookies)
+        assertFalse(marker.message.orEmpty().contains("initial"))
         assertFalse(marker.message.orEmpty().contains("rotated"))
         assertFailsWith<UnsupportedOperationException> {
-            (marker.responseSetCookies as MutableMap).clear()
+            (marker.requestCookies as MutableMap<String, String>).clear()
+        }
+        assertFailsWith<UnsupportedOperationException> {
+            (marker.responseSetCookies as MutableMap<String, String>).clear()
         }
     }
 
@@ -766,6 +778,7 @@ class CaptchaServiceTest {
         }
 
         assertSame(signal, actual.controlSignal)
+        assertEquals(mapOf("PHPSESSID" to "abc"), actual.requestCookies)
         assertEquals(emptyMap(), actual.responseSetCookies)
         assertEquals(2, gateway.requests.size)
         assertEquals(emptyList(), captchaImageFileStore.deletedKeys)

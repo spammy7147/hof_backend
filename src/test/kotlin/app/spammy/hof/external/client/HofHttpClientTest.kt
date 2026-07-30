@@ -17,7 +17,6 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -145,14 +144,7 @@ class HofHttpClientTest {
         val releaseFirst = CountDownLatch(1)
         val server = HttpServer.create(InetSocketAddress(0), 0)
         val serverExecutor = Executors.newCachedThreadPool()
-        val workerNumber = AtomicInteger(0)
-        val secondWorker = AtomicReference<Thread>()
-        val requestExecutor = Executors.newFixedThreadPool(2) { task ->
-            val number = workerNumber.incrementAndGet()
-            Thread(task, "hof-http-client-test-$number").also { worker ->
-                if (number == 2) secondWorker.set(worker)
-            }
-        }
+        val requestExecutor = Executors.newFixedThreadPool(2)
         server.executor = serverExecutor
         server.createContext("/test") { exchange ->
             val current = active.incrementAndGet()
@@ -167,7 +159,13 @@ class HofHttpClientTest {
             exchange.sendText("OK")
         }
         server.start()
-        val client = client()
+        val governor = governor()
+        val queuedRequests = AtomicInteger()
+        val secondQueued = CountDownLatch(1)
+        governor.queueObserver = HofRequestQueueObserver { accountId, _ ->
+            if (accountId == ACCOUNT_ID && queuedRequests.incrementAndGet() == 2) secondQueued.countDown()
+        }
+        val client = HofHttpClient(governor)
         val url = "http://localhost:${server.address.port}/test"
 
         try {
@@ -184,7 +182,7 @@ class HofHttpClientTest {
                     HofRequest(HofHttpMethod.GET, url, origin = HofRequestOrigin.AUTOMATION),
                 )
             }
-            awaitGovernorQueue(checkNotNull(secondWorker.get()))
+            assertTrue(secondQueued.await(2, TimeUnit.SECONDS))
             assertEquals(1, maximumActive.get())
             releaseFirst.countDown()
             interactive.get(2, TimeUnit.SECONDS)
@@ -242,12 +240,12 @@ class HofHttpClientTest {
         }
     }
 
-    private fun client(): HofHttpClient = HofHttpClient(
-        governor = HofRequestGovernor(
-            properties = HofRequestProperties(minimumInterval = Duration.ZERO),
-            timeProvider = TimeProvider { Instant.now() },
-            waiter = HofRequestWaiter { },
-        ),
+    private fun client(): HofHttpClient = HofHttpClient(governor())
+
+    private fun governor(): HofRequestGovernor = HofRequestGovernor(
+        properties = HofRequestProperties(minimumInterval = Duration.ZERO),
+        timeProvider = TimeProvider { Instant.now() },
+        waiter = HofRequestWaiter { },
     )
 
     private fun serverReturning(status: Int): HttpServer =
@@ -263,24 +261,6 @@ class HofHttpClientTest {
         val bytes = body.toByteArray()
         sendResponseHeaders(200, bytes.size.toLong())
         responseBody.use { output -> output.write(bytes) }
-    }
-
-    private fun awaitGovernorQueue(worker: Thread) {
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
-        while (System.nanoTime() < deadline) {
-            val waitingInGovernor = worker.state == Thread.State.WAITING &&
-                worker.stackTrace.any { frame ->
-                    frame.className == HofRequestGovernor::class.java.name &&
-                        frame.methodName == "acquireExecutionSlot"
-                }
-            if (waitingInGovernor) return
-            Thread.yield()
-        }
-
-        throw AssertionError(
-            "Second request worker did not enter the HOF governor queue: " +
-                "state=${worker.state}, stack=${worker.stackTrace.joinToString()}",
-        )
     }
 
     private companion object {

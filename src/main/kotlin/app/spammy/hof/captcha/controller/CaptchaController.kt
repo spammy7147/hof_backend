@@ -97,6 +97,7 @@ class CaptchaController(
                     accountId = accountId,
                     challengeId = challengeId,
                     consumedPreparationVersion = request.preparationVersion,
+                    requestCookies = error.requestCookies,
                     responseSetCookies = error.responseSetCookies,
                 )
             } catch (cleanupError: Throwable) {

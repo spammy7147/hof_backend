@@ -25,6 +25,10 @@ fun interface HofRequestWaiter {
     fun waitFor(duration: Duration)
 }
 
+internal fun interface HofRequestQueueObserver {
+    fun queued(accountId: Long, origin: HofRequestOrigin)
+}
+
 @Component
 class ThreadSleepHofRequestWaiter : HofRequestWaiter {
     override fun waitFor(duration: Duration) {
@@ -45,6 +49,8 @@ class HofRequestGovernor(
 ) {
     private val log = LoggerFactory.getLogger(HofRequestGovernor::class.java)
     private val accountStates = ConcurrentHashMap<Long, AccountRequestState>()
+    @Volatile
+    internal var queueObserver: HofRequestQueueObserver = HofRequestQueueObserver { _, _ -> }
 
     fun execute(
         accountId: Long,
@@ -66,7 +72,7 @@ class HofRequestGovernor(
     ): T {
         val state = accountStates.computeIfAbsent(accountId) { AccountRequestState() }
         val queuedAtNanos = System.nanoTime()
-        acquireExecutionSlot(state, origin)
+        acquireExecutionSlot(accountId, state, origin)
 
         try {
             val requestStartedAtNanos = System.nanoTime()
@@ -115,7 +121,11 @@ class HofRequestGovernor(
         }
     }
 
-    private fun acquireExecutionSlot(state: AccountRequestState, origin: HofRequestOrigin) {
+    private fun acquireExecutionSlot(
+        accountId: Long,
+        state: AccountRequestState,
+        origin: HofRequestOrigin,
+    ) {
         try {
             state.lock.lockInterruptibly()
         } catch (exception: InterruptedException) {
@@ -126,6 +136,7 @@ class HofRequestGovernor(
         val queue = state.queueFor(origin)
         queue.addLast(queuedRequest)
         try {
+            queueObserver.queued(accountId, origin)
             while (true) {
                 while (
                     state.executing ||
