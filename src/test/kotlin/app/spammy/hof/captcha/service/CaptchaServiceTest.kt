@@ -72,6 +72,13 @@ class CaptchaServiceTest {
     )
 
     @Test
+    fun consumedPreparationMarkerRejectsOrdinaryRuntimeFailure() {
+        assertFailsWith<IllegalArgumentException> {
+            CaptchaPreparationConsumedException.from(IllegalStateException("ordinary failure"))
+        }
+    }
+
+    @Test
     fun detectAndRecordReturnsNullWhenCaptchaIsAbsent() {
         val response = service.detectAndRecord(
             account = account,

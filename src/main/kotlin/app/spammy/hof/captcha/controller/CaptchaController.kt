@@ -8,6 +8,7 @@ import app.spammy.hof.captcha.service.CaptchaService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.security.CurrentAccountId
+import org.slf4j.LoggerFactory
 import org.springframework.http.CacheControl
 import org.springframework.http.MediaType
 import org.springframework.http.ResponseEntity
@@ -28,6 +29,8 @@ class CaptchaController(
     private val captchaService: CaptchaService,
     private val sessionRecoveryService: HofSessionRecoveryService,
 ) {
+    private val log = LoggerFactory.getLogger(CaptchaController::class.java)
+
     /**
      * 현재 계정에 대기 중인 캡차 challenge를 조회한다.
      */
@@ -88,8 +91,19 @@ class CaptchaController(
                 preparationVersion = request.preparationVersion,
             )
         } catch (error: CaptchaPreparationConsumedException) {
-            runCatching { captchaService.invalidateCurrentPreparation(accountId) }
-            throw error.controlSignal
+            val controlSignal = error.controlSignal
+            try {
+                captchaService.invalidateCurrentPreparation(accountId)
+            } catch (cleanupError: Throwable) {
+                log.error(
+                    "Consumed CAPTCHA preparation cleanup failed accountId={} cleanupErrorType={} cleanupMessage={}",
+                    accountId,
+                    cleanupError.javaClass.simpleName,
+                    cleanupError.message,
+                )
+                controlSignal.addSuppressed(cleanupError)
+            }
+            throw controlSignal
         } catch (error: ApiException) {
             if (error.errorCode == ErrorCode.HOF_SESSION_EXPIRED) {
                 runCatching { captchaService.invalidateCurrentPreparation(accountId) }

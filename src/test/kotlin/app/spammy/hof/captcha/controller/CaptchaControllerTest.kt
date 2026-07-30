@@ -8,7 +8,6 @@ import app.spammy.hof.captcha.service.CaptchaPreparationConsumedException
 import app.spammy.hof.captcha.service.CaptchaService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
-import app.spammy.hof.external.client.HofAutomationDeferredException
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -68,7 +67,7 @@ class CaptchaControllerTest {
     fun submitAnswerInvalidatesConsumedPreparationAndRethrowsOriginalControlSignal() {
         val signal = ApiException(ErrorCode.HOF_TEMPORARILY_UNAVAILABLE, "retry later")
         Mockito.`when`(captchaService.submitAnswer(1L, 7L, "AB12", 3))
-            .thenThrow(CaptchaPreparationConsumedException(signal))
+            .thenThrow(CaptchaPreparationConsumedException.from(signal))
 
         val actual = assertFailsWith<ApiException> {
             controller.submitAnswer(1L, 7L, SubmitCaptchaAnswerRequest("AB12", 3))
@@ -92,20 +91,20 @@ class CaptchaControllerTest {
     }
 
     @Test
-    fun submitAnswerConsumedPreparationPreservesAutomationDeferralMetadata() {
-        val retryAt = Instant.parse("2026-07-30T09:30:00Z")
-        val signal = HofAutomationDeferredException(retryAt, 3)
+    fun submitAnswerCleanupFailureIsSuppressedOnOriginalControlSignal() {
+        val signal = ApiException(ErrorCode.HOF_TEMPORARILY_UNAVAILABLE, "retry later")
+        val cleanupError = IllegalStateException("cleanup failed")
         Mockito.`when`(captchaService.submitAnswer(1L, 7L, "AB12", 3))
-            .thenThrow(CaptchaPreparationConsumedException(signal))
+            .thenThrow(CaptchaPreparationConsumedException.from(signal))
+        Mockito.doThrow(cleanupError).`when`(captchaService).invalidateCurrentPreparation(1L)
 
-        val actual = assertFailsWith<HofAutomationDeferredException> {
+        val actual = assertFailsWith<ApiException> {
             controller.submitAnswer(1L, 7L, SubmitCaptchaAnswerRequest("AB12", 3))
         }
 
         assertSame(signal, actual)
-        assertEquals(retryAt, actual.retryAt)
-        assertEquals(3, actual.consecutiveFailures)
-        Mockito.verify(captchaService).invalidateCurrentPreparation(1L)
+        assertEquals(listOf(cleanupError), actual.suppressed.toList())
+        Mockito.verify(captchaService, Mockito.times(1)).invalidateCurrentPreparation(1L)
     }
 
     private fun readyCaptcha() = CaptchaChallengeResponse(

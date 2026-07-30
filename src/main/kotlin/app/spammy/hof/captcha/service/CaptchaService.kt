@@ -15,6 +15,7 @@ import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.client.AccountHofGateway
+import app.spammy.hof.external.client.isHofControlSignal
 import app.spammy.hof.external.client.rethrowIfHofControlSignal
 import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofRequest
@@ -31,10 +32,6 @@ data class CaptchaImageResponse(
     val contentType: String,
     val bytes: ByteArray,
 )
-
-class CaptchaPreparationConsumedException(
-    val controlSignal: RuntimeException,
-) : RuntimeException("CAPTCHA preparation was consumed before a follow-up request failed", controlSignal)
 
 @Service
 /**
@@ -427,10 +424,8 @@ class CaptchaService(
                 cookies,
             )
         }.getOrElse { error ->
-            try {
-                error.rethrowIfHofControlSignal()
-            } catch (controlSignal: RuntimeException) {
-                throw CaptchaPreparationConsumedException(controlSignal)
+            if (error.isHofControlSignal()) {
+                throw CaptchaPreparationConsumedException.from(error)
             }
             return null
         }
