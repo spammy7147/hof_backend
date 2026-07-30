@@ -33,6 +33,12 @@ class HofAccountServiceTest {
     private val cookieRepository = Mockito.mock(HofCookieRepository::class.java)
     private val accountQueryRepository = Mockito.mock(AccountQueryRepository::class.java)
     private val cookieQueryRepository = Mockito.mock(CookieQueryRepository::class.java)
+    private val accountIdentityService = HofAccountIdentityService(
+        accountRepository = accountRepository,
+        accountQueryRepository = accountQueryRepository,
+        credentialCipher = credentialCipher,
+        timeProvider = TimeProvider { now },
+    )
     private val gateway = FakeHofGateway()
     private val accountGateway = Mockito.mock(AccountHofGateway::class.java)
     private val service = HofAccountService(
@@ -40,6 +46,7 @@ class HofAccountServiceTest {
         cookieRepository = cookieRepository,
         accountQueryRepository = accountQueryRepository,
         cookieQueryRepository = cookieQueryRepository,
+        accountIdentityService = accountIdentityService,
         credentialCipher = credentialCipher,
         cookieCipher = cookieCipher,
         requestFactory = HofRequestFactory(),

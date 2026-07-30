@@ -13,6 +13,7 @@ import app.spammy.hof.captcha.repository.CaptchaQueryRepository
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.external.client.HofAutomationDeferredException
 import app.spammy.hof.external.client.HofBinaryGateway
 import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.client.testAccountHofGateway
@@ -34,6 +35,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 
 class CaptchaServiceTest {
     private val now = Instant.parse("2026-07-08T00:00:00Z")
@@ -705,6 +707,96 @@ class CaptchaServiceTest {
         assertEquals(listOf("1:3:1"), captchaImageFileStore.deletedKeys)
     }
 
+    @Test
+    fun submitAnswerPreservesFriendlyUnavailableSignalAfterDeletingImage() {
+        val challenge = pendingChallenge(id = 30L)
+        captchaImageFileStore.files["1:30:1"] = StoredFile("image/png", byteArrayOf(1))
+        val signal = ApiException(ErrorCode.HOF_TEMPORARILY_UNAVAILABLE, "temporarily unavailable")
+        stubOwnedChallenge(30L, challenge)
+        Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(listOf(cookie()))
+        gateway.failure = signal
+
+        val actual = assertFailsWith<ApiException> {
+            service.submitAnswer(1L, 30L, "1234", 1)
+        }
+
+        assertSame(signal, actual)
+        assertEquals(ErrorCode.HOF_TEMPORARILY_UNAVAILABLE, actual.errorCode)
+        assertEquals(listOf("1:30:1"), captchaImageFileStore.deletedKeys)
+    }
+
+    @Test
+    fun submitAnswerPreservesAutomationDeferredSignalAfterDeletingImage() {
+        val challenge = pendingChallenge(id = 31L)
+        captchaImageFileStore.files["1:31:1"] = StoredFile("image/png", byteArrayOf(1))
+        val retryAt = now.plusSeconds(30)
+        val signal = HofAutomationDeferredException(retryAt, 2)
+        stubOwnedChallenge(31L, challenge)
+        Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(listOf(cookie()))
+        gateway.failure = signal
+
+        val actual = assertFailsWith<HofAutomationDeferredException> {
+            service.submitAnswer(1L, 31L, "1234", 1)
+        }
+
+        assertSame(signal, actual)
+        assertEquals(retryAt, actual.retryAt)
+        assertEquals(2, actual.consecutiveFailures)
+        assertEquals(listOf("1:31:1"), captchaImageFileStore.deletedKeys)
+    }
+
+    @Test
+    fun policeFollowUpPreservesFriendlyUnavailableSignal() {
+        val challenge = pendingChallenge(id = 32L)
+        val signal = ApiException(ErrorCode.HOF_TEMPORARILY_UNAVAILABLE, "temporarily unavailable")
+        stubOwnedChallenge(32L, challenge)
+        Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(listOf(cookie()))
+        gateway.responses += vigilanteGateResponse(challenge.sourceUrl)
+        gateway.failure = signal
+        gateway.failOnCall = 2
+
+        val actual = assertFailsWith<ApiException> {
+            service.submitAnswer(1L, 32L, "1234", 1)
+        }
+
+        assertSame(signal, actual)
+        assertEquals(ErrorCode.HOF_TEMPORARILY_UNAVAILABLE, actual.errorCode)
+        assertEquals(2, gateway.requests.size)
+    }
+
+    @Test
+    fun policeFollowUpPreservesAutomationDeferredSignal() {
+        val challenge = pendingChallenge(id = 33L)
+        val retryAt = now.plusSeconds(30)
+        val signal = HofAutomationDeferredException(retryAt, 3)
+        stubOwnedChallenge(33L, challenge)
+        Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(listOf(cookie()))
+        gateway.responses += vigilanteGateResponse(challenge.sourceUrl)
+        gateway.failure = signal
+        gateway.failOnCall = 2
+
+        val actual = assertFailsWith<HofAutomationDeferredException> {
+            service.submitAnswer(1L, 33L, "1234", 1)
+        }
+
+        assertSame(signal, actual)
+        assertEquals(retryAt, actual.retryAt)
+        assertEquals(3, actual.consecutiveFailures)
+        assertEquals(2, gateway.requests.size)
+    }
+
+    private fun vigilanteGateResponse(sourceUrl: String): HofHttpResponse = HofHttpResponse(
+        statusCode = 200,
+        finalUrl = sourceUrl,
+        body = """
+            <html><body>
+              <font color="red">자경단</font>
+              <p>자경단에서 통행증을 발급받아주세요.</p>
+            </body></html>
+        """.trimIndent(),
+        setCookies = emptyMap(),
+    )
+
     private fun pendingChallenge(
         id: Long,
         owner: HofAccountEntity = account,
@@ -855,6 +947,7 @@ class CaptchaServiceTest {
         )
         val responses = ArrayDeque<HofHttpResponse>()
         var failure: RuntimeException? = null
+        var failOnCall: Int? = null
 
         override fun execute(
             accountId: Long,
@@ -863,7 +956,7 @@ class CaptchaServiceTest {
         ): HofHttpResponse {
             requests += request
             this.cookies += cookies
-            failure?.let { throw it }
+            failure?.takeIf { failOnCall == null || requests.size == failOnCall }?.let { throw it }
             return responses.removeFirstOrNull() ?: response
         }
     }

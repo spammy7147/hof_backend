@@ -33,6 +33,7 @@ class HofAccountService(
     private val cookieRepository: HofCookieRepository,
     private val accountQueryRepository: AccountQueryRepository,
     private val cookieQueryRepository: CookieQueryRepository,
+    private val accountIdentityService: HofAccountIdentityService,
     private val credentialCipher: CredentialCipher,
     private val cookieCipher: HofCookieCipher,
     private val requestFactory: HofRequestFactory,
@@ -56,18 +57,8 @@ class HofAccountService(
         }
 
         log.info("HOF login requested loginId={}", trimmedLoginId)
-        val account = accountQueryRepository.findByLoginId(trimmedLoginId)
-            ?.apply {
-                log.info("HOF account found loginId={} accountId={}", trimmedLoginId, id)
-                encryptedPassword = credentialCipher.encrypt(password)
-            }
-            ?: HofAccountEntity(
-                loginId = trimmedLoginId,
-                encryptedPassword = credentialCipher.encrypt(password),
-                createdAt = timeProvider.now(),
-            )
-
-        return loginAccount(accountRepository.save(account), HofRequestOrigin.INTERACTIVE)
+        val account = accountIdentityService.persist(trimmedLoginId, password)
+        return loginAccount(account, HofRequestOrigin.INTERACTIVE)
     }
 
     @Transactional
