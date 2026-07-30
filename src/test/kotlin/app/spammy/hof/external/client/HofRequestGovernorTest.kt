@@ -97,32 +97,44 @@ class HofRequestGovernorTest {
     @Test
     fun `requests for different accounts execute concurrently`() {
         val governor = governor(MutableTimeProvider(NOW), HofRequestWaiter { })
-        val firstEntered = CountDownLatch(1)
-        val releaseFirst = CountDownLatch(1)
-        val secondEntered = CountDownLatch(1)
+        val accountAEntered = CountDownLatch(1)
+        val releaseAccountA = CountDownLatch(1)
+        val accountBCompleted = CountDownLatch(1)
+        val childFailure = AtomicReference<Throwable>()
 
         val first = thread {
-            governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) {
-                firstEntered.countDown()
-                assertTrue(releaseFirst.await(2, TimeUnit.SECONDS))
-                response(200)
+            try {
+                governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) {
+                    accountAEntered.countDown()
+                    releaseAccountA.await()
+                    response(200)
+                }
+            } catch (error: Throwable) {
+                childFailure.compareAndSet(null, error)
             }
         }
-        assertTrue(firstEntered.await(2, TimeUnit.SECONDS))
+        assertTrue(accountAEntered.await(2, TimeUnit.SECONDS))
 
         val second = thread {
-            governor.execute(ACCOUNT_B, HofRequestOrigin.AUTOMATION) {
-                secondEntered.countDown()
-                response(200)
+            try {
+                governor.execute(ACCOUNT_B, HofRequestOrigin.AUTOMATION) { response(200) }
+                accountBCompleted.countDown()
+            } catch (error: Throwable) {
+                childFailure.compareAndSet(null, error)
             }
         }
 
-        assertTrue(secondEntered.await(2, TimeUnit.SECONDS))
-        releaseFirst.countDown()
+        val completedWhileAccountABlocked = try {
+            accountBCompleted.await(500, TimeUnit.MILLISECONDS)
+        } finally {
+            releaseAccountA.countDown()
+        }
         first.join(2_000)
         second.join(2_000)
         assertFalse(first.isAlive)
         assertFalse(second.isAlive)
+        childFailure.get()?.let { throw AssertionError("Child request failed", it) }
+        assertTrue(completedWhileAccountABlocked)
     }
 
     @Test
@@ -258,18 +270,31 @@ class HofRequestGovernorTest {
         val clock = MutableTimeProvider(NOW)
         val governor = governor(clock, ThreadSleepHofRequestWaiter())
         governor.execute(ACCOUNT_A, HofRequestOrigin.INTERACTIVE) { response(200) }
+        val failure = AtomicReference<Throwable>()
+        val interruptRestored = AtomicBoolean(false)
+        val requestBodyCalled = AtomicBoolean(false)
 
-        Thread.currentThread().interrupt()
-        try {
-            assertFailsWith<IllegalStateException> {
-                governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) { response(200) }
+        val interrupted = thread {
+            try {
+                governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) {
+                    requestBodyCalled.set(true)
+                    response(200)
+                }
+            } catch (error: Throwable) {
+                failure.set(error)
+                interruptRestored.set(Thread.currentThread().isInterrupted)
             }
-            assertTrue(Thread.currentThread().isInterrupted)
-        } finally {
-            Thread.interrupted()
         }
+        awaitThreadState(interrupted, Thread.State.TIMED_WAITING)
 
-        clock.current = clock.current.plusMillis(100)
+        interrupted.interrupt()
+        interrupted.join(2_000)
+        assertFalse(interrupted.isAlive)
+        assertTrue(failure.get() is IllegalStateException)
+        assertTrue(interruptRestored.get())
+        assertFalse(requestBodyCalled.get())
+
+        clock.current = clock.current.plusSeconds(2)
         assertEquals(200, governor.execute(ACCOUNT_A, HofRequestOrigin.INTERACTIVE) { response(200) }.statusCode)
     }
 
@@ -390,11 +415,15 @@ class HofRequestGovernorTest {
     )
 
     private fun awaitQueued(candidate: Thread) {
+        awaitThreadState(candidate, Thread.State.WAITING)
+    }
+
+    private fun awaitThreadState(candidate: Thread, expectedState: Thread.State) {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
-        while (candidate.state != Thread.State.WAITING && System.nanoTime() < deadline) {
+        while (candidate.state != expectedState && System.nanoTime() < deadline) {
             Thread.yield()
         }
-        assertEquals(Thread.State.WAITING, candidate.state)
+        assertEquals(expectedState, candidate.state)
     }
 
     private class MutableTimeProvider(var current: Instant) : TimeProvider {
