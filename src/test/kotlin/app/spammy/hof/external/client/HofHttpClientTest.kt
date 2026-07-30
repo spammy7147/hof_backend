@@ -17,10 +17,10 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class HofHttpClientTest {
@@ -145,7 +145,14 @@ class HofHttpClientTest {
         val releaseFirst = CountDownLatch(1)
         val server = HttpServer.create(InetSocketAddress(0), 0)
         val serverExecutor = Executors.newCachedThreadPool()
-        val requestExecutor = Executors.newFixedThreadPool(2)
+        val workerNumber = AtomicInteger(0)
+        val secondWorker = AtomicReference<Thread>()
+        val requestExecutor = Executors.newFixedThreadPool(2) { task ->
+            val number = workerNumber.incrementAndGet()
+            Thread(task, "hof-http-client-test-$number").also { worker ->
+                if (number == 2) secondWorker.set(worker)
+            }
+        }
         server.executor = serverExecutor
         server.createContext("/test") { exchange ->
             val current = active.incrementAndGet()
@@ -177,7 +184,7 @@ class HofHttpClientTest {
                     HofRequest(HofHttpMethod.GET, url, origin = HofRequestOrigin.AUTOMATION),
                 )
             }
-            assertFalse(secondEntered.await(100, TimeUnit.MILLISECONDS))
+            awaitGovernorQueue(checkNotNull(secondWorker.get()))
             assertEquals(1, maximumActive.get())
             releaseFirst.countDown()
             interactive.get(2, TimeUnit.SECONDS)
@@ -256,6 +263,24 @@ class HofHttpClientTest {
         val bytes = body.toByteArray()
         sendResponseHeaders(200, bytes.size.toLong())
         responseBody.use { output -> output.write(bytes) }
+    }
+
+    private fun awaitGovernorQueue(worker: Thread) {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+        while (System.nanoTime() < deadline) {
+            val waitingInGovernor = worker.state == Thread.State.WAITING &&
+                worker.stackTrace.any { frame ->
+                    frame.className == HofRequestGovernor::class.java.name &&
+                        frame.methodName == "acquireExecutionSlot"
+                }
+            if (waitingInGovernor) return
+            Thread.yield()
+        }
+
+        throw AssertionError(
+            "Second request worker did not enter the HOF governor queue: " +
+                "state=${worker.state}, stack=${worker.stackTrace.joinToString()}",
+        )
     }
 
     private companion object {
