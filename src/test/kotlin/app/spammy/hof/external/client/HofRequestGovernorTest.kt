@@ -11,6 +11,8 @@ import java.time.Instant
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -25,29 +27,22 @@ class HofRequestGovernorTest {
         val waiter = RecordingWaiter(clock)
         val governor = governor(clock, waiter)
 
-        governor.execute(HofRequestOrigin.INTERACTIVE) { response(200) }
-        governor.execute(HofRequestOrigin.AUTOMATION) { response(200) }
+        governor.execute(ACCOUNT_A, HofRequestOrigin.INTERACTIVE) { response(200) }
+        governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) { response(200) }
 
         assertEquals(listOf(Duration.ofSeconds(1)), waiter.waits)
     }
 
     @Test
-    fun `interactive and automation requests execute one at a time in FIFO lock order`() {
+    fun `interactive request overtakes queued automation after running request completes`() {
         val governor = governor(MutableTimeProvider(NOW), HofRequestWaiter { })
         val firstEntered = CountDownLatch(1)
         val releaseFirst = CountDownLatch(1)
         val order = Collections.synchronizedList(mutableListOf<String>())
-        fun awaitQueued(candidate: Thread) {
-            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
-            while (candidate.state != Thread.State.WAITING && System.nanoTime() < deadline) {
-                Thread.yield()
-            }
-            assertEquals(Thread.State.WAITING, candidate.state)
-        }
 
         val first = thread {
-            governor.execute(HofRequestOrigin.INTERACTIVE) {
-                order += "first"
+            governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) {
+                order += "automation-1"
                 firstEntered.countDown()
                 assertTrue(releaseFirst.await(2, TimeUnit.SECONDS))
                 response(200)
@@ -56,21 +51,21 @@ class HofRequestGovernorTest {
         assertTrue(firstEntered.await(2, TimeUnit.SECONDS))
 
         val second = thread {
-            governor.execute(HofRequestOrigin.AUTOMATION) {
-                order += "second"
+            governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) {
+                order += "automation-2"
                 response(200)
             }
         }
         awaitQueued(second)
 
         val third = thread {
-            governor.execute(HofRequestOrigin.INTERACTIVE) {
-                order += "third"
+            governor.execute(ACCOUNT_A, HofRequestOrigin.INTERACTIVE) {
+                order += "interactive"
                 response(200)
             }
         }
         awaitQueued(third)
-        assertEquals(listOf("first"), order)
+        assertEquals(listOf("automation-1"), order)
 
         releaseFirst.countDown()
         first.join(2_000)
@@ -80,7 +75,165 @@ class HofRequestGovernorTest {
         assertFalse(first.isAlive)
         assertFalse(second.isAlive)
         assertFalse(third.isAlive)
-        assertEquals(listOf("first", "second", "third"), order)
+        assertEquals(listOf("automation-1", "interactive", "automation-2"), order)
+    }
+
+    @Test
+    fun `request spacing is isolated between accounts`() {
+        val clock = MutableTimeProvider(NOW)
+        val waiter = RecordingWaiter(clock)
+        val governor = governor(clock, waiter)
+
+        governor.execute(ACCOUNT_A, HofRequestOrigin.INTERACTIVE) { response(200) }
+        governor.execute(ACCOUNT_B, HofRequestOrigin.INTERACTIVE) { response(200) }
+
+        assertEquals(emptyList(), waiter.waits)
+
+        governor.execute(ACCOUNT_A, HofRequestOrigin.INTERACTIVE) { response(200) }
+
+        assertEquals(listOf(Duration.ofSeconds(1)), waiter.waits)
+    }
+
+    @Test
+    fun `requests for different accounts execute concurrently`() {
+        val governor = governor(MutableTimeProvider(NOW), HofRequestWaiter { })
+        val firstEntered = CountDownLatch(1)
+        val releaseFirst = CountDownLatch(1)
+        val secondEntered = CountDownLatch(1)
+
+        val first = thread {
+            governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) {
+                firstEntered.countDown()
+                assertTrue(releaseFirst.await(2, TimeUnit.SECONDS))
+                response(200)
+            }
+        }
+        assertTrue(firstEntered.await(2, TimeUnit.SECONDS))
+
+        val second = thread {
+            governor.execute(ACCOUNT_B, HofRequestOrigin.AUTOMATION) {
+                secondEntered.countDown()
+                response(200)
+            }
+        }
+
+        assertTrue(secondEntered.await(2, TimeUnit.SECONDS))
+        releaseFirst.countDown()
+        first.join(2_000)
+        second.join(2_000)
+        assertFalse(first.isAlive)
+        assertFalse(second.isAlive)
+    }
+
+    @Test
+    fun `same-priority waiters preserve FIFO while interactive waiters precede automation`() {
+        val governor = governor(MutableTimeProvider(NOW), HofRequestWaiter { })
+        val blockerEntered = CountDownLatch(1)
+        val releaseBlocker = CountDownLatch(1)
+        val order = Collections.synchronizedList(mutableListOf<String>())
+
+        val blocker = thread {
+            governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) {
+                order += "blocker"
+                blockerEntered.countDown()
+                assertTrue(releaseBlocker.await(2, TimeUnit.SECONDS))
+                response(200)
+            }
+        }
+        assertTrue(blockerEntered.await(2, TimeUnit.SECONDS))
+
+        fun queued(origin: HofRequestOrigin, label: String): Thread = thread {
+            governor.execute(ACCOUNT_A, origin) {
+                order += label
+                response(200)
+            }
+        }.also(::awaitQueued)
+
+        val automation1 = queued(HofRequestOrigin.AUTOMATION, "automation-1")
+        val automation2 = queued(HofRequestOrigin.AUTOMATION, "automation-2")
+        val interactive1 = queued(HofRequestOrigin.INTERACTIVE, "interactive-1")
+        val interactive2 = queued(HofRequestOrigin.INTERACTIVE, "interactive-2")
+
+        releaseBlocker.countDown()
+        listOf(blocker, automation1, automation2, interactive1, interactive2).forEach {
+            it.join(2_000)
+            assertFalse(it.isAlive)
+        }
+        assertEquals(
+            listOf("blocker", "interactive-1", "interactive-2", "automation-1", "automation-2"),
+            order,
+        )
+    }
+
+    @Test
+    fun `service unavailable cooldown and failure count are isolated between accounts`() {
+        val clock = MutableTimeProvider(NOW)
+        val governor = governor(clock, RecordingWaiter(clock))
+        var accountBCalls = 0
+
+        val accountA = assertFailsWith<HofAutomationDeferredException> {
+            governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) { response(503) }
+        }
+        val accountB = assertFailsWith<HofAutomationDeferredException> {
+            governor.execute(ACCOUNT_B, HofRequestOrigin.AUTOMATION) {
+                accountBCalls += 1
+                response(503)
+            }
+        }
+
+        assertEquals(1, accountA.consecutiveFailures)
+        assertEquals(1, accountB.consecutiveFailures)
+        assertEquals(1, accountBCalls)
+    }
+
+    @Test
+    fun `interrupted queued waiter is removed and next waiter remains usable`() {
+        val governor = governor(MutableTimeProvider(NOW), HofRequestWaiter { })
+        val blockerEntered = CountDownLatch(1)
+        val releaseBlocker = CountDownLatch(1)
+        val interruptedFailure = AtomicReference<Throwable>()
+        val interruptRestored = AtomicBoolean(false)
+        val nextExecuted = CountDownLatch(1)
+
+        val blocker = thread {
+            governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) {
+                blockerEntered.countDown()
+                assertTrue(releaseBlocker.await(2, TimeUnit.SECONDS))
+                response(200)
+            }
+        }
+        assertTrue(blockerEntered.await(2, TimeUnit.SECONDS))
+
+        val interrupted = thread {
+            try {
+                governor.execute(ACCOUNT_A, HofRequestOrigin.INTERACTIVE) { response(200) }
+            } catch (error: Throwable) {
+                interruptedFailure.set(error)
+                interruptRestored.set(Thread.currentThread().isInterrupted)
+            }
+        }
+        awaitQueued(interrupted)
+
+        val next = thread {
+            governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) {
+                nextExecuted.countDown()
+                response(200)
+            }
+        }
+        awaitQueued(next)
+
+        interrupted.interrupt()
+        interrupted.join(2_000)
+        assertFalse(interrupted.isAlive)
+        assertTrue(interruptedFailure.get() is IllegalStateException)
+        assertTrue(interruptRestored.get())
+
+        releaseBlocker.countDown()
+        assertTrue(nextExecuted.await(2, TimeUnit.SECONDS))
+        blocker.join(2_000)
+        next.join(2_000)
+        assertFalse(blocker.isAlive)
+        assertFalse(next.isAlive)
     }
 
     @Test
@@ -90,12 +243,12 @@ class HofRequestGovernorTest {
         val governor = governor(clock, waiter)
 
         assertFailsWith<IllegalStateException> {
-            governor.execute(HofRequestOrigin.INTERACTIVE) {
+            governor.execute(ACCOUNT_A, HofRequestOrigin.INTERACTIVE) {
                 clock.current = clock.current.plusSeconds(2)
                 throw IllegalStateException("network down")
             }
         }
-        governor.execute(HofRequestOrigin.AUTOMATION) { response(200) }
+        governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) { response(200) }
 
         assertEquals(listOf(Duration.ofSeconds(1)), waiter.waits)
     }
@@ -104,12 +257,12 @@ class HofRequestGovernorTest {
     fun `interrupted spacing restores interrupt status and leaves the queue usable`() {
         val clock = MutableTimeProvider(NOW)
         val governor = governor(clock, ThreadSleepHofRequestWaiter())
-        governor.execute(HofRequestOrigin.INTERACTIVE) { response(200) }
+        governor.execute(ACCOUNT_A, HofRequestOrigin.INTERACTIVE) { response(200) }
 
         Thread.currentThread().interrupt()
         try {
             assertFailsWith<IllegalStateException> {
-                governor.execute(HofRequestOrigin.AUTOMATION) { response(200) }
+                governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) { response(200) }
             }
             assertTrue(Thread.currentThread().isInterrupted)
         } finally {
@@ -117,7 +270,7 @@ class HofRequestGovernorTest {
         }
 
         clock.current = clock.current.plusMillis(100)
-        assertEquals(200, governor.execute(HofRequestOrigin.INTERACTIVE) { response(200) }.statusCode)
+        assertEquals(200, governor.execute(ACCOUNT_A, HofRequestOrigin.INTERACTIVE) { response(200) }.statusCode)
     }
 
     @Test
@@ -127,7 +280,7 @@ class HofRequestGovernorTest {
         var outboundCalls = 0
 
         val first = assertFailsWith<HofAutomationDeferredException> {
-            governor.execute(HofRequestOrigin.AUTOMATION) {
+            governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) {
                 outboundCalls += 1
                 response(503)
             }
@@ -136,7 +289,7 @@ class HofRequestGovernorTest {
         assertEquals(1, first.consecutiveFailures)
 
         val whileCoolingDown = assertFailsWith<HofAutomationDeferredException> {
-            governor.execute(HofRequestOrigin.AUTOMATION) {
+            governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) {
                 outboundCalls += 1
                 response(200)
             }
@@ -146,7 +299,7 @@ class HofRequestGovernorTest {
 
         clock.current = first.retryAt
         val second = assertFailsWith<HofAutomationDeferredException> {
-            governor.execute(HofRequestOrigin.AUTOMATION) {
+            governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) {
                 outboundCalls += 1
                 response(503)
             }
@@ -163,14 +316,14 @@ class HofRequestGovernorTest {
         var outboundCalls = 0
 
         assertFailsWith<HofAutomationDeferredException> {
-            governor.execute(HofRequestOrigin.AUTOMATION) {
+            governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) {
                 outboundCalls += 1
                 response(503)
             }
         }
 
         val error = assertFailsWith<ApiException> {
-            governor.execute(HofRequestOrigin.INTERACTIVE) {
+            governor.execute(ACCOUNT_A, HofRequestOrigin.INTERACTIVE) {
                 outboundCalls += 1
                 response(200)
             }
@@ -187,13 +340,13 @@ class HofRequestGovernorTest {
 
         repeat(2) {
             val deferred = assertFailsWith<HofAutomationDeferredException> {
-                governor.execute(HofRequestOrigin.AUTOMATION) { response(503) }
+                governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) { response(503) }
             }
             clock.current = deferred.retryAt
         }
 
         val third = assertFailsWith<HofAutomationDeferredException> {
-            governor.execute(HofRequestOrigin.AUTOMATION) { response(503) }
+            governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) { response(503) }
         }
 
         assertEquals(clock.current.plus(Duration.ofMinutes(3)), third.retryAt)
@@ -206,14 +359,14 @@ class HofRequestGovernorTest {
         val governor = governor(clock, RecordingWaiter(clock))
 
         val first = assertFailsWith<HofAutomationDeferredException> {
-            governor.execute(HofRequestOrigin.AUTOMATION) { response(503) }
+            governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) { response(503) }
         }
         clock.current = first.retryAt
-        governor.execute(HofRequestOrigin.AUTOMATION) { response(200) }
+        governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) { response(200) }
 
         clock.current = clock.current.plusMillis(100)
         val afterSuccess = assertFailsWith<HofAutomationDeferredException> {
-            governor.execute(HofRequestOrigin.AUTOMATION) { response(503) }
+            governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) { response(503) }
         }
 
         assertEquals(1, afterSuccess.consecutiveFailures)
@@ -236,6 +389,14 @@ class HofRequestGovernorTest {
         setCookies = emptyMap(),
     )
 
+    private fun awaitQueued(candidate: Thread) {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+        while (candidate.state != Thread.State.WAITING && System.nanoTime() < deadline) {
+            Thread.yield()
+        }
+        assertEquals(Thread.State.WAITING, candidate.state)
+    }
+
     private class MutableTimeProvider(var current: Instant) : TimeProvider {
         override fun now(): Instant = current
     }
@@ -252,6 +413,8 @@ class HofRequestGovernorTest {
     }
 
     companion object {
+        private const val ACCOUNT_A = 11L
+        private const val ACCOUNT_B = 22L
         private val NOW: Instant = Instant.parse("2026-07-23T00:00:00Z")
     }
 }

@@ -8,6 +8,9 @@ import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequestOrigin
 import java.time.Duration
 import java.time.Instant
+import java.util.ArrayDeque
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.locks.Condition
 import java.util.concurrent.locks.ReentrantLock
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
@@ -40,29 +43,30 @@ class HofRequestGovernor(
     private val waiter: HofRequestWaiter,
 ) {
     private val log = LoggerFactory.getLogger(HofRequestGovernor::class.java)
-    private val executionLock = ReentrantLock(true)
-    private var nextAllowedAt: Instant? = null
-    private var cooldownUntil: Instant? = null
-    private var consecutiveServiceUnavailable = 0
+    private val accountStates = ConcurrentHashMap<Long, AccountRequestState>()
 
-    fun execute(origin: HofRequestOrigin, request: () -> HofHttpResponse): HofHttpResponse {
+    fun execute(origin: HofRequestOrigin, request: () -> HofHttpResponse): HofHttpResponse =
+        execute(LEGACY_ACCOUNT_ID, origin, request)
+
+    fun execute(
+        accountId: Long,
+        origin: HofRequestOrigin,
+        request: () -> HofHttpResponse,
+    ): HofHttpResponse {
+        val state = accountStates.computeIfAbsent(accountId) { AccountRequestState() }
         val queuedAtNanos = System.nanoTime()
-        try {
-            executionLock.lockInterruptibly()
-        } catch (exception: InterruptedException) {
-            Thread.currentThread().interrupt()
-            throw IllegalStateException("Interrupted while waiting for the HOF request queue", exception)
-        }
+        acquireExecutionSlot(state, origin)
 
         try {
-            rejectDuringCooldown(origin)
-            waitForRequestSpacing()
+            rejectDuringCooldown(state, origin)
+            waitForRequestSpacing(state)
             val requestStartedAtNanos = System.nanoTime()
             val response = try {
                 request()
             } catch (error: Throwable) {
                 log.warn(
-                    "HOF QUEUE origin={} queueWaitMs={} durationMs={} outcome=failed errorType={}",
+                    "HOF QUEUE accountId={} origin={} queueWaitMs={} durationMs={} outcome=failed errorType={}",
+                    accountId,
                     origin,
                     (requestStartedAtNanos - queuedAtNanos) / NANOS_PER_MILLISECOND,
                     (System.nanoTime() - requestStartedAtNanos) / NANOS_PER_MILLISECOND,
@@ -70,47 +74,92 @@ class HofRequestGovernor(
                 )
                 throw error
             } finally {
-                nextAllowedAt = timeProvider.now().plus(properties.minimumInterval)
+                state.nextAllowedAt = timeProvider.now().plus(properties.minimumInterval)
             }
 
             log.info(
-                "HOF QUEUE origin={} queueWaitMs={} durationMs={} status={}",
+                "HOF QUEUE accountId={} origin={} queueWaitMs={} durationMs={} status={}",
+                accountId,
                 origin,
                 (requestStartedAtNanos - queuedAtNanos) / NANOS_PER_MILLISECOND,
                 (System.nanoTime() - requestStartedAtNanos) / NANOS_PER_MILLISECOND,
                 response.statusCode,
             )
             if (response.statusCode != SERVICE_UNAVAILABLE) {
-                consecutiveServiceUnavailable = 0
-                cooldownUntil = null
+                state.consecutiveServiceUnavailable = 0
+                state.cooldownUntil = null
                 return response
             }
 
-            consecutiveServiceUnavailable += 1
-            val cooldown = if (consecutiveServiceUnavailable >= properties.longCooldownThreshold) {
+            state.consecutiveServiceUnavailable += 1
+            val cooldown = if (state.consecutiveServiceUnavailable >= properties.longCooldownThreshold) {
                 properties.longCooldown
             } else {
                 properties.shortCooldown
             }
             val retryAt = timeProvider.now().plus(cooldown)
-            cooldownUntil = retryAt
-            throw unavailable(origin, retryAt)
+            state.cooldownUntil = retryAt
+            throw unavailable(state, origin, retryAt)
         } finally {
-            executionLock.unlock()
+            releaseExecutionSlot(state)
         }
     }
 
-    private fun rejectDuringCooldown(origin: HofRequestOrigin) {
-        val retryAt = cooldownUntil ?: return
-        if (timeProvider.now().isBefore(retryAt)) throw unavailable(origin, retryAt)
-        cooldownUntil = null
+    private fun acquireExecutionSlot(state: AccountRequestState, origin: HofRequestOrigin) {
+        try {
+            state.lock.lockInterruptibly()
+        } catch (exception: InterruptedException) {
+            throw interruptedQueueWait(exception)
+        }
+
+        val queuedRequest = QueuedRequest(state.lock.newCondition())
+        val queue = state.queueFor(origin)
+        queue.addLast(queuedRequest)
+        try {
+            while (state.executing || state.nextEligible() !== queuedRequest) {
+                queuedRequest.condition.await()
+            }
+            queue.removeFirst()
+            state.executing = true
+        } catch (exception: InterruptedException) {
+            queue.remove(queuedRequest)
+            state.signalNextEligible()
+            throw interruptedQueueWait(exception)
+        } finally {
+            state.lock.unlock()
+        }
     }
 
-    private fun unavailable(origin: HofRequestOrigin, retryAt: Instant): RuntimeException =
+    private fun releaseExecutionSlot(state: AccountRequestState) {
+        state.lock.lock()
+        try {
+            state.executing = false
+            state.signalNextEligible()
+        } finally {
+            state.lock.unlock()
+        }
+    }
+
+    private fun interruptedQueueWait(exception: InterruptedException): IllegalStateException {
+        Thread.currentThread().interrupt()
+        return IllegalStateException("Interrupted while waiting for the HOF request queue", exception)
+    }
+
+    private fun rejectDuringCooldown(state: AccountRequestState, origin: HofRequestOrigin) {
+        val retryAt = state.cooldownUntil ?: return
+        if (timeProvider.now().isBefore(retryAt)) throw unavailable(state, origin, retryAt)
+        state.cooldownUntil = null
+    }
+
+    private fun unavailable(
+        state: AccountRequestState,
+        origin: HofRequestOrigin,
+        retryAt: Instant,
+    ): RuntimeException =
         when (origin) {
             HofRequestOrigin.AUTOMATION -> HofAutomationDeferredException(
                 retryAt = retryAt,
-                consecutiveFailures = consecutiveServiceUnavailable,
+                consecutiveFailures = state.consecutiveServiceUnavailable,
             )
             HofRequestOrigin.INTERACTIVE -> ApiException(
                 ErrorCode.HOF_TEMPORARILY_UNAVAILABLE,
@@ -118,13 +167,39 @@ class HofRequestGovernor(
             )
         }
 
-    private fun waitForRequestSpacing() {
-        val allowedAt = nextAllowedAt ?: return
+    private fun waitForRequestSpacing(state: AccountRequestState) {
+        val allowedAt = state.nextAllowedAt ?: return
         val remaining = Duration.between(timeProvider.now(), allowedAt)
         if (!remaining.isNegative && !remaining.isZero) waiter.waitFor(remaining)
     }
 
+    private class QueuedRequest(val condition: Condition)
+
+    private class AccountRequestState {
+        val lock = ReentrantLock()
+        val interactiveWaiters = ArrayDeque<QueuedRequest>()
+        val automationWaiters = ArrayDeque<QueuedRequest>()
+        var executing = false
+        var nextAllowedAt: Instant? = null
+        var cooldownUntil: Instant? = null
+        var consecutiveServiceUnavailable = 0
+
+        fun queueFor(origin: HofRequestOrigin): ArrayDeque<QueuedRequest> =
+            when (origin) {
+                HofRequestOrigin.INTERACTIVE -> interactiveWaiters
+                HofRequestOrigin.AUTOMATION -> automationWaiters
+            }
+
+        fun nextEligible(): QueuedRequest? =
+            interactiveWaiters.peekFirst() ?: automationWaiters.peekFirst()
+
+        fun signalNextEligible() {
+            if (!executing) nextEligible()?.condition?.signal()
+        }
+    }
+
     private companion object {
+        const val LEGACY_ACCOUNT_ID = Long.MIN_VALUE
         const val SERVICE_UNAVAILABLE = 503
         const val NANOS_PER_MILLISECOND = 1_000_000L
         const val FRIENDLY_UNAVAILABLE_MESSAGE =
