@@ -178,7 +178,11 @@ class AuthApiSecurityTest(
         @Primary
         fun fakeHofGateway(): HofGateway =
             object : HofGateway {
-                override fun execute(request: HofRequest, cookies: Map<String, String>): HofHttpResponse =
+                override fun execute(
+                    accountId: Long,
+                    request: HofRequest,
+                    cookies: Map<String, String>,
+                ): HofHttpResponse =
                     if (request.method == HofHttpMethod.GET) {
                         HofHttpResponse(200, request.url, "<html></html>", mapOf("PHPSESSID" to "initial"))
                     } else {

@@ -298,7 +298,11 @@ class CharacterSyncJobServiceTest {
         var failedCharacterId: String? = null
         var failHome: Boolean = false
 
-        override fun execute(request: HofRequest, cookies: Map<String, String>): HofHttpResponse {
+        override fun execute(
+            accountId: Long,
+            request: HofRequest,
+            cookies: Map<String, String>,
+        ): HofHttpResponse {
             requests += request
             if (failHome && request.url.endsWith("index.php")) error("home failed")
             if (failedCharacterId != null && request.url.endsWith("char=$failedCharacterId")) error("detail failed")

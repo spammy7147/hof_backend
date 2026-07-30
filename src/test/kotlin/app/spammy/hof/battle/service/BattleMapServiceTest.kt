@@ -692,6 +692,7 @@ class BattleMapServiceTest {
         var failure: Exception? = null
 
         override fun execute(
+            accountId: Long,
             request: HofRequest,
             cookies: Map<String, String>,
         ): HofHttpResponse {

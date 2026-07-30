@@ -505,7 +505,11 @@ class CaptchaServicePersistenceTest {
         @Volatile
         var handler: ((HofRequest) -> HofHttpResponse)? = null
 
-        override fun execute(request: HofRequest, cookies: Map<String, String>): HofHttpResponse {
+        override fun execute(
+            accountId: Long,
+            request: HofRequest,
+            cookies: Map<String, String>,
+        ): HofHttpResponse {
             requests += request
             return handler?.invoke(request) ?: response
         }

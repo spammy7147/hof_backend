@@ -34,15 +34,24 @@ class HofHttpClient private constructor(
     /**
      * HOF 요청을 실제 HTTP 요청으로 변환해 실행하고 응답 body와 Set-Cookie를 반환한다.
      */
-    override fun execute(request: HofRequest, cookies: Map<String, String>): HofHttpResponse =
-        governor.execute(request.origin) {
-            executeHttp(request, cookies)
+    override fun execute(
+        accountId: Long,
+        request: HofRequest,
+        cookies: Map<String, String>,
+    ): HofHttpResponse =
+        governor.execute(accountId, request.origin) {
+            executeHttp(accountId, request, cookies)
         }
 
-    private fun executeHttp(request: HofRequest, cookies: Map<String, String>): HofHttpResponse {
+    private fun executeHttp(
+        accountId: Long,
+        request: HofRequest,
+        cookies: Map<String, String>,
+    ): HofHttpResponse {
         val startedAt = System.nanoTime()
         log.info(
-            "HOF OUT method={} url={} formFields={} cookieNames={}",
+            "HOF OUT accountId={} method={} url={} formFields={} cookieNames={}",
+            accountId,
             request.method,
             request.url,
             request.formFields.keys.sorted(),
@@ -53,7 +62,8 @@ class HofHttpClient private constructor(
             client.send(httpRequest, HttpResponse.BodyHandlers.ofByteArray())
         }.getOrElse { error ->
             log.error(
-                "HOF ERROR method={} url={} durationMs={} error={}",
+                "HOF ERROR accountId={} method={} url={} durationMs={} error={}",
+                accountId,
                 request.method,
                 request.url,
                 elapsedMs(startedAt),
@@ -66,7 +76,8 @@ class HofHttpClient private constructor(
         val setCookies = parseSetCookies(response.headers())
 
         log.info(
-            "HOF IN method={} url={} status={} finalUrl={} durationMs={} setCookieNames={} bytes={}",
+            "HOF IN accountId={} method={} url={} status={} finalUrl={} durationMs={} setCookieNames={} bytes={}",
+            accountId,
             request.method,
             request.url,
             response.statusCode(),

@@ -159,7 +159,11 @@ class HofStatusServiceTest {
             </table>
         """.trimIndent()
 
-        override fun execute(request: HofRequest, cookies: Map<String, String>): HofHttpResponse {
+        override fun execute(
+            accountId: Long,
+            request: HofRequest,
+            cookies: Map<String, String>,
+        ): HofHttpResponse {
             requests += request
             this.cookies += cookies
             return HofHttpResponse(

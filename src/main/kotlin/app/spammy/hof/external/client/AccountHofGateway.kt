@@ -25,7 +25,7 @@ class AccountHofGateway(
         cookies: Map<String, String> = emptyMap(),
     ): HofHttpResponse {
         val requestStartedAt = timeProvider.now()
-        val response = gateway.execute(request, cookies)
+        val response = gateway.execute(accountId, request, cookies)
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
             TransactionSynchronizationManager.registerSynchronization(
                 object : TransactionSynchronization {

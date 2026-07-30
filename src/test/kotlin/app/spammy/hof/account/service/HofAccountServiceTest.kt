@@ -75,6 +75,7 @@ class HofAccountServiceTest {
 
         assertEquals(1L, response.id)
         assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.POST), gateway.requests.map { it.method })
+        assertEquals(listOf(1L, 1L), gateway.accountIds)
 
         val cookieCaptor = ArgumentCaptor.forClass(HofCookieEntity::class.java)
         Mockito.verify(cookieRepository).deleteAll(listOf(existingCookie))
@@ -138,6 +139,28 @@ class HofAccountServiceTest {
         assertEquals("new-password", gateway.requests.last().formFields["pass"])
     }
 
+    @Test
+    fun reauthenticateSendsBothLoginRequestsWithTheAccountId() {
+        val account = HofAccountEntity(
+            id = 23L,
+            loginId = "abcd12",
+            encryptedPassword = credentialCipher.encrypt("qwer12"),
+            createdAt = now,
+        )
+        Mockito.`when`(accountQueryRepository.findById(23L)).thenReturn(account)
+        Mockito.`when`(cookieQueryRepository.findByAccountId(23L)).thenReturn(emptyList())
+        Mockito.`when`(accountRepository.save(anyAccount()))
+            .thenAnswer { invocation -> invocation.arguments[0] }
+        Mockito.`when`(cookieRepository.save(anyCookie()))
+            .thenAnswer { invocation -> invocation.arguments[0] }
+
+        val response = service.reauthenticate(23L)
+
+        assertEquals(23L, response.id)
+        assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.POST), gateway.requests.map { it.method })
+        assertEquals(listOf(23L, 23L), gateway.accountIds)
+    }
+
     private fun anyAccount(): HofAccountEntity =
         Mockito.any(HofAccountEntity::class.java) ?: account()
 
@@ -162,9 +185,15 @@ class HofAccountServiceTest {
     ): T = captor.capture() ?: fallback
 
     private class FakeHofGateway : HofGateway {
+        val accountIds = mutableListOf<Long>()
         val requests = mutableListOf<HofRequest>()
 
-        override fun execute(request: HofRequest, cookies: Map<String, String>): HofHttpResponse {
+        override fun execute(
+            accountId: Long,
+            request: HofRequest,
+            cookies: Map<String, String>,
+        ): HofHttpResponse {
+            accountIds += accountId
             requests += request
             return if (request.method == HofHttpMethod.GET) {
                 HofHttpResponse(

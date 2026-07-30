@@ -170,7 +170,11 @@ class AutomationDailyPreflightMapSyncTest {
         var firstStarted = CountDownLatch(1)
         var releaseFirst = CountDownLatch(1)
 
-        override fun execute(request: HofRequest, cookies: Map<String, String>): HofHttpResponse {
+        override fun execute(
+            accountId: Long,
+            request: HofRequest,
+            cookies: Map<String, String>,
+        ): HofHttpResponse {
             val call = calls.incrementAndGet()
             if (blockFirst && call == 1) {
                 firstStarted.countDown()

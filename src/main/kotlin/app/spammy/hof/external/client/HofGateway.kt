@@ -8,7 +8,11 @@ import app.spammy.hof.external.model.HofRequest
  */
 interface HofGateway {
     /**
-     * GET/POST 요청과 쿠키를 받아 HOF HTML 응답을 반환한다.
+     * 계정 ID, GET/POST 요청, 쿠키를 받아 HOF HTML 응답을 반환한다.
      */
-    fun execute(request: HofRequest, cookies: Map<String, String> = emptyMap()): HofHttpResponse
+    fun execute(
+        accountId: Long,
+        request: HofRequest,
+        cookies: Map<String, String> = emptyMap(),
+    ): HofHttpResponse
 }

@@ -17,7 +17,6 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
-import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -66,6 +65,7 @@ class HofHttpClientTest {
             val client = client()
 
             client.execute(
+                ACCOUNT_ID,
                 HofRequest(
                     method = HofHttpMethod.GET,
                     url = "http://localhost:$port/ZeroHOF/pass_check.php?existing=1#fragment",
@@ -89,6 +89,7 @@ class HofHttpClientTest {
         try {
             val error = assertFailsWith<ApiException> {
                 client().execute(
+                    ACCOUNT_ID,
                     HofRequest(
                         method = HofHttpMethod.GET,
                         url = "http://localhost:${server.address.port}/test",
@@ -119,6 +120,7 @@ class HofHttpClientTest {
         try {
             val error = assertFailsWith<HofAutomationDeferredException> {
                 HofHttpClient(governor = governor).execute(
+                    ACCOUNT_ID,
                     HofRequest(
                         method = HofHttpMethod.GET,
                         url = "http://localhost:${server.address.port}/test",
@@ -135,20 +137,24 @@ class HofHttpClientTest {
     }
 
     @Test
-    fun `interactive and automation HTTP requests share one execution slot`() {
+    fun `interactive and automation HTTP requests for the same account share one execution slot`() {
         val active = AtomicInteger(0)
         val maximumActive = AtomicInteger(0)
         val firstEntered = CountDownLatch(1)
+        val secondEntered = CountDownLatch(1)
         val releaseFirst = CountDownLatch(1)
         val server = HttpServer.create(InetSocketAddress(0), 0)
         val serverExecutor = Executors.newCachedThreadPool()
+        val requestExecutor = Executors.newFixedThreadPool(2)
         server.executor = serverExecutor
         server.createContext("/test") { exchange ->
             val current = active.incrementAndGet()
             maximumActive.accumulateAndGet(current, ::maxOf)
             if (firstEntered.count == 1L) {
                 firstEntered.countDown()
-                releaseFirst.await(2, TimeUnit.SECONDS)
+                check(releaseFirst.await(2, TimeUnit.SECONDS)) { "timed out waiting to release first request" }
+            } else {
+                secondEntered.countDown()
             }
             active.decrementAndGet()
             exchange.sendText("OK")
@@ -158,24 +164,73 @@ class HofHttpClientTest {
         val url = "http://localhost:${server.address.port}/test"
 
         try {
-            val interactive = thread {
-                client.execute(HofRequest(HofHttpMethod.GET, url, origin = HofRequestOrigin.INTERACTIVE))
+            val interactive = requestExecutor.submit {
+                client.execute(
+                    ACCOUNT_ID,
+                    HofRequest(HofHttpMethod.GET, url, origin = HofRequestOrigin.INTERACTIVE),
+                )
             }
             assertTrue(firstEntered.await(2, TimeUnit.SECONDS))
-            val automation = thread {
-                client.execute(HofRequest(HofHttpMethod.GET, url, origin = HofRequestOrigin.AUTOMATION))
+            val automation = requestExecutor.submit {
+                client.execute(
+                    ACCOUNT_ID,
+                    HofRequest(HofHttpMethod.GET, url, origin = HofRequestOrigin.AUTOMATION),
+                )
             }
-            Thread.sleep(50)
+            assertFalse(secondEntered.await(100, TimeUnit.MILLISECONDS))
             assertEquals(1, maximumActive.get())
             releaseFirst.countDown()
-            interactive.join(2_000)
-            automation.join(2_000)
-            assertFalse(interactive.isAlive)
-            assertFalse(automation.isAlive)
+            interactive.get(2, TimeUnit.SECONDS)
+            automation.get(2, TimeUnit.SECONDS)
+            assertTrue(secondEntered.await(2, TimeUnit.SECONDS))
             assertEquals(1, maximumActive.get())
         } finally {
             releaseFirst.countDown()
             server.stop(0)
+            requestExecutor.shutdownNow()
+            serverExecutor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `HTTP requests for different accounts use separate execution slots`() {
+        val active = AtomicInteger(0)
+        val maximumActive = AtomicInteger(0)
+        val bothEntered = CountDownLatch(2)
+        val releaseBoth = CountDownLatch(1)
+        val server = HttpServer.create(InetSocketAddress(0), 0)
+        val serverExecutor = Executors.newCachedThreadPool()
+        val requestExecutor = Executors.newFixedThreadPool(2)
+        server.executor = serverExecutor
+        server.createContext("/test") { exchange ->
+            val current = active.incrementAndGet()
+            maximumActive.accumulateAndGet(current, ::maxOf)
+            bothEntered.countDown()
+            check(releaseBoth.await(2, TimeUnit.SECONDS)) { "timed out waiting to release requests" }
+            active.decrementAndGet()
+            exchange.sendText("OK")
+        }
+        server.start()
+        val client = client()
+        val url = "http://localhost:${server.address.port}/test"
+
+        try {
+            val first = requestExecutor.submit {
+                client.execute(FIRST_ACCOUNT_ID, HofRequest(HofHttpMethod.GET, url))
+            }
+            val second = requestExecutor.submit {
+                client.execute(SECOND_ACCOUNT_ID, HofRequest(HofHttpMethod.GET, url))
+            }
+
+            assertTrue(bothEntered.await(2, TimeUnit.SECONDS))
+            assertEquals(2, maximumActive.get())
+            releaseBoth.countDown()
+            first.get(2, TimeUnit.SECONDS)
+            second.get(2, TimeUnit.SECONDS)
+        } finally {
+            releaseBoth.countDown()
+            server.stop(0)
+            requestExecutor.shutdownNow()
             serverExecutor.shutdownNow()
         }
     }
@@ -201,5 +256,11 @@ class HofHttpClientTest {
         val bytes = body.toByteArray()
         sendResponseHeaders(200, bytes.size.toLong())
         responseBody.use { output -> output.write(bytes) }
+    }
+
+    private companion object {
+        const val ACCOUNT_ID = 17L
+        const val FIRST_ACCOUNT_ID = 23L
+        const val SECOND_ACCOUNT_ID = 29L
     }
 }

@@ -7,6 +7,7 @@ import app.spammy.hof.external.model.HofRequest
 import app.spammy.hof.status.service.HofStatusSnapshotService
 import java.time.Instant
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertSame
 import org.mockito.Mockito
 import org.springframework.transaction.support.TransactionSynchronization
@@ -23,6 +24,7 @@ class AccountHofGatewayTest {
 
         assertSame(RESPONSE, actual)
         Mockito.verify(snapshots).observe(ACCOUNT_ID, RESPONSE.body, REQUEST_STARTED_AT)
+        assertEquals(listOf(ACCOUNT_ID), raw.accountIds)
         kotlin.test.assertEquals(COOKIES, raw.cookies)
     }
 
@@ -51,9 +53,15 @@ class AccountHofGatewayTest {
     }
 
     private class RecordingGateway : HofGateway {
+        val accountIds = mutableListOf<Long>()
         var cookies: Map<String, String> = emptyMap()
 
-        override fun execute(request: HofRequest, cookies: Map<String, String>): HofHttpResponse {
+        override fun execute(
+            accountId: Long,
+            request: HofRequest,
+            cookies: Map<String, String>,
+        ): HofHttpResponse {
+            accountIds += accountId
             this.cookies = cookies
             return RESPONSE
         }

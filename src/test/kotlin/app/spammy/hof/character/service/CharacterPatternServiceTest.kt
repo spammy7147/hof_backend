@@ -122,7 +122,11 @@ class CharacterPatternServiceTest {
         val cookies = mutableListOf<Map<String, String>>()
         var responseBody = """<div>Funds : $ 1 Time : 10/10</div>"""
 
-        override fun execute(request: HofRequest, cookies: Map<String, String>): HofHttpResponse {
+        override fun execute(
+            accountId: Long,
+            request: HofRequest,
+            cookies: Map<String, String>,
+        ): HofHttpResponse {
             requests += request
             this.cookies += cookies
             return HofHttpResponse(

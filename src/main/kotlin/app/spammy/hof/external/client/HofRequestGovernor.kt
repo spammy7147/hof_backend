@@ -45,9 +45,6 @@ class HofRequestGovernor(
     private val log = LoggerFactory.getLogger(HofRequestGovernor::class.java)
     private val accountStates = ConcurrentHashMap<Long, AccountRequestState>()
 
-    fun execute(origin: HofRequestOrigin, request: () -> HofHttpResponse): HofHttpResponse =
-        execute(LEGACY_ACCOUNT_ID, origin, request)
-
     fun execute(
         accountId: Long,
         origin: HofRequestOrigin,
@@ -199,7 +196,6 @@ class HofRequestGovernor(
     }
 
     private companion object {
-        const val LEGACY_ACCOUNT_ID = Long.MIN_VALUE
         const val SERVICE_UNAVAILABLE = 503
         const val NANOS_PER_MILLISECOND = 1_000_000L
         const val FRIENDLY_UNAVAILABLE_MESSAGE =

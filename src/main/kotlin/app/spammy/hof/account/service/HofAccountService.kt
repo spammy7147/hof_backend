@@ -85,7 +85,7 @@ class HofAccountService(
      */
     private fun loginAccount(account: HofAccountEntity, origin: HofRequestOrigin): HofAccountEntity {
         log.info("HOF login start accountId={} loginId={}", account.id, account.loginId)
-        val initialResponse = gateway.execute(requestFactory.home(origin))
+        val initialResponse = gateway.execute(account.id, requestFactory.home(origin))
         log.info(
             "HOF login home fetched accountId={} status={} cookies={}",
             account.id,
@@ -94,6 +94,7 @@ class HofAccountService(
         )
         val loginRequestStartedAt = timeProvider.now()
         val loginResponse = gateway.execute(
+            accountId = account.id,
             request = requestFactory.login(
                 id = account.loginId,
                 password = credentialCipher.decrypt(account.encryptedPassword),
