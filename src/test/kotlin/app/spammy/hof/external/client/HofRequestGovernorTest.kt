@@ -11,6 +11,7 @@ import java.time.Duration
 import java.time.Instant
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -89,6 +90,64 @@ class HofRequestGovernorTest {
         assertFalse(second.isAlive)
         assertFalse(third.isAlive)
         assertEquals(listOf("automation-1", "interactive", "automation-2"), order)
+    }
+
+    @Test
+    fun `interactive request overtakes automation waiting for request spacing`() {
+        val clock = MutableTimeProvider(NOW)
+        val waiter = ControlledSpacingWaiter(clock)
+        val governor = governor(clock, waiter)
+        val order = Collections.synchronizedList(mutableListOf<String>())
+        val childFailure = AtomicReference<Throwable>()
+        val interactiveExecuted = CountDownLatch(1)
+
+        governor.execute(ACCOUNT_A, HofRequestOrigin.INTERACTIVE) {
+            order += "first"
+            response(200)
+        }
+
+        val automation = thread {
+            try {
+                governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) {
+                    order += "automation"
+                    response(200)
+                }
+            } catch (error: Throwable) {
+                childFailure.compareAndSet(null, error)
+            }
+        }
+        assertEquals(Duration.ofSeconds(1), waiter.awaitStarted())
+
+        val interactive = thread {
+            try {
+                governor.execute(ACCOUNT_A, HofRequestOrigin.INTERACTIVE) {
+                    order += "interactive"
+                    interactiveExecuted.countDown()
+                    response(200)
+                }
+            } catch (error: Throwable) {
+                childFailure.compareAndSet(null, error)
+            }
+        }
+        awaitQueued(interactive)
+
+        try {
+            waiter.release()
+            assertTrue(interactiveExecuted.await(2, TimeUnit.SECONDS))
+            assertEquals(Duration.ofSeconds(1), waiter.awaitStarted())
+            waiter.release()
+        } finally {
+            waiter.release()
+            waiter.release()
+        }
+
+        automation.join(2_000)
+        interactive.join(2_000)
+        assertFalse(automation.isAlive)
+        assertFalse(interactive.isAlive)
+        childFailure.get()?.let { throw AssertionError("Child request failed", it) }
+        assertEquals(listOf("first", "interactive", "automation"), order)
+        assertEquals(listOf(Duration.ofSeconds(1), Duration.ofSeconds(1)), waiter.waits)
     }
 
     @Test
@@ -492,6 +551,27 @@ class HofRequestGovernorTest {
         override fun waitFor(duration: Duration) {
             waits += duration
             clock.current = clock.current.plus(duration)
+        }
+    }
+
+    private class ControlledSpacingWaiter(
+        private val clock: MutableTimeProvider,
+    ) : HofRequestWaiter {
+        private val started = LinkedBlockingQueue<Duration>()
+        private val releases = LinkedBlockingQueue<Unit>()
+        val waits = Collections.synchronizedList(mutableListOf<Duration>())
+
+        override fun waitFor(duration: Duration) {
+            waits += duration
+            started.put(duration)
+            releases.take()
+            clock.current = clock.current.plus(duration)
+        }
+
+        fun awaitStarted(): Duration? = started.poll(2, TimeUnit.SECONDS)
+
+        fun release() {
+            releases.put(Unit)
         }
     }
 

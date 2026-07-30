@@ -69,8 +69,6 @@ class HofRequestGovernor(
         acquireExecutionSlot(state, origin)
 
         try {
-            rejectDuringCooldown(state, origin)
-            waitForRequestSpacing(state)
             val requestStartedAtNanos = System.nanoTime()
             val response = try {
                 request()
@@ -128,15 +126,35 @@ class HofRequestGovernor(
         val queue = state.queueFor(origin)
         queue.addLast(queuedRequest)
         try {
-            while (state.executing || state.nextEligible() !== queuedRequest) {
-                queuedRequest.condition.await()
+            while (true) {
+                while (
+                    state.executing ||
+                    state.spacingWaiter != null ||
+                    state.nextEligible() !== queuedRequest
+                ) {
+                    queuedRequest.condition.await()
+                }
+
+                rejectDuringCooldown(state, origin)
+                val allowedAt = state.nextAllowedAt
+                val remaining = allowedAt?.let { Duration.between(timeProvider.now(), it) }
+                if (allowedAt == null || remaining == null || remaining.isNegative || remaining.isZero) {
+                    queue.removeFirst()
+                    state.executing = true
+                    return
+                }
+
+                state.spacingWaiter = queuedRequest
+                waitForRequestSpacing(state, allowedAt, remaining)
             }
-            queue.removeFirst()
-            state.executing = true
         } catch (exception: InterruptedException) {
             queue.remove(queuedRequest)
             state.signalNextEligible()
             throw interruptedQueueWait(exception)
+        } catch (error: Throwable) {
+            queue.remove(queuedRequest)
+            state.signalNextEligible()
+            throw error
         } finally {
             state.lock.unlock()
         }
@@ -179,10 +197,28 @@ class HofRequestGovernor(
             )
         }
 
-    private fun waitForRequestSpacing(state: AccountRequestState) {
-        val allowedAt = state.nextAllowedAt ?: return
-        val remaining = Duration.between(timeProvider.now(), allowedAt)
-        if (!remaining.isNegative && !remaining.isZero) waiter.waitFor(remaining)
+    private fun waitForRequestSpacing(
+        state: AccountRequestState,
+        allowedAt: Instant,
+        remaining: Duration,
+    ) {
+        state.lock.unlock()
+        var waitFailure: Throwable? = null
+        try {
+            waiter.waitFor(remaining)
+        } catch (error: Throwable) {
+            waitFailure = error
+        } finally {
+            state.lock.lock()
+            state.spacingWaiter = null
+        }
+
+        waitFailure?.let { throw it }
+        if (Thread.currentThread().isInterrupted) {
+            throw interruptedQueueWait(InterruptedException("Interrupted after spacing HOF requests"))
+        }
+        if (state.nextAllowedAt == allowedAt) state.nextAllowedAt = null
+        state.signalNextEligible()
     }
 
     private class QueuedRequest(val condition: Condition)
@@ -192,6 +228,7 @@ class HofRequestGovernor(
         val interactiveWaiters = ArrayDeque<QueuedRequest>()
         val automationWaiters = ArrayDeque<QueuedRequest>()
         var executing = false
+        var spacingWaiter: QueuedRequest? = null
         var nextAllowedAt: Instant? = null
         var cooldownUntil: Instant? = null
         var consecutiveServiceUnavailable = 0
