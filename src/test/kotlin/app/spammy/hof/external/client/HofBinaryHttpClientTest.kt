@@ -19,6 +19,7 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -82,6 +83,38 @@ class HofBinaryHttpClientTest {
             )
 
             assertNull(capturedCookieHeaders.single())
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `automation binary 503 preserves deferred retry metadata`() {
+        val now = Instant.parse("2026-07-30T01:02:00Z")
+        val server = HttpServer.create(InetSocketAddress(0), 0)
+        server.createContext("/binary") { exchange ->
+            exchange.sendResponseHeaders(503, -1)
+            exchange.close()
+        }
+        server.start()
+        val governor = HofRequestGovernor(
+            properties = HofRequestProperties(),
+            timeProvider = TimeProvider { now },
+            waiter = HofRequestWaiter { },
+        )
+        val client = HofBinaryHttpClient(HofCookieHeaderBuilder(), governor)
+
+        try {
+            val error = assertFailsWith<HofAutomationDeferredException> {
+                client.get(
+                    accountId = ACCOUNT_ID,
+                    origin = HofRequestOrigin.AUTOMATION,
+                    url = "http://localhost:${server.address.port}/binary",
+                )
+            }
+
+            assertEquals(now.plusSeconds(30), error.retryAt)
+            assertEquals(1, error.consecutiveFailures)
         } finally {
             server.stop(0)
         }

@@ -2,6 +2,7 @@ package app.spammy.hof.captcha.service
 
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
+import app.spammy.hof.external.client.HofAutomationDeferredException
 import app.spammy.hof.external.client.HofBinaryGateway
 import app.spammy.hof.external.model.HofRequestOrigin
 import org.springframework.http.MediaType
@@ -78,9 +79,7 @@ class CaptchaImageManager(
         }
 
         val response = runCatching { binaryGateway.get(accountId, origin, imageUrl, cookies) }
-            .getOrElse { error ->
-                throw ApiException(ErrorCode.HOF_REQUEST_FAILED, "HOF 캡차 이미지를 불러오지 못했습니다.", error)
-            }
+            .getOrElse(::throwDownloadFailure)
         if (response.statusCode !in 200..299) {
             throw ApiException(
                 ErrorCode.HOF_REQUEST_FAILED,
@@ -161,6 +160,17 @@ class CaptchaImageManager(
             )
         }
     }
+
+    private fun throwDownloadFailure(error: Throwable): Nothing =
+        when {
+            error is HofAutomationDeferredException -> throw error
+            error is ApiException && error.errorCode == ErrorCode.HOF_TEMPORARILY_UNAVAILABLE -> throw error
+            else -> throw ApiException(
+                ErrorCode.HOF_REQUEST_FAILED,
+                "HOF 캡차 이미지를 불러오지 못했습니다.",
+                error,
+            )
+        }
 
     private fun afterCommit(action: () -> Unit) {
         if (

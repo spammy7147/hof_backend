@@ -2,14 +2,17 @@ package app.spammy.hof.captcha.service
 
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
+import app.spammy.hof.external.client.HofAutomationDeferredException
 import app.spammy.hof.external.client.HofBinaryGateway
 import app.spammy.hof.external.model.HofBinaryResponse
 import app.spammy.hof.external.model.HofRequestOrigin
+import java.time.Instant
 import org.junit.jupiter.api.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 
 class CaptchaImageManagerTest {
     private val gateway = RecordingBinaryGateway()
@@ -96,11 +99,53 @@ class CaptchaImageManagerTest {
         assertEquals(ErrorCode.HOF_SESSION_EXPIRED, error.errorCode)
     }
 
+    @Test
+    fun requiredDownloadPreservesFriendlyUnavailableSignal() {
+        val signal = ApiException(
+            ErrorCode.HOF_TEMPORARILY_UNAVAILABLE,
+            "HOF 서버 연결이 일시적으로 원활하지 않습니다.",
+        )
+        gateway.failure = signal
+
+        val actual = assertFailsWith<ApiException> {
+            manager.downloadRequired(
+                1L,
+                HofRequestOrigin.INTERACTIVE,
+                IMAGE_URL,
+                mapOf("PHPSESSID" to "session-a"),
+            )
+        }
+
+        assertSame(signal, actual)
+        assertEquals(ErrorCode.HOF_TEMPORARILY_UNAVAILABLE, actual.errorCode)
+    }
+
+    @Test
+    fun requiredDownloadPreservesAutomationDeferredSignal() {
+        val retryAt = Instant.parse("2026-07-30T01:02:30Z")
+        val signal = HofAutomationDeferredException(retryAt, 2)
+        gateway.failure = signal
+
+        val actual = assertFailsWith<HofAutomationDeferredException> {
+            manager.downloadRequired(
+                1L,
+                HofRequestOrigin.AUTOMATION,
+                IMAGE_URL,
+                mapOf("PHPSESSID" to "session-a"),
+            )
+        }
+
+        assertSame(signal, actual)
+        assertEquals(retryAt, actual.retryAt)
+        assertEquals(2, actual.consecutiveFailures)
+    }
+
     private class RecordingBinaryGateway : HofBinaryGateway {
         var response: HofBinaryResponse = imageResponse(byteArrayOf())
         val accountIds = mutableListOf<Long>()
         val origins = mutableListOf<HofRequestOrigin>()
         var lastCookies: Map<String, String> = emptyMap()
+        var failure: RuntimeException? = null
 
         override fun get(
             accountId: Long,
@@ -111,6 +156,7 @@ class CaptchaImageManagerTest {
             accountIds += accountId
             origins += origin
             lastCookies = cookies
+            failure?.let { throw it }
             return response
         }
     }
