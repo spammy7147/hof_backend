@@ -78,6 +78,12 @@ class CaptchaServicePersistenceTest {
     private lateinit var cookieRepository: HofCookieRepository
 
     @Autowired
+    private lateinit var cookieQueryRepository: CookieQueryRepository
+
+    @Autowired
+    private lateinit var cookieCipher: HofCookieCipher
+
+    @Autowired
     private lateinit var queryRepository: CaptchaQueryRepository
 
     @Autowired
@@ -417,7 +423,10 @@ class CaptchaServicePersistenceTest {
                           <p>자경단에서 통행증을 발급받아주세요.</p>
                         </body></html>
                     """.trimIndent(),
-                    setCookies = emptyMap(),
+                    setCookies = mapOf(
+                        "PHPSESSID" to "rotated-session",
+                        "NEW_SESSION" to "new-cookie",
+                    ),
                 )
             } else {
                 throw signal
@@ -446,6 +455,57 @@ class CaptchaServicePersistenceTest {
         assertNull(imageStore.read(account.id, challenge.id, challenge.preparationVersion))
         assertEquals(listOf("delete:${account.id}:${challenge.id}:${challenge.preparationVersion}"), imageStore.events)
         assertEquals(2, gateway.requests.size)
+        val persistedCookies = cookieQueryRepository.findByAccountId(account.id)
+        assertTrue(persistedCookies.all { cookie -> cookieCipher.isEncrypted(cookie.value) })
+        assertEquals(
+            mapOf("NEW_SESSION" to "new-cookie", "PHPSESSID" to "rotated-session"),
+            persistedCookies
+                .associate { cookie -> cookie.name to cookieCipher.decrypt(cookie.value) },
+        )
+    }
+
+    @Test
+    fun consumedRecoveryKeepsNewerPreparationWhilePersistingResponseCookies() {
+        val account = savedAccountWithCookie("captcha-service-consumed-version-mismatch")
+        val consumed = detectAndPrepare(account, "old_token", "old")
+        binaryGateway.body = byteArrayOf(9, 8, 7)
+        gateway.response = HofHttpResponse(
+            statusCode = 200,
+            finalUrl = POLICE_URL,
+            body = captchaHtml("new_token", "new"),
+            setCookies = emptyMap(),
+        )
+        val newer = service.submitAnswer(account.id, consumed.id, "wrong", consumed.preparationVersion)
+        val newerImageUrl = assertNotNull(
+            queryRepository.findOwnedByAccountIdAndId(account.id, consumed.id),
+        ).imageUrl
+        val fieldsBeforeRecovery = queryRepository.findFormFields(consumed.id)
+            .map { field -> Triple(field.fieldOrder, field.fieldName, field.fieldValue) }
+        imageStore.clearEvents()
+
+        service.recoverConsumedPreparation(
+            account.id,
+            consumed.id,
+            consumed.preparationVersion,
+            mapOf("PHPSESSID" to "rotated-session", "NEW_SESSION" to "new-cookie"),
+        )
+
+        val stored = assertNotNull(queryRepository.findOwnedByAccountIdAndId(account.id, consumed.id))
+        assertEquals("READY", stored.status)
+        assertEquals(newer.preparationVersion, stored.preparationVersion)
+        assertEquals(newerImageUrl, stored.imageUrl)
+        assertEquals(
+            fieldsBeforeRecovery,
+            queryRepository.findFormFields(consumed.id)
+                .map { field -> Triple(field.fieldOrder, field.fieldName, field.fieldValue) },
+        )
+        assertNotNull(imageStore.read(account.id, consumed.id, newer.preparationVersion))
+        assertEquals(emptyList(), imageStore.events)
+        assertEquals(
+            mapOf("NEW_SESSION" to "new-cookie", "PHPSESSID" to "rotated-session"),
+            cookieQueryRepository.findByAccountId(account.id)
+                .associate { cookie -> cookie.name to cookieCipher.decrypt(cookie.value) },
+        )
     }
 
     private fun savedAccountWithCookie(loginId: String): HofAccountEntity {

@@ -217,14 +217,26 @@ class CaptchaService(
         if (challenge.status != STATUS_READY) return
 
         val previousVersion = challenge.preparationVersion
-        challenge.status = STATUS_DETECTED
-        challenge.imageUrl = null
-        challenge.submitUrl = null
-        challenge.submitMethod = "POST"
-        challenge.answerFieldName = CaptchaChallengeParser.DEFAULT_ANSWER_FIELD
-        challenge.preparationVersion = 0
-        replaceFormFields(challenge, emptyList())
+        resetPreparation(challenge)
         imageManager.deleteAfterCommit(accountId, challenge.id, previousVersion)
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun recoverConsumedPreparation(
+        accountId: Long,
+        challengeId: Long,
+        consumedPreparationVersion: Int,
+        responseSetCookies: Map<String, String>,
+    ) {
+        val account = captchaQueryRepository.findAccountByIdForUpdate(accountId) ?: return
+        val storedCookies = cookieQueryRepository.findByAccountId(accountId)
+        mergeResponseCookies(account, storedCookies, responseSetCookies)
+
+        val challenge = captchaQueryRepository.findOwnedByAccountIdAndIdForUpdate(accountId, challengeId) ?: return
+        if (challenge.status != STATUS_READY || challenge.preparationVersion != consumedPreparationVersion) return
+
+        resetPreparation(challenge)
+        imageManager.deleteAfterCommit(accountId, challenge.id, consumedPreparationVersion)
     }
 
     /**
@@ -335,7 +347,14 @@ class CaptchaService(
         val document = Jsoup.parse(response.body, responseUrl)
         val pageText = document.text().trim()
         if (!challengeParser.isCaptchaSuccessPage(pageText) && challengeParser.hasCaptchaSignal(document, pageText)) {
-            val metadata = extractChallengeMetadata(challenge.account, document, pageText, responseUrl)
+            val metadata = try {
+                extractChallengeMetadata(challenge.account, document, pageText, responseUrl)
+            } catch (error: Throwable) {
+                if (error.isHofControlSignal()) {
+                    throw CaptchaPreparationConsumedException.from(error, response.setCookies)
+                }
+                throw error
+            }
             val imageUrl = metadata.imageUrl
                 ?: throw ApiException(ErrorCode.CAPTCHA_PREPARATION_FAILED, "새 캡차를 준비하지 못했습니다.")
             val previousVersion = challenge.preparationVersion
@@ -424,9 +443,7 @@ class CaptchaService(
                 cookies,
             )
         }.getOrElse { error ->
-            if (error.isHofControlSignal()) {
-                throw CaptchaPreparationConsumedException.from(error)
-            }
+            error.rethrowIfHofControlSignal()
             return null
         }
         if (response.statusCode !in 200..299) {
@@ -522,6 +539,16 @@ class CaptchaService(
         submitUrl = metadata.submitUrl
         submitMethod = metadata.submitMethod
         answerFieldName = metadata.answerFieldName
+    }
+
+    private fun resetPreparation(challenge: CaptchaChallengeEntity) {
+        challenge.status = STATUS_DETECTED
+        challenge.imageUrl = null
+        challenge.submitUrl = null
+        challenge.submitMethod = "POST"
+        challenge.answerFieldName = CaptchaChallengeParser.DEFAULT_ANSWER_FIELD
+        challenge.preparationVersion = 0
+        replaceFormFields(challenge, emptyList())
     }
 
     /**

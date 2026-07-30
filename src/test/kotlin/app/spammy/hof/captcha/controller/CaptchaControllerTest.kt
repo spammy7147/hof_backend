@@ -66,15 +66,17 @@ class CaptchaControllerTest {
     @Test
     fun submitAnswerInvalidatesConsumedPreparationAndRethrowsOriginalControlSignal() {
         val signal = ApiException(ErrorCode.HOF_TEMPORARILY_UNAVAILABLE, "retry later")
+        val responseSetCookies = mapOf("PHPSESSID" to "rotated")
         Mockito.`when`(captchaService.submitAnswer(1L, 7L, "AB12", 3))
-            .thenThrow(CaptchaPreparationConsumedException.from(signal))
+            .thenThrow(CaptchaPreparationConsumedException.from(signal, responseSetCookies))
 
         val actual = assertFailsWith<ApiException> {
             controller.submitAnswer(1L, 7L, SubmitCaptchaAnswerRequest("AB12", 3))
         }
 
         assertSame(signal, actual)
-        Mockito.verify(captchaService).invalidateCurrentPreparation(1L)
+        Mockito.verify(captchaService).recoverConsumedPreparation(1L, 7L, 3, responseSetCookies)
+        Mockito.verify(captchaService, Mockito.never()).invalidateCurrentPreparation(1L)
     }
 
     @Test
@@ -88,15 +90,19 @@ class CaptchaControllerTest {
 
         assertSame(signal, actual)
         Mockito.verify(captchaService, Mockito.never()).invalidateCurrentPreparation(1L)
+        Mockito.verify(captchaService).submitAnswer(1L, 7L, "AB12", 3)
+        Mockito.verifyNoMoreInteractions(captchaService)
     }
 
     @Test
     fun submitAnswerCleanupFailureIsSuppressedOnOriginalControlSignal() {
         val signal = ApiException(ErrorCode.HOF_TEMPORARILY_UNAVAILABLE, "retry later")
         val cleanupError = IllegalStateException("cleanup failed")
+        val responseSetCookies = mapOf("PHPSESSID" to "rotated")
         Mockito.`when`(captchaService.submitAnswer(1L, 7L, "AB12", 3))
-            .thenThrow(CaptchaPreparationConsumedException.from(signal))
-        Mockito.doThrow(cleanupError).`when`(captchaService).invalidateCurrentPreparation(1L)
+            .thenThrow(CaptchaPreparationConsumedException.from(signal, responseSetCookies))
+        Mockito.doThrow(cleanupError).`when`(captchaService)
+            .recoverConsumedPreparation(1L, 7L, 3, responseSetCookies)
 
         val actual = assertFailsWith<ApiException> {
             controller.submitAnswer(1L, 7L, SubmitCaptchaAnswerRequest("AB12", 3))
@@ -104,7 +110,8 @@ class CaptchaControllerTest {
 
         assertSame(signal, actual)
         assertEquals(listOf(cleanupError), actual.suppressed.toList())
-        Mockito.verify(captchaService, Mockito.times(1)).invalidateCurrentPreparation(1L)
+        Mockito.verify(captchaService, Mockito.times(1))
+            .recoverConsumedPreparation(1L, 7L, 3, responseSetCookies)
     }
 
     private fun readyCaptcha() = CaptchaChallengeResponse(

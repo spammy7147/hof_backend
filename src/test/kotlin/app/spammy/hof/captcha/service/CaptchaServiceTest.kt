@@ -32,6 +32,7 @@ import java.util.Base64
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertSame
@@ -74,7 +75,24 @@ class CaptchaServiceTest {
     @Test
     fun consumedPreparationMarkerRejectsOrdinaryRuntimeFailure() {
         assertFailsWith<IllegalArgumentException> {
-            CaptchaPreparationConsumedException.from(IllegalStateException("ordinary failure"))
+            CaptchaPreparationConsumedException.from(IllegalStateException("ordinary failure"), emptyMap())
+        }
+    }
+
+    @Test
+    fun consumedPreparationMarkerCopiesResponseCookies() {
+        val responseSetCookies = linkedMapOf("PHPSESSID" to "rotated")
+        val marker = CaptchaPreparationConsumedException.from(
+            ApiException(ErrorCode.HOF_TEMPORARILY_UNAVAILABLE, "retry later"),
+            responseSetCookies,
+        )
+
+        responseSetCookies.clear()
+
+        assertEquals(mapOf("PHPSESSID" to "rotated"), marker.responseSetCookies)
+        assertFalse(marker.message.orEmpty().contains("rotated"))
+        assertFailsWith<UnsupportedOperationException> {
+            (marker.responseSetCookies as MutableMap).clear()
         }
     }
 
@@ -748,6 +766,7 @@ class CaptchaServiceTest {
         }
 
         assertSame(signal, actual.controlSignal)
+        assertEquals(emptyMap(), actual.responseSetCookies)
         assertEquals(2, gateway.requests.size)
         assertEquals(emptyList(), captchaImageFileStore.deletedKeys)
         assertNotNull(captchaImageFileStore.files["1:32:1"])

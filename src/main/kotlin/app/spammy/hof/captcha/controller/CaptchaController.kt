@@ -93,7 +93,12 @@ class CaptchaController(
         } catch (error: CaptchaPreparationConsumedException) {
             val controlSignal = error.controlSignal
             try {
-                captchaService.invalidateCurrentPreparation(accountId)
+                captchaService.recoverConsumedPreparation(
+                    accountId = accountId,
+                    challengeId = challengeId,
+                    consumedPreparationVersion = request.preparationVersion,
+                    responseSetCookies = error.responseSetCookies,
+                )
             } catch (cleanupError: Throwable) {
                 log.error(
                     "Consumed CAPTCHA preparation cleanup failed accountId={} cleanupErrorType={} cleanupMessage={}",
