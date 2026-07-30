@@ -33,11 +33,14 @@ class HofAccountServiceTest {
     private val cookieRepository = Mockito.mock(HofCookieRepository::class.java)
     private val accountQueryRepository = Mockito.mock(AccountQueryRepository::class.java)
     private val cookieQueryRepository = Mockito.mock(CookieQueryRepository::class.java)
-    private val accountIdentityService = HofAccountIdentityService(
+    private val accountIdentityCreator = HofAccountIdentityCreator(
         accountRepository = accountRepository,
-        accountQueryRepository = accountQueryRepository,
         credentialCipher = credentialCipher,
         timeProvider = TimeProvider { now },
+    )
+    private val accountIdentityService = HofAccountIdentityService(
+        accountQueryRepository = accountQueryRepository,
+        accountIdentityCreator = accountIdentityCreator,
     )
     private val gateway = FakeHofGateway()
     private val accountGateway = Mockito.mock(AccountHofGateway::class.java)
@@ -72,6 +75,7 @@ class HofAccountServiceTest {
             updatedAt = now,
         )
         Mockito.`when`(accountQueryRepository.findByLoginId("abcd12")).thenReturn(account)
+        Mockito.`when`(accountQueryRepository.findByIdForUpdate(1L)).thenReturn(account)
         Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(listOf(existingCookie))
         Mockito.`when`(accountRepository.save(anyAccount()))
             .thenAnswer { invocation -> invocation.arguments[0] }
@@ -98,22 +102,19 @@ class HofAccountServiceTest {
 
     @Test
     fun authenticateCreatesAccountAndLogsIn() {
+        val savedAccount = HofAccountEntity(
+            id = 42L,
+            loginId = "abcd12",
+            encryptedPassword = credentialCipher.encrypt("qwer12"),
+            createdAt = now,
+        )
         Mockito.`when`(accountQueryRepository.findByLoginId("abcd12")).thenReturn(null)
         Mockito.`when`(accountRepository.save(anyAccount()))
             .thenAnswer { invocation ->
                 val account = invocation.arguments[0] as HofAccountEntity
-                if (account.id == 0L) {
-                    HofAccountEntity(
-                        id = 42L,
-                        loginId = account.loginId,
-                        encryptedPassword = account.encryptedPassword,
-                        createdAt = account.createdAt,
-                        lastLoginAt = account.lastLoginAt,
-                    )
-                } else {
-                    account
-                }
+                if (account.id == 0L) savedAccount else account
             }
+        Mockito.`when`(accountQueryRepository.findByIdForUpdate(42L)).thenReturn(savedAccount)
         Mockito.`when`(cookieRepository.save(anyCookie()))
             .thenAnswer { invocation -> invocation.arguments[0] }
 
@@ -127,7 +128,7 @@ class HofAccountServiceTest {
     }
 
     @Test
-    fun authenticateUpdatesExistingAccountPasswordBeforeLogin() {
+    fun authenticateUsesSubmittedPasswordAndStoresItAfterLoginSuccess() {
         val account = HofAccountEntity(
             id = 7L,
             loginId = "abcd12",
@@ -135,6 +136,7 @@ class HofAccountServiceTest {
             createdAt = now,
         )
         Mockito.`when`(accountQueryRepository.findByLoginId("abcd12")).thenReturn(account)
+        Mockito.`when`(accountQueryRepository.findByIdForUpdate(7L)).thenReturn(account)
         Mockito.`when`(accountRepository.save(anyAccount()))
             .thenAnswer { invocation -> invocation.arguments[0] }
         Mockito.`when`(cookieRepository.save(anyCookie()))
@@ -156,6 +158,7 @@ class HofAccountServiceTest {
             createdAt = now,
         )
         Mockito.`when`(accountQueryRepository.findById(23L)).thenReturn(account)
+        Mockito.`when`(accountQueryRepository.findByIdForUpdate(23L)).thenReturn(account)
         Mockito.`when`(cookieQueryRepository.findByAccountId(23L)).thenReturn(emptyList())
         Mockito.`when`(accountRepository.save(anyAccount()))
             .thenAnswer { invocation -> invocation.arguments[0] }

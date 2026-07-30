@@ -2,8 +2,8 @@ package app.spammy.hof.captcha.service
 
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
-import app.spammy.hof.external.client.HofAutomationDeferredException
 import app.spammy.hof.external.client.HofBinaryGateway
+import app.spammy.hof.external.client.rethrowIfHofControlSignal
 import app.spammy.hof.external.model.HofRequestOrigin
 import org.springframework.http.MediaType
 import org.springframework.stereotype.Service
@@ -161,16 +161,14 @@ class CaptchaImageManager(
         }
     }
 
-    private fun throwDownloadFailure(error: Throwable): Nothing =
-        when {
-            error is HofAutomationDeferredException -> throw error
-            error is ApiException && error.errorCode == ErrorCode.HOF_TEMPORARILY_UNAVAILABLE -> throw error
-            else -> throw ApiException(
-                ErrorCode.HOF_REQUEST_FAILED,
-                "HOF 캡차 이미지를 불러오지 못했습니다.",
-                error,
-            )
-        }
+    private fun throwDownloadFailure(error: Throwable): Nothing {
+        error.rethrowIfHofControlSignal()
+        throw ApiException(
+            ErrorCode.HOF_REQUEST_FAILED,
+            "HOF 캡차 이미지를 불러오지 못했습니다.",
+            error,
+        )
+    }
 
     private fun afterCommit(action: () -> Unit) {
         if (

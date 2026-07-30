@@ -47,7 +47,7 @@ class HofAccountService(
     /**
      * 사용자가 입력한 ID/PW로 HOF 원본 서버에 로그인한다.
      *
-     * 같은 ID가 이미 저장되어 있으면 비밀번호를 갱신하고, 없으면 새 계정을 만든다.
+     * 없는 ID는 원격 요청 전에 durable identity를 만들고, 입력한 비밀번호는 로그인 성공 후에만 저장한다.
      */
     @Transactional
     fun authenticate(loginId: String, password: String): HofAccountEntity {
@@ -57,8 +57,8 @@ class HofAccountService(
         }
 
         log.info("HOF login requested loginId={}", trimmedLoginId)
-        val account = accountIdentityService.persist(trimmedLoginId, password)
-        return loginAccount(account, HofRequestOrigin.INTERACTIVE)
+        val account = accountIdentityService.resolve(trimmedLoginId, password)
+        return loginAccount(account, password, HofRequestOrigin.INTERACTIVE)
     }
 
     @Transactional
@@ -68,13 +68,17 @@ class HofAccountService(
     ): HofAccountEntity {
         val account = accountQueryRepository.findById(accountId)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
-        return loginAccount(account, origin)
+        return loginAccount(account, credentialCipher.decrypt(account.encryptedPassword), origin)
     }
 
     /**
      * HOF 홈 요청 후 로그인 요청을 보내고, 성공하면 쿠키를 DB에 저장한다.
      */
-    private fun loginAccount(account: HofAccountEntity, origin: HofRequestOrigin): HofAccountEntity {
+    private fun loginAccount(
+        account: HofAccountEntity,
+        submittedPassword: String,
+        origin: HofRequestOrigin,
+    ): HofAccountEntity {
         log.info("HOF login start accountId={} loginId={}", account.id, account.loginId)
         val initialResponse = gateway.execute(account.id, requestFactory.home(origin))
         log.info(
@@ -88,7 +92,7 @@ class HofAccountService(
             accountId = account.id,
             request = requestFactory.login(
                 id = account.loginId,
-                password = credentialCipher.decrypt(account.encryptedPassword),
+                password = submittedPassword,
                 origin = origin,
             ),
             cookies = initialResponse.setCookies,
@@ -110,16 +114,18 @@ class HofAccountService(
         }
         observeAfterTransaction(account.id, loginResponse, loginRequestStartedAt)
 
+        val managedAccount = accountQueryRepository.findByIdForUpdate(account.id)
+            ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
         val now = timeProvider.now()
         val cookies = initialResponse.setCookies + loginResponse.setCookies
-        val existingCookies = cookieQueryRepository.findByAccountId(account.id)
+        val existingCookies = cookieQueryRepository.findByAccountId(managedAccount.id)
         cookieRepository.deleteAll(existingCookies)
         cookieRepository.flush()
         log.info("HOF cookies cleared accountId={}", account.id)
         cookies.forEach { (name, value) ->
             cookieRepository.save(
                 HofCookieEntity(
-                    account = account,
+                    account = managedAccount,
                     name = name,
                     value = cookieCipher.encrypt(value),
                     domain = "sic.zerosic.com",
@@ -129,11 +135,12 @@ class HofAccountService(
             )
         }
         log.info("HOF cookies stored accountId={} cookieNames={}", account.id, cookies.keys.sorted())
-        account.lastLoginAt = now
-        accountRepository.save(account)
-        log.info("HOF login success accountId={} cookieCount={}", account.id, cookies.size)
+        managedAccount.encryptedPassword = credentialCipher.encrypt(submittedPassword)
+        managedAccount.lastLoginAt = now
+        accountRepository.save(managedAccount)
+        log.info("HOF login success accountId={} cookieCount={}", managedAccount.id, cookies.size)
 
-        return account
+        return managedAccount
     }
 
     private fun observeAfterTransaction(

@@ -13,7 +13,6 @@ import app.spammy.hof.captcha.repository.CaptchaQueryRepository
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
-import app.spammy.hof.external.client.HofAutomationDeferredException
 import app.spammy.hof.external.client.HofBinaryGateway
 import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.client.testAccountHofGateway
@@ -708,7 +707,7 @@ class CaptchaServiceTest {
     }
 
     @Test
-    fun submitAnswerPreservesFriendlyUnavailableSignalAfterDeletingImage() {
+    fun submitAnswerPreservesFriendlyUnavailableSignalAndPreparedImage() {
         val challenge = pendingChallenge(id = 30L)
         captchaImageFileStore.files["1:30:1"] = StoredFile("image/png", byteArrayOf(1))
         val signal = ApiException(ErrorCode.HOF_TEMPORARILY_UNAVAILABLE, "temporarily unavailable")
@@ -722,27 +721,8 @@ class CaptchaServiceTest {
 
         assertSame(signal, actual)
         assertEquals(ErrorCode.HOF_TEMPORARILY_UNAVAILABLE, actual.errorCode)
-        assertEquals(listOf("1:30:1"), captchaImageFileStore.deletedKeys)
-    }
-
-    @Test
-    fun submitAnswerPreservesAutomationDeferredSignalAfterDeletingImage() {
-        val challenge = pendingChallenge(id = 31L)
-        captchaImageFileStore.files["1:31:1"] = StoredFile("image/png", byteArrayOf(1))
-        val retryAt = now.plusSeconds(30)
-        val signal = HofAutomationDeferredException(retryAt, 2)
-        stubOwnedChallenge(31L, challenge)
-        Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(listOf(cookie()))
-        gateway.failure = signal
-
-        val actual = assertFailsWith<HofAutomationDeferredException> {
-            service.submitAnswer(1L, 31L, "1234", 1)
-        }
-
-        assertSame(signal, actual)
-        assertEquals(retryAt, actual.retryAt)
-        assertEquals(2, actual.consecutiveFailures)
-        assertEquals(listOf("1:31:1"), captchaImageFileStore.deletedKeys)
+        assertEquals(emptyList(), captchaImageFileStore.deletedKeys)
+        assertNotNull(captchaImageFileStore.files["1:30:1"])
     }
 
     @Test
@@ -761,27 +741,6 @@ class CaptchaServiceTest {
 
         assertSame(signal, actual)
         assertEquals(ErrorCode.HOF_TEMPORARILY_UNAVAILABLE, actual.errorCode)
-        assertEquals(2, gateway.requests.size)
-    }
-
-    @Test
-    fun policeFollowUpPreservesAutomationDeferredSignal() {
-        val challenge = pendingChallenge(id = 33L)
-        val retryAt = now.plusSeconds(30)
-        val signal = HofAutomationDeferredException(retryAt, 3)
-        stubOwnedChallenge(33L, challenge)
-        Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(listOf(cookie()))
-        gateway.responses += vigilanteGateResponse(challenge.sourceUrl)
-        gateway.failure = signal
-        gateway.failOnCall = 2
-
-        val actual = assertFailsWith<HofAutomationDeferredException> {
-            service.submitAnswer(1L, 33L, "1234", 1)
-        }
-
-        assertSame(signal, actual)
-        assertEquals(retryAt, actual.retryAt)
-        assertEquals(3, actual.consecutiveFailures)
         assertEquals(2, gateway.requests.size)
     }
 

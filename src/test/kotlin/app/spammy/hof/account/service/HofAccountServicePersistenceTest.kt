@@ -21,6 +21,9 @@ import java.time.Duration
 import java.time.Instant
 import java.util.Base64
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -45,6 +48,7 @@ import org.springframework.transaction.annotation.Transactional
     CookieQueryRepository::class,
     HofRequestFactory::class,
     LoginStateParser::class,
+    HofAccountIdentityCreator::class,
     HofAccountIdentityService::class,
     HofAccountService::class,
     HofAccountServicePersistenceTest.BoundaryConfig::class,
@@ -55,6 +59,9 @@ class HofAccountServicePersistenceTest {
 
     @Autowired
     private lateinit var accountQueryRepository: AccountQueryRepository
+
+    @Autowired
+    private lateinit var accountIdentityService: HofAccountIdentityService
 
     @Autowired
     private lateinit var cookieQueryRepository: CookieQueryRepository
@@ -96,9 +103,112 @@ class HofAccountServicePersistenceTest {
         assertEquals(durableIdentity.id, accountAfterRetry.id)
         assertEquals(1L, countAccounts("first-cooldown-user"))
         assertEquals(
-            "second-password",
+            "first-password",
             credentialCipher.decrypt(accountAfterRetry.encryptedPassword),
         )
+    }
+
+    @Test
+    fun failedLoginPreservesExistingValidCredential() {
+        service.authenticate("existing-failed-user", "valid-password")
+        gateway.reset()
+        gateway.rejectLogin = true
+
+        val failure = assertFailsWith<ApiException> {
+            service.authenticate("existing-failed-user", "wrong-password")
+        }
+
+        assertEquals(ErrorCode.HOF_LOGIN_FAILED, failure.errorCode)
+        val stored = assertNotNull(accountQueryRepository.findByLoginId("existing-failed-user"))
+        assertEquals("valid-password", credentialCipher.decrypt(stored.encryptedPassword))
+    }
+
+    @Test
+    fun serviceUnavailablePreservesExistingValidCredential() {
+        service.authenticate("existing-503-user", "valid-password")
+        gateway.reset()
+        gateway.failWithServiceUnavailable = true
+
+        val failure = assertFailsWith<ApiException> {
+            service.authenticate("existing-503-user", "wrong-password")
+        }
+        val cooldownFailure = assertFailsWith<ApiException> {
+            service.authenticate("existing-503-user", "another-wrong-password")
+        }
+
+        assertEquals(ErrorCode.HOF_TEMPORARILY_UNAVAILABLE, failure.errorCode)
+        assertEquals(ErrorCode.HOF_TEMPORARILY_UNAVAILABLE, cooldownFailure.errorCode)
+        val stored = assertNotNull(accountQueryRepository.findByLoginId("existing-503-user"))
+        assertEquals(listOf(stored.id), gateway.outboundAccountIds)
+        assertEquals("valid-password", credentialCipher.decrypt(stored.encryptedPassword))
+    }
+
+    @Test
+    fun successfulLoginUpdatesExistingCredential() {
+        service.authenticate("existing-success-user", "old-password")
+        gateway.reset()
+
+        service.authenticate("existing-success-user", "new-password")
+
+        val stored = assertNotNull(accountQueryRepository.findByLoginId("existing-success-user"))
+        assertEquals("new-password", credentialCipher.decrypt(stored.encryptedPassword))
+    }
+
+    @Test
+    fun concurrentFirstIdentityResolutionReturnsOneDurableAccount() {
+        val ready = CountDownLatch(2)
+        val start = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            val futures = (1..2).map { index ->
+                executor.submit<Long> {
+                    ready.countDown()
+                    check(start.await(5, TimeUnit.SECONDS))
+                    accountIdentityService.resolve("concurrent-identity-user", "password-$index").id
+                }
+            }
+            check(ready.await(5, TimeUnit.SECONDS))
+            start.countDown()
+
+            val ids = futures.map { future -> future.get(10, TimeUnit.SECONDS) }
+
+            assertEquals(1, ids.toSet().size)
+            assertEquals(1L, countAccounts("concurrent-identity-user"))
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun concurrentSuccessfulLoginsPersistOneConsistentCredentialAndCookieSet() {
+        service.authenticate("concurrent-login-user", "initial-password")
+        gateway.reset()
+        gateway.concurrentLoginBarrier = CountDownLatch(2)
+        val ready = CountDownLatch(2)
+        val start = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            val futures = listOf("password-a", "password-b").map { password ->
+                executor.submit<Unit> {
+                    ready.countDown()
+                    check(start.await(5, TimeUnit.SECONDS))
+                    service.authenticate("concurrent-login-user", password)
+                }
+            }
+            check(ready.await(5, TimeUnit.SECONDS))
+            start.countDown()
+            futures.forEach { future -> future.get(10, TimeUnit.SECONDS) }
+
+            val stored = assertNotNull(accountQueryRepository.findByLoginId("concurrent-login-user"))
+            val storedPassword = credentialCipher.decrypt(stored.encryptedPassword)
+            val cookies = cookieQueryRepository.findByAccountId(stored.id)
+                .associate { cookie -> cookie.name to cookieCipher.decrypt(cookie.value) }
+            assertEquals(storedPassword, cookies["NO"])
+            assertEquals(setOf("NO", "PHPSESSID"), cookies.keys)
+            assertEquals(2, cookies.size)
+        } finally {
+            executor.shutdownNow()
+        }
     }
 
     @Test
@@ -152,32 +262,56 @@ class HofAccountServicePersistenceTest {
         val outboundAccountIds = CopyOnWriteArrayList<Long>()
         @Volatile
         var failWithServiceUnavailable: Boolean = false
+        @Volatile
+        var rejectLogin: Boolean = false
+        @Volatile
+        var concurrentLoginBarrier: CountDownLatch? = null
 
         override fun execute(
             accountId: Long,
             request: HofRequest,
             cookies: Map<String, String>,
-        ): HofHttpResponse = governor.execute(accountId, request.origin) {
-            outboundAccountIds += accountId
-            when {
-                failWithServiceUnavailable -> response(request, 503)
-                request.method == HofHttpMethod.GET -> response(
-                    request,
-                    200,
-                    setCookies = mapOf("PHPSESSID" to "initial"),
-                )
-                else -> response(
-                    request,
-                    200,
-                    body = """<a href="?char=1683198503393759">소셜</a>""",
-                    setCookies = mapOf("NO" to "42"),
-                )
+        ): HofHttpResponse {
+            val barrier = concurrentLoginBarrier
+            val outbound = {
+                outboundAccountIds += accountId
+                when {
+                    failWithServiceUnavailable -> response(request, 503)
+                    request.method == HofHttpMethod.GET -> response(
+                        request,
+                        200,
+                        setCookies = mapOf("PHPSESSID" to "initial"),
+                    )
+                    rejectLogin -> response(
+                        request,
+                        200,
+                        body = """<form><input name="id"><input name="pass"></form>""",
+                    )
+                    else -> response(
+                        request,
+                        200,
+                        body = """<a href="?char=1683198503393759">소셜</a>""",
+                        setCookies = mapOf(
+                            "NO" to if (barrier == null) "42" else requireNotNull(request.formFields["pass"]),
+                        ),
+                    )
+                }
             }
+            if (barrier != null) {
+                if (request.method == HofHttpMethod.POST) {
+                    barrier.countDown()
+                    check(barrier.await(5, TimeUnit.SECONDS))
+                }
+                return outbound()
+            }
+            return governor.execute(accountId, request.origin, outbound)
         }
 
         fun reset() {
             outboundAccountIds.clear()
             failWithServiceUnavailable = false
+            rejectLogin = false
+            concurrentLoginBarrier = null
         }
 
         private fun response(

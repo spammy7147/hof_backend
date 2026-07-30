@@ -15,7 +15,7 @@ import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.client.AccountHofGateway
-import app.spammy.hof.external.client.HofAutomationDeferredException
+import app.spammy.hof.external.client.rethrowIfHofControlSignal
 import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofRequest
 import app.spammy.hof.external.model.HofRequestOrigin
@@ -316,8 +316,8 @@ class CaptchaService(
         val response = runCatching {
             gateway.execute(challenge.account.id, request, cookies)
         }.getOrElse { error ->
-            imageManager.deleteImmediately(challenge.account.id, challenge.id, challenge.preparationVersion)
             error.rethrowIfHofControlSignal()
+            imageManager.deleteImmediately(challenge.account.id, challenge.id, challenge.preparationVersion)
             throw ApiException(ErrorCode.HOF_REQUEST_FAILED, "HOF 캡차 답안 제출에 실패했습니다.", error)
         }
         val activeCookies = mergeResponseCookies(
@@ -469,13 +469,6 @@ class CaptchaService(
                 prompt = prompt,
                 imageCookies = activeCookies,
             )
-        }
-    }
-
-    private fun Throwable.rethrowIfHofControlSignal() {
-        when {
-            this is HofAutomationDeferredException -> throw this
-            this is ApiException && errorCode == ErrorCode.HOF_TEMPORARILY_UNAVAILABLE -> throw this
         }
     }
 
