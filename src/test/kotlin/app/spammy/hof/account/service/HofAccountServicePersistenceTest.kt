@@ -1,5 +1,6 @@
 package app.spammy.hof.account.service
 
+import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.CookieQueryRepository
 import app.spammy.hof.common.error.ApiException
@@ -24,11 +25,13 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import org.mockito.Mockito
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
@@ -36,6 +39,7 @@ import org.springframework.boot.test.context.TestConfiguration
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Import
 import org.springframework.test.context.ActiveProfiles
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 
@@ -57,11 +61,14 @@ class HofAccountServicePersistenceTest {
     @Autowired
     private lateinit var service: HofAccountService
 
-    @Autowired
+    @MockitoSpyBean
     private lateinit var accountQueryRepository: AccountQueryRepository
 
     @Autowired
     private lateinit var accountIdentityService: HofAccountIdentityService
+
+    @MockitoSpyBean
+    private lateinit var accountIdentityCreator: HofAccountIdentityCreator
 
     @Autowired
     private lateinit var cookieQueryRepository: CookieQueryRepository
@@ -156,25 +163,43 @@ class HofAccountServicePersistenceTest {
 
     @Test
     fun concurrentFirstIdentityResolutionReturnsOneDurableAccount() {
+        val loginId = "concurrent-identity-user"
+        val initialLookupCount = AtomicInteger()
+        val bothObservedMissing = CountDownLatch(2)
+        val releaseCreators = CountDownLatch(1)
         val ready = CountDownLatch(2)
         val start = CountDownLatch(1)
         val executor = Executors.newFixedThreadPool(2)
+        Mockito.doAnswer { invocation ->
+            val found = invocation.callRealMethod() as HofAccountEntity?
+            if (initialLookupCount.incrementAndGet() <= 2) {
+                assertNull(found)
+                bothObservedMissing.countDown()
+                check(releaseCreators.await(5, TimeUnit.SECONDS))
+            }
+            found
+        }.`when`(accountQueryRepository).findByLoginId(loginId)
         try {
             val futures = (1..2).map { index ->
                 executor.submit<Long> {
                     ready.countDown()
                     check(start.await(5, TimeUnit.SECONDS))
-                    accountIdentityService.resolve("concurrent-identity-user", "password-$index").id
+                    accountIdentityService.resolve(loginId, "password-$index").id
                 }
             }
             check(ready.await(5, TimeUnit.SECONDS))
             start.countDown()
+            check(bothObservedMissing.await(5, TimeUnit.SECONDS))
+            releaseCreators.countDown()
 
             val ids = futures.map { future -> future.get(10, TimeUnit.SECONDS) }
 
             assertEquals(1, ids.toSet().size)
-            assertEquals(1L, countAccounts("concurrent-identity-user"))
+            assertEquals(1L, countAccounts(loginId))
+            Mockito.verify(accountIdentityCreator).create(loginId, "password-1")
+            Mockito.verify(accountIdentityCreator).create(loginId, "password-2")
         } finally {
+            releaseCreators.countDown()
             executor.shutdownNow()
         }
     }
