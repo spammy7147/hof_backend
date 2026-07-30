@@ -20,7 +20,7 @@ import kotlin.test.assertTrue
 
 class HofRequestGovernorTest {
     @Test
-    fun `waits at least the configured interval between completed requests`() {
+    fun `waits one second by default between completed requests`() {
         val clock = MutableTimeProvider(NOW)
         val waiter = RecordingWaiter(clock)
         val governor = governor(clock, waiter)
@@ -28,7 +28,7 @@ class HofRequestGovernorTest {
         governor.execute(HofRequestOrigin.INTERACTIVE) { response(200) }
         governor.execute(HofRequestOrigin.AUTOMATION) { response(200) }
 
-        assertEquals(listOf(Duration.ofMillis(250)), waiter.waits)
+        assertEquals(listOf(Duration.ofSeconds(1)), waiter.waits)
     }
 
     @Test
@@ -97,7 +97,7 @@ class HofRequestGovernorTest {
         }
         governor.execute(HofRequestOrigin.AUTOMATION) { response(200) }
 
-        assertEquals(listOf(Duration.ofMillis(250)), waiter.waits)
+        assertEquals(listOf(Duration.ofSeconds(1)), waiter.waits)
     }
 
     @Test
