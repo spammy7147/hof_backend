@@ -2,6 +2,7 @@ package app.spammy.hof.town.common.service
 
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
+import app.spammy.hof.external.model.HofFormField
 import app.spammy.hof.town.common.model.GuardedTownAction
 import app.spammy.hof.town.common.model.ParsedTownCandidate
 import app.spammy.hof.town.common.model.ParsedTownPage
@@ -35,20 +36,29 @@ class TownActionGuard {
             .takeIf(Map<*, *>::isNotEmpty)
             ?.let { invalid("하나만 선택할 수 있는 항목을 여러 개 선택했습니다.") }
 
-        val fields = linkedMapOf<String, String>()
-        form.hiddenFields.forEach { (name, value) -> putStrict(fields, name, value) }
-        form.submitFields.forEach { (name, value) -> putStrict(fields, name, value) }
-        candidates.forEach { (candidate, quantity) ->
-            putStrict(fields, candidate.inputName, candidate.inputValue)
-            candidate.quantityFieldName?.let { putStrict(fields, it, quantity.toString()) }
+        val fields = mutableListOf<PositionedField>()
+        form.hiddenFields.zip(form.hiddenFieldPositions).forEach { (field, position) ->
+            fields += PositionedField(position, field)
         }
-        return GuardedTownAction(form, fields)
-    }
-
-    private fun putStrict(fields: MutableMap<String, String>, name: String, value: String) {
-        val previous = fields.putIfAbsent(name, value)
-        if (previous != null && previous != value) invalid("HOF form 필드가 충돌하여 안전하게 실행할 수 없습니다.")
+        form.submitFields.zip(form.submitFieldPositions).forEach { (field, position) ->
+            fields += PositionedField(position, field)
+        }
+        candidates.forEach { (candidate, quantity) ->
+            fields += PositionedField(candidate.inputPosition, HofFormField(candidate.inputName, candidate.inputValue))
+            candidate.quantityFieldName?.let { name ->
+                fields += PositionedField(
+                    candidate.quantityPosition ?: candidate.inputPosition + 1,
+                    HofFormField(name, quantity.toString()),
+                )
+            }
+        }
+        return GuardedTownAction(form, fields.sortedBy(PositionedField::position).map(PositionedField::field))
     }
 
     private fun invalid(message: String): Nothing = throw ApiException(ErrorCode.INVALID_REQUEST, message)
+
+    private data class PositionedField(
+        val position: Int,
+        val field: HofFormField,
+    )
 }

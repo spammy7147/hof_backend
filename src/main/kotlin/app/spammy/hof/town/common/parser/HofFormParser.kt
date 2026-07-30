@@ -1,6 +1,7 @@
 package app.spammy.hof.town.common.parser
 
 import app.spammy.hof.external.model.HofHttpMethod
+import app.spammy.hof.external.model.HofFormField
 import app.spammy.hof.town.common.model.ParsedTownCandidate
 import app.spammy.hof.town.common.model.ParsedTownForm
 import app.spammy.hof.town.common.model.ParsedTownPage
@@ -16,11 +17,11 @@ import org.springframework.stereotype.Component
 class HofFormParser {
     fun parse(html: String, pageUrl: String = HOF_BASE_URL): ParsedTownPage {
         val document = Jsoup.parse(html, pageUrl)
-        val parsed = document.select("form").flatMap { form -> parseForm(form, pageUrl) }
+        val parsed = document.select("form").flatMapIndexed { formIndex, form -> parseForm(form, formIndex, pageUrl) }
         return ParsedTownPage(parsed)
     }
 
-    private fun parseForm(form: Element, pageUrl: String): List<ParsedTownForm> {
+    private fun parseForm(form: Element, formIndex: Int, pageUrl: String): List<ParsedTownForm> {
         val method = if (form.attr("method").equals("post", ignoreCase = true)) {
             HofHttpMethod.POST
         } else {
@@ -32,17 +33,29 @@ class HofFormParser {
         val hiddenFields = ownedControls
             .filter { it.tagName() == "input" && it.attr("type").equals("hidden", ignoreCase = true) }
             .mapNotNull(::namedValue)
-            .toMap()
+        val hiddenFieldPositions = ownedControls.mapIndexedNotNull { index, control ->
+            index.takeIf {
+                control.tagName() == "input" &&
+                    control.attr("type").equals("hidden", ignoreCase = true) &&
+                    control.attr("name").isNotBlank()
+            }
+        }
         val submitControls = ownedControls.filter(::isSubmitControl)
-        val submitVariants = submitControls.mapNotNull(::namedValue).map(::mapOf).ifEmpty { listOf(emptyMap()) }
+        val submitVariants = submitControls.mapNotNull { control ->
+            namedValue(control)?.let { field -> listOf(field) to listOf(ownedControls.indexOf(control)) }
+        }.ifEmpty { listOf(emptyList<HofFormField>() to emptyList()) }
         val rows = parseRows(form, ownedControls)
 
-        return submitVariants.map { submitFields ->
+        return submitVariants.map { (submitFields, submitFieldPositions) ->
             val fingerprint = buildString {
-                append(method.name).append('|').append(actionUrl).append('|')
-                append(submitFields.toSortedMap().entries.joinToString("&") { "${it.key}=${it.value}" })
+                append(formIndex).append('|').append(method.name).append('|').append(actionUrl).append('|')
+                append(submitFields.joinToString("&") { "${it.name}=${it.value}" })
                 append('|')
                 append(ownedControls.map { it.attr("name") }.filter(String::isNotBlank).distinct().sorted().joinToString(","))
+                append('|')
+                append(rows.mapNotNull(ParsedTownRow::candidate).joinToString("&") { candidate ->
+                    "${candidate.inputName}=${candidate.inputValue}"
+                })
             }
             ParsedTownForm(
                 actionId = sha256(fingerprint),
@@ -51,6 +64,8 @@ class HofFormParser {
                 rows = rows,
                 hiddenFields = hiddenFields,
                 submitFields = submitFields,
+                hiddenFieldPositions = hiddenFieldPositions,
+                submitFieldPositions = submitFieldPositions,
             )
         }
     }
@@ -92,10 +107,11 @@ class HofFormParser {
         }
         if (selection == null) return ParsedTownRow(label)
 
+        val selectionContainer = selection.quantityContainer()
         val quantityControl = controls.firstOrNull { control ->
-            control !== selection && control.closest("tr") === selection.closest("tr") &&
+            control !== selection && selectionContainer != null && control.quantityContainer() === selectionContainer &&
                 control.tagName() == "input" &&
-                control.attr("type").lowercase() in QUANTITY_TYPES &&
+                control.isQuantityControl() &&
                 control.attr("name").isNotBlank()
         }
         val value = selection.attr("value").trim().ifBlank { "on" }
@@ -114,6 +130,8 @@ class HofFormParser {
                 } else {
                     TownSelectionType.RADIO
                 },
+                inputPosition = controls.indexOf(selection),
+                quantityPosition = quantityControl?.let(controls::indexOf),
             ),
         )
     }
@@ -125,14 +143,21 @@ class HofFormParser {
         }
     }
 
-    private fun namedValue(element: Element): Pair<String, String>? {
+    private fun namedValue(element: Element): HofFormField? {
         val name = element.attr("name").trim()
         if (name.isBlank()) return null
         val value = when {
             element.tagName() == "button" -> element.attr("value").ifBlank { element.text() }
             else -> element.attr("value")
         }
-        return name to value
+        return HofFormField(name, value)
+    }
+
+    private fun Element.quantityContainer(): Element? = closest("tr") ?: closest("li") ?: parent()
+
+    private fun Element.isQuantityControl(): Boolean {
+        val type = attr("type").lowercase()
+        return type == "number" || (type in TEXT_INPUT_TYPES && QUANTITY_NAME.matches(attr("name")))
     }
 
     private fun isSubmitControl(element: Element): Boolean = when (element.tagName()) {
@@ -153,6 +178,7 @@ class HofFormParser {
     private companion object {
         const val HOF_BASE_URL = "http://sic.zerosic.com/ZeroHOF/index.php"
         val SELECTION_TYPES = setOf("radio", "checkbox")
-        val QUANTITY_TYPES = setOf("number", "text")
+        val TEXT_INPUT_TYPES = setOf("", "text", "tel")
+        val QUANTITY_NAME = Regex("^(qty|quantity|count|amount|num|number|many|suu)(_|\\[|$).*", RegexOption.IGNORE_CASE)
     }
 }

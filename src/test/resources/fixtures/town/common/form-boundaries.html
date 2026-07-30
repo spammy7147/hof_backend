@@ -17,5 +17,19 @@
     <input type="radio" name="gift" value="foreign-item">
     <button type="submit" name="Create" value="선물">Create</button>
   </form>
+  <form action="index.php?menu=shop" method="post">
+    <input type="hidden" name="token" value="first">
+    <input type="hidden" name="token" value="second">
+    <div>
+      <input type="radio" name="item" value="item-2">
+      <span>검색창과 같은 컨테이너의 항목</span>
+      <input type="text" name="search" value="검색어">
+    </div>
+    <button type="submit" name="Create" value="교환">Create</button>
+  </form>
+  <form action="index.php?menu=shop" method="post">
+    <input type="radio" name="item" value="item-1">
+    <button type="submit" name="Create" value="교환">Create</button>
+  </form>
 </body>
 </html>

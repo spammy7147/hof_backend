@@ -1,5 +1,8 @@
 package app.spammy.hof.external.client
 
+import app.spammy.hof.common.error.ApiException
+import app.spammy.hof.common.error.ErrorCode
+import app.spammy.hof.external.model.HofFormField
 import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
@@ -45,12 +48,11 @@ class HofHttpClient private constructor(
             "HOF OUT method={} url={} formFields={} cookieNames={}",
             request.method,
             request.url,
-            request.formFields.keys.sorted(),
+            request.formEntries.map(HofFormField::name).distinct().sorted(),
             cookies.keys.sorted(),
         )
-        val httpRequest = buildHttpRequest(request, cookies)
-        val response = runCatching {
-            client.send(httpRequest, HttpResponse.BodyHandlers.ofByteArray())
+        val redirectResponse = runCatching {
+            sendWithSafeRedirects(request, cookies)
         }.getOrElse { error ->
             log.error(
                 "HOF ERROR method={} url={} durationMs={} error={}",
@@ -62,8 +64,8 @@ class HofHttpClient private constructor(
             )
             throw error
         }
+        val response = redirectResponse.response
         val contentType = response.headers().firstValue("Content-Type").orElse(null)
-        val setCookies = parseSetCookies(response.headers())
 
         log.info(
             "HOF IN method={} url={} status={} finalUrl={} durationMs={} setCookieNames={} bytes={}",
@@ -72,7 +74,7 @@ class HofHttpClient private constructor(
             response.statusCode(),
             response.uri(),
             elapsedMs(startedAt),
-            setCookies.keys.sorted(),
+            redirectResponse.setCookies.keys.sorted(),
             response.body().size,
         )
 
@@ -80,8 +82,44 @@ class HofHttpClient private constructor(
             statusCode = response.statusCode(),
             finalUrl = response.uri().toString(),
             body = decodeBody(response.body(), contentType),
-            setCookies = setCookies,
+            setCookies = redirectResponse.setCookies,
         )
+    }
+
+    private fun sendWithSafeRedirects(
+        initialRequest: HofRequest,
+        initialCookies: Map<String, String>,
+    ): RedirectResponse {
+        val trustedOrigin = URI.create(initialRequest.url)
+        var request = initialRequest
+        var cookies = initialCookies
+        val receivedCookies = linkedMapOf<String, String>()
+
+        repeat(MAX_REDIRECTS + 1) { redirectCount ->
+            val response = client.send(buildHttpRequest(request, cookies), HttpResponse.BodyHandlers.ofByteArray())
+            val setCookies = parseSetCookies(response.headers())
+            receivedCookies.putAll(setCookies)
+            val location = response.headers().firstValue("Location").orElse(null)
+            if (response.statusCode() !in REDIRECT_STATUSES || location == null) {
+                return RedirectResponse(response, receivedCookies)
+            }
+            if (redirectCount >= MAX_REDIRECTS) {
+                throw ApiException(ErrorCode.HOF_REQUEST_FAILED, "HOF redirect 횟수가 너무 많습니다.")
+            }
+            val target = response.uri().resolve(location).normalize()
+            if (!sameOrigin(trustedOrigin, target)) {
+                throw ApiException(ErrorCode.HOF_REQUEST_FAILED, "HOF 외부 주소로의 redirect를 차단했습니다.")
+            }
+            cookies = cookies + setCookies
+            val preserveMethod = response.statusCode() in setOf(307, 308)
+            request = HofRequest(
+                method = if (preserveMethod) request.method else HofHttpMethod.GET,
+                url = target.toASCIIString(),
+                origin = request.origin,
+                formEntries = if (preserveMethod) request.formEntries else emptyList(),
+            )
+        }
+        error("unreachable")
     }
 
     /**
@@ -89,7 +127,7 @@ class HofHttpClient private constructor(
      */
     private fun buildHttpRequest(request: HofRequest, cookies: Map<String, String>): HttpRequest {
         val requestUrl = when (request.method) {
-            HofHttpMethod.GET -> appendGetQuery(request.url, request.formFields)
+            HofHttpMethod.GET -> appendGetQuery(request.url, request.formEntries)
             HofHttpMethod.POST -> request.url
         }
         val builder = HttpRequest.newBuilder(URI.create(requestUrl))
@@ -106,7 +144,7 @@ class HofHttpClient private constructor(
             HofHttpMethod.GET -> builder.GET().build()
             HofHttpMethod.POST -> builder
                 .header("Content-Type", "application/x-www-form-urlencoded")
-                .POST(HttpRequest.BodyPublishers.ofString(encodeForm(request.formFields)))
+                .POST(HttpRequest.BodyPublishers.ofString(encodeForm(request.formEntries)))
                 .build()
         }
     }
@@ -114,7 +152,7 @@ class HofHttpClient private constructor(
     /**
      * GET 요청일 때 formFields를 query string으로 붙인다.
      */
-    private fun appendGetQuery(url: String, fields: Map<String, String>): String {
+    private fun appendGetQuery(url: String, fields: List<HofFormField>): String {
         if (fields.isEmpty()) {
             return url
         }
@@ -132,12 +170,23 @@ class HofHttpClient private constructor(
     }
 
     /**
-     * form field Map을 x-www-form-urlencoded body/query 문자열로 변환한다.
+     * 반복 이름과 DOM 순서를 유지해 form field 목록을 x-www-form-urlencoded 문자열로 변환한다.
      */
-    private fun encodeForm(fields: Map<String, String>): String =
-        fields.entries.joinToString("&") { (name, value) ->
-            "${urlEncode(name)}=${urlEncode(value)}"
+    private fun encodeForm(fields: List<HofFormField>): String =
+        fields.joinToString("&") { field ->
+            "${urlEncode(field.name)}=${urlEncode(field.value)}"
         }
+
+    private fun sameOrigin(first: URI, second: URI): Boolean =
+        first.scheme.equals(second.scheme, ignoreCase = true) &&
+            first.host.equals(second.host, ignoreCase = true) &&
+            effectivePort(first) == effectivePort(second)
+
+    private fun effectivePort(uri: URI): Int = when {
+        uri.port >= 0 -> uri.port
+        uri.scheme.equals("https", ignoreCase = true) -> 443
+        else -> 80
+    }
 
     private fun urlEncode(value: String): String =
         URLEncoder.encode(value, StandardCharsets.UTF_8)
@@ -179,7 +228,7 @@ class HofHttpClient private constructor(
         private val CHARSET_PATTERN = Regex("""charset\s*=\s*"?([^;\s"]+)""", RegexOption.IGNORE_CASE)
 
         private fun defaultClient(): HttpClient = HttpClient.newBuilder()
-            .followRedirects(HttpClient.Redirect.NORMAL)
+            .followRedirects(HttpClient.Redirect.NEVER)
             .connectTimeout(Duration.ofSeconds(10))
             .build()
 
@@ -197,5 +246,13 @@ class HofHttpClient private constructor(
 
         private fun elapsedMs(startedAt: Long): Long =
             (System.nanoTime() - startedAt) / 1_000_000
+
+        private val REDIRECT_STATUSES = setOf(301, 302, 303, 307, 308)
+        private const val MAX_REDIRECTS = 5
     }
+
+    private data class RedirectResponse(
+        val response: HttpResponse<ByteArray>,
+        val setCookies: Map<String, String>,
+    )
 }

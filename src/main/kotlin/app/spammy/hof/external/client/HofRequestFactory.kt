@@ -1,6 +1,7 @@
 package app.spammy.hof.external.client
 
 import app.spammy.hof.external.model.HofBattleType
+import app.spammy.hof.external.model.HofFormField
 import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofRequest
 import app.spammy.hof.external.model.HofRequestOrigin
@@ -83,13 +84,14 @@ class HofRequestFactory {
     fun townForm(
         method: HofHttpMethod,
         actionUrl: String,
-        formFields: Map<String, String>,
+        formEntries: List<HofFormField>,
         origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
     ): HofRequest = HofRequest(
         method = method,
         url = requireSafeTownUrl(actionUrl),
-        formFields = formFields.toMap(),
+        formFields = formEntries.associate { it.name to it.value },
         origin = origin,
+        formEntries = formEntries.toList(),
     )
 
     fun questAction(

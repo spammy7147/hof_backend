@@ -2,6 +2,7 @@ package app.spammy.hof.town.common.service
 
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.external.model.HofHttpMethod
+import app.spammy.hof.external.model.HofFormField
 import app.spammy.hof.town.common.model.ParsedTownCandidate
 import app.spammy.hof.town.common.model.ParsedTownForm
 import app.spammy.hof.town.common.model.ParsedTownPage
@@ -27,8 +28,8 @@ class TownActionGuardTest {
         method = HofHttpMethod.POST,
         actionUrl = "http://sic.zerosic.com/ZeroHOF/index.php?menu=shop",
         rows = listOf(ParsedTownRow("선택 가능 아이템", candidate)),
-        hiddenFields = mapOf("csrf" to "fresh-token"),
-        submitFields = mapOf("Create" to "교환"),
+        hiddenFields = listOf(HofFormField("csrf", "fresh-token")),
+        submitFields = listOf(HofFormField("Create", "교환")),
     )
     private val page = ParsedTownPage(listOf(form))
 

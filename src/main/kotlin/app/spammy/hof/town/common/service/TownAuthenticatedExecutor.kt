@@ -2,6 +2,8 @@ package app.spammy.hof.town.common.service
 
 import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.CookieQueryRepository
+import app.spammy.hof.account.entity.HofAccountEntity
+import app.spammy.hof.captcha.service.CaptchaService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.client.AccountHofGateway
@@ -32,14 +34,15 @@ class TownAuthenticatedExecutor(
     private val formParser: HofFormParser,
     private val resultParser: HofResultParser,
     private val actionGuard: TownActionGuard,
+    private val captchaService: CaptchaService,
 ) {
     fun load(
         accountId: Long,
         pageUrl: String,
         origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
     ): ParsedTownPage {
-        val cookies = authenticatedCookies(accountId)
-        val response = executeAuthenticated(accountId, requestFactory.townPage(pageUrl, origin), cookies)
+        val context = authenticatedContext(accountId)
+        val response = executeAuthenticated(context.account, requestFactory.townPage(pageUrl, origin), context.cookies)
         return formParser.parse(response.body, response.finalUrl)
     }
 
@@ -49,19 +52,19 @@ class TownAuthenticatedExecutor(
         action: TownActionRequest,
         origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
     ): ExecutedTownAction {
-        val cookies = authenticatedCookies(accountId)
-        val current = executeAuthenticated(accountId, requestFactory.townPage(pageUrl, origin), cookies)
+        val context = authenticatedContext(accountId)
+        val current = executeAuthenticated(context.account, requestFactory.townPage(pageUrl, origin), context.cookies)
         val currentPage = formParser.parse(current.body, current.finalUrl)
         val guarded = actionGuard.guard(currentPage, action)
         val actionResponse = executeAuthenticated(
-            accountId = accountId,
+            account = context.account,
             request = requestFactory.townForm(
                 method = guarded.form.method,
                 actionUrl = guarded.form.actionUrl,
-                formFields = guarded.formFields,
+                formEntries = guarded.formEntries,
                 origin = origin,
             ),
-            cookies = cookies + current.setCookies,
+            cookies = context.cookies + current.setCookies,
         )
         return ExecutedTownAction(
             result = resultParser.parse(actionResponse.body),
@@ -69,24 +72,34 @@ class TownAuthenticatedExecutor(
         )
     }
 
-    private fun authenticatedCookies(accountId: Long): Map<String, String> {
-        accountQueryRepository.findById(accountId)
+    private fun authenticatedContext(accountId: Long): AuthenticatedContext {
+        val account = accountQueryRepository.findById(accountId)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
-        return cookieQueryRepository.findValueMapByAccountId(accountId).ifEmpty {
+        val cookies = cookieQueryRepository.findValueMapByAccountId(accountId).ifEmpty {
             throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "저장된 HOF 로그인 쿠키가 없습니다.")
         }
+        return AuthenticatedContext(account, cookies)
     }
 
     private fun executeAuthenticated(
-        accountId: Long,
+        account: HofAccountEntity,
         request: app.spammy.hof.external.model.HofRequest,
         cookies: Map<String, String>,
     ): HofHttpResponse {
-        val response = gateway.execute(accountId, request, cookies)
+        val response = gateway.execute(account.id, request, cookies)
         val login = loginStateParser.parse(response.body)
         if (login.hasLoginForm && !login.isLoggedIn) {
             throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "HOF 로그인 세션이 만료되었습니다.")
         }
+        val sourceUrl = response.finalUrl.ifBlank { request.url }
+        if (captchaService.detectAndRecord(account, response.body, sourceUrl) != null) {
+            throw ApiException(ErrorCode.CAPTCHA_REQUIRED, "캡차 또는 통행증 입력이 필요합니다.")
+        }
         return response
     }
+
+    private data class AuthenticatedContext(
+        val account: HofAccountEntity,
+        val cookies: Map<String, String>,
+    )
 }

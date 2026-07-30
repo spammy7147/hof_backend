@@ -15,7 +15,7 @@ class HofFormParserTest {
     fun `only controls owned by selected form become candidates`() {
         val page = parser.parse(fixture("fixtures/town/common/form-boundaries.html"))
 
-        assertEquals(2, page.forms.size)
+        assertEquals(4, page.forms.size)
         assertEquals(listOf("item-1"), page.forms.first().candidates.map { it.id })
         assertFalse(page.forms.first().rows.single { it.label.contains("표시 전용") }.selectable)
         assertNotEquals(page.forms[0].actionId, page.forms[1].actionId)
@@ -25,8 +25,8 @@ class HofFormParserTest {
     fun `hidden and submit fields are retained only inside server model`() {
         val form = parser.parse(fixture("fixtures/town/common/form-boundaries.html")).forms.first()
 
-        assertEquals(mapOf("csrf" to "server-only"), form.hiddenFields)
-        assertEquals(mapOf("Create" to "교환"), form.submitFields)
+        assertEquals(listOf("csrf" to "server-only"), form.hiddenFields.map { it.name to it.value })
+        assertEquals(listOf("Create" to "교환"), form.submitFields.map { it.name to it.value })
     }
 
     @Test
@@ -38,7 +38,35 @@ class HofFormParserTest {
         assertFalse(json.contains("inputName"))
         assertFalse(json.contains("inputValue"))
         assertFalse(json.contains("quantityFieldName"))
+        assertFalse(json.contains("actionUrl"))
+        assertFalse(json.contains("sic.zerosic.com"))
+        assertFalse(json.contains("HofHttpMethod"))
+        assertFalse(json.contains("POST"))
         assertTrue(json.contains("item-1"))
+    }
+
+    @Test
+    fun `structurally identical forms receive unique opaque action ids`() {
+        val forms = parser.parse(fixture("fixtures/town/common/form-boundaries.html")).forms
+
+        assertEquals(forms.size, forms.map { it.actionId }.distinct().size)
+        assertTrue(forms.all { it.actionId.matches(Regex("[0-9a-f]{64}")) })
+    }
+
+    @Test
+    fun `unrelated text input is not inferred as quantity and repeated fields are preserved`() {
+        val form = parser.parse(fixture("fixtures/town/common/form-boundaries.html")).forms[2]
+        val guarded = app.spammy.hof.town.common.service.TownActionGuard().guard(
+            app.spammy.hof.town.common.model.ParsedTownPage(listOf(form)),
+            app.spammy.hof.town.common.model.TownActionRequest(
+                form.actionId,
+                listOf(app.spammy.hof.town.common.model.TownActionSelection("item-2", 3)),
+            ),
+        )
+
+        assertEquals(listOf("token", "token", "item", "Create"), guarded.formEntries.map { it.name })
+        assertEquals(listOf("first", "second"), guarded.formEntries.filter { it.name == "token" }.map { it.value })
+        assertFalse(guarded.formEntries.any { it.name == "search" })
     }
 
     private fun fixture(path: String): String = requireNotNull(javaClass.classLoader.getResource(path))
