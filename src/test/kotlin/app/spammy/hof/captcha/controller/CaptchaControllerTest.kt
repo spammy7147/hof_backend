@@ -4,13 +4,16 @@ import app.spammy.hof.account.service.HofAccountService
 import app.spammy.hof.account.service.HofSessionRecoveryService
 import app.spammy.hof.captcha.dto.CaptchaChallengeResponse
 import app.spammy.hof.captcha.dto.SubmitCaptchaAnswerRequest
+import app.spammy.hof.captcha.service.CaptchaPreparationConsumedException
 import app.spammy.hof.captcha.service.CaptchaService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
+import app.spammy.hof.external.client.HofAutomationDeferredException
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertSame
 import org.mockito.Mockito
 
 class CaptchaControllerTest {
@@ -59,6 +62,50 @@ class CaptchaControllerTest {
         Mockito.verify(captchaService).invalidateCurrentPreparation(1L)
         Mockito.verifyNoInteractions(accountService)
         Mockito.verify(captchaService, Mockito.times(1)).submitAnswer(1L, 7L, "AB12", 3)
+    }
+
+    @Test
+    fun submitAnswerInvalidatesConsumedPreparationAndRethrowsOriginalControlSignal() {
+        val signal = ApiException(ErrorCode.HOF_TEMPORARILY_UNAVAILABLE, "retry later")
+        Mockito.`when`(captchaService.submitAnswer(1L, 7L, "AB12", 3))
+            .thenThrow(CaptchaPreparationConsumedException(signal))
+
+        val actual = assertFailsWith<ApiException> {
+            controller.submitAnswer(1L, 7L, SubmitCaptchaAnswerRequest("AB12", 3))
+        }
+
+        assertSame(signal, actual)
+        Mockito.verify(captchaService).invalidateCurrentPreparation(1L)
+    }
+
+    @Test
+    fun submitAnswerDirectControlRejectionDoesNotInvalidatePreparation() {
+        val signal = ApiException(ErrorCode.HOF_TEMPORARILY_UNAVAILABLE, "retry later")
+        Mockito.`when`(captchaService.submitAnswer(1L, 7L, "AB12", 3)).thenThrow(signal)
+
+        val actual = assertFailsWith<ApiException> {
+            controller.submitAnswer(1L, 7L, SubmitCaptchaAnswerRequest("AB12", 3))
+        }
+
+        assertSame(signal, actual)
+        Mockito.verify(captchaService, Mockito.never()).invalidateCurrentPreparation(1L)
+    }
+
+    @Test
+    fun submitAnswerConsumedPreparationPreservesAutomationDeferralMetadata() {
+        val retryAt = Instant.parse("2026-07-30T09:30:00Z")
+        val signal = HofAutomationDeferredException(retryAt, 3)
+        Mockito.`when`(captchaService.submitAnswer(1L, 7L, "AB12", 3))
+            .thenThrow(CaptchaPreparationConsumedException(signal))
+
+        val actual = assertFailsWith<HofAutomationDeferredException> {
+            controller.submitAnswer(1L, 7L, SubmitCaptchaAnswerRequest("AB12", 3))
+        }
+
+        assertSame(signal, actual)
+        assertEquals(retryAt, actual.retryAt)
+        assertEquals(3, actual.consecutiveFailures)
+        Mockito.verify(captchaService).invalidateCurrentPreparation(1L)
     }
 
     private fun readyCaptcha() = CaptchaChallengeResponse(

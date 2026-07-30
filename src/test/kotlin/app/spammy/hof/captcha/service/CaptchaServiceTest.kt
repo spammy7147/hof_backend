@@ -726,8 +726,9 @@ class CaptchaServiceTest {
     }
 
     @Test
-    fun policeFollowUpPreservesFriendlyUnavailableSignal() {
+    fun policeFollowUpMarksPreparationConsumedWhilePreservingFriendlySignal() {
         val challenge = pendingChallenge(id = 32L)
+        captchaImageFileStore.files["1:32:1"] = StoredFile("image/png", byteArrayOf(1))
         val signal = ApiException(ErrorCode.HOF_TEMPORARILY_UNAVAILABLE, "temporarily unavailable")
         stubOwnedChallenge(32L, challenge)
         Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(listOf(cookie()))
@@ -735,12 +736,30 @@ class CaptchaServiceTest {
         gateway.failure = signal
         gateway.failOnCall = 2
 
-        val actual = assertFailsWith<ApiException> {
+        val actual = assertFailsWith<CaptchaPreparationConsumedException> {
             service.submitAnswer(1L, 32L, "1234", 1)
         }
 
-        assertSame(signal, actual)
-        assertEquals(ErrorCode.HOF_TEMPORARILY_UNAVAILABLE, actual.errorCode)
+        assertSame(signal, actual.controlSignal)
+        assertEquals(2, gateway.requests.size)
+        assertEquals(emptyList(), captchaImageFileStore.deletedKeys)
+        assertNotNull(captchaImageFileStore.files["1:32:1"])
+    }
+
+    @Test
+    fun policeFollowUpOrdinaryFailureKeepsMetadataFallbackSemantics() {
+        val challenge = pendingChallenge(id = 33L)
+        stubOwnedChallenge(33L, challenge)
+        Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(listOf(cookie()))
+        gateway.responses += vigilanteGateResponse(challenge.sourceUrl)
+        gateway.failure = IllegalStateException("network down")
+        gateway.failOnCall = 2
+
+        val actual = assertFailsWith<ApiException> {
+            service.submitAnswer(1L, 33L, "1234", 1)
+        }
+
+        assertEquals(ErrorCode.CAPTCHA_PREPARATION_FAILED, actual.errorCode)
         assertEquals(2, gateway.requests.size)
     }
 

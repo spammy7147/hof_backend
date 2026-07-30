@@ -5,19 +5,24 @@ import app.spammy.hof.account.entity.HofCookieEntity
 import app.spammy.hof.account.repository.CookieQueryRepository
 import app.spammy.hof.account.repository.HofAccountRepository
 import app.spammy.hof.account.repository.HofCookieRepository
+import app.spammy.hof.account.service.HofAccountService
 import app.spammy.hof.account.service.HofCookieCipher
+import app.spammy.hof.account.service.HofSessionRecoveryService
+import app.spammy.hof.captcha.controller.CaptchaController
+import app.spammy.hof.captcha.dto.CaptchaChallengeResponse
+import app.spammy.hof.captcha.dto.SubmitCaptchaAnswerRequest
 import app.spammy.hof.captcha.entity.CaptchaChallengeEntity
 import app.spammy.hof.captcha.repository.CaptchaChallengeRepository
 import app.spammy.hof.captcha.repository.CaptchaQueryRepository
-import app.spammy.hof.captcha.dto.CaptchaChallengeResponse
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.persistence.QueryDslConfig
 import app.spammy.hof.common.time.TimeProvider
-import app.spammy.hof.external.client.HofBinaryGateway
 import app.spammy.hof.external.client.AccountHofGateway
+import app.spammy.hof.external.client.HofBinaryGateway
 import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.model.HofBinaryResponse
+import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
 import app.spammy.hof.external.model.HofRequestOrigin
@@ -37,7 +42,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
+import org.mockito.Mockito
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
 import org.springframework.boot.test.context.TestConfiguration
@@ -391,6 +398,54 @@ class CaptchaServicePersistenceTest {
             assertNotNull(queryRepository.findOwnedByAccountIdAndId(account.id, challenge.id)).status,
         )
         assertEquals(emptyList(), imageStore.events)
+    }
+
+    @Test
+    fun controllerInvalidatesCommittedPreparationAfterPoliceFollowUpControlFailure() {
+        val account = savedAccountWithCookie("captcha-service-consumed-control")
+        val challenge = detectAndPrepare(account, "token", "consumed")
+        imageStore.clearEvents()
+        val signal = ApiException(ErrorCode.HOF_TEMPORARILY_UNAVAILABLE, "retry later")
+        gateway.handler = { request ->
+            if (request.method == HofHttpMethod.POST) {
+                HofHttpResponse(
+                    statusCode = 200,
+                    finalUrl = POLICE_URL,
+                    body = """
+                        <html><body>
+                          <font color="red">자경단</font>
+                          <p>자경단에서 통행증을 발급받아주세요.</p>
+                        </body></html>
+                    """.trimIndent(),
+                    setCookies = emptyMap(),
+                )
+            } else {
+                throw signal
+            }
+        }
+        val controller = CaptchaController(
+            service,
+            HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java)),
+        )
+
+        val actual = assertFailsWith<ApiException> {
+            controller.submitAnswer(
+                account.id,
+                challenge.id,
+                SubmitCaptchaAnswerRequest("7319", challenge.preparationVersion),
+            )
+        }
+
+        assertSame(signal, actual)
+        val invalidated = assertNotNull(queryRepository.findOwnedByAccountIdAndId(account.id, challenge.id))
+        assertEquals("DETECTED", invalidated.status)
+        assertEquals(0, invalidated.preparationVersion)
+        assertNull(invalidated.imageUrl)
+        assertNull(invalidated.submitUrl)
+        assertEquals(emptyList(), queryRepository.findFormFields(challenge.id))
+        assertNull(imageStore.read(account.id, challenge.id, challenge.preparationVersion))
+        assertEquals(listOf("delete:${account.id}:${challenge.id}:${challenge.preparationVersion}"), imageStore.events)
+        assertEquals(2, gateway.requests.size)
     }
 
     private fun savedAccountWithCookie(loginId: String): HofAccountEntity {

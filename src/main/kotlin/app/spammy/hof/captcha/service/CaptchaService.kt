@@ -32,6 +32,10 @@ data class CaptchaImageResponse(
     val bytes: ByteArray,
 )
 
+class CaptchaPreparationConsumedException(
+    val controlSignal: RuntimeException,
+) : RuntimeException("CAPTCHA preparation was consumed before a follow-up request failed", controlSignal)
+
 @Service
 /**
  * 캡차/자경단 통행증 감지, 이미지 저장, 답안 제출을 담당한다.
@@ -264,8 +268,8 @@ class CaptchaService(
      * 사용자가 입력한 답안을 HOF 원본 form에 맞춰 제출한다.
      *
      * challenge row를 비관적으로 잠근 뒤 READY 상태와 준비 버전을 검사하므로 동시 제출 중 하나만 HOF를 호출한다.
-     * 정상 성공 삭제와 실패 응답의 이미지 교체는 DB commit 후 실행한다. 다만 외부 gateway 자체가
-     * 예외를 던진 경우에는 기존 의도대로 재사용 위험이 있는 이미지를 즉시 삭제하며 DB 변경은 rollback한다.
+     * 첫 제출의 제어 신호는 준비 상태를 보존하고 일반 transport 실패만 이미지를 즉시 삭제한다. 제출 성공 뒤
+     * 경찰 후속 조회의 제어 신호는 marker로 transaction을 먼저 unwind한 뒤 controller가 준비 상태를 무효화한다.
      */
     @Transactional
     fun submitAnswer(
@@ -423,7 +427,11 @@ class CaptchaService(
                 cookies,
             )
         }.getOrElse { error ->
-            error.rethrowIfHofControlSignal()
+            try {
+                error.rethrowIfHofControlSignal()
+            } catch (controlSignal: RuntimeException) {
+                throw CaptchaPreparationConsumedException(controlSignal)
+            }
             return null
         }
         if (response.statusCode !in 200..299) {

@@ -3,6 +3,7 @@ package app.spammy.hof.captcha.controller
 import app.spammy.hof.account.service.HofSessionRecoveryService
 import app.spammy.hof.captcha.dto.CaptchaChallengeResponse
 import app.spammy.hof.captcha.dto.SubmitCaptchaAnswerRequest
+import app.spammy.hof.captcha.service.CaptchaPreparationConsumedException
 import app.spammy.hof.captcha.service.CaptchaService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
@@ -86,6 +87,9 @@ class CaptchaController(
                 answer = request.answer,
                 preparationVersion = request.preparationVersion,
             )
+        } catch (error: CaptchaPreparationConsumedException) {
+            runCatching { captchaService.invalidateCurrentPreparation(accountId) }
+            throw error.controlSignal
         } catch (error: ApiException) {
             if (error.errorCode == ErrorCode.HOF_SESSION_EXPIRED) {
                 runCatching { captchaService.invalidateCurrentPreparation(accountId) }
