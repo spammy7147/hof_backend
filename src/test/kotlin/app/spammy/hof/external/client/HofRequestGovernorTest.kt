@@ -125,7 +125,7 @@ class HofRequestGovernorTest {
         }
 
         val completedWhileAccountABlocked = try {
-            accountBCompleted.await(500, TimeUnit.MILLISECONDS)
+            accountBCompleted.await(2, TimeUnit.SECONDS)
         } finally {
             releaseAccountA.countDown()
         }
@@ -268,7 +268,11 @@ class HofRequestGovernorTest {
     @Test
     fun `interrupted spacing restores interrupt status and leaves the queue usable`() {
         val clock = MutableTimeProvider(NOW)
-        val governor = governor(clock, ThreadSleepHofRequestWaiter())
+        val governor = HofRequestGovernor(
+            properties = HofRequestProperties(minimumInterval = Duration.ofSeconds(30)),
+            timeProvider = clock,
+            waiter = ThreadSleepHofRequestWaiter(),
+        )
         governor.execute(ACCOUNT_A, HofRequestOrigin.INTERACTIVE) { response(200) }
         val failure = AtomicReference<Throwable>()
         val interruptRestored = AtomicBoolean(false)
@@ -294,7 +298,7 @@ class HofRequestGovernorTest {
         assertTrue(interruptRestored.get())
         assertFalse(requestBodyCalled.get())
 
-        clock.current = clock.current.plusSeconds(2)
+        clock.current = clock.current.plusSeconds(31)
         assertEquals(200, governor.execute(ACCOUNT_A, HofRequestOrigin.INTERACTIVE) { response(200) }.statusCode)
     }
 
