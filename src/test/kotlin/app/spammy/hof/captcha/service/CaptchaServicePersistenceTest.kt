@@ -20,6 +20,7 @@ import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.model.HofBinaryResponse
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
+import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.external.parser.LoginStateParser
 import app.spammy.hof.status.service.HofStatusSnapshotService
 import java.time.Instant
@@ -533,7 +534,12 @@ class CaptchaServicePersistenceTest {
         @Volatile
         var body: ByteArray = byteArrayOf(1, 2, 3)
 
-        override fun get(url: String, cookies: Map<String, String>): HofBinaryResponse =
+        override fun get(
+            accountId: Long,
+            origin: HofRequestOrigin,
+            url: String,
+            cookies: Map<String, String>,
+        ): HofBinaryResponse =
             HofBinaryResponse(
                 statusCode = 200,
                 finalUrl = url,

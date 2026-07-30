@@ -4,6 +4,7 @@ import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.config.HofRequestProperties
+import app.spammy.hof.external.model.HofBinaryResponse
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequestOrigin
 import java.time.Duration
@@ -49,7 +50,20 @@ class HofRequestGovernor(
         accountId: Long,
         origin: HofRequestOrigin,
         request: () -> HofHttpResponse,
-    ): HofHttpResponse {
+    ): HofHttpResponse = executeInternal(accountId, origin, request) { response -> response.statusCode }
+
+    fun executeBinary(
+        accountId: Long,
+        origin: HofRequestOrigin,
+        request: () -> HofBinaryResponse,
+    ): HofBinaryResponse = executeInternal(accountId, origin, request) { response -> response.statusCode }
+
+    private fun <T> executeInternal(
+        accountId: Long,
+        origin: HofRequestOrigin,
+        request: () -> T,
+        statusCode: (T) -> Int,
+    ): T {
         val state = accountStates.computeIfAbsent(accountId) { AccountRequestState() }
         val queuedAtNanos = System.nanoTime()
         acquireExecutionSlot(state, origin)
@@ -74,15 +88,16 @@ class HofRequestGovernor(
                 state.nextAllowedAt = timeProvider.now().plus(properties.minimumInterval)
             }
 
+            val responseStatus = statusCode(response)
             log.info(
                 "HOF QUEUE accountId={} origin={} queueWaitMs={} durationMs={} status={}",
                 accountId,
                 origin,
                 (requestStartedAtNanos - queuedAtNanos) / NANOS_PER_MILLISECOND,
                 (System.nanoTime() - requestStartedAtNanos) / NANOS_PER_MILLISECOND,
-                response.statusCode,
+                responseStatus,
             )
-            if (response.statusCode != SERVICE_UNAVAILABLE) {
+            if (responseStatus != SERVICE_UNAVAILABLE) {
                 state.consecutiveServiceUnavailable = 0
                 state.cooldownUntil = null
                 return response

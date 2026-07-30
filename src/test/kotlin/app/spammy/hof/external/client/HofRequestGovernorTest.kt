@@ -4,6 +4,7 @@ import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.config.HofRequestProperties
+import app.spammy.hof.external.model.HofBinaryResponse
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequestOrigin
 import java.time.Duration
@@ -34,6 +35,18 @@ class HofRequestGovernorTest {
     }
 
     @Test
+    fun `HTML completion spaces a following binary request for the same account`() {
+        val clock = MutableTimeProvider(NOW)
+        val waiter = RecordingWaiter(clock)
+        val governor = governor(clock, waiter)
+
+        governor.execute(ACCOUNT_A, HofRequestOrigin.INTERACTIVE) { response(200) }
+        governor.executeBinary(ACCOUNT_A, HofRequestOrigin.INTERACTIVE) { binaryResponse(200) }
+
+        assertEquals(listOf(Duration.ofSeconds(1)), waiter.waits)
+    }
+
+    @Test
     fun `interactive request overtakes queued automation after running request completes`() {
         val governor = governor(MutableTimeProvider(NOW), HofRequestWaiter { })
         val firstEntered = CountDownLatch(1)
@@ -51,9 +64,9 @@ class HofRequestGovernorTest {
         assertTrue(firstEntered.await(2, TimeUnit.SECONDS))
 
         val second = thread {
-            governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) {
+            governor.executeBinary(ACCOUNT_A, HofRequestOrigin.AUTOMATION) {
                 order += "automation-2"
-                response(200)
+                binaryResponse(200)
             }
         }
         awaitQueued(second)
@@ -196,6 +209,36 @@ class HofRequestGovernorTest {
         assertEquals(1, accountA.consecutiveFailures)
         assertEquals(1, accountB.consecutiveFailures)
         assertEquals(1, accountBCalls)
+    }
+
+    @Test
+    fun `binary 503 cooldown is isolated by account`() {
+        val clock = MutableTimeProvider(NOW)
+        val governor = governor(clock, RecordingWaiter(clock))
+        var accountACalls = 0
+        var accountBCalls = 0
+
+        val deferred = assertFailsWith<HofAutomationDeferredException> {
+            governor.executeBinary(ACCOUNT_A, HofRequestOrigin.AUTOMATION) {
+                accountACalls += 1
+                binaryResponse(503)
+            }
+        }
+        val accountBResponse = governor.execute(ACCOUNT_B, HofRequestOrigin.INTERACTIVE) {
+            accountBCalls += 1
+            response(200)
+        }
+        val stillDeferred = assertFailsWith<HofAutomationDeferredException> {
+            governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) {
+                accountACalls += 1
+                response(200)
+            }
+        }
+
+        assertEquals(200, accountBResponse.statusCode)
+        assertEquals(1, accountACalls)
+        assertEquals(1, accountBCalls)
+        assertEquals(deferred.retryAt, stillDeferred.retryAt)
     }
 
     @Test
@@ -416,6 +459,13 @@ class HofRequestGovernorTest {
         finalUrl = "https://sic.zerosic.com/test",
         body = "",
         setCookies = emptyMap(),
+    )
+
+    private fun binaryResponse(statusCode: Int) = HofBinaryResponse(
+        statusCode = statusCode,
+        finalUrl = "https://sic.zerosic.com/test.png",
+        contentType = "image/png",
+        body = byteArrayOf(),
     )
 
     private fun awaitQueued(candidate: Thread) {

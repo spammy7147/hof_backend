@@ -3,6 +3,7 @@ package app.spammy.hof.captcha.service
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.client.HofBinaryGateway
+import app.spammy.hof.external.model.HofRequestOrigin
 import org.springframework.http.MediaType
 import org.springframework.stereotype.Service
 import org.springframework.transaction.support.TransactionSynchronization
@@ -41,12 +42,13 @@ class CaptchaImageManager(
 
     fun storePrepared(
         accountId: Long,
+        origin: HofRequestOrigin,
         challengeId: Long,
         preparationVersion: Int,
         imageUrl: String,
         cookies: Map<String, String>,
     ) {
-        val image = downloadRequired(imageUrl, cookies)
+        val image = downloadRequired(accountId, origin, imageUrl, cookies)
         runCatching {
             fileStore.save(
                 accountId = accountId,
@@ -66,6 +68,8 @@ class CaptchaImageManager(
      * 쿠키가 없거나 HOF가 HTML Notice를 반환하면 이미지로 전달하지 않고 명확한 API 오류를 발생시킨다.
      */
     fun downloadRequired(
+        accountId: Long,
+        origin: HofRequestOrigin,
         imageUrl: String,
         cookies: Map<String, String>,
     ): CaptchaImageResponse {
@@ -73,7 +77,7 @@ class CaptchaImageManager(
             throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "저장된 HOF 로그인 쿠키가 없습니다.")
         }
 
-        val response = runCatching { binaryGateway.get(imageUrl, cookies) }
+        val response = runCatching { binaryGateway.get(accountId, origin, imageUrl, cookies) }
             .getOrElse { error ->
                 throw ApiException(ErrorCode.HOF_REQUEST_FAILED, "HOF 캡차 이미지를 불러오지 못했습니다.", error)
             }
@@ -92,23 +96,25 @@ class CaptchaImageManager(
     /** 신규 challenge 파일은 DB row가 commit된 뒤에만 저장한다. */
     fun saveAfterCommit(
         accountId: Long,
+        origin: HofRequestOrigin,
         challengeId: Long,
         imageUrl: String?,
         cookies: Map<String, String>,
     ) {
-        afterCommit { storeIfPossible(accountId, challengeId, imageUrl, cookies) }
+        afterCommit { storeIfPossible(accountId, origin, challengeId, imageUrl, cookies) }
     }
 
     /** 기존 이미지는 metadata 교체가 commit된 뒤 삭제하고 새 이미지를 저장한다. */
     fun replaceAfterCommit(
         accountId: Long,
+        origin: HofRequestOrigin,
         challengeId: Long,
         imageUrl: String?,
         cookies: Map<String, String>,
     ) {
         afterCommit {
             deleteImmediately(accountId, challengeId)
-            storeIfPossible(accountId, challengeId, imageUrl, cookies)
+            storeIfPossible(accountId, origin, challengeId, imageUrl, cookies)
         }
     }
 
@@ -132,6 +138,7 @@ class CaptchaImageManager(
 
     private fun storeIfPossible(
         accountId: Long,
+        origin: HofRequestOrigin,
         challengeId: Long,
         imageUrl: String?,
         cookies: Map<String, String>,
@@ -139,7 +146,9 @@ class CaptchaImageManager(
         val normalizedImageUrl = imageUrl?.trim()?.ifBlank { null } ?: return
         if (cookies.isEmpty()) return
 
-        val response = runCatching { binaryGateway.get(normalizedImageUrl, cookies) }.getOrNull() ?: return
+        val response = runCatching {
+            binaryGateway.get(accountId, origin, normalizedImageUrl, cookies)
+        }.getOrNull() ?: return
         if (response.statusCode !in 200..299 || isHtmlContentType(response.contentType)) return
 
         runCatching {

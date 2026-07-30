@@ -4,6 +4,7 @@ import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.client.HofBinaryGateway
 import app.spammy.hof.external.model.HofBinaryResponse
+import app.spammy.hof.external.model.HofRequestOrigin
 import org.junit.jupiter.api.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -19,10 +20,19 @@ class CaptchaImageManagerTest {
     fun storesAndReadsOnlyTheRequestedPreparationVersion() {
         gateway.response = imageResponse(byteArrayOf(1, 2, 3))
 
-        manager.storePrepared(1L, 7L, 1, IMAGE_URL, mapOf("PHPSESSID" to "session-a"))
+        manager.storePrepared(
+            accountId = 1L,
+            origin = HofRequestOrigin.INTERACTIVE,
+            challengeId = 7L,
+            preparationVersion = 1,
+            imageUrl = IMAGE_URL,
+            cookies = mapOf("PHPSESSID" to "session-a"),
+        )
 
         assertContentEquals(byteArrayOf(1, 2, 3), manager.readStored(1L, 7L, 1)?.bytes)
         assertNull(manager.readStored(1L, 7L, 2))
+        assertEquals(listOf(1L), gateway.accountIds)
+        assertEquals(listOf(HofRequestOrigin.INTERACTIVE), gateway.origins)
     }
 
     @Test
@@ -30,7 +40,14 @@ class CaptchaImageManagerTest {
         gateway.response = HofBinaryResponse(200, IMAGE_URL, "text/html", "Notice".toByteArray())
 
         val error = assertFailsWith<ApiException> {
-            manager.storePrepared(1L, 7L, 2, IMAGE_URL, mapOf("PHPSESSID" to "session-a"))
+            manager.storePrepared(
+                accountId = 1L,
+                origin = HofRequestOrigin.INTERACTIVE,
+                challengeId = 7L,
+                preparationVersion = 2,
+                imageUrl = IMAGE_URL,
+                cookies = mapOf("PHPSESSID" to "session-a"),
+            )
         }
 
         assertEquals(ErrorCode.HOF_REQUEST_FAILED, error.errorCode)
@@ -41,9 +58,17 @@ class CaptchaImageManagerTest {
     fun savesAnImageWithTheCurrentSessionCookies() {
         gateway.response = imageResponse(byteArrayOf(1, 2, 3))
 
-        manager.saveAfterCommit(1L, 7L, IMAGE_URL, mapOf("PHPSESSID" to "session-a"))
+        manager.saveAfterCommit(
+            accountId = 1L,
+            origin = HofRequestOrigin.INTERACTIVE,
+            challengeId = 7L,
+            imageUrl = IMAGE_URL,
+            cookies = mapOf("PHPSESSID" to "session-a"),
+        )
 
         assertEquals(mapOf("PHPSESSID" to "session-a"), gateway.lastCookies)
+        assertEquals(listOf(1L), gateway.accountIds)
+        assertEquals(listOf(HofRequestOrigin.INTERACTIVE), gateway.origins)
         assertContentEquals(byteArrayOf(1, 2, 3), manager.readStored(1L, 7L)?.bytes)
     }
 
@@ -51,7 +76,13 @@ class CaptchaImageManagerTest {
     fun neverStoresAnHtmlNoticeAsAnImage() {
         gateway.response = HofBinaryResponse(200, IMAGE_URL, "text/html", "Notice".toByteArray())
 
-        manager.saveAfterCommit(1L, 8L, IMAGE_URL, mapOf("PHPSESSID" to "session-a"))
+        manager.saveAfterCommit(
+            accountId = 1L,
+            origin = HofRequestOrigin.INTERACTIVE,
+            challengeId = 8L,
+            imageUrl = IMAGE_URL,
+            cookies = mapOf("PHPSESSID" to "session-a"),
+        )
 
         assertNull(manager.readStored(1L, 8L))
     }
@@ -59,7 +90,7 @@ class CaptchaImageManagerTest {
     @Test
     fun requiredDownloadRejectsMissingSessionCookies() {
         val error = assertFailsWith<ApiException> {
-            manager.downloadRequired(IMAGE_URL, emptyMap())
+            manager.downloadRequired(1L, HofRequestOrigin.INTERACTIVE, IMAGE_URL, emptyMap())
         }
 
         assertEquals(ErrorCode.HOF_SESSION_EXPIRED, error.errorCode)
@@ -67,9 +98,18 @@ class CaptchaImageManagerTest {
 
     private class RecordingBinaryGateway : HofBinaryGateway {
         var response: HofBinaryResponse = imageResponse(byteArrayOf())
+        val accountIds = mutableListOf<Long>()
+        val origins = mutableListOf<HofRequestOrigin>()
         var lastCookies: Map<String, String> = emptyMap()
 
-        override fun get(url: String, cookies: Map<String, String>): HofBinaryResponse {
+        override fun get(
+            accountId: Long,
+            origin: HofRequestOrigin,
+            url: String,
+            cookies: Map<String, String>,
+        ): HofBinaryResponse {
+            accountIds += accountId
+            origins += origin
             lastCookies = cookies
             return response
         }

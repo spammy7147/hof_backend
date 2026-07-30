@@ -17,6 +17,7 @@ import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.client.AccountHofGateway
 import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofRequest
+import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.external.parser.LoginStateParser
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
@@ -189,7 +190,14 @@ class CaptchaService(
             ?: throw ApiException(ErrorCode.CAPTCHA_PREPARATION_FAILED, "최신 캡차를 준비하지 못했습니다.")
         val previousVersion = challenge.preparationVersion
         val nextVersion = previousVersion + 1
-        imageManager.storePrepared(accountId, challenge.id, nextVersion, imageUrl, activeCookies)
+        imageManager.storePrepared(
+            accountId = accountId,
+            origin = HofRequestOrigin.INTERACTIVE,
+            challengeId = challenge.id,
+            preparationVersion = nextVersion,
+            imageUrl = imageUrl,
+            cookies = activeCookies,
+        )
         deletePreparedVersionAfterRollback(accountId, challenge.id, nextVersion)
 
         challenge.applyChallengeMetadata(metadata.copy(prompt = challenge.prompt))
@@ -331,6 +339,7 @@ class CaptchaService(
             val nextVersion = previousVersion + 1
             imageManager.storePrepared(
                 accountId = challenge.account.id,
+                origin = HofRequestOrigin.INTERACTIVE,
                 challengeId = challenge.id,
                 preparationVersion = nextVersion,
                 imageUrl = imageUrl,

@@ -20,6 +20,7 @@ import app.spammy.hof.external.model.HofBinaryResponse
 import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
+import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.external.parser.LoginStateParser
 import org.junit.jupiter.api.Test
 import org.mockito.ArgumentCaptor
@@ -878,7 +879,12 @@ class CaptchaServiceTest {
         )
         var failure: RuntimeException? = null
 
-        override fun get(url: String, cookies: Map<String, String>): HofBinaryResponse {
+        override fun get(
+            accountId: Long,
+            origin: HofRequestOrigin,
+            url: String,
+            cookies: Map<String, String>,
+        ): HofBinaryResponse {
             urls += url
             this.cookies += cookies
             failure?.let { throw it }

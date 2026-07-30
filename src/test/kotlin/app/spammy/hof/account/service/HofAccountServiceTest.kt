@@ -114,6 +114,7 @@ class HofAccountServiceTest {
 
         assertEquals(42L, response.id)
         assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.POST), gateway.requests.map { it.method })
+        assertEquals(listOf(42L, 42L), gateway.accountIds)
         assertEquals("abcd12", gateway.requests.last().formFields["id"])
         assertEquals("qwer12", gateway.requests.last().formFields["pass"])
     }

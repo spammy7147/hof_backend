@@ -724,7 +724,12 @@ class BattleRunServiceTest {
     private class FakeHofBinaryGateway : HofBinaryGateway {
         val urls = mutableListOf<String>()
 
-        override fun get(url: String, cookies: Map<String, String>): HofBinaryResponse {
+        override fun get(
+            accountId: Long,
+            origin: HofRequestOrigin,
+            url: String,
+            cookies: Map<String, String>,
+        ): HofBinaryResponse {
             urls += url
             return HofBinaryResponse(
                 statusCode = 200,
