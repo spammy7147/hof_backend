@@ -57,6 +57,37 @@ class HofHttpClientTest {
     }
 
     @Test
+    fun `get form query is attached only to initial hop across 307 redirect`() {
+        val queries = mutableListOf<Pair<String, String?>>()
+        val server = HttpServer.create(InetSocketAddress(0), 0)
+        server.createContext("/start") { exchange ->
+            queries += "start" to exchange.requestURI.rawQuery
+            exchange.responseHeaders.add("Location", "/finish")
+            exchange.sendResponseHeaders(307, -1)
+            exchange.close()
+        }
+        server.createContext("/finish") { exchange ->
+            queries += "finish" to exchange.requestURI.rawQuery
+            exchange.sendText("done")
+        }
+        server.start()
+
+        try {
+            client().execute(
+                HofRequest(
+                    HofHttpMethod.GET,
+                    "http://localhost:${server.address.port}/start",
+                    formFields = mapOf("x" to "1"),
+                ),
+            )
+
+            assertEquals(listOf("start" to "x=1", "finish" to null), queries)
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
     fun `post encoding preserves repeated form names and order`() {
         val bodies = mutableListOf<String>()
         val server = HttpServer.create(InetSocketAddress(0), 0)

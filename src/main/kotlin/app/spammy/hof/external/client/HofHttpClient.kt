@@ -116,7 +116,11 @@ class HofHttpClient private constructor(
                 method = if (preserveMethod) request.method else HofHttpMethod.GET,
                 url = target.toASCIIString(),
                 origin = request.origin,
-                formEntries = if (preserveMethod) request.formEntries else emptyList(),
+                formEntries = if (preserveMethod && request.method == HofHttpMethod.POST) {
+                    request.formEntries
+                } else {
+                    emptyList()
+                },
             )
         }
         error("unreachable")

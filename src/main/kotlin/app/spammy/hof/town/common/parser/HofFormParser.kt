@@ -17,11 +17,19 @@ import org.springframework.stereotype.Component
 class HofFormParser {
     fun parse(html: String, pageUrl: String = HOF_BASE_URL): ParsedTownPage {
         val document = Jsoup.parse(html, pageUrl)
-        val parsed = document.select("form").flatMapIndexed { formIndex, form -> parseForm(form, formIndex, pageUrl) }
-        return ParsedTownPage(parsed)
+        val parsed = document.select("form").flatMap { form -> parseForm(form, pageUrl) }
+        val actionIdCounts = parsed.groupingBy(ParsedTownForm::actionId).eachCount()
+        val unique = parsed.mapIndexed { index, form ->
+            if (actionIdCounts[form.actionId] == 1) {
+                form
+            } else {
+                form.copy(actionId = sha256("${form.actionId}|dom-tie:$index"))
+            }
+        }
+        return ParsedTownPage(unique)
     }
 
-    private fun parseForm(form: Element, formIndex: Int, pageUrl: String): List<ParsedTownForm> {
+    private fun parseForm(form: Element, pageUrl: String): List<ParsedTownForm> {
         val method = if (form.attr("method").equals("post", ignoreCase = true)) {
             HofHttpMethod.POST
         } else {
@@ -48,14 +56,16 @@ class HofFormParser {
 
         return submitVariants.map { (submitFields, submitFieldPositions) ->
             val fingerprint = buildString {
-                append(formIndex).append('|').append(method.name).append('|').append(actionUrl).append('|')
-                append(submitFields.joinToString("&") { "${it.name}=${it.value}" })
+                append(method.name).append('|').append(actionUrl).append('|')
+                append(canonicalFields(submitFields))
                 append('|')
                 append(ownedControls.map { it.attr("name") }.filter(String::isNotBlank).distinct().sorted().joinToString(","))
                 append('|')
-                append(rows.mapNotNull(ParsedTownRow::candidate).joinToString("&") { candidate ->
-                    "${candidate.inputName}=${candidate.inputValue}"
-                })
+                append(canonicalFields(hiddenFields))
+                append('|')
+                append(canonicalFields(rows.mapNotNull(ParsedTownRow::candidate).map { candidate ->
+                    HofFormField(candidate.inputName, candidate.inputValue)
+                }))
             }
             ParsedTownForm(
                 actionId = sha256(fingerprint),
@@ -172,6 +182,12 @@ class HofFormParser {
     private fun sha256(value: String): String = MessageDigest.getInstance("SHA-256")
         .digest(value.toByteArray(Charsets.UTF_8))
         .joinToString("") { "%02x".format(it) }
+
+    private fun canonicalFields(fields: List<HofFormField>): String = fields
+        .sortedWith(compareBy(HofFormField::name, HofFormField::value))
+        .joinToString("|") { field ->
+            "${field.name.length}:${field.name}${field.value.length}:${field.value}"
+        }
 
     private fun cleanText(value: String): String = value.replace(Regex("\\s+"), " ").trim()
 

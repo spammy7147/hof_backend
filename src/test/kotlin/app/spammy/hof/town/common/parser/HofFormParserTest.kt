@@ -54,6 +54,28 @@ class HofFormParserTest {
     }
 
     @Test
+    fun `action id follows hidden target when forms reorder`() {
+        fun page(targets: List<String>) = targets.joinToString(prefix = "<html><body>", postfix = "</body></html>") { target ->
+            """
+                <form action="index.php?menu=shop" method="post">
+                  <input type="hidden" name="target" value="$target">
+                  <input type="radio" name="item" value="same-item">
+                  <button type="submit" name="Create" value="교환">Create</button>
+                </form>
+            """.trimIndent()
+        }
+        fun idsByTarget(html: String) = parser.parse(html).forms.associate { form ->
+            form.hiddenFields.single { it.name == "target" }.value to form.actionId
+        }
+
+        val original = idsByTarget(page(listOf("alpha", "beta")))
+        val reordered = idsByTarget(page(listOf("beta", "alpha")))
+
+        assertEquals(original, reordered)
+        assertNotEquals(original.getValue("alpha"), original.getValue("beta"))
+    }
+
+    @Test
     fun `unrelated text input is not inferred as quantity and repeated fields are preserved`() {
         val form = parser.parse(fixture("fixtures/town/common/form-boundaries.html")).forms[2]
         val guarded = app.spammy.hof.town.common.service.TownActionGuard().guard(
