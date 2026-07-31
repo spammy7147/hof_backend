@@ -8,6 +8,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import app.spammy.hof.town.common.model.ParsedTownResult
 
 class CardPageParserTest {
     private val forms = HofFormParser()
@@ -31,6 +32,8 @@ class CardPageParserTest {
         assertEquals("AddMaterial", page.selectionSlots[1].fieldName)
         assertEquals(20, page.maxQuantity)
         assertTrue(page.history.isNotEmpty())
+        val afterAction = parser.parseUpgrade(html, URL, forms.parse(html, URL), ParsedTownResult(emptyList(), emptyList()))
+        assertTrue(afterAction.result!!.messages.any { it.contains("합성 성공") })
     }
 
     @Test fun `change reads HOF max ten and actual labels`() {

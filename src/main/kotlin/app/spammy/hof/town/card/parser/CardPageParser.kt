@@ -13,7 +13,7 @@ import org.springframework.stereotype.Component
 class CardPageParser {
     fun parseIdentify(html: String, finalUrl: String, page: ParsedTownPage, result: ParsedTownResult? = null): CardIdentifySnapshot {
         val form = actionForm(page, setOf("Identify", "CardIdentify", "Create")) ?: page.forms.maxByOrNull { it.rows.size }
-        return CardIdentifySnapshot(form?.actionId, 1, candidates(form), result)
+        return CardIdentifySnapshot(form?.actionId, 1, candidates(form), structuredResult(html, result, IDENTIFY_RESULT))
     }
 
     fun parseUpgrade(html: String, finalUrl: String, page: ParsedTownPage, result: ParsedTownResult? = null): CardUpgradeSnapshot {
@@ -24,7 +24,7 @@ class CardPageParser {
         return CardUpgradeSnapshot(
             form?.actionId,
             slots(base, material), base, material, bounds.first, bounds.second,
-            parseHistory(html, Regex("합성|강화|upgrade", RegexOption.IGNORE_CASE)), result,
+            parseHistory(html, Regex("합성|강화|upgrade", RegexOption.IGNORE_CASE)), structuredResult(html, result, UPGRADE_RESULT),
         )
     }
 
@@ -36,7 +36,7 @@ class CardPageParser {
         return CardChangeSnapshot(
             form?.actionId,
             slots(base, material), base, material, bounds.first, minOf(bounds.second, 10),
-            parseHistory(html, Regex("변화|변환|업그레이드|change", RegexOption.IGNORE_CASE)), result,
+            parseHistory(html, Regex("변화|변환|업그레이드|change", RegexOption.IGNORE_CASE)), structuredResult(html, result, CHANGE_RESULT),
         )
     }
 
@@ -50,7 +50,7 @@ class CardPageParser {
             candidate.copy(blankCardValue = value, maxQuantity = candidate.maxQuantity ?: owned(candidate.label))
         }
         val blank = BLANK_OWNED.find(clean(Jsoup.parse(html, finalUrl).text()))?.groupValues?.get(1)?.replace(",", "")?.toIntOrNull()
-        return CardSellSnapshot(form?.actionId, cards, true, CardRewardKind.BLANK_CARD, blank, result)
+        return CardSellSnapshot(form?.actionId, cards, true, CardRewardKind.BLANK_CARD, blank, structuredResult(html, result, SELL_RESULT))
     }
 
     fun parseSoulEcho(html: String, finalUrl: String, page: ParsedTownPage, result: ParsedTownResult? = null): SoulEchoSnapshot {
@@ -80,7 +80,7 @@ class CardPageParser {
         val categories = document.select("select[name=type] option:not([disabled])")
             .filter { it.attr("value").isNotBlank() }
             .map { SoulEchoCategory("type:${it.attr("value")}", clean(it.text())) }
-        return SoulEchoSnapshot(form?.actionId, categories, recipes, owned, history, result)
+        return SoulEchoSnapshot(form?.actionId, categories, recipes, owned, history, structuredResult(html, result, SOUL_RESULT))
     }
 
     private fun candidates(form: ParsedTownForm?): List<CardCandidate> = form?.rows.orEmpty().mapIndexed { index, row ->
@@ -111,7 +111,30 @@ class CardPageParser {
     }
 
     private fun parseHistory(html: String, signal: Regex): List<String> = Jsoup.parse(html).select("p,li,div")
-        .map { clean(it.text()) }.filter { it.length in 2..500 && signal.containsMatchIn(it) }.distinct().takeLast(30)
+        .map { clean(it.ownText()) }.filter { it.length in 2..500 && signal.containsMatchIn(it) }.distinct().takeLast(30)
+
+    /** 공통 result selector가 없는 HOF의 bare text 결과도 짧은 텍스트만 복구한다. */
+    private fun structuredResult(html: String, result: ParsedTownResult?, signal: Regex): ParsedTownResult? {
+        if (result == null || result.messages.isNotEmpty() || result.items.isNotEmpty()) return result
+        val document = Jsoup.parse(html)
+        val form = document.selectFirst("form")
+        val explicit = document.select(".result,.message,.msg,.notice,.success,.error,[data-town-result]")
+            .map { clean(it.text()) }
+        val nearby = if (form == null) {
+            emptyList()
+        } else {
+            val before = generateSequence(form.previousElementSibling()) { it.previousElementSibling() }.take(40)
+            val after = generateSequence(form.nextElementSibling()) { it.nextElementSibling() }
+                .take(40).takeWhile { it.tagName() != "form" }
+            (before + after).flatMap { sibling ->
+                (sibling.select("p,li,div,font,b,strong,span") + sibling).asSequence()
+            }.map { clean(it.ownText()) }.toList()
+        }
+        val messages = (explicit + nearby)
+            .filter { it.length in 2..500 && signal.containsMatchIn(it) && !RESULT_NOISE.containsMatchIn(it) }
+            .distinct().takeLast(20)
+        return result.copy(messages = messages)
+    }
 
     private fun sectionLines(document: org.jsoup.nodes.Document, heading: Regex): List<String> {
         val start = document.select("h1,h2,h3,h4,h5").firstOrNull { heading.containsMatchIn(clean(it.text())) } ?: return emptyList()
@@ -143,5 +166,11 @@ class CardPageParser {
         val BONUS = Regex("\\+?(\\d+)%")
         val HISTORY_SIGNAL = Regex("Soul Echo|소울 에코|창조|실패|성공", RegexOption.IGNORE_CASE)
         val FAILURE = Regex("실패|failed", RegexOption.IGNORE_CASE)
+        val IDENTIFY_RESULT = Regex("감정|사용한 금액|부여한 카드 목록|Joker", RegexOption.IGNORE_CASE)
+        val UPGRADE_RESULT = Regex("합성 성공|합성 실패|강화 성공|강화 실패|되돌려|소멸|보존|환급", RegexOption.IGNORE_CASE)
+        val CHANGE_RESULT = Regex("카드 변화|카드 변환|업그레이드 성공|업그레이드 실패|되돌려|소멸", RegexOption.IGNORE_CASE)
+        val SELL_RESULT = Regex("Blank\\s*Card|카드 판매|카드 교환|교환.*(?:성공|완료)|판매.*(?:성공|완료)", RegexOption.IGNORE_CASE)
+        val SOUL_RESULT = Regex("소울 에코|Soul Echo|융합|창조|실패|성공", RegexOption.IGNORE_CASE)
+        val RESULT_NOISE = Regex("(?:카드를|소울 에코를).*(?:선택|목록)|Create|Reset|전부표시|주의사항", RegexOption.IGNORE_CASE)
     }
 }
