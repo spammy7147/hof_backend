@@ -80,6 +80,19 @@ class HofRequestFactory {
         origin = origin,
     )
 
+    /** 최신 HOF 문서에서 관측·검증한 GET 링크의 query만 same-origin에 전달한다. */
+    fun townObservedGet(
+        pageUrl: String,
+        queryEntries: List<HofFormField>,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
+    ): HofRequest = HofRequest(
+        method = HofHttpMethod.GET,
+        url = requireSafeTownUrl(pageUrl),
+        formFields = queryEntries.associate { it.name to it.value },
+        formEntries = queryEntries.toList(),
+        origin = origin,
+    )
+
     /** 직전에 파싱·검증한 form만 HOF same-origin 요청으로 변환한다. */
     fun townForm(
         method: HofHttpMethod,

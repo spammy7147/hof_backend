@@ -10,6 +10,7 @@ import app.spammy.hof.external.client.AccountHofGateway
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequestOrigin
+import app.spammy.hof.external.model.HofFormField
 import app.spammy.hof.external.parser.LoginStateParser
 import app.spammy.hof.town.common.model.ExecutedTownAction
 import app.spammy.hof.town.common.model.ParsedTownPage
@@ -65,6 +66,40 @@ class TownAuthenticatedExecutor(
         val response = executeAuthenticated(context.account, requestFactory.townPage(pageUrl, origin), context.cookies)
         val page = formParser.parse(response.body, response.finalUrl)
         return projector(response.body, response.finalUrl, page)
+    }
+
+    /**
+     * 최신 GET에 실제 존재하는 링크를 기능 parser가 opaque query로 해석한 뒤 같은 계정 fence 안에서 한 번 실행한다.
+     * 임의 URL은 받지 않고 호출자가 선언한 query 이름 집합과 정확히 일치할 때만 HOF same-origin GET을 허용한다.
+     */
+    fun <T> executeObservedGetProjected(
+        accountId: Long,
+        pageUrl: String,
+        requiredQueryFields: Set<String>,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
+        resolveQuery: (html: String, finalUrl: String, page: ParsedTownPage) -> List<HofFormField>,
+        projector: (html: String, finalUrl: String, result: app.spammy.hof.town.common.model.ParsedTownResult, page: ParsedTownPage) -> T,
+    ): T = withAccountActionFence(accountId) {
+        require(requiredQueryFields.isNotEmpty() && requiredQueryFields.size <= 8)
+        val context = authenticatedContext(accountId)
+        val current = executeAuthenticated(
+            context.account,
+            requestFactory.townPage(pageUrl, origin),
+            context.cookies,
+        )
+        val currentPage = formParser.parse(current.body, current.finalUrl)
+        val query = resolveQuery(current.body, current.finalUrl, currentPage)
+        if (query.size != requiredQueryFields.size || query.map(HofFormField::name).toSet() != requiredQueryFields ||
+            query.any { it.name.length > 80 || it.value.isBlank() || it.value.length > 500 }
+        ) throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF action을 안전하게 확인하지 못했습니다.")
+        val actionResponse = executeAuthenticated(
+            context.account,
+            requestFactory.townObservedGet(pageUrl, query, origin),
+            context.cookies + current.setCookies,
+        )
+        val result = resultParser.parse(actionResponse.body)
+        val page = formParser.parse(actionResponse.body, actionResponse.finalUrl)
+        projector(actionResponse.body, actionResponse.finalUrl, result, page)
     }
 
     /**
