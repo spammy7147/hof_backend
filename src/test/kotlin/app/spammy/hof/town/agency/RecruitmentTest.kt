@@ -51,6 +51,9 @@ class RecruitmentTest {
             <input type="submit" name="Recruit" value="Recruit">
         """.trimIndent())
         assertFalse(parser.parse(duplicate, URL, forms.parse(duplicate, URL)).recruitmentAvailable)
+
+        val readOnly = fixture().replace("name=\"NewName\"", "name=\"NewName\" readonly")
+        assertFalse(parser.parse(readOnly, URL, forms.parse(readOnly, URL)).recruitmentAvailable)
     }
 
     @Test fun `모집은 최신 GET의 실제 값과 이름 필드만 한 번 제출한다`() {
@@ -74,6 +77,51 @@ class RecruitmentTest {
         assertEquals(emptyList(), harness.requests())
 
         assertFailsWith<ApiException> { harness.service.recruit(7L, RecruitCharacterRequest("forged", "이름", "forged")) }
+        assertEquals(listOf(HofHttpMethod.GET), harness.requests().map(HofRequest::method))
+    }
+
+    @Test fun `이름의 제어문자와 보이지 않는 문자를 HOF 요청 전에 거부한다`() {
+        listOf("새\n동료", "새\u200B동료", "\uE000").forEach { invalidName ->
+            val harness = Harness()
+            assertFailsWith<ApiException> {
+                harness.service.recruit(7L, RecruitCharacterRequest("job", invalidName, "gender"))
+            }
+            assertEquals(emptyList(), harness.requests())
+        }
+    }
+
+    @Test fun `HOF 규칙대로 ASCII는 1칸 비 ASCII는 2칸으로 이름 길이를 검증한다`() {
+        val tooLong = Harness()
+        assertFailsWith<ApiException> {
+            tooLong.service.recruit(7L, RecruitCharacterRequest("job", "가".repeat(9), "gender"))
+        }
+        assertEquals(emptyList(), tooLong.requests())
+
+        val accepted = Harness()
+        accepted.stub(fixture(), fixture())
+        val initial = parser.parse(fixture(), URL, forms.parse(fixture(), URL))
+        accepted.service.recruit(
+            7L,
+            RecruitCharacterRequest(initial.jobs.first().id, "abc123가나다라마", initial.genders.first().id),
+        )
+        assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.POST), accepted.requests().map(HofRequest::method))
+    }
+
+    @Test fun `이름과 동일한 필드명의 성공 control이 둘 이상이면 제출하지 않는다`() {
+        val polluted = fixture().replace(
+            "<input type=\"text\" maxlength=\"16\" name=\"NewName\">",
+            "<input type=\"hidden\" name=\"NewName\" value=\"server\"><input type=\"text\" maxlength=\"16\" name=\"NewName\">",
+        )
+        val harness = Harness()
+        harness.stub(polluted)
+        val initial = parser.parse(polluted, URL, forms.parse(polluted, URL))
+
+        assertFailsWith<ApiException> {
+            harness.service.recruit(
+                7L,
+                RecruitCharacterRequest(initial.jobs.first().id, "새동료", initial.genders.first().id),
+            )
+        }
         assertEquals(listOf(HofHttpMethod.GET), harness.requests().map(HofRequest::method))
     }
 

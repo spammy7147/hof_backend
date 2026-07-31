@@ -80,7 +80,9 @@ class RecruitmentPageParser {
 
     private fun isObservedNameInput(input: Element): Boolean {
         val type = input.attr("type").lowercase()
-        if (type !in setOf("", "text") || input.attr("name").isBlank() || input.hasAttr("disabled")) return false
+        if (type !in setOf("", "text") || input.attr("name").isBlank() ||
+            input.hasAttr("disabled") || input.hasAttr("readonly")
+        ) return false
         val max = input.attr("maxlength").toIntOrNull() ?: return false
         if (max !in 1..16 || input.attr("style").contains("display:none", true)) return false
         val meaning = listOf(input.attr("name"), input.id(), input.attr("placeholder"), input.attr("title"),
@@ -103,7 +105,11 @@ class RecruitmentPageParser {
     }
     private fun safeImageUrl(url: String): Boolean = runCatching {
         val uri = URI(url)
-        uri.scheme in setOf("http", "https") && uri.host.equals("sic.zerosic.com", true)
+        val safePort = (uri.scheme == "http" && uri.port in setOf(-1, 80)) ||
+            (uri.scheme == "https" && uri.port in setOf(-1, 443))
+        safePort && uri.host.equals("sic.zerosic.com", true) &&
+            uri.rawUserInfo == null && uri.rawFragment == null &&
+            uri.path.startsWith("/ZeroHOF/")
     }.getOrDefault(false)
     private fun clean(value: String) = value.replace(Regex("\\s+"), " ").trim()
 

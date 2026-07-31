@@ -33,7 +33,7 @@ data class RecruitmentResponse(
 }
 
 data class RecruitCharacterRequest(
-    @field:NotBlank val jobId: String,
+    @field:NotBlank @field:Size(max = 256) val jobId: String,
     @field:Size(min = 1, max = 16) val name: String,
-    @field:NotBlank val genderId: String,
+    @field:NotBlank @field:Size(max = 256) val genderId: String,
 )

@@ -28,7 +28,12 @@ class RecruitmentService(
 
     fun recruit(accountId: Long, request: RecruitCharacterRequest): RecruitmentResponse {
         val name = request.name.trim()
-        if (name.length !in 1..16) invalid("캐릭터 이름은 1~16자로 입력해 주세요.")
+        if (request.jobId.length > 256 || request.genderId.length > 256) {
+            invalid("현재 HOF에서 선택할 수 없는 모집 항목입니다.")
+        }
+        if (!validName(name)) {
+            invalid("캐릭터 이름은 영문·숫자 1칸, 한글·일본어 등은 2칸으로 계산해 1~16칸으로 입력해 주세요.")
+        }
         val url = locations.resolve(TownFeatureId.TALENT_AGENCY).url
         return executor.executeRecruitmentProjected(
             accountId = accountId,
@@ -56,6 +61,24 @@ class RecruitmentService(
                 RecruitmentResponse.from(parser.parse(html, finalUrl, page, result))
             },
         )
+    }
+
+    /** HOF가 표시하는 이름 길이 규칙(일본어 문자는 2로 계산)을 동일하게 적용한다. */
+    private fun validName(value: String): Boolean {
+        if (value.isEmpty()) return false
+        var width = 0
+        var offset = 0
+        while (offset < value.length) {
+            val codePoint = value.codePointAt(offset)
+            val type = Character.getType(codePoint)
+            if (type == Character.CONTROL.toInt() || type == Character.FORMAT.toInt() ||
+                type == Character.SURROGATE.toInt() || type == Character.PRIVATE_USE.toInt()
+            ) return false
+            width += if (codePoint <= 0x7f) 1 else 2
+            if (width > 16) return false
+            offset += Character.charCount(codePoint)
+        }
+        return width in 1..16
     }
 
     private fun invalid(message: String): Nothing = throw ApiException(ErrorCode.INVALID_REQUEST, message)

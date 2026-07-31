@@ -356,7 +356,9 @@ class TownAuthenticatedExecutor(
         )
         val currentPage = formParser.parse(current.body, current.finalUrl)
         val (action, nameField, maximumLength) = resolve(current.body, current.finalUrl, currentPage)
-        if (nameField.name.isBlank() || nameField.name.length > 80 || nameField.value.length !in 1..maximumLength || maximumLength !in 1..16) {
+        if (nameField.name.isBlank() || nameField.name.length > 80 || nameField.value.length !in 1..maximumLength ||
+            maximumLength !in 1..16 || containsUnsafeRecruitmentNameCharacter(nameField.value)
+        ) {
             throw ApiException(ErrorCode.INVALID_REQUEST, "캐릭터 이름은 1~16자로 입력해 주세요.")
         }
         val guarded = actionGuard.guard(currentPage, action)
@@ -370,11 +372,15 @@ class TownAuthenticatedExecutor(
             semantic.any { it.actionId == guarded.form.actionId && it.method == guarded.form.method && it.actionUrl == guarded.form.actionUrl }
         }
         if (matchingForms.size != 1) throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 모집 양식을 안전하게 확인하지 못했습니다.")
-        val inputs = matchingForms.single().select("input").filter { input ->
-            !input.hasAttr("disabled") && input.attr("name") == nameField.name &&
+        val controlsWithName = matchingForms.single().select("input,select,textarea").filter { control ->
+            !control.hasAttr("disabled") && control.attr("name") == nameField.name
+        }
+        if (controlsWithName.size != 1) throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 이름 입력란이 변경되었습니다.")
+        val inputs = controlsWithName.filter { input ->
+            input.tagName() == "input" &&
                 input.attr("type").lowercase() in setOf("", "text") &&
                 input.attr("maxlength").toIntOrNull() == maximumLength && maximumLength <= 16 &&
-                !input.attr("style").contains("display:none", true)
+                !input.hasAttr("readonly") && !input.attr("style").contains("display:none", true)
         }
         if (inputs.size != 1) throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 이름 입력란이 변경되었습니다.")
         val input = inputs.single()
@@ -397,6 +403,19 @@ class TownAuthenticatedExecutor(
         val result = resultParser.parse(response.body)
         val page = formParser.parse(response.body, response.finalUrl)
         projector(response.body, response.finalUrl, result, page)
+    }
+
+    private fun containsUnsafeRecruitmentNameCharacter(value: String): Boolean {
+        var offset = 0
+        while (offset < value.length) {
+            val codePoint = value.codePointAt(offset)
+            val type = Character.getType(codePoint)
+            if (type == Character.CONTROL.toInt() || type == Character.FORMAT.toInt() ||
+                type == Character.SURROGATE.toInt() || type == Character.PRIVATE_USE.toInt()
+            ) return true
+            offset += Character.charCount(codePoint)
+        }
+        return false
     }
 
     /** 최신 GET 안에서 actionId까지 결정해 nonce/hidden field 변화와의 TOCTOU를 막는 variant다. */
