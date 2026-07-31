@@ -38,9 +38,13 @@ class ShopCatalogRefreshService(
             check(items.isNotEmpty()) { "상점 카탈로그에서 상품을 찾지 못했습니다." }
             persistence.replaceAndMarkSuccess(shopId, jobKey(shopId), owner, now, items)
         } catch (failure: Exception) {
-            runCatching { persistence.releaseFailure(jobKey(shopId), owner) }
+            val authenticationFailure = failure is ApiException && failure.errorCode in AUTHENTICATION_ERRORS
+            runCatching {
+                if (authenticationFailure) persistence.releaseAuthenticationFailure(jobKey(shopId), owner)
+                else persistence.releaseFailure(jobKey(shopId), owner)
+            }
                 .exceptionOrNull()?.let(failure::addSuppressed)
-            if (failure is ApiException && failure.errorCode in AUTHENTICATION_ERRORS) throw failure
+            if (authenticationFailure) throw failure
             // 유효한 last-good이 있으면 사용자 진입은 계속된다. 최초 동기화 실패만 호출자에게 알린다.
             if (queryRepository.findActiveItems(shopId.name).isEmpty()) throw failure
         }

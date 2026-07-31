@@ -42,4 +42,10 @@ class ShopCatalogPersistenceService(
     fun releaseFailure(jobKey: String, owner: String) {
         queryRepository.releaseFailure(jobKey, owner)
     }
+
+    /** CAPTCHA/세션 복구 직후 같은 날에도 즉시 다시 검증할 수 있도록 attempt cooldown까지 해제한다. */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun releaseAuthenticationFailure(jobKey: String, owner: String) {
+        queryRepository.releaseAuthenticationFailure(jobKey, owner)
+    }
 }

@@ -35,6 +35,19 @@ class ShopCatalogPersistenceServiceTest {
         Mockito.verify(queries, Mockito.never()).markSuccess(Mockito.anyString(), Mockito.anyString(), anyInstant())
     }
 
+    @Test
+    fun `authentication failure release is isolated and clears cooldown through the owned lease update`() {
+        val annotation = ShopCatalogPersistenceService::class.java
+            .getMethod("releaseAuthenticationFailure", String::class.java, String::class.java)
+            .getAnnotation(Transactional::class.java)
+        assertEquals(Propagation.REQUIRES_NEW, annotation.propagation)
+
+        service.releaseAuthenticationFailure("SHOP_GENERAL", "owner")
+
+        Mockito.verify(queries).releaseAuthenticationFailure("SHOP_GENERAL", "owner")
+        Mockito.verify(queries, Mockito.never()).releaseFailure(Mockito.anyString(), Mockito.anyString())
+    }
+
     private fun anyCatalogItems(): Iterable<ShopCatalogItemEntity> = Mockito.any<Iterable<ShopCatalogItemEntity>>() ?: emptyList()
     private fun anyInstant(): Instant = Mockito.any(Instant::class.java) ?: Instant.EPOCH
 }

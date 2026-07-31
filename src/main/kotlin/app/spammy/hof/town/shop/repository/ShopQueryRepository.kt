@@ -67,4 +67,11 @@ class ShopQueryRepository(private val queryFactory: JPAQueryFactory) {
         .setNull(townGlobalJobLeaseEntity.leaseUntil)
         .where(townGlobalJobLeaseEntity.jobKey.eq(jobKey), townGlobalJobLeaseEntity.leaseOwner.eq(owner))
         .execute()
+
+    fun releaseAuthenticationFailure(jobKey: String, owner: String): Long = queryFactory.update(townGlobalJobLeaseEntity)
+        .setNull(townGlobalJobLeaseEntity.leaseOwner)
+        .setNull(townGlobalJobLeaseEntity.leaseUntil)
+        .setNull(townGlobalJobLeaseEntity.lastAttemptAt)
+        .where(townGlobalJobLeaseEntity.jobKey.eq(jobKey), townGlobalJobLeaseEntity.leaseOwner.eq(owner))
+        .execute()
 }

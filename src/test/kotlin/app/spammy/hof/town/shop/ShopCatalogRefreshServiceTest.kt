@@ -94,7 +94,34 @@ class ShopCatalogRefreshServiceTest {
         val error = assertFailsWith<ApiException> { service.refreshIfDue(7L, ShopId.GENERAL) }
 
         assertEquals(ErrorCode.CAPTCHA_REQUIRED, error.errorCode)
-        Mockito.verify(persistence).releaseFailure(eqString("SHOP_GENERAL"), Mockito.anyString())
+        Mockito.verify(persistence).releaseAuthenticationFailure(eqString("SHOP_GENERAL"), Mockito.anyString())
+    }
+
+    @Test
+    fun `empty catalog retries immediately after captcha recovery and then stores the first snapshot`() {
+        stubAccount()
+        Mockito.`when`(locations.resolve(TownFeatureId.GENERAL_STORE, null)).thenReturn(ResolvedTownLocation(TownFeatureId.GENERAL_STORE, URL))
+        Mockito.`when`(persistence.tryAcquire(Mockito.anyString(), Mockito.anyString(), anyInstant(), anyInstant(), anyInstant(), anyInstant())).thenReturn(true, true)
+        val captchaHtml = "<p>자경단에서 통행증을 발급받아주세요.</p>"
+        Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies())).thenReturn(
+            HofHttpResponse(200, URL, captchaHtml, emptyMap()),
+            HofHttpResponse(200, URL, SHOP_HTML, emptyMap()),
+        )
+        Mockito.`when`(captcha.detectAndRecord(anyAccount(), eqString(captchaHtml), eqString(URL))).thenReturn(
+            CaptchaChallengeResponse(1L, 7L, "DETECTED", "통행증", null, URL, 0, NOW.toString(), null),
+        )
+        Mockito.`when`(queries.findActiveItems("GENERAL")).thenReturn(emptyList())
+
+        val error = assertFailsWith<ApiException> { service.refreshIfDue(7L, ShopId.GENERAL) }
+        assertEquals(ErrorCode.CAPTCHA_REQUIRED, error.errorCode)
+
+        service.refreshIfDue(7L, ShopId.GENERAL)
+
+        Mockito.verify(persistence).releaseAuthenticationFailure(eqString("SHOP_GENERAL"), Mockito.anyString())
+        Mockito.verify(persistence, Mockito.never()).releaseFailure(Mockito.anyString(), Mockito.anyString())
+        Mockito.verify(persistence, Mockito.times(2)).tryAcquire(Mockito.anyString(), Mockito.anyString(), anyInstant(), anyInstant(), anyInstant(), anyInstant())
+        Mockito.verify(gateway, Mockito.times(2)).execute(Mockito.eq(7L), anyRequest(), anyCookies())
+        Mockito.verify(persistence).replaceAndMarkSuccess(eqShop(ShopId.GENERAL), eqString("SHOP_GENERAL"), Mockito.anyString(), eqInstant(NOW), anyParsedItems())
     }
 
     @Test
@@ -110,7 +137,7 @@ class ShopCatalogRefreshServiceTest {
         val error = assertFailsWith<ApiException> { service.refreshIfDue(7L, ShopId.GENERAL) }
 
         assertEquals(ErrorCode.HOF_SESSION_EXPIRED, error.errorCode)
-        Mockito.verify(persistence).releaseFailure(eqString("SHOP_GENERAL"), Mockito.anyString())
+        Mockito.verify(persistence).releaseAuthenticationFailure(eqString("SHOP_GENERAL"), Mockito.anyString())
     }
 
     private fun stubAccount() {
