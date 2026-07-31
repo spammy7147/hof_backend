@@ -13,8 +13,10 @@ class CardController(private val service: CardService, private val recovery: Hof
     @GetMapping("/identify") fun identifyPage(@CurrentAccountId accountId: Long) = recovery.execute(accountId) { service.loadIdentify(accountId) }
     @PostMapping("/identify") fun identify(@CurrentAccountId accountId: Long, @Valid @RequestBody request: CardIdentifyRequest) = recovery.execute(accountId) { service.identify(accountId, request) }
     @GetMapping("/upgrade") fun upgradePage(@CurrentAccountId accountId: Long) = recovery.execute(accountId) { service.loadUpgrade(accountId) }
+    @PostMapping("/upgrade/options") fun upgradeOptions(@CurrentAccountId accountId: Long, @Valid @RequestBody request: CardBaseOptionsRequest) = recovery.execute(accountId) { service.loadUpgradeOptions(accountId, request) }
     @PostMapping("/upgrade") fun upgrade(@CurrentAccountId accountId: Long, @Valid @RequestBody request: CardUpgradeRequest) = recovery.execute(accountId) { service.upgrade(accountId, request) }
     @GetMapping("/change") fun changePage(@CurrentAccountId accountId: Long) = recovery.execute(accountId) { service.loadChange(accountId) }
+    @PostMapping("/change/options") fun changeOptions(@CurrentAccountId accountId: Long, @Valid @RequestBody request: CardBaseOptionsRequest) = recovery.execute(accountId) { service.loadChangeOptions(accountId, request) }
     @PostMapping("/change") fun change(@CurrentAccountId accountId: Long, @Valid @RequestBody request: CardChangeRequest) = recovery.execute(accountId) { service.change(accountId, request) }
     @GetMapping("/sell") fun sellPage(@CurrentAccountId accountId: Long) = recovery.execute(accountId) { service.loadSell(accountId) }
     @PostMapping("/sell") fun sell(@CurrentAccountId accountId: Long, @Valid @RequestBody request: CardSellRequest) = recovery.execute(accountId) { service.sell(accountId, request) }

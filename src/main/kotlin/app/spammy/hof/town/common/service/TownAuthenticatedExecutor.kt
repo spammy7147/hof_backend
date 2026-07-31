@@ -310,6 +310,104 @@ class TownAuthenticatedExecutor(
         projector(finalResponse.body, finalResponse.finalUrl, result, page)
     }
 
+    /**
+     * 파괴적 최종 action 없이 HOF의 선택 1단계만 실행하고 그 응답을 구조화한다.
+     * 카드 강화/변화처럼 베이스 선택 후에만 재료 후보가 나타나는 form에 사용한다.
+     */
+    fun <T> loadSecondStageProjected(
+        accountId: Long,
+        pageUrl: String,
+        requiredEntrySubmitField: String,
+        entryAction: (String, String, ParsedTownPage) -> TownActionRequest,
+        projector: (String, String, ParsedTownPage) -> T,
+    ): T = withAccountActionFence(accountId) {
+        val context = authenticatedContext(accountId)
+        val main = executeAuthenticated(
+            context.account,
+            requestFactory.townPage(pageUrl, HofRequestOrigin.INTERACTIVE),
+            context.cookies,
+        )
+        val mainPage = formParser.parse(main.body, main.finalUrl)
+        val guardedEntry = actionGuard.guard(mainPage, entryAction(main.body, main.finalUrl, mainPage))
+        if (guardedEntry.form.submitFields.singleOrNull()?.name != requiredEntrySubmitField) {
+            throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 1단계 작업 양식이 변경되었습니다.")
+        }
+        val entryResponse = executeAuthenticated(
+            context.account,
+            requestFactory.townForm(
+                guardedEntry.form.method,
+                guardedEntry.form.actionUrl,
+                guardedEntry.formEntries,
+                HofRequestOrigin.INTERACTIVE,
+            ),
+            context.cookies + main.setCookies,
+        )
+        val entryPage = formParser.parse(entryResponse.body, entryResponse.finalUrl)
+        projector(entryResponse.body, entryResponse.finalUrl, entryPage)
+    }
+
+    /** 최신 GET과 그 응답의 두 form을 같은 계정 fence 안에서 각각 다시 해석하는 variant다. */
+    fun <T> executeResolvedTwoStepProjectedWithScalars(
+        accountId: Long,
+        pageUrl: String,
+        requiredEntrySubmitField: String,
+        entryAction: (String, String, ParsedTownPage) -> TownActionRequest,
+        finalAction: (String, String, ParsedTownPage) -> TownActionRequest,
+        scalarValues: Map<String, String>,
+        requiredScalarFields: Set<String>,
+        requiredFinalSubmitField: String,
+        projector: (String, String, app.spammy.hof.town.common.model.ParsedTownResult, ParsedTownPage) -> T,
+    ): T = withAccountActionFence(accountId) {
+        require(scalarValues.isNotEmpty() && scalarValues.keys == requiredScalarFields)
+        require(scalarValues.size <= 8 && scalarValues.values.all { it.length <= 500 })
+        val context = authenticatedContext(accountId)
+        val main = executeAuthenticated(context.account, requestFactory.townPage(pageUrl, HofRequestOrigin.INTERACTIVE), context.cookies)
+        val mainPage = formParser.parse(main.body, main.finalUrl)
+        val guardedEntry = actionGuard.guard(mainPage, entryAction(main.body, main.finalUrl, mainPage))
+        if (guardedEntry.form.submitFields.singleOrNull()?.name != requiredEntrySubmitField) {
+            throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 1단계 작업 양식이 변경되었습니다.")
+        }
+        val entryResponse = executeAuthenticated(
+            context.account,
+            requestFactory.townForm(guardedEntry.form.method, guardedEntry.form.actionUrl, guardedEntry.formEntries, HofRequestOrigin.INTERACTIVE),
+            context.cookies + main.setCookies,
+        )
+        val entryPage = formParser.parse(entryResponse.body, entryResponse.finalUrl)
+        val guardedFinal = actionGuard.guard(entryPage, finalAction(entryResponse.body, entryResponse.finalUrl, entryPage))
+        if (guardedFinal.form.submitFields.singleOrNull()?.name != requiredFinalSubmitField) {
+            throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 최종 작업 양식이 변경되었습니다.")
+        }
+        val matchingForms = Jsoup.parse(entryResponse.body, entryResponse.finalUrl).select("form").filter { domForm ->
+            val controls = domForm.select("input,button,select,textarea")
+                .filter { it.closest("form") === domForm && !it.hasAttr("disabled") }
+            val names = controls.map { it.attr("name") }.toSet()
+            val semanticForms = formParser.parse(domForm.outerHtml(), entryResponse.finalUrl).forms
+            scalarValues.keys.all { it in names } && semanticForms.any {
+                it.actionId == guardedFinal.form.actionId && it.method == guardedFinal.form.method && it.actionUrl == guardedFinal.form.actionUrl
+            }
+        }
+        if (matchingForms.size != 1) throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 최종 입력 양식을 안전하게 확인하지 못했습니다.")
+        val controlsByName = matchingForms.single().select("input,select,textarea")
+            .filter { !it.hasAttr("disabled") && it.attr("name") in scalarValues.keys }
+            .groupBy { it.attr("name") }
+        if (scalarValues.keys.any { controlsByName[it].orEmpty().size != 1 }) {
+            throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 최종 입력 필드가 변경되었습니다.")
+        }
+        val replacements = scalarValues.toMutableMap()
+        val entries = guardedFinal.formEntries.map { field -> replacements.remove(field.name)?.let { field.copy(value = it) } ?: field }.toMutableList()
+        val submitStart = entries.indexOfFirst { field -> guardedFinal.form.submitFields.any { it.name == field.name && it.value == field.value } }
+            .let { if (it < 0) entries.size else it }
+        replacements.forEach { (name, value) -> entries.add(submitStart, app.spammy.hof.external.model.HofFormField(name, value)) }
+        val finalResponse = executeAuthenticated(
+            context.account,
+            requestFactory.townForm(guardedFinal.form.method, guardedFinal.form.actionUrl, entries, HofRequestOrigin.INTERACTIVE),
+            context.cookies + main.setCookies + entryResponse.setCookies,
+        )
+        val result = resultParser.parse(finalResponse.body)
+        val page = formParser.parse(finalResponse.body, finalResponse.finalUrl)
+        projector(finalResponse.body, finalResponse.finalUrl, result, page)
+    }
+
     private fun <T> withAccountActionFence(accountId: Long, action: () -> T): T =
         actionLocks.computeIfAbsent(accountId) { ReentrantLock(true) }.withLock(action)
 

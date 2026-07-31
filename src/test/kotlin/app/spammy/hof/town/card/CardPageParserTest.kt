@@ -24,20 +24,24 @@ class CardPageParserTest {
         assertEquals(50_000, page.cards.first().cost)
     }
 
-    @Test fun `upgrade keeps base and material as distinct actual HOF fields`() {
+    @Test fun `upgrade keeps base and material as distinct two stage HOF fields`() {
         val html = fixture("upgrade.html")
         val page = parser.parseUpgrade(html, URL, forms.parse(html, URL))
-        assertEquals(listOf("base", "material"), page.selectionSlots.map { it.id })
+        assertEquals(listOf("base"), page.selectionSlots.map { it.id })
         assertEquals("ItemNo", page.selectionSlots[0].fieldName)
-        assertEquals("AddMaterial", page.selectionSlots[1].fieldName)
-        assertEquals(20, page.maxQuantity)
+        assertTrue(page.materialCards.isEmpty())
+        val optionsHtml = fixture("upgrade-options.html")
+        val options = parser.parseUpgrade(optionsHtml, URL, forms.parse(optionsHtml, URL))
+        assertEquals(listOf("material"), options.selectionSlots.map { it.id })
+        assertEquals("AddMaterial", options.selectionSlots[0].fieldName)
+        assertEquals(20, options.maxQuantity)
         assertTrue(page.history.isNotEmpty())
         val afterAction = parser.parseUpgrade(html, URL, forms.parse(html, URL), ParsedTownResult(emptyList(), emptyList()))
         assertTrue(afterAction.result!!.messages.any { it.contains("합성 성공") })
     }
 
     @Test fun `change reads HOF max ten and actual labels`() {
-        val html = fixture("change.html")
+        val html = fixture("change-options.html")
         val page = parser.parseChange(html, URL, forms.parse(html, URL))
         assertEquals(10, page.maxQuantity)
         assertTrue(page.materialCards.single().label.contains("Cursed Crew"))
@@ -61,6 +65,8 @@ class CardPageParserTest {
         assertFalse(page.recipes.last().selectable)
         assertEquals(2, page.ownedEchoes.size)
         assertEquals("Arena Boss", page.ownedEchoes.first().region)
+        assertEquals("type:weapon", page.currentCategoryId)
+        assertTrue(page.recipes.all { it.category == page.currentCategoryId })
         assertTrue(page.history.any { it.success })
         assertTrue(page.history.any { !it.success })
     }

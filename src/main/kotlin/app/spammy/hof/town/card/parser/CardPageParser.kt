@@ -12,36 +12,38 @@ import org.springframework.stereotype.Component
 @Component
 class CardPageParser {
     fun parseIdentify(html: String, finalUrl: String, page: ParsedTownPage, result: ParsedTownResult? = null): CardIdentifySnapshot {
-        val form = actionForm(page, setOf("Identify", "CardIdentify", "Create")) ?: page.forms.maxByOrNull { it.rows.size }
+        val form = actionForm(page, setOf("Identify", "CardIdentify", "Create"), setOf("ItemNo"))
         return CardIdentifySnapshot(form?.actionId, 1, candidates(form), structuredResult(html, result, IDENTIFY_RESULT))
     }
 
     fun parseUpgrade(html: String, finalUrl: String, page: ParsedTownPage, result: ParsedTownResult? = null): CardUpgradeSnapshot {
-        val form = actionForm(page, setOf("Create")) ?: page.forms.maxByOrNull { it.rows.size }
+        val form = actionForm(page, setOf("Create"), setOf("ItemNo", ADD_MATERIAL))
         val base = candidates(form).filter { it.fieldName != ADD_MATERIAL }
         val material = candidates(form).filter { it.fieldName == ADD_MATERIAL }
         val bounds = quantityBounds(html, 1, material.mapNotNull { it.owned }.maxOrNull() ?: 1)
         return CardUpgradeSnapshot(
             form?.actionId,
             slots(base, material), base, material, bounds.first, bounds.second,
-            parseHistory(html, Regex("합성|강화|upgrade", RegexOption.IGNORE_CASE)), structuredResult(html, result, UPGRADE_RESULT),
+            parseHistory(html, Regex("합성|강화|upgrade", RegexOption.IGNORE_CASE)),
+            result = structuredResult(html, result, UPGRADE_RESULT),
         )
     }
 
     fun parseChange(html: String, finalUrl: String, page: ParsedTownPage, result: ParsedTownResult? = null): CardChangeSnapshot {
-        val form = actionForm(page, setOf("Create")) ?: page.forms.maxByOrNull { it.rows.size }
+        val form = actionForm(page, setOf("Create"), setOf("ItemNo", ADD_MATERIAL))
         val base = candidates(form).filter { it.fieldName != ADD_MATERIAL }
         val material = candidates(form).filter { it.fieldName == ADD_MATERIAL }
         val bounds = quantityBounds(html, 1, 10)
         return CardChangeSnapshot(
             form?.actionId,
             slots(base, material), base, material, bounds.first, minOf(bounds.second, 10),
-            parseHistory(html, Regex("변화|변환|업그레이드|change", RegexOption.IGNORE_CASE)), structuredResult(html, result, CHANGE_RESULT),
+            parseHistory(html, Regex("변화|변환|업그레이드|change", RegexOption.IGNORE_CASE)),
+            result = structuredResult(html, result, CHANGE_RESULT),
         )
     }
 
     fun parseSell(html: String, finalUrl: String, page: ParsedTownPage, result: ParsedTownResult? = null): CardSellSnapshot {
-        val form = actionForm(page, setOf("ItemSell", "Sell")) ?: page.forms.maxByOrNull { it.rows.size }
+        val form = actionForm(page, setOf("ItemSell", "Sell"), setOf("check_"))
         val cards = candidates(form).map { candidate ->
             val code = candidate.fieldName?.removePrefix("check_")
             val row = Jsoup.parse(html, finalUrl).selectFirst("input[name=check_$code]")?.closest("tr")
@@ -55,15 +57,18 @@ class CardPageParser {
 
     fun parseSoulEcho(html: String, finalUrl: String, page: ParsedTownPage, result: ParsedTownResult? = null): SoulEchoSnapshot {
         val document = Jsoup.parse(html, finalUrl)
-        val form = actionForm(page, setOf("Create")) ?: page.forms.maxByOrNull { it.rows.size }
+        val form = actionForm(page, setOf("Create"), setOf("ItemNo", "type"))
         val recipeRows = form?.rows.orEmpty().filter { it.candidate?.inputName != "type" }
         val candidateByLabel = recipeRows.associate { clean(it.label) to it.candidate }
+        val selectedOption = document.selectFirst("select[name=type] option[selected]")
+            ?: document.selectFirst("select[name=type] option")
+        val currentCategoryId = selectedOption?.attr("value")?.takeIf(String::isNotBlank)?.let { "type:$it" }
         val recipes = recipeRows.mapIndexed { index, row ->
             val label = clean(row.label)
             val candidate = candidateByLabel[label]
             SoulEchoRecipe(
                 id = candidate?.id ?: "display-$index", label = label, selectable = candidate != null,
-                category = document.selectFirst("select[name=type] option[selected], select[name=type] option")?.text()?.let(::clean),
+                category = currentCategoryId,
                 requiredEchoes = ECHO_REQUIREMENT.findAll(label).map { clean(it.value.substringBeforeLast('x')) + " x" + it.groupValues[1] }.toList(),
                 cost = money(label), successBonus = BONUS.find(label)?.groupValues?.get(1)?.toIntOrNull(),
             )
@@ -80,7 +85,7 @@ class CardPageParser {
         val categories = document.select("select[name=type] option:not([disabled])")
             .filter { it.attr("value").isNotBlank() }
             .map { SoulEchoCategory("type:${it.attr("value")}", clean(it.text())) }
-        return SoulEchoSnapshot(form?.actionId, categories, recipes, owned, history, structuredResult(html, result, SOUL_RESULT))
+        return SoulEchoSnapshot(form?.actionId, categories, recipes, currentCategoryId, owned, history, structuredResult(html, result, SOUL_RESULT))
     }
 
     private fun candidates(form: ParsedTownForm?): List<CardCandidate> = form?.rows.orEmpty().mapIndexed { index, row ->
@@ -100,8 +105,15 @@ class CardPageParser {
         material.firstOrNull()?.fieldName?.let { add(CardSelectionSlot("material", "추가 카드", it)) }
     }
 
-    private fun actionForm(page: ParsedTownPage, names: Set<String>): ParsedTownForm? = page.forms.firstOrNull { form ->
-        form.submitFields.any { it.name in names }
+    private fun actionForm(page: ParsedTownPage, names: Set<String>, candidateFields: Set<String>): ParsedTownForm? {
+        val matches = page.forms.filter { form ->
+            form.submitFields.singleOrNull()?.name in names && form.candidates.any { candidate ->
+                candidateFields.any { expected ->
+                    if (expected.endsWith('_')) candidate.inputName.startsWith(expected) else candidate.inputName == expected
+                }
+            }
+        }
+        return matches.singleOrNull()
     }
 
     private fun quantityBounds(html: String, defaultMin: Int, defaultMax: Int): Pair<Int, Int> {

@@ -29,6 +29,7 @@ data class CardUpgradeSnapshot(
     val actionId: String?, val selectionSlots: List<CardSelectionSlot>,
     val baseCards: List<CardCandidate>, val materialCards: List<CardCandidate>,
     val minQuantity: Int, val maxQuantity: Int, val history: List<String>,
+    val selectedBaseCandidateId: String? = null,
     val result: ParsedTownResult? = null,
 )
 
@@ -36,6 +37,7 @@ data class CardChangeSnapshot(
     val actionId: String?, val selectionSlots: List<CardSelectionSlot>,
     val baseCards: List<CardCandidate>, val materialCards: List<CardCandidate>,
     val minQuantity: Int, val maxQuantity: Int, val history: List<String>,
+    val selectedBaseCandidateId: String? = null,
     val result: ParsedTownResult? = null,
 )
 
@@ -60,6 +62,6 @@ data class SoulEchoHistory(val text: String, val success: Boolean)
 data class SoulEchoCategory(val id: String, val label: String)
 data class SoulEchoSnapshot(
     val actionId: String?, val categories: List<SoulEchoCategory>, val recipes: List<SoulEchoRecipe>,
-    val ownedEchoes: List<OwnedSoulEcho>, val history: List<SoulEchoHistory>,
+    val currentCategoryId: String?, val ownedEchoes: List<OwnedSoulEcho>, val history: List<SoulEchoHistory>,
     val result: ParsedTownResult? = null,
 )

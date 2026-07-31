@@ -1,6 +1,7 @@
 package app.spammy.hof.town.card
 
 import app.spammy.hof.town.card.dto.CardChangeRequest
+import app.spammy.hof.town.card.dto.CardBaseOptionsRequest
 import app.spammy.hof.town.card.dto.CardIdentifyRequest
 import app.spammy.hof.town.card.dto.CardSellLineRequest
 import app.spammy.hof.town.card.dto.CardSellRequest
@@ -26,22 +27,26 @@ class CardControllerTest {
     @Test fun `typed requests keep five card actions separate and enforce quantity bounds`() {
         assertTrue(validator.validate(CardIdentifyRequest("")).isNotEmpty())
         assertTrue(validator.validate(CardUpgradeRequest("base", "material", 0)).isNotEmpty())
+        assertTrue(validator.validate(CardBaseOptionsRequest("")).isNotEmpty())
         assertTrue(validator.validate(CardChangeRequest("base", "material", 11)).isNotEmpty())
         assertTrue(validator.validate(CardSellRequest(emptyList())).isNotEmpty())
         assertTrue(validator.validate(SoulEchoFuseRequest("recipe", "")).isNotEmpty())
         assertTrue(validator.validate(CardSellRequest(listOf(CardSellLineRequest("card", 1)))).isEmpty())
     }
 
-    @Test fun `upgrade submits actual ItemNo AddMaterial amount and Create controls only`() {
+    @Test fun `upgrade submits base and material through separate actual HOF forms`() {
         val html = fixture("upgrade.html")
         val page = forms.parse(html, URL)
         val snapshot = parser.parseUpgrade(html, URL, page)
-        val guarded = guard.guard(page, TownActionRequest(snapshot.actionId!!, listOf(
-            TownActionSelection(snapshot.baseCards.first { it.selectable }.id),
-            TownActionSelection(snapshot.materialCards.first { it.selectable }.id),
-        )))
-        assertEquals(listOf("ItemNo", "AddMaterial", "Create"), guarded.formEntries.map { it.name })
-        assertFalse(guarded.formEntries.any { it.name == "amount" }, "amount는 scalar allowlist에서만 추가한다")
+        val guarded = guard.guard(page, TownActionRequest(snapshot.actionId!!, listOf(TownActionSelection(snapshot.baseCards.first { it.selectable }.id))))
+        assertEquals(listOf("ItemNo", "Create"), guarded.formEntries.map { it.name })
+
+        val optionsHtml = fixture("upgrade-options.html")
+        val optionsPage = forms.parse(optionsHtml, URL)
+        val options = parser.parseUpgrade(optionsHtml, URL, optionsPage)
+        val final = guard.guard(optionsPage, TownActionRequest(options.actionId!!, listOf(TownActionSelection(options.materialCards.single().id))))
+        assertEquals(listOf("ItemNo", "AddMaterial", "Create"), final.formEntries.map { it.name })
+        assertFalse(final.formEntries.any { it.name == "amount" }, "amount는 scalar allowlist에서만 추가한다")
     }
 
     @Test fun `sell preserves each check amount pair and one ItemSell submit`() {

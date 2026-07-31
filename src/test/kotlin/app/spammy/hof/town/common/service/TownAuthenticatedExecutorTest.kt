@@ -280,6 +280,71 @@ class TownAuthenticatedExecutorTest {
         Mockito.verify(gateway, Mockito.times(2)).execute(Mockito.eq(7L), anyRequest(), anyCookies())
     }
 
+    @Test
+    fun `card second stage options uses fresh entry form and forwards response cookies`() {
+        stubAccount()
+        val main = """
+          <form action="index.php?menu=cardmix" method="post"><input type="hidden" name="nonce" value="fresh">
+            <input type="radio" name="ItemNo" value="201"><input type="submit" name="Create" value="Create">
+          </form>
+        """.trimIndent()
+        val second = """
+          <form action="index.php?menu=cardmix" method="post"><input type="hidden" name="ItemNo" value="201">
+            <input type="radio" name="AddMaterial" value="202"><input name="amount"><input type="submit" name="Create" value="Create">
+          </form>
+        """.trimIndent()
+        Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies()))
+            .thenReturn(response(main), HofHttpResponse(200, HOF_URL, second, mapOf("stage" to "two")))
+
+        val materialCount = executor.loadSecondStageProjected(
+            7L, HOF_URL, "Create",
+            entryAction = { _, _, page ->
+                val form = page.forms.single()
+                TownActionRequest(form.actionId, listOf(TownActionSelection(form.candidates.single().id)))
+            },
+        ) { _, _, page -> page.forms.single().candidates.size }
+
+        assertEquals(1, materialCount)
+        val requests = ArgumentCaptor.forClass(HofRequest::class.java)
+        Mockito.verify(gateway, Mockito.times(2)).execute(Mockito.eq(7L), capture(requests, HofRequest(HofHttpMethod.GET, HOF_URL)), anyCookies())
+        assertEquals(mapOf("nonce" to "fresh", "ItemNo" to "201", "Create" to "Create"), requests.allValues[1].formFields)
+    }
+
+    @Test
+    fun `resolved card two step revalidates both forms and submits amount only on final stage`() {
+        stubAccount()
+        val main = """
+          <form action="index.php?menu=cardmix" method="post"><input type="hidden" name="nonce" value="fresh">
+            <input type="radio" name="ItemNo" value="201"><input type="submit" name="Create" value="Create">
+          </form>
+        """.trimIndent()
+        val second = """
+          <form action="index.php?menu=cardmix" method="post"><input type="hidden" name="ItemNo" value="201"><input type="hidden" name="nonce" value="second">
+            <input type="radio" name="AddMaterial" value="202"><input name="amount"><input type="submit" name="Create" value="Create">
+          </form>
+        """.trimIndent()
+        Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies()))
+            .thenReturn(response(main), HofHttpResponse(200, HOF_URL, second, mapOf("stage" to "two")), response("<div id='result'>합성 성공</div>"))
+
+        executor.executeResolvedTwoStepProjectedWithScalars(
+            7L, HOF_URL, "Create",
+            entryAction = { _, _, page ->
+                val form = page.forms.single()
+                TownActionRequest(form.actionId, listOf(TownActionSelection(form.candidates.single().id)))
+            },
+            finalAction = { _, _, page ->
+                val form = page.forms.single()
+                TownActionRequest(form.actionId, listOf(TownActionSelection(form.candidates.single().id)))
+            },
+            scalarValues = mapOf("amount" to "2"), requiredScalarFields = setOf("amount"), requiredFinalSubmitField = "Create",
+        ) { _, _, result, _ -> result }
+
+        val requests = ArgumentCaptor.forClass(HofRequest::class.java)
+        Mockito.verify(gateway, Mockito.times(3)).execute(Mockito.eq(7L), capture(requests, HofRequest(HofHttpMethod.GET, HOF_URL)), anyCookies())
+        assertEquals(mapOf("nonce" to "fresh", "ItemNo" to "201", "Create" to "Create"), requests.allValues[1].formFields)
+        assertEquals(mapOf("ItemNo" to "201", "nonce" to "second", "AddMaterial" to "202", "amount" to "2", "Create" to "Create"), requests.allValues[2].formFields)
+    }
+
     private fun stubAccount() {
         Mockito.`when`(accounts.findById(7L)).thenReturn(
             HofAccountEntity(7L, "town-user", "encrypted", Instant.EPOCH),

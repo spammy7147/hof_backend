@@ -24,15 +24,20 @@ data class CardIdentifyRequest(@field:NotBlank val candidateId: String)
 data class CardUpgradeResponse(
     val selectionSlots: List<CardSelectionSlotResponse>, val baseCards: List<CardItemResponse>,
     val materialCards: List<CardItemResponse>, val minQuantity: Int, val maxQuantity: Int,
-    val history: List<String>, val result: TownActionResultResponse?,
-) { companion object { fun from(value: CardUpgradeSnapshot) = CardUpgradeResponse(value.selectionSlots.map { CardSelectionSlotResponse(it.id, it.label) }, value.baseCards.map(CardItemResponse::from), value.materialCards.map(CardItemResponse::from), value.minQuantity, value.maxQuantity, value.history, value.result?.let(TownActionResultResponse::from)) } }
+    val history: List<String>, val selectedBaseCandidateId: String?, val result: TownActionResultResponse?,
+) {
+    companion object { fun from(value: CardUpgradeSnapshot) = CardUpgradeResponse(value.selectionSlots.map { CardSelectionSlotResponse(it.id, it.label) }, value.baseCards.map(CardItemResponse::from), value.materialCards.map(CardItemResponse::from), value.minQuantity, value.maxQuantity, value.history, value.selectedBaseCandidateId, value.result?.let(TownActionResultResponse::from)) }
+}
+data class CardBaseOptionsRequest(@field:NotBlank val baseCandidateId: String)
 data class CardUpgradeRequest(@field:NotBlank val baseCandidateId: String, @field:NotBlank val materialCandidateId: String, @field:Min(1) val quantity: Int)
 
 data class CardChangeResponse(
     val selectionSlots: List<CardSelectionSlotResponse>, val baseCards: List<CardItemResponse>,
     val materialCards: List<CardItemResponse>, val minQuantity: Int, val maxQuantity: Int,
-    val history: List<String>, val result: TownActionResultResponse?,
-) { companion object { fun from(value: CardChangeSnapshot) = CardChangeResponse(value.selectionSlots.map { CardSelectionSlotResponse(it.id, it.label) }, value.baseCards.map(CardItemResponse::from), value.materialCards.map(CardItemResponse::from), value.minQuantity, value.maxQuantity, value.history, value.result?.let(TownActionResultResponse::from)) } }
+    val history: List<String>, val selectedBaseCandidateId: String?, val result: TownActionResultResponse?,
+) {
+    companion object { fun from(value: CardChangeSnapshot) = CardChangeResponse(value.selectionSlots.map { CardSelectionSlotResponse(it.id, it.label) }, value.baseCards.map(CardItemResponse::from), value.materialCards.map(CardItemResponse::from), value.minQuantity, value.maxQuantity, value.history, value.selectedBaseCandidateId, value.result?.let(TownActionResultResponse::from)) }
+}
 data class CardChangeRequest(@field:NotBlank val baseCandidateId: String, @field:NotBlank val materialCandidateId: String, @field:Min(1) @field:Max(10) val quantity: Int)
 
 data class CardSellResponse(
@@ -51,12 +56,12 @@ data class SoulEchoHistoryResponse(val text: String, val success: Boolean)
 data class SoulEchoCategoryResponse(val id: String, val label: String)
 data class SoulEchoResponse(
     val categories: List<SoulEchoCategoryResponse>, val recipes: List<SoulEchoRecipeResponse>,
-    val ownedEchoes: List<SoulEchoOwnedResponse>, val history: List<SoulEchoHistoryResponse>,
+    val currentCategoryId: String?, val ownedEchoes: List<SoulEchoOwnedResponse>, val history: List<SoulEchoHistoryResponse>,
     val result: TownActionResultResponse?,
 ) { companion object { fun from(value: SoulEchoSnapshot) = SoulEchoResponse(
     value.categories.map { SoulEchoCategoryResponse(it.id, it.label) },
     value.recipes.map { SoulEchoRecipeResponse(it.id, it.label, it.selectable, it.category, it.requiredEchoes, it.cost, it.successBonus) },
-    value.ownedEchoes.map { SoulEchoOwnedResponse(it.name, it.region, it.quantity) },
+    value.currentCategoryId, value.ownedEchoes.map { SoulEchoOwnedResponse(it.name, it.region, it.quantity) },
     value.history.map { SoulEchoHistoryResponse(it.text, it.success) }, value.result?.let(TownActionResultResponse::from),
 ) } }
 data class SoulEchoFuseRequest(@field:NotBlank val recipeCandidateId: String, @field:NotBlank val categoryCandidateId: String)
