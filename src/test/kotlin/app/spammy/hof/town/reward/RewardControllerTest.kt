@@ -30,8 +30,18 @@ class RewardControllerTest {
         val box = snapshot.boxes.single { it.selectable }
 
         val guarded = guard.guard(page, TownActionRequest(action.actionId, listOf(TownActionSelection(box.id))))
-        assertEquals(listOf("ItemNo", "future-action"), guarded.formEntries.map { it.name })
+        assertEquals(listOf("ItemNo", "Open1000"), guarded.formEntries.map { it.name })
         assertEquals("1000개 열기", guarded.formEntries.last().value)
+    }
+
+    @Test fun `stash ignores a submit whose label mimics a fixed open action`() {
+        val html = fixture("stash.html").replace(
+            "<input type=\"submit\" name=\"Open1000\" value=\"1000개 열기\">",
+            "<input type=\"submit\" name=\"future-action\" value=\"1000개 열기\">",
+        )
+        val snapshot = stash.parse(html, STASH_URL, forms.parse(html, STASH_URL))
+
+        assertTrue(snapshot.actions.none { it.action == StashOpenAction.THOUSAND })
     }
 
     @Test fun `orb actions submit only the confirmed HOF one or five button`() {

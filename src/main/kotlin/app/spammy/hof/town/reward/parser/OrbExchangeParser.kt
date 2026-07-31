@@ -26,7 +26,10 @@ class OrbExchangeParser {
             remainingRewards = REMAINING_TOTAL.find(text)?.groupValues?.get(1)?.number(),
             rewardMonth = MONTH.find(text)?.let { "${it.groupValues[1]}년 ${it.groupValues[2]}월" },
             rewards = parseRewards(html, finalUrl),
-            actions = page.forms.mapNotNull(::actionCandidate).distinctBy(OrbActionCandidate::action).sortedBy { it.action.repetitions },
+            actions = page.forms.mapNotNull(::actionCandidate)
+                .groupBy(OrbActionCandidate::action)
+                .mapNotNull { (_, matches) -> matches.singleOrNull() }
+                .sortedBy { it.action.repetitions },
             result = result,
         )
     }
@@ -103,6 +106,9 @@ class OrbExchangeParser {
     }
 
     private fun inferOutcomes(before: List<OrbLimitedReward>, after: List<OrbLimitedReward>, successful: Int): List<OrbExchangeOutcome> {
+        // Result 응답에 List가 생략되거나 부분 렌더링된 경우 감소가 없었다고 볼 수 없다.
+        // 교환 전 카탈로그를 모두 다시 관측했을 때만 남은 수량 차이와 무제한 꽝을 추론한다.
+        if (before.isEmpty() || before.any { old -> after.none { it.key == old.key } }) return emptyList()
         var accounted = 0
         val finite = before.mapNotNull { old ->
             val capacity = (successful - accounted).coerceAtLeast(0)
@@ -155,14 +161,20 @@ class OrbExchangeParser {
             }
             buffer = StringBuilder()
         }
-        nodes.forEach { node ->
-            if (node is Element && node.tagName() == "img") flush()
+        fun visit(node: Node) {
             when (node) {
                 is TextNode -> buffer.append(' ').append(node.text())
-                is Element -> if (node.tagName() == "br") flush() else buffer.append(' ').append(node.text())
-                else -> buffer.append(' ').append(node.toString())
+                is Element -> when (node.tagName()) {
+                    "img" -> flush()
+                    "br", "hr" -> flush()
+                    else -> {
+                        node.childNodes().forEach(::visit)
+                        if (node.tagName() in RESULT_BLOCK_TAGS) flush()
+                    }
+                }
             }
         }
+        nodes.forEach(::visit)
         flush()
         return outcomes.take(100)
     }
@@ -194,6 +206,7 @@ class OrbExchangeParser {
         val TRAILING_BIND = Regex("\\s*/\\s*Bind\\s*/?\\s*$", RegexOption.IGNORE_CASE)
         val ORB_SHORTAGE = Regex("필요한 오브의 개수가 부족합니다[.!]?")
         val HEADING_TAGS = setOf("h1", "h2", "h3", "h4", "legend")
+        val RESULT_BLOCK_TAGS = setOf("div", "p", "li", "tr")
         const val UNLIMITED_FUNDS_BAG = "Funds Bag($ 1,000)"
     }
 }

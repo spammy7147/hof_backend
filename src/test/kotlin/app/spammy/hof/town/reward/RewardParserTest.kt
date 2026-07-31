@@ -52,6 +52,29 @@ class RewardParserTest {
         assertTrue(after.outcomes.all { !it.inferred })
     }
 
+    @Test fun `explicit rewards are parsed in order when images are nested in result rows`() {
+        val beforeHtml = fixture("orbs-before.html")
+        val before = orbs.parse(beforeHtml, ORB_URL, forms.parse(beforeHtml, ORB_URL))
+        val afterHtml = fixture("orbs-explicit.html").replace(
+            "<img src=\"/item/funds.gif\"> Funds Bag($ 5,000) (Other) / Bind / 을(를) 획득했다!<br>\n<img src=\"/item/sack.gif\"> Material Sack (Stash) 을(를) 획득했다!<br>",
+            "<div class=\"outcome\"><span><img src=\"/item/funds.gif\"> Funds Bag($ 5,000) (Other) / Bind / 을(를) 획득했다!</span></div>\n<div class=\"outcome\"><span><img src=\"/item/sack.gif\"> Material Sack (Stash) 을(를) 획득했다!</span></div>",
+        )
+        val after = orbs.parseExchange(afterHtml, ORB_URL, forms.parse(afterHtml, ORB_URL), ParsedTownResult(emptyList(), emptyList()), before, 1)
+
+        assertEquals(listOf("Funds Bag($ 5,000) (Other)", "Material Sack (Stash)"), after.outcomes.map { it.text })
+    }
+
+    @Test fun `duplicate orb submit contracts fail closed`() {
+        val html = fixture("orbs-before.html").replace(
+            "</body>",
+            "<form method=\"post\" action=\"?menu=other\"><input type=\"submit\" name=\"TestBTN2\" value=\"위장 기부\"></form></body>",
+        )
+        val snapshot = orbs.parse(html, ORB_URL, forms.parse(html, ORB_URL))
+
+        assertTrue(snapshot.actions.none { it.action == OrbExchangeAction.ONE })
+        assertTrue(snapshot.actions.any { it.action == OrbExchangeAction.FIVE })
+    }
+
     @Test fun `missing result infers finite decreases then unlimited funds bag and calculated orbs`() {
         val beforeHtml = fixture("orbs-before.html")
         val before = orbs.parse(beforeHtml, ORB_URL, forms.parse(beforeHtml, ORB_URL))
@@ -70,6 +93,25 @@ class RewardParserTest {
         assertEquals(3_448, after.displayedOrbs.green)
         assertTrue(after.orbCountsEstimated)
         assertNotNull(after.result)
+    }
+
+    @Test fun `missing after catalog does not guess every success as an unlimited funds bag`() {
+        val beforeHtml = fixture("orbs-before.html")
+        val before = orbs.parse(beforeHtml, ORB_URL, forms.parse(beforeHtml, ORB_URL))
+        val afterHtml = """
+            <html><body>
+            <p>Red Orb : 154240개</p><p>Blue Orb : 5086개</p><p>Green Orb : 7448개</p>
+            <form method="post" action="?menu=orbboxshop">
+              <input type="submit" name="TestBTN2" value="오브를 기부한다">
+              <input type="submit" name="TestBTN3" value="오브를 5회 기부한다">
+            </form>
+            </body></html>
+        """.trimIndent()
+        val after = orbs.parseExchange(afterHtml, ORB_URL, forms.parse(afterHtml, ORB_URL), ParsedTownResult(emptyList(), emptyList()), before, 1)
+
+        assertTrue(after.outcomes.isEmpty())
+        assertEquals(153_240, after.displayedOrbs.red)
+        assertTrue(after.orbCountsEstimated)
     }
 
     private fun fixture(name: String) = requireNotNull(javaClass.getResource("/fixtures/town/reward/$name")).readText()
