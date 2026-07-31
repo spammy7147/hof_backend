@@ -35,6 +35,7 @@ class FishingPageParserTest {
         val waiting = parser.parse(html, url, forms.parse(html, url))
 
         assertEquals(FishingPrimaryAction.CATCH, waiting.primaryAction)
+        assertEquals(FishingOutcome.STARTED, waiting.lastOutcome)
         assertEquals(30, waiting.escapeSeconds)
         assertEquals(setOf(FishingAction.CATCH, FishingAction.STATUS, FishingAction.FILTER), waiting.availableActions.map { it.action }.toSet())
     }
@@ -54,9 +55,33 @@ class FishingPageParserTest {
         val monster = parser.parse(html, url, forms.parse(html, url))
 
         assertTrue(monster.blockedByBattle)
-        assertNotNull(monster.battleLink)
+        assertEquals("battle_map", assertNotNull(monster.battleTarget).categoryId)
+        assertEquals("fishing_12", monster.battleTarget?.mapCode)
         assertEquals(FishingPrimaryAction.NONE, monster.primaryAction)
         assertTrue(monster.availableActions.isEmpty())
+    }
+
+    @Test
+    fun `상단 공용 전투 링크는 낚시 전투로 오인하지 않는다`() {
+        val html = fixture("header-battle.html")
+        val snapshot = parser.parse(html, url, forms.parse(html, url))
+
+        assertFalse(snapshot.blockedByBattle)
+        assertEquals(null, snapshot.battleTarget)
+        assertEquals(FishingPrimaryAction.START, snapshot.primaryAction)
+    }
+
+    @Test
+    fun `낚시 결과 아이템을 이름 수량 사용횟수 효과로 구조화한다`() {
+        val html = fixture("caught.html")
+        val snapshot = parser.parse(html, url, forms.parse(html, url), results.parse(html))
+
+        assertEquals(FishingOutcome.CAUGHT, snapshot.lastOutcome)
+        val item = snapshot.catches.single()
+        assertEquals("Rank Fish", item.name)
+        assertEquals(2, item.quantity)
+        assertEquals(100, item.remainingUses)
+        assertTrue(item.effect.orEmpty().contains("HP+3000"))
     }
 
     @Test

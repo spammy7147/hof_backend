@@ -22,7 +22,8 @@ data class FishingResponse(
     val availableActions: Set<FishingAction>,
     val lastOutcome: FishingOutcome?,
     val blockedByBattle: Boolean,
-    val battleLink: String?,
+    val battleTarget: FishingBattleTargetResponse?,
+    val catches: List<FishingCatchItemResponse>,
     val result: TownActionResultResponse?,
 ) {
     companion object {
@@ -39,12 +40,15 @@ data class FishingResponse(
             availableActions = snapshot.availableActions.map { it.action }.toSet(),
             lastOutcome = snapshot.lastOutcome,
             blockedByBattle = snapshot.blockedByBattle,
-            // 앱에는 HOF URL 대신 전투 탭으로 넘길 typed target만 공개한다.
-            battleLink = snapshot.battleLink?.let { "FISHING_BATTLE" },
+            battleTarget = snapshot.battleTarget?.let { FishingBattleTargetResponse(it.categoryId, it.mapCode) },
+            catches = snapshot.catches.map { FishingCatchItemResponse(it.name, it.quantity, it.remainingUses, it.effect) },
             result = snapshot.result?.let(TownActionResultResponse::from),
         )
     }
 }
+
+data class FishingBattleTargetResponse(val categoryId: String, val mapCode: String)
+data class FishingCatchItemResponse(val name: String, val quantity: Int, val remainingUses: Int?, val effect: String?)
 
 data class FishingExchangeResponse(
     val items: List<FishingExchangeItemResponse>,
@@ -53,7 +57,14 @@ data class FishingExchangeResponse(
     companion object {
         fun from(snapshot: FishingExchangeSnapshot) = FishingExchangeResponse(
             items = snapshot.items.map { item ->
-                FishingExchangeItemResponse(item.id, item.name, item.selectable, item.detail)
+                FishingExchangeItemResponse(
+                    id = item.id,
+                    label = item.name,
+                    selectable = item.selectable,
+                    detail = item.detail,
+                    price = item.price,
+                    materials = item.materials,
+                )
             },
             result = snapshot.result?.let(TownActionResultResponse::from),
         )
@@ -65,6 +76,10 @@ data class FishingExchangeItemResponse(
     val label: String,
     val selectable: Boolean,
     val detail: String?,
+    val imageUrl: String? = null,
+    val price: Long?,
+    val quantity: Int? = null,
+    val materials: List<String>,
 )
 
 data class FishingExchangeRequest(

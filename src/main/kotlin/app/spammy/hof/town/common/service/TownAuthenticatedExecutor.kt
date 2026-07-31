@@ -16,6 +16,9 @@ import app.spammy.hof.town.common.model.ParsedTownPage
 import app.spammy.hof.town.common.model.TownActionRequest
 import app.spammy.hof.town.common.parser.HofFormParser
 import app.spammy.hof.town.common.parser.HofResultParser
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import org.springframework.stereotype.Service
 
 /**
@@ -36,6 +39,8 @@ class TownAuthenticatedExecutor(
     private val actionGuard: TownActionGuard,
     private val captchaService: CaptchaService,
 ) {
+    private val actionLocks = ConcurrentHashMap<Long, ReentrantLock>()
+
     fun load(
         accountId: Long,
         pageUrl: String,
@@ -64,7 +69,7 @@ class TownAuthenticatedExecutor(
         pageUrl: String,
         action: TownActionRequest,
         origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
-    ): ExecutedTownAction {
+    ): ExecutedTownAction = withAccountActionFence(accountId) {
         val context = authenticatedContext(accountId)
         val current = executeAuthenticated(context.account, requestFactory.townPage(pageUrl, origin), context.cookies)
         val currentPage = formParser.parse(current.body, current.finalUrl)
@@ -79,7 +84,7 @@ class TownAuthenticatedExecutor(
             ),
             cookies = context.cookies + current.setCookies,
         )
-        return ExecutedTownAction(
+        ExecutedTownAction(
             result = resultParser.parse(actionResponse.body),
             page = formParser.parse(actionResponse.body, actionResponse.finalUrl),
         )
@@ -100,7 +105,7 @@ class TownAuthenticatedExecutor(
             result: app.spammy.hof.town.common.model.ParsedTownResult,
             page: ParsedTownPage,
         ) -> T,
-    ): T {
+    ): T = withAccountActionFence(accountId) {
         val context = authenticatedContext(accountId)
         val current = executeAuthenticated(context.account, requestFactory.townPage(pageUrl, origin), context.cookies)
         val currentPage = formParser.parse(current.body, current.finalUrl)
@@ -117,8 +122,11 @@ class TownAuthenticatedExecutor(
         )
         val result = resultParser.parse(actionResponse.body)
         val page = formParser.parse(actionResponse.body, actionResponse.finalUrl)
-        return projector(actionResponse.body, actionResponse.finalUrl, result, page)
+        projector(actionResponse.body, actionResponse.finalUrl, result, page)
     }
+
+    private fun <T> withAccountActionFence(accountId: Long, action: () -> T): T =
+        actionLocks.computeIfAbsent(accountId) { ReentrantLock(true) }.withLock(action)
 
     private fun authenticatedContext(accountId: Long): AuthenticatedContext {
         val account = accountQueryRepository.findById(accountId)

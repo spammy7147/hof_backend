@@ -26,8 +26,18 @@ data class FishingSnapshot(
     val availableActions: List<FishingActionCandidate>,
     val lastOutcome: FishingOutcome?,
     val blockedByBattle: Boolean,
-    val battleLink: String?,
+    val battleTarget: FishingBattleTarget?,
+    val catches: List<FishingCatchItem>,
     val result: ParsedTownResult?,
+)
+
+data class FishingBattleTarget(val categoryId: String, val mapCode: String)
+
+data class FishingCatchItem(
+    val name: String,
+    val quantity: Int,
+    val remainingUses: Int?,
+    val effect: String?,
 )
 
 data class FishingExchangeItem(
@@ -35,6 +45,8 @@ data class FishingExchangeItem(
     val name: String,
     val selectable: Boolean,
     val detail: String?,
+    val price: Long?,
+    val materials: List<String>,
 )
 
 data class FishingExchangeSnapshot(

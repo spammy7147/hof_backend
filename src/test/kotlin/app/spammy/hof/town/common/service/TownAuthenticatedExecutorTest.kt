@@ -18,10 +18,15 @@ import app.spammy.hof.town.common.model.TownActionSelection
 import app.spammy.hof.town.common.parser.HofFormParser
 import app.spammy.hof.town.common.parser.HofResultParser
 import java.time.Instant
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 import org.mockito.ArgumentCaptor
 import org.mockito.Mockito
 
@@ -132,6 +137,43 @@ class TownAuthenticatedExecutorTest {
 
         assertEquals("물고기가 도망쳤다.", message)
         Mockito.verify(gateway, Mockito.times(2)).execute(Mockito.eq(7L), anyRequest(), anyCookies())
+    }
+
+    @Test
+    fun `same account costly actions cannot interleave between fresh GET and POST`() {
+        stubAccount()
+        val formHtml = "<form method='post'><button name='do' value='낚는다'>낚는다</button></form>"
+        val calls = AtomicInteger()
+        Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies())).thenAnswer {
+            if (calls.incrementAndGet() % 2 == 1) response(formHtml) else response("<div id='result'>획득했다.</div>")
+        }
+        val firstInsideFence = CountDownLatch(1)
+        val releaseFirst = CountDownLatch(1)
+        val pool = Executors.newFixedThreadPool(2)
+        try {
+            val first = pool.submit<String> {
+                executor.executeProjected(7L, HOF_URL, resolveAction = { _, _, page ->
+                    firstInsideFence.countDown()
+                    releaseFirst.await(2, TimeUnit.SECONDS)
+                    TownActionRequest(page.forms.single().actionId)
+                }) { _, _, result, _ -> result.messages.single() }
+            }
+            assertTrue(firstInsideFence.await(2, TimeUnit.SECONDS))
+            val second = pool.submit<String> {
+                executor.executeProjected(7L, HOF_URL, resolveAction = { _, _, page ->
+                    TownActionRequest(page.forms.single().actionId)
+                }) { _, _, result, _ -> result.messages.single() }
+            }
+            Thread.sleep(100)
+            assertEquals(1, calls.get(), "두 번째 요청은 첫 번째 POST가 끝나기 전에 GET을 수행하면 안 된다")
+            releaseFirst.countDown()
+            assertEquals("획득했다.", first.get(2, TimeUnit.SECONDS))
+            assertEquals("획득했다.", second.get(2, TimeUnit.SECONDS))
+            assertEquals(4, calls.get())
+        } finally {
+            releaseFirst.countDown()
+            pool.shutdownNow()
+        }
     }
 
     private fun stubAccount() {

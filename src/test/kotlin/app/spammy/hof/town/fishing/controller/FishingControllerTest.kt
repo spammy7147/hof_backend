@@ -78,7 +78,8 @@ class FishingControllerTest {
         availableActions = setOf(FishingAction.START),
         lastOutcome = FishingOutcome.ESCAPED,
         blockedByBattle = false,
-        battleLink = null,
+        battleTarget = null,
+        catches = emptyList(),
         result = null,
     )
 
