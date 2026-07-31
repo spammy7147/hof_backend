@@ -31,7 +31,9 @@ class CraftingParserTest {
     }
 
     @Test fun `제련과 장로대장간은 timesB 선택 가능 횟수를 노출한다`() {
-        assertThat(parse("refine.html", CraftingMode.REFINE).allowedRefineCounts).containsExactly(1, 2, 3)
+        val refine = parse("refine.html", CraftingMode.REFINE)
+        assertThat(refine.allowedRefineCounts).containsExactly(1, 2, 3)
+        assertThat(refine.history).containsExactly("제련 성공: +1 Short Sword")
         assertThat(parse("veteran.html", CraftingMode.VETERAN).allowedRefineCounts).containsExactly(1, 2, 3)
     }
 
@@ -46,6 +48,35 @@ class CraftingParserTest {
         val html = resource("workbase.html").replace("document.getElementById('ItemT').value='17'", "window.runRecipe('17')")
         val value = parser.parse(CraftingMode.WORKBASE, html, URL, forms.parse(html, URL))
         assertThat(value.rows.single { it.label.contains("Striker Coat") }.selectable).isFalse()
+    }
+
+    @Test fun `radio를 소유한 행의 직접 ItemT 대입은 후보에만 엄격히 연결한다`() {
+        val html = resource("workbase.html")
+            .replace(" onclick=\"document.getElementById('ItemT').value='17'\"", "")
+            .replace("<tr><td>$ 8,000</td>", "<tr onclick=\"document.getElementById('ItemT').value='17'\"><td>$ 8,000</td>")
+        val value = parser.parse(CraftingMode.WORKBASE, html, URL, forms.parse(html, URL))
+        assertThat(value.rows.single { it.label.contains("Striker Coat") }.selectable).isTrue()
+    }
+
+    @Test fun `현재 분류에 제작 후보가 없어도 분류 전환 action은 유지한다`() {
+        val html = resource("workbase.html").replace(
+            Regex("<table>.*?</table>", setOf(RegexOption.DOT_MATCHES_ALL)),
+            "<table><tr><th>제작비</th><th>Item</th></tr></table>",
+        )
+        val value = parser.parse(CraftingMode.WORKBASE, html, URL, forms.parse(html, URL))
+        assertThat(value.rows).isEmpty()
+        assertThat(value.categories.map { it.label }).contains("방어구(armor)")
+        assertThat(value.actionId).isNotBlank()
+    }
+
+    @Test fun `HOF의 비정상적으로 큰 보유량과 제작 시간은 Int overflow 없이 null 처리한다`() {
+        val html = resource("workbase.html")
+            .replace("x3", "x9,999,999,999")
+            .replace("제작 시간: 600", "제작 시간: 9,999,999,999")
+        val row = parser.parse(CraftingMode.WORKBASE, html, URL, forms.parse(html, URL))
+            .rows.single { it.label.contains("Striker Coat") }
+        assertThat(row.owned).isNull()
+        assertThat(row.workSeconds).isNull()
     }
 
     private fun parse(name: String, mode: CraftingMode) = resource(name).let { html ->

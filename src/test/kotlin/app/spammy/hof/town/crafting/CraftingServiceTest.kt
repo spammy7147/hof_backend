@@ -13,6 +13,7 @@ import app.spammy.hof.town.common.parser.HofFormParser
 import app.spammy.hof.town.common.parser.HofResultParser
 import app.spammy.hof.town.common.service.*
 import app.spammy.hof.town.crafting.dto.RefineRequest
+import app.spammy.hof.town.crafting.dto.CreateCraftRequest
 import app.spammy.hof.town.crafting.dto.WorkbaseStartRequest
 import app.spammy.hof.town.crafting.model.CraftingMode
 import app.spammy.hof.town.crafting.parser.CraftingPageParser
@@ -20,6 +21,7 @@ import app.spammy.hof.town.crafting.service.CraftingService
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import org.mockito.Mockito
 
 class CraftingServiceTest {
@@ -42,8 +44,8 @@ class CraftingServiceTest {
 
         val requests = captureRequests()
         assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.POST), requests.map(HofRequest::method))
-        assertEquals(listOf("type_create", "ItemT", "amount", "ItemNo", "Create"), requests.last().formEntries.map { it.name })
-        assertEquals(listOf("weapon", "17", "2", "coat01", "Create"), requests.last().formEntries.map { it.value })
+        assertEquals(listOf("nonce", "type_create", "ItemT", "amount", "ItemNo", "Create"), requests.last().formEntries.map { it.name })
+        assertEquals(listOf("fresh-123", "weapon", "17", "2", "coat01", "Create"), requests.last().formEntries.map { it.value })
     }
 
     @Test fun `장로대장간은 최신 timesA 기본값과 허용 timesB만 제출한다`() {
@@ -57,14 +59,67 @@ class CraftingServiceTest {
         assertEquals(listOf("weapon", "safe", "3", "mask09", "Refine"), posted.formEntries.map { it.value })
     }
 
-    private fun stub(feature: TownFeatureId, url: String, html: String) {
+    @Test fun `분류 전환은 최신 form의 opaque option과 안전한 hidden만 보내고 작업 submit은 보내지 않는다`() {
+        val initial = fixture("workbase.html")
+        val armor = initial
+            .replace("<option value=\"weapon\" selected>", "<option value=\"weapon\">")
+            .replace("<option value=\"armor\">", "<option value=\"armor\" selected>")
+            .replace("id=\"work-1\"", "id=\"work-2\"")
+            .replace("value=\"coat01\"", "value=\"armor01\"")
+            .replace("value='17'", "value='18'")
+            .replace("Striker Coat", "Knight Armor")
+        stub(TownFeatureId.WORKBASE, WORK_URL, initial, armor)
+
+        val response = service.loadCategory(7L, CraftingMode.WORKBASE, "type_create:armor")
+
+        assertEquals("type_create:armor", response.currentCategoryId)
+        assertEquals(true, response.rows.any { it.label.contains("Knight Armor") })
+        val requests = captureRequests()
+        assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.POST), requests.map(HofRequest::method))
+        assertEquals(listOf("nonce", "type_create"), requests.last().formEntries.map { it.name })
+        assertEquals(listOf("fresh-123", "armor"), requests.last().formEntries.map { it.value })
+    }
+
+    @Test fun `작업 완료는 자동 실행 없이 사용자가 호출할 때 최신 WSend form만 제출한다`() {
+        val html = fixture("workbase-active.html")
+        stub(TownFeatureId.WORKBASE, WORK_URL, html)
+
+        service.completeWorkbase(7L)
+
+        val requests = captureRequests()
+        assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.POST), requests.map(HofRequest::method))
+        assertEquals(listOf("WSend"), requests.last().formEntries.map { it.name })
+    }
+
+    @Test fun `관측되지 않은 분류 id는 HOF에 두 번째 요청을 보내기 전에 거부한다`() {
+        val html = fixture("workbase.html")
+        stub(TownFeatureId.WORKBASE, WORK_URL, html)
+
+        assertFailsWith<app.spammy.hof.common.error.ApiException> {
+            service.loadCategory(7L, CraftingMode.WORKBASE, "type_create:forged")
+        }
+
+        assertEquals(listOf(HofHttpMethod.GET), captureRequests().map(HofRequest::method))
+    }
+
+    @Test fun `제작공방은 추가 소재 없이도 실행하고 경고 코드를 반환한다`() {
+        val html = fixture("create.html")
+        stub(TownFeatureId.CREATE_WORKSHOP, CREATE_URL, html)
+
+        val response = service.create(7L, CreateCraftRequest("recipe-1", "type_create:weapon", 2))
+
+        assertEquals("NO_ADDITIONAL_MATERIAL", response.warningCode)
+        val posted = captureRequests().last()
+        assertEquals(listOf("type_create", "ItemT", "amount", "ItemNo", "Create"), posted.formEntries.map { it.name })
+        assertEquals(false, posted.formEntries.any { it.name == "AddMaterial" })
+    }
+
+    private fun stub(feature: TownFeatureId, url: String, vararg responses: String) {
         Mockito.`when`(accounts.findById(7L)).thenReturn(HofAccountEntity(7L, "crafter", "encrypted", Instant.EPOCH))
         Mockito.`when`(cookies.findValueMapByAccountId(7L)).thenReturn(mapOf("PHPSESSID" to "session"))
         Mockito.`when`(locations.resolve(feature, null)).thenReturn(ResolvedTownLocation(feature, url))
-        Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies())).thenReturn(
-            HofHttpResponse(200, url, html, emptyMap()),
-            HofHttpResponse(200, url, html, emptyMap()),
-        )
+        val values = responses.map { HofHttpResponse(200, url, it, emptyMap()) }.toTypedArray()
+        Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies())).thenReturn(values.first(), *values.drop(1).toTypedArray())
     }
     private fun captureRequests(): List<HofRequest> {
         return Mockito.mockingDetails(gateway).invocations.mapNotNull { invocation ->
@@ -77,5 +132,6 @@ class CraftingServiceTest {
     private companion object {
         const val WORK_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=workbase"
         const val VETERAN_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=refine2"
+        const val CREATE_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=create"
     }
 }

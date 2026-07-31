@@ -77,6 +77,16 @@ class HofFormParserTest {
     }
 
     @Test
+    fun `query only form action preserves the HOF entry filename`() {
+        val form = parser.parse(
+            "<form method='post' action='?menu=create'><input name='item' type='radio' value='1'><button name='Create'>Create</button></form>",
+            "http://sic.zerosic.com/ZeroHOF/index.php?menu=town",
+        ).forms.single()
+
+        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?menu=create", form.actionUrl)
+    }
+
+    @Test
     fun `unrelated text input is not inferred as quantity and repeated fields are preserved`() {
         val form = parser.parse(fixture("fixtures/town/common/form-boundaries.html")).forms[2]
         assertFails {

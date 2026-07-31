@@ -14,6 +14,8 @@ import app.spammy.hof.external.parser.LoginStateParser
 import app.spammy.hof.town.common.model.ExecutedTownAction
 import app.spammy.hof.town.common.model.ParsedTownPage
 import app.spammy.hof.town.common.model.TownActionRequest
+import app.spammy.hof.town.common.model.TownActionSelection
+import app.spammy.hof.town.common.model.TownSelectionType
 import app.spammy.hof.town.common.parser.HofFormParser
 import app.spammy.hof.town.common.parser.HofResultParser
 import java.util.concurrent.ConcurrentHashMap
@@ -63,6 +65,55 @@ class TownAuthenticatedExecutor(
         val response = executeAuthenticated(context.account, requestFactory.townPage(pageUrl, origin), context.cookies)
         val page = formParser.parse(response.body, response.finalUrl)
         return projector(response.body, response.finalUrl, page)
+    }
+
+    /**
+     * 페이지의 select 변경만 HOF에 전달하고 그 응답을 읽는 비파괴 옵션 전환 경계다.
+     *
+     * 브라우저의 onchange 구현이나 임의 query를 재현하지 않는다. 최신 GET에서 관측한 동일 form의
+     * opaque option만 허용하며, 실제 작업을 실행하는 submit/hidden action 필드는 전송하지 않는다.
+     */
+    fun <T> loadSelectedOptionProjected(
+        accountId: Long,
+        pageUrl: String,
+        actionId: (String, String, ParsedTownPage) -> String,
+        optionCandidateId: String,
+        requiredOptionField: String,
+        requiredFormSubmitField: String,
+        excludedActionFields: Set<String>,
+        projector: (html: String, finalUrl: String, page: ParsedTownPage) -> T,
+    ): T = withAccountActionFence(accountId) {
+        require(requiredOptionField.isNotBlank() && requiredFormSubmitField.isNotBlank())
+        require(excludedActionFields.isNotEmpty() && requiredFormSubmitField in excludedActionFields)
+        val context = authenticatedContext(accountId)
+        val current = executeAuthenticated(
+            context.account,
+            requestFactory.townPage(pageUrl, HofRequestOrigin.INTERACTIVE),
+            context.cookies,
+        )
+        val currentPage = formParser.parse(current.body, current.finalUrl)
+        val formId = actionId(current.body, current.finalUrl, currentPage)
+        val guarded = actionGuard.guard(
+            currentPage,
+            TownActionRequest(formId, listOf(TownActionSelection(optionCandidateId))),
+        )
+        if (guarded.form.submitFields.singleOrNull()?.name != requiredFormSubmitField) {
+            throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 분류 양식이 변경되었습니다.")
+        }
+        val option = guarded.form.candidates.singleOrNull { it.id == optionCandidateId }
+            ?.takeIf { it.inputName == requiredOptionField && it.selectionType == TownSelectionType.SELECT }
+            ?: throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF에서 선택할 수 없는 분류입니다.")
+        // hidden Create/refine 같은 관측된 action trigger도 기능별 denylist에 따라 전송하지 않는다.
+        val entries = guarded.form.hiddenFields.filterNot { it.name in excludedActionFields }.toMutableList().apply {
+            add(app.spammy.hof.external.model.HofFormField(option.inputName, option.inputValue))
+        }
+        val transitioned = executeAuthenticated(
+            context.account,
+            requestFactory.townForm(guarded.form.method, guarded.form.actionUrl, entries, HofRequestOrigin.INTERACTIVE),
+            context.cookies + current.setCookies,
+        )
+        val transitionedPage = formParser.parse(transitioned.body, transitioned.finalUrl)
+        projector(transitioned.body, transitioned.finalUrl, transitionedPage)
     }
 
     fun execute(

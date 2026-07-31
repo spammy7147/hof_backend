@@ -20,7 +20,7 @@ class CraftingPageParser {
         val contract = contract(mode)
         val actionForms = page.forms.filter { form ->
             form.submitFields.singleOrNull()?.name == contract.submit &&
-                form.candidates.any { it.inputName == contract.itemField }
+                form.candidates.any { it.inputName == contract.categoryField }
         }
         val actionForm = actionForms.singleOrNull()
         val completionForm = page.forms.singleOrNull { it.submitFields.singleOrNull()?.name == "WSend" }
@@ -44,15 +44,15 @@ class CraftingPageParser {
                 selectable = selectable,
                 detail = label,
                 cost = PRICE.find(label)?.groupValues?.get(1)?.number(),
-                owned = OWNED.find(label)?.groupValues?.get(1)?.number()?.toInt(),
-                workSeconds = WORK_SECONDS.find(label)?.groupValues?.get(1)?.number()?.toInt(),
+                owned = OWNED.find(label)?.groupValues?.get(1)?.intNumber(),
+                workSeconds = WORK_SECONDS.find(label)?.groupValues?.get(1)?.intNumber(),
                 itemT = itemT,
             )
         }.distinctBy(CraftingRow::id)
         val quantity = parseQuantity(domForm, mode)
         val refineOptions = parseRefineOptions(actionForm, domForm)
         val additional = parseAdditionalMaterials(actionForm, domForm, mode)
-        val remaining = REMAINING_SECONDS.find(clean(document.text()))?.groupValues?.get(1)?.number()?.toInt()
+        val remaining = REMAINING_SECONDS.find(clean(document.text()))?.groupValues?.get(1)?.intNumber()
         val activeText = ACTIVE_JOB.find(clean(document.text()))?.value?.let(::clean)
         val activeJob = if (mode == CraftingMode.WORKBASE && (remaining != null || activeText != null || completionForm != null)) {
             ActiveCraftingJob(activeText ?: if (remaining == null) "제작 결과 확인 가능" else "현재 장비를 제작 중입니다.", remaining, completionForm != null)
@@ -82,16 +82,21 @@ class CraftingPageParser {
     private fun strictItemTByCandidate(form: ParsedTownForm, domForm: Element, itemField: String): Map<ParsedTownCandidate, String> =
         form.candidates.filter { it.inputName == itemField }.mapNotNull { candidate ->
             val controls = domForm.select("input[name=${cssValue(candidate.inputName)}]").filter {
+                it.closest("form") === domForm &&
                 it.attr("value").trim().ifBlank { "on" } == candidate.inputValue
             }
             val control = controls.singleOrNull() ?: return@mapNotNull null
-            val assignments = ITEM_T_ASSIGNMENT.findAll(control.attr("onclick")).map { it.groupValues[3] }.distinct().toList()
+            val sources = listOf(control.attr("onclick"), control.closest("tr")?.attr("onclick").orEmpty())
+            val assignments = sources.flatMap { source ->
+                ITEM_T_ASSIGNMENT.findAll(source).map { it.groupValues[3] }.toList()
+            }.distinct()
             candidate to (assignments.singleOrNull() ?: return@mapNotNull null)
         }.toMap()
 
     private fun parseCategories(form: ParsedTownForm?, domForm: Element?, field: String): List<CraftingCategory> {
         if (form == null || domForm == null) return emptyList()
-        val select = domForm.select("select[name=${cssValue(field)}]").singleOrNull() ?: return emptyList()
+        val select = domForm.select("select[name=${cssValue(field)}]").filter { it.closest("form") === domForm }.singleOrNull()
+            ?: return emptyList()
         return select.select("option[value]").filterNot { it.hasAttr("disabled") }.mapNotNull { option ->
             val candidate = form.candidates.singleOrNull { it.inputName == field && it.inputValue == option.attr("value") }
                 ?: return@mapNotNull null
@@ -103,11 +108,12 @@ class CraftingPageParser {
     private fun parseRefineOptions(form: ParsedTownForm?, domForm: Element?): Pair<String?, Map<Int, String>> {
         if (form == null || domForm == null) return null to emptyMap()
         fun candidate(field: String, value: String) = form.candidates.singleOrNull { it.inputName == field && it.inputValue == value }?.id
-        val timesA = domForm.select("select[name=timesA]").singleOrNull()?.let { select ->
+        val timesA = domForm.select("select[name=timesA]").filter { it.closest("form") === domForm }.singleOrNull()?.let { select ->
             val selected = select.select("option[selected]").singleOrNull() ?: select.select("option[value=${cssValue(select.`val`())}]").singleOrNull()
             selected?.attr("value")?.let { candidate("timesA", it) }
         }
-        val timesBSelect = domForm.select("select[name=timesB]").singleOrNull() ?: return timesA to emptyMap()
+        val timesBSelect = domForm.select("select[name=timesB]").filter { it.closest("form") === domForm }.singleOrNull()
+            ?: return timesA to emptyMap()
         val counts = timesBSelect.select("option[value]").filterNot { it.hasAttr("disabled") }.mapNotNull { option ->
             val count = option.attr("value").toIntOrNull()?.takeIf { it > 0 } ?: return@mapNotNull null
             val id = candidate("timesB", option.attr("value")) ?: return@mapNotNull null
@@ -120,7 +126,7 @@ class CraftingPageParser {
         if (mode != CraftingMode.CREATE || form == null || domForm == null) return emptyList()
         return form.candidates.filter { it.inputName == "AddMaterial" }.mapNotNull { candidate ->
             val input = domForm.select("input[name=AddMaterial]").filter {
-                it.attr("value").trim().ifBlank { "on" } == candidate.inputValue
+                it.closest("form") === domForm && it.attr("value").trim().ifBlank { "on" } == candidate.inputValue
             }.singleOrNull() ?: return@mapNotNull null
             val fragments = mutableListOf<String>()
             var sibling = input.nextSibling()
@@ -135,31 +141,38 @@ class CraftingPageParser {
                 id = candidate.id,
                 label = label,
                 selectable = true,
-                owned = OWNED.find(label)?.groupValues?.get(1)?.number()?.toInt(),
+                owned = OWNED.find(label)?.groupValues?.get(1)?.intNumber(),
                 detail = label,
             )
         }.distinctBy(AdditionalMaterial::id)
     }
 
     private fun parseQuantity(form: Element?, mode: CraftingMode): Pair<Int, Int> {
-        val input = form?.select("input[name=amount]")?.singleOrNull()
+        val input = form?.select("input[name=amount]")?.filter { it.closest("form") === form }?.singleOrNull()
         val min = input?.attr("min")?.toIntOrNull()?.coerceAtLeast(1) ?: 1
         val fallback = when (mode) { CraftingMode.WORKBASE -> 10; CraftingMode.CREATE -> 100; else -> Int.MAX_VALUE }
         val max = input?.attr("max")?.toIntOrNull()
-            ?: form?.text()?.let { MAX_QUANTITY.find(it)?.groupValues?.get(1)?.toIntOrNull() }
+            ?: form?.text()?.let { MAX_QUANTITY.find(it)?.groupValues?.get(1)?.intNumber() }
             ?: fallback
         return min to max.coerceAtLeast(min)
     }
 
-    private fun parseHistory(document: org.jsoup.nodes.Document): List<String> = document.select("body *")
-        .map { clean(it.ownText()) }
-        .filter { it.isNotBlank() && HISTORY_WORD.containsMatchIn(it) }
-        .distinct().takeLast(50)
+    private fun parseHistory(document: org.jsoup.nodes.Document): List<String> {
+        val elements = document.select("body *")
+        val markerIndex = elements.indexOfFirst { HALL_OF_PAIN.containsMatchIn(clean(it.ownText())) }
+        if (markerIndex < 0) return emptyList()
+        return elements.drop(markerIndex + 1)
+            .takeWhile { !FOOTER_WORD.containsMatchIn(clean(it.ownText())) }
+            .map { clean(it.ownText()) }
+            .filter { it.isNotBlank() && HISTORY_WORD.containsMatchIn(it) }
+            .distinct().takeLast(50)
+    }
 
     private fun findDomForm(document: org.jsoup.nodes.Document, form: ParsedTownForm, contract: Contract): Element? = document.select("form").filter { dom ->
-        val itemControls = dom.select("input[name=${cssValue(contract.itemField)}]")
+        val categoryControls = dom.select("select[name=${cssValue(contract.categoryField)}]").filter { it.closest("form") === dom }
         val submitControls = dom.select("input[name=${cssValue(contract.submit)}],button[name=${cssValue(contract.submit)}]")
-        itemControls.isNotEmpty() && submitControls.size == 1 &&
+            .filter { it.closest("form") === dom }
+        categoryControls.size == 1 && submitControls.size == 1 &&
             dom.attr("action").let { action -> action.isBlank() || form.actionUrl.endsWith(action.substringAfterLast('/')) || form.actionUrl.contains(action) }
     }.singleOrNull()
 
@@ -173,13 +186,13 @@ class CraftingPageParser {
 
     private fun clean(value: String) = value.replace(Regex("\\s+"), " ").trim()
     private fun String.number() = replace(",", "").toLongOrNull()
+    private fun String.intNumber() = number()?.takeIf { it in 0..Int.MAX_VALUE.toLong() }?.toInt()
     private fun cssValue(value: String) = "'${value.replace("'", "\\'")}'"
     private data class Contract(val itemField: String, val categoryField: String, val submit: String)
 
     private companion object {
         val ITEM_T_MODES = setOf(CraftingMode.WORKBASE, CraftingMode.CLARIS, CraftingMode.CREATE)
         val ITEM_T_ASSIGNMENT = Regex("(?:document\\.getElementById\\(\\s*(['\"])ItemT\\1\\s*\\)|(?:document\\.)?ItemT)\\s*\\.value\\s*=\\s*(['\"]?)([A-Za-z0-9_.:-]+)\\2", RegexOption.IGNORE_CASE)
-            // group 3 is the token; normalize group access in init wrapper below
         val PRICE = Regex("[$]\\s*([\\d,]+)")
         val LEADING_PRICE = Regex("^[$]\\s*[\\d,]+\\s*")
         val OWNED = Regex("[x×]\\s*([\\d,]+)", RegexOption.IGNORE_CASE)
@@ -188,6 +201,8 @@ class CraftingPageParser {
         val ACTIVE_JOB = Regex("현재\\s+장비를\\s+제작\\s+중입니다[^.]*\\.")
         val MAX_QUANTITY = Regex("최대\\s*([\\d,]+)개")
         val HISTORY_WORD = Regex("제련|성공|실패|파괴")
+        val HALL_OF_PAIN = Regex("Hall\\s+of\\s+Pain", RegexOption.IGNORE_CASE)
+        val FOOTER_WORD = Regex("Copy\\s*Right|UpDate\\s+Manual|GameData\\s+Top", RegexOption.IGNORE_CASE)
         val HEADER = Regex("^(제작비|제작비 Item|Item|아이템|수수료)(?:\\s+(Item|아이템))?$", RegexOption.IGNORE_CASE)
     }
 }

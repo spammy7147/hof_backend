@@ -207,8 +207,13 @@ class HofFormParser {
         else -> false
     }
 
-    private fun resolveAction(pageUrl: String, action: String): String =
-        URI(pageUrl).resolve(action.ifBlank { pageUrl }).toString()
+    private fun resolveAction(pageUrl: String, action: String): String {
+        if (action.isBlank()) return pageUrl
+        // URI.resolve("?menu=...")는 브라우저와 달리 마지막 path segment를 제거할 수 있다.
+        // HOF의 query-only form action은 현재 index.php path를 그대로 보존해야 한다.
+        if (action.startsWith("?")) return "${pageUrl.substringBefore('#').substringBefore('?')}$action"
+        return URI(pageUrl).resolve(action).toString()
+    }
 
     private fun sha256(value: String): String = MessageDigest.getInstance("SHA-256")
         .digest(value.toByteArray(Charsets.UTF_8))

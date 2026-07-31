@@ -20,6 +20,26 @@ class CraftingService(
         CraftingResponse.from(parser.parse(mode, html, finalUrl, page))
     }
 
+    fun loadCategory(accountId: Long, mode: CraftingMode, categoryCandidateId: String): CraftingResponse =
+        executor.loadSelectedOptionProjected(
+            accountId = accountId,
+            pageUrl = url(mode),
+            actionId = { html, finalUrl, page ->
+                parser.parse(mode, html, finalUrl, page).actionId
+                    ?: invalid("현재 HOF 품목 분류 양식을 찾지 못했습니다.")
+            },
+            optionCandidateId = categoryCandidateId,
+            requiredOptionField = categoryField(mode),
+            requiredFormSubmitField = submitField(mode),
+            excludedActionFields = categoryTransitionActionFields(mode),
+        ) { html, finalUrl, page ->
+            val snapshot = parser.parse(mode, html, finalUrl, page)
+            if (snapshot.currentCategoryId != categoryCandidateId) {
+                invalid("HOF가 요청한 품목 분류로 전환하지 않았습니다. 목록을 새로고침해 주세요.")
+            }
+            CraftingResponse.from(snapshot)
+        }
+
     fun startWorkbase(accountId: Long, request: WorkbaseStartRequest): CraftingResponse = executeItemT(
         accountId, CraftingMode.WORKBASE, request.candidateId, request.categoryCandidateId, request.quantity,
     )
@@ -145,6 +165,23 @@ class CraftingService(
         CraftingMode.CREATE -> TownFeatureId.CREATE_WORKSHOP
         CraftingMode.VETERAN -> TownFeatureId.VETERAN_SMITHY
     }).url
+
+    private fun categoryField(mode: CraftingMode) = when (mode) {
+        CraftingMode.WORKBASE, CraftingMode.CLARIS, CraftingMode.CREATE -> "type_create"
+        CraftingMode.REFINE, CraftingMode.VETERAN -> "type"
+    }
+
+    private fun submitField(mode: CraftingMode) = when (mode) {
+        CraftingMode.WORKBASE, CraftingMode.CLARIS, CraftingMode.CREATE -> "Create"
+        CraftingMode.REFINE, CraftingMode.VETERAN -> "refine"
+    }
+
+    private fun categoryTransitionActionFields(mode: CraftingMode) = when (mode) {
+        CraftingMode.WORKBASE, CraftingMode.CLARIS, CraftingMode.CREATE ->
+            setOf("Create", "ItemNo", "ItemT", "amount", "AddMaterial")
+        CraftingMode.REFINE, CraftingMode.VETERAN ->
+            setOf("refine", "item_no", "timesA", "timesB")
+    }
 
     private fun invalid(message: String): Nothing = throw ApiException(ErrorCode.INVALID_REQUEST, message)
 }
