@@ -26,7 +26,7 @@ class ExchangeService(
             accountId = accountId,
             pageUrl = url(mode),
             optionCandidateId = candidateId,
-            excludedActionFields = setOf("Create", "Trade", "ItemNo", "item_no", "amount", "suu"),
+            excludedActionFields = setOf("Create", "Trade", "ItemNo", "item_no", "ItemT", "list_type", "amount", "suu"),
             resolveContract = { html, finalUrl, page ->
                 val snapshot = parser.parse(mode, html, finalUrl, page)
                 Triple(
@@ -44,21 +44,29 @@ class ExchangeService(
 
     fun trade(accountId: Long, mode: ExchangeMode, request: ExchangeTradeRequest): ExchangeResponse {
         if (mode == ExchangeMode.ANN) invalid("앤의 가게 action을 선택해 주세요.")
-        return executor.executeProjected(
+        return executor.executeResolvedProjectedWithScalars(
             accountId = accountId,
             pageUrl = url(mode),
-            resolveAction = { html, finalUrl, page ->
+            requiredScalarFields = setOf("ItemT", "list_type", "amount"),
+            requiredSubmitField = tradeSubmit(mode),
+            resolve = { html, finalUrl, page ->
                 val snapshot = parser.parse(mode, html, finalUrl, page)
                 validateCategory(snapshot, request.categoryCandidateId)
                 val row = snapshot.rows.singleOrNull { it.id == request.candidateId && it.selectable }
                     ?: invalid("현재 선택할 수 없는 교환 품목입니다.")
                 validateQuantity(request.quantity, row)
+                val category = snapshot.categories.singleOrNull { it.id == snapshot.currentCategoryId }
+                    ?: invalid("현재 교환 분류를 하나로 확인하지 못했습니다.")
+                val categoryCandidate = page.forms.singleOrNull { it.actionId == snapshot.tradeActionId }
+                    ?.candidates?.singleOrNull { it.id == category.id }
+                    ?: invalid("현재 교환 분류 계약을 확인하지 못했습니다.")
                 TownActionRequest(
                     snapshot.tradeActionId ?: invalid("현재 교환 양식을 찾지 못했습니다."),
-                    listOfNotNull(
-                        TownActionSelection(row.id, request.quantity),
-                        snapshot.currentCategoryId?.let(::TownActionSelection),
-                    ),
+                    listOf(TownActionSelection(row.id)),
+                ) to mapOf(
+                    "ItemT" to (row.itemT ?: invalid("현재 품목의 HOF ItemT 계약을 안전하게 확인하지 못했습니다.")),
+                    "list_type" to categoryCandidate.inputValue,
+                    "amount" to request.quantity.toString(),
                 )
             },
         ) { html, finalUrl, result, page -> ExchangeResponse.from(parser.parse(mode, html, finalUrl, page, result)) }

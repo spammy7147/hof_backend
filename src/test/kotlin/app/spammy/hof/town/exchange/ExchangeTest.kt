@@ -27,6 +27,7 @@ class ExchangeTest {
         assertEquals("전부(all)", value.categories.single { it.current }.label)
         assertFalse(value.rows.single { it.label.contains("보유 재료 부족") }.selectable)
         assertTrue(value.rows.single { it.label.contains("Muramasa") }.selectable)
+        assertEquals(999, value.rows.single { it.label.contains("Muramasa") }.maxQuantity)
     }
 
     @Test fun `유물 등급 교환은 대상 선택을 허용하지 않고 1개만 HOF에 위임한다`() {
@@ -41,35 +42,57 @@ class ExchangeTest {
         val value = parse("ann.html", ExchangeMode.ANN)
         assertEquals(setOf(AnnAction.MODIFY_ITEM, AnnAction.GIVE_GIFT), value.annActions.map { it.type }.toSet())
         assertEquals("+10 Guardian's Goblin Robos Right Arm", value.annActions.single { it.type == AnnAction.MODIFY_ITEM }.rows.single().label)
+        assertTrue(value.annActions.single { it.type == AnnAction.GIVE_GIFT }.rows.isEmpty())
     }
 
     @Test fun `동적 category 전환은 관측한 select 이름과 안전 hidden만 제출한다`() {
-        val initial = fixture("emblem.html")
+        val initial = fixture("emblem.html").replace("type_create", "catalog_kind")
         val transitioned = initial.replace("value=\"all\" selected", "value=\"all\"").replace("value=\"weapon\"", "value=\"weapon\" selected")
         val context = service(TownFeatureId.EMBLEM_SHOP, EMBLEM_URL, initial, transitioned)
-        val response = context.service.loadCategory(7L, ExchangeMode.EMBLEM, "kind:weapon")
-        assertEquals("kind:weapon", response.currentCategoryId)
+        val response = context.service.loadCategory(7L, ExchangeMode.EMBLEM, "catalog_kind:weapon")
+        assertEquals("catalog_kind:weapon", response.currentCategoryId)
         val post = context.requests().last()
-        assertEquals(listOf("nonce", "kind"), post.formEntries.map { it.name })
+        assertEquals(listOf("nonce", "catalog_kind"), post.formEntries.map { it.name })
         assertEquals(listOf("fresh-e", "weapon"), post.formEntries.map { it.value })
+    }
+
+    @Test fun `교환은 최신 GET radio의 strict ItemT와 현재 category를 scalar로 제출한다`() {
+        val html = fixture("emblem.html")
+        val context = service(TownFeatureId.EMBLEM_SHOP, EMBLEM_URL, html)
+        context.service.trade(7L, ExchangeMode.EMBLEM, ExchangeTradeRequest("emblem-1", "type_create:all", 9))
+        val post = context.requests().last()
+        assertEquals(
+            mapOf("nonce" to "fresh-e", "ItemT" to "37", "list_type" to "all", "amount" to "9", "ItemNo" to "mura", "Create" to "Create"),
+            post.formEntries.associate { it.name to it.value },
+        )
+    }
+
+    @Test fun `교환 radio의 임의 javascript는 ItemT로 실행하거나 선택 가능하게 만들지 않는다`() {
+        val html = fixture("emblem.html").replace(
+            "document.getElementById('ItemT').value='37'",
+            "window.pickRecipe('37')",
+        )
+        val page = parser.parse(ExchangeMode.EMBLEM, html, BASE, forms.parse(html, BASE))
+        assertFalse(page.rows.single { it.label.contains("Muramasa") }.selectable)
     }
 
     @Test fun `유물 등급 버튼은 후보나 대상 없이 최신 form을 한 번만 제출한다`() {
         val html = fixture("legacy.html")
         val context = service(TownFeatureId.LEGACY_SHOP, LEGACY_URL, html)
-        val action = parse("legacy.html", ExchangeMode.LEGACY).gradeActions.first()
+        val action = parse("legacy.html", ExchangeMode.LEGACY).gradeActions.single { it.label.startsWith("Junk") }
         context.service.exchangeLegacyGrade(7L, LegacyGradeExchangeRequest(action.id))
         val requests = context.requests()
         assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.POST), requests.map { it.method })
         assertEquals(listOf("nonce", "GradeExchange"), requests.last().formEntries.map { it.name })
+        assertEquals("Junk 등급 장비!", requests.last().formEntries.last().value)
         assertFalse(requests.last().formEntries.any { it.name == "item_no" })
     }
 
     @Test fun `앤 action은 최신 GET의 해당 candidate만 제출한다`() {
         val html = fixture("ann.html")
         val context = service(TownFeatureId.ANN_SHOP, ANN_URL, html)
-        context.service.annAction(7L, AnnActionRequest(AnnAction.GIVE_GIFT, "gift-1", 1))
-        assertEquals(listOf("nonce", "GiftNo", "Create"), context.requests().last().formEntries.map { it.name })
+        context.service.annAction(7L, AnnActionRequest(AnnAction.GIVE_GIFT))
+        assertEquals(listOf("nonce", "Create"), context.requests().last().formEntries.map { it.name })
     }
 
     private fun parse(name: String, mode: ExchangeMode) = fixture(name).let { parser.parse(mode, it, BASE, forms.parse(it, BASE)) }

@@ -17,22 +17,29 @@ class ExchangePageParser(private val formParser: HofFormParser = HofFormParser()
         result: ParsedTownResult? = null,
     ): ExchangeSnapshot {
         val document = Jsoup.parse(html, finalUrl)
+        val domForms = mapDomForms(document, page)
         val forms = page.forms.filter { it.submitFields.size == 1 }
         val gradeForms = if (mode == ExchangeMode.LEGACY) forms.filter(::isLegacyGradeForm) else emptyList()
         val annForms = if (mode == ExchangeMode.ANN) forms.mapNotNull { form ->
-            annType(form, annSection(document, finalUrl, form))?.let { type -> AnnActionGroup(type, annLabel(type), rows(form), form.actionId) }
+            annType(form, annSection(document, domForms[form.actionId]))?.let { type ->
+                AnnActionGroup(type, annLabel(type), rows(form), form.actionId)
+            }
         } else emptyList()
         val tradeForm = if (mode == ExchangeMode.ANN) null else forms
             .filterNot { it in gradeForms }
             .filter { form -> form.candidates.any { it.selectionType != TownSelectionType.SELECT } }
             .singleOrNull { isTradeForm(it) }
+        val domTradeForm = tradeForm?.let { domForms[it.actionId] }
         val categories = tradeForm?.let { parseCategories(it, document) }.orEmpty()
         val current = categories.singleOrNull { it.current }?.id
+        val itemTByCandidate = if (tradeForm != null && domTradeForm != null && hasScalar(domTradeForm, "ItemT")) {
+            strictItemTByCandidate(tradeForm, domTradeForm)
+        } else emptyMap()
         return ExchangeSnapshot(
             mode = mode,
             categories = categories,
             currentCategoryId = current,
-            rows = tradeForm?.let(::rows).orEmpty(),
+            rows = tradeForm?.let { rows(it, itemTByCandidate, domTradeForm?.let { form -> hasScalar(form, "ItemT") } == true) }.orEmpty(),
             ownedCurrencies = parseCurrencies(document),
             gradeActions = gradeForms.map { form ->
                 LegacyGradeAction(form.actionId, clean(form.submitFields.single().value).ifBlank { clean(form.submitFields.single().name) })
@@ -48,19 +55,25 @@ class ExchangePageParser(private val formParser: HofFormParser = HofFormParser()
         )
     }
 
-    private fun rows(form: ParsedTownForm): List<ExchangeRow> = form.rows.mapIndexedNotNull { index, row ->
+    private fun rows(
+        form: ParsedTownForm,
+        itemTByCandidate: Map<ParsedTownCandidate, String> = emptyMap(),
+        requiresItemT: Boolean = false,
+    ): List<ExchangeRow> = form.rows.mapIndexedNotNull { index, row ->
         val label = clean(row.label)
         if (label.isBlank() || HEADER.matches(label)) return@mapIndexedNotNull null
         val candidate = row.candidate?.takeIf { it.selectionType != TownSelectionType.SELECT }
+        val itemT = candidate?.let(itemTByCandidate::get)
         ExchangeRow(
             id = candidate?.id ?: "display-$index",
             label = label.replace(LEADING_PRICE, "").trim(),
-            selectable = candidate != null,
+            selectable = candidate != null && (!requiresItemT || itemT != null),
             detail = label,
             cost = PRICE.find(label)?.groupValues?.get(1)?.number(),
             owned = OWNED.find(label)?.groupValues?.get(1)?.intNumber(),
             minQuantity = candidate?.minQuantity ?: 1,
-            maxQuantity = candidate?.maxQuantity,
+            maxQuantity = candidate?.let { it.maxQuantity ?: MAX_TRADE_QUANTITY },
+            itemT = itemT,
         )
     }.distinctBy(ExchangeRow::id)
 
@@ -86,6 +99,33 @@ class ExchangePageParser(private val formParser: HofFormParser = HofFormParser()
         return LEGACY_GRADE.containsMatchIn("${submit.name} ${submit.value}")
     }
 
+    /** HofFormParser의 DOM 순서를 보존해 동일한 Create form끼리도 dom-tie actionId와 정확히 연결한다. */
+    private fun mapDomForms(document: org.jsoup.nodes.Document, page: ParsedTownPage): Map<String, Element> {
+        var offset = 0
+        val result = mutableMapOf<String, Element>()
+        document.select("form").forEach { dom ->
+            val variantCount = formParser.parse(dom.outerHtml(), document.baseUri()).forms.size
+            page.forms.drop(offset).take(variantCount).forEach { result[it.actionId] = dom }
+            offset += variantCount
+        }
+        return result.takeIf { offset == page.forms.size }.orEmpty()
+    }
+
+    /** HOF create 계열은 radio의 제한된 ItemT 직접 대입으로 recipe variant를 고른다. */
+    private fun strictItemTByCandidate(form: ParsedTownForm, domForm: Element): Map<ParsedTownCandidate, String> =
+        form.candidates.filter { it.selectionType != TownSelectionType.SELECT }.mapNotNull { candidate ->
+            val controls = domForm.select("input[name=${css(candidate.inputName)}]").filter {
+                it.closest("form") === domForm && it.attr("value").trim().ifBlank { "on" } == candidate.inputValue
+            }
+            val control = controls.singleOrNull() ?: return@mapNotNull null
+            val sources = listOf(control.attr("onclick"), control.closest("tr")?.attr("onclick").orEmpty())
+            val values = sources.flatMap { source -> ITEM_T_ASSIGNMENT.findAll(source).map { it.groupValues[3] }.toList() }.distinct()
+            candidate to (values.singleOrNull() ?: return@mapNotNull null)
+        }.toMap()
+
+    private fun hasScalar(form: Element, name: String): Boolean = form.select("input[name=${css(name)}]")
+        .count { it.closest("form") === form && !it.hasAttr("disabled") } == 1
+
     private fun annType(form: ParsedTownForm, section: String?): AnnAction? {
         val submit = form.submitFields.single()
         val semantic = "${section.orEmpty()} ${submit.name} ${submit.value}"
@@ -96,10 +136,8 @@ class ExchangePageParser(private val formParser: HofFormParser = HofFormParser()
         }
     }
 
-    private fun annSection(document: org.jsoup.nodes.Document, finalUrl: String, form: ParsedTownForm): String? {
-        val dom = document.select("form").singleOrNull { element ->
-            formParser.parse(element.outerHtml(), finalUrl).forms.any { it.actionId == form.actionId }
-        } ?: return null
+    private fun annSection(document: org.jsoup.nodes.Document, dom: Element?): String? {
+        dom ?: return null
         val elements = document.select("body *")
         val index = elements.indexOf(dom)
         if (index < 0) return null
@@ -137,7 +175,8 @@ class ExchangePageParser(private val formParser: HofFormParser = HofFormParser()
 
     private companion object {
         val TRADE_WORD = Regex("Create|Trade|교환|제작", RegexOption.IGNORE_CASE)
-        val LEGACY_GRADE = Regex("(Junk|Old|Common|Uncommon|Rare|Historical).*(교환|exchange)", RegexOption.IGNORE_CASE)
+        // 실제 버튼 문구는 `Junk 등급 장비!`처럼 "교환"을 포함하지 않는다.
+        val LEGACY_GRADE = Regex("(?:Junk|Old|Common|Uncommon|Rare|Historical).*(?:등급|grade)", RegexOption.IGNORE_CASE)
         val GIFT_WORD = Regex("Gift|선물", RegexOption.IGNORE_CASE)
         val MODIFY_WORD = Regex("Modify|Create|맡기|마제즈", RegexOption.IGNORE_CASE)
         val ANN_SECTION = Regex("앤에게.*(맡기|선물)|아이템을 맡긴다", RegexOption.IGNORE_CASE)
@@ -149,5 +188,7 @@ class ExchangePageParser(private val formParser: HofFormParser = HofFormParser()
         val HISTORY_WORD = Regex("교환|마제즈|결과|성공|실패", RegexOption.IGNORE_CASE)
         val HISTORY_MARKER = Regex("마제즈.*이력|최근.*결과|history", RegexOption.IGNORE_CASE)
         val HEADER = Regex("^(제작비|수수료|Item|아이템|제작비 Item|수수료 Item)$", RegexOption.IGNORE_CASE)
+        val ITEM_T_ASSIGNMENT = Regex("(?:document\\.getElementById\\(\\s*(['\"])ItemT\\1\\s*\\)|(?:document\\.)?ItemT)\\s*\\.value\\s*=\\s*(['\"]?)([A-Za-z0-9_.:-]+)\\2", RegexOption.IGNORE_CASE)
+        const val MAX_TRADE_QUANTITY = 999
     }
 }

@@ -16,6 +16,7 @@ data class ExchangeRow(
     val owned: Int?,
     val minQuantity: Int,
     val maxQuantity: Int?,
+    internal val itemT: String? = null,
 )
 
 data class OwnedExchangeCurrency(val label: String, val quantity: Long?)
