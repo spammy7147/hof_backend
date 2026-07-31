@@ -151,6 +151,57 @@ class TownAuthenticatedExecutor(
         projector(transitioned.body, transitioned.finalUrl, transitionedPage)
     }
 
+    /**
+     * 기능 parser가 최신 GET의 유일한 category select 이름까지 관측해야 하는 form을 위한 variant다.
+     * field 이름을 API 입력이나 고정 추측으로 받지 않고, 같은 account fence 안의 opaque candidate에서 재확인한다.
+     */
+    fun <T> loadResolvedSelectedOptionProjected(
+        accountId: Long,
+        pageUrl: String,
+        optionCandidateId: String,
+        excludedActionFields: Set<String>,
+        resolveContract: (html: String, finalUrl: String, page: ParsedTownPage) -> Triple<String, String, String>,
+        projector: (html: String, finalUrl: String, page: ParsedTownPage) -> T,
+    ): T = withAccountActionFence(accountId) {
+        require(excludedActionFields.isNotEmpty())
+        val context = authenticatedContext(accountId)
+        val current = executeAuthenticated(
+            context.account,
+            requestFactory.townPage(pageUrl, HofRequestOrigin.INTERACTIVE),
+            context.cookies,
+        )
+        val currentPage = formParser.parse(current.body, current.finalUrl)
+        val (actionId, optionField, submitField) = resolveContract(current.body, current.finalUrl, currentPage)
+        if (optionField.isBlank() || submitField.isBlank() || optionField.length > 80 || submitField.length > 80) {
+            throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 분류 양식을 안전하게 확인하지 못했습니다.")
+        }
+        val guarded = actionGuard.guard(
+            currentPage,
+            TownActionRequest(actionId, listOf(TownActionSelection(optionCandidateId))),
+        )
+        if (guarded.form.submitFields.singleOrNull()?.name != submitField || submitField !in excludedActionFields) {
+            throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 분류 양식이 변경되었습니다.")
+        }
+        val option = guarded.form.candidates.singleOrNull { it.id == optionCandidateId }
+            ?.takeIf { it.inputName == optionField && it.selectionType == TownSelectionType.SELECT }
+            ?: throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF에서 선택할 수 없는 분류입니다.")
+        val categoryFields = guarded.form.candidates.filter { it.selectionType == TownSelectionType.SELECT }
+            .map { it.inputName }.distinct()
+        if (categoryFields != listOf(optionField)) {
+            throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 분류 선택란을 하나로 확인하지 못했습니다.")
+        }
+        val entries = guarded.form.hiddenFields.filterNot { it.name in excludedActionFields }.toMutableList().apply {
+            add(HofFormField(option.inputName, option.inputValue))
+        }
+        val transitioned = executeAuthenticated(
+            context.account,
+            requestFactory.townForm(guarded.form.method, guarded.form.actionUrl, entries, HofRequestOrigin.INTERACTIVE),
+            context.cookies + current.setCookies,
+        )
+        val transitionedPage = formParser.parse(transitioned.body, transitioned.finalUrl)
+        projector(transitioned.body, transitioned.finalUrl, transitionedPage)
+    }
+
     fun execute(
         accountId: Long,
         pageUrl: String,
