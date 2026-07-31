@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+<body>
+  <form action="index.php?menu=shop" method="post">
+    <input type="hidden" name="csrf" value="server-only">
+    <table>
+      <tr>
+        <td><input type="radio" name="item" value="item-1"></td>
+        <td>선택 가능 아이템</td>
+        <td><input type="number" name="quantity" value="1" min="1" max="10"></td>
+      </tr>
+      <tr><td></td><td>표시 전용</td><td>재고 없음</td></tr>
+    </table>
+    <button type="submit" name="Create" value="교환">Create</button>
+  </form>
+  <form action="index.php?menu=shop" method="post">
+    <input type="radio" name="gift" value="foreign-item">
+    <button type="submit" name="Create" value="선물">Create</button>
+  </form>
+  <form action="index.php?menu=shop" method="post">
+    <input type="hidden" name="token" value="first">
+    <input type="hidden" name="token" value="second">
+    <div>
+      <input type="radio" name="item" value="item-2">
+      <span>검색창과 같은 컨테이너의 항목</span>
+      <input type="text" name="search" value="검색어">
+    </div>
+    <button type="submit" name="Create" value="교환">Create</button>
+  </form>
+  <form action="index.php?menu=shop" method="post">
+    <input type="radio" name="item" value="item-1">
+    <button type="submit" name="Create" value="교환">Create</button>
+  </form>
+</body>
+</html>

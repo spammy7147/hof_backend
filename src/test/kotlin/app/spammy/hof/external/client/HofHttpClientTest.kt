@@ -5,6 +5,7 @@ import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.config.HofRequestProperties
 import app.spammy.hof.external.model.HofHttpMethod
+import app.spammy.hof.external.model.HofFormField
 import app.spammy.hof.external.model.HofRequest
 import app.spammy.hof.external.model.HofRequestOrigin
 import com.sun.net.httpserver.HttpExchange
@@ -23,6 +24,134 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class HofHttpClientTest {
+    @Test
+    fun `same origin redirect is followed and redirect cookies are retained`() {
+        val cookies = mutableListOf<String?>()
+        val server = HttpServer.create(InetSocketAddress(0), 0)
+        server.createContext("/start") { exchange ->
+            exchange.responseHeaders.add("Set-Cookie", "NO=42; Path=/")
+            exchange.responseHeaders.add("Location", "/finish")
+            exchange.sendResponseHeaders(302, -1)
+            exchange.close()
+        }
+        server.createContext("/finish") { exchange ->
+            cookies += exchange.requestHeaders.getFirst("Cookie")
+            exchange.sendText("done")
+        }
+        server.start()
+
+        try {
+            val response = client().execute(
+                ACCOUNT_ID,
+                HofRequest(HofHttpMethod.GET, "http://localhost:${server.address.port}/start"),
+                mapOf("PHPSESSID" to "session"),
+            )
+
+            assertEquals(200, response.statusCode)
+            assertEquals(mapOf("NO" to "42"), response.setCookies)
+            assertEquals("PHPSESSID=session; NO=42", cookies.single())
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `get form query is attached only to initial hop across 307 redirect`() {
+        val queries = mutableListOf<Pair<String, String?>>()
+        val server = HttpServer.create(InetSocketAddress(0), 0)
+        server.createContext("/start") { exchange ->
+            queries += "start" to exchange.requestURI.rawQuery
+            exchange.responseHeaders.add("Location", "/finish")
+            exchange.sendResponseHeaders(307, -1)
+            exchange.close()
+        }
+        server.createContext("/finish") { exchange ->
+            queries += "finish" to exchange.requestURI.rawQuery
+            exchange.sendText("done")
+        }
+        server.start()
+
+        try {
+            client().execute(
+                ACCOUNT_ID,
+                HofRequest(
+                    HofHttpMethod.GET,
+                    "http://localhost:${server.address.port}/start",
+                    formFields = mapOf("x" to "1"),
+                ),
+            )
+
+            assertEquals(listOf("start" to "x=1", "finish" to null), queries)
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `post encoding preserves repeated form names and order`() {
+        val bodies = mutableListOf<String>()
+        val server = HttpServer.create(InetSocketAddress(0), 0)
+        server.createContext("/submit") { exchange ->
+            bodies += exchange.requestBody.bufferedReader().readText()
+            exchange.sendText("done")
+        }
+        server.start()
+
+        try {
+            client().execute(
+                ACCOUNT_ID,
+                HofRequest(
+                    method = HofHttpMethod.POST,
+                    url = "http://localhost:${server.address.port}/submit",
+                    formEntries = listOf(
+                        HofFormField("token", "first"),
+                        HofFormField("token", "second"),
+                        HofFormField("Create", "교환"),
+                    ),
+                ),
+            )
+
+            assertEquals("token=first&token=second&Create=%EA%B5%90%ED%99%98", bodies.single())
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `cross origin redirect is rejected before session cookie can leave origin`() {
+        val externalRequests = AtomicInteger(0)
+        val external = HttpServer.create(InetSocketAddress(0), 0).also { server ->
+            server.createContext("/leak") { exchange ->
+                externalRequests.incrementAndGet()
+                exchange.sendText("leaked")
+            }
+            server.start()
+        }
+        val origin = HttpServer.create(InetSocketAddress(0), 0).also { server ->
+            server.createContext("/start") { exchange ->
+                exchange.responseHeaders.add("Location", "http://localhost:${external.address.port}/leak")
+                exchange.sendResponseHeaders(302, -1)
+                exchange.close()
+            }
+            server.start()
+        }
+
+        try {
+            val error = assertFailsWith<ApiException> {
+                client().execute(
+                    ACCOUNT_ID,
+                    HofRequest(HofHttpMethod.GET, "http://localhost:${origin.address.port}/start"),
+                    mapOf("PHPSESSID" to "secret"),
+                )
+            }
+            assertEquals(ErrorCode.HOF_REQUEST_FAILED, error.errorCode)
+            assertEquals(0, externalRequests.get())
+        } finally {
+            origin.stop(0)
+            external.stop(0)
+        }
+    }
+
     @Test
     fun `HOF requests allow up to 90 seconds for a response`() {
         val buildHttpRequest = HofHttpClient::class.java.getDeclaredMethod(

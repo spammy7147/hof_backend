@@ -5,6 +5,8 @@ import app.spammy.hof.common.security.CurrentAccountId
 import app.spammy.hof.quest.model.QuestSnapshot
 import app.spammy.hof.quest.service.QuestGatewayService
 import org.springframework.web.bind.annotation.GetMapping
+import org.springframework.web.bind.annotation.PathVariable
+import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
 
@@ -19,4 +21,12 @@ class QuestController(
         recovery.execute(accountId) {
             gateway.load(accountId)
         }
+
+    @PostMapping("/{actionNo}/accept")
+    fun accept(@CurrentAccountId accountId: Long, @PathVariable actionNo: String): List<QuestSnapshot> =
+        recovery.execute(accountId) { gateway.accept(accountId, actionNo) }
+
+    @PostMapping("/{actionNo}/claim")
+    fun claim(@CurrentAccountId accountId: Long, @PathVariable actionNo: String): List<QuestSnapshot> =
+        recovery.execute(accountId) { gateway.claim(accountId, actionNo) }
 }

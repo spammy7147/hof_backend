@@ -5,6 +5,7 @@ import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofRequestOrigin
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 
 class HofRequestFactoryTest {
     private val factory = HofRequestFactory()
@@ -89,5 +90,17 @@ class HofRequestFactoryTest {
                 origin = HofRequestOrigin.AUTOMATION,
             ).origin,
         )
+    }
+
+    @Test
+    fun `town requests only allow the fixed HOF origin and entry path`() {
+        val request = factory.townPage("http://sic.zerosic.com/ZeroHOF/index.php?menu=buy")
+
+        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?menu=buy", request.url)
+        assertFailsWith<IllegalArgumentException> { factory.townPage("https://evil.example/ZeroHOF/index.php") }
+        assertFailsWith<IllegalArgumentException> { factory.townPage("http://sic.zerosic.com/admin") }
+        assertFailsWith<IllegalArgumentException> {
+            factory.townPage("http://sic.zerosic.com@evil.example/ZeroHOF/index.php")
+        }
     }
 }

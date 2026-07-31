@@ -1,9 +1,11 @@
 package app.spammy.hof.external.client
 
 import app.spammy.hof.external.model.HofBattleType
+import app.spammy.hof.external.model.HofFormField
 import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofRequest
 import app.spammy.hof.external.model.HofRequestOrigin
+import java.net.URI
 import org.springframework.stereotype.Component
 
 @Component
@@ -66,6 +68,43 @@ class HofRequestFactory {
         method = HofHttpMethod.GET,
         url = "$HOF_BASE_URL?menu=quest",
         origin = origin,
+    )
+
+    /** 서버가 발견하거나 미리 등록한 HOF 마을 페이지를 same-origin GET 요청으로 만든다. */
+    fun townPage(
+        pageUrl: String,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
+    ): HofRequest = HofRequest(
+        method = HofHttpMethod.GET,
+        url = requireSafeTownUrl(pageUrl),
+        origin = origin,
+    )
+
+    /** 최신 HOF 문서에서 관측·검증한 GET 링크의 query만 same-origin에 전달한다. */
+    fun townObservedGet(
+        pageUrl: String,
+        queryEntries: List<HofFormField>,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
+    ): HofRequest = HofRequest(
+        method = HofHttpMethod.GET,
+        url = requireSafeTownUrl(pageUrl),
+        formFields = queryEntries.associate { it.name to it.value },
+        formEntries = queryEntries.toList(),
+        origin = origin,
+    )
+
+    /** 직전에 파싱·검증한 form만 HOF same-origin 요청으로 변환한다. */
+    fun townForm(
+        method: HofHttpMethod,
+        actionUrl: String,
+        formEntries: List<HofFormField>,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
+    ): HofRequest = HofRequest(
+        method = method,
+        url = requireSafeTownUrl(actionUrl),
+        formFields = formEntries.associate { it.name to it.value },
+        origin = origin,
+        formEntries = formEntries.toList(),
     )
 
     fun questAction(
@@ -132,5 +171,19 @@ class HofRequestFactory {
 
     private companion object {
         const val HOF_BASE_URL = "http://sic.zerosic.com/ZeroHOF/index.php"
+        const val HOF_HOST = "sic.zerosic.com"
+        const val HOF_PATH = "/ZeroHOF/index.php"
+    }
+
+    private fun requireSafeTownUrl(value: String): String {
+        val uri = runCatching { URI(value).normalize() }
+            .getOrElse { throw IllegalArgumentException("Invalid HOF town URL") }
+        require(uri.scheme == "http" && uri.host.equals(HOF_HOST, ignoreCase = true)) {
+            "Town request must target the HOF origin"
+        }
+        require(uri.port in setOf(-1, 80) && uri.rawUserInfo == null && uri.rawFragment == null && uri.path == HOF_PATH) {
+            "Town request must target the HOF entry path"
+        }
+        return uri.toASCIIString()
     }
 }

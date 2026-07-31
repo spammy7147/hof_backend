@@ -1,0 +1,10 @@
+<html><body><div>Work : Nothing Auction : Nothing</div>
+<form method="post" action="index.php?menu=workbase">
+  <input type="hidden" name="nonce" value="fresh-123">
+  <select name="type_create"><option value="all">전부(all)</option><option value="weapon" selected>무기(weapon)</option><option value="armor">방어구(armor)</option></select>
+  <input id="ItemT" name="ItemT" value="0" type="hidden"><input name="amount" value="1" min="1" max="10">
+  <table><tr><th>제작비</th><th>Item</th></tr>
+    <tr><td>$ 8,000</td><td><input id="work-1" type="radio" name="ItemNo" value="coat01" onclick="document.getElementById('ItemT').value='17'"> Striker Coat (Cloth) x3 [제작 시간: 600]</td></tr>
+    <tr><td>$ 0</td><td>재료 부족 품목</td></tr>
+  </table><input type="submit" name="Create" value="Create">
+</form></body></html>

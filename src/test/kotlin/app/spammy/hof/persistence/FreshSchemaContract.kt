@@ -483,6 +483,32 @@ internal object FreshSchemaContract {
             serialId(), requiredBigint("challenge_id"), requiredInteger("field_order"),
             requiredVarchar("field_name"), requiredText("field_value"),
         ),
+        table(
+            "town_feature_locations",
+            requiredVarchar("feature_id", 50), optionalVarchar("href", 500), optionalInstant("observed_at"),
+            primaryKey = listOf("feature_id"),
+        ),
+        table(
+            "shop_catalog_item",
+            requiredVarchar("shop_id", 20), requiredVarchar("item_key", 200), requiredVarchar("name", 300),
+            optionalVarchar("item_type", 100), optionalText("description"), requiredBigint("price"),
+            requiredBoolean("active"), requiredInstant("last_seen_at"),
+            primaryKey = listOf("shop_id", "item_key"),
+        ),
+        table(
+            "town_global_job_lease",
+            requiredVarchar("job_key", 100), optionalVarchar("lease_owner", 100), optionalInstant("lease_until"),
+            optionalInstant("last_attempt_at"), optionalInstant("last_success_at"),
+            primaryKey = listOf("job_key"),
+        ),
+        table(
+            "auction_observation",
+            requiredVarchar("observation_key", 128), optionalVarchar("listing_id", 120),
+            requiredVarchar("observation_kind", 20), requiredVarchar("item_key", 128),
+            requiredVarchar("item_name", 300), optionalVarchar("item_type", 100), requiredInteger("quantity"),
+            requiredBigint("total_price"), requiredBigint("unit_price"), requiredInstant("observed_at"),
+            requiredInstant("last_seen_at"), primaryKey = listOf("observation_key"),
+        ),
     )
 
     private val UNIQUE_KEYS = listOf(
@@ -693,6 +719,8 @@ internal object FreshSchemaContract {
     )
 
     private val INDEXES = listOf(
+        index("auction_observation", "idx_auction_observation_market", "item_key", "observation_kind", "observed_at"),
+        index("shop_catalog_item", "idx_shop_catalog_item_active_name", "shop_id", "active", "name", "item_key"),
         index("hof_cookies", "idx_hof_cookies_account_updated", "account_id", "updated_at", "id"),
         index("refresh_tokens", "idx_refresh_tokens_family_created", "family_id", "created_at", "id"),
         index("refresh_tokens", "idx_refresh_tokens_account_active", "account_id", "revoked_at", "expires_at", "id"),
@@ -807,6 +835,12 @@ internal object FreshSchemaContract {
     )
 
     private val CHECKS = listOf(
+        check("auction_observation", "ck_auction_observation_kind", "observation_kind in ('CURRENT', 'SOLD')"),
+        check("auction_observation", "ck_auction_observation_quantity", "quantity > 0"),
+        check("auction_observation", "ck_auction_observation_prices", "total_price >= cast(0 as bigint) and unit_price >= cast(0 as bigint)"),
+        check("shop_catalog_item", "ck_shop_catalog_item_shop", "shop_id in ('GENERAL', 'SUNDRIES', 'DARK')"),
+        check("shop_catalog_item", "ck_shop_catalog_item_price", "price >= cast(0 as bigint)"),
+        check("town_global_job_lease", "ck_town_global_job_lease_pair", "((lease_owner is null) and (lease_until is null)) or ((lease_owner is not null) and (lease_until is not null))"),
         check("characters", "ck_characters_pattern_slot_count", "pattern_slot_count >= 0"),
         check(
             "automation_work_sessions", "ck_automation_work_type",
@@ -842,6 +876,14 @@ internal object FreshSchemaContract {
         check("typed_automation_action_runs", "ck_typed_action_status", "locate(',' || status || ',', ',PREPARED,SUBMITTING,RECONCILING,SUCCEEDED,FAILED,AMBIGUOUS,') > 0"),
         check("typed_automation_action_runs", "ck_typed_action_retry", "retry_attempt >= 0"),
         check("typed_automation_action_runs", "ck_typed_action_fingerprint", "char_length(action_fingerprint) = 64"),
+        check(
+            "town_feature_locations", "ck_town_feature_locations_public_menu",
+            "href regexp '^[?]menu=[A-Za-z0-9_-]{1,80}$'",
+        ),
+        check(
+            "town_feature_locations", "ck_town_feature_locations_observation_pair",
+            "(href is null and observed_at is null) or (href is not null and observed_at is not null)",
+        ),
         check("character_status_lines", "ck_character_status_lines_order", "line_order >= 0"),
         check("character_action_patterns", "ck_character_action_patterns_row", "row_index >= 0"),
         check("character_position_choices", "ck_character_position_choices_order", "choice_order >= 0"),

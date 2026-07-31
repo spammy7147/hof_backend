@@ -25,6 +25,7 @@ import org.springframework.security.core.context.SecurityContextHolder
 import org.springframework.security.oauth2.jwt.Jwt
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.content
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
@@ -88,6 +89,19 @@ class QuestControllerTest {
             .andExpect(jsonPath("$.code").value("AUTH_TOKEN_INVALID"))
             .andExpect(jsonPath("$.message").value("로그인 정보가 올바르지 않습니다."))
         Mockito.verifyNoInteractions(gateway)
+    }
+
+    @Test
+    fun manualAcceptAndClaimUsePostAndCurrentAccount() {
+        Mockito.`when`(gateway.accept(42L, "351")).thenReturn(listOf(snapshot()))
+        Mockito.`when`(gateway.claim(42L, "R610")).thenReturn(listOf(snapshot()))
+        SecurityContextHolder.getContext().authentication = TestingAuthenticationToken(jwt("42"), null)
+
+        mockMvc.perform(post("/api/quests/351/accept")).andExpect(status().isOk)
+        mockMvc.perform(post("/api/quests/R610/claim")).andExpect(status().isOk)
+
+        Mockito.verify(gateway).accept(42L, "351")
+        Mockito.verify(gateway).claim(42L, "R610")
     }
 
     private fun jwt(subject: String): Jwt = Jwt.withTokenValue("token")
