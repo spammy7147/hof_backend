@@ -28,6 +28,7 @@ data class RaidPubRaid(
 data class RaidPubSnapshot(
     val raids: List<RaidPubRaid>,
     val applied: Boolean,
+    val applyWait: Boolean,
     val applyWaitSeconds: Int?,
     val myStatus: String?,
     val globalActions: Set<RaidAction>,

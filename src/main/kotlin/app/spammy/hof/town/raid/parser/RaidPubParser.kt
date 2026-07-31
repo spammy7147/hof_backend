@@ -3,6 +3,8 @@ package app.spammy.hof.town.raid.parser
 import app.spammy.hof.town.common.model.ParsedTownPage
 import app.spammy.hof.town.common.model.ParsedTownResult
 import app.spammy.hof.town.raid.model.*
+import app.spammy.hof.external.model.HofHttpMethod
+import java.math.BigInteger
 import java.net.URI
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
@@ -22,8 +24,8 @@ class RaidPubParser {
     ): RaidPubSnapshot {
         val doc = Jsoup.parse(html, finalUrl)
         val forms = doc.select("form").filter { form ->
-            val resolved = resolve(finalUrl, form.attr("action"))
-            resolved.substringAfter('?', "").split('&').any { it.equals("menu=raidpub", true) }
+            form.attr("method").equals("post", true) &&
+                form.attr("action").contains("raidpub", true) && safeRaidPubUrl(resolve(finalUrl, form.attr("action")))
         }
         if (forms.size != 1) return empty(result)
         val form = forms.single()
@@ -36,6 +38,9 @@ class RaidPubParser {
             .eachCount()
         val actionIds = page.forms.mapNotNull { parsed ->
             val submit = parsed.submitFields.singleOrNull() ?: return@mapNotNull null
+            if (parsed.method != HofHttpMethod.POST || !safeRaidPubUrl(parsed.actionUrl) ||
+                parsed.hiddenFields.groupingBy { it.name }.eachCount().any { it.value > 1 }
+            ) return@mapNotNull null
             if (submitControlCounts[submit.name to submit.value] != 1) return@mapNotNull null
             (submit.name to submit.value) to parsed.actionId
         }.groupBy({ it.first }, { it.second }).mapValues { (_, ids) -> ids.distinct().singleOrNull() }
@@ -67,18 +72,21 @@ class RaidPubParser {
                     current?.actionIds?.putIfAbsent(action, actionId)
                 }
             }
-            current?.text?.append(' ')?.append(nodeText(node))
+            current?.appendText(nodeText(node))
         }
         flush()
 
-        val pageText = clean(doc.text())
+        val pageText = clean(doc.text()).take(MAX_PAGE_TEXT)
         val playerName = PLAYER_NAME.find(pageText)?.groupValues
             ?.drop(1)
             ?.firstOrNull(String::isNotBlank)
             ?.trim()
             .orEmpty()
-        val raids = sections.take(MAX_RAIDS).mapNotNull { section ->
+        val boundedSections = sections.take(MAX_RAIDS)
+        val codeCounts = boundedSections.map(MutableRaid::code).filter(RAID_CODE::matches).groupingBy { it }.eachCount()
+        val raids = boundedSections.mapNotNull { section ->
             val code = section.code.takeIf { RAID_CODE.matches(it) } ?: return@mapNotNull null
+            if (codeCounts[code] != 1) return@mapNotNull null
             val text = clean(section.text.toString())
             val statusText = STATUS.find(text)?.groupValues?.get(1)?.trim()?.take(MAX_TEXT)
             val wait = statusText?.let { DEPART.find(it)?.groupValues?.get(1)?.boundedInt(MAX_WAIT_SECONDS) }
@@ -110,14 +118,12 @@ class RaidPubParser {
                 actionIds = section.actionIds.toMap(),
             )
         }
-        val applyWait = APPLY_WAIT.find(pageText)?.let { match ->
-            val seconds = match.groupValues[1].toLongOrNull().orZero() * 3600L +
-                match.groupValues[2].toLongOrNull().orZero() * 60L + match.groupValues[3].toLongOrNull().orZero()
-            seconds.takeIf { it in 0..MAX_WAIT_SECONDS.toLong() }?.toInt()
-        }
+        val applyWaiting = APPLY_WAIT_STATE.containsMatchIn(pageText)
+        val applyWait = APPLY_WAIT.find(pageText)?.let(::boundedDurationSeconds)
         return RaidPubSnapshot(
             raids = raids,
             applied = APPLIED.containsMatchIn(pageText),
+            applyWait = applyWaiting,
             applyWaitSeconds = applyWait,
             myStatus = MY_STATUS.find(pageText)?.value?.take(MAX_TEXT),
             globalActions = global.keys + RaidAction.REFRESH,
@@ -127,7 +133,7 @@ class RaidPubParser {
         )
     }
 
-    private fun empty(result: ParsedTownResult?) = RaidPubSnapshot(emptyList(), false, null, null, setOf(RaidAction.REFRESH), result, emptyMap(), false)
+    private fun empty(result: ParsedTownResult?) = RaidPubSnapshot(emptyList(), false, false, null, null, setOf(RaidAction.REFRESH), result, emptyMap(), false)
     private fun nodeText(node: Node): String = when (node) { is TextNode -> node.text(); is Element -> node.text(); else -> "" }
     private fun isSubmit(element: Element): Boolean = when (element.tagName()) {
         "button" -> element.attr("type").lowercase().let { it.isBlank() || it == "submit" }
@@ -160,16 +166,33 @@ class RaidPubParser {
         action.startsWith("?") -> pageUrl.substringBefore('#').substringBefore('?') + action
         else -> URI(pageUrl).resolve(action).toString()
     }
+    private fun safeRaidPubUrl(value: String): Boolean = runCatching {
+        val uri = URI(value).normalize()
+        uri.scheme == "http" && uri.host.equals("sic.zerosic.com", true) && uri.port in setOf(-1, 80) &&
+            uri.rawUserInfo == null && uri.rawFragment == null && uri.path == "/ZeroHOF/index.php" &&
+            uri.rawQuery.orEmpty().split('&').any { it.equals("menu=raidpub", true) }
+    }.getOrDefault(false)
     private fun clean(value: String) = value.replace('\u00a0', ' ').replace(Regex("\\s+"), " ").trim()
     private fun String.boundedInt(max: Int) = replace(",", "").toLongOrNull()?.takeIf { it in 0..max.toLong() }?.toInt()
-    private fun Long?.orZero() = this ?: 0L
+    private fun boundedDurationSeconds(match: MatchResult): Int? {
+        val values = match.groupValues.drop(1).map { value ->
+            if (value.isBlank()) BigInteger.ZERO else value.toBigIntegerOrNull() ?: return null
+        }
+        val total = values[0] * BigInteger.valueOf(3600) + values[1] * BigInteger.valueOf(60) + values[2]
+        return total.takeIf { it >= BigInteger.ZERO && it <= BigInteger.valueOf(MAX_WAIT_SECONDS.toLong()) }?.toInt()
+    }
 
-    private data class MutableRaid(val code: String, val heading: String, val text: StringBuilder = StringBuilder(), val actionIds: LinkedHashMap<RaidAction, String> = linkedMapOf())
+    private data class MutableRaid(val code: String, val heading: String, val text: StringBuilder = StringBuilder(), val actionIds: LinkedHashMap<RaidAction, String> = linkedMapOf()) {
+        fun appendText(value: String) {
+            if (value.isBlank() || text.length >= MAX_SECTION_TEXT) return
+            text.append(' ').append(value.take(MAX_SECTION_TEXT - text.length))
+        }
+    }
 
     private companion object {
         val RAID_ACTIONS = setOf(RaidAction.REGISTER, RaidAction.LEAVE, RaidAction.START, RaidAction.RESET)
         val GLOBAL_ACTIONS = setOf(RaidAction.REWARD, RaidAction.WAIT_RESET, RaidAction.REFRESH)
-        val REGISTER = Regex("^(?:등록(?:한다)?|신청(?:한다)?|register)$", RegexOption.IGNORE_CASE)
+        val REGISTER = Regex("^(?:(?:파티에\\s*)?등록(?:한다)?|신청(?:한다)?|register)$", RegexOption.IGNORE_CASE)
         val LEAVE = Regex("^(?:파티에서\\s*)?(?:나온다|나오기|탈퇴(?:한다)?|leave)$", RegexOption.IGNORE_CASE)
         val START = Regex("^(?:전투를?\\s*)?시작(?:한다)?$|^start$", RegexOption.IGNORE_CASE)
         val RESET = Regex("^(?:파티를?\\s*)?리셋(?:한다)?$|^reset$", RegexOption.IGNORE_CASE)
@@ -185,6 +208,7 @@ class RaidPubParser {
         val DEPART = Regex("(\\d+)\\s*초\\s*후\\s*출발")
         val APPLICANT = Regex("-\\s*\\[([^]]+)]")
         val APPLY_WAIT = Regex("신청\\s*가능\\s*까지\\s*(?:(\\d+)\\s*시간)?\\s*(?:(\\d+)\\s*분)?\\s*(?:(\\d+)\\s*초)?")
+        val APPLY_WAIT_STATE = Regex("신청\\s*대기|신청\\s*가능\\s*까지")
         val MY_STATUS = Regex("현재\\s*(?:상태는|전투)[^)]*\\)")
         val APPLIED = Regex("신청한\\s*상태|신청\\s*완료")
         val UNPLAYABLE = Regex("플레이\\s*불가|시험\\s*중")
@@ -199,5 +223,7 @@ class RaidPubParser {
         const val MAX_PARTY_SIZE = 100
         const val MAX_WAIT_SECONDS = 604_800
         const val MAX_TEXT = 500
+        const val MAX_SECTION_TEXT = 20_000
+        const val MAX_PAGE_TEXT = 200_000
     }
 }

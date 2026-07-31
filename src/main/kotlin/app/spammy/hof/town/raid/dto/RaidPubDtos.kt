@@ -23,6 +23,7 @@ data class RaidPubRaidResponse(
 data class RaidPubResponse(
     val raids: List<RaidPubRaidResponse>,
     val applied: Boolean,
+    val applyWait: Boolean,
     val applyWaitSeconds: Int?,
     val myStatus: String?,
     val globalActions: Set<RaidAction>,
@@ -36,6 +37,7 @@ data class RaidPubResponse(
                 raid.battleTarget?.let { RaidBattleTargetResponse(it.categoryId, it.mapCode) },
             ) },
             applied = value.applied,
+            applyWait = value.applyWait,
             applyWaitSeconds = value.applyWaitSeconds,
             myStatus = value.myStatus,
             globalActions = value.globalActions,

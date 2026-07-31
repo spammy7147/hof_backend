@@ -67,6 +67,19 @@ class BattleMapService(
     }
 
     /**
+     * 이번 HOF 응답에서 실제 관측된 맵만 반환한다. 현재 응답이 비었을 때 DB의 과거 목록으로 폴백하지 않으므로,
+     * 레이드처럼 일시적으로만 열리는 전투 CTA의 권한 판정에 사용한다.
+     */
+    fun findCurrentlyObservedMaps(
+        accountId: Long,
+        categoryId: String,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
+    ): List<BattleMapResponse> {
+        val snapshot = fetchMapSnapshot(accountId, categoryId, requireObservations = false, origin)
+        return if (snapshot.observations.isEmpty()) emptyList() else synchronizeSnapshot(snapshot)
+    }
+
+    /**
      * Performs the authenticated `?sp_hunt` refresh used by the automation daily gate. Unlike the read endpoint,
      * an empty/unparseable page is a failed refresh because no observed account state was synchronized.
      */

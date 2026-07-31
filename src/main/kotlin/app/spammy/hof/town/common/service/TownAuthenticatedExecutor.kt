@@ -264,6 +264,51 @@ class TownAuthenticatedExecutor(
     }
 
     /**
+     * action 응답이 원래 화면을 포함하지 않는 HOF 기능을 위해, 같은 계정 fence 안에서 최신 GET을 최대 한 번 보충한다.
+     * action 결과는 보충 GET으로 덮지 않고 최종 projector에 그대로 전달한다.
+     */
+    fun <T> executeProjectedWithSingleFallbackGet(
+        accountId: Long,
+        pageUrl: String,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
+        resolveAction: (html: String, finalUrl: String, page: ParsedTownPage) -> TownActionRequest,
+        acceptsActionResponse: (T) -> Boolean,
+        projector: (
+            html: String,
+            finalUrl: String,
+            result: app.spammy.hof.town.common.model.ParsedTownResult,
+            page: ParsedTownPage,
+        ) -> T,
+    ): T = withAccountActionFence(accountId) {
+        val context = authenticatedContext(accountId)
+        val current = executeAuthenticated(context.account, requestFactory.townPage(pageUrl, origin), context.cookies)
+        val currentPage = formParser.parse(current.body, current.finalUrl)
+        val guarded = actionGuard.guard(currentPage, resolveAction(current.body, current.finalUrl, currentPage))
+        val actionResponse = executeAuthenticated(
+            account = context.account,
+            request = requestFactory.townForm(
+                method = guarded.form.method,
+                actionUrl = guarded.form.actionUrl,
+                formEntries = guarded.formEntries,
+                origin = origin,
+            ),
+            cookies = context.cookies + current.setCookies,
+        )
+        val result = resultParser.parse(actionResponse.body)
+        val actionPage = formParser.parse(actionResponse.body, actionResponse.finalUrl)
+        val projected = projector(actionResponse.body, actionResponse.finalUrl, result, actionPage)
+        if (acceptsActionResponse(projected)) return@withAccountActionFence projected
+
+        val refreshed = executeAuthenticated(
+            context.account,
+            requestFactory.townPage(pageUrl, origin),
+            context.cookies + current.setCookies + actionResponse.setCookies,
+        )
+        val refreshedPage = formParser.parse(refreshed.body, refreshed.finalUrl)
+        projector(refreshed.body, refreshed.finalUrl, result, refreshedPage)
+    }
+
+    /**
      * HOF가 radio가 아닌 가격/번호 입력을 요구하는 기능을 위한 좁은 실행 경계다.
      * 호출자가 compile-time 상수 allowlist를 제공하고, 최신 GET의 같은 form에 실제 존재하는 이름만 덮어쓴다.
      */

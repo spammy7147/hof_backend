@@ -578,6 +578,18 @@ class BattleMapServiceTest {
         assertEquals(mapOf("PHPSESSID" to "abc", "NO" to "scenario"), gateway.cookies[1])
     }
 
+    @Test
+    fun currentlyObservedRaidMapsDoNotFallBackToAStaleCatalogEntry() {
+        val account = savedAccount("battle-map-current-raid")
+        gateway.defaultBody = """<a href="index.php?raid_common=RaidGoblin">고블린 전투 마차</a>"""
+
+        assertEquals(listOf("RaidGoblin"), service.findMaps(account.id, "raid").map { it.mapCode })
+
+        gateway.defaultBody = "<html><body>현재 열린 레이드가 없습니다.</body></html>"
+        assertTrue(service.findCurrentlyObservedMaps(account.id, "raid").isEmpty())
+        assertEquals(listOf("RaidGoblin"), service.findMaps(account.id, "raid").map { it.mapCode })
+    }
+
     private fun savedAccount(loginId: String): HofAccountEntity {
         val account = accountRepository.save(
             HofAccountEntity(
