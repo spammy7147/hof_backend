@@ -106,12 +106,14 @@ class HofFormParser {
             }
         controls.filter { it.tagName() == "select" && it.attr("name").isNotBlank() }
             .forEach { select ->
-                val selectCount = controls.count { it.tagName() == "select" && it.attr("name").isNotBlank() }
                 val quantityControl = controls.singleOrNull { control ->
                     control.tagName() == "input" && control.attr("name").isNotBlank() &&
-                        (control.isQuantityControl() || (selectCount >= 4 && control.isPlainScalarInput()))
+                        control.isQuantityControl()
                 }
-                select.select("option").filter { it.hasAttr("value") && it.attr("value").isNotBlank() }
+                select.select("option").filter { option ->
+                    option.hasAttr("value") && option.attr("value").isNotBlank() && !option.hasAttr("disabled") &&
+                        option.parents().none { parent -> parent.tagName() == "optgroup" && parent.hasAttr("disabled") }
+                }
                     .forEach { option ->
                         val label = cleanText(option.text()).ifBlank { option.attr("value") }
                         rows += ParsedTownRow(
@@ -198,8 +200,6 @@ class HofFormParser {
         val type = attr("type").lowercase()
         return type == "number" || (type in TEXT_INPUT_TYPES && QUANTITY_NAME.matches(attr("name")))
     }
-
-    private fun Element.isPlainScalarInput(): Boolean = attr("type").lowercase() in (TEXT_INPUT_TYPES + "number")
 
     private fun isSubmitControl(element: Element): Boolean = when (element.tagName()) {
         "button" -> element.attr("type").lowercase().let { it.isBlank() || it == "submit" }

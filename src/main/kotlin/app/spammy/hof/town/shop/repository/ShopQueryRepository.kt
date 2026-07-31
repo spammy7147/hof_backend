@@ -35,7 +35,14 @@ class ShopQueryRepository(private val queryFactory: JPAQueryFactory) {
         .where(shopCatalogItemEntity.id.shopId.eq(shopId))
         .execute()
 
-    fun tryAcquire(jobKey: String, owner: String, now: Instant, leaseUntil: Instant, freshAfter: Instant): Long =
+    fun tryAcquire(
+        jobKey: String,
+        owner: String,
+        now: Instant,
+        leaseUntil: Instant,
+        freshAfter: Instant,
+        retryAfter: Instant,
+    ): Long =
         queryFactory.update(townGlobalJobLeaseEntity)
             .set(townGlobalJobLeaseEntity.leaseOwner, owner)
             .set(townGlobalJobLeaseEntity.leaseUntil, leaseUntil)
@@ -44,6 +51,7 @@ class ShopQueryRepository(private val queryFactory: JPAQueryFactory) {
                 townGlobalJobLeaseEntity.jobKey.eq(jobKey),
                 townGlobalJobLeaseEntity.leaseUntil.isNull.or(townGlobalJobLeaseEntity.leaseUntil.lt(now)),
                 townGlobalJobLeaseEntity.lastSuccessAt.isNull.or(townGlobalJobLeaseEntity.lastSuccessAt.lt(freshAfter)),
+                townGlobalJobLeaseEntity.lastAttemptAt.isNull.or(townGlobalJobLeaseEntity.lastAttemptAt.lt(retryAfter)),
             )
             .execute()
 

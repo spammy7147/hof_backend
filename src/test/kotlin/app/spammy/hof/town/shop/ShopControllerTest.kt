@@ -40,7 +40,7 @@ class ShopControllerTest {
     @Test
     fun `combine exposes one primary and three secondary selects and guard emits no arbitrary field`() {
         val page = formParser.parse("""<form method="post">
-          <select name="main"><option value="">선택</option><option value="m">Milk</option></select>
+          <select name="main"><option value="">선택</option><option value="m">Milk</option><option value="disabled" disabled>Disabled</option><optgroup disabled><option value="group-disabled">Group Disabled</option></optgroup></select>
           <select name="sub1"><option value="a">A</option></select><select name="sub2"><option value="b">B</option></select><select name="sub3"><option value="c">C</option></select>
           <input name="mix_times" type="number" min="1" max="10" value="1"><button name="Combine" value="Combine">Combine</button></form>""")
         val combine = parser.parseCombine(page)
@@ -53,5 +53,20 @@ class ShopControllerTest {
         assertEquals(listOf("main", "sub1", "sub2", "sub3", "mix_times", "Combine"), guarded.formEntries.map { it.name })
         assertTrue(guarded.formEntries.none { it.name == "actionUrl" || it.name == "csrf-from-app" })
         assertFails { TownActionGuard().guard(page, TownActionRequest(form.actionId, listOf(TownActionSelection("main:m"), TownActionSelection("main:m")))) }
+    }
+
+    @Test
+    fun `four selects do not turn an unrelated text field into quantity`() {
+        val page = formParser.parse("""<form method="post">
+          <select name="main"><option value="m">Milk</option></select><select name="sub1"><option value="a">A</option></select>
+          <select name="sub2"><option value="b">B</option></select><select name="sub3"><option value="c">C</option></select>
+          <input name="search" type="text" value="query"><button name="Combine" value="Combine">Combine</button></form>""")
+        val form = parser.combineForm(page)!!
+
+        assertFails {
+            TownActionGuard().guard(page, TownActionRequest(form.actionId, listOf(
+                TownActionSelection("main:m", 2), TownActionSelection("sub1:a"), TownActionSelection("sub2:b"), TownActionSelection("sub3:c"),
+            )))
+        }
     }
 }
