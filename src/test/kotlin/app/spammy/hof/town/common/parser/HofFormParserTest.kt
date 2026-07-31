@@ -3,6 +3,7 @@ package app.spammy.hof.town.common.parser
 import java.nio.charset.StandardCharsets
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFails
 import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
@@ -78,11 +79,20 @@ class HofFormParserTest {
     @Test
     fun `unrelated text input is not inferred as quantity and repeated fields are preserved`() {
         val form = parser.parse(fixture("fixtures/town/common/form-boundaries.html")).forms[2]
+        assertFails {
+            app.spammy.hof.town.common.service.TownActionGuard().guard(
+                app.spammy.hof.town.common.model.ParsedTownPage(listOf(form)),
+                app.spammy.hof.town.common.model.TownActionRequest(
+                    form.actionId,
+                    listOf(app.spammy.hof.town.common.model.TownActionSelection("item-2", 3)),
+                ),
+            )
+        }
         val guarded = app.spammy.hof.town.common.service.TownActionGuard().guard(
             app.spammy.hof.town.common.model.ParsedTownPage(listOf(form)),
             app.spammy.hof.town.common.model.TownActionRequest(
                 form.actionId,
-                listOf(app.spammy.hof.town.common.model.TownActionSelection("item-2", 3)),
+                listOf(app.spammy.hof.town.common.model.TownActionSelection("item-2", 1)),
             ),
         )
 

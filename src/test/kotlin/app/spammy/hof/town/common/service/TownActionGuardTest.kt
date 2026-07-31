@@ -58,4 +58,14 @@ class TownActionGuardTest {
             guard.guard(page, TownActionRequest("action-1", listOf(TownActionSelection("item-1", 11))))
         }
     }
+
+    @Test
+    fun `rejects a requested quantity when the fresh form has no quantity control`() {
+        val withoutQuantity = candidate.copy(quantityFieldName = null)
+        val current = page.copy(forms = listOf(form.copy(rows = listOf(ParsedTownRow("item", withoutQuantity)))))
+
+        assertFailsWith<ApiException> {
+            guard.guard(current, TownActionRequest("action-1", listOf(TownActionSelection("item-1", 2))))
+        }
+    }
 }

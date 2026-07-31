@@ -27,6 +27,9 @@ class TownActionGuard {
             if (candidate.maxQuantity != null && selection.quantity > candidate.maxQuantity) {
                 invalid("허용된 최대 수량을 초과했습니다.")
             }
+            if (selection.quantity != 1 && candidate.quantityFieldName == null) {
+                invalid("현재 양식에서는 이 항목의 수량을 지정할 수 없습니다.")
+            }
             candidate to selection.quantity
         }
         candidates.filter { it.first.selectionType == TownSelectionType.RADIO }
@@ -35,6 +38,12 @@ class TownActionGuard {
             .filterValues { it > 1 }
             .takeIf(Map<*, *>::isNotEmpty)
             ?.let { invalid("하나만 선택할 수 있는 항목을 여러 개 선택했습니다.") }
+        candidates.filter { it.first.selectionType == TownSelectionType.SELECT }
+            .groupingBy { it.first.inputName }
+            .eachCount()
+            .filterValues { it > 1 }
+            .takeIf(Map<*, *>::isNotEmpty)
+            ?.let { invalid("각 선택 목록에서는 하나의 항목만 선택할 수 있습니다.") }
 
         val fields = mutableListOf<PositionedField>()
         form.hiddenFields.zip(form.hiddenFieldPositions).forEach { (field, position) ->

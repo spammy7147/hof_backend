@@ -40,6 +40,7 @@ data class ParsedTownRow(
 enum class TownSelectionType {
     RADIO,
     CHECKBOX,
+    SELECT,
 }
 
 data class ParsedTownCandidate(

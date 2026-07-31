@@ -488,6 +488,19 @@ internal object FreshSchemaContract {
             requiredVarchar("feature_id", 50), optionalVarchar("href", 500), optionalInstant("observed_at"),
             primaryKey = listOf("feature_id"),
         ),
+        table(
+            "shop_catalog_item",
+            requiredVarchar("shop_id", 20), requiredVarchar("item_key", 200), requiredVarchar("name", 300),
+            optionalVarchar("item_type", 100), optionalText("description"), requiredBigint("price"),
+            requiredBoolean("active"), requiredInstant("last_seen_at"),
+            primaryKey = listOf("shop_id", "item_key"),
+        ),
+        table(
+            "town_global_job_lease",
+            requiredVarchar("job_key", 100), optionalVarchar("lease_owner", 100), optionalInstant("lease_until"),
+            optionalInstant("last_attempt_at"), optionalInstant("last_success_at"),
+            primaryKey = listOf("job_key"),
+        ),
     )
 
     private val UNIQUE_KEYS = listOf(
@@ -698,6 +711,7 @@ internal object FreshSchemaContract {
     )
 
     private val INDEXES = listOf(
+        index("shop_catalog_item", "idx_shop_catalog_item_active_name", "shop_id", "active", "name", "item_key"),
         index("hof_cookies", "idx_hof_cookies_account_updated", "account_id", "updated_at", "id"),
         index("refresh_tokens", "idx_refresh_tokens_family_created", "family_id", "created_at", "id"),
         index("refresh_tokens", "idx_refresh_tokens_account_active", "account_id", "revoked_at", "expires_at", "id"),
@@ -812,6 +826,9 @@ internal object FreshSchemaContract {
     )
 
     private val CHECKS = listOf(
+        check("shop_catalog_item", "ck_shop_catalog_item_shop", "shop_id in ('GENERAL', 'SUNDRIES', 'DARK')"),
+        check("shop_catalog_item", "ck_shop_catalog_item_price", "price >= cast(0 as bigint)"),
+        check("town_global_job_lease", "ck_town_global_job_lease_pair", "((lease_owner is null) and (lease_until is null)) or ((lease_owner is not null) and (lease_until is not null))"),
         check("characters", "ck_characters_pattern_slot_count", "pattern_slot_count >= 0"),
         check(
             "automation_work_sessions", "ck_automation_work_type",

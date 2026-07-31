@@ -62,6 +62,7 @@ class FreshSchemaTest {
                 "11" to "remove typed action schema version",
                 "12" to "add party preset folders",
                 "13" to "add town location cache",
+                "14" to "add town catalog and jobs",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -78,6 +79,7 @@ class FreshSchemaTest {
                 "V11__remove_typed_action_schema_version.sql",
                 "V12__add_party_preset_folders.sql",
                 "V13__add_town_location_cache.sql",
+                "V14__add_town_catalog_and_jobs.sql",
                 "V1__initialize_schema.sql",
                 "V2__order_party_presets.sql",
                 "V3__add_automation_work_sessions.sql",
@@ -105,6 +107,8 @@ class FreshSchemaTest {
             assertTrue(connection.columnExists("quest_automation_selections", "display_code"))
             assertTrue(connection.columnExists("quest_automation_selections", "quest_name"))
             assertTrue(connection.tableExists("town_feature_locations"))
+            assertTrue(connection.tableExists("shop_catalog_item"))
+            assertTrue(connection.tableExists("town_global_job_lease"))
             connection.createStatement().use { statement ->
                 statement.executeQuery("select count(*) from town_feature_locations").use { rows ->
                     assertTrue(rows.next())
