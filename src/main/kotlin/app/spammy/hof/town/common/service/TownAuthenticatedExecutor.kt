@@ -46,6 +46,19 @@ class TownAuthenticatedExecutor(
         return formParser.parse(response.body, response.finalUrl)
     }
 
+    /** 원문은 service 경계를 벗어나지 않고 기능 parser에만 전달한다. */
+    fun <T> loadProjected(
+        accountId: Long,
+        pageUrl: String,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
+        projector: (html: String, finalUrl: String, page: ParsedTownPage) -> T,
+    ): T {
+        val context = authenticatedContext(accountId)
+        val response = executeAuthenticated(context.account, requestFactory.townPage(pageUrl, origin), context.cookies)
+        val page = formParser.parse(response.body, response.finalUrl)
+        return projector(response.body, response.finalUrl, page)
+    }
+
     fun execute(
         accountId: Long,
         pageUrl: String,
@@ -70,6 +83,41 @@ class TownAuthenticatedExecutor(
             result = resultParser.parse(actionResponse.body),
             page = formParser.parse(actionResponse.body, actionResponse.finalUrl),
         )
+    }
+
+    /**
+     * 최신 GET에서 의미 action을 고른 뒤 같은 문서의 form을 guard하여 한 번만 제출한다.
+     * 기능별 응답 projector에만 HOF HTML을 전달하고 controller DTO에는 포함하지 않는다.
+     */
+    fun <T> executeProjected(
+        accountId: Long,
+        pageUrl: String,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
+        resolveAction: (html: String, finalUrl: String, page: ParsedTownPage) -> TownActionRequest,
+        projector: (
+            html: String,
+            finalUrl: String,
+            result: app.spammy.hof.town.common.model.ParsedTownResult,
+            page: ParsedTownPage,
+        ) -> T,
+    ): T {
+        val context = authenticatedContext(accountId)
+        val current = executeAuthenticated(context.account, requestFactory.townPage(pageUrl, origin), context.cookies)
+        val currentPage = formParser.parse(current.body, current.finalUrl)
+        val guarded = actionGuard.guard(currentPage, resolveAction(current.body, current.finalUrl, currentPage))
+        val actionResponse = executeAuthenticated(
+            account = context.account,
+            request = requestFactory.townForm(
+                method = guarded.form.method,
+                actionUrl = guarded.form.actionUrl,
+                formEntries = guarded.formEntries,
+                origin = origin,
+            ),
+            cookies = context.cookies + current.setCookies,
+        )
+        val result = resultParser.parse(actionResponse.body)
+        val page = formParser.parse(actionResponse.body, actionResponse.finalUrl)
+        return projector(actionResponse.body, actionResponse.finalUrl, result, page)
     }
 
     private fun authenticatedContext(accountId: Long): AuthenticatedContext {

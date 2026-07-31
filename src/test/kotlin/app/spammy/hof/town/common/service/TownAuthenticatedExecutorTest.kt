@@ -98,6 +98,49 @@ class TownAuthenticatedExecutorTest {
         Mockito.verify(captchaService).detectAndRecord(account, captchaHtml, HOF_URL)
     }
 
+    @Test
+    fun `projects raw HTML only inside the backend callback`() {
+        stubAccount()
+        val html = "<main><p>날짜가 갱신되었습니다.</p><form><button name='do' value='start'>시작</button></form></main>"
+        Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies())).thenReturn(response(html))
+
+        val projected = executor.loadProjected(7L, HOF_URL) { raw, finalUrl, page ->
+            Triple(raw.contains("날짜가 갱신되었습니다"), finalUrl, page.forms.size)
+        }
+
+        assertEquals(Triple(true, HOF_URL, 1), projected)
+    }
+
+    @Test
+    fun `resolves a semantic action from the same fresh GET that is guarded and submitted`() {
+        stubAccount()
+        val html = """
+            <form method="post"><input type="hidden" name="csrf" value="fresh">
+            <button name="do" value="낚는다">낚는다</button></form>
+        """.trimIndent()
+        Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies()))
+            .thenReturn(response(html), response("<div id='result'>물고기가 도망쳤다.</div>"))
+
+        val message = executor.executeProjected(
+            accountId = 7L,
+            pageUrl = HOF_URL,
+            resolveAction = { raw, _, page ->
+                assertEquals(true, raw.contains("낚는다"))
+                TownActionRequest(page.forms.single().actionId)
+            },
+        ) { _, _, result, _ -> result.messages.single() }
+
+        assertEquals("물고기가 도망쳤다.", message)
+        Mockito.verify(gateway, Mockito.times(2)).execute(Mockito.eq(7L), anyRequest(), anyCookies())
+    }
+
+    private fun stubAccount() {
+        Mockito.`when`(accounts.findById(7L)).thenReturn(
+            HofAccountEntity(7L, "town-user", "encrypted", Instant.EPOCH),
+        )
+        Mockito.`when`(cookies.findValueMapByAccountId(7L)).thenReturn(mapOf("PHPSESSID" to "session"))
+    }
+
     private fun response(body: String) = HofHttpResponse(200, HOF_URL, body, emptyMap())
 
     private fun anyRequest(): HofRequest = Mockito.any(HofRequest::class.java)
