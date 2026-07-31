@@ -25,6 +25,11 @@ import kotlin.concurrent.withLock
 import org.jsoup.Jsoup
 import org.springframework.stereotype.Service
 
+sealed interface TownObservedAction {
+    data class Form(val request: TownActionRequest) : TownObservedAction
+    data class Link(val query: List<HofFormField>) : TownObservedAction
+}
+
 /**
  * 계정 쿠키로 HOF 마을 페이지를 읽고, 실행 직전 다시 파싱한 form만 제출한다.
  *
@@ -97,6 +102,64 @@ class TownAuthenticatedExecutor(
             requestFactory.townObservedGet(pageUrl, query, origin),
             context.cookies + current.setCookies,
         )
+        val result = resultParser.parse(actionResponse.body)
+        val page = formParser.parse(actionResponse.body, actionResponse.finalUrl)
+        projector(actionResponse.body, actionResponse.finalUrl, result, page)
+    }
+
+    /**
+     * 상위 목록에서 상세 링크를, 상세에서 최종 form/링크를 매번 다시 관측한 뒤 한 계정 fence 안에서 실행한다.
+     * 클라이언트가 목록 또는 상세 URL/query/form 값을 공급하지 않으므로 오래된 화면이 새 대상을 잘못 실행하지 않는다.
+     */
+    fun <T> executeNestedObservedActionProjected(
+        accountId: Long,
+        rootPageUrl: String,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
+        resolveDetailUrl: (html: String, finalUrl: String, page: ParsedTownPage) -> String,
+        resolveAction: (html: String, finalUrl: String, page: ParsedTownPage) -> TownObservedAction,
+        projector: (
+            html: String,
+            finalUrl: String,
+            result: app.spammy.hof.town.common.model.ParsedTownResult,
+            page: ParsedTownPage,
+        ) -> T,
+    ): T = withAccountActionFence(accountId) {
+        val context = authenticatedContext(accountId)
+        val root = executeAuthenticated(
+            context.account,
+            requestFactory.townPage(rootPageUrl, origin),
+            context.cookies,
+        )
+        val rootPage = formParser.parse(root.body, root.finalUrl)
+        val detailUrl = resolveDetailUrl(root.body, root.finalUrl, rootPage)
+        val detail = executeAuthenticated(
+            context.account,
+            requestFactory.townPage(detailUrl, origin),
+            context.cookies + root.setCookies,
+        )
+        val detailPage = formParser.parse(detail.body, detail.finalUrl)
+        val observed = resolveAction(detail.body, detail.finalUrl, detailPage)
+        val actionResponse = when (observed) {
+            is TownObservedAction.Form -> {
+                val guarded = actionGuard.guard(detailPage, observed.request)
+                executeAuthenticated(
+                    context.account,
+                    requestFactory.townForm(guarded.form.method, guarded.form.actionUrl, guarded.formEntries, origin),
+                    context.cookies + root.setCookies + detail.setCookies,
+                )
+            }
+            is TownObservedAction.Link -> {
+                val query = observed.query
+                if (query.isEmpty() || query.size > 8 || query.map(HofFormField::name).distinct().size != query.size ||
+                    query.any { it.name.isBlank() || it.name.length > 80 || it.value.isBlank() || it.value.length > 500 }
+                ) throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF action 링크를 안전하게 확인하지 못했습니다.")
+                executeAuthenticated(
+                    context.account,
+                    requestFactory.townObservedGet(detail.finalUrl, query, origin),
+                    context.cookies + root.setCookies + detail.setCookies,
+                )
+            }
+        }
         val result = resultParser.parse(actionResponse.body)
         val page = formParser.parse(actionResponse.body, actionResponse.finalUrl)
         projector(actionResponse.body, actionResponse.finalUrl, result, page)
