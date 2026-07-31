@@ -501,6 +501,14 @@ internal object FreshSchemaContract {
             optionalInstant("last_attempt_at"), optionalInstant("last_success_at"),
             primaryKey = listOf("job_key"),
         ),
+        table(
+            "auction_observation",
+            requiredVarchar("observation_key", 128), optionalVarchar("listing_id", 120),
+            requiredVarchar("observation_kind", 20), requiredVarchar("item_key", 128),
+            requiredVarchar("item_name", 300), optionalVarchar("item_type", 100), requiredInteger("quantity"),
+            requiredBigint("total_price"), requiredBigint("unit_price"), requiredInstant("observed_at"),
+            requiredInstant("last_seen_at"), primaryKey = listOf("observation_key"),
+        ),
     )
 
     private val UNIQUE_KEYS = listOf(
@@ -711,6 +719,7 @@ internal object FreshSchemaContract {
     )
 
     private val INDEXES = listOf(
+        index("auction_observation", "idx_auction_observation_market", "item_key", "observation_kind", "observed_at"),
         index("shop_catalog_item", "idx_shop_catalog_item_active_name", "shop_id", "active", "name", "item_key"),
         index("hof_cookies", "idx_hof_cookies_account_updated", "account_id", "updated_at", "id"),
         index("refresh_tokens", "idx_refresh_tokens_family_created", "family_id", "created_at", "id"),
@@ -826,6 +835,9 @@ internal object FreshSchemaContract {
     )
 
     private val CHECKS = listOf(
+        check("auction_observation", "ck_auction_observation_kind", "observation_kind in ('CURRENT', 'SOLD')"),
+        check("auction_observation", "ck_auction_observation_quantity", "quantity > 0"),
+        check("auction_observation", "ck_auction_observation_prices", "total_price >= cast(0 as bigint) and unit_price >= cast(0 as bigint)"),
         check("shop_catalog_item", "ck_shop_catalog_item_shop", "shop_id in ('GENERAL', 'SUNDRIES', 'DARK')"),
         check("shop_catalog_item", "ck_shop_catalog_item_price", "price >= cast(0 as bigint)"),
         check("town_global_job_lease", "ck_town_global_job_lease_pair", "((lease_owner is null) and (lease_until is null)) or ((lease_owner is not null) and (lease_until is not null))"),

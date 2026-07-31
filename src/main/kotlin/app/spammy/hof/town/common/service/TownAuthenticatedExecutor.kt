@@ -19,6 +19,7 @@ import app.spammy.hof.town.common.parser.HofResultParser
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
+import org.jsoup.Jsoup
 import org.springframework.stereotype.Service
 
 /**
@@ -119,6 +120,64 @@ class TownAuthenticatedExecutor(
                 origin = origin,
             ),
             cookies = context.cookies + current.setCookies,
+        )
+        val result = resultParser.parse(actionResponse.body)
+        val page = formParser.parse(actionResponse.body, actionResponse.finalUrl)
+        projector(actionResponse.body, actionResponse.finalUrl, result, page)
+    }
+
+    /**
+     * HOF가 radio가 아닌 가격/번호 입력을 요구하는 기능을 위한 좁은 실행 경계다.
+     * 호출자가 compile-time 상수 allowlist를 제공하고, 최신 GET의 같은 form에 실제 존재하는 이름만 덮어쓴다.
+     */
+    fun <T> executeProjectedWithScalars(
+        accountId: Long,
+        pageUrl: String,
+        action: TownActionRequest,
+        scalarValues: Map<String, String>,
+        allowedScalarFields: Set<String>,
+        projector: (
+            html: String,
+            finalUrl: String,
+            result: app.spammy.hof.town.common.model.ParsedTownResult,
+            page: ParsedTownPage,
+        ) -> T,
+    ): T = withAccountActionFence(accountId) {
+        require(scalarValues.isNotEmpty() && scalarValues.keys.all { it in allowedScalarFields })
+        require(scalarValues.size <= 8 && scalarValues.values.all { it.length <= 500 })
+        val context = authenticatedContext(accountId)
+        val current = executeAuthenticated(context.account, requestFactory.townPage(pageUrl, HofRequestOrigin.INTERACTIVE), context.cookies)
+        val currentPage = formParser.parse(current.body, current.finalUrl)
+        val guarded = actionGuard.guard(currentPage, action)
+        val document = Jsoup.parse(current.body, current.finalUrl)
+        val matchingForms = document.select("form").filter { domForm ->
+            val names = domForm.select("input,button,select,textarea")
+                .filter { it.closest("form") === domForm && !it.hasAttr("disabled") }
+                .map { it.attr("name") }.toSet()
+            scalarValues.keys.all { it in names } && guarded.form.submitFields.all { submit ->
+                domForm.select("input[type=submit],input[type=image],button").any {
+                    it.attr("name") == submit.name && (it.attr("value").ifBlank { it.text() }) == submit.value
+                }
+            }
+        }
+        if (matchingForms.size != 1) throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 입력 양식을 안전하게 확인하지 못했습니다.")
+        val controlsByName = matchingForms.single().select("input,select,textarea")
+            .filter { !it.hasAttr("disabled") && it.attr("name") in scalarValues.keys }
+            .groupBy { it.attr("name") }
+        if (scalarValues.keys.any { controlsByName[it].orEmpty().size != 1 }) {
+            throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 입력 필드가 변경되었습니다.")
+        }
+        val replacements = scalarValues.toMutableMap()
+        val entries = guarded.formEntries.map { field ->
+            replacements.remove(field.name)?.let { field.copy(value = it) } ?: field
+        }.toMutableList()
+        val submitStart = entries.indexOfFirst { field -> guarded.form.submitFields.any { it.name == field.name && it.value == field.value } }
+            .let { if (it < 0) entries.size else it }
+        replacements.forEach { (name, value) -> entries.add(submitStart, app.spammy.hof.external.model.HofFormField(name, value)) }
+        val actionResponse = executeAuthenticated(
+            context.account,
+            requestFactory.townForm(guarded.form.method, guarded.form.actionUrl, entries, HofRequestOrigin.INTERACTIVE),
+            context.cookies + current.setCookies,
         )
         val result = resultParser.parse(actionResponse.body)
         val page = formParser.parse(actionResponse.body, actionResponse.finalUrl)
