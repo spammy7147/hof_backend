@@ -52,6 +52,9 @@ data class ColosseumShopRow(
     val detail: String?,
     val cost: Long?,
     val owned: Int?,
+    internal val minQuantity: Int = 1,
+    internal val maxQuantity: Int? = null,
+    internal val itemT: String? = null,
 )
 
 data class ColosseumShopSnapshot(

@@ -75,20 +75,27 @@ class ColosseumService(
             ColosseumShopResponse.from(snapshot)
         }
 
-    fun trade(accountId: Long, request: ColosseumTradeRequest): ColosseumShopResponse = executor.executeProjected(
+    fun trade(accountId: Long, request: ColosseumTradeRequest): ColosseumShopResponse = executor.executeResolvedProjectedWithScalars(
         accountId = accountId,
         pageUrl = shopUrl(),
-        resolveAction = { html, finalUrl, page ->
+        requiredScalarFields = setOf("ItemT", "list_type", "amount"),
+        requiredSubmitField = "Create",
+        resolve = { html, finalUrl, page ->
             val snapshot = parser.parseShop(html, finalUrl, page)
             if (snapshot.currentCategoryId != request.categoryCandidateId) invalid("현재 표시된 교환 분류를 다시 확인해 주세요.")
             val row = snapshot.items.singleOrNull { it.id == request.candidateId && it.selectable }
                 ?: invalid("현재 선택할 수 없는 교환 품목입니다.")
             val form = page.forms.singleOrNull { it.actionId == snapshot.actionId } ?: invalid("현재 교환 양식을 찾지 못했습니다.")
             val candidate = form.candidates.singleOrNull { it.id == row.id } ?: invalid("현재 교환 품목 계약을 확인하지 못했습니다.")
-            val max = candidate.maxQuantity ?: Int.MAX_VALUE
-            if (request.quantity !in candidate.minQuantity..max) invalid("현재 HOF가 허용하는 수량을 입력해 주세요.")
-            val category = request.categoryCandidateId?.let { id -> form.candidates.singleOrNull { it.id == id } }
-            TownActionRequest(snapshot.actionId ?: invalid("현재 교환 양식을 찾지 못했습니다."), listOfNotNull(category?.let { TownActionSelection(it.id) }, TownActionSelection(row.id, request.quantity)))
+            val max = row.maxQuantity ?: Int.MAX_VALUE
+            if (request.quantity !in row.minQuantity..max) invalid("현재 HOF가 허용하는 수량을 입력해 주세요.")
+            val categoryId = snapshot.currentCategoryId ?: invalid("현재 교환 분류를 확인하지 못했습니다.")
+            val category = form.candidates.singleOrNull { it.id == categoryId } ?: invalid("현재 교환 분류 계약을 확인하지 못했습니다.")
+            TownActionRequest(snapshot.actionId ?: invalid("현재 교환 양식을 찾지 못했습니다."), listOf(TownActionSelection(candidate.id))) to mapOf(
+                "ItemT" to (row.itemT ?: invalid("현재 품목의 HOF ItemT 계약을 확인하지 못했습니다.")),
+                "list_type" to category.inputValue,
+                "amount" to request.quantity.toString(),
+            )
         },
     ) { html, finalUrl, result, page -> ColosseumShopResponse.from(parser.parseShop(html, finalUrl, page, result)) }
 
