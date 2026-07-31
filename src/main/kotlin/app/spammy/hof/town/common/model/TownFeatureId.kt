@@ -15,7 +15,7 @@ enum class TownFeatureId(
     DARK_STORE("암흑상점", "sbuy", "암흑 상점", "Dark Shop"),
     SELL("판매", null, "판다", "Sell"),
     COMBINE("조합소", null, "Combine"),
-    AUCTION("옥션", "auction", "Auction"),
+    AUCTION("옥션", null, "Auction"),
     AUCTION_MARKET("낙찰 시세", null, "Auction Market", "Market Price"),
 
     COLOSSEUM_BATTLE("콜로세움 전투", null, "Colosseum Battle"),

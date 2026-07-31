@@ -176,6 +176,50 @@ class TownAuthenticatedExecutorTest {
         }
     }
 
+    @Test
+    fun `scalar action proves the same semantic form and submits only exact required names`() {
+        stubAccount()
+        val html = """
+            <form action="index.php?menu=auction" method="post">
+              <input name="ArticleNo" value=""><input name="BidPrice" value="">
+              <input type="submit" name="Bid" value="Bid">
+            </form>
+        """.trimIndent()
+        val actionId = HofFormParser().parse(html, AUCTION_URL).forms.single().actionId
+        Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies()))
+            .thenReturn(response(html), response("<div id='result'>입찰했습니다.</div>"))
+
+        executor.executeProjectedWithScalars(
+            7L, AUCTION_URL, TownActionRequest(actionId),
+            mapOf("ArticleNo" to "12", "BidPrice" to "3456"), setOf("ArticleNo", "BidPrice"),
+            "Bid",
+        ) { _, _, result, _ -> result }
+
+        val requests = ArgumentCaptor.forClass(HofRequest::class.java)
+        Mockito.verify(gateway, Mockito.times(2)).execute(Mockito.eq(7L), capture(requests, HofRequest(HofHttpMethod.GET, AUCTION_URL)), anyCookies())
+        assertEquals(mapOf("ArticleNo" to "12", "BidPrice" to "3456", "Bid" to "Bid"), requests.allValues[1].formFields)
+    }
+
+    @Test
+    fun `scalar action rejects fields assembled from another form`() {
+        stubAccount()
+        val html = """
+            <form action="index.php?menu=auction" method="post"><input name="ArticleNo"><input type="submit" name="Bid" value="Bid"></form>
+            <form action="index.php?menu=other" method="post"><input name="BidPrice"><input type="submit" name="Other" value="Other"></form>
+        """.trimIndent()
+        val actionId = HofFormParser().parse(html, AUCTION_URL).forms.first().actionId
+        Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies())).thenReturn(response(html))
+
+        assertFailsWith<ApiException> {
+            executor.executeProjectedWithScalars(
+                7L, AUCTION_URL, TownActionRequest(actionId),
+                mapOf("ArticleNo" to "12", "BidPrice" to "3456"), setOf("ArticleNo", "BidPrice"),
+                "Bid",
+            ) { _, _, result, _ -> result }
+        }
+        Mockito.verify(gateway, Mockito.times(1)).execute(Mockito.eq(7L), anyRequest(), anyCookies())
+    }
+
     private fun stubAccount() {
         Mockito.`when`(accounts.findById(7L)).thenReturn(
             HofAccountEntity(7L, "town-user", "encrypted", Instant.EPOCH),
@@ -194,5 +238,6 @@ class TownAuthenticatedExecutorTest {
 
     private companion object {
         const val HOF_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=buy"
+        const val AUCTION_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=auction"
     }
 }

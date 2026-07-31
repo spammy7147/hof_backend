@@ -1,6 +1,8 @@
 package app.spammy.hof.town.auction.service
 
 import app.spammy.hof.town.auction.config.AuctionCollectorProperties
+import app.spammy.hof.account.service.HofSessionRecoveryService
+import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.town.shop.repository.ShopQueryRepository
 import java.time.Clock
 import java.time.Duration
@@ -30,6 +32,7 @@ class AuctionCollector(
     private val service: AuctionService,
     private val observations: AuctionObservationService,
     private val lease: AuctionLeaseService,
+    private val recovery: HofSessionRecoveryService,
     private val clock: Clock = Clock.systemUTC(),
 ) {
     private val owner = UUID.randomUUID().toString()
@@ -42,7 +45,8 @@ class AuctionCollector(
         if (!lease.acquire(owner, now)) return
         try {
             // Collector는 이 GET projection 외에 어떠한 form/action도 실행하지 않는다.
-            observations.observe(service.collectorPage(accountId), now)
+            val snapshots = recovery.execute(accountId, HofRequestOrigin.AUTOMATION) { service.collectorPage(accountId) }
+            observations.observe(snapshots, now)
             lease.success(owner, now)
         } catch (failure: Exception) {
             runCatching { lease.failure(owner) }.exceptionOrNull()?.let(failure::addSuppressed)

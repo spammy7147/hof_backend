@@ -1,6 +1,9 @@
 package app.spammy.hof.town.auction.parser
 
 import app.spammy.hof.town.auction.service.AuctionAction
+import app.spammy.hof.town.auction.service.AuctionCapabilities
+import app.spammy.hof.town.auction.service.AuctionDuration
+import app.spammy.hof.town.auction.service.AuctionExhibitPage
 import app.spammy.hof.town.auction.service.AuctionListing
 import app.spammy.hof.town.auction.service.AuctionPage
 import app.spammy.hof.town.auction.service.AuctionSnapshot
@@ -24,30 +27,22 @@ class AuctionPageParser {
             val itemText = cells[3].text()
             val item = item(itemText)
             AuctionListing(
-                candidateId = "listing:$no", actionId = bidActionId, listingId = no, name = item.first,
+                rowKey = "lot:$no", candidateId = null, actionId = bidActionId, listingId = no, name = item.first,
                 type = item.second, quantity = item.third, totalPrice = total, unitPrice = total / item.third,
                 action = AuctionAction.BID, kind = ObservationKind.CURRENT,
             )
         }.filter { query.isNullOrBlank() || it.name.contains(query, true) }
         val actions = mutableListOf<AuctionAction>()
         if (bidActionId != null) actions += AuctionAction.BID
-        val pseudo = listOfNotNull(
-            actionId(page, "ExhibitItemForm")?.let { pseudo(it, "새 아이템 출품", AuctionAction.EXHIBIT) },
-            actionId(page, "GetAutuonItem")?.let { pseudo(it, "낙찰 아이템 수령", AuctionAction.CLAIM) },
-            actionId(page, "GetAutuonMoney")?.let { pseudo(it, "옥션 Funds 수령", AuctionAction.CLAIM) },
+        val capabilities = AuctionCapabilities(
+            bidActionId = bidActionId,
+            exhibitEntryActionId = actionId(page, "ExhibitItemForm"),
+            claimItemActionId = actionId(page, "GetAutuonItem"),
+            claimFundsActionId = actionId(page, "GetAutuonMoney"),
         )
-        actions += pseudo.map { it.action }
-        val exhibitItems = document.select("input[name=item_no]").mapNotNull { input ->
-            val form = input.closest("form") ?: return@mapNotNull null
-            val actionId = page.forms.firstOrNull { parsed ->
-                parsed.submitFields.any { it.name == "PutAuction" || it.name == "ExhibitItemForm" } &&
-                    parsed.candidates.any { it.inputName == "item_no" && it.inputValue == input.attr("value") }
-            }?.actionId ?: return@mapNotNull null
-            val label = input.closest("tr")?.text() ?: input.parent()?.text().orEmpty()
-            val parsed = item(label)
-            AuctionListing(input.attr("value"), actionId, null, parsed.first, parsed.second, parsed.third, 0, 0, AuctionAction.EXHIBIT, ObservationKind.CURRENT)
-        }
-        return AuctionPage((listings + pseudo + exhibitItems).distinctBy { "${it.action}:${it.candidateId}" }, actions.distinct())
+        if (capabilities.exhibitEntryActionId != null) actions += AuctionAction.EXHIBIT
+        if (capabilities.claimItemActionId != null || capabilities.claimFundsActionId != null) actions += AuctionAction.CLAIM
+        return AuctionPage(listings.distinctBy { it.listingId }, actions.distinct(), capabilities)
     }
 
     fun parse(page: ParsedTownPage, query: String? = null): AuctionPage {
@@ -60,9 +55,39 @@ class AuctionPageParser {
                 val candidate = row.candidate ?: return@mapNotNull null
                 parseListing(candidate.id, row.label, action, form.actionId)
             }
-        }.distinctBy { "${it.action}:${it.candidateId}" }
+        }.distinctBy { "${it.action}:${it.rowKey}" }
             .filter { query.isNullOrBlank() || it.name.contains(query, ignoreCase = true) }
         return AuctionPage(listings, forms.map { it.first }.distinct())
+    }
+
+    fun parseExhibit(html: String, page: ParsedTownPage): AuctionExhibitPage {
+        val document = Jsoup.parse(html)
+        val form = page.forms.singleOrNull { parsed ->
+            parsed.submitFields.any { it.name == "PutAuction" } &&
+                parsed.candidates.any { it.inputName == "item_no" }
+        }
+        val items = form?.candidates?.filter { it.inputName == "item_no" }?.map { candidate ->
+            val parsed = item(candidate.label)
+            AuctionListing("item:${candidate.id}", candidate.id, form.actionId, null, parsed.first, parsed.second, parsed.third, 0, 0, AuctionAction.EXHIBIT, ObservationKind.CURRENT)
+        }.orEmpty()
+        val durations = document.select("select[name=ExhibitTime] option[value]")
+            .filter { it.attr("value").isNotBlank() && !it.hasAttr("disabled") }
+            .map { AuctionDuration(it.attr("value"), it.text().trim().ifBlank { it.attr("value") }) }
+        return AuctionExhibitPage(items, durations, form?.actionId)
+    }
+
+    fun requireExactForm(page: ParsedTownPage, actionId: String, submitName: String): ParsedTownForm =
+        page.forms.singleOrNull { form ->
+            form.actionId == actionId && form.submitFields.singleOrNull()?.name == submitName
+        } ?: throw app.spammy.hof.common.error.ApiException(
+            app.spammy.hof.common.error.ErrorCode.INVALID_REQUEST,
+            "옥션 양식이 변경되었습니다. 새로고침해 주세요.",
+        )
+
+    fun requireFormActionId(actionId: String) {
+        if (actionId.isBlank() || actionId.length > 128) throw app.spammy.hof.common.error.ApiException(
+            app.spammy.hof.common.error.ErrorCode.INVALID_REQUEST, "옥션 양식 식별자가 올바르지 않습니다.",
+        )
     }
 
     fun snapshots(page: ParsedTownPage): List<AuctionSnapshot> = parse(page).listings.map { row ->
@@ -74,11 +99,13 @@ class AuctionPageParser {
             AuctionSnapshot(row.listingId, row.name, row.type, row.quantity, row.totalPrice, ObservationKind.CURRENT)
         }
         val text = Jsoup.parse(html).body().text()
-        val sold = SOLD_LOG.findAll(text).mapNotNull { match ->
-            val no = match.groupValues[1]
-            val body = match.groupValues[2]
+        val sold = text.split(Regex("(?=No\\.\\s*\\d+)", RegexOption.IGNORE_CASE)).mapNotNull { body ->
+            if (!SOLD_INCLUDE.containsMatchIn(body) || SOLD_EXCLUDE.containsMatchIn(body)) return@mapNotNull null
+            val no = Regex("No\\.\\s*(\\d+)", RegexOption.IGNORE_CASE).find(body)?.groupValues?.get(1) ?: return@mapNotNull null
             val price = money(body) ?: return@mapNotNull null
-            val parsed = item(body.substringBefore("\$").ifBlank { body })
+            val soldItem = Regex("출품한\\s+(.+?)\\s*(?:을|를)\\s+.+?(?:[$￦]\\s*[\\d,]+|[\\d,]+\\s*Funds)", RegexOption.IGNORE_CASE)
+                .find(body)?.groupValues?.get(1)
+            val parsed = item(soldItem ?: body.substringBefore("\$").replace(Regex("^No\\.\\s*\\d+"), ""))
             parsed.first.takeIf { it.isNotBlank() }?.let {
                 AuctionSnapshot(no, it, parsed.second, parsed.third, price, ObservationKind.SOLD)
             }
@@ -118,6 +145,7 @@ class AuctionPageParser {
             .ifBlank { "Auction item" }
         val listingId = LISTING_ID.find(raw)?.groupValues?.get(1)
         return AuctionListing(
+            rowKey = "candidate:$candidateId",
             candidateId = candidateId,
             actionId = actionId,
             listingId = listingId,
@@ -136,7 +164,8 @@ class AuctionPageParser {
         private val QUANTITY = Regex("(?:x|×|수량\\s*[:：]?)\\s*([0-9][0-9,]*)", RegexOption.IGNORE_CASE)
         private val TYPE = Regex("\\((weapon|armor|cloak|shoes|item|accessory|jobitem|head|avatar|skillseal|char|useitem|addmaterial|housing[^)]*|other)\\)", RegexOption.IGNORE_CASE)
         private val LISTING_ID = Regex("(?:No\\.?|#|번호\\s*[:：]?)\\s*([A-Za-z0-9_-]{1,100})", RegexOption.IGNORE_CASE)
-        private val SOLD_LOG = Regex("No\\.\\s*(\\d+)\\s+(.+?)(?=No\\.\\s*\\d+|$)", setOf(RegexOption.IGNORE_CASE))
+        private val SOLD_INCLUDE = Regex("낙찰하였습니다|낙찰되었습니다|\\bsold\\b|\\bwon\\b", RegexOption.IGNORE_CASE)
+        private val SOLD_EXCLUDE = Regex("입찰하였습니다|출품되었습니다|취소되었습니다|입찰자가\\s*없어|Exhibit|Put Auction", RegexOption.IGNORE_CASE)
         fun hash(value: String): String = MessageDigest.getInstance("SHA-256")
             .digest(value.toByteArray()).joinToString("") { "%02x".format(it) }
     }
@@ -144,10 +173,6 @@ class AuctionPageParser {
     private fun actionId(page: ParsedTownPage, vararg names: String): String? = page.forms.firstOrNull { form ->
         form.submitFields.any { it.name in names } || form.hiddenFields.any { it.name in names }
     }?.actionId
-    private fun pseudo(actionId: String, name: String, action: AuctionAction) = AuctionListing(
-        candidateId = "action:${hash("$actionId|$name")}", actionId = actionId, listingId = null, name = name,
-        type = null, quantity = 1, totalPrice = 0, unitPrice = 0, action = action, kind = ObservationKind.CURRENT,
-    )
     private fun money(text: String): Long? = PRICE.find(text)?.groupValues?.get(1)?.replace(",", "")?.toLongOrNull()
     private fun item(text: String): Triple<String, String?, Int> {
         val qty = QUANTITY.find(text)?.groupValues?.get(1)?.replace(",", "")?.toIntOrNull()?.coerceAtLeast(1) ?: 1

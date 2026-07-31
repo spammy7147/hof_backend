@@ -135,7 +135,8 @@ class TownAuthenticatedExecutor(
         pageUrl: String,
         action: TownActionRequest,
         scalarValues: Map<String, String>,
-        allowedScalarFields: Set<String>,
+        requiredScalarFields: Set<String>,
+        requiredSubmitField: String,
         projector: (
             html: String,
             finalUrl: String,
@@ -143,22 +144,23 @@ class TownAuthenticatedExecutor(
             page: ParsedTownPage,
         ) -> T,
     ): T = withAccountActionFence(accountId) {
-        require(scalarValues.isNotEmpty() && scalarValues.keys.all { it in allowedScalarFields })
+        require(scalarValues.isNotEmpty() && scalarValues.keys == requiredScalarFields)
         require(scalarValues.size <= 8 && scalarValues.values.all { it.length <= 500 })
         val context = authenticatedContext(accountId)
         val current = executeAuthenticated(context.account, requestFactory.townPage(pageUrl, HofRequestOrigin.INTERACTIVE), context.cookies)
         val currentPage = formParser.parse(current.body, current.finalUrl)
         val guarded = actionGuard.guard(currentPage, action)
+        if (guarded.form.submitFields.singleOrNull()?.name != requiredSubmitField) {
+            throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 작업 양식이 변경되었습니다.")
+        }
         val document = Jsoup.parse(current.body, current.finalUrl)
         val matchingForms = document.select("form").filter { domForm ->
             val names = domForm.select("input,button,select,textarea")
                 .filter { it.closest("form") === domForm && !it.hasAttr("disabled") }
                 .map { it.attr("name") }.toSet()
-            scalarValues.keys.all { it in names } && guarded.form.submitFields.all { submit ->
-                domForm.select("input[type=submit],input[type=image],button").any {
-                    it.attr("name") == submit.name && (it.attr("value").ifBlank { it.text() }) == submit.value
-                }
-            }
+            val semanticForms = formParser.parse(domForm.outerHtml(), current.finalUrl).forms
+            scalarValues.keys.all { it in names } &&
+                semanticForms.any { it.actionId == guarded.form.actionId && it.method == guarded.form.method && it.actionUrl == guarded.form.actionUrl }
         }
         if (matchingForms.size != 1) throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 입력 양식을 안전하게 확인하지 못했습니다.")
         val controlsByName = matchingForms.single().select("input,select,textarea")
