@@ -12,6 +12,7 @@ import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
+import app.spammy.hof.external.model.HofFormField
 import app.spammy.hof.external.parser.LoginStateParser
 import app.spammy.hof.town.common.model.TownActionRequest
 import app.spammy.hof.town.common.model.TownActionSelection
@@ -114,6 +115,33 @@ class TownAuthenticatedExecutorTest {
         }
 
         assertEquals(Triple(true, HOF_URL, 1), projected)
+    }
+
+    @Test
+    fun `observed GET keeps exact query order and fresh response cookies inside account fence`() {
+        stubAccount()
+        val current = "<a href='?menu=quest&amp;action=get&amp;no=R%2B10'>수락</a>"
+        val seenRequests = mutableListOf<HofRequest>()
+        val seenCookies = mutableListOf<Map<String, String>>()
+        Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies()))
+            .thenAnswer { invocation ->
+                seenRequests += invocation.getArgument<HofRequest>(1)
+                seenCookies += invocation.getArgument<Map<String, String>>(2)
+                if (seenRequests.size == 1) HofHttpResponse(200, QUEST_URL, current, mapOf("rotated" to "fresh"))
+                else HofHttpResponse(200, QUEST_URL, "<div id='result'>수락했습니다.</div>", emptyMap())
+            }
+
+        val message = executor.executeObservedGetProjected(
+            7L,
+            QUEST_URL,
+            setOf("action", "no"),
+            resolveQuery = { _, _, _ -> listOf(HofFormField("action", "get"), HofFormField("no", "R+10")) },
+        ) { _, _, result, _ -> result.messages.single() }
+
+        assertEquals("수락했습니다.", message)
+        assertEquals(2, seenRequests.size)
+        assertEquals(listOf(HofFormField("action", "get"), HofFormField("no", "R+10")), seenRequests[1].formEntries)
+        assertEquals("fresh", seenCookies[1]["rotated"])
     }
 
     @Test
@@ -364,5 +392,6 @@ class TownAuthenticatedExecutorTest {
     private companion object {
         const val HOF_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=buy"
         const val AUCTION_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=auction"
+        const val QUEST_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=quest"
     }
 }

@@ -63,9 +63,11 @@ class QuestGatewayService(
         if (matches.size != 1) invalid("현재 HOF 퀘스트 링크를 안전하게 확인하지 못했습니다.")
     }
 
-    private fun query(uri: URI): Map<String, List<String>> = uri.rawQuery.orEmpty().split('&').filter(String::isNotBlank)
-        .map { part -> decode(part.substringBefore('=')) to decode(part.substringAfter('=', "")) }
-        .groupBy({ it.first }, { it.second })
+    private fun query(uri: URI): Map<String, List<String>>? = runCatching {
+        uri.rawQuery.orEmpty().split('&').filter(String::isNotBlank)
+            .map { part -> decode(part.substringBefore('=')) to decode(part.substringAfter('=', "")) }
+            .groupBy({ it.first }, { it.second })
+    }.getOrNull()
 
     private fun decode(value: String) = URLDecoder.decode(value, StandardCharsets.UTF_8)
     private fun invalid(message: String): Nothing = throw ApiException(ErrorCode.INVALID_REQUEST, message)

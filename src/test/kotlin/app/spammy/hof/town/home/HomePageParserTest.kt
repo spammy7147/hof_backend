@@ -23,6 +23,7 @@ class HomePageParserTest {
             <tr><td>[H003] 창고 정리</td><td>조건 0/1</td><td>-</td><td>-</td></tr>
             <tr><td>[BAD] 외부</td><td>조건 1/1</td><td>-</td><td><a href="https://evil.test/?action=complete&amp;no=9">완료</a></td></tr>
             <tr><td>[BAD2] 다른 메뉴</td><td>조건 1/1</td><td>-</td><td><a href="?menu=quest&amp;action=complete&amp;no=10">완료</a></td></tr>
+            <tr><td>[BAD3] 깨진 인코딩</td><td>조건 1/1</td><td>-</td><td><a href="?menu=housing&amp;action=complete&amp;no=%ZZ">완료</a></td></tr>
             </table></div>
         """.trimIndent()
         val url = "http://sic.zerosic.com/ZeroHOF/index.php?menu=housing"
@@ -34,17 +35,40 @@ class HomePageParserTest {
         assertNotNull(snapshot.quests.first { it.name.contains("H001") }.actionId)
         assertEquals(null, snapshot.quests.first { it.name.contains("BAD") }.actionId)
         assertEquals(null, snapshot.quests.first { it.name.contains("BAD2") }.actionId)
+        assertEquals(null, snapshot.quests.first { it.name.contains("BAD3") }.actionId)
     }
 
     @Test
     fun `rest exposes only observed restore form`() {
         val html = """
+            <header>Time : 371/6,000</header>
+            <p>기본적으로 3,000의 Time이 회복됩니다.</p>
+            <ul class="facilities"><li data-facility>푹신한 침대 · Time 200 추가</li></ul>
             <form method="post" action="?menu=rest"><input type="hidden" name="nonce" value="n1"><input type="submit" name="Rest" value="휴식실에서 회복한다"></form>
             <form method="post" action="?menu=rest"><input type="submit" name="Delete" value="삭제"></form>
+            <form method="post" action="?menu=rest"><input name="target"><input type="submit" name="Other" value="휴식 복구"></form>
+            <form method="post" action="?menu=other"><input type="submit" name="Rest" value="휴식한다"></form>
         """.trimIndent()
         val url = "http://sic.zerosic.com/ZeroHOF/index.php?menu=rest"
         val snapshot = parser.parse(HomeMode.REST, html, url, forms.parse(html, url))
         assertEquals(1, snapshot.actions.size)
         assertTrue(snapshot.actions.single().label.contains("회복"))
+        assertEquals(371, snapshot.restStatus?.currentTime)
+        assertEquals(6000, snapshot.restStatus?.maxTime)
+        assertEquals(3000, snapshot.restStatus?.baseRecovery)
+        assertEquals(false, snapshot.restStatus?.usedToday)
+        assertEquals(listOf("푹신한 침대 · Time 200 추가"), snapshot.restStatus?.facilities)
+    }
+
+    @Test
+    fun `rest marks explicit daily use without inventing recovery numbers`() {
+        val html = "<p>오늘은 이미 휴식을 사용했습니다.</p>"
+        val url = "http://sic.zerosic.com/ZeroHOF/index.php?menu=rest"
+
+        val snapshot = parser.parse(HomeMode.REST, html, url, forms.parse(html, url))
+
+        assertEquals(true, snapshot.restStatus?.usedToday)
+        assertEquals(null, snapshot.restStatus?.baseRecovery)
+        assertEquals(null, snapshot.restStatus?.facilityRecovery)
     }
 }
