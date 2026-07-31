@@ -230,10 +230,7 @@ class AuctionService(
     }
     private fun invalid(message: String): Nothing = throw ApiException(ErrorCode.INVALID_REQUEST, message)
     private fun anonymousResult(result: app.spammy.hof.town.common.model.ParsedTownResult): TownActionResultResponse {
-        fun scrub(value: String): String = value
-            .replace(Regex("(?:판매자|입찰자|seller|bidder)\\s*[:：]?\\s*[^\\s/|]+", RegexOption.IGNORE_CASE), "참여자: 비공개")
-            .replace(Regex("[A-Za-z0-9가-힣_-]{2,}\\s*님"), "사용자")
-            .take(500)
+        fun scrub(value: String): String = redactAuctionParticipantLine(value)
         return TownActionResultResponse.from(result.copy(
             messages = result.messages.map(::scrub),
             items = result.items.map { it.copy(label = scrub(it.label)) },
@@ -245,3 +242,13 @@ class AuctionService(
         val EXHIBIT_SCALARS = setOf("Amount", "ExhibitTime", "StartPrice", "Comment")
     }
 }
+
+private val AUCTION_PARTICIPANT_MARKER = Regex("판매자|입찰자|\\bseller\\b|\\bbidder\\b", RegexOption.IGNORE_CASE)
+
+/** 참여자 표기가 있는 한 결과 줄만 폐기하고 다른 독립 결과 줄은 그대로 보존한다. */
+internal fun redactAuctionParticipantLine(value: String): String =
+    if (AUCTION_PARTICIPANT_MARKER.containsMatchIn(value)) {
+        "옥션 결과(참여자 정보 비공개)"
+    } else {
+        value.replace(Regex("[A-Za-z0-9가-힣_-]{2,}\\s*님"), "사용자").take(500)
+    }

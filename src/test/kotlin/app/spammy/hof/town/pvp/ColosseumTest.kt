@@ -28,7 +28,7 @@ class ColosseumTest {
     }
     @Test fun `challenge 결과를 현재 응답에서 구조화한다`() {
         val html = fixture("result.html"); val result = assertNotNull(parser.parseBattle(html, BASE, forms.parse(html, BASE)).battleResult)
-        assertEquals(12, result.turns); assertEquals("공민이", result.winner); assertEquals("0/27306", result.playerHp); assertEquals(1936, result.totalDamage); assertNotNull(result.reward); assertEquals(1, result.detail.first().turn)
+        assertEquals(12, result.turns); assertEquals("테스트전사A", result.winner); assertEquals("0/27306", result.playerHp); assertEquals(1936, result.totalDamage); assertNotNull(result.reward); assertEquals(1, result.detail.first().turn)
     }
     @Test fun `교환소 radio 없는 항목은 선택 불가다`() {
         val html = fixture("shop.html"); val shop = parser.parseShop(html, BASE, forms.parse(html, BASE))

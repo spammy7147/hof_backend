@@ -43,10 +43,17 @@ class HofResultParser {
         }
     }
 
-    private fun cleanText(value: String): String = value
+    private fun cleanText(value: String): String {
+        val normalized = value
         .replace(Regex("\\s+"), " ")
         .trim()
-        .take(MAX_MESSAGE_LENGTH)
+        val safe = when {
+            SENSITIVE_TRANSPORT_MARKER.containsMatchIn(normalized) -> "민감 정보 비공개"
+            AUCTION_PARTICIPANT_MARKER.containsMatchIn(normalized) -> "옥션 결과(참여자 정보 비공개)"
+            else -> normalized
+        }
+        return safe.take(MAX_MESSAGE_LENGTH)
+    }
 
     private companion object {
         const val RESULT_SELECTORS = "#result, [data-town-result], .result, .message, .notice, .success, .error, .warning"
@@ -54,6 +61,11 @@ class HofResultParser {
         val HEADING_TAGS = setOf("h1", "h2", "h3", "h4", "legend")
         val RESULT_HEADING = Regex("^(결과|Result|처리 결과)$", RegexOption.IGNORE_CASE)
         val EXCLUDED_TEXT = Regex("Copy\\s*Right|UpDate\\s+Manual|GameData\\s+Top", RegexOption.IGNORE_CASE)
+        val SENSITIVE_TRANSPORT_MARKER = Regex(
+            "PHPSESSID|Set-Cookie|Authorization|\\bBearer\\s+|password|passwd|비밀번호",
+            RegexOption.IGNORE_CASE,
+        )
+        val AUCTION_PARTICIPANT_MARKER = Regex("판매자|입찰자|\\bseller\\b|\\bbidder\\b", RegexOption.IGNORE_CASE)
         const val MAX_MESSAGE_LENGTH = 1_000
         const val MAX_MESSAGES = 20
         const val MAX_ITEMS = 100

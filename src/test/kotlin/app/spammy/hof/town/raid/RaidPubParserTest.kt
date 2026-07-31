@@ -95,7 +95,7 @@ class RaidPubParserTest {
     }
 
     @Test fun `콜론형 header에서도 현재 사용자 이름을 찾아 참가 상태를 판별한다`() {
-        val html = fixture().replace("》 공민이 Funds", "공민이 Funds:")
+        val html = fixture().replace("《테스트 길드》현재사용자 Funds :", "현재사용자 Funds:")
         val page = parser.parse(html, URL, forms.parse(html, URL))
         assertTrue(page.raids.first().joined)
     }
@@ -172,8 +172,8 @@ class RaidPubParserTest {
     private fun fixture() = requireNotNull(javaClass.getResource("/fixtures/town/raid/raidpub.html")).readText()
     private fun registerableFixture() = fixture()
         .replace("현재 상태는 신청 대기 (신청 가능까지 6분 58초)", "현재 상태는 신청 가능")
-        .replace("[《얼어붙은 손길》공민이]", "[다른 신청자]")
-    private fun startableFixture() = fixture().replace("- [다른 사람]", "- [《얼어붙은 손길》공민이]")
+        .replace("[《테스트 길드》현재사용자]", "[다른 신청자]")
+    private fun startableFixture() = fixture().replace("- [다른 사람]", "- [《테스트 길드》현재사용자]")
     private fun service(vararg responses: String): Context {
         val accounts = Mockito.mock(AccountQueryRepository::class.java)
         val cookies = Mockito.mock(CookieQueryRepository::class.java)
