@@ -338,6 +338,67 @@ class TownAuthenticatedExecutor(
         projector(actionResponse.body, actionResponse.finalUrl, result, page)
     }
 
+    /**
+     * 인재 모집처럼 이름 input의 서버 필드명이 페이지마다 바뀔 수 있는 단일 문자열 form 경계다.
+     * 최신 GET에서 모집 form, 의미가 관측된 name input 하나와 opaque 선택지를 함께 다시 결정한다.
+     */
+    fun <T> executeRecruitmentProjected(
+        accountId: Long,
+        pageUrl: String,
+        resolve: (String, String, ParsedTownPage) -> Triple<TownActionRequest, HofFormField, Int>,
+        projector: (String, String, app.spammy.hof.town.common.model.ParsedTownResult, ParsedTownPage) -> T,
+    ): T = withAccountActionFence(accountId) {
+        val context = authenticatedContext(accountId)
+        val current = executeAuthenticated(
+            context.account,
+            requestFactory.townPage(pageUrl, HofRequestOrigin.INTERACTIVE),
+            context.cookies,
+        )
+        val currentPage = formParser.parse(current.body, current.finalUrl)
+        val (action, nameField, maximumLength) = resolve(current.body, current.finalUrl, currentPage)
+        if (nameField.name.isBlank() || nameField.name.length > 80 || nameField.value.length !in 1..maximumLength || maximumLength !in 1..16) {
+            throw ApiException(ErrorCode.INVALID_REQUEST, "캐릭터 이름은 1~16자로 입력해 주세요.")
+        }
+        val guarded = actionGuard.guard(currentPage, action)
+        val submit = guarded.form.submitFields.singleOrNull()
+        if (submit == null || !submit.name.equals("Recruit", true) ||
+            !Regex("(?:Recruit|모집|고용)", RegexOption.IGNORE_CASE).matches(submit.value.trim())
+        ) throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 모집 양식이 변경되었습니다.")
+        val document = Jsoup.parse(current.body, current.finalUrl)
+        val matchingForms = document.select("form").filter { domForm ->
+            val semantic = formParser.parse(domForm.outerHtml(), current.finalUrl).forms
+            semantic.any { it.actionId == guarded.form.actionId && it.method == guarded.form.method && it.actionUrl == guarded.form.actionUrl }
+        }
+        if (matchingForms.size != 1) throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 모집 양식을 안전하게 확인하지 못했습니다.")
+        val inputs = matchingForms.single().select("input").filter { input ->
+            !input.hasAttr("disabled") && input.attr("name") == nameField.name &&
+                input.attr("type").lowercase() in setOf("", "text") &&
+                input.attr("maxlength").toIntOrNull() == maximumLength && maximumLength <= 16 &&
+                !input.attr("style").contains("display:none", true)
+        }
+        if (inputs.size != 1) throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 이름 입력란이 변경되었습니다.")
+        val input = inputs.single()
+        val meaning = listOf(
+            input.attr("name"), input.id(), input.attr("placeholder"), input.attr("title"),
+            input.closest("label")?.text().orEmpty(), input.parent()?.text().orEmpty(),
+        ).joinToString(" ")
+        if (!Regex("name|이름|성명", RegexOption.IGNORE_CASE).containsMatchIn(meaning)) {
+            throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 이름 입력란을 확인하지 못했습니다.")
+        }
+        val entries = guarded.formEntries.toMutableList()
+        val submitStart = entries.indexOfFirst { field -> guarded.form.submitFields.any { it.name == field.name && it.value == field.value } }
+            .let { if (it < 0) entries.size else it }
+        entries.add(submitStart, nameField)
+        val response = executeAuthenticated(
+            context.account,
+            requestFactory.townForm(guarded.form.method, guarded.form.actionUrl, entries, HofRequestOrigin.INTERACTIVE),
+            context.cookies + current.setCookies,
+        )
+        val result = resultParser.parse(response.body)
+        val page = formParser.parse(response.body, response.finalUrl)
+        projector(response.body, response.finalUrl, result, page)
+    }
+
     /** 최신 GET 안에서 actionId까지 결정해 nonce/hidden field 변화와의 TOCTOU를 막는 variant다. */
     fun <T> executeProjectedWithScalars(
         accountId: Long,

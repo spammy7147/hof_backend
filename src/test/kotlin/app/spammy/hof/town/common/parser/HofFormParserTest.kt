@@ -111,6 +111,25 @@ class HofFormParserTest {
         assertFalse(guarded.formEntries.any { it.name == "search" })
     }
 
+    @Test
+    fun `multiple radio cards in one table row remain distinct candidates`() {
+        val form = parser.parse(
+            """
+                <form action='?menu=recruit' method='post'>
+                  <table><tr>
+                    <td><label><input type='radio' name='Job' value='opaque-a'>Warrior ${'$'}2,000</label></td>
+                    <td><label><input type='radio' name='Job' value='opaque-b'>Monk ${'$'}10,000</label></td>
+                  </tr></table>
+                  <input type='submit' name='Recruit' value='Recruit'>
+                </form>
+            """.trimIndent(),
+            "http://sic.zerosic.com/ZeroHOF/index.php?menu=town",
+        ).forms.single()
+
+        assertEquals(listOf("Warrior ${'$'}2,000", "Monk ${'$'}10,000"), form.candidates.map { it.label })
+        assertEquals(listOf("opaque-a", "opaque-b"), form.candidates.map { it.inputValue })
+    }
+
     private fun fixture(path: String): String = requireNotNull(javaClass.classLoader.getResource(path))
         .readText(StandardCharsets.UTF_8)
 }

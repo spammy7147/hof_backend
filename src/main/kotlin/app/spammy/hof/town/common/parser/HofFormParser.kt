@@ -88,14 +88,19 @@ class HofFormParser {
         }
         val valueCounts = selectable.groupingBy { it.attr("value").trim().ifBlank { "on" } }.eachCount()
         val rowElements = form.select("tr").filter { it.closest("form") === form }
+        val rowControls = rowElements.associateWith { row ->
+            selectable.filter { it.closest("tr") === row }.singleOrNull()
+        }
         val rows = rowElements.map { row ->
-            val control = selectable.firstOrNull { it.closest("tr") === row }
+            val control = rowControls[row]
             row.toParsedRow(control, controls, control?.candidateId(valueCounts))
         }.toMutableList()
 
-        selectable.filter { candidate -> rowElements.none { candidate.closest("tr") === it } }
+        // 한 tr 안에 카드형 td가 여러 개인 form은 tr 전체를 한 후보의 label로 오인하지 않는다.
+        // 각 radio를 자신이 속한 td/label의 별도 row로 만든다.
+        selectable.filter { candidate -> candidate !in rowControls.values }
             .forEach { control ->
-                val owner = sequenceOf("li", "label", "div", "p")
+                val owner = sequenceOf("td", "li", "label", "div", "p")
                     .mapNotNull(control::closest)
                     .firstOrNull { it.closest("form") === form }
                 rows += (owner ?: control.parent() ?: control).toParsedRow(
