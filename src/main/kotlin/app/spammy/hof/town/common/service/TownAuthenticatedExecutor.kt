@@ -186,6 +186,62 @@ class TownAuthenticatedExecutor(
         projector(actionResponse.body, actionResponse.finalUrl, result, page)
     }
 
+    /** 최신 GET 안에서 actionId까지 결정해 nonce/hidden field 변화와의 TOCTOU를 막는 variant다. */
+    fun <T> executeProjectedWithScalars(
+        accountId: Long,
+        pageUrl: String,
+        resolveAction: (html: String, finalUrl: String, page: ParsedTownPage) -> TownActionRequest,
+        scalarValues: Map<String, String>,
+        requiredScalarFields: Set<String>,
+        requiredSubmitField: String,
+        projector: (
+            html: String,
+            finalUrl: String,
+            result: app.spammy.hof.town.common.model.ParsedTownResult,
+            page: ParsedTownPage,
+        ) -> T,
+    ): T = withAccountActionFence(accountId) {
+        require(scalarValues.isNotEmpty() && scalarValues.keys == requiredScalarFields)
+        require(scalarValues.size <= 8 && scalarValues.values.all { it.length <= 500 })
+        val context = authenticatedContext(accountId)
+        val current = executeAuthenticated(context.account, requestFactory.townPage(pageUrl, HofRequestOrigin.INTERACTIVE), context.cookies)
+        val currentPage = formParser.parse(current.body, current.finalUrl)
+        val guarded = actionGuard.guard(currentPage, resolveAction(current.body, current.finalUrl, currentPage))
+        if (guarded.form.submitFields.singleOrNull()?.name != requiredSubmitField) {
+            throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 작업 양식이 변경되었습니다.")
+        }
+        val document = Jsoup.parse(current.body, current.finalUrl)
+        val matchingForms = document.select("form").filter { domForm ->
+            val names = domForm.select("input,button,select,textarea")
+                .filter { it.closest("form") === domForm && !it.hasAttr("disabled") }
+                .map { it.attr("name") }.toSet()
+            val semanticForms = formParser.parse(domForm.outerHtml(), current.finalUrl).forms
+            scalarValues.keys.all { it in names } && semanticForms.any {
+                it.actionId == guarded.form.actionId && it.method == guarded.form.method && it.actionUrl == guarded.form.actionUrl
+            }
+        }
+        if (matchingForms.size != 1) throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 입력 양식을 안전하게 확인하지 못했습니다.")
+        val controlsByName = matchingForms.single().select("input,select,textarea")
+            .filter { !it.hasAttr("disabled") && it.attr("name") in scalarValues.keys }
+            .groupBy { it.attr("name") }
+        if (scalarValues.keys.any { controlsByName[it].orEmpty().size != 1 }) {
+            throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 입력 필드가 변경되었습니다.")
+        }
+        val replacements = scalarValues.toMutableMap()
+        val entries = guarded.formEntries.map { field -> replacements.remove(field.name)?.let { field.copy(value = it) } ?: field }.toMutableList()
+        val submitStart = entries.indexOfFirst { field -> guarded.form.submitFields.any { it.name == field.name && it.value == field.value } }
+            .let { if (it < 0) entries.size else it }
+        replacements.forEach { (name, value) -> entries.add(submitStart, app.spammy.hof.external.model.HofFormField(name, value)) }
+        val actionResponse = executeAuthenticated(
+            context.account,
+            requestFactory.townForm(guarded.form.method, guarded.form.actionUrl, entries, HofRequestOrigin.INTERACTIVE),
+            context.cookies + current.setCookies,
+        )
+        val result = resultParser.parse(actionResponse.body)
+        val page = formParser.parse(actionResponse.body, actionResponse.finalUrl)
+        projector(actionResponse.body, actionResponse.finalUrl, result, page)
+    }
+
     /**
      * 메인 화면의 진입 form과 그 응답에만 존재하는 최종 form을 하나의 계정 fence 안에서 연속 검증한다.
      * 중간 응답을 클라이언트 토큰으로 신뢰하지 않고 매 실행마다 HOF에서 다시 획득한다.
