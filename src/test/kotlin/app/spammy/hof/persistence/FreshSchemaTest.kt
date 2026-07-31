@@ -105,6 +105,12 @@ class FreshSchemaTest {
             assertTrue(connection.columnExists("quest_automation_selections", "display_code"))
             assertTrue(connection.columnExists("quest_automation_selections", "quest_name"))
             assertTrue(connection.tableExists("town_feature_locations"))
+            connection.createStatement().use { statement ->
+                statement.executeQuery("select count(*) from town_feature_locations").use { rows ->
+                    assertTrue(rows.next())
+                    assertEquals(33L, rows.getLong(1))
+                }
+            }
         }
     }
 

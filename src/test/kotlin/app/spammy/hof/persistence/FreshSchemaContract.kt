@@ -485,7 +485,7 @@ internal object FreshSchemaContract {
         ),
         table(
             "town_feature_locations",
-            requiredVarchar("feature_id", 50), requiredVarchar("href", 500), requiredInstant("observed_at"),
+            requiredVarchar("feature_id", 50), optionalVarchar("href", 500), optionalInstant("observed_at"),
             primaryKey = listOf("feature_id"),
         ),
     )
@@ -850,6 +850,10 @@ internal object FreshSchemaContract {
         check(
             "town_feature_locations", "ck_town_feature_locations_public_menu",
             "href regexp '^[?]menu=[A-Za-z0-9_-]{1,80}$'",
+        ),
+        check(
+            "town_feature_locations", "ck_town_feature_locations_observation_pair",
+            "(href is null and observed_at is null) or (href is not null and observed_at is not null)",
         ),
         check("character_status_lines", "ck_character_status_lines_order", "line_order >= 0"),
         check("character_action_patterns", "ck_character_action_patterns_row", "row_index >= 0"),

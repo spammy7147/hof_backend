@@ -18,9 +18,9 @@ class TownFeatureLocationEntity(
     @Column(name = "feature_id", nullable = false, length = 50)
     val featureId: TownFeatureId,
 
-    @Column(name = "href", nullable = false, length = 500)
-    var href: String,
+    @Column(name = "href", length = 500)
+    var href: String?,
 
-    @Column(name = "observed_at", nullable = false)
-    var observedAt: Instant,
+    @Column(name = "observed_at")
+    var observedAt: Instant?,
 )
