@@ -86,6 +86,11 @@ class AuctionControllerTest {
             .filter { it.kind.name == "SOLD" }
 
         assertEquals(listOf("1", "6"), snapshots.mapNotNull { it.listingId })
+        val english = snapshots.single { it.listingId == "6" }
+        assertEquals("Herb", english.name)
+        assertEquals("item", english.type)
+        assertEquals(3, english.quantity)
+        assertEquals(9_000, english.totalPrice)
     }
 
     @Test

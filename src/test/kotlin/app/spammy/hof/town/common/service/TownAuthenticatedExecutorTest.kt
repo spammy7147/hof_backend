@@ -220,6 +220,66 @@ class TownAuthenticatedExecutorTest {
         Mockito.verify(gateway, Mockito.times(1)).execute(Mockito.eq(7L), anyRequest(), anyCookies())
     }
 
+    @Test
+    fun `two step scalar action guards final form from entry response inside one fence`() {
+        stubAccount()
+        val main = "<form action='index.php?menu=auction' method='post'><input type='submit' name='ExhibitItemForm' value='Put Auction'></form>"
+        val exhibit = """
+          <form action="index.php?menu=auction" method="post">
+            <input type="radio" name="item_no" value="77"><input name="Amount"><select name="ExhibitTime"><option value="24">24</option></select>
+            <input name="StartPrice"><input name="Comment"><input type="submit" name="PutAuction" value="1">
+          </form>
+        """.trimIndent()
+        val entryId = HofFormParser().parse(main, AUCTION_URL).forms.single().actionId
+        val exhibitPage = HofFormParser().parse(exhibit, AUCTION_URL)
+        val finalForm = exhibitPage.forms.first { it.submitFields.any { field -> field.name == "PutAuction" } }
+        val candidate = finalForm.candidates.first { it.inputName == "item_no" }
+        Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies()))
+            .thenReturn(response(main), response(exhibit), response("<div id='result'>출품했습니다.</div>"))
+
+        executor.executeTwoStepProjectedWithScalars(
+            7L, AUCTION_URL,
+            entryAction = { TownActionRequest(entryId) },
+            finalAction = { TownActionRequest(finalForm.actionId, listOf(TownActionSelection(candidate.id))) },
+            scalarValues = mapOf("Amount" to "2", "ExhibitTime" to "24", "StartPrice" to "9000", "Comment" to "memo"),
+            requiredScalarFields = setOf("Amount", "ExhibitTime", "StartPrice", "Comment"),
+            requiredFinalSubmitField = "PutAuction",
+        ) { _, _, result, _ -> result }
+
+        val requests = ArgumentCaptor.forClass(HofRequest::class.java)
+        Mockito.verify(gateway, Mockito.times(3)).execute(Mockito.eq(7L), capture(requests, HofRequest(HofHttpMethod.GET, AUCTION_URL)), anyCookies())
+        assertEquals("ExhibitItemForm", requests.allValues[1].formFields.keys.single())
+        assertEquals(mapOf("item_no" to "77", "Amount" to "2", "ExhibitTime" to "24", "StartPrice" to "9000", "Comment" to "memo", "PutAuction" to "1"), requests.allValues[2].formFields)
+    }
+
+    @Test
+    fun `two step scalar action rejects a value outside server select options`() {
+        stubAccount()
+        val main = "<form action='index.php?menu=auction' method='post'><input type='submit' name='ExhibitItemForm' value='Put Auction'></form>"
+        val exhibit = """
+          <form action="index.php?menu=auction" method="post">
+            <input type="radio" name="item_no" value="77"><input name="Amount"><select name="ExhibitTime"><option value="24">24</option></select>
+            <input name="StartPrice"><input name="Comment"><input type="submit" name="PutAuction" value="1">
+          </form>
+        """.trimIndent()
+        val entryId = HofFormParser().parse(main, AUCTION_URL).forms.single().actionId
+        val finalForm = HofFormParser().parse(exhibit, AUCTION_URL).forms.single()
+        val candidate = finalForm.candidates.first { it.inputName == "item_no" }
+        Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies())).thenReturn(response(main), response(exhibit))
+
+        assertFailsWith<ApiException> {
+            executor.executeTwoStepProjectedWithScalars(
+                7L, AUCTION_URL,
+                entryAction = { TownActionRequest(entryId) },
+                finalAction = { TownActionRequest(finalForm.actionId, listOf(TownActionSelection(candidate.id))) },
+                scalarValues = mapOf("Amount" to "2", "ExhibitTime" to "forged", "StartPrice" to "9000", "Comment" to "memo"),
+                requiredScalarFields = setOf("Amount", "ExhibitTime", "StartPrice", "Comment"),
+                requiredFinalSubmitField = "PutAuction",
+            ) { _, _, result, _ -> result }
+        }
+        Mockito.verify(gateway, Mockito.times(2)).execute(Mockito.eq(7L), anyRequest(), anyCookies())
+    }
+
     private fun stubAccount() {
         Mockito.`when`(accounts.findById(7L)).thenReturn(
             HofAccountEntity(7L, "town-user", "encrypted", Instant.EPOCH),

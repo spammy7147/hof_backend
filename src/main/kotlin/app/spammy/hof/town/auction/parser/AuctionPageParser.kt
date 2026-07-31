@@ -105,7 +105,11 @@ class AuctionPageParser {
             val price = money(body) ?: return@mapNotNull null
             val soldItem = Regex("출품한\\s+(.+?)\\s*(?:을|를)\\s+.+?(?:[$￦]\\s*[\\d,]+|[\\d,]+\\s*Funds)", RegexOption.IGNORE_CASE)
                 .find(body)?.groupValues?.get(1)
-            val parsed = item(soldItem ?: body.substringBefore("\$").replace(Regex("^No\\.\\s*\\d+"), ""))
+            val englishItem = Regex("No\\.\\s*\\d+\\s+(.+?)\\s+(?:sold|won)(?:\\s+for)?\\s+[$￦]", RegexOption.IGNORE_CASE)
+                .find(body)?.groupValues?.get(1)
+            val source = (soldItem ?: englishItem ?: body.substringBefore("\$").replace(Regex("^No\\.\\s*\\d+"), ""))
+                .replace(Regex("^(?:seller|bidder|판매자|입찰자)\\s*[:：][^|/]+[|/]\\s*", RegexOption.IGNORE_CASE), "")
+            val parsed = item(source)
             parsed.first.takeIf { it.isNotBlank() }?.let {
                 AuctionSnapshot(no, it, parsed.second, parsed.third, price, ObservationKind.SOLD)
             }

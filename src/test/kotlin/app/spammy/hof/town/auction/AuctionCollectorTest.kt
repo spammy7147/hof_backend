@@ -74,6 +74,19 @@ class AuctionCollectorTest {
     }
 
     @Test
+    fun `sold event identity is stable across collector hours`() {
+        val repository = Mockito.mock(AuctionObservationRepository::class.java)
+        val query = Mockito.mock(AuctionQueryRepository::class.java)
+        val service = AuctionObservationService(repository, query, CLOCK)
+        val sold = SNAPSHOT.copy(listingId = "77", kind = ObservationKind.SOLD)
+        service.observe(listOf(sold), NOW)
+        service.observe(listOf(sold), NOW.plusSeconds(7200))
+        val captor = ArgumentCaptor.forClass(AuctionObservationEntity::class.java)
+        Mockito.verify(repository, Mockito.times(2)).save(captor.capture() ?: AuctionObservationEntity())
+        assertEquals(captor.allValues[0].observationKey, captor.allValues[1].observationKey)
+    }
+
+    @Test
     fun `captcha or authentication failure releases lease and retains previous observations`() {
         val service = Mockito.mock(AuctionService::class.java)
         val observations = Mockito.mock(AuctionObservationService::class.java)

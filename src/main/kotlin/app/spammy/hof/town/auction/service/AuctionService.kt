@@ -7,6 +7,7 @@ import app.spammy.hof.town.auction.entity.AuctionObservationEntity
 import app.spammy.hof.town.auction.parser.AuctionPageParser
 import app.spammy.hof.town.auction.repository.AuctionObservationRepository
 import app.spammy.hof.town.auction.repository.AuctionQueryRepository
+import app.spammy.hof.town.auction.repository.AuctionAtomicUpsertRepository
 import app.spammy.hof.town.common.model.TownActionRequest
 import app.spammy.hof.town.common.model.TownActionSelection
 import app.spammy.hof.town.common.model.TownFeatureId
@@ -54,6 +55,7 @@ data class AuctionExhibitPage(
     val items: List<AuctionListing>,
     val durations: List<AuctionDuration>,
     val actionId: String?,
+    val entryActionId: String? = null,
     val result: TownActionResultResponse? = null,
 )
 data class AuctionDuration(val value: String, val label: String)
@@ -63,7 +65,7 @@ data class AuctionSnapshot(
 )
 data class AuctionBidCommand(val actionId: String, val listingId: String, val bidPrice: Long)
 data class AuctionExhibitCommand(
-    val actionId: String, val candidateId: String, val amount: Int, val exhibitTime: String,
+    val entryActionId: String, val actionId: String, val candidateId: String, val amount: Int, val exhibitTime: String,
     val startPrice: Long, val comment: String,
 )
 data class MarketPoint(val totalPrice: Long, val unitPrice: Long, val quantity: Int, val observedAt: Instant, val kind: ObservationKind)
@@ -79,6 +81,7 @@ class AuctionObservationService(
     private val repository: AuctionObservationRepository,
     private val queryRepository: AuctionQueryRepository,
     private val clock: Clock = Clock.systemUTC(),
+    private val atomicUpsert: AuctionAtomicUpsertRepository? = null,
 ) {
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun observe(snapshots: List<AuctionSnapshot>, observedAt: Instant = clock.instant()) {
@@ -86,8 +89,12 @@ class AuctionObservationService(
             if (snapshot.quantity <= 0 || snapshot.totalPrice < 0) return@forEach
             val itemKey = hash("${snapshot.name.lowercase()}|${snapshot.type.orEmpty().lowercase()}")
             val bucket = observedAt.epochSecond / 3600
-            val key = hash(snapshot.listingId?.let { "id:$it|$bucket|${snapshot.kind}" }
-                ?: "$itemKey|${snapshot.quantity}|${snapshot.totalPrice}|$bucket|${snapshot.kind}")
+            val key = if (snapshot.kind == ObservationKind.SOLD) {
+                hash("sold|${snapshot.listingId.orEmpty()}|$itemKey|${snapshot.quantity}|${snapshot.totalPrice}")
+            } else {
+                hash(snapshot.listingId?.let { "id:$it|$bucket|${snapshot.kind}" }
+                    ?: "$itemKey|${snapshot.quantity}|${snapshot.totalPrice}|$bucket|${snapshot.kind}")
+            }
             val existing = queryRepository.findByKey(key)
             val entity = existing ?: AuctionObservationEntity(observationKey = key)
             entity.listingId = snapshot.listingId
@@ -100,7 +107,7 @@ class AuctionObservationService(
             entity.unitPrice = snapshot.totalPrice / snapshot.quantity
             if (existing == null) entity.observedAt = observedAt
             entity.lastSeenAt = observedAt
-            repository.save(entity)
+            atomicUpsert?.upsert(entity) ?: repository.save(entity)
         }
     }
 
@@ -168,24 +175,31 @@ class AuctionService(
         return executor.executeProjected(accountId, url, resolveAction = { _, _, page ->
             parser.requireExactForm(page, actionId, "ExhibitItemForm")
             TownActionRequest(actionId)
-        }) { html, _, result, page -> parser.parseExhibit(html, page).copy(result = anonymousResult(result)) }
+        }) { html, _, result, page -> parser.parseExhibit(html, page).copy(entryActionId = actionId, result = anonymousResult(result)) }
     }
 
     fun exhibit(accountId: Long, command: AuctionExhibitCommand): AuctionExhibitPage {
-        if (command.amount !in 1..100_000 || command.startPrice < 0 || command.exhibitTime.length !in 1..30 || command.comment.length > 300) {
+        if (command.amount !in 1..100_000 || command.startPrice <= 0 || command.exhibitTime.length !in 1..30 || command.comment.length > 300) {
             invalid("출품 값이 올바르지 않습니다.")
         }
         val url = resolveLocation(accountId)
-        return executor.executeProjectedWithScalars(
+        return executor.executeTwoStepProjectedWithScalars(
             accountId, url,
-            TownActionRequest(command.actionId, listOf(TownActionSelection(command.candidateId, 1))),
-            mapOf(
+            entryAction = { page ->
+                parser.requireExactForm(page, command.entryActionId, "ExhibitItemForm")
+                TownActionRequest(command.entryActionId)
+            },
+            finalAction = { page ->
+                parser.requireExactForm(page, command.actionId, "PutAuction")
+                TownActionRequest(command.actionId, listOf(TownActionSelection(command.candidateId, 1)))
+            },
+            scalarValues = mapOf(
                 "Amount" to command.amount.toString(), "ExhibitTime" to command.exhibitTime,
                 "StartPrice" to command.startPrice.toString(), "Comment" to command.comment,
             ),
-            EXHIBIT_SCALARS,
-            "PutAuction",
-        ) { html, _, result, page -> parser.parseExhibit(html, page).copy(result = anonymousResult(result)) }
+            requiredScalarFields = EXHIBIT_SCALARS,
+            requiredFinalSubmitField = "PutAuction",
+        ) { html, _, result, page -> parser.parseExhibit(html, page).copy(entryActionId = command.entryActionId, result = anonymousResult(result)) }
     }
 
     fun claim(accountId: Long, actionId: String, submitName: String): AuctionPage {

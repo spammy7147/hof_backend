@@ -30,6 +30,7 @@ data class AuctionBidRequest(
 )
 data class AuctionExhibitOpenRequest(@field:NotBlank val actionId: String)
 data class AuctionExhibitRequest(
+    @field:NotBlank val entryActionId: String,
     @field:NotBlank val actionId: String,
     @field:NotBlank val candidateId: String,
     @field:Min(1) @field:Max(100000) val amount: Int,
@@ -64,7 +65,7 @@ class AuctionController(
     fun exhibit(@CurrentAccountId accountId: Long, @Valid @RequestBody request: AuctionExhibitRequest): AuctionExhibitPage =
         recovery.execute(accountId) {
             service.exhibit(accountId, AuctionExhibitCommand(
-                request.actionId, request.candidateId, request.amount, request.exhibitTime, request.startPrice, request.comment,
+                request.entryActionId, request.actionId, request.candidateId, request.amount, request.exhibitTime, request.startPrice, request.comment,
             ))
         }
 
