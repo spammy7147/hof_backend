@@ -61,6 +61,7 @@ class FreshSchemaTest {
                 "10" to "stabilize quest identity",
                 "11" to "remove typed action schema version",
                 "12" to "add party preset folders",
+                "13" to "add town location cache",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -76,6 +77,7 @@ class FreshSchemaTest {
                 "V10__stabilize_quest_identity.sql",
                 "V11__remove_typed_action_schema_version.sql",
                 "V12__add_party_preset_folders.sql",
+                "V13__add_town_location_cache.sql",
                 "V1__initialize_schema.sql",
                 "V2__order_party_presets.sql",
                 "V3__add_automation_work_sessions.sql",
@@ -102,6 +104,7 @@ class FreshSchemaTest {
             assertTrue(connection.columnExists("battle_maps", "shares_minute_cooldown"))
             assertTrue(connection.columnExists("quest_automation_selections", "display_code"))
             assertTrue(connection.columnExists("quest_automation_selections", "quest_name"))
+            assertTrue(connection.tableExists("town_feature_locations"))
         }
     }
 

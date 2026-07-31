@@ -483,6 +483,11 @@ internal object FreshSchemaContract {
             serialId(), requiredBigint("challenge_id"), requiredInteger("field_order"),
             requiredVarchar("field_name"), requiredText("field_value"),
         ),
+        table(
+            "town_feature_locations",
+            requiredVarchar("feature_id", 50), requiredVarchar("href", 500), requiredInstant("observed_at"),
+            primaryKey = listOf("feature_id"),
+        ),
     )
 
     private val UNIQUE_KEYS = listOf(
@@ -842,6 +847,10 @@ internal object FreshSchemaContract {
         check("typed_automation_action_runs", "ck_typed_action_status", "locate(',' || status || ',', ',PREPARED,SUBMITTING,RECONCILING,SUCCEEDED,FAILED,AMBIGUOUS,') > 0"),
         check("typed_automation_action_runs", "ck_typed_action_retry", "retry_attempt >= 0"),
         check("typed_automation_action_runs", "ck_typed_action_fingerprint", "char_length(action_fingerprint) = 64"),
+        check(
+            "town_feature_locations", "ck_town_feature_locations_public_menu",
+            "href regexp '^[?]menu=[A-Za-z0-9_-]{1,80}$'",
+        ),
         check("character_status_lines", "ck_character_status_lines_order", "line_order >= 0"),
         check("character_action_patterns", "ck_character_action_patterns_row", "row_index >= 0"),
         check("character_position_choices", "ck_character_position_choices_order", "choice_order >= 0"),
