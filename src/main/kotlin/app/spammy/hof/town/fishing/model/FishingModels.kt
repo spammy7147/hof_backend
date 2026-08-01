@@ -47,10 +47,15 @@ data class FishingExchangeItem(
     val detail: String?,
     val price: Long?,
     val materials: List<String>,
+    internal val itemT: String? = null,
 )
+
+data class FishingExchangeCategory(val id: String, val label: String, val current: Boolean)
 
 data class FishingExchangeSnapshot(
     val actionId: String?,
+    val categories: List<FishingExchangeCategory>,
+    val currentCategoryId: String?,
     val items: List<FishingExchangeItem>,
     val result: ParsedTownResult? = null,
 )

@@ -51,11 +51,15 @@ data class FishingBattleTargetResponse(val categoryId: String, val mapCode: Stri
 data class FishingCatchItemResponse(val name: String, val quantity: Int, val remainingUses: Int?, val effect: String?)
 
 data class FishingExchangeResponse(
+    val categories: List<FishingExchangeCategoryResponse>,
+    val currentCategoryId: String?,
     val items: List<FishingExchangeItemResponse>,
     val result: TownActionResultResponse?,
 ) {
     companion object {
         fun from(snapshot: FishingExchangeSnapshot) = FishingExchangeResponse(
+            categories = snapshot.categories.map { FishingExchangeCategoryResponse(it.id, it.label, it.current) },
+            currentCategoryId = snapshot.currentCategoryId,
             items = snapshot.items.map { item ->
                 FishingExchangeItemResponse(
                     id = item.id,
@@ -71,6 +75,8 @@ data class FishingExchangeResponse(
     }
 }
 
+data class FishingExchangeCategoryResponse(val id: String, val label: String, val current: Boolean)
+
 data class FishingExchangeItemResponse(
     val id: String,
     val label: String,
@@ -84,6 +90,7 @@ data class FishingExchangeItemResponse(
 
 data class FishingExchangeRequest(
     @field:NotBlank val candidateId: String,
+    @field:NotBlank val categoryCandidateId: String,
     @field:Min(1) val quantity: Int = 1,
 )
 

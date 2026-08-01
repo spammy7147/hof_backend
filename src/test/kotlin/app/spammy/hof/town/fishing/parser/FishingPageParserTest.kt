@@ -72,6 +72,18 @@ class FishingPageParserTest {
     }
 
     @Test
+    fun `긴 낚시 안내문은 물 상태나 전투 발생으로 오인하지 않는다`() {
+        val html = fixture("guide-with-reset.html")
+        val snapshot = parser.parse(html, url, forms.parse(html, url))
+
+        assertFalse(snapshot.blockedByBattle)
+        assertEquals(null, snapshot.battleTarget)
+        assertEquals(FishingPrimaryAction.START, snapshot.primaryAction)
+        assertEquals(18, snapshot.remainingCasts)
+        assertEquals("수면이 아름답게 빛나고있다", snapshot.waterStatus)
+    }
+
+    @Test
     fun `낚시 결과 아이템을 이름 수량 사용횟수 효과로 구조화한다`() {
         val html = fixture("caught.html")
         val snapshot = parser.parse(html, url, forms.parse(html, url), results.parse(html))
@@ -87,10 +99,13 @@ class FishingPageParserTest {
     @Test
     fun `radio 없는 교환품도 숨기지 않고 선택 불가로 둔다`() {
         val html = fixture("exchange.html")
-        val exchange = parser.parseExchange(forms.parse(html, url))
+        val exchange = parser.parseExchange(html, url, forms.parse(html, url))
 
+        assertEquals(listOf("무기(weapon)", "방어구(armor)"), exchange.categories.map { it.label })
+        assertEquals("type_create:weapon", exchange.currentCategoryId)
         assertTrue(exchange.items.single { it.name.contains("Rank Fish") }.selectable)
         assertFalse(exchange.items.single { it.name == "교환 불가 기념 물고기" }.selectable)
+        assertTrue(exchange.items.none { it.name.contains("weapon") || it.name.contains("armor") })
     }
 
     private fun fixture(name: String): String = checkNotNull(javaClass.getResource("/fixtures/town/fishing/$name")).readText()

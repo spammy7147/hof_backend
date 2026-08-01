@@ -37,6 +37,19 @@ class CraftingParserTest {
         assertThat(parse("veteran.html", CraftingMode.VETERAN).allowedRefineCounts).containsExactly(1, 2, 3)
     }
 
+    @Test fun `제련 기록에서 사용자명과 링크 안의 아이템명을 모두 보존한다`() {
+        val html = resource("refine.html").replace(
+            "<p>제련 성공: +1 Short Sword</p>",
+            "<p>-[《HOF 초보자》 soxlzzz] <a href='?item=1'>+10 Mask of Scorn</a> (+1)수치 제련 실패!</p>",
+        )
+
+        val value = parser.parse(CraftingMode.REFINE, html, URL, forms.parse(html, URL))
+
+        assertThat(value.history).containsExactly(
+            "-[《HOF 초보자》 soxlzzz] +10 Mask of Scorn (+1)수치 제련 실패!",
+        )
+    }
+
     @Test fun `제작공방은 수량 100과 선택적 추가 소재를 파싱한다`() {
         val value = parse("create.html", CraftingMode.CREATE)
         assertThat(value.maxQuantity).isEqualTo(100)
@@ -67,6 +80,49 @@ class CraftingParserTest {
         assertThat(value.rows).isEmpty()
         assertThat(value.categories.map { it.label }).contains("방어구(armor)")
         assertThat(value.actionId).isNotBlank()
+    }
+
+    @Test fun `긴 목록에 동일한 Create 버튼이 반복되어도 제작 품목을 파싱한다`() {
+        val html = resource("workbase.html").replace(
+            "<input type=\"submit\" name=\"Create\" value=\"Create\">",
+            "<input type=\"submit\" name=\"Create\" value=\"Create\"><input type=\"submit\" name=\"Create\" value=\"Create\">",
+        )
+
+        val value = parser.parse(CraftingMode.WORKBASE, html, URL, forms.parse(html, URL))
+
+        assertThat(value.categories).isNotEmpty()
+        assertThat(value.rows).anyMatch { it.label.contains("Striker Coat") }
+        assertThat(value.actionId).isNotBlank()
+    }
+
+    @Test fun `제련 폼의 상하단 버튼과 횟수 선택기가 반복되어도 목록을 파싱한다`() {
+        val times = "<select name=\"timesB\"><option value=\"1\" selected>1</option><option value=\"2\">2</option><option value=\"3\">3</option></select>"
+        val html = resource("refine.html")
+            .replace(times, "$times$times")
+            .replace(
+                "<input type=\"submit\" name=\"refine\" value=\"Refine\">",
+                "<input type=\"submit\" name=\"refine\" value=\"Refine\"><input type=\"submit\" name=\"refine\" value=\"제련\">",
+            )
+
+        val value = parser.parse(CraftingMode.REFINE, html, URL, forms.parse(html, URL))
+
+        assertThat(value.categories).isNotEmpty()
+        assertThat(value.rows).anyMatch { it.label.contains("Short Sword") }
+        assertThat(value.allowedRefineCounts).containsExactly(1, 2, 3)
+        assertThat(value.actionId).isNotBlank()
+    }
+
+    @Test fun `장로대장간의 분류 선택기가 제련 form 밖에 있어도 품목은 표시한다`() {
+        val category = "<select name=\"type\"><option value=\"weapon\" selected>무기</option></select>"
+        val html = resource("veteran.html")
+            .replace(category, "")
+            .replace("<body>", "<body><form method=\"post\">$category</form>")
+
+        val value = parser.parse(CraftingMode.VETERAN, html, URL, forms.parse(html, URL))
+
+        assertThat(value.rows).anyMatch { it.label.contains("Mask of Scorn") }
+        assertThat(value.actionId).isNotBlank()
+        assertThat(value.allowedRefineCounts).containsExactly(1, 2, 3)
     }
 
     @Test fun `HOF의 비정상적으로 큰 보유량과 제작 시간은 Int overflow 없이 null 처리한다`() {

@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RestController
 
 @RestController
@@ -35,6 +36,14 @@ class FishingController(
     @GetMapping("/fishing-exchange")
     fun loadExchange(@CurrentAccountId accountId: Long): FishingExchangeResponse = recovery.execute(accountId) {
         service.loadExchange(accountId)
+    }
+
+    @GetMapping("/fishing-exchange", params = ["categoryCandidateId"])
+    fun loadExchangeCategory(
+        @CurrentAccountId accountId: Long,
+        @RequestParam categoryCandidateId: String,
+    ): FishingExchangeResponse = recovery.execute(accountId) {
+        service.loadExchangeCategory(accountId, categoryCandidateId)
     }
 
     @PostMapping("/fishing-exchange")

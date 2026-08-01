@@ -3,6 +3,7 @@ package app.spammy.hof.town.shop.service
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.town.common.model.TownFeatureId
+import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.town.common.service.TownAuthenticatedExecutor
 import app.spammy.hof.town.common.service.TownLocationResolver
 import app.spammy.hof.town.shop.catalog.ShopId
@@ -24,8 +25,8 @@ class ShopCatalogRefreshService(
 ) {
     private val owner = UUID.randomUUID().toString()
 
-    /** 당일 최초 진입 계정만 DB lease를 얻어 상점 하나를 검증한다. 실패는 last-good을 손대지 않는다. */
-    fun refreshIfDue(accountId: Long, shopId: ShopId) {
+    /** 전용 수집 계정이 DB lease를 얻어 상점 하나를 하루 한 번 검증한다. 실패는 last-good을 손대지 않는다. */
+    fun refreshIfDue(accountId: Long, shopId: ShopId, origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE) {
         val now = clock.instant()
         val acquired = persistence.tryAcquire(
             jobKey(shopId), owner, now, now.plus(LEASE_DURATION),
@@ -34,7 +35,7 @@ class ShopCatalogRefreshService(
         if (!acquired) return
         try {
             val url = locationResolver.resolve(feature(shopId)).url
-            val items = executor.loadProjected(accountId, url) { _, _, page -> parser.parseCatalog(page) }
+            val items = executor.loadProjected(accountId, url, origin) { _, _, page -> parser.parseCatalog(page) }
             check(items.isNotEmpty()) { "상점 카탈로그에서 상품을 찾지 못했습니다." }
             persistence.replaceAndMarkSuccess(shopId, jobKey(shopId), owner, now, items)
         } catch (failure: Exception) {

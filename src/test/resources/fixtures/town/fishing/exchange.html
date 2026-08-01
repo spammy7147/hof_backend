@@ -1,5 +1,8 @@
-<!doctype html><html><body><form method="post">
+<!doctype html><html><body><form method="post" action="?menu=createF">
+<select name="type_create"><option value="weapon" selected>무기(weapon)</option><option value="armor">방어구(armor)</option></select>
+<input type="hidden" id="ItemT" name="ItemT"><input name="amount" value="1">
 <table>
-<tr><td><input type="radio" name="item" value="rank-fish"></td><td>Rank Fish (100회 사용가능) / h:2</td></tr>
+<tr><th>제작비</th><th>Item</th></tr>
+<tr><td>$ 10</td><td><input type="radio" name="ItemNo" value="rank-fish" onclick="document.getElementById('ItemT').value='fish-17'">Rank Fish (100회 사용가능) / h:2</td></tr>
 <tr><td></td><td>교환 불가 기념 물고기</td></tr>
-</table><input type="submit" name="create" value="Create"></form></body></html>
+</table><input type="submit" name="Create" value="Create"></form></body></html>
