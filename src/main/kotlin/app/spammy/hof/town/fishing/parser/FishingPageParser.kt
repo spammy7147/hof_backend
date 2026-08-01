@@ -34,6 +34,7 @@ class FishingPageParser {
         val text = clean(contentRoot.text())
         val actions = page.forms.mapNotNull(::fishingAction)
         val battleMessagePresent = contentRoot.getAllElements().asSequence()
+            .filter(::isRedWarning)
             .map { clean(it.ownText()) }
             .filter(String::isNotBlank)
             .any(BATTLE_BLOCKED::containsMatchIn)
@@ -49,8 +50,8 @@ class FishingPageParser {
             result.messages.isNotEmpty() || result.items.isNotEmpty() -> FishingOutcome.INFORMATIONAL
             else -> FishingOutcome.INFORMATIONAL
         } else if (STARTED.containsMatchIn(text)) FishingOutcome.STARTED else null
-        // 안내문에 포함된 일반적인 "전투/낚시" 문구만으로는 전투 상태가 아니다.
-        // 실제 차단 문구와 낚시 전투 target이 함께 있을 때만 낚시를 막는다.
+        // HOF는 실제 낚시 전투 차단 문구를 빨간 글씨로 표시한다.
+        // 일반 안내문에도 몬스터와 전투 링크가 있으므로 문구만으로 차단하면 안 된다.
         val blocked = battleMessagePresent && detectedBattleTarget != null
         val battleTarget = detectedBattleTarget.takeIf { blocked }
         val available = if (blocked) emptyList() else actions
@@ -210,7 +211,9 @@ class FishingPageParser {
         val suffix = text.substring(remaining.range.last + 1).trimStart(' ', ')', '）', ':', '：')
         val withoutFollowingSections = WATER_STATUS_ENDINGS.fold(suffix) { current, marker -> current.substringBefore(marker) }
         val sentenceEnd = WATER_STATUS_SENTENCE_END.find(withoutFollowingSections)?.range?.first
-        val status = withoutFollowingSections.substring(0, sentenceEnd ?: withoutFollowingSections.length).trim()
+        val status = withoutFollowingSections.substring(0, sentenceEnd ?: withoutFollowingSections.length)
+            .replace(REMAINING_STATUS_PREFIX, "")
+            .trim()
         return status.takeIf { candidate ->
             candidate.isNotBlank() &&
                 !FISHING_ACTION_LABEL.matches(candidate) &&
@@ -218,11 +221,19 @@ class FishingPageParser {
         }
     }
 
+    private fun isRedWarning(element: Element): Boolean {
+        val color = element.attr("color").trim().lowercase()
+        if (color in RED_COLOR_VALUES) return true
+        val styleColor = CSS_COLOR.find(element.attr("style"))?.groupValues?.get(1)?.lowercase()
+        return styleColor in RED_COLOR_VALUES
+    }
+
     private fun clean(value: String): String = value.replace(Regex("\\s+"), " ").trim()
 
     private companion object {
         val DATE_NOTICE = Regex("날짜가 갱신되었습니다[.!]?")
         val REMAINING = Regex("오늘의 남은 낚시 횟수\\s*[:：]?\\s*(\\d+)회")
+        val REMAINING_STATUS_PREFIX = Regex("^[（(]?\\s*오늘의 남은 낚시 횟수\\s*[:：]?\\s*\\d+회\\s*[）)]?\\s*")
         val BAIT = Regex("(?<!빛나는 )미끼 경단\\s*[:：]?\\s*(\\d+)개")
         val SHINING_BAIT = Regex("빛나는 미끼\\s*[:：]?\\s*(\\d+)개")
         val ESCAPE_SECONDS = Regex("(?:도망|도망까지)[^0-9]{0,12}(\\d+)초")
@@ -235,7 +246,9 @@ class FishingPageParser {
         val ESCAPED = Regex("도망(?:쳤|갔|가 버렸|쳐)|놓쳤|escaped", RegexOption.IGNORE_CASE)
         val CAUGHT = Regex("낚았다|획득했다|낚는데!|caught", RegexOption.IGNORE_CASE)
         val STARTED = Regex("지금부터 낚시를 시작|물고기 그림자|낚시를 시작합니다")
-        val BATTLE_BLOCKED = Regex("(?:전투몹|몬스터)[^。.!?]*(?:출몰했습니다|등장했습니다)")
+        val BATTLE_BLOCKED = Regex("(?:전투몹|몬스터)[^。.!?]*(?:출몰|등장|낚시(?:가|를)?\\s*(?:할 수 없|불가능))", RegexOption.IGNORE_CASE)
+        val CSS_COLOR = Regex("(?:^|;)\\s*color\\s*:\\s*([^;\\s]+)", RegexOption.IGNORE_CASE)
+        val RED_COLOR_VALUES = setOf("red", "#f00", "#ff0000", "rgb(255,0,0)", "rgb(255, 0, 0)")
         val FISHING_ACTION_LABEL = Regex("^(?:낚시를 시작한다|낚시 시작|낚는다|상태를 본다|거른다)$")
         val WATER_STATUS_ENDINGS = listOf(
             "미끼 경단",

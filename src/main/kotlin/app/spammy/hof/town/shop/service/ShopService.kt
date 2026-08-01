@@ -32,11 +32,8 @@ class ShopService(
     private val queryRepository: ShopQueryRepository,
     private val clock: Clock = Clock.systemUTC(),
 ) {
-    /** 로그인 사용자의 HOF 세션을 확인한 뒤 공용 snapshot을 읽는다. 상품 GET이나 CAPTCHA는 발생시키지 않는다. */
-    fun loadShop(accountId: Long, shopId: ShopId): ShopResponse {
-        executor.requireSession(accountId)
-        return catalog(shopId)
-    }
+    /** 공용 snapshot만 읽는다. 사용자 HOF 세션, 상품 GET, CAPTCHA는 목록 조회에 사용하지 않는다. */
+    fun loadShop(shopId: ShopId): ShopResponse = catalog(shopId)
 
     fun purchase(accountId: Long, shopId: ShopId, request: PurchaseRequest): ShopResponse {
         ensureUnique(request.items.map { it.itemId })

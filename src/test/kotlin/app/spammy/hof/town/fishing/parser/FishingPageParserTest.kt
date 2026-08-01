@@ -72,6 +72,22 @@ class FishingPageParserTest {
     }
 
     @Test
+    fun `빨간색이 아닌 몬스터 안내와 전투 링크는 낚시 전투로 오인하지 않는다`() {
+        val html = """
+            <main id="fishing">
+              <p>몬스터가 등장하면 낚시를 할 수 없습니다.</p>
+              <a href="?menu=hunt&amp;common=ordinary_battle">전투</a>
+              <form method="post"><input type="submit" name="do" value="낚시를 시작한다"></form>
+            </main>
+        """.trimIndent()
+        val snapshot = parser.parse(html, url, forms.parse(html, url))
+
+        assertFalse(snapshot.blockedByBattle)
+        assertEquals(FishingPrimaryAction.START, snapshot.primaryAction)
+        assertEquals(setOf(FishingAction.START), snapshot.availableActions.map { it.action }.toSet())
+    }
+
+    @Test
     fun `긴 낚시 안내문은 물 상태나 전투 발생으로 오인하지 않는다`() {
         val html = fixture("guide-with-reset.html")
         val snapshot = parser.parse(html, url, forms.parse(html, url))
@@ -79,6 +95,20 @@ class FishingPageParserTest {
         assertFalse(snapshot.blockedByBattle)
         assertEquals(null, snapshot.battleTarget)
         assertEquals(FishingPrimaryAction.START, snapshot.primaryAction)
+        assertEquals(18, snapshot.remainingCasts)
+        assertEquals("수면이 아름답게 빛나고있다", snapshot.waterStatus)
+    }
+
+    @Test
+    fun `물고기 상태에서는 중복되는 남은 낚시 횟수를 제거한다`() {
+        val html = """
+            <main id="fishing">
+              <p>오늘의 남은 낚시 횟수 : 18회 (오늘의 남은 낚시 횟수 : 18회) 수면이 아름답게 빛나고있다.</p>
+              <form method="post"><input type="submit" name="do" value="낚시를 시작한다"></form>
+            </main>
+        """.trimIndent()
+        val snapshot = parser.parse(html, url, forms.parse(html, url))
+
         assertEquals(18, snapshot.remainingCasts)
         assertEquals("수면이 아름답게 빛나고있다", snapshot.waterStatus)
     }

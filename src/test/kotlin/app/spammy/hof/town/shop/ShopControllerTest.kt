@@ -1,18 +1,37 @@
 package app.spammy.hof.town.shop
 
+import app.spammy.hof.account.service.HofSessionRecoveryService
 import app.spammy.hof.town.common.model.TownActionRequest
 import app.spammy.hof.town.common.model.TownActionSelection
 import app.spammy.hof.town.common.parser.HofFormParser
 import app.spammy.hof.town.common.service.TownActionGuard
+import app.spammy.hof.town.shop.catalog.ShopId
+import app.spammy.hof.town.shop.controller.ShopController
+import app.spammy.hof.town.shop.dto.ShopResponse
 import app.spammy.hof.town.shop.parser.ShopPageParser
+import app.spammy.hof.town.shop.service.ShopService
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
 import kotlin.test.assertTrue
+import org.mockito.Mockito
 
 class ShopControllerTest {
     private val formParser = HofFormParser()
     private val parser = ShopPageParser()
+
+    @Test
+    fun `공용 상점 목록 조회는 HOF 세션 복구나 captcha를 실행하지 않는다`() {
+        val service = Mockito.mock(ShopService::class.java)
+        val recovery = Mockito.mock(HofSessionRecoveryService::class.java)
+        val expected = ShopResponse("dark", emptyList(), stale = false, lastVerifiedAt = null)
+        Mockito.`when`(service.loadShop(ShopId.DARK)).thenReturn(expected)
+
+        val actual = ShopController(service, recovery).loadShop("dark")
+
+        assertEquals(expected, actual)
+        Mockito.verifyNoInteractions(recovery)
+    }
 
     @Test
     fun `catalog and zero-dollar sell rows remain selectable`() {

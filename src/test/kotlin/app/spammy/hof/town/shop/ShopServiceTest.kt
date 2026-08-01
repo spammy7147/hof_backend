@@ -30,12 +30,12 @@ class ShopServiceTest {
             Mockito.`when`(queries.findActiveItems(shopId.name)).thenReturn(listOf(cachedItem(shopId)))
             Mockito.`when`(refresh.lastSuccessAt(shopId)).thenReturn(NOW)
 
-            val response = service.loadShop(7L, shopId)
+            val response = service.loadShop(shopId)
 
             assertEquals(listOf("${shopId.name} Item"), response.items.map { it.label })
             assertEquals(shopId.pathValue, response.shopId)
         }
-        Mockito.verify(executor, Mockito.times(ShopId.entries.size)).requireSession(7L)
+        Mockito.verifyNoInteractions(executor)
     }
 
     @Test
@@ -43,10 +43,10 @@ class ShopServiceTest {
         Mockito.`when`(queries.findActiveItems(ShopId.DARK.name)).thenReturn(emptyList())
         Mockito.`when`(refresh.lastSuccessAt(ShopId.DARK)).thenReturn(null)
 
-        val response = service.loadShop(7L, ShopId.DARK)
+        val response = service.loadShop(ShopId.DARK)
 
         assertEquals(0, response.items.size)
-        Mockito.verify(executor).requireSession(7L)
+        Mockito.verifyNoInteractions(executor)
         Mockito.verify(refresh, Mockito.never()).refreshIfDue(7L, ShopId.DARK)
     }
 
