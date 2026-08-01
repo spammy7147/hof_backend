@@ -71,4 +71,20 @@ class HomePageParserTest {
         assertEquals(null, snapshot.restStatus?.baseRecovery)
         assertEquals(null, snapshot.restStatus?.facilityRecovery)
     }
+
+    @Test
+    fun `rest does not mistake update footer for a facility`() {
+        val html = """
+            <header>Time : 1,259/6,000</header>
+            <p>기본적으로 300의 Time이 회복됩니다.</p>
+            <h3>보유 중인 시설</h3>
+            <div>UpDate - Manual - Tutorial - GameData - Top 현재 접속자 수는 6명 입니다. Copy Right Tekito 2007-2008.</div>
+            <form method="post" action="?menu=rest"><input type="submit" name="Rest" value="휴식을 취한다"></form>
+        """.trimIndent()
+        val url = "http://sic.zerosic.com/ZeroHOF/index.php?menu=rest"
+
+        val snapshot = parser.parse(HomeMode.REST, html, url, forms.parse(html, url))
+
+        assertEquals(emptyList(), snapshot.restStatus?.facilities)
+    }
 }

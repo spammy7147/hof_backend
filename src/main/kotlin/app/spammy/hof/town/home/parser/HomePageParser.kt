@@ -50,13 +50,13 @@ class HomePageParser {
         val explicit = document.select("[data-facility], .facility, .facilities li, #facility li, #facilities li")
             .take(MAX_FACILITIES)
             .map { clean(it.text()) }
-            .filter { it.isNotBlank() && it.length <= MAX_FACILITY_TEXT }
+            .filter { it.isNotBlank() && it.length <= MAX_FACILITY_TEXT && !FOOTER_TEXT.containsMatchIn(it) }
         if (explicit.isNotEmpty()) return explicit.distinct().take(MAX_FACILITIES)
 
         val heading = document.select("h1,h2,h3,h4,h5,h6,legend,summary,dt,th")
             .firstOrNull { clean(it.text()) == "보유 중인 시설" } ?: return emptyList()
         return generateSequence(heading.nextElementSibling()) { it.nextElementSibling() }
-            .takeWhile { it.tagName() !in HEADING_TAGS }
+            .takeWhile { it.tagName() !in HEADING_TAGS && !FOOTER_TEXT.containsMatchIn(clean(it.text())) }
             .take(MAX_FACILITY_SIBLINGS)
             .flatMap { sibling ->
                 val rows = sibling.select("li,tr")
@@ -208,5 +208,6 @@ class HomePageParser {
         val FACILITY_RECOVERY = Regex("(?:시설|추가)[^0-9]{0,80}([0-9][0-9,]*)\\s*(?:의\\s*)?Time(?:이|을)?\\s*(?:추가로\\s*)?회복", RegexOption.IGNORE_CASE)
         val USED_TODAY = Regex("오늘[^.。\\n]{0,80}(?:이미\\s*)?(?:휴식|회복)[^.。\\n]{0,40}(?:했습니다|사용했습니다|할 수 없습니다)")
         val RESTORE_WORD = Regex("회복|복구|휴식|Rest|보충", RegexOption.IGNORE_CASE)
+        val FOOTER_TEXT = Regex("^(?:[•·\\-]\\s*)?(?:UpDate|Update|Copy\\s*Right)\\b", RegexOption.IGNORE_CASE)
     }
 }
