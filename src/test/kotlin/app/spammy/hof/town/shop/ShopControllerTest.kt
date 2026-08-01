@@ -1,6 +1,7 @@
 package app.spammy.hof.town.shop
 
 import app.spammy.hof.account.service.HofSessionRecoveryService
+import app.spammy.hof.account.service.HofAccountService
 import app.spammy.hof.town.common.model.TownActionRequest
 import app.spammy.hof.town.common.model.TownActionSelection
 import app.spammy.hof.town.common.parser.HofFormParser
@@ -21,16 +22,16 @@ class ShopControllerTest {
     private val parser = ShopPageParser()
 
     @Test
-    fun `공용 상점 목록 조회는 HOF 세션 복구나 captcha를 실행하지 않는다`() {
+    fun `암흑상점 목록 조회는 현재 계정 세션 복구 경계 안에서 실행한다`() {
         val service = Mockito.mock(ShopService::class.java)
-        val recovery = Mockito.mock(HofSessionRecoveryService::class.java)
+        val recovery = HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))
         val expected = ShopResponse("dark", emptyList(), stale = false, lastVerifiedAt = null)
-        Mockito.`when`(service.loadShop(ShopId.DARK)).thenReturn(expected)
+        Mockito.`when`(service.loadShop(42L, ShopId.DARK)).thenReturn(expected)
 
-        val actual = ShopController(service, recovery).loadShop("dark")
+        val actual = ShopController(service, recovery).loadShop(42L, "dark")
 
         assertEquals(expected, actual)
-        Mockito.verifyNoInteractions(recovery)
+        Mockito.verify(service).loadShop(42L, ShopId.DARK)
     }
 
     @Test

@@ -25,8 +25,8 @@ class ShopController(
     private val recovery: HofSessionRecoveryService,
 ) {
     @GetMapping("/shops/{shop}")
-    fun loadShop(@PathVariable shop: String): ShopResponse =
-        service.loadShop(ShopId.fromPath(shop))
+    fun loadShop(@CurrentAccountId accountId: Long, @PathVariable shop: String): ShopResponse =
+        recovery.execute(accountId) { service.loadShop(accountId, ShopId.fromPath(shop)) }
 
     @PostMapping("/shops/{shop}/purchase")
     fun purchase(

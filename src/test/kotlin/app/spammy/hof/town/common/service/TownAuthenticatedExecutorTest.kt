@@ -3,8 +3,6 @@ package app.spammy.hof.town.common.service
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.CookieQueryRepository
-import app.spammy.hof.captcha.dto.CaptchaChallengeResponse
-import app.spammy.hof.captcha.service.CaptchaService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.client.AccountHofGateway
@@ -35,7 +33,6 @@ class TownAuthenticatedExecutorTest {
     private val accounts = Mockito.mock(AccountQueryRepository::class.java)
     private val cookies = Mockito.mock(CookieQueryRepository::class.java)
     private val gateway = Mockito.mock(AccountHofGateway::class.java)
-    private val captchaService = Mockito.mock(CaptchaService::class.java)
     private val executor = TownAuthenticatedExecutor(
         accountQueryRepository = accounts,
         cookieQueryRepository = cookies,
@@ -45,7 +42,6 @@ class TownAuthenticatedExecutorTest {
         formParser = HofFormParser(),
         resultParser = HofResultParser(),
         actionGuard = TownActionGuard(),
-        captchaService = captchaService,
     )
 
     @Test
@@ -87,21 +83,17 @@ class TownAuthenticatedExecutorTest {
     }
 
     @Test
-    fun `records captcha and stops before parsing town page`() {
+    fun `does not treat captcha-like item text as a town authentication gate`() {
         val account = HofAccountEntity(7L, "town-user", "encrypted", Instant.EPOCH)
         Mockito.`when`(accounts.findById(7L)).thenReturn(account)
         Mockito.`when`(cookies.findValueMapByAccountId(7L)).thenReturn(mapOf("PHPSESSID" to "session"))
-        val captchaHtml = "<p>자경단에서 통행증을 발급받아주세요.</p>"
+        val captchaHtml = "<p>자경단에서 통행증을 발급받아주세요.</p><form><button name='Sell'>판매</button></form>"
         Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies()))
             .thenReturn(response(captchaHtml))
-        Mockito.`when`(captchaService.detectAndRecord(account, captchaHtml, HOF_URL)).thenReturn(
-            CaptchaChallengeResponse(1L, 7L, "DETECTED", "통행증", null, HOF_URL, 0, Instant.EPOCH.toString(), null),
-        )
 
-        val error = assertFailsWith<ApiException> { executor.load(7L, HOF_URL) }
+        val page = executor.load(7L, HOF_URL)
 
-        assertEquals(ErrorCode.CAPTCHA_REQUIRED, error.errorCode)
-        Mockito.verify(captchaService).detectAndRecord(account, captchaHtml, HOF_URL)
+        assertEquals(1, page.forms.size)
     }
 
     @Test

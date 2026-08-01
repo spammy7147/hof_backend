@@ -3,7 +3,6 @@ package app.spammy.hof.town.pantheon
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.CookieQueryRepository
-import app.spammy.hof.captcha.service.CaptchaService
 import app.spammy.hof.external.client.AccountHofGateway
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.*
@@ -90,7 +89,6 @@ class PantheonServiceTest {
         val accounts = Mockito.mock(AccountQueryRepository::class.java)
         val cookies = Mockito.mock(CookieQueryRepository::class.java)
         val gateway = Mockito.mock(AccountHofGateway::class.java)
-        val captcha = Mockito.mock(CaptchaService::class.java)
         val locations = Mockito.mock(TownLocationResolver::class.java)
         Mockito.`when`(accounts.findById(7L)).thenReturn(HofAccountEntity(7L, "pantheon", "encrypted", Instant.EPOCH))
         Mockito.`when`(cookies.findValueMapByAccountId(7L)).thenReturn(mapOf("PHPSESSID" to "session"))
@@ -99,7 +97,7 @@ class PantheonServiceTest {
         Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies())).thenReturn(values.first(), *values.drop(1).toTypedArray())
         val executor = TownAuthenticatedExecutor(
             accounts, cookies, HofRequestFactory(), gateway, LoginStateParser(), forms,
-            HofResultParser(), TownActionGuard(), captcha,
+            HofResultParser(), TownActionGuard(),
         )
         return Context(PantheonService(executor, locations, parser), gateway)
     }

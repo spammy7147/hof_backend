@@ -3,7 +3,6 @@ package app.spammy.hof.town.common.service
 import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.CookieQueryRepository
 import app.spammy.hof.account.entity.HofAccountEntity
-import app.spammy.hof.captcha.service.CaptchaService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.client.AccountHofGateway
@@ -46,7 +45,6 @@ class TownAuthenticatedExecutor(
     private val formParser: HofFormParser,
     private val resultParser: HofResultParser,
     private val actionGuard: TownActionGuard,
-    private val captchaService: CaptchaService,
 ) {
     private val actionLocks = ConcurrentHashMap<Long, ReentrantLock>()
 
@@ -825,10 +823,6 @@ class TownAuthenticatedExecutor(
         val login = loginStateParser.parse(response.body)
         if (login.hasLoginForm && !login.isLoggedIn) {
             throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "HOF 로그인 세션이 만료되었습니다.")
-        }
-        val sourceUrl = response.finalUrl.ifBlank { request.url }
-        if (captchaService.detectAndRecord(account, response.body, sourceUrl) != null) {
-            throw ApiException(ErrorCode.CAPTCHA_REQUIRED, "캡차 또는 통행증 입력이 필요합니다.")
         }
         return response
     }

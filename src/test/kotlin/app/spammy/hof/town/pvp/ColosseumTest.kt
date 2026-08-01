@@ -3,7 +3,6 @@ package app.spammy.hof.town.pvp
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.CookieQueryRepository
-import app.spammy.hof.captcha.service.CaptchaService
 import app.spammy.hof.external.client.*
 import app.spammy.hof.external.model.*
 import app.spammy.hof.external.parser.LoginStateParser
@@ -74,7 +73,6 @@ class ColosseumTest {
         val accounts = Mockito.mock(AccountQueryRepository::class.java)
         val cookies = Mockito.mock(CookieQueryRepository::class.java)
         val gateway = Mockito.mock(AccountHofGateway::class.java)
-        val captcha = Mockito.mock(CaptchaService::class.java)
         val locations = Mockito.mock(TownLocationResolver::class.java)
         Mockito.`when`(accounts.findById(7L)).thenReturn(HofAccountEntity(7L, "pvp", "encrypted", Instant.EPOCH))
         Mockito.`when`(cookies.findValueMapByAccountId(7L)).thenReturn(mapOf("PHPSESSID" to "session"))
@@ -83,7 +81,7 @@ class ColosseumTest {
             HofHttpResponse(200, url, html.first(), emptyMap()),
             *html.drop(1).map { HofHttpResponse(200, url, it, emptyMap()) }.toTypedArray(),
         )
-        val executor = TownAuthenticatedExecutor(accounts, cookies, HofRequestFactory(), gateway, LoginStateParser(), forms, HofResultParser(), TownActionGuard(), captcha)
+        val executor = TownAuthenticatedExecutor(accounts, cookies, HofRequestFactory(), gateway, LoginStateParser(), forms, HofResultParser(), TownActionGuard())
         return Context(ColosseumService(executor, locations, parser), gateway)
     }
     private data class Context(val service: ColosseumService, val gateway: AccountHofGateway) {

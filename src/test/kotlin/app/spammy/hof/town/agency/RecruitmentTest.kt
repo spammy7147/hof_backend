@@ -3,7 +3,6 @@ package app.spammy.hof.town.agency
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.CookieQueryRepository
-import app.spammy.hof.captcha.service.CaptchaService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.external.client.AccountHofGateway
 import app.spammy.hof.external.client.HofRequestFactory
@@ -129,10 +128,9 @@ class RecruitmentTest {
         private val accounts = Mockito.mock(AccountQueryRepository::class.java)
         private val cookies = Mockito.mock(CookieQueryRepository::class.java)
         private val gateway = Mockito.mock(AccountHofGateway::class.java)
-        private val captcha = Mockito.mock(CaptchaService::class.java)
         private val locations = Mockito.mock(TownLocationResolver::class.java)
         val service = RecruitmentService(
-            TownAuthenticatedExecutor(accounts, cookies, HofRequestFactory(), gateway, LoginStateParser(), forms, HofResultParser(), TownActionGuard(), captcha),
+            TownAuthenticatedExecutor(accounts, cookies, HofRequestFactory(), gateway, LoginStateParser(), forms, HofResultParser(), TownActionGuard()),
             locations,
             parser,
         )

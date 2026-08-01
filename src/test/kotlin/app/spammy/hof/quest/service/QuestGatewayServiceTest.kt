@@ -3,7 +3,6 @@ package app.spammy.hof.quest.service
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.CookieQueryRepository
-import app.spammy.hof.captcha.service.CaptchaService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.external.client.AccountHofGateway
 import app.spammy.hof.external.client.HofRequestFactory
@@ -27,7 +26,6 @@ class QuestGatewayServiceTest {
     private val accounts = Mockito.mock(AccountQueryRepository::class.java)
     private val cookies = Mockito.mock(CookieQueryRepository::class.java)
     private val gateway = Mockito.mock(AccountHofGateway::class.java)
-    private val captcha = Mockito.mock(CaptchaService::class.java)
     private val service = QuestGatewayService(
         TownAuthenticatedExecutor(
             accounts,
@@ -38,7 +36,6 @@ class QuestGatewayServiceTest {
             HofFormParser(),
             HofResultParser(),
             TownActionGuard(),
-            captcha,
         ),
         QuestPageParser(),
     )

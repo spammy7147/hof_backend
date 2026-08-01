@@ -6,7 +6,6 @@ import app.spammy.hof.account.repository.CookieQueryRepository
 import app.spammy.hof.battle.dto.BattleMapResponse
 import app.spammy.hof.battle.model.BattleMapKeyMode
 import app.spammy.hof.battle.service.BattleMapService
-import app.spammy.hof.captcha.service.CaptchaService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.client.AccountHofGateway
@@ -35,13 +34,12 @@ class FishingServiceTest {
     private val accounts = Mockito.mock(AccountQueryRepository::class.java)
     private val cookies = Mockito.mock(CookieQueryRepository::class.java)
     private val gateway = Mockito.mock(AccountHofGateway::class.java)
-    private val captcha = Mockito.mock(CaptchaService::class.java)
     private val locations = Mockito.mock(TownLocationResolver::class.java)
     private val battleMaps = Mockito.mock(BattleMapService::class.java)
     private val service = FishingService(
         executor = TownAuthenticatedExecutor(
             accounts, cookies, HofRequestFactory(), gateway, LoginStateParser(), HofFormParser(),
-            HofResultParser(), TownActionGuard(), captcha,
+            HofResultParser(), TownActionGuard(),
         ),
         locationResolver = locations,
         parser = FishingPageParser(),

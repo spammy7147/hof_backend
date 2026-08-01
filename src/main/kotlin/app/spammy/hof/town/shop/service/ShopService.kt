@@ -5,6 +5,7 @@ import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.town.common.model.TownActionRequest
 import app.spammy.hof.town.common.model.TownActionSelection
 import app.spammy.hof.town.common.model.TownFeatureId
+import app.spammy.hof.town.common.model.ParsedTownPage
 import app.spammy.hof.town.common.model.TownSelectionType
 import app.spammy.hof.town.common.service.TownAuthenticatedExecutor
 import app.spammy.hof.town.common.service.TownLocationResolver
@@ -32,12 +33,15 @@ class ShopService(
     private val queryRepository: ShopQueryRepository,
     private val clock: Clock = Clock.systemUTC(),
 ) {
-    /** 공용 snapshot만 읽는다. 사용자 HOF 세션, 상품 GET, CAPTCHA는 목록 조회에 사용하지 않는다. */
-    fun loadShop(shopId: ShopId): ShopResponse = catalog(shopId)
+    /** 암흑상점은 입장할 때마다 로그인 사용자의 최신 HOF 목록을 읽는다. 나머지는 공용 일일 snapshot을 사용한다. */
+    fun loadShop(accountId: Long, shopId: ShopId): ShopResponse = when (shopId) {
+        ShopId.DARK -> loadLiveCatalog(accountId, shopId)
+        else -> catalog(shopId)
+    }
 
     fun purchase(accountId: Long, shopId: ShopId, request: PurchaseRequest): ShopResponse {
         ensureUnique(request.items.map { it.itemId })
-        request.items.forEach { line ->
+        if (shopId != ShopId.DARK) request.items.forEach { line ->
             queryRepository.findActiveItem(shopId.name, line.itemId)
                 ?: invalid("현재 상점에서 구매할 수 없는 품목입니다.")
         }
@@ -51,8 +55,11 @@ class ShopService(
                     ?: invalid("상점 구매 양식이 변경되었습니다. 목록을 새로 확인해 주세요.")
                 TownActionRequest(form.actionId, request.items.map { TownActionSelection(it.itemId, it.quantity) })
             },
-        ) { _, _, actionResult, _ -> TownActionResultResponse.from(actionResult) }
-        return catalog(shopId).copy(result = result)
+        ) { _, _, actionResult, page ->
+            val response = if (shopId == ShopId.DARK) liveCatalog(shopId, page) else catalog(shopId)
+            response.copy(result = TownActionResultResponse.from(actionResult))
+        }
+        return result
     }
 
     fun loadSell(accountId: Long): SellResponse = executor.loadProjected(
@@ -109,6 +116,20 @@ class ShopService(
             lastVerifiedAt = lastVerified,
         )
     }
+
+    private fun loadLiveCatalog(accountId: Long, shopId: ShopId): ShopResponse {
+        val url = locationResolver.resolve(feature(shopId)).url
+        return executor.loadProjected(accountId, url) { _, _, page -> liveCatalog(shopId, page) }
+    }
+
+    private fun liveCatalog(shopId: ShopId, page: ParsedTownPage): ShopResponse = ShopResponse(
+        shopId = shopId.pathValue,
+        items = parser.parseCatalog(page).map { item ->
+            ShopItemResponse(item.itemKey, item.name, true, item.description, price = item.price, type = item.type)
+        },
+        stale = false,
+        lastVerifiedAt = null,
+    )
 
     private fun feature(shopId: ShopId) = when (shopId) {
         ShopId.GENERAL -> TownFeatureId.GENERAL_STORE

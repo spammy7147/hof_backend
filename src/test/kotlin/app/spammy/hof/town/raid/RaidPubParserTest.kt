@@ -7,7 +7,6 @@ import app.spammy.hof.account.repository.CookieQueryRepository
 import app.spammy.hof.battle.dto.BattleMapResponse
 import app.spammy.hof.battle.model.BattleMapKeyMode
 import app.spammy.hof.battle.service.BattleMapService
-import app.spammy.hof.captcha.service.CaptchaService
 import app.spammy.hof.external.client.*
 import app.spammy.hof.external.model.*
 import app.spammy.hof.external.parser.LoginStateParser
@@ -178,7 +177,6 @@ class RaidPubParserTest {
         val accounts = Mockito.mock(AccountQueryRepository::class.java)
         val cookies = Mockito.mock(CookieQueryRepository::class.java)
         val gateway = Mockito.mock(AccountHofGateway::class.java)
-        val captcha = Mockito.mock(CaptchaService::class.java)
         val locations = Mockito.mock(TownLocationResolver::class.java)
         val maps = Mockito.mock(BattleMapService::class.java)
         Mockito.`when`(accounts.findById(7L)).thenReturn(HofAccountEntity(7L, "raid", "encrypted", Instant.EPOCH))
@@ -189,7 +187,7 @@ class RaidPubParserTest {
             HofHttpResponse(200, URL, responses.first(), emptyMap()),
             *responses.drop(1).map { HofHttpResponse(200, URL, it, emptyMap()) }.toTypedArray(),
         )
-        val executor = TownAuthenticatedExecutor(accounts, cookies, HofRequestFactory(), gateway, LoginStateParser(), forms, HofResultParser(), TownActionGuard(), captcha)
+        val executor = TownAuthenticatedExecutor(accounts, cookies, HofRequestFactory(), gateway, LoginStateParser(), forms, HofResultParser(), TownActionGuard())
         return Context(RaidPubService(executor, locations, parser, maps), gateway)
     }
     private fun observedMap(code: String) = BattleMapResponse("raid", code, code, null, 0, 0, null, null, null, null, null, null, BattleMapKeyMode.UNKNOWN, null, null, false, true, true, null, "?raid_common=$code")
