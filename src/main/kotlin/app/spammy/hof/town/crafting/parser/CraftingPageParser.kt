@@ -35,7 +35,7 @@ class CraftingPageParser {
         } else emptyMap()
         val categories = parseCategories(actionForm, domForm, contract.categoryField)
         val categoryCandidateId = categories.firstOrNull(CraftingCategory::current)?.id
-        val itemRows = actionForm?.rows.orEmpty().filter { row ->
+        val formItemRows = actionForm?.rows.orEmpty().filter { row ->
             row.candidate == null || row.candidate.inputName == contract.itemField
         }.mapIndexedNotNull { index, row ->
             val label = clean(row.label)
@@ -54,6 +54,9 @@ class CraftingPageParser {
                 itemT = itemT,
             )
         }.distinctBy(CraftingRow::id)
+        val itemRows = formItemRows.ifEmpty {
+            parseDetachedItemRows(document, actionForm, contract, mode)
+        }
         val quantity = parseQuantity(domForm, mode)
         val refineOptions = parseRefineOptions(actionForm, domForm)
         val additional = parseAdditionalMaterials(actionForm, domForm, mode)
@@ -97,6 +100,41 @@ class CraftingPageParser {
             }.distinct()
             candidate to (assignments.singleOrNull() ?: return@mapNotNull null)
         }.toMap()
+
+    /**
+     * HOF create/refine 페이지는 AJAX로 갱신하는 #list를 action form 밖에 놓기도 한다.
+     * 이 경우 품목을 숨기지는 않되, 최신 form의 opaque candidate로 역참조되지 않은 행은 실행 불가로 노출한다.
+     */
+    private fun parseDetachedItemRows(
+        document: org.jsoup.nodes.Document,
+        actionForm: ParsedTownForm?,
+        contract: Contract,
+        mode: CraftingMode,
+    ): List<CraftingRow> = document.select("#list input[name=${cssValue(contract.itemField)}], input[name=${cssValue(contract.itemField)}]")
+        .distinct()
+        .mapIndexedNotNull { index, input ->
+            val value = input.attr("value").trim().ifBlank { return@mapIndexedNotNull null }
+            val owner = input.closest("tr") ?: input.closest("li") ?: input.closest("div") ?: input.parent()
+            val label = clean(owner?.text().orEmpty())
+            if (label.isBlank() || HEADER.matches(label)) return@mapIndexedNotNull null
+            val candidate = actionForm?.candidates
+                ?.filter { it.inputName == contract.itemField && it.inputValue == value }
+                ?.distinctBy(ParsedTownCandidate::id)
+                ?.singleOrNull()
+            val sources = listOf(input.attr("onclick"), input.closest("tr")?.attr("onclick").orEmpty())
+            val itemT = sources.flatMap { source -> ITEM_T_ASSIGNMENT.findAll(source).map { it.groupValues[3] }.toList() }
+                .distinct().singleOrNull()
+            CraftingRow(
+                id = candidate?.id ?: input.id().ifBlank { "detached-$index-$value" },
+                label = label.replace(LEADING_PRICE, "").trim(),
+                selectable = candidate != null && (mode !in ITEM_T_MODES || itemT != null),
+                detail = label,
+                cost = PRICE.find(label)?.groupValues?.get(1)?.number(),
+                owned = OWNED.find(label)?.groupValues?.get(1)?.intNumber(),
+                workSeconds = WORK_SECONDS.find(label)?.groupValues?.get(1)?.intNumber(),
+                itemT = itemT,
+            )
+        }.distinctBy(CraftingRow::id)
 
     private fun parseCategories(form: ParsedTownForm?, domForm: Element?, field: String): List<CraftingCategory> {
         if (form == null || domForm == null) return emptyList()

@@ -125,6 +125,18 @@ class CraftingParserTest {
         assertThat(value.allowedRefineCounts).containsExactly(1, 2, 3)
     }
 
+    @Test fun `제작공방 AJAX 목록이 form 밖에 렌더링되어도 품목을 누락하지 않는다`() {
+        val row = "<table><tr><td>$ 2,000</td><td><input id=\"recipe-1\" type=\"radio\" name=\"ItemNo\" value=\"sword\" onclick=\"document.getElementById('ItemT').value='77'\"> Rune Sword · Steel Ingot x10</td></tr></table>"
+        val html = resource("create.html")
+            .replace(row, "")
+            .replace("</form>", "</form><div id=\"list\">$row</div>")
+
+        val value = parser.parse(CraftingMode.CREATE, html, URL, forms.parse(html, URL))
+
+        assertThat(value.rows).anyMatch { it.label.contains("Rune Sword") }
+        assertThat(value.rows.single { it.label.contains("Rune Sword") }.selectable).isFalse()
+    }
+
     @Test fun `HOF의 비정상적으로 큰 보유량과 제작 시간은 Int overflow 없이 null 처리한다`() {
         val html = resource("workbase.html")
             .replace("x3", "x9,999,999,999")
