@@ -161,8 +161,8 @@ class TypedLiveAutomationSnapshotLoaderTest {
         Mockito.`when`(mapQuery.findAllStatesForExecution(7)).thenReturn(listOf(liveState))
         liveMap.requiredTime = 75
         Mockito.`when`(status.findLatest(7)).thenReturn(
-            HofObservedStatusResponse("player", 1L, 1451, 6000, "Nothing", "Nothing", now.minusSeconds(50)),
-            HofObservedStatusResponse("player", 1L, 1450, 6000, "Nothing", "Nothing", now.minusSeconds(50)),
+            HofObservedStatusResponse("player", 1L, 1470, 6000, "Nothing", "Nothing", now.minusSeconds(50)),
+            HofObservedStatusResponse("player", 1L, 1469, 6000, "Nothing", "Nothing", now.minusSeconds(50)),
         )
         Mockito.`when`(presets.findAllByAccountId(7)).thenReturn(listOf(primaryA, primaryB, explicitX))
         Mockito.`when`(presets.findPrimaryByAccountId(7)).thenReturn(primaryA, primaryA, primaryB, primaryB)
@@ -182,8 +182,8 @@ class TypedLiveAutomationSnapshotLoaderTest {
         assertEquals(BattleMapKeyMode.UNLIMITED, firstQuest.mapStates.single().keyMode)
         assertEquals("qmap", firstQuest.mapStates.single().mapCode)
         assertEquals("Live map", firstQuest.mapStates.single().mapName)
-        val firstTime = AutomationTimeSnapshot(1451, 6000, now.minusSeconds(50))
-        val secondTime = AutomationTimeSnapshot(1450, 6000, now.minusSeconds(50))
+        val firstTime = AutomationTimeSnapshot(1470, 6000, now.minusSeconds(50))
+        val secondTime = AutomationTimeSnapshot(1469, 6000, now.minusSeconds(50))
         assertEquals(firstTime, firstQuest.timeSnapshot)
         assertEquals(secondTime, secondQuest.timeSnapshot)
         assertEquals(75, firstQuest.mapStates.single().requiredTime)
@@ -198,7 +198,7 @@ class TypedLiveAutomationSnapshotLoaderTest {
         )
         val secondEvaluation = assertIs<HandlerEvaluation.Unavailable>(battleHandler.evaluate(secondBattle))
         assertEquals(3, firstAction.battleCount)
-        assertEquals(now.plusSeconds(1), secondEvaluation.nextRunAt)
+        assertEquals(now.plusMillis(1_600), secondEvaluation.nextRunAt)
         assertEquals(101, firstBattle.primaryPresetId); assertEquals(102, secondBattle.primaryPresetId)
         assertNotEquals(firstBattle.executionIdentity, secondBattle.executionIdentity)
         assertTrue(firstBattle.executionIdentity.isNotBlank() && firstBattle.executionIdentity.length <= 128)

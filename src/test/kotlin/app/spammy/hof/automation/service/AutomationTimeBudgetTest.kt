@@ -10,18 +10,20 @@ class AutomationTimeBudgetTest {
     private val policy = BattleTimePolicy()
 
     @Test
-    fun `estimate adds one TIME per elapsed second and clamps to maximum`() {
+    fun `estimate adds one TIME per 1 point 6 seconds and clamps to maximum`() {
         val snapshot = AutomationTimeSnapshot(50, 100, NOW)
         assertEquals(50, snapshot.estimateAt(NOW))
-        assertEquals(80, snapshot.estimateAt(NOW.plusSeconds(30)))
-        assertEquals(100, snapshot.estimateAt(NOW.plusSeconds(70)))
+        assertEquals(50, snapshot.estimateAt(NOW.plusMillis(1_599)))
+        assertEquals(51, snapshot.estimateAt(NOW.plusMillis(1_600)))
+        assertEquals(80, snapshot.estimateAt(NOW.plusSeconds(48)))
+        assertEquals(100, snapshot.estimateAt(NOW.plusSeconds(80)))
         assertEquals(50, snapshot.estimateAt(NOW.minusSeconds(10)))
     }
 
     @Test
     fun `battle map preserves 1500 TIME and chooses one or three only above the reserve`() {
         assertEquals(
-            NOW.plusSeconds(1),
+            NOW.plusMillis(1_600),
             assertIs<BattleTimeDecision.Wait>(
                 policy.forBattleMap(time(1500), NOW, 10, true, true),
             ).nextRunAt,
@@ -62,7 +64,7 @@ class AutomationTimeBudgetTest {
     @Test
     fun `wait schedules the exact estimated deficit and missing observation retries safely`() {
         assertEquals(
-            NOW.plusSeconds(40),
+            NOW.plusSeconds(64),
             assertIs<BattleTimeDecision.Wait>(policy.forAdventureMap(time(60), NOW, 100)).nextRunAt,
         )
         assertEquals(

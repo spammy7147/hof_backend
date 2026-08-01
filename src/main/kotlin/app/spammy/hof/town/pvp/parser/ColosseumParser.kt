@@ -12,10 +12,15 @@ import org.springframework.stereotype.Component
 class ColosseumParser {
     fun parseBattle(html: String, finalUrl: String, page: ParsedTownPage, result: ParsedTownResult? = null): ColosseumBattleSnapshot {
         val doc = Jsoup.parse(html, finalUrl)
-        val teamForm = page.forms.singleOrNull { form ->
+        val semanticTeamForms = page.forms.filter { form ->
             form.submitFields.singleOrNull()?.let { TEAM.matchesSemantic(it.name, it.value) } == true &&
                 form.candidates.any { it.selectionType == TownSelectionType.CHECKBOX } &&
                 form.candidates.none { it.selectionType == TownSelectionType.RADIO }
+        }
+        val teamForm = semanticTeamForms.singleOrNull() ?: page.forms.singleOrNull { form ->
+            val checkboxes = form.candidates.filter { it.selectionType == TownSelectionType.CHECKBOX }
+            checkboxes.isNotEmpty() && form.candidates.none { it.selectionType == TownSelectionType.RADIO } &&
+                checkboxes.map { it.inputName }.distinct().singleOrNull()?.let(TEAM_FIELD::matches) == true
         }
         val challengeForms = page.forms.filter { form ->
             form.submitFields.singleOrNull()?.let { CHALLENGE.matchesSemantic(it.name, it.value) } == true &&
@@ -31,7 +36,7 @@ class ColosseumParser {
         } }.orEmpty()
         val selected = fighters.filter(ColosseumFighter::selected).map(ColosseumFighter::id)
         val max = teamDom?.select("input[type=checkbox]")?.firstOrNull()?.attr("data-max")?.toIntOrNull()
-            ?: MAX_TEAM.find(clean(doc.text()))?.groupValues?.get(1)?.toIntOrNull() ?: selected.size
+            ?: MAX_TEAM.find(clean(doc.text()))?.groupValues?.get(1)?.toIntOrNull() ?: if (teamForm == null) 0 else COLOSSEUM_TEAM_SIZE
         val stableIds = challengeForms.map { form -> form to stableOpponentId(form) }
         val uniqueIds = stableIds.mapNotNull { it.second }.groupingBy { it }.eachCount()
         val opponents = stableIds.mapIndexedNotNull { index, (form, stableId) ->
@@ -130,6 +135,7 @@ class ColosseumParser {
     private fun String.boundedLong() = replace(",", "").toBigIntegerOrNull()?.takeIf { it.signum() >= 0 && it.bitLength() <= 63 }?.toLong()
     private companion object {
         val TEAM = Regex("(?:set\\s*team|team\\s*setting|팀\\s*(?:설정|저장))", RegexOption.IGNORE_CASE)
+        val TEAM_FIELD = Regex("team(?:\\[\\])?", RegexOption.IGNORE_CASE)
         val CHALLENGE = Regex("(?:challenge|도전|전투를?\\s*시작)", RegexOption.IGNORE_CASE)
         val TRADE = Regex("(?:create|trade|교환)", RegexOption.IGNORE_CASE)
         val SHOP_TITLE = Regex("콜로세움\\s*교환소|Colosseum\\s*Shop", RegexOption.IGNORE_CASE)
@@ -162,5 +168,6 @@ class ColosseumParser {
         const val MAX_SHOP_ITEMS = 500
         const val MAX_CURRENCIES = 50
         const val MAX_TRADE_QUANTITY = 999
+        const val COLOSSEUM_TEAM_SIZE = 5
     }
 }

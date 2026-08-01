@@ -57,7 +57,7 @@ class QuestAutomationHandlerTest {
             states = listOf(state("adventure", category = "adventure_map", requiredTime = 50)),
             timeCurrent = 49,
         ))
-        assertEquals(NOW.plusSeconds(1), assertIs<HandlerEvaluation.Unavailable>(waiting).nextRunAt)
+        assertEquals(NOW.plusMillis(1_600), assertIs<HandlerEvaluation.Unavailable>(waiting).nextRunAt)
 
         val fallback = battle(handler.evaluate(snapshot(
             quests = listOf(quest("q", QuestState.ACTIVE, 0, monster("kill"))),

@@ -18,7 +18,7 @@ class AdventureMapAutomationHandlerTest {
             listOf(state("costly", requiredTime = 150)),
             timeCurrent = 100,
         ))
-        assertEquals(NOW.plusSeconds(50), assertIs<HandlerEvaluation.Unavailable>(waiting).nextRunAt)
+        assertEquals(NOW.plusSeconds(80), assertIs<HandlerEvaluation.Unavailable>(waiting).nextRunAt)
 
         val action = runnable(handler.evaluate(snapshot(
             listOf(setting(1, "costly", 0)),
@@ -41,7 +41,7 @@ class AdventureMapAutomationHandlerTest {
             listOf(state("fallback", requiredTime = null)),
             timeCurrent = 99,
         ))
-        assertEquals(NOW.plusSeconds(1), assertIs<HandlerEvaluation.Unavailable>(fallback).nextRunAt)
+        assertEquals(NOW.plusMillis(1_600), assertIs<HandlerEvaluation.Unavailable>(fallback).nextRunAt)
     }
 
     @Test

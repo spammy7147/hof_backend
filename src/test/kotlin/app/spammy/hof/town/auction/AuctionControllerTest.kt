@@ -6,6 +6,9 @@ import app.spammy.hof.town.auction.parser.AuctionPageParser
 import app.spammy.hof.town.auction.service.AuctionMarket
 import app.spammy.hof.town.auction.service.AuctionObservationService
 import app.spammy.hof.town.auction.service.AuctionService
+import app.spammy.hof.town.common.model.ParsedTownPage
+import app.spammy.hof.town.common.service.TownAuthenticatedExecutor
+import app.spammy.hof.town.common.service.TownLocationResolver
 import app.spammy.hof.town.common.parser.HofFormParser
 import java.time.Instant
 import kotlin.test.Test
@@ -39,6 +42,20 @@ class AuctionControllerTest {
 
         assertEquals(expected, actual)
         Mockito.verifyNoInteractions(auction, recovery)
+    }
+
+    @Test
+    fun `live auction remains available when observation fails`() {
+        val executor = Mockito.mock(TownAuthenticatedExecutor::class.java)
+        val locations = Mockito.mock(TownLocationResolver::class.java)
+        val parser = Mockito.mock(AuctionPageParser::class.java)
+        val observations = Mockito.mock(AuctionObservationService::class.java)
+        val page = Mockito.mock(ParsedTownPage::class.java)
+        Mockito.`when`(parser.snapshots("auction-html", page)).thenThrow(IllegalStateException("observation unavailable"))
+
+        AuctionService(executor, locations, parser, observations).observeBestEffort("auction-html", page)
+
+        Mockito.verifyNoInteractions(observations)
     }
 
     @Test

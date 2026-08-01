@@ -145,6 +145,9 @@ class FishingPageParserTest {
         val snapshot = parser.parse(html, url, forms.parse(html, url), results.parse(html))
 
         assertEquals(FishingOutcome.CAUGHT, snapshot.lastOutcome)
+        assertTrue(snapshot.waterStatus.orEmpty().startsWith("낚는다!"))
+        assertTrue(snapshot.waterStatus.orEmpty().contains("Rank Fish"))
+        assertFalse(snapshot.waterStatus.orEmpty().contains("수면이 아름답게"))
         val item = snapshot.catches.single()
         assertEquals("Rank Fish", item.name)
         assertEquals(2, item.quantity)

@@ -41,7 +41,7 @@ class BattleMapAutomationHandlerTest {
             now,
             timeCurrent = 1500,
         ))
-        assertEquals(now.plusSeconds(1), assertIs<HandlerEvaluation.Unavailable>(at1500).nextRunAt)
+        assertEquals(now.plusMillis(1_600), assertIs<HandlerEvaluation.Unavailable>(at1500).nextRunAt)
 
         fun actionAt(time: Int) = assertIs<BattleMapAutomationAction>(
             assertIs<HandlerEvaluation.Runnable>(handler.evaluate(snapshot(

@@ -17,8 +17,13 @@ data class AutomationTimeSnapshot(
     }
 
     fun estimateAt(now: Instant): Int {
-        val elapsed = Duration.between(observedAt, now).seconds.coerceAtLeast(0)
-        return (current.toLong() + elapsed).coerceAtMost(max.toLong()).toInt()
+        val elapsedMillis = Duration.between(observedAt, now).toMillis().coerceAtLeast(0)
+        val recovered = elapsedMillis / TIME_RECOVERY_INTERVAL_MILLIS
+        return (current.toLong() + recovered).coerceAtMost(max.toLong()).toInt()
+    }
+
+    companion object {
+        const val TIME_RECOVERY_INTERVAL_MILLIS = 1_600L
     }
 }
 
@@ -90,7 +95,7 @@ class BattleTimePolicy(
         if (estimated < minimumExecutionTime) {
             return BattleTimeDecision.Wait(
                 nextRunAt = unreachableRetryAt
-                    ?: now.plusSeconds((minimumExecutionTime - estimated).toLong()),
+                    ?: recoveryAt(now, minimumExecutionTime - estimated),
                 estimatedTime = estimated,
                 requiredTime = minimumExecutionTime,
             )
@@ -133,7 +138,7 @@ class BattleTimePolicy(
         required: Int,
         fallback: Boolean,
     ) = BattleTimeDecision.Wait(
-        nextRunAt = now.plusSeconds((required - estimated).coerceAtLeast(1).toLong()),
+        nextRunAt = recoveryAt(now, (required - estimated).coerceAtLeast(1)),
         estimatedTime = estimated,
         requiredTime = required,
         usedFallback = fallback,
@@ -149,6 +154,9 @@ class BattleTimePolicy(
         requiredTime = required,
         usedFallback = fallback,
     )
+
+    private fun recoveryAt(now: Instant, deficit: Int): Instant =
+        now.plusMillis(deficit.toLong() * AutomationTimeSnapshot.TIME_RECOVERY_INTERVAL_MILLIS)
 
     private companion object {
         const val BATTLE_TIME_PER_ROUND = 100

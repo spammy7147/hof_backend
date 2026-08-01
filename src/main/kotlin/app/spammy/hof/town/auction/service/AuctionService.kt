@@ -11,6 +11,7 @@ import app.spammy.hof.town.auction.repository.AuctionAtomicUpsertRepository
 import app.spammy.hof.town.common.model.TownActionRequest
 import app.spammy.hof.town.common.model.TownActionSelection
 import app.spammy.hof.town.common.model.TownFeatureId
+import app.spammy.hof.town.common.model.ParsedTownPage
 import app.spammy.hof.town.common.service.TownAuthenticatedExecutor
 import app.spammy.hof.town.common.service.TownLocationResolver
 import app.spammy.hof.town.fishing.dto.TownActionResultResponse
@@ -19,6 +20,7 @@ import java.math.BigInteger
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
+import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
@@ -150,7 +152,7 @@ class AuctionService(
     fun browse(accountId: Long, query: String?): AuctionPage {
         val url = resolveLocation(accountId)
         return executor.loadProjected(accountId, url) { html, _, page ->
-            observations.observe(parser.snapshots(html, page))
+            observeBestEffort(html, page)
             parser.parse(html, page, query)
         }
     }
@@ -165,7 +167,7 @@ class AuctionService(
             BID_SCALARS,
             "Bid",
         ) { html, _, result, page ->
-            observations.observe(parser.snapshots(html, page))
+            observeBestEffort(html, page)
             parser.parse(html, page).copy(result = anonymousResult(result))
         }
     }
@@ -208,8 +210,17 @@ class AuctionService(
             parser.requireExactForm(page, actionId, submitName)
             TownActionRequest(actionId)
         }) { html, _, result, page ->
-            observations.observe(parser.snapshots(html, page))
+            observeBestEffort(html, page)
             parser.parse(html, page).copy(result = anonymousResult(result))
+        }
+    }
+
+    /** 시세 관측은 부가 기능이므로 파싱 또는 DB 장애가 사용자의 옥션 작업을 막지 않는다. */
+    internal fun observeBestEffort(html: String, page: ParsedTownPage) {
+        try {
+            observations.observe(parser.snapshots(html, page))
+        } catch (failure: Exception) {
+            logger.warn("Auction observation failed; serving the live auction response: {}", failure.javaClass.simpleName)
         }
     }
 
@@ -237,6 +248,7 @@ class AuctionService(
         ))
     }
     private companion object {
+        val logger = LoggerFactory.getLogger(AuctionService::class.java)
         const val TOWN_ENTRY_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=town"
         val BID_SCALARS = setOf("ArticleNo", "BidPrice")
         val EXHIBIT_SCALARS = setOf("Amount", "ExhibitTime", "StartPrice", "Comment")

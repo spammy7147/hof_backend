@@ -17,7 +17,10 @@ import java.net.URI
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import org.jsoup.Jsoup
+import org.jsoup.nodes.Node
 import org.jsoup.nodes.Element
+import org.jsoup.nodes.TextNode
+import org.jsoup.select.NodeVisitor
 import org.springframework.stereotype.Component
 
 @Component
@@ -43,24 +46,26 @@ class FishingPageParser {
             .filter { clean(it.text()).matches(Regex("^(전투|Battle)$", RegexOption.IGNORE_CASE)) }
             .mapNotNull { parseBattleTarget(it, finalUrl) }
             .firstOrNull()
-        val resultText = result?.let { (it.messages + it.items.map { item -> item.label }).joinToString(" ") }
+        val fishingResultLines = parseFishingResultLines(contentRoot)
+        val resultText = ((result?.messages.orEmpty() + result?.items.orEmpty().map { item -> item.label }) + fishingResultLines)
+            .joinToString(" ")
         val outcome = if (result != null) when {
-            ESCAPED.containsMatchIn(resultText.orEmpty()) -> FishingOutcome.ESCAPED
-            CAUGHT.containsMatchIn(resultText.orEmpty()) -> FishingOutcome.CAUGHT
+            ESCAPED.containsMatchIn(resultText) -> FishingOutcome.ESCAPED
+            CAUGHT.containsMatchIn(resultText) -> FishingOutcome.CAUGHT
             result.messages.isNotEmpty() || result.items.isNotEmpty() -> FishingOutcome.INFORMATIONAL
             else -> FishingOutcome.INFORMATIONAL
         } else if (STARTED.containsMatchIn(text)) FishingOutcome.STARTED else null
         // HOF는 실제 낚시 전투 차단 문구를 빨간 글씨로 표시한다. 낚시 action 직후에는
         // 같은 문구가 본문 경고가 아니라 결과 영역으로만 반환될 수 있으므로 구조화된
         // action 결과도 함께 본다. 일반 안내문은 result가 아니므로 차단으로 오인하지 않는다.
-        val blocked = battleMessagePresent || BATTLE_BLOCKED.containsMatchIn(resultText.orEmpty())
+        val blocked = battleMessagePresent || BATTLE_BLOCKED.containsMatchIn(resultText)
         val battleTarget = detectedBattleTarget.takeIf { blocked }
         val available = if (blocked) emptyList() else actions
-        val catches = if (result != null) parseCaughtItems(document) else emptyList()
+        val catches = if (result != null) parseCaughtItems(document, fishingResultLines) else emptyList()
         return FishingSnapshot(
             notice = DATE_NOTICE.find(text)?.value,
             remainingCasts = REMAINING.find(text)?.groupValues?.get(1)?.toIntOrNull(),
-            waterStatus = parseWaterStatus(text),
+            waterStatus = fishingResultLines.takeIf(List<String>::isNotEmpty)?.joinToString("\n") ?: parseWaterStatus(text),
             baitCount = BAIT.find(text)?.groupValues?.get(1)?.toIntOrNull(),
             shiningBaitCount = SHINING_BAIT.find(text)?.groupValues?.get(1)?.toIntOrNull(),
             escapeSeconds = ESCAPE_SECONDS.find(text)?.groupValues?.get(1)?.toIntOrNull(),
@@ -241,11 +246,12 @@ class FishingPageParser {
         FishingBattleTarget(category, code.take(120))
     }.getOrNull()
 
-    private fun parseCaughtItems(document: org.jsoup.nodes.Document): List<FishingCatchItem> {
+    private fun parseCaughtItems(document: org.jsoup.nodes.Document, fishingResultLines: List<String>): List<FishingCatchItem> {
         val roots = document.select("#result, [data-town-result], .result, .message, .success")
-        return roots.flatMap { root -> root.select("li, tr, p, [data-result-item], .result-item, .item").ifEmpty { listOf(root) } }
-            .mapNotNull { element ->
-                val line = clean(element.text())
+        val lines = roots.flatMap { root ->
+            root.select("li, tr, p, [data-result-item], .result-item, .item").ifEmpty { listOf(root) }.map { clean(it.text()) }
+        } + fishingResultLines
+        return lines.mapNotNull { line ->
                 if (!CAUGHT.containsMatchIn(line)) return@mapNotNull null
                 val name = line.substringBefore('(').substringBefore(" x").trim()
                 FishingCatchItem(
@@ -255,6 +261,36 @@ class FishingPageParser {
                     effect = EFFECT.find(line)?.groupValues?.get(1)?.trim()?.takeIf(String::isNotBlank),
                 ).takeIf { it.name.isNotBlank() }
             }.distinctBy { listOf(it.name, it.quantity, it.remainingUses, it.effect) }
+    }
+
+    /** HOF 낚시 결과는 별도 result wrapper 없이 '낚시 교환소'와 '물의 상태' 사이에 출력된다. */
+    private fun parseFishingResultLines(contentRoot: Element): List<String> {
+        val start = contentRoot.select("a").firstOrNull { clean(it.text()) == "낚시 교환소" } ?: return emptyList()
+        val end = contentRoot.getAllElements().firstOrNull { clean(it.ownText()) == "물의 상태" } ?: return emptyList()
+        val buffer = StringBuilder()
+        var collecting = false
+        contentRoot.traverse(object : NodeVisitor {
+            override fun head(node: Node, depth: Int) {
+                if (node === end) collecting = false
+                if (!collecting) return
+                when {
+                    node is TextNode -> buffer.append(node.text())
+                    node is Element && (node.tagName() == "br" || node.tagName() in RESULT_BLOCK_TAGS) -> buffer.append('\n')
+                }
+            }
+
+            override fun tail(node: Node, depth: Int) {
+                if (node === start) collecting = true
+                if (collecting && node is Element && node.tagName() in RESULT_BLOCK_TAGS) buffer.append('\n')
+            }
+        })
+        return buffer.lineSequence()
+            .map(::clean)
+            .filter(String::isNotBlank)
+            .filterNot { FISHING_RESULT_NOISE.matches(it) }
+            .distinct()
+            .take(MAX_FISHING_RESULT_LINES)
+            .toList()
     }
 
     private fun parseWaterStatus(text: String): String? {
@@ -301,6 +337,9 @@ class FishingPageParser {
         val CSS_COLOR = Regex("(?:^|;)\\s*color\\s*:\\s*([^;\\s]+)", RegexOption.IGNORE_CASE)
         val RED_COLOR_VALUES = setOf("red", "#f00", "#ff0000", "rgb(255,0,0)", "rgb(255, 0, 0)")
         val FISHING_ACTION_LABEL = Regex("^(?:낚시를 시작한다|낚시 시작|낚는다|상태를 본다|거른다)$")
+        val FISHING_RESULT_NOISE = Regex("^(?:낚시터|낚시 교환소)$")
+        val RESULT_BLOCK_TAGS = setOf("p", "div", "li", "tr", "section")
+        const val MAX_FISHING_RESULT_LINES = 8
         val WATER_STATUS_ENDINGS = listOf(
             "미끼 경단",
             "빛나는 미끼",
