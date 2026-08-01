@@ -1,5 +1,7 @@
 package app.spammy.hof.town.fishing.service
 
+import app.spammy.hof.battle.dto.BattleMapResponse
+import app.spammy.hof.battle.service.BattleMapService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.town.common.model.ParsedTownPage
@@ -12,6 +14,8 @@ import app.spammy.hof.town.fishing.dto.FishingExchangeRequest
 import app.spammy.hof.town.fishing.dto.FishingExchangeResponse
 import app.spammy.hof.town.fishing.dto.FishingResponse
 import app.spammy.hof.town.fishing.model.FishingAction
+import app.spammy.hof.town.fishing.model.FishingBattleTarget
+import app.spammy.hof.town.fishing.model.FishingSnapshot
 import app.spammy.hof.town.fishing.parser.FishingPageParser
 import org.springframework.stereotype.Service
 
@@ -20,11 +24,12 @@ class FishingService(
     private val executor: TownAuthenticatedExecutor,
     private val locationResolver: TownLocationResolver,
     private val parser: FishingPageParser,
+    private val battleMaps: BattleMapService,
 ) {
     fun load(accountId: Long): FishingResponse {
         val url = locationResolver.resolve(TownFeatureId.FISHING).url
         return executor.loadProjected(accountId, url) { html, finalUrl, page ->
-            FishingResponse.from(parser.parse(html, finalUrl, page))
+            FishingResponse.from(withObservedBattleTarget(accountId, parser.parse(html, finalUrl, page)))
         }
     }
 
@@ -35,7 +40,7 @@ class FishingService(
             pageUrl = url,
             resolveAction = { html, finalUrl, page -> resolveFishingAction(html, finalUrl, page, action) },
         ) { html, finalUrl, result, page ->
-            FishingResponse.from(parser.parse(html, finalUrl, page, result))
+            FishingResponse.from(withObservedBattleTarget(accountId, parser.parse(html, finalUrl, page, result)))
         }
     }
 
@@ -118,5 +123,33 @@ class FishingService(
         )
     }
 
+    /**
+     * 실서버의 낚시 경고에는 전투 링크가 없을 수 있다. 그 경우 전투 탭의 이번 응답에서 실제로 관측된
+     * `낚시` 그룹 맵을 찾아 전투 화면으로 이동할 수 있는 목표를 보완한다.
+     */
+    private fun withObservedBattleTarget(accountId: Long, snapshot: FishingSnapshot): FishingSnapshot {
+        if (!snapshot.blockedByBattle || snapshot.battleTarget != null) return snapshot
+
+        val observed = battleMaps.findCurrentlyObservedMaps(accountId, BATTLE_CATEGORY_ID)
+            .filter { it.enabled && it.resolved && !it.mapCode.isNullOrBlank() }
+            .filter(::isFishingBattleMap)
+            .firstOrNull() ?: return snapshot
+        return snapshot.copy(
+            battleTarget = FishingBattleTarget(
+                categoryId = BATTLE_CATEGORY_ID,
+                mapCode = requireNotNull(observed.mapCode),
+                name = observed.name,
+            ),
+        )
+    }
+
+    private fun isFishingBattleMap(map: BattleMapResponse): Boolean =
+        map.groupName?.trim()?.startsWith("낚시") == true ||
+            map.name.trim().startsWith("Fishing-", ignoreCase = true)
+
     private fun unavailable(message: String): Nothing = throw ApiException(ErrorCode.INVALID_REQUEST, message)
+
+    private companion object {
+        const val BATTLE_CATEGORY_ID = "battle_map"
+    }
 }

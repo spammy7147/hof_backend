@@ -40,14 +40,14 @@ data class FishingResponse(
             availableActions = snapshot.availableActions.map { it.action }.toSet(),
             lastOutcome = snapshot.lastOutcome,
             blockedByBattle = snapshot.blockedByBattle,
-            battleTarget = snapshot.battleTarget?.let { FishingBattleTargetResponse(it.categoryId, it.mapCode) },
+            battleTarget = snapshot.battleTarget?.let { FishingBattleTargetResponse(it.categoryId, it.mapCode, it.name) },
             catches = snapshot.catches.map { FishingCatchItemResponse(it.name, it.quantity, it.remainingUses, it.effect) },
             result = snapshot.result?.let(TownActionResultResponse::from),
         )
     }
 }
 
-data class FishingBattleTargetResponse(val categoryId: String, val mapCode: String)
+data class FishingBattleTargetResponse(val categoryId: String, val mapCode: String, val name: String?)
 data class FishingCatchItemResponse(val name: String, val quantity: Int, val remainingUses: Int?, val effect: String?)
 
 data class FishingExchangeResponse(

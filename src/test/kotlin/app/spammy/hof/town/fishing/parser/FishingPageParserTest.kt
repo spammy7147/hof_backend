@@ -62,6 +62,17 @@ class FishingPageParserTest {
     }
 
     @Test
+    fun `빨간 전투 경고만 있고 링크가 없어도 낚시 action을 차단한다`() {
+        val html = fixture("monster.html").replace("<a href=\"?menu=hunt&amp;common=fishing_12\">전투</a>", "")
+        val monster = parser.parse(html, url, forms.parse(html, url))
+
+        assertTrue(monster.blockedByBattle)
+        assertEquals(null, monster.battleTarget)
+        assertEquals(FishingPrimaryAction.NONE, monster.primaryAction)
+        assertTrue(monster.availableActions.isEmpty())
+    }
+
+    @Test
     fun `상단 공용 전투 링크는 낚시 전투로 오인하지 않는다`() {
         val html = fixture("header-battle.html")
         val snapshot = parser.parse(html, url, forms.parse(html, url))

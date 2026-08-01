@@ -52,7 +52,7 @@ class FishingPageParser {
         } else if (STARTED.containsMatchIn(text)) FishingOutcome.STARTED else null
         // HOF는 실제 낚시 전투 차단 문구를 빨간 글씨로 표시한다.
         // 일반 안내문에도 몬스터와 전투 링크가 있으므로 문구만으로 차단하면 안 된다.
-        val blocked = battleMessagePresent && detectedBattleTarget != null
+        val blocked = battleMessagePresent
         val battleTarget = detectedBattleTarget.takeIf { blocked }
         val available = if (blocked) emptyList() else actions
         val catches = if (result != null) parseCaughtItems(document) else emptyList()

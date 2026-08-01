@@ -3,6 +3,9 @@ package app.spammy.hof.town.fishing.service
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.CookieQueryRepository
+import app.spammy.hof.battle.dto.BattleMapResponse
+import app.spammy.hof.battle.model.BattleMapKeyMode
+import app.spammy.hof.battle.service.BattleMapService
 import app.spammy.hof.captcha.service.CaptchaService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
@@ -34,6 +37,7 @@ class FishingServiceTest {
     private val gateway = Mockito.mock(AccountHofGateway::class.java)
     private val captcha = Mockito.mock(CaptchaService::class.java)
     private val locations = Mockito.mock(TownLocationResolver::class.java)
+    private val battleMaps = Mockito.mock(BattleMapService::class.java)
     private val service = FishingService(
         executor = TownAuthenticatedExecutor(
             accounts, cookies, HofRequestFactory(), gateway, LoginStateParser(), HofFormParser(),
@@ -41,7 +45,39 @@ class FishingServiceTest {
         ),
         locationResolver = locations,
         parser = FishingPageParser(),
+        battleMaps = battleMaps,
     )
+
+    @Test
+    fun `낚시 페이지에 전투 링크가 없어도 전투 탭에서 현재 출현한 낚시 맵을 연결한다`() {
+        val html = fixture("monster.html").replace(Regex("<a href=\"\\?menu=hunt&amp;common=fishing_12\">전투</a>"), "")
+        stubFishing(html)
+        Mockito.`when`(battleMaps.findCurrentlyObservedMaps(7L, "battle_map"))
+            .thenReturn(listOf(observedMap("fishing_eel", "Fishing- 전기 뱀장어", "낚시(적정 레벨: ??-??)")))
+
+        val response = service.load(7L)
+
+        assertEquals(true, response.blockedByBattle)
+        assertEquals("battle_map", response.battleTarget?.categoryId)
+        assertEquals("fishing_eel", response.battleTarget?.mapCode)
+        assertEquals("Fishing- 전기 뱀장어", response.battleTarget?.name)
+    }
+
+    @Test
+    fun `낚시 맵은 현재 관측 순서의 첫 맵 하나를 사용한다`() {
+        val html = fixture("monster.html").replace(Regex("<a href=\"\\?menu=hunt&amp;common=fishing_12\">전투</a>"), "")
+        stubFishing(html)
+        Mockito.`when`(battleMaps.findCurrentlyObservedMaps(7L, "battle_map"))
+            .thenReturn(listOf(
+                observedMap("field", "고블린 부락", "일반"),
+                observedMap("fishing_eel", "Fishing- 전기 뱀장어", "낚시"),
+                observedMap("fishing_shark", "Fishing- 상어", "낚시"),
+            ))
+
+        val response = service.load(7L)
+
+        assertEquals("fishing_eel", response.battleTarget?.mapCode)
+    }
 
     @Test
     fun `전투 출몰 상태에서는 HOF 낚시 form을 제출하지 않는다`() {
@@ -92,6 +128,37 @@ class FishingServiceTest {
         Mockito.`when`(accounts.findById(7L)).thenReturn(HofAccountEntity(7L, "fisher", "encrypted", Instant.EPOCH))
         Mockito.`when`(cookies.findValueMapByAccountId(7L)).thenReturn(mapOf("PHPSESSID" to "session"))
     }
+
+    private fun stubFishing(html: String) {
+        stubAccount()
+        Mockito.`when`(locations.resolve(TownFeatureId.FISHING, null)).thenReturn(
+            ResolvedTownLocation(TownFeatureId.FISHING, URL),
+        )
+        Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies()))
+            .thenReturn(HofHttpResponse(200, URL, html, emptyMap()))
+    }
+
+    private fun observedMap(mapCode: String, name: String, groupName: String) = BattleMapResponse(
+        categoryId = "battle_map",
+        mapCode = mapCode,
+        name = name,
+        groupName = groupName,
+        groupOrder = 0,
+        mapOrder = 0,
+        recommendedLevel = null,
+        availableCount = null,
+        attemptCount = null,
+        winCount = null,
+        cooldownRemainingText = null,
+        cooldownRemainingSeconds = null,
+        keyMode = BattleMapKeyMode.UNKNOWN,
+        keyCount = null,
+        requiredTime = null,
+        enabled = true,
+        resolved = true,
+        iconUrl = null,
+        rawHref = "?menu=hunt&common=$mapCode",
+    )
 
     private fun stubExchange(vararg responses: String) {
         stubAccount()

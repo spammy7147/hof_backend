@@ -31,7 +31,7 @@ data class FishingSnapshot(
     val result: ParsedTownResult?,
 )
 
-data class FishingBattleTarget(val categoryId: String, val mapCode: String)
+data class FishingBattleTarget(val categoryId: String, val mapCode: String, val name: String? = null)
 
 data class FishingCatchItem(
     val name: String,
