@@ -6,6 +6,7 @@ import app.spammy.hof.common.error.GlobalExceptionHandler
 import app.spammy.hof.common.security.CurrentAccountIdArgumentResolver
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.town.fishing.dto.FishingResponse
+import app.spammy.hof.town.fishing.dto.FishingExchangeResponse
 import app.spammy.hof.town.fishing.model.FishingAction
 import app.spammy.hof.town.fishing.model.FishingOutcome
 import app.spammy.hof.town.fishing.model.FishingPrimaryAction
@@ -57,6 +58,19 @@ class FishingControllerTest {
             .andExpect(status().isOk)
             .andExpect(jsonPath("$.lastOutcome").value("ESCAPED"))
         Mockito.verify(service).act(42L, FishingAction.CATCH)
+    }
+
+    @Test
+    fun `낚시 교환 분류 id를 별도 조회 action으로 전달한다`() {
+        authenticate()
+        Mockito.`when`(service.loadExchangeCategory(42L, "type_create:armor"))
+            .thenReturn(FishingExchangeResponse(emptyList(), null, emptyList(), null))
+
+        mvc.perform(get("/api/town/fishing-exchange").param("categoryCandidateId", "type_create:armor"))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.categories").isArray)
+            .andExpect(jsonPath("$.items").isArray)
+        Mockito.verify(service).loadExchangeCategory(42L, "type_create:armor")
     }
 
     private fun authenticate() {

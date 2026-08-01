@@ -18,11 +18,16 @@ class CraftingPageParser {
     ): CraftingSnapshot {
         val document = Jsoup.parse(html, finalUrl)
         val contract = contract(mode)
-        val actionForms = page.forms.filter { form ->
-            form.submitFields.singleOrNull()?.name == contract.submit &&
-                form.candidates.any { it.inputName == contract.categoryField }
+        val submitForms = page.forms.filter { form -> form.submitFields.singleOrNull()?.name == contract.submit }
+        val itemActionForms = submitForms.filter { form -> form.candidates.any { it.inputName == contract.itemField } }
+        val actionForms = itemActionForms.ifEmpty {
+            submitForms.filter { form -> form.candidates.any { it.inputName == contract.categoryField } }
         }
-        val actionForm = actionForms.singleOrNull()
+        // HOF는 긴 목록의 위·아래에 동일한 submit 버튼을 반복하기도 한다.
+        // HofFormParser는 각 submit을 별도 action으로 보존하므로, 계약이 완전히 같은 변형만 하나로 취급한다.
+        val actionForm = actionForms.firstOrNull()?.takeIf { first ->
+            actionForms.all { candidate -> sameActionContract(first, candidate) }
+        }
         val completionForm = page.forms.singleOrNull { it.submitFields.singleOrNull()?.name == "WSend" }
         val domForm = actionForm?.let { findDomForm(document, it, contract) }
         val itemTByCandidate = if (mode in ITEM_T_MODES && actionForm != null && domForm != null) {
@@ -30,7 +35,7 @@ class CraftingPageParser {
         } else emptyMap()
         val categories = parseCategories(actionForm, domForm, contract.categoryField)
         val categoryCandidateId = categories.firstOrNull(CraftingCategory::current)?.id
-        val itemRows = actionForm?.rows.orEmpty().filter { row ->
+        val formItemRows = actionForm?.rows.orEmpty().filter { row ->
             row.candidate == null || row.candidate.inputName == contract.itemField
         }.mapIndexedNotNull { index, row ->
             val label = clean(row.label)
@@ -49,6 +54,9 @@ class CraftingPageParser {
                 itemT = itemT,
             )
         }.distinctBy(CraftingRow::id)
+        val itemRows = formItemRows.ifEmpty {
+            parseDetachedItemRows(document, actionForm, contract, mode)
+        }
         val quantity = parseQuantity(domForm, mode)
         val refineOptions = parseRefineOptions(actionForm, domForm)
         val additional = parseAdditionalMaterials(actionForm, domForm, mode)
@@ -93,26 +101,61 @@ class CraftingPageParser {
             candidate to (assignments.singleOrNull() ?: return@mapNotNull null)
         }.toMap()
 
+    /**
+     * HOF create/refine 페이지는 AJAX로 갱신하는 #list를 action form 밖에 놓기도 한다.
+     * 이 경우 품목을 숨기지는 않되, 최신 form의 opaque candidate로 역참조되지 않은 행은 실행 불가로 노출한다.
+     */
+    private fun parseDetachedItemRows(
+        document: org.jsoup.nodes.Document,
+        actionForm: ParsedTownForm?,
+        contract: Contract,
+        mode: CraftingMode,
+    ): List<CraftingRow> = document.select("#list input[name=${cssValue(contract.itemField)}], input[name=${cssValue(contract.itemField)}]")
+        .distinct()
+        .mapIndexedNotNull { index, input ->
+            val value = input.attr("value").trim().ifBlank { return@mapIndexedNotNull null }
+            val owner = input.closest("tr") ?: input.closest("li") ?: input.closest("div") ?: input.parent()
+            val label = clean(owner?.text().orEmpty())
+            if (label.isBlank() || HEADER.matches(label)) return@mapIndexedNotNull null
+            val candidate = actionForm?.candidates
+                ?.filter { it.inputName == contract.itemField && it.inputValue == value }
+                ?.distinctBy(ParsedTownCandidate::id)
+                ?.singleOrNull()
+            val sources = listOf(input.attr("onclick"), input.closest("tr")?.attr("onclick").orEmpty())
+            val itemT = sources.flatMap { source -> ITEM_T_ASSIGNMENT.findAll(source).map { it.groupValues[3] }.toList() }
+                .distinct().singleOrNull()
+            CraftingRow(
+                id = candidate?.id ?: input.id().ifBlank { "detached-$index-$value" },
+                label = label.replace(LEADING_PRICE, "").trim(),
+                selectable = candidate != null && (mode !in ITEM_T_MODES || itemT != null),
+                detail = label,
+                cost = PRICE.find(label)?.groupValues?.get(1)?.number(),
+                owned = OWNED.find(label)?.groupValues?.get(1)?.intNumber(),
+                workSeconds = WORK_SECONDS.find(label)?.groupValues?.get(1)?.intNumber(),
+                itemT = itemT,
+            )
+        }.distinctBy(CraftingRow::id)
+
     private fun parseCategories(form: ParsedTownForm?, domForm: Element?, field: String): List<CraftingCategory> {
         if (form == null || domForm == null) return emptyList()
-        val select = domForm.select("select[name=${cssValue(field)}]").filter { it.closest("form") === domForm }.singleOrNull()
+        val select = equivalentSelect(domForm, "select[name=${cssValue(field)}]")
             ?: return emptyList()
         return select.select("option[value]").filterNot { it.hasAttr("disabled") }.mapNotNull { option ->
-            val candidate = form.candidates.singleOrNull { it.inputName == field && it.inputValue == option.attr("value") }
+            val candidate = uniqueCandidate(form, field, option.attr("value"))
                 ?: return@mapNotNull null
             CraftingCategory(candidate.id, clean(option.text()), option.hasAttr("selected") || select.`val`() == option.attr("value"))
-        }
+        }.distinctBy(CraftingCategory::id)
     }
 
     /** timesA는 최신 GET의 selected option만 보존하고, 사용자 선택 목록은 timesB에서만 만든다. */
     private fun parseRefineOptions(form: ParsedTownForm?, domForm: Element?): Pair<String?, Map<Int, String>> {
         if (form == null || domForm == null) return null to emptyMap()
-        fun candidate(field: String, value: String) = form.candidates.singleOrNull { it.inputName == field && it.inputValue == value }?.id
-        val timesA = domForm.select("select[name=timesA]").filter { it.closest("form") === domForm }.singleOrNull()?.let { select ->
+        fun candidate(field: String, value: String) = uniqueCandidate(form, field, value)?.id
+        val timesA = equivalentSelect(domForm, "select[name=timesA]")?.let { select ->
             val selected = select.select("option[selected]").singleOrNull() ?: select.select("option[value=${cssValue(select.`val`())}]").singleOrNull()
             selected?.attr("value")?.let { candidate("timesA", it) }
         }
-        val timesBSelect = domForm.select("select[name=timesB]").filter { it.closest("form") === domForm }.singleOrNull()
+        val timesBSelect = equivalentSelect(domForm, "select[name=timesB]")
             ?: return timesA to emptyMap()
         val counts = timesBSelect.select("option[value]").filterNot { it.hasAttr("disabled") }.mapNotNull { option ->
             val count = option.attr("value").toIntOrNull()?.takeIf { it > 0 } ?: return@mapNotNull null
@@ -163,18 +206,47 @@ class CraftingPageParser {
         if (markerIndex < 0) return emptyList()
         return elements.drop(markerIndex + 1)
             .takeWhile { !FOOTER_WORD.containsMatchIn(clean(it.ownText())) }
-            .map { clean(it.ownText()) }
-            .filter { it.isNotBlank() && HISTORY_WORD.containsMatchIn(it) }
+            // 제련 품목명은 보통 행 안의 a/span에 있고, 결과·사용자명만 행의 ownText로 남는다.
+            // 결과를 가진 행만 고른 뒤 자식 링크까지 포함한 text를 노출한다.
+            .mapNotNull { element ->
+                val ownText = clean(element.ownText())
+                ownText.takeIf(HISTORY_WORD::containsMatchIn)?.let { clean(element.text()) }
+            }
+            .filter(String::isNotBlank)
             .distinct().takeLast(50)
     }
 
     private fun findDomForm(document: org.jsoup.nodes.Document, form: ParsedTownForm, contract: Contract): Element? = document.select("form").filter { dom ->
-        val categoryControls = dom.select("select[name=${cssValue(contract.categoryField)}]").filter { it.closest("form") === dom }
+        val itemControls = dom.select("input[name=${cssValue(contract.itemField)}]").filter { it.closest("form") === dom }
+        val categoryControl = equivalentSelect(dom, "select[name=${cssValue(contract.categoryField)}]")
         val submitControls = dom.select("input[name=${cssValue(contract.submit)}],button[name=${cssValue(contract.submit)}]")
             .filter { it.closest("form") === dom }
-        categoryControls.size == 1 && submitControls.size == 1 &&
+        (itemControls.isNotEmpty() || categoryControl != null) && submitControls.isNotEmpty() &&
             dom.attr("action").let { action -> action.isBlank() || form.actionUrl.endsWith(action.substringAfterLast('/')) || form.actionUrl.contains(action) }
     }.singleOrNull()
+
+    private fun sameActionContract(left: ParsedTownForm, right: ParsedTownForm): Boolean =
+        left.method == right.method &&
+            left.actionUrl == right.actionUrl &&
+            left.hiddenFields == right.hiddenFields &&
+            left.submitFields.map { it.name } == right.submitFields.map { it.name } &&
+            left.candidates.map { it.inputName to it.inputValue } == right.candidates.map { it.inputName to it.inputValue }
+
+    private fun equivalentSelect(form: Element, selector: String): Element? {
+        val selects = form.select(selector).filter { it.closest("form") === form }
+        val first = selects.firstOrNull() ?: return null
+        val signature = selectSignature(first)
+        return first.takeIf { selects.all { selectSignature(it) == signature } }
+    }
+
+    private fun selectSignature(select: Element): List<Triple<String, String, Boolean>> = select.select("option").map { option ->
+        Triple(option.attr("value"), clean(option.text()), option.hasAttr("selected") || select.`val`() == option.attr("value"))
+    }
+
+    private fun uniqueCandidate(form: ParsedTownForm, field: String, value: String): ParsedTownCandidate? =
+        form.candidates.filter { it.inputName == field && it.inputValue == value }
+            .distinctBy { listOf(it.id, it.inputName, it.inputValue, it.selectionType.name) }
+            .singleOrNull()
 
     private fun contract(mode: CraftingMode) = when (mode) {
         CraftingMode.WORKBASE -> Contract("ItemNo", "type_create", "Create")

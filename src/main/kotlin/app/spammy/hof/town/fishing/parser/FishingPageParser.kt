@@ -8,6 +8,7 @@ import app.spammy.hof.town.fishing.model.FishingActionCandidate
 import app.spammy.hof.town.fishing.model.FishingBattleTarget
 import app.spammy.hof.town.fishing.model.FishingCatchItem
 import app.spammy.hof.town.fishing.model.FishingExchangeItem
+import app.spammy.hof.town.fishing.model.FishingExchangeCategory
 import app.spammy.hof.town.fishing.model.FishingExchangeSnapshot
 import app.spammy.hof.town.fishing.model.FishingOutcome
 import app.spammy.hof.town.fishing.model.FishingPrimaryAction
@@ -32,12 +33,15 @@ class FishingPageParser {
         val contentRoot = document.selectFirst("#fishing, main, #content, .content") ?: document.body()
         val text = clean(contentRoot.text())
         val actions = page.forms.mapNotNull(::fishingAction)
-        val battleTextPresent = BATTLE_BLOCKED.containsMatchIn(text)
-        val battleTarget = if (battleTextPresent) contentRoot.select("a[href]")
+        val battleMessagePresent = contentRoot.getAllElements().asSequence()
+            .map { clean(it.ownText()) }
+            .filter(String::isNotBlank)
+            .any(BATTLE_BLOCKED::containsMatchIn)
+        val detectedBattleTarget = contentRoot.select("a[href]")
             .asSequence()
             .filter { clean(it.text()).matches(Regex("^(전투|Battle)$", RegexOption.IGNORE_CASE)) }
             .mapNotNull { parseBattleTarget(it, finalUrl) }
-            .firstOrNull() else null
+            .firstOrNull()
         val resultText = result?.let { (it.messages + it.items.map { item -> item.label }).joinToString(" ") }
         val outcome = if (result != null) when {
             ESCAPED.containsMatchIn(resultText.orEmpty()) -> FishingOutcome.ESCAPED
@@ -45,13 +49,16 @@ class FishingPageParser {
             result.messages.isNotEmpty() || result.items.isNotEmpty() -> FishingOutcome.INFORMATIONAL
             else -> FishingOutcome.INFORMATIONAL
         } else if (STARTED.containsMatchIn(text)) FishingOutcome.STARTED else null
-        val blocked = battleTextPresent
+        // 안내문에 포함된 일반적인 "전투/낚시" 문구만으로는 전투 상태가 아니다.
+        // 실제 차단 문구와 낚시 전투 target이 함께 있을 때만 낚시를 막는다.
+        val blocked = battleMessagePresent && detectedBattleTarget != null
+        val battleTarget = detectedBattleTarget.takeIf { blocked }
         val available = if (blocked) emptyList() else actions
         val catches = if (result != null) parseCaughtItems(document) else emptyList()
         return FishingSnapshot(
             notice = DATE_NOTICE.find(text)?.value,
             remainingCasts = REMAINING.find(text)?.groupValues?.get(1)?.toIntOrNull(),
-            waterStatus = WATER.find(text)?.groupValues?.get(1)?.trim()?.takeIf(String::isNotBlank),
+            waterStatus = parseWaterStatus(text),
             baitCount = BAIT.find(text)?.groupValues?.get(1)?.toIntOrNull(),
             shiningBaitCount = SHINING_BAIT.find(text)?.groupValues?.get(1)?.toIntOrNull(),
             escapeSeconds = ESCAPE_SECONDS.find(text)?.groupValues?.get(1)?.toIntOrNull(),
@@ -72,23 +79,81 @@ class FishingPageParser {
         )
     }
 
-    fun parseExchange(page: ParsedTownPage, result: ParsedTownResult? = null): FishingExchangeSnapshot {
-        val form = page.forms.maxByOrNull { it.rows.size }
+    fun parseExchange(
+        html: String,
+        finalUrl: String,
+        page: ParsedTownPage,
+        result: ParsedTownResult? = null,
+    ): FishingExchangeSnapshot {
+        val document = Jsoup.parse(html, finalUrl)
+        val form = page.forms.singleOrNull { candidate ->
+            candidate.submitFields.singleOrNull()?.name.equals("Create", ignoreCase = true) &&
+                candidate.candidates.any { it.inputName == EXCHANGE_CATEGORY_FIELD }
+        }
+        val domForm = form?.let { parsed -> findExchangeDomForm(document, parsed) }
+        val categories = parseExchangeCategories(form, domForm)
+        val currentCategoryId = categories.firstOrNull(FishingExchangeCategory::current)?.id
+        val itemTByCandidate = if (form != null && domForm != null) strictExchangeItemT(form, domForm) else emptyMap()
         return FishingExchangeSnapshot(
             actionId = form?.actionId,
-            items = form?.rows.orEmpty().mapIndexed { index, row ->
+            categories = categories,
+            currentCategoryId = currentCategoryId,
+            items = form?.rows.orEmpty().filter { row ->
+                row.candidate == null || row.candidate.inputName == EXCHANGE_ITEM_FIELD
+            }.mapIndexedNotNull { index, row ->
+                val label = clean(row.label)
+                if (label.isBlank() || EXCHANGE_HEADER.matches(label)) return@mapIndexedNotNull null
+                val candidate = row.candidate
+                val itemT = candidate?.let(itemTByCandidate::get)
                 FishingExchangeItem(
-                    id = row.candidate?.id ?: "display-$index",
-                    name = row.label,
-                    selectable = row.selectable,
-                    detail = row.label,
-                    price = PRICE.find(row.label)?.groupValues?.get(1)?.replace(",", "")?.toLongOrNull(),
-                    materials = MATERIAL.findAll(row.label).map { it.groupValues[1].trim() }.distinct().toList(),
+                    id = candidate?.id ?: "display-$index",
+                    name = label.replace(EXCHANGE_LEADING_PRICE, "").trim(),
+                    selectable = candidate != null && itemT != null,
+                    detail = null,
+                    price = PRICE.find(label)?.groupValues?.get(1)?.replace(",", "")?.toLongOrNull(),
+                    materials = MATERIAL.findAll(label).map { it.groupValues[1].trim() }.distinct().toList(),
+                    itemT = itemT,
                 )
-            },
+            }.distinctBy(FishingExchangeItem::id),
             result = result,
         )
     }
+
+    private fun parseExchangeCategories(form: ParsedTownForm?, domForm: Element?): List<FishingExchangeCategory> {
+        if (form == null || domForm == null) return emptyList()
+        val select = domForm.select("select[name=${cssValue(EXCHANGE_CATEGORY_FIELD)}]")
+            .filter { it.closest("form") === domForm }.singleOrNull() ?: return emptyList()
+        return select.select("option[value]").filterNot { it.hasAttr("disabled") }.mapNotNull { option ->
+            val candidate = form.candidates.singleOrNull {
+                it.inputName == EXCHANGE_CATEGORY_FIELD && it.inputValue == option.attr("value")
+            } ?: return@mapNotNull null
+            FishingExchangeCategory(
+                candidate.id,
+                clean(option.text()).ifBlank { option.attr("value") },
+                option.hasAttr("selected") || select.`val`() == option.attr("value"),
+            )
+        }
+    }
+
+    private fun strictExchangeItemT(form: ParsedTownForm, domForm: Element): Map<app.spammy.hof.town.common.model.ParsedTownCandidate, String> =
+        form.candidates.filter { it.inputName == EXCHANGE_ITEM_FIELD }.mapNotNull { candidate ->
+            val control = domForm.select("input[name=${cssValue(EXCHANGE_ITEM_FIELD)}]").filter {
+                it.closest("form") === domForm && it.attr("value").trim().ifBlank { "on" } == candidate.inputValue
+            }.singleOrNull() ?: return@mapNotNull null
+            val assignments = listOf(control.attr("onclick"), control.closest("tr")?.attr("onclick").orEmpty())
+                .flatMap { source -> ITEM_T_ASSIGNMENT.findAll(source).map { it.groupValues[3] }.toList() }
+                .distinct()
+            candidate to (assignments.singleOrNull() ?: return@mapNotNull null)
+        }.toMap()
+
+    private fun findExchangeDomForm(document: org.jsoup.nodes.Document, form: ParsedTownForm): Element? =
+        document.select("form").filter { dom ->
+            val categories = dom.select("select[name=${cssValue(EXCHANGE_CATEGORY_FIELD)}]").filter { it.closest("form") === dom }
+            val submits = dom.select("input[name=Create],button[name=Create]").filter { it.closest("form") === dom }
+            categories.size == 1 && submits.size == 1 && form.actionUrl.isNotBlank()
+        }.singleOrNull()
+
+    private fun cssValue(value: String) = "'${value.replace("'", "\\'")}'"
 
     fun actionFor(form: ParsedTownForm): FishingAction? = fishingAction(form)?.action
 
@@ -140,6 +205,19 @@ class FishingPageParser {
             }.distinctBy { listOf(it.name, it.quantity, it.remainingUses, it.effect) }
     }
 
+    private fun parseWaterStatus(text: String): String? {
+        val remaining = REMAINING.find(text) ?: return null
+        val suffix = text.substring(remaining.range.last + 1).trimStart(' ', ')', '）', ':', '：')
+        val withoutFollowingSections = WATER_STATUS_ENDINGS.fold(suffix) { current, marker -> current.substringBefore(marker) }
+        val sentenceEnd = WATER_STATUS_SENTENCE_END.find(withoutFollowingSections)?.range?.first
+        val status = withoutFollowingSections.substring(0, sentenceEnd ?: withoutFollowingSections.length).trim()
+        return status.takeIf { candidate ->
+            candidate.isNotBlank() &&
+                !FISHING_ACTION_LABEL.matches(candidate) &&
+                candidate.length <= MAX_WATER_STATUS_LENGTH
+        }
+    }
+
     private fun clean(value: String): String = value.replace(Regex("\\s+"), " ").trim()
 
     private companion object {
@@ -149,7 +227,6 @@ class FishingPageParser {
         val SHINING_BAIT = Regex("빛나는 미끼\\s*[:：]?\\s*(\\d+)개")
         val ESCAPE_SECONDS = Regex("(?:도망|도망까지)[^0-9]{0,12}(\\d+)초")
         val COMBO = Regex("현재\\s*(\\d+)\\s*콤보")
-        val WATER = Regex("(?:물의 상태|남은 낚시 횟수[^)]*\\))\\s*[:：]?\\s*([^。.!]+)")
         val LOCATION = Regex("낚시 장소\\s*[:：]?\\s*([^|]+)")
         val START = Regex(".*(?:낚시를 시작한다|낚시 시작|Start Fishing).*", RegexOption.IGNORE_CASE)
         val CATCH = Regex(".*(?:낚는다|Catch).*", RegexOption.IGNORE_CASE)
@@ -158,9 +235,28 @@ class FishingPageParser {
         val ESCAPED = Regex("도망(?:쳤|갔|가 버렸|쳐)|놓쳤|escaped", RegexOption.IGNORE_CASE)
         val CAUGHT = Regex("낚았다|획득했다|낚는데!|caught", RegexOption.IGNORE_CASE)
         val STARTED = Regex("지금부터 낚시를 시작|물고기 그림자|낚시를 시작합니다")
-        val BATTLE_BLOCKED = Regex("(?:몬스터|전투몹).*(?:출몰|등장)|전투.*(?:완료|종료).*(?:낚시)")
+        val BATTLE_BLOCKED = Regex("(?:전투몹|몬스터)[^。.!?]*(?:출몰했습니다|등장했습니다)")
+        val FISHING_ACTION_LABEL = Regex("^(?:낚시를 시작한다|낚시 시작|낚는다|상태를 본다|거른다)$")
+        val WATER_STATUS_ENDINGS = listOf(
+            "미끼 경단",
+            "빛나는 미끼",
+            "낚시 장소",
+            "낚시를 시작한다",
+            "낚는다",
+            "상태를 본다",
+            "거른다",
+            "낚시의 방법",
+            "UpDate",
+        )
+        val WATER_STATUS_SENTENCE_END = Regex("[。.!?]")
+        const val MAX_WATER_STATUS_LENGTH = 160
         val PRICE = Regex("[$]\\s*([\\d,]+)")
         val MATERIAL = Regex("([A-Za-z가-힣][A-Za-z가-힣 '\\-]{1,60})\\s*[x×]\\s*\\d+")
+        val EXCHANGE_HEADER = Regex("^(제작비|제작비 Item|Item|아이템|수수료)(?:\\s+(Item|아이템))?$", RegexOption.IGNORE_CASE)
+        val EXCHANGE_LEADING_PRICE = Regex("^[$]\\s*[\\d,]+\\s*")
+        val ITEM_T_ASSIGNMENT = Regex("(?:document\\.getElementById\\(\\s*(['\"])ItemT\\1\\s*\\)|(?:document\\.)?ItemT)\\s*\\.value\\s*=\\s*(['\"]?)([A-Za-z0-9_.:-]+)\\2", RegexOption.IGNORE_CASE)
+        const val EXCHANGE_CATEGORY_FIELD = "type_create"
+        const val EXCHANGE_ITEM_FIELD = "ItemNo"
         val USES = Regex("\\((\\d+)회 사용가능\\)")
         val QUANTITY = Regex("[x×]\\s*(\\d+)")
         val EFFECT = Regex("사용 효과\\s*[:：]\\s*([^)]+)")

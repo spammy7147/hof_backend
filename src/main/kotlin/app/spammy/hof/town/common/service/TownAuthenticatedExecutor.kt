@@ -50,6 +50,11 @@ class TownAuthenticatedExecutor(
 ) {
     private val actionLocks = ConcurrentHashMap<Long, ReentrantLock>()
 
+    /** HOF 원격 요청 없이 로그인 사용자의 저장된 HOF 계정과 세션 쿠키 존재 여부만 확인한다. */
+    fun requireSession(accountId: Long) {
+        authenticatedContext(accountId)
+    }
+
     fun load(
         accountId: Long,
         pageUrl: String,

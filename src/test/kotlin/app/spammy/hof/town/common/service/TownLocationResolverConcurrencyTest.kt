@@ -25,17 +25,17 @@ class TownLocationResolverConcurrencyTest {
     fun `concurrent first discovery serializes on the preseeded feature row`() {
         jdbcTemplate.update(
             "update town_feature_locations set href = null, observed_at = null where feature_id = ?",
-            TownFeatureId.PANTHEON.name,
+            TownFeatureId.EVENT_SHOP.name,
         )
         val start = CountDownLatch(1)
         val pool = Executors.newFixedThreadPool(2)
         try {
-            val tasks = listOf("firstPantheon", "secondPantheon").map { menu ->
+            val tasks = listOf("firstEvent", "secondEvent").map { menu ->
                 Callable {
                     start.await()
                     resolver.resolve(
-                        TownFeatureId.PANTHEON,
-                        "<a href='?menu=$menu'>신전 거리(Pantheon)</a>",
+                        TownFeatureId.EVENT_SHOP,
+                        "<a href='?menu=$menu'>특별 교환상점(Event Shop)</a>",
                     ).url
                 }
             }
@@ -46,7 +46,7 @@ class TownLocationResolverConcurrencyTest {
             assertEquals(1, urls.toSet().size)
             val row = jdbcTemplate.queryForMap(
                 "select href, observed_at from town_feature_locations where feature_id = ?",
-                TownFeatureId.PANTHEON.name,
+                TownFeatureId.EVENT_SHOP.name,
             )
             assertEquals(urls.first().substringAfter("index.php"), row["href"])
             assertNotNull(row["observed_at"])
