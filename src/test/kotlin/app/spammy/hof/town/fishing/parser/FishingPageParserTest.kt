@@ -73,6 +73,21 @@ class FishingPageParserTest {
     }
 
     @Test
+    fun `낚시 action 결과에만 몬스터 차단 문구가 있어도 전투 상태로 전환한다`() {
+        val html = fixture("reset.html")
+        val result = ParsedTownResult(
+            messages = listOf("낚시터에 나타난 몬스터 때문에 낚시가 불가능합니다!(전투 탭에서 확인)"),
+            items = emptyList(),
+        )
+
+        val snapshot = parser.parse(html, url, forms.parse(html, url), result)
+
+        assertTrue(snapshot.blockedByBattle)
+        assertEquals(FishingPrimaryAction.NONE, snapshot.primaryAction)
+        assertTrue(snapshot.availableActions.isEmpty())
+    }
+
+    @Test
     fun `상단 공용 전투 링크는 낚시 전투로 오인하지 않는다`() {
         val html = fixture("header-battle.html")
         val snapshot = parser.parse(html, url, forms.parse(html, url))
@@ -147,6 +162,23 @@ class FishingPageParserTest {
         assertTrue(exchange.items.single { it.name.contains("Rank Fish") }.selectable)
         assertFalse(exchange.items.single { it.name == "교환 불가 기념 물고기" }.selectable)
         assertTrue(exchange.items.none { it.name.contains("weapon") || it.name.contains("armor") })
+    }
+
+    @Test
+    fun `긴 교환 목록의 중복 Create 버튼 때문에 목록을 버리지 않는다`() {
+        val html = fixture("exchange.html").replace(
+            "<input type=\"submit\" name=\"Create\" value=\"Create\">",
+            """
+                <input type="submit" name="Create" value="Create">
+                <input type="submit" name="Create" value="Create">
+            """.trimIndent(),
+        )
+
+        val exchange = parser.parseExchange(html, url, forms.parse(html, url))
+
+        assertEquals(2, exchange.categories.size)
+        assertTrue(exchange.items.single { it.name.contains("Rank Fish") }.selectable)
+        assertNotNull(exchange.actionId)
     }
 
     private fun fixture(name: String): String = checkNotNull(javaClass.getResource("/fixtures/town/fishing/$name")).readText()

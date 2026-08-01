@@ -50,9 +50,10 @@ class FishingPageParser {
             result.messages.isNotEmpty() || result.items.isNotEmpty() -> FishingOutcome.INFORMATIONAL
             else -> FishingOutcome.INFORMATIONAL
         } else if (STARTED.containsMatchIn(text)) FishingOutcome.STARTED else null
-        // HOF는 실제 낚시 전투 차단 문구를 빨간 글씨로 표시한다.
-        // 일반 안내문에도 몬스터와 전투 링크가 있으므로 문구만으로 차단하면 안 된다.
-        val blocked = battleMessagePresent
+        // HOF는 실제 낚시 전투 차단 문구를 빨간 글씨로 표시한다. 낚시 action 직후에는
+        // 같은 문구가 본문 경고가 아니라 결과 영역으로만 반환될 수 있으므로 구조화된
+        // action 결과도 함께 본다. 일반 안내문은 result가 아니므로 차단으로 오인하지 않는다.
+        val blocked = battleMessagePresent || BATTLE_BLOCKED.containsMatchIn(resultText.orEmpty())
         val battleTarget = detectedBattleTarget.takeIf { blocked }
         val available = if (blocked) emptyList() else actions
         val catches = if (result != null) parseCaughtItems(document) else emptyList()
@@ -87,9 +88,20 @@ class FishingPageParser {
         result: ParsedTownResult? = null,
     ): FishingExchangeSnapshot {
         val document = Jsoup.parse(html, finalUrl)
-        val form = page.forms.singleOrNull { candidate ->
+        val matchingForms = page.forms.filter { candidate ->
             candidate.submitFields.singleOrNull()?.name.equals("Create", ignoreCase = true) &&
-                candidate.candidates.any { it.inputName == EXCHANGE_CATEGORY_FIELD }
+                candidate.candidates.any { it.inputName == EXCHANGE_CATEGORY_FIELD } &&
+                candidate.candidates.any { it.inputName == EXCHANGE_ITEM_FIELD }
+        }.ifEmpty {
+            page.forms.filter { candidate ->
+                candidate.submitFields.singleOrNull()?.name.equals("Create", ignoreCase = true) &&
+                    candidate.candidates.any { it.inputName == EXCHANGE_CATEGORY_FIELD }
+            }
+        }
+        // HOF의 긴 교환 목록은 같은 form 안에 Create 버튼을 위·아래로 반복할 수 있다.
+        // HofFormParser는 submit마다 action을 하나씩 만들므로, 완전히 같은 계약이면 첫 action을 사용한다.
+        val form = matchingForms.firstOrNull()?.takeIf { first ->
+            matchingForms.all { candidate -> sameExchangeContract(first, candidate) }
         }
         val domForm = form?.let { parsed -> findExchangeDomForm(document, parsed) }
         val categories = parseExchangeCategories(form, domForm)
@@ -122,18 +134,17 @@ class FishingPageParser {
 
     private fun parseExchangeCategories(form: ParsedTownForm?, domForm: Element?): List<FishingExchangeCategory> {
         if (form == null || domForm == null) return emptyList()
-        val select = domForm.select("select[name=${cssValue(EXCHANGE_CATEGORY_FIELD)}]")
-            .filter { it.closest("form") === domForm }.singleOrNull() ?: return emptyList()
+        val select = equivalentSelect(domForm, "select[name=${cssValue(EXCHANGE_CATEGORY_FIELD)}]")
+            ?: return emptyList()
         return select.select("option[value]").filterNot { it.hasAttr("disabled") }.mapNotNull { option ->
-            val candidate = form.candidates.singleOrNull {
-                it.inputName == EXCHANGE_CATEGORY_FIELD && it.inputValue == option.attr("value")
-            } ?: return@mapNotNull null
+            val candidate = uniqueCandidate(form, EXCHANGE_CATEGORY_FIELD, option.attr("value"))
+                ?: return@mapNotNull null
             FishingExchangeCategory(
                 candidate.id,
                 clean(option.text()).ifBlank { option.attr("value") },
                 option.hasAttr("selected") || select.`val`() == option.attr("value"),
             )
-        }
+        }.distinctBy(FishingExchangeCategory::id)
     }
 
     private fun strictExchangeItemT(form: ParsedTownForm, domForm: Element): Map<app.spammy.hof.town.common.model.ParsedTownCandidate, String> =
@@ -147,12 +158,52 @@ class FishingPageParser {
             candidate to (assignments.singleOrNull() ?: return@mapNotNull null)
         }.toMap()
 
-    private fun findExchangeDomForm(document: org.jsoup.nodes.Document, form: ParsedTownForm): Element? =
-        document.select("form").filter { dom ->
-            val categories = dom.select("select[name=${cssValue(EXCHANGE_CATEGORY_FIELD)}]").filter { it.closest("form") === dom }
+    private fun findExchangeDomForm(document: org.jsoup.nodes.Document, form: ParsedTownForm): Element? {
+        val forms = document.select("form").filter { dom ->
+            val category = equivalentSelect(dom, "select[name=${cssValue(EXCHANGE_CATEGORY_FIELD)}]")
+            val items = dom.select("input[name=${cssValue(EXCHANGE_ITEM_FIELD)}]").filter { it.closest("form") === dom }
             val submits = dom.select("input[name=Create],button[name=Create]").filter { it.closest("form") === dom }
-            categories.size == 1 && submits.size == 1 && form.actionUrl.isNotBlank()
-        }.singleOrNull()
+            category != null && (items.isNotEmpty() || form.candidates.none { it.inputName == EXCHANGE_ITEM_FIELD }) &&
+                submits.isNotEmpty() && equivalentActionUrl(form, dom)
+        }
+        val first = forms.firstOrNull() ?: return null
+        return first.takeIf { forms.all { candidate -> exchangeDomSignature(candidate) == exchangeDomSignature(first) } }
+    }
+
+    private fun sameExchangeContract(left: ParsedTownForm, right: ParsedTownForm): Boolean =
+        left.method == right.method &&
+            left.actionUrl == right.actionUrl &&
+            left.hiddenFields == right.hiddenFields &&
+            left.submitFields.map { it.name } == right.submitFields.map { it.name } &&
+            left.candidates.map { it.inputName to it.inputValue } == right.candidates.map { it.inputName to it.inputValue }
+
+    private fun equivalentActionUrl(form: ParsedTownForm, dom: Element): Boolean = dom.attr("action").let { action ->
+        action.isBlank() || form.actionUrl.endsWith(action.substringAfterLast('/')) || form.actionUrl.contains(action)
+    }
+
+    private fun exchangeDomSignature(form: Element): List<Any> = listOf(
+        form.attr("method").lowercase(),
+        form.attr("action"),
+        selectSignature(equivalentSelect(form, "select[name=${cssValue(EXCHANGE_CATEGORY_FIELD)}]")!!),
+        form.select("input[name=${cssValue(EXCHANGE_ITEM_FIELD)}]").filter { it.closest("form") === form }
+            .map { it.attr("value").trim().ifBlank { "on" } },
+    )
+
+    private fun equivalentSelect(form: Element, selector: String): Element? {
+        val selects = form.select(selector).filter { it.closest("form") === form }
+        val first = selects.firstOrNull() ?: return null
+        val signature = selectSignature(first)
+        return first.takeIf { selects.all { selectSignature(it) == signature } }
+    }
+
+    private fun selectSignature(select: Element): List<Triple<String, String, Boolean>> = select.select("option").map { option ->
+        Triple(option.attr("value"), clean(option.text()), option.hasAttr("selected") || select.`val`() == option.attr("value"))
+    }
+
+    private fun uniqueCandidate(form: ParsedTownForm, field: String, value: String) = form.candidates
+        .filter { it.inputName == field && it.inputValue == value }
+        .distinctBy { listOf(it.id, it.inputName, it.inputValue, it.selectionType.name) }
+        .singleOrNull()
 
     private fun cssValue(value: String) = "'${value.replace("'", "\\'")}'"
 
