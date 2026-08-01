@@ -128,6 +128,15 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
     }
 
     @Test
+    fun `adventure map becoming unavailable confirms ambiguous battle without replay`() {
+        Mockito.`when`(battleMapService.findMaps(7, "adventure_map", HofRequestOrigin.AUTOMATION))
+            .thenReturn(listOf(mapResponse(cooldownSeconds = null, attemptCount = null, enabled = false)))
+
+        assertIs<AmbiguousActionResolution.Applied>(reconciler.reconcile(7, adventureAction(attemptCount = null)))
+        Mockito.verify(workLifecycle).completeAdventureAction(7, 11, "adventure_map", "map-1")
+    }
+
+    @Test
     fun `ambiguous battle map is conservatively applied without remote retry`() {
         Mockito.`when`(battleHandler.confirmAmbiguousSuccess(anyBattleAction()))
             .thenReturn(BattleOutcomeResolution.Applied("battle-1", 3))
@@ -169,7 +178,7 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
         ),
     )
 
-    private fun adventureAction(attemptCount: Int) = StoredTypedAutomationAction(
+    private fun adventureAction(attemptCount: Int?) = StoredTypedAutomationAction(
         11,
         "adventure-1",
         StoredTypedActionPayload.AdventureMap(
@@ -198,7 +207,11 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
         ),
     )
 
-    private fun mapResponse(cooldownSeconds: Long?, attemptCount: Int?) = BattleMapResponse(
+    private fun mapResponse(
+        cooldownSeconds: Long?,
+        attemptCount: Int?,
+        enabled: Boolean = true,
+    ) = BattleMapResponse(
         categoryId = "adventure_map",
         mapCode = "map-1",
         name = "Adventure",
@@ -214,7 +227,7 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
         keyMode = BattleMapKeyMode.UNLIMITED,
         keyCount = null,
         requiredTime = 0,
-        enabled = true,
+        enabled = enabled,
         resolved = true,
         iconUrl = null,
         rawHref = "?map=map-1",

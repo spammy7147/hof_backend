@@ -134,16 +134,18 @@ class DefaultAutomationAmbiguousActionReconciler(
         ).any { (before, after) -> before != null && after != null && after < before }
         val cooldownStarted = current.cooldownRemainingSeconds?.let { it > 0 } == true
         if (decreased || cooldownStarted) {
-            workLifecycle.completeAdventureAction(accountId, entryId, payload.categoryId, payload.mapCode)
-            return AmbiguousActionResolution.Applied(
-                TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode),
-            )
+            return completeAdventure(accountId, entryId, payload)
         }
         val exhausted = listOf(current.attemptCount, current.winCount, current.availableCount)
             .any { it != null && it <= 0 }
         val runnable = current.resolved && current.enabled && !exhausted &&
             current.keyCount != 0 && (current.cooldownRemainingSeconds ?: 0) <= 0
         if (runnable) return AmbiguousActionResolution.Resubmit
+        // The action was prepared only while this map was runnable. If an authoritative reload now
+        // resolves the same map as unavailable, do not replay a possibly successful battle.
+        if (current.resolved && !current.enabled) {
+            return completeAdventure(accountId, entryId, payload)
+        }
         val retryAt = current.cooldownRemainingSeconds
             ?.takeIf { it > 0 }
             ?.let { timeProvider.now().plusSeconds(it) }
@@ -151,6 +153,17 @@ class DefaultAutomationAmbiguousActionReconciler(
         return AmbiguousActionResolution.VerifyLater(
             retryAt,
             "Adventure map outcome is not yet authoritative.",
+        )
+    }
+
+    private fun completeAdventure(
+        accountId: Long,
+        entryId: Long,
+        payload: StoredTypedActionPayload.AdventureMap,
+    ): AmbiguousActionResolution.Applied {
+        workLifecycle.completeAdventureAction(accountId, entryId, payload.categoryId, payload.mapCode)
+        return AmbiguousActionResolution.Applied(
+            TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode),
         )
     }
 
