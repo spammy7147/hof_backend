@@ -19,9 +19,6 @@ import app.spammy.hof.town.shop.dto.SellResponse
 import app.spammy.hof.town.shop.dto.ShopItemResponse
 import app.spammy.hof.town.shop.dto.ShopResponse
 import app.spammy.hof.town.shop.parser.ShopPageParser
-import app.spammy.hof.town.shop.repository.ShopQueryRepository
-import java.time.Clock
-import java.time.Duration
 import org.springframework.stereotype.Service
 
 @Service
@@ -29,22 +26,12 @@ class ShopService(
     private val executor: TownAuthenticatedExecutor,
     private val locationResolver: TownLocationResolver,
     private val parser: ShopPageParser,
-    private val catalogRefresh: ShopCatalogRefreshService,
-    private val queryRepository: ShopQueryRepository,
-    private val clock: Clock = Clock.systemUTC(),
 ) {
-    /** 암흑상점은 입장할 때마다 로그인 사용자의 최신 HOF 목록을 읽는다. 나머지는 공용 일일 snapshot을 사용한다. */
-    fun loadShop(accountId: Long, shopId: ShopId): ShopResponse = when (shopId) {
-        ShopId.DARK -> loadLiveCatalog(accountId, shopId)
-        else -> catalog(shopId)
-    }
+    /** 모든 상점은 입장할 때마다 로그인 사용자의 최신 HOF 목록을 읽는다. */
+    fun loadShop(accountId: Long, shopId: ShopId): ShopResponse = loadLiveCatalog(accountId, shopId)
 
     fun purchase(accountId: Long, shopId: ShopId, request: PurchaseRequest): ShopResponse {
         ensureUnique(request.items.map { it.itemId })
-        if (shopId != ShopId.DARK) request.items.forEach { line ->
-            queryRepository.findActiveItem(shopId.name, line.itemId)
-                ?: invalid("현재 상점에서 구매할 수 없는 품목입니다.")
-        }
         val url = locationResolver.resolve(feature(shopId)).url
         val result = executor.executeProjected(
             accountId = accountId,
@@ -56,8 +43,7 @@ class ShopService(
                 TownActionRequest(form.actionId, request.items.map { TownActionSelection(it.itemId, it.quantity) })
             },
         ) { _, _, actionResult, page ->
-            val response = if (shopId == ShopId.DARK) liveCatalog(shopId, page) else catalog(shopId)
-            response.copy(result = TownActionResultResponse.from(actionResult))
+            liveCatalog(shopId, page).copy(result = TownActionResultResponse.from(actionResult))
         }
         return result
     }
@@ -103,18 +89,6 @@ class ShopService(
                 )
             },
         ) { _, _, result, page -> parser.parseCombine(page).copy(result = TownActionResultResponse.from(result)) }
-    }
-
-    private fun catalog(shopId: ShopId): ShopResponse {
-        val lastVerified = catalogRefresh.lastSuccessAt(shopId)
-        return ShopResponse(
-            shopId = shopId.pathValue,
-            items = queryRepository.findActiveItems(shopId.name).map { item ->
-                ShopItemResponse(item.id.itemKey, item.name, true, item.description, price = item.price, type = item.itemType)
-            },
-            stale = lastVerified == null || lastVerified.isBefore(clock.instant().minus(Duration.ofDays(1))),
-            lastVerifiedAt = lastVerified,
-        )
     }
 
     private fun loadLiveCatalog(accountId: Long, shopId: ShopId): ShopResponse {
