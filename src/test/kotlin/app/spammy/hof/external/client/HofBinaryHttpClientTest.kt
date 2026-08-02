@@ -112,7 +112,7 @@ class HofBinaryHttpClientTest {
                 )
             }
 
-            assertEquals(now.plusSeconds(30), error.retryAt)
+            assertEquals(now.plusSeconds(1), error.retryAt)
             assertEquals(1, error.consecutiveFailures)
         } finally {
             server.stop(0)
@@ -243,7 +243,10 @@ class HofBinaryHttpClientTest {
     }
 
     private fun governor(): HofRequestGovernor = HofRequestGovernor(
-        properties = HofRequestProperties(minimumInterval = Duration.ZERO),
+            properties = HofRequestProperties(
+                interactiveMinimumInterval = Duration.ZERO,
+                automationMinimumInterval = Duration.ZERO,
+            ),
         timeProvider = TimeProvider { Instant.now() },
         waiter = HofRequestWaiter { },
     )

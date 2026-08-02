@@ -280,7 +280,10 @@ class HofAccountServicePersistenceTest {
 
     class GovernorGateway(timeProvider: TimeProvider) : HofGateway {
         private val governor = HofRequestGovernor(
-            properties = HofRequestProperties(minimumInterval = Duration.ZERO),
+            properties = HofRequestProperties(
+                interactiveMinimumInterval = Duration.ZERO,
+                automationMinimumInterval = Duration.ZERO,
+            ),
             timeProvider = timeProvider,
             waiter = HofRequestWaiter { },
         )

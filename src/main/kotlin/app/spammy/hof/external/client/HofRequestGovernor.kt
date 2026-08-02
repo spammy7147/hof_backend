@@ -89,7 +89,10 @@ class HofRequestGovernor(
                 )
                 throw error
             } finally {
-                state.nextAllowedAt = timeProvider.now().plus(properties.minimumInterval)
+                state.setNextAllowedAt(
+                    origin,
+                    timeProvider.now().plus(properties.minimumIntervalFor(origin)),
+                )
             }
 
             val responseStatus = statusCode(response)
@@ -115,6 +118,8 @@ class HofRequestGovernor(
             }
             val retryAt = timeProvider.now().plus(cooldown)
             state.cooldownUntil = retryAt
+            // 503 재시도 시각은 일반 origin 간격보다 우선한다. 공유 cooldown이 정확한 재개 시각을 통제한다.
+            state.setNextAllowedAt(origin, null)
             throw unavailable(state, origin, retryAt)
         } finally {
             releaseExecutionSlot(state)
@@ -140,14 +145,13 @@ class HofRequestGovernor(
             while (true) {
                 while (
                     state.executing ||
-                    state.spacingWaiter != null ||
                     state.nextEligible() !== queuedRequest
                 ) {
                     queuedRequest.condition.await()
                 }
 
                 rejectDuringCooldown(state, origin)
-                val allowedAt = state.nextAllowedAt
+                val allowedAt = state.nextAllowedAt(origin)
                 val remaining = allowedAt?.let { Duration.between(timeProvider.now(), it) }
                 if (allowedAt == null || remaining == null || remaining.isNegative || remaining.isZero) {
                     queue.removeFirst()
@@ -155,8 +159,7 @@ class HofRequestGovernor(
                     return
                 }
 
-                state.spacingWaiter = queuedRequest
-                waitForRequestSpacing(state, allowedAt, remaining)
+                waitForRequestSpacing(state, origin, allowedAt, remaining)
             }
         } catch (exception: InterruptedException) {
             queue.remove(queuedRequest)
@@ -210,6 +213,7 @@ class HofRequestGovernor(
 
     private fun waitForRequestSpacing(
         state: AccountRequestState,
+        origin: HofRequestOrigin,
         allowedAt: Instant,
         remaining: Duration,
     ) {
@@ -221,14 +225,13 @@ class HofRequestGovernor(
             waitFailure = error
         } finally {
             state.lock.lock()
-            state.spacingWaiter = null
         }
 
         waitFailure?.let { throw it }
         if (Thread.currentThread().isInterrupted) {
             throw interruptedQueueWait(InterruptedException("Interrupted after spacing HOF requests"))
         }
-        if (state.nextAllowedAt == allowedAt) state.nextAllowedAt = null
+        if (state.nextAllowedAt(origin) == allowedAt) state.setNextAllowedAt(origin, null)
         state.signalNextEligible()
     }
 
@@ -239,8 +242,8 @@ class HofRequestGovernor(
         val interactiveWaiters = ArrayDeque<QueuedRequest>()
         val automationWaiters = ArrayDeque<QueuedRequest>()
         var executing = false
-        var spacingWaiter: QueuedRequest? = null
-        var nextAllowedAt: Instant? = null
+        private var interactiveNextAllowedAt: Instant? = null
+        private var automationNextAllowedAt: Instant? = null
         var cooldownUntil: Instant? = null
         var consecutiveServiceUnavailable = 0
 
@@ -253,6 +256,19 @@ class HofRequestGovernor(
         fun nextEligible(): QueuedRequest? =
             interactiveWaiters.peekFirst() ?: automationWaiters.peekFirst()
 
+        fun nextAllowedAt(origin: HofRequestOrigin): Instant? =
+            when (origin) {
+                HofRequestOrigin.INTERACTIVE -> interactiveNextAllowedAt
+                HofRequestOrigin.AUTOMATION -> automationNextAllowedAt
+            }
+
+        fun setNextAllowedAt(origin: HofRequestOrigin, value: Instant?) {
+            when (origin) {
+                HofRequestOrigin.INTERACTIVE -> interactiveNextAllowedAt = value
+                HofRequestOrigin.AUTOMATION -> automationNextAllowedAt = value
+            }
+        }
+
         fun signalNextEligible() {
             if (!executing) nextEligible()?.condition?.signal()
         }
@@ -264,4 +280,10 @@ class HofRequestGovernor(
         const val FRIENDLY_UNAVAILABLE_MESSAGE =
             "HOF 서버 연결이 일시적으로 원활하지 않습니다. 잠시 후 다시 시도해 주세요."
     }
+
+    private fun HofRequestProperties.minimumIntervalFor(origin: HofRequestOrigin): Duration =
+        when (origin) {
+            HofRequestOrigin.INTERACTIVE -> interactiveMinimumInterval
+            HofRequestOrigin.AUTOMATION -> automationMinimumInterval
+        }
 }

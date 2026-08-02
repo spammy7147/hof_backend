@@ -5,13 +5,15 @@ import org.springframework.boot.context.properties.ConfigurationProperties
 
 @ConfigurationProperties("hof.request")
 data class HofRequestProperties(
-    val minimumInterval: Duration = Duration.ofSeconds(1),
-    val shortCooldown: Duration = Duration.ofSeconds(30),
-    val longCooldown: Duration = Duration.ofMinutes(3),
-    val longCooldownThreshold: Int = 3,
+    val interactiveMinimumInterval: Duration = Duration.ofMillis(250),
+    val automationMinimumInterval: Duration = Duration.ofSeconds(3),
+    val shortCooldown: Duration = Duration.ofSeconds(1),
+    val longCooldown: Duration = Duration.ofSeconds(60),
+    val longCooldownThreshold: Int = 5,
 ) {
     init {
-        require(!minimumInterval.isNegative) { "minimumInterval must not be negative" }
+        require(!interactiveMinimumInterval.isNegative) { "interactiveMinimumInterval must not be negative" }
+        require(!automationMinimumInterval.isNegative) { "automationMinimumInterval must not be negative" }
         require(!shortCooldown.isNegative) { "shortCooldown must not be negative" }
         require(!longCooldown.isNegative) { "longCooldown must not be negative" }
         require(longCooldownThreshold >= 1) { "longCooldownThreshold must be at least 1" }
