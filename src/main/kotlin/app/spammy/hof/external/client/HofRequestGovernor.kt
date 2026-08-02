@@ -21,6 +21,8 @@ class HofAutomationDeferredException(
     val consecutiveFailures: Int,
 ) : RuntimeException("HOF automation requests are deferred until $retryAt")
 
+class HofCaptchaRetryException : RuntimeException("HOF CAPTCHA request returned 503 and must be retried")
+
 fun interface HofRequestWaiter {
     fun waitFor(duration: Duration)
 }
@@ -104,6 +106,12 @@ class HofRequestGovernor(
                 (System.nanoTime() - requestStartedAtNanos) / NANOS_PER_MILLISECOND,
                 responseStatus,
             )
+            if (origin == HofRequestOrigin.CAPTCHA) {
+                if (responseStatus == SERVICE_UNAVAILABLE) {
+                    throw HofCaptchaRetryException()
+                }
+                return response
+            }
             if (responseStatus != SERVICE_UNAVAILABLE) {
                 state.consecutiveServiceUnavailable = 0
                 state.cooldownUntil = null
@@ -190,6 +198,7 @@ class HofRequestGovernor(
     }
 
     private fun rejectDuringCooldown(state: AccountRequestState, origin: HofRequestOrigin) {
+        if (origin == HofRequestOrigin.CAPTCHA) return
         val retryAt = state.cooldownUntil ?: return
         if (timeProvider.now().isBefore(retryAt)) throw unavailable(state, origin, retryAt)
         state.cooldownUntil = null
@@ -201,6 +210,7 @@ class HofRequestGovernor(
         retryAt: Instant,
     ): RuntimeException =
         when (origin) {
+            HofRequestOrigin.CAPTCHA -> error("CAPTCHA 503 responses must be retried before reaching cooldown handling")
             HofRequestOrigin.AUTOMATION -> HofAutomationDeferredException(
                 retryAt = retryAt,
                 consecutiveFailures = state.consecutiveServiceUnavailable,
@@ -239,9 +249,11 @@ class HofRequestGovernor(
 
     private class AccountRequestState {
         val lock = ReentrantLock()
+        val captchaWaiters = ArrayDeque<QueuedRequest>()
         val interactiveWaiters = ArrayDeque<QueuedRequest>()
         val automationWaiters = ArrayDeque<QueuedRequest>()
         var executing = false
+        private var captchaNextAllowedAt: Instant? = null
         private var interactiveNextAllowedAt: Instant? = null
         private var automationNextAllowedAt: Instant? = null
         var cooldownUntil: Instant? = null
@@ -249,21 +261,24 @@ class HofRequestGovernor(
 
         fun queueFor(origin: HofRequestOrigin): ArrayDeque<QueuedRequest> =
             when (origin) {
+                HofRequestOrigin.CAPTCHA -> captchaWaiters
                 HofRequestOrigin.INTERACTIVE -> interactiveWaiters
                 HofRequestOrigin.AUTOMATION -> automationWaiters
             }
 
         fun nextEligible(): QueuedRequest? =
-            interactiveWaiters.peekFirst() ?: automationWaiters.peekFirst()
+            captchaWaiters.peekFirst() ?: interactiveWaiters.peekFirst() ?: automationWaiters.peekFirst()
 
         fun nextAllowedAt(origin: HofRequestOrigin): Instant? =
             when (origin) {
+                HofRequestOrigin.CAPTCHA -> captchaNextAllowedAt
                 HofRequestOrigin.INTERACTIVE -> interactiveNextAllowedAt
                 HofRequestOrigin.AUTOMATION -> automationNextAllowedAt
             }
 
         fun setNextAllowedAt(origin: HofRequestOrigin, value: Instant?) {
             when (origin) {
+                HofRequestOrigin.CAPTCHA -> captchaNextAllowedAt = value
                 HofRequestOrigin.INTERACTIVE -> interactiveNextAllowedAt = value
                 HofRequestOrigin.AUTOMATION -> automationNextAllowedAt = value
             }
@@ -275,6 +290,7 @@ class HofRequestGovernor(
     }
 
     private companion object {
+        val CAPTCHA_INTERVAL: Duration = Duration.ofMillis(500)
         const val SERVICE_UNAVAILABLE = 503
         const val NANOS_PER_MILLISECOND = 1_000_000L
         const val FRIENDLY_UNAVAILABLE_MESSAGE =
@@ -283,6 +299,7 @@ class HofRequestGovernor(
 
     private fun HofRequestProperties.minimumIntervalFor(origin: HofRequestOrigin): Duration =
         when (origin) {
+            HofRequestOrigin.CAPTCHA -> CAPTCHA_INTERVAL
             HofRequestOrigin.INTERACTIVE -> interactiveMinimumInterval
             HofRequestOrigin.AUTOMATION -> automationMinimumInterval
         }

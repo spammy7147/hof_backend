@@ -29,12 +29,65 @@ class HofRequestGovernorTest {
         val waiter = RecordingWaiter(clock)
         val governor = governor(clock, waiter)
 
+        governor.execute(ACCOUNT_A, HofRequestOrigin.CAPTCHA) { response(200) }
+        governor.execute(ACCOUNT_A, HofRequestOrigin.CAPTCHA) { response(200) }
         governor.execute(ACCOUNT_A, HofRequestOrigin.INTERACTIVE) { response(200) }
         governor.execute(ACCOUNT_A, HofRequestOrigin.INTERACTIVE) { response(200) }
         governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) { response(200) }
         governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) { response(200) }
 
-        assertEquals(listOf(Duration.ofMillis(250), Duration.ofSeconds(3)), waiter.waits)
+        assertEquals(
+            listOf(Duration.ofMillis(500), Duration.ofMillis(250), Duration.ofSeconds(3)),
+            waiter.waits,
+        )
+    }
+
+    @Test
+    fun `captcha 503 does not create a shared cooldown and its retry waits five hundred milliseconds`() {
+        val clock = MutableTimeProvider(NOW)
+        val waiter = RecordingWaiter(clock)
+        val governor = governor(clock, waiter)
+        var captchaCalls = 0
+
+        assertFailsWith<HofCaptchaRetryException> {
+            governor.execute(ACCOUNT_A, HofRequestOrigin.CAPTCHA) {
+                captchaCalls += 1
+                response(503)
+            }
+        }
+        val captchaResponse = governor.execute(ACCOUNT_A, HofRequestOrigin.CAPTCHA) {
+            captchaCalls += 1
+            response(200)
+        }
+        var automationCalls = 0
+        val automationResponse = governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) {
+            automationCalls += 1
+            response(200)
+        }
+
+        assertEquals(200, captchaResponse.statusCode)
+        assertEquals(2, captchaCalls)
+        assertEquals(200, automationResponse.statusCode)
+        assertEquals(1, automationCalls)
+        assertEquals(listOf(Duration.ofMillis(500)), waiter.waits)
+    }
+
+    @Test
+    fun `captcha bypasses an existing automation 503 cooldown`() {
+        val clock = MutableTimeProvider(NOW)
+        val governor = governor(clock, RecordingWaiter(clock))
+
+        assertFailsWith<HofAutomationDeferredException> {
+            governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) { response(503) }
+        }
+        var captchaCalls = 0
+        val captchaResponse = governor.execute(ACCOUNT_A, HofRequestOrigin.CAPTCHA) {
+            captchaCalls += 1
+            response(200)
+        }
+
+        assertEquals(200, captchaResponse.statusCode)
+        assertEquals(1, captchaCalls)
     }
 
     @Test

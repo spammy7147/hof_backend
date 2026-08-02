@@ -8,6 +8,7 @@ import app.spammy.hof.captcha.service.CaptchaService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.security.CurrentAccountId
+import app.spammy.hof.external.client.HofCaptchaRetryException
 import org.slf4j.LoggerFactory
 import org.springframework.http.CacheControl
 import org.springframework.http.MediaType
@@ -45,8 +46,10 @@ class CaptchaController(
         @CurrentAccountId accountId: Long,
     ): CaptchaChallengeResponse =
         try {
-            sessionRecoveryService.execute(accountId) {
-                captchaService.prepareCurrent(accountId)
+            retryCaptcha503 {
+                sessionRecoveryService.execute(accountId) {
+                    captchaService.prepareCurrent(accountId)
+                }
             }
         } catch (error: Throwable) {
             runCatching { captchaService.invalidateCurrentPreparation(accountId) }
@@ -83,37 +86,49 @@ class CaptchaController(
         @PathVariable challengeId: Long,
         @RequestBody request: SubmitCaptchaAnswerRequest,
     ): CaptchaChallengeResponse =
-        try {
-            captchaService.submitAnswer(
-                accountId = accountId,
-                challengeId = challengeId,
-                answer = request.answer,
-                preparationVersion = request.preparationVersion,
-            )
-        } catch (error: CaptchaPreparationConsumedException) {
-            val controlSignal = error.controlSignal
+        retryCaptcha503 {
             try {
-                captchaService.recoverConsumedPreparation(
+                captchaService.submitAnswer(
                     accountId = accountId,
                     challengeId = challengeId,
-                    consumedPreparationVersion = request.preparationVersion,
-                    requestCookies = error.requestCookies,
-                    responseSetCookies = error.responseSetCookies,
+                    answer = request.answer,
+                    preparationVersion = request.preparationVersion,
                 )
-            } catch (cleanupError: Throwable) {
-                log.error(
-                    "Consumed CAPTCHA preparation cleanup failed accountId={} cleanupErrorType={} cleanupMessage={}",
-                    accountId,
-                    cleanupError.javaClass.simpleName,
-                    cleanupError.message,
-                )
-                controlSignal.addSuppressed(cleanupError)
+            } catch (error: CaptchaPreparationConsumedException) {
+                val controlSignal = error.controlSignal
+                try {
+                    captchaService.recoverConsumedPreparation(
+                        accountId = accountId,
+                        challengeId = challengeId,
+                        consumedPreparationVersion = request.preparationVersion,
+                        requestCookies = error.requestCookies,
+                        responseSetCookies = error.responseSetCookies,
+                    )
+                } catch (cleanupError: Throwable) {
+                    log.error(
+                        "Consumed CAPTCHA preparation cleanup failed accountId={} cleanupErrorType={} cleanupMessage={}",
+                        accountId,
+                        cleanupError.javaClass.simpleName,
+                        cleanupError.message,
+                    )
+                    controlSignal.addSuppressed(cleanupError)
+                }
+                throw controlSignal
+            } catch (error: ApiException) {
+                if (error.errorCode == ErrorCode.HOF_SESSION_EXPIRED) {
+                    runCatching { captchaService.invalidateCurrentPreparation(accountId) }
+                }
+                throw error
             }
-            throw controlSignal
-        } catch (error: ApiException) {
-            if (error.errorCode == ErrorCode.HOF_SESSION_EXPIRED) {
-                runCatching { captchaService.invalidateCurrentPreparation(accountId) }
-            }
-            throw error
         }
+
+    private fun <T> retryCaptcha503(action: () -> T): T {
+        while (true) {
+            try {
+                return action()
+            } catch (_: HofCaptchaRetryException) {
+                // 다음 호출은 CAPTCHA 전용 500ms 간격을 적용받으며, 이전 transaction의 DB lock은 이미 해제됐다.
+            }
+        }
+    }
 }

@@ -8,6 +8,7 @@ import app.spammy.hof.captcha.service.CaptchaPreparationConsumedException
 import app.spammy.hof.captcha.service.CaptchaService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
+import app.spammy.hof.external.client.HofCaptchaRetryException
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -36,6 +37,21 @@ class CaptchaControllerTest {
     }
 
     @Test
+    fun prepareCurrentRetriesCaptcha503WithoutInvalidatingPreparation() {
+        val ready = readyCaptcha()
+        Mockito.`when`(captchaService.prepareCurrent(1L))
+            .thenThrow(HofCaptchaRetryException())
+            .thenReturn(ready)
+
+        val response = controller.prepareCurrent(1L)
+
+        assertEquals(ready, response)
+        Mockito.verify(captchaService, Mockito.times(2)).prepareCurrent(1L)
+        Mockito.verify(captchaService, Mockito.never()).invalidateCurrentPreparation(1L)
+        Mockito.verifyNoInteractions(accountService)
+    }
+
+    @Test
     fun prepareCurrentInvalidatesSnapshotWhenRetryAlsoFails() {
         Mockito.`when`(captchaService.prepareCurrent(1L))
             .thenThrow(ApiException(ErrorCode.HOF_SESSION_EXPIRED, "expired"))
@@ -61,6 +77,20 @@ class CaptchaControllerTest {
         Mockito.verify(captchaService).invalidateCurrentPreparation(1L)
         Mockito.verifyNoInteractions(accountService)
         Mockito.verify(captchaService, Mockito.times(1)).submitAnswer(1L, 7L, "AB12", 3)
+    }
+
+    @Test
+    fun submitAnswerRetriesCaptcha503WithoutInvalidatingPreparation() {
+        val ready = readyCaptcha()
+        Mockito.`when`(captchaService.submitAnswer(1L, 7L, "AB12", 3))
+            .thenThrow(HofCaptchaRetryException())
+            .thenReturn(ready)
+
+        val response = controller.submitAnswer(1L, 7L, SubmitCaptchaAnswerRequest("AB12", 3))
+
+        assertEquals(ready, response)
+        Mockito.verify(captchaService, Mockito.times(2)).submitAnswer(1L, 7L, "AB12", 3)
+        Mockito.verify(captchaService, Mockito.never()).invalidateCurrentPreparation(1L)
     }
 
     @Test

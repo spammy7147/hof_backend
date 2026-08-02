@@ -62,13 +62,17 @@ class ExchangePageParser(private val formParser: HofFormParser = HofFormParser()
     ): List<ExchangeRow> = form.rows.mapIndexedNotNull { index, row ->
         val label = clean(row.label)
         if (label.isBlank() || HEADER.matches(label)) return@mapIndexedNotNull null
+        val display = label.replace(LEADING_PRICE, "").trim()
+        val detailSeparator = DETAIL_SEPARATOR.find(display)
+        val itemLabel = detailSeparator?.let { display.substring(0, it.range.first).trim() }.orEmpty().ifBlank { display }
+        val detail = detailSeparator?.let { display.substring(it.range.last + 1).trim().takeIf(String::isNotBlank) }
         val candidate = row.candidate?.takeIf { it.selectionType != TownSelectionType.SELECT }
         val itemT = candidate?.let(itemTByCandidate::get)
         ExchangeRow(
             id = candidate?.id ?: "display-$index",
-            label = label.replace(LEADING_PRICE, "").trim(),
+            label = itemLabel,
             selectable = candidate != null && (!requiresItemT || itemT != null),
-            detail = label,
+            detail = detail,
             cost = PRICE.find(label)?.groupValues?.get(1)?.number(),
             owned = OWNED.find(label)?.groupValues?.get(1)?.intNumber(),
             minQuantity = candidate?.minQuantity ?: 1,
@@ -182,6 +186,7 @@ class ExchangePageParser(private val formParser: HofFormParser = HofFormParser()
         val ANN_SECTION = Regex("앤에게.*(맡기|선물)|아이템을 맡긴다", RegexOption.IGNORE_CASE)
         val PRICE = Regex("[$]\\s*([\\d,]+)")
         val LEADING_PRICE = Regex("^[$]\\s*[\\d,]+\\s*")
+        val DETAIL_SEPARATOR = Regex("\\s+/\\s+")
         val OWNED = Regex("[x×]\\s*([\\d,]+)", RegexOption.IGNORE_CASE)
         val CURRENCY_WORD = Regex("보유|Coin|Statue|Shard|Ticket|Memo|Certificate|조각|주화|증표", RegexOption.IGNORE_CASE)
         val CURRENCY_QUANTITY = Regex("(?::|：|x|×)\\s*([\\d,]+)\\s*(?:개|보유중|보유 중)?", RegexOption.IGNORE_CASE)

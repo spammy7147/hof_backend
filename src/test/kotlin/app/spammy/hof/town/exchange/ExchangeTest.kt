@@ -25,8 +25,11 @@ class ExchangeTest {
         val value = parse("emblem.html", ExchangeMode.EMBLEM)
         assertEquals("전부(all)", value.categories.single { it.current }.label)
         assertFalse(value.rows.single { it.label.contains("보유 재료 부족") }.selectable)
-        assertTrue(value.rows.single { it.label.contains("Muramasa") }.selectable)
-        assertEquals(999, value.rows.single { it.label.contains("Muramasa") }.maxQuantity)
+        val muramasa = value.rows.single { it.label.contains("Muramasa") }
+        assertTrue(muramasa.selectable)
+        assertEquals("Muramasa (Sword)", muramasa.label)
+        assertEquals("Atk:154 / h:7 / M:Metal / +6 Katana 필요", muramasa.detail)
+        assertEquals(999, muramasa.maxQuantity)
     }
 
     @Test fun `유물 등급 교환은 대상 선택을 허용하지 않고 1개만 HOF에 위임한다`() {

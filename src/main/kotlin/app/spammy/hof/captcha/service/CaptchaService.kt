@@ -143,7 +143,11 @@ class CaptchaService(
         }
         val cookies = storedCookies.associate { cookie -> cookie.name to cookieCipher.decrypt(cookie.value) }
         val policeUrl = challengeParser.buildPoliceUrl(challenge.sourceUrl)
-        val response = gateway.execute(account.id, HofRequest(HofHttpMethod.GET, policeUrl), cookies)
+        val response = gateway.execute(
+            account.id,
+            HofRequest(HofHttpMethod.GET, policeUrl, origin = HofRequestOrigin.CAPTCHA),
+            cookies,
+        )
         val login = loginStateParser.parse(response.body)
         if (login.hasLoginForm && !login.isLoggedIn) {
             throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "HOF 로그인 세션이 만료되었습니다.")
@@ -194,7 +198,7 @@ class CaptchaService(
         val nextVersion = previousVersion + 1
         imageManager.storePrepared(
             accountId = accountId,
-            origin = HofRequestOrigin.INTERACTIVE,
+            origin = HofRequestOrigin.CAPTCHA,
             challengeId = challenge.id,
             preparationVersion = nextVersion,
             imageUrl = imageUrl,
@@ -326,6 +330,7 @@ class CaptchaService(
                 HofHttpMethod.POST
             },
             url = challenge.submitUrl?.trim()?.ifBlank { null } ?: challenge.sourceUrl,
+            origin = HofRequestOrigin.CAPTCHA,
             formFields = buildSubmittedFormFields(
                 challenge = challenge,
                 storedFields = captchaQueryRepository.findFormFields(challenge.id),
@@ -367,7 +372,7 @@ class CaptchaService(
             val nextVersion = previousVersion + 1
             imageManager.storePrepared(
                 accountId = challenge.account.id,
-                origin = HofRequestOrigin.INTERACTIVE,
+                origin = HofRequestOrigin.CAPTCHA,
                 challengeId = challenge.id,
                 preparationVersion = nextVersion,
                 imageUrl = imageUrl,
@@ -445,6 +450,7 @@ class CaptchaService(
                 HofRequest(
                     method = HofHttpMethod.GET,
                     url = policeUrl,
+                    origin = HofRequestOrigin.CAPTCHA,
                 ),
                 cookies,
             )
