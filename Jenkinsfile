@@ -27,6 +27,7 @@ pipeline {
         CONTAINER_PORT = '8080'
         RELEASE_HOST_DIR = '/home/spammy/hof/releases'
         RELEASE_CONTAINER_DIR = '/var/lib/hof/releases'
+        GRADLE_USER_HOME = '/home/jenkins/workspace/.gradle-cache/hof-backend'
     }
 
     stages {
