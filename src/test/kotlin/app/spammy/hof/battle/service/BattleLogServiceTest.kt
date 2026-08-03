@@ -116,9 +116,10 @@ class BattleLogServiceTest {
         assertEquals(NOW.toString(), response.createdAt)
 
         val stats = service.summarize(account.id)
-        assertEquals(1L, stats.totalBattles)
-        assertEquals(1L, stats.victories)
-        assertEquals(3L, stats.totalLootCount)
+        assertEquals(3_660L, stats.dailyFunds)
+        assertEquals(3_660L, stats.weeklyFunds)
+        assertEquals(3_660L, stats.monthlyFunds)
+        assertEquals(emptyList(), stats.adventureMapOutcomes)
     }
 
     @Test
@@ -150,6 +151,15 @@ class BattleLogServiceTest {
             assertEquals("unknown-code", stored.mapCodeSnapshot)
             assertEquals("unknown-code", stored.mapNameSnapshot)
         }
+    }
+
+    @Test
+    fun fundPeriodsStartAtKoreaMidnightMondayAndFirstDayOfMonth() {
+        val periods = battleFundPeriodStarts(Instant.parse("2026-08-05T03:00:00Z"))
+
+        assertEquals(Instant.parse("2026-08-04T15:00:00Z"), periods.day)
+        assertEquals(Instant.parse("2026-08-02T15:00:00Z"), periods.week)
+        assertEquals(Instant.parse("2026-07-31T15:00:00Z"), periods.month)
     }
 
     private fun savedAccount(loginId: String): HofAccountEntity =

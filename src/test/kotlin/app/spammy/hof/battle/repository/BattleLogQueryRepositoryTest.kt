@@ -117,34 +117,40 @@ class BattleLogQueryRepositoryTest {
     }
 
     @Test
-    fun aggregatesOutcomesFundsExperienceAndLootQuantities() {
-        val account = savedAccount("battle-query-stats")
-        val otherAccount = savedAccount("battle-query-stats-other")
-        val victory = savedLog(account, EARLIER, "VICTORY", funds = 100, experience = 20)
-        val defeat = savedLog(account, LATER, "DEFEAT", funds = null, experience = 5)
-        savedLog(account, LATER.plusSeconds(1), "DRAW", funds = 30, experience = null)
-        savedLog(account, LATER.plusSeconds(2), "UNKNOWN", funds = null, experience = null)
-        val foreign = savedLog(otherAccount, LATER, "VICTORY", funds = 9_999, experience = 9_999)
-        lootRepository.saveAll(
+    fun filtersAndOffsetsRecentLogsWithoutMixingAccounts() {
+        val account = savedAccount("battle-query-filter")
+        val otherAccount = savedAccount("battle-query-filter-other")
+        val olderDefeat = savedLog(account, EARLIER, "DEFEAT")
+        val newerDefeat = savedLog(account, LATER, "DEFEAT")
+        savedLog(account, LATER.plusSeconds(1), "VICTORY")
+        savedLog(otherAccount, LATER.plusSeconds(2), "DEFEAT")
+
+        val filtered = queryRepository.findRecent(account.id, limit = 1, offset = 1, outcome = "DEFEAT")
+
+        assertEquals(listOf(olderDefeat.id), filtered.map { it.log.id })
+        assertTrue(filtered.none { it.log.id == newerDefeat.id })
+    }
+
+    @Test
+    fun sumsPeriodFundsAndGroupsAdventureMapDefeatsAndDraws() {
+        val account = savedAccount("battle-query-periods")
+        val otherAccount = savedAccount("battle-query-periods-other")
+        savedLog(account, EARLIER, "VICTORY", funds = 100)
+        savedLog(account, LATER, "DEFEAT", funds = 30, categoryId = "adventure_map", mapCode = "snow22", mapName = "얼어붙은 산")
+        savedLog(account, LATER.plusSeconds(1), "DRAW", funds = null, categoryId = "adventure_map", mapCode = "snow22", mapName = "얼어붙은 산")
+        savedLog(account, LATER.plusSeconds(2), "DEFEAT", funds = 20, categoryId = "adventure_map", mapCode = "desert01", mapName = "사막")
+        savedLog(account, LATER.plusSeconds(3), "DEFEAT", categoryId = "battle_map")
+        savedLog(otherAccount, LATER.plusSeconds(4), "DEFEAT", funds = 9_999, categoryId = "adventure_map")
+
+        assertEquals(50L, queryRepository.sumFundsSince(account.id, LATER))
+        assertEquals(150L, queryRepository.sumFundsSince(account.id, EARLIER))
+        assertEquals(
             listOf(
-                BattleLogLootEntity(battleLog = victory, displayOrder = 0, name = "Steel", quantity = 2, rawText = "Steel x 2"),
-                BattleLogLootEntity(battleLog = victory, displayOrder = 1, name = "Bone", quantity = 1, rawText = "Bone"),
-                BattleLogLootEntity(battleLog = defeat, displayOrder = 0, name = "Cloth", quantity = 4, rawText = "Cloth x 4"),
-                BattleLogLootEntity(battleLog = foreign, displayOrder = 0, name = "Foreign", quantity = 100, rawText = "Foreign x 100"),
+                AdventureMapOutcomeStatsProjection("snow22", "얼어붙은 산", defeats = 1, draws = 1),
+                AdventureMapOutcomeStatsProjection("desert01", "사막", defeats = 1, draws = 0),
             ),
+            queryRepository.findAdventureMapOutcomeStats(account.id),
         )
-        lootRepository.flush()
-
-        val stats = queryRepository.findStats(account.id)
-
-        assertEquals(4L, stats.totalBattles)
-        assertEquals(1L, stats.victories)
-        assertEquals(1L, stats.defeats)
-        assertEquals(1L, stats.draws)
-        assertEquals(1L, stats.unknowns)
-        assertEquals(130L, stats.totalFunds)
-        assertEquals(25L, stats.totalExperience)
-        assertEquals(7L, queryRepository.sumLootQuantity(account.id))
     }
 
     private fun savedAccount(loginId: String): HofAccountEntity =
@@ -173,14 +179,17 @@ class BattleLogQueryRepositoryTest {
         outcome: String,
         funds: Int? = null,
         experience: Int? = null,
+        categoryId: String = "battle_map",
+        mapCode: String = "query-map",
+        mapName: String = "Query Map",
     ): BattleLogEntity =
         logRepository.save(
             BattleLogEntity(
                 account = account,
                 battleMap = null,
-                categoryIdSnapshot = "battle_map",
-                mapCodeSnapshot = "query-map",
-                mapNameSnapshot = "Query Map",
+                categoryIdSnapshot = categoryId,
+                mapCodeSnapshot = mapCode,
+                mapNameSnapshot = mapName,
                 outcome = outcome,
                 title = "query result",
                 turns = 1,

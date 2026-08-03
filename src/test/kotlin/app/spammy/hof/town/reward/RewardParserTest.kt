@@ -24,10 +24,29 @@ class RewardParserTest {
         assertEquals(listOf(StashOpenAction.ONE, StashOpenAction.TWENTY, StashOpenAction.HUNDRED, StashOpenAction.THOUSAND, StashOpenAction.ALL), snapshot.actions.map { it.action })
         assertEquals(listOf("1개 열기", "20개 열기", "100개 열기", "1000개 열기", "전부 열기"), snapshot.actions.map { it.label })
         assertEquals(2, snapshot.boxes.size)
-        assertTrue(snapshot.boxes.first().selectable)
-        assertEquals(5, snapshot.boxes.first().owned)
+        val box = snapshot.boxes.first()
+        assertTrue(box.selectable)
+        assertEquals("Plumpy Fish (Stash)", box.name)
+        assertEquals("Bind / 설명", box.detail)
+        assertEquals(10, box.cost)
+        assertEquals(5, box.owned)
         assertFalse(snapshot.boxes.last().selectable)
+        assertEquals("선택할 수 없는 상자", snapshot.boxes.last().name)
+        assertEquals(null, snapshot.boxes.last().detail)
         assertTrue(snapshot.actions.none { it.label.contains("미리") })
+    }
+
+    @Test fun `stash splits the historical box title and description without repeating its price`() {
+        val html = fixture("stash.html").replace(
+            "${'$'} 10</td><td><img src=\"/item/plumpy.gif\"> Plumpy Fish (Stash) x5 / Bind / 설명",
+            "${'$'} 0</td><td>Treasure Box - Historical Weapon (Stash) x8 / 고대인들의 시대로부터 지금까지 남아있는 역사적인 무기가 들어있습니다.",
+        )
+        val box = stash.parse(html, STASH_URL, forms.parse(html, STASH_URL)).boxes.first()
+
+        assertEquals("Treasure Box - Historical Weapon (Stash)", box.name)
+        assertEquals("고대인들의 시대로부터 지금까지 남아있는 역사적인 무기가 들어있습니다.", box.detail)
+        assertEquals(0, box.cost)
+        assertEquals(8, box.owned)
     }
 
     @Test fun `orb parser keeps actual GET balances and confirmed one and five actions`() {

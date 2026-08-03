@@ -25,11 +25,13 @@ class BattleLogController(
     fun findRecentLogs(
         @CurrentAccountId accountId: Long,
         @RequestParam(defaultValue = "20") limit: Int,
+        @RequestParam(defaultValue = "0") offset: Int,
+        @RequestParam(required = false) outcome: String?,
     ): List<BattleLogResponse> =
-        battleLogService.findRecent(accountId = accountId, limit = limit)
+        battleLogService.findRecent(accountId = accountId, limit = limit, offset = offset, outcome = outcome)
 
     /**
-     * 누적 전투 횟수, 승률, 보상 합계를 계산해 반환한다.
+     * 기간별 Funds와 모험맵 패배·무승부 집계를 반환한다.
      */
     @GetMapping("/stats")
     fun summarize(

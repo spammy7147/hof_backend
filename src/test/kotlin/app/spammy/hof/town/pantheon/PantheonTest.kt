@@ -21,10 +21,12 @@ class PantheonTest {
 
     @Test
     fun `장소명과 실제 링크 문구가 나뉜 캡처형 목록도 li의 관측 문맥으로 파싱한다`() {
-        val html = "<ul><li>마르두크의 전당 - <a href='?menu=pantheon&shrine=Marduk'>군신 마르두크(Marduk)</a></li></ul>"
+        val html = "<ul><li>마르두크의 전당 - <a href='?menu=marduktemple'>군신 마르두크(Marduk)</a></li></ul>"
         val street = parser.parseStreet(html, base)
         assertEquals(1, street.shrines.size)
-        assertTrue(street.shrines.single().name.contains("마르두크의 전당"))
+        assertEquals("군신 마르두크", street.shrines.single().name)
+        assertEquals("Marduk", street.shrines.single().alias)
+        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?menu=marduktemple", street.shrines.single().detailUrl)
     }
 
     @Test

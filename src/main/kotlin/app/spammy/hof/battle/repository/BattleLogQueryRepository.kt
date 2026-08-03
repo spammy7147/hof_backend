@@ -9,6 +9,7 @@ import app.spammy.hof.battle.entity.QBattleLogParticipantEntity.battleLogPartici
 import com.querydsl.core.types.dsl.CaseBuilder
 import com.querydsl.jpa.impl.JPAQueryFactory
 import org.springframework.stereotype.Repository
+import java.time.Instant
 
 /** 최근 전투 한 건의 scalar 부모와 정렬된 참가자/전리품을 함께 전달하는 read model이다. */
 data class BattleLogReadModel(
@@ -17,15 +18,12 @@ data class BattleLogReadModel(
     val loots: List<BattleLogLootEntity>,
 )
 
-/** 전투 로그 부모 행에서 한 번에 계산한 결과별 횟수와 금액/경험치 합계다. */
-data class BattleLogStatsProjection(
-    val totalBattles: Long,
-    val victories: Long,
+/** 모험맵 한 곳의 패배/무승부 집계 결과다. */
+data class AdventureMapOutcomeStatsProjection(
+    val mapCode: String,
+    val mapName: String,
     val defeats: Long,
     val draws: Long,
-    val unknowns: Long,
-    val totalFunds: Long,
-    val totalExperience: Long,
 )
 
 /**
@@ -43,14 +41,20 @@ class BattleLogQueryRepository(
     fun findRecent(
         accountId: Long,
         limit: Int,
+        offset: Int = 0,
+        outcome: String? = null,
     ): List<BattleLogReadModel> {
         if (limit <= 0) return emptyList()
 
         val logIds = queryFactory
             .select(battleLogEntity.id)
             .from(battleLogEntity)
-            .where(battleLogEntity.account.id.eq(accountId))
+            .where(
+                battleLogEntity.account.id.eq(accountId),
+                outcome?.let(battleLogEntity.outcome::eq),
+            )
             .orderBy(battleLogEntity.createdAt.desc(), battleLogEntity.id.desc())
+            .offset(offset.coerceAtLeast(0).toLong())
             .limit(limit.coerceAtMost(100).toLong())
             .fetch()
         if (logIds.isEmpty()) return emptyList()
@@ -83,49 +87,47 @@ class BattleLogQueryRepository(
             .where(battleLogParticipantEntity.battleLog.id.eq(logId))
             .fetchOne() ?: 0L
 
-    /** 계정의 결과별 전투 횟수와 Funds/경험치 합계를 단일 aggregate query로 계산한다. */
-    fun findStats(accountId: Long): BattleLogStatsProjection {
-        val totalBattles = battleLogEntity.id.count()
-        val victories = outcomeCount("VICTORY")
-        val defeats = outcomeCount("DEFEAT")
-        val draws = outcomeCount("DRAW")
-        val unknowns = outcomeCount("UNKNOWN")
+    /** 지정 시각 이후 기록된 전투 Funds를 합산한다. */
+    fun sumFundsSince(accountId: Long, since: Instant): Long {
         val totalFunds = battleLogEntity.funds.longValue().sum().coalesce(0L)
-        val totalExperience = battleLogEntity.experience.longValue().sum().coalesce(0L)
-        val row = queryFactory
-            .select(
-                totalBattles,
-                victories,
-                defeats,
-                draws,
-                unknowns,
-                totalFunds,
-                totalExperience,
-            )
+        return queryFactory
+            .select(totalFunds)
             .from(battleLogEntity)
-            .where(battleLogEntity.account.id.eq(accountId))
-            .fetchOne()
-
-        return BattleLogStatsProjection(
-            totalBattles = row?.get(totalBattles) ?: 0L,
-            victories = row?.get(victories) ?: 0L,
-            defeats = row?.get(defeats) ?: 0L,
-            draws = row?.get(draws) ?: 0L,
-            unknowns = row?.get(unknowns) ?: 0L,
-            totalFunds = row?.get(totalFunds) ?: 0L,
-            totalExperience = row?.get(totalExperience) ?: 0L,
-        )
+            .where(
+                battleLogEntity.account.id.eq(accountId),
+                battleLogEntity.createdAt.goe(since),
+            )
+            .fetchOne() ?: 0L
     }
 
-    /** 계정의 모든 전리품 수량을 전리품 자식 테이블에서 직접 합산한다. */
-    fun sumLootQuantity(accountId: Long): Long {
-        val totalQuantity = battleLogLootEntity.quantity.longValue().sum().coalesce(0L)
+    /** 모험맵 중 패배 또는 무승부가 있었던 맵만 맵별로 집계한다. */
+    fun findAdventureMapOutcomeStats(accountId: Long): List<AdventureMapOutcomeStatsProjection> {
+        val defeats = outcomeCount("DEFEAT")
+        val draws = outcomeCount("DRAW")
         return queryFactory
-            .select(totalQuantity)
-            .from(battleLogLootEntity)
-            .join(battleLogLootEntity.battleLog, battleLogEntity)
-            .where(battleLogEntity.account.id.eq(accountId))
-            .fetchOne() ?: 0L
+            .select(
+                battleLogEntity.mapCodeSnapshot,
+                battleLogEntity.mapNameSnapshot,
+                defeats,
+                draws,
+            )
+            .from(battleLogEntity)
+            .where(
+                battleLogEntity.account.id.eq(accountId),
+                battleLogEntity.categoryIdSnapshot.eq("adventure_map"),
+                battleLogEntity.outcome.`in`("DEFEAT", "DRAW"),
+            )
+            .groupBy(battleLogEntity.mapCodeSnapshot, battleLogEntity.mapNameSnapshot)
+            .orderBy(defeats.desc(), draws.desc(), battleLogEntity.mapNameSnapshot.asc())
+            .fetch()
+            .map { row ->
+                AdventureMapOutcomeStatsProjection(
+                    mapCode = row.get(battleLogEntity.mapCodeSnapshot).orEmpty(),
+                    mapName = row.get(battleLogEntity.mapNameSnapshot).orEmpty(),
+                    defeats = row.get(defeats) ?: 0L,
+                    draws = row.get(draws) ?: 0L,
+                )
+            }
     }
 
     private fun findParticipants(logIds: Collection<Long>): List<BattleLogParticipantEntity> =

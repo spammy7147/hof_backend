@@ -2,6 +2,7 @@ package app.spammy.hof.battle.service
 
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.battle.dto.BattleLogResponse
+import app.spammy.hof.battle.dto.AdventureMapOutcomeStatsResponse
 import app.spammy.hof.battle.dto.BattleLootResponse
 import app.spammy.hof.battle.dto.BattleSideResponse
 import app.spammy.hof.battle.dto.BattleStatsResponse
@@ -22,9 +23,13 @@ import app.spammy.hof.external.model.HofBattleSide
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
+import java.time.DayOfWeek
+import java.time.Instant
+import java.time.ZoneId
+import java.time.temporal.TemporalAdjusters
 
 /**
- * 전투 결과 부모와 참가자/전리품 자식을 기록하고 최근 목록과 누적 통계를 제공하는 서비스다.
+ * 전투 결과 부모와 참가자/전리품 자식을 기록하고 필터 가능한 로그와 기간 통계를 제공하는 서비스다.
  *
  * 저장은 command repository만 사용하고 모든 읽기와 집계는 [BattleLogQueryRepository]에 위임한다.
  * 앱 응답의 배열 형태는 유지하되 DB에서는 슬롯과 표시 순서를 가진 자식 행으로 관리한다.
@@ -116,30 +121,44 @@ class BattleLogService(
     fun findRecent(
         accountId: Long,
         limit: Int = 20,
+        offset: Int = 0,
+        outcome: String? = null,
     ): List<BattleLogResponse> =
         battleLogQueryRepository
-            .findRecent(accountId = accountId, limit = limit.coerceIn(1, 100))
+            .findRecent(
+                accountId = accountId,
+                limit = limit.coerceIn(1, 100),
+                offset = offset.coerceAtLeast(0),
+                outcome = outcome?.uppercase()?.takeIf { it in LOG_OUTCOMES },
+            )
             .map { readModel -> readModel.toResponse() }
 
     /**
-     * 부모 aggregate 한 번과 전리품 수량 aggregate 한 번으로 누적 통계를 계산한다.
-     *
-     * 서비스 메모리에서 로그나 JSON 배열을 순회하지 않으므로 기록 수가 늘어도 전송량이 증가하지 않는다.
+     * 서울 시간 기준 일/주/월 Funds와 모험맵 패배·무승부를 DB aggregate로 계산한다.
      */
     @Transactional(readOnly = true)
     fun summarize(accountId: Long): BattleStatsResponse {
-        val stats = battleLogQueryRepository.findStats(accountId)
+        val periods = battleFundPeriodStarts(timeProvider.now())
         return BattleStatsResponse(
             accountId = accountId,
-            totalBattles = stats.totalBattles,
-            victories = stats.victories,
-            defeats = stats.defeats,
-            draws = stats.draws,
-            unknowns = stats.unknowns,
-            winRate = if (stats.totalBattles == 0L) 0.0 else stats.victories.toDouble() / stats.totalBattles.toDouble(),
-            totalFunds = stats.totalFunds,
-            totalExperience = stats.totalExperience,
-            totalLootCount = battleLogQueryRepository.sumLootQuantity(accountId),
+            dailyFunds = battleLogQueryRepository.sumFundsSince(accountId, periods.day),
+            weeklyFunds = battleLogQueryRepository.sumFundsSince(accountId, periods.week),
+            monthlyFunds = battleLogQueryRepository.sumFundsSince(accountId, periods.month),
+            adventureMapOutcomes = battleLogQueryRepository.findAdventureMapOutcomeStats(accountId)
+                .groupBy { stats -> stats.mapCode }
+                .map { (mapCode, entries) ->
+                    AdventureMapOutcomeStatsResponse(
+                        mapCode = mapCode,
+                        mapName = entries.firstNotNullOfOrNull { it.mapName.takeIf(String::isNotBlank) } ?: mapCode,
+                        defeats = entries.sumOf { it.defeats },
+                        draws = entries.sumOf { it.draws },
+                    )
+                }
+                .sortedWith(
+                    compareByDescending<AdventureMapOutcomeStatsResponse> { it.defeats }
+                        .thenByDescending { it.draws }
+                        .thenBy { it.mapName },
+                ),
         )
     }
 
@@ -191,4 +210,28 @@ class BattleLogService(
             rawLogUrl = rawLogUrl,
             createdAt = createdAt.toString(),
         )
+
+    private companion object {
+        val LOG_OUTCOMES: Set<String> = setOf("VICTORY", "DEFEAT", "DRAW")
+    }
+}
+
+internal data class BattleFundPeriodStarts(
+    val day: Instant,
+    val week: Instant,
+    val month: Instant,
+)
+
+/** 서울 날짜를 기준으로 오늘, 이번 주 월요일, 이번 달 1일의 시작 시각을 계산한다. */
+internal fun battleFundPeriodStarts(now: Instant): BattleFundPeriodStarts {
+    val today = now.atZone(ZoneId.of("Asia/Seoul")).toLocalDate()
+    val zone = ZoneId.of("Asia/Seoul")
+    return BattleFundPeriodStarts(
+        day = today.atStartOfDay(zone).toInstant(),
+        week = today
+            .with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+            .atStartOfDay(zone)
+            .toInstant(),
+        month = today.withDayOfMonth(1).atStartOfDay(zone).toInstant(),
+    )
 }

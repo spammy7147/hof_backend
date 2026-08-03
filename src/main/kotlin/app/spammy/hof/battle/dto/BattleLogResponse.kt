@@ -25,17 +25,20 @@ data class BattleLogResponse(
 )
 
 /**
- * 전투 로그를 집계한 누적 통계를 앱에 내려주는 응답 DTO다.
+ * 기간별 Funds와 파티 조정용 모험맵 결과 집계를 앱에 내려주는 응답 DTO다.
  */
 data class BattleStatsResponse(
     val accountId: Long,
-    val totalBattles: Long,
-    val victories: Long,
+    val dailyFunds: Long,
+    val weeklyFunds: Long,
+    val monthlyFunds: Long,
+    val adventureMapOutcomes: List<AdventureMapOutcomeStatsResponse>,
+)
+
+/** 파티 조정에 활용할 수 있도록 모험맵별 패배와 무승부 횟수를 전달한다. */
+data class AdventureMapOutcomeStatsResponse(
+    val mapCode: String,
+    val mapName: String,
     val defeats: Long,
     val draws: Long,
-    val unknowns: Long,
-    val winRate: Double,
-    val totalFunds: Long,
-    val totalExperience: Long,
-    val totalLootCount: Long,
 )

@@ -27,13 +27,16 @@ class StashPageParser {
         val rows = actionForms.firstOrNull()?.second?.rows.orEmpty()
         val boxes = rows.filterNot { row -> HEADER.matches(clean(row.label)) }.mapIndexed { index, row ->
             val label = clean(row.label)
+            val display = label.replace(LEADING_PRICE, "").trim()
+            val name = display.substringBefore(DETAIL_SEPARATOR).replace(TRAILING_OWNED, "").trim()
+            val detail = display.substringAfter(DETAIL_SEPARATOR, "").trim().takeIf(String::isNotBlank)
             StashBox(
                 id = row.candidate?.id ?: "display-$index",
-                name = label.replace(LEADING_PRICE, "").trim().ifBlank { "이름 없는 상자" },
+                name = name.ifBlank { "이름 없는 상자" },
                 selectable = row.selectable,
                 owned = OWNED.find(label)?.groupValues?.get(1)?.replace(",", "")?.toIntOrNull(),
                 cost = PRICE.find(label)?.groupValues?.get(1)?.replace(",", "")?.toLongOrNull(),
-                detail = label.takeIf(String::isNotBlank),
+                detail = detail,
             )
         }
         return StashSnapshot(boxes.distinctBy(StashBox::id), actions, result)
@@ -68,8 +71,10 @@ class StashPageParser {
         val ALL_WORD = Regex("전부|전체|모두|all", RegexOption.IGNORE_CASE)
         val DRAW_COUNT = Regex("([\\d,]+)\\s*개")
         val OWNED = Regex("[x×]\\s*([\\d,]+)", RegexOption.IGNORE_CASE)
+        val TRAILING_OWNED = Regex("\\s*[x×]\\s*[\\d,]+\\s*$", RegexOption.IGNORE_CASE)
         val PRICE = Regex("[$]\\s*([\\d,]+)")
         val LEADING_PRICE = Regex("^[$]\\s*[\\d,]+\\s*")
+        const val DETAIL_SEPARATOR = "/"
         val HEADER = Regex("^(개봉가능|가격|Item|아이템)(?:\\s+(개봉가능|가격|Item|아이템))*$", RegexOption.IGNORE_CASE)
     }
 }

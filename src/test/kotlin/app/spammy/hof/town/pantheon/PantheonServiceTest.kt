@@ -24,6 +24,34 @@ class PantheonServiceTest {
     private val forms = HofFormParser()
 
     @Test
+    fun `신전 거리 응답은 각 temple에서 관측된 서로 다른 action만 해당 카드에 포함한다`() {
+        val street = """
+            <ul>
+              <li>마르두크의 전당 - <a href='?menu=marduktemple'>군신 마르두크(Marduk)</a></li>
+              <li>카즘의 창고 - <a href='?menu=kazmtemple'>재주꾼 카즘(Kazm)</a></li>
+            </ul>
+        """.trimIndent()
+        val marduk = fixture("detail.html").replace("?menu=pantheon&amp;shrine=Marduk", "?menu=marduktemple")
+        val kazm = """
+            <h4>카즘의 창고</h4>
+            <form method='post' action='?menu=kazmtemple'>
+              <input type='hidden' name='nonce' value='kazm'>
+              <input type='submit' name='buy' value='사제 아이템을 구입한다(12,000 Funds)'>
+            </form>
+        """.trimIndent()
+        val context = service(STREET_URL to street, ACTUAL_DETAIL_URL to marduk, KAZM_DETAIL_URL to kazm)
+
+        val response = context.service.street(7L)
+
+        val mardukCard = response.shrines.single { it.name == "군신 마르두크" }
+        val kazmCard = response.shrines.single { it.name == "재주꾼 카즘" }
+        assertTrue(mardukCard.actions.any { it.type == ShrineAction.DONATE_PERCENT })
+        assertEquals(listOf(ShrineAction.BUY_PRIEST_ITEM), kazmCard.actions.map { it.type })
+        assertEquals(12_000L, kazmCard.actions.single().costFunds)
+        assertEquals(listOf(STREET_URL, ACTUAL_DETAIL_URL, KAZM_DETAIL_URL), context.requests().map(HofRequest::url))
+    }
+
+    @Test
     fun `form action은 최신 거리와 상세를 다시 읽고 hidden과 submit을 한 번만 보낸다`() {
         val street = fixture("street.html")
         val detail = fixture("detail.html")
@@ -113,5 +141,7 @@ class PantheonServiceTest {
     private companion object {
         const val STREET_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=pantheon"
         const val DETAIL_URL = "$STREET_URL&shrine=Marduk"
+        const val ACTUAL_DETAIL_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=marduktemple"
+        const val KAZM_DETAIL_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=kazmtemple"
     }
 }

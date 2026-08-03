@@ -107,6 +107,23 @@ class BattleResultParserTest {
     }
 
     @Test
+    fun preservesEnglishShowDetailLinkEvenWhenUrlDoesNotContainLog() {
+        val result = parser.parse(
+            html = """
+                <html><body>
+                  <a href="http://sic.zerosic.com/ZeroHOF/index.php?common=english-detail#">Show Detail(6 turns.)</a>
+                  공민이은(는) 승리했다!
+                  <div>남은 HP : 0/100</div>
+                  <div>남은 HP : 100/100 획득 Funds : ${'$'} 200</div>
+                </body></html>
+            """.trimIndent(),
+            playerName = "공민이",
+        )
+
+        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?common=english-detail#", result.rawLogUrl)
+    }
+
+    @Test
     fun parsesVictoryWhenPlayerNameAppearsInTitle() {
         val result = parser.parse(
             html = """

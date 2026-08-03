@@ -20,18 +20,18 @@ class PantheonParser {
         val document = Jsoup.parse(html, finalUrl)
         val baseQuery = safeQuery(finalUrl) ?: return PantheonStreetSnapshot(emptyList())
         val observed = document.select("a[href]").asSequence().take(MAX_LINKS).mapNotNull { link ->
-            val target = safeObservedTarget(finalUrl, link.attr("href"), baseQuery) ?: return@mapNotNull null
-            val delta = queryDelta(baseQuery, safeQuery(target) ?: return@mapNotNull null)
-                ?.takeIf { it.size == 1 } ?: return@mapNotNull null
+            val target = safeShrineTarget(finalUrl, link.attr("href"), baseQuery) ?: return@mapNotNull null
+            val targetQuery = safeQuery(target) ?: return@mapNotNull null
             val owner = link.closest("li")
-            val label = sequenceOf(clean(link.text()), clean(owner?.text().orEmpty()))
-                .firstOrNull { SHRINE_WORD.containsMatchIn(it) }?.take(MAX_NAME) ?: return@mapNotNull null
-            if (label.isBlank() || !SHRINE_WORD.containsMatchIn(label)) return@mapNotNull null
+            val context = clean(owner?.text().orEmpty()).ifBlank { clean(link.text()) }
+            if (!SHRINE_WORD.containsMatchIn(context)) return@mapNotNull null
+            val label = clean(link.text()).ifBlank { context }.take(MAX_NAME)
+            if (label.isBlank()) return@mapNotNull null
             val (name, alias) = splitName(label)
             val color = parseColor(link) ?: owner?.let(::parseColor)
             val stableIdentity = clean(alias ?: name).lowercase().takeIf(String::isNotBlank) ?: return@mapNotNull null
             stableIdentity to PantheonShrine(
-                id = opaque("shrine\u0000$stableIdentity\u0000${canonical(delta)}"),
+                id = opaque("shrine\u0000$stableIdentity\u0000${canonicalQuery(targetQuery)}"),
                 name = name,
                 alias = alias,
                 color = color,
@@ -192,17 +192,33 @@ class PantheonParser {
         return target
     }
 
+    /** 신전 거리는 pantheon에서 marduktemple처럼 menu 자체가 바뀌는 링크를 사용한다. */
+    private fun safeShrineTarget(pageUrl: String, href: String, baseQuery: Map<String, List<String>>): String? {
+        val resolved = runCatching { URI(resolve(pageUrl, href)).normalize() }.getOrNull() ?: return null
+        val query = safeQuery(resolved.toASCIIString()) ?: return null
+        val baseMenu = baseQuery["menu"]?.singleOrNull() ?: return null
+        val detailMenu = query["menu"]?.singleOrNull()
+        if (baseMenu.equals("pantheon", true) && query.size == 1 && detailMenu != null && TEMPLE_MENU.matches(detailMenu)) {
+            return safeSameHofPage(resolved)
+        }
+        val legacy = safeFormTarget(pageUrl, href, baseQuery) ?: return null
+        return legacy.takeIf { target -> queryDelta(baseQuery, safeQuery(target) ?: return null)?.size == 1 }
+    }
+
     private fun safeFormTarget(pageUrl: String, href: String, baseQuery: Map<String, List<String>>): String? {
         val resolved = runCatching { URI(resolve(pageUrl, href)).normalize() }.getOrNull() ?: return null
-        if (resolved.scheme != "http" || !resolved.host.equals("sic.zerosic.com", true) || resolved.port !in setOf(-1, 80) ||
-            resolved.rawUserInfo != null || resolved.rawFragment != null || resolved.path != "/ZeroHOF/index.php"
-        ) return null
+        safeSameHofPage(resolved) ?: return null
         val query = safeQuery(resolved.toASCIIString()) ?: return null
         if (query.size !in 1..MAX_QUERY_FIELDS || query.values.any { it.size != 1 } || baseQuery.values.any { it.size != 1 }) return null
         val baseMenu = baseQuery["menu"]?.singleOrNull() ?: return null
         if (query["menu"]?.singleOrNull() != baseMenu) return null
         if (baseQuery.any { (key, values) -> query[key] != values }) return null
         return resolved.toASCIIString()
+    }
+
+    private fun safeSameHofPage(uri: URI): String? = uri.toASCIIString().takeIf {
+        uri.scheme == "http" && uri.host.equals("sic.zerosic.com", true) && uri.port in setOf(-1, 80) &&
+            uri.rawUserInfo == null && uri.rawFragment == null && uri.path == "/ZeroHOF/index.php"
     }
 
     private fun queryDelta(base: Map<String, List<String>>, target: Map<String, List<String>>): List<HofFormField>? {
@@ -216,6 +232,8 @@ class PantheonParser {
 
     private fun canonical(fields: List<HofFormField>): String = fields.sortedWith(compareBy(HofFormField::name, HofFormField::value))
         .joinToString("\u0001") { fieldContract(it.name, it.value) }
+    private fun canonicalQuery(query: Map<String, List<String>>): String = query.entries.sortedBy(Map.Entry<String, List<String>>::key)
+        .joinToString("\u0001") { (name, values) -> values.sorted().joinToString("\u0002") { fieldContract(name, it) } }
 
     private fun fieldContract(name: String, value: String) = "${name.length}:$name:${value.length}:$value"
 
@@ -253,6 +271,7 @@ class PantheonParser {
 
     private companion object {
         val SHRINE_WORD = Regex("신전|전당|창고|도서관|밀실|제단|성당|정원|둥지|나선탑|구덩이", RegexOption.IGNORE_CASE)
+        val TEMPLE_MENU = Regex("[a-z0-9]+temple", RegexOption.IGNORE_CASE)
         val SHRINE_DETAIL_WORD = Regex("신전|전당|창고|도서관|밀실|제단|성당|정원|둥지|나선탑|구덩이|Hall|Storage|Library|Altar|Church|Garden|Nest|Tower|Pit", RegexOption.IGNORE_CASE)
         val NAME_ALIAS = Regex("^(.+?)\\s*\\(([^()]*)\\)\\s*$")
         val DEITY = Regex("(?:섬기는|설치되는)\\s*신\\s*[:：]?\\s*([^\\n]+?)(?=\\s*(?:성향|주관하는|F[■□]|공민|사제와|$))")

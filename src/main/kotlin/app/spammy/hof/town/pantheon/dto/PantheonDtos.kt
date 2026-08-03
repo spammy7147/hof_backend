@@ -10,12 +10,13 @@ data class PantheonShrineResponse(
     val alias: String?,
     val color: String?,
     val imageUrl: String?,
+    val actions: List<PantheonActionResponse>,
 )
 
 data class PantheonStreetResponse(val shrines: List<PantheonShrineResponse>) {
     companion object {
-        fun from(value: PantheonStreetSnapshot) = PantheonStreetResponse(value.shrines.map {
-            PantheonShrineResponse(it.id, it.name, it.alias, it.color, it.imageUrl)
+        fun from(value: PantheonStreetSnapshot, actions: Map<String, List<PantheonAction>>) = PantheonStreetResponse(value.shrines.map {
+            PantheonShrineResponse(it.id, it.name, it.alias, it.color, it.imageUrl, actions[it.id].orEmpty().map(PantheonActionResponse::from))
         })
     }
 }
@@ -28,7 +29,13 @@ data class PantheonActionResponse(
     val fundsPercent: Int?,
     val itemName: String?,
     val itemQuantity: Int?,
-)
+) {
+    companion object {
+        fun from(value: PantheonAction) = PantheonActionResponse(
+            value.id, value.type, value.label, value.costFunds, value.fundsPercent, value.itemName, value.itemQuantity,
+        )
+    }
+}
 
 data class PantheonDetailResponse(
     val shrineId: String,
@@ -48,7 +55,7 @@ data class PantheonDetailResponse(
         fun from(value: PantheonDetailSnapshot) = PantheonDetailResponse(
             value.shrineId, value.name, value.alias, value.description, value.imageUrl, value.deity,
             value.alignment, value.domains, value.relation, value.currentJob,
-            value.actions.map { PantheonActionResponse(it.id, it.type, it.label, it.costFunds, it.fundsPercent, it.itemName, it.itemQuantity) },
+            value.actions.map(PantheonActionResponse::from),
             value.result?.let(TownActionResultResponse::from),
         )
     }

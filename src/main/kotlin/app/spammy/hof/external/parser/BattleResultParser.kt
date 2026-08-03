@@ -103,7 +103,9 @@ class BattleResultParser {
     private fun findRawLogUrl(lines: List<DomLine>): String? {
         val links = lines.flatMap(DomLine::links)
         return (
-            links.firstOrNull { link -> link.text.contains("로그 주소") }
+            links.firstOrNull { link ->
+                link.text.contains("로그 주소") || link.text.contains("Show Detail", ignoreCase = true)
+            }
                 ?: links.firstOrNull { link -> link.url.contains("log", ignoreCase = true) }
             )
             ?.url
