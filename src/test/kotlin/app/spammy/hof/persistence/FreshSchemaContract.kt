@@ -202,6 +202,13 @@ internal object FreshSchemaContract {
             optionalInstant("revoked_at"),
         ),
         table(
+            "app_releases",
+            serialId(), requiredVarchar("platform", 20), requiredBigint("version_code"),
+            requiredVarchar("version_name", 100), requiredVarchar("file_name"), requiredBigint("file_size"),
+            requiredVarchar("sha256", 64), requiredVarchar("git_revision", 40), requiredBigint("jenkins_build"),
+            requiredInstant("published_at"),
+        ),
+        table(
             "characters",
             serialId(), requiredBigint("account_id"), requiredVarchar("hof_character_id", 50),
             requiredVarchar("name", 100), requiredVarchar("job", 100), optionalInteger("level"),
@@ -512,6 +519,8 @@ internal object FreshSchemaContract {
     )
 
     private val UNIQUE_KEYS = listOf(
+        key("app_releases", "uk_app_releases_platform_version", "platform", "version_code"),
+        key("app_releases", "uk_app_releases_file_name", "file_name"),
         key("hof_accounts", "uk_hof_accounts_login_id", "login_id"),
         key("latest_hof_status", "uk_latest_hof_status_account", "account_id"),
         key("hof_cookies", "uk_hof_cookies_account_name", "account_id", "name"),
@@ -719,6 +728,7 @@ internal object FreshSchemaContract {
     )
 
     private val INDEXES = listOf(
+        index("app_releases", "idx_app_releases_platform_latest", "platform", "version_code"),
         index("auction_observation", "idx_auction_observation_market", "item_key", "observation_kind", "observed_at"),
         index("shop_catalog_item", "idx_shop_catalog_item_active_name", "shop_id", "active", "name", "item_key"),
         index("hof_cookies", "idx_hof_cookies_account_updated", "account_id", "updated_at", "id"),
@@ -835,6 +845,11 @@ internal object FreshSchemaContract {
     )
 
     private val CHECKS = listOf(
+        check("app_releases", "ck_app_releases_platform", "platform = 'ANDROID'"),
+        check("app_releases", "ck_app_releases_version_code", "version_code > cast(0 as bigint)"),
+        check("app_releases", "ck_app_releases_file_size", "file_size > cast(0 as bigint)"),
+        check("app_releases", "ck_app_releases_sha256", "char_length(sha256) = 64"),
+        check("app_releases", "ck_app_releases_jenkins_build", "jenkins_build > cast(0 as bigint)"),
         check("auction_observation", "ck_auction_observation_kind", "observation_kind in ('CURRENT', 'SOLD')"),
         check("auction_observation", "ck_auction_observation_quantity", "quantity > 0"),
         check("auction_observation", "ck_auction_observation_prices", "total_price >= cast(0 as bigint) and unit_price >= cast(0 as bigint)"),

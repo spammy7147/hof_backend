@@ -39,6 +39,12 @@ class SecurityConfig(
                         "/api/auth/login",
                         "/api/auth/refresh",
                         "/api/auth/logout",
+                        "/internal/app-releases/android",
+                    ).permitAll()
+                    .requestMatchers(
+                        HttpMethod.GET,
+                        "/api/app-releases/android/latest",
+                        "/api/app-releases/android/*/download",
                     ).permitAll()
                     .requestMatchers("/actuator/health", "/error").permitAll()
                     .anyRequest().authenticated()

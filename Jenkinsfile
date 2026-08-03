@@ -17,6 +17,7 @@ pipeline {
         SSH_CREDENTIAL_ID = 'hof-deploy-ssh'
         ENV_FILE_CREDENTIAL_ID = 'hof-spammy-backend-env'
         FIREBASE_CREDENTIAL_ID = 'hof-spammy-fcm'
+        PUBLISH_TOKEN_CREDENTIAL_ID = 'hof-spammy-publish-token'
         DEPLOY_TARGET = 'spammy@192.168.50.202'
         DEPLOY_HOST_IP = '192.168.50.202'
         SSH_KNOWN_HOSTS_FILE = "${WORKSPACE}/.jenkins/known_hosts"
@@ -24,6 +25,8 @@ pipeline {
         CONTAINER_NAME = 'hof-backend'
         HOST_PORT = '8080'
         CONTAINER_PORT = '8080'
+        RELEASE_HOST_DIR = '/home/spammy/hof/releases'
+        RELEASE_CONTAINER_DIR = '/var/lib/hof/releases'
     }
 
     stages {
@@ -49,6 +52,7 @@ pipeline {
                     env.IMAGE = "${IMAGE_REPOSITORY}:${env.IMAGE_TAG}"
                     env.REMOTE_ENV_FILE = "/tmp/hof-backend-env-${BUILD_NUMBER}"
                     env.REMOTE_FIREBASE_FILE = "/tmp/hof-firebase-${BUILD_NUMBER}.json"
+                    env.REMOTE_RELEASE_ENV_FILE = "/tmp/hof-release-token-${BUILD_NUMBER}.env"
                 }
             }
         }
@@ -142,6 +146,10 @@ pipeline {
                         credentialsId: "${FIREBASE_CREDENTIAL_ID}",
                         variable: 'HOF_FIREBASE_FILE',
                     ),
+                    string(
+                        credentialsId: "${PUBLISH_TOKEN_CREDENTIAL_ID}",
+                        variable: 'HOF_RELEASE_PUBLISH_TOKEN',
+                    ),
                 ]) {
                         sh(script: '''#!/usr/bin/env bash
                             set -Eeuo pipefail
@@ -151,10 +159,18 @@ pipeline {
                             scp -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes \
                               -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
                               "$HOF_FIREBASE_FILE" "$DEPLOY_TARGET:$REMOTE_FIREBASE_FILE"
+                            case "$HOF_RELEASE_PUBLISH_TOKEN" in
+                                *$'\n'*|*$'\r'*) echo 'Release publish token must be a single line.' >&2; exit 1 ;;
+                            esac
+                            printf 'HOF_RELEASE_PUBLISH_TOKEN=%s\n' "$HOF_RELEASE_PUBLISH_TOKEN" | \
+                              ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes \
+                                -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
+                                "$DEPLOY_TARGET" \
+                                "umask 077; cat > '$REMOTE_RELEASE_ENV_FILE'"
                             ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes \
                               -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
                               "$DEPLOY_TARGET" \
-                              "IMAGE='$IMAGE' IMAGE_REPOSITORY='$IMAGE_REPOSITORY' CONTAINER_NAME='$CONTAINER_NAME' DEPLOY_HOST_IP='$DEPLOY_HOST_IP' HOST_PORT='$HOST_PORT' CONTAINER_PORT='$CONTAINER_PORT' REMOTE_ENV_FILE='$REMOTE_ENV_FILE' REMOTE_FIREBASE_FILE='$REMOTE_FIREBASE_FILE' BUILD_NUMBER='$BUILD_NUMBER' bash -s" <<'REMOTE_SCRIPT'
+                              "IMAGE='$IMAGE' IMAGE_REPOSITORY='$IMAGE_REPOSITORY' CONTAINER_NAME='$CONTAINER_NAME' DEPLOY_HOST_IP='$DEPLOY_HOST_IP' HOST_PORT='$HOST_PORT' CONTAINER_PORT='$CONTAINER_PORT' RELEASE_HOST_DIR='$RELEASE_HOST_DIR' RELEASE_CONTAINER_DIR='$RELEASE_CONTAINER_DIR' REMOTE_ENV_FILE='$REMOTE_ENV_FILE' REMOTE_FIREBASE_FILE='$REMOTE_FIREBASE_FILE' REMOTE_RELEASE_ENV_FILE='$REMOTE_RELEASE_ENV_FILE' BUILD_NUMBER='$BUILD_NUMBER' bash -s" <<'REMOTE_SCRIPT'
                             set -Eeuo pipefail
 
                             rollback_name="${CONTAINER_NAME}-rollback"
@@ -166,7 +182,7 @@ pipeline {
                             secret_path="$secret_dir/firebase-service-account-${BUILD_NUMBER}.json"
 
                             cleanup_transfers() {
-                                rm -f -- "$REMOTE_ENV_FILE" "$REMOTE_FIREBASE_FILE" "${secret_path}.tmp"
+                                rm -f -- "$REMOTE_ENV_FILE" "$REMOTE_FIREBASE_FILE" "$REMOTE_RELEASE_ENV_FILE" "${secret_path}.tmp"
                             }
 
                             restore_previous() {
@@ -179,10 +195,13 @@ pipeline {
 
                             trap cleanup_transfers EXIT
                             chmod 600 "$REMOTE_ENV_FILE"
+                            chmod 600 "$REMOTE_RELEASE_ENV_FILE"
+                            test -s "$REMOTE_RELEASE_ENV_FILE"
                             test -s "$REMOTE_FIREBASE_FILE"
                             install -d -m 700 "$secret_dir"
                             install -m 600 "$REMOTE_FIREBASE_FILE" "${secret_path}.tmp"
                             mv -f "${secret_path}.tmp" "$secret_path"
+                            install -d -m 750 "$RELEASE_HOST_DIR"
 
                             if docker container inspect "$rollback_name" >/dev/null 2>&1; then
                                 if docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
@@ -206,8 +225,11 @@ pipeline {
                                 --name "$CONTAINER_NAME" \
                                 --publish "$DEPLOY_HOST_IP:$HOST_PORT:$CONTAINER_PORT" \
                                 --env-file "$REMOTE_ENV_FILE" \
+                                --env-file "$REMOTE_RELEASE_ENV_FILE" \
                                 --mount "type=bind,src=$secret_path,dst=/run/secrets/firebase-service-account.json,readonly" \
+                                --mount "type=bind,src=$RELEASE_HOST_DIR,dst=$RELEASE_CONTAINER_DIR,readonly" \
                                 --env "GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/firebase-service-account.json" \
+                                --env "HOF_RELEASE_STORAGE_ROOT=$RELEASE_CONTAINER_DIR" \
                                 --restart unless-stopped \
                                 "$IMAGE" >/dev/null; then
                                 restore_previous
@@ -260,7 +282,7 @@ REMOTE_SCRIPT
                 if (env.IMAGE?.trim()) {
                     sh 'docker image rm "$IMAGE" >/dev/null 2>&1 || true'
                 }
-                if (env.REMOTE_ENV_FILE?.trim() || env.REMOTE_FIREBASE_FILE?.trim()) {
+                if (env.REMOTE_ENV_FILE?.trim() || env.REMOTE_FIREBASE_FILE?.trim() || env.REMOTE_RELEASE_ENV_FILE?.trim()) {
                     withCredentials([
                         sshUserPrivateKey(
                             credentialsId: "${SSH_CREDENTIAL_ID}",
@@ -271,7 +293,7 @@ REMOTE_SCRIPT
                             ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes \
                               -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
                               "$DEPLOY_TARGET" \
-                              "rm -f -- '$REMOTE_ENV_FILE' '$REMOTE_FIREBASE_FILE'" >/dev/null 2>&1 || true
+                              "rm -f -- '$REMOTE_ENV_FILE' '$REMOTE_FIREBASE_FILE' '$REMOTE_RELEASE_ENV_FILE'" >/dev/null 2>&1 || true
                         '''
                     }
                 }
