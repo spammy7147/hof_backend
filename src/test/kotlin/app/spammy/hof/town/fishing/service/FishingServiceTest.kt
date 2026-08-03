@@ -118,6 +118,7 @@ class FishingServiceTest {
         service.exchange(7L, FishingExchangeRequest("rank-fish", "type_create:weapon", 3))
 
         val posted = captureRequests().last()
+        assertEquals(CREATE_URL, posted.url)
         assertEquals(listOf("type_create", "ItemT", "amount", "ItemNo", "Create"), posted.formEntries.map { it.name })
         assertEquals(listOf("weapon", "fish-17", "3", "rank-fish", "Create"), posted.formEntries.map { it.value })
     }
@@ -178,6 +179,7 @@ class FishingServiceTest {
 
     private companion object {
         const val URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=fishing"
-        const val EXCHANGE_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=createF"
+        const val EXCHANGE_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=fishchange"
+        const val CREATE_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=createF"
     }
 }
