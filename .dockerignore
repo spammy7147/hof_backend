@@ -1,6 +1,9 @@
 .git
 .gradle
 .idea
-build
+build/*
+!build/libs/
+build/libs/*
+!build/libs/hof-0.0.1-SNAPSHOT.jar
 data
 *.log

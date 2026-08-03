@@ -29,10 +29,13 @@ pipeline {
     stages {
         stage('Checkout') {
             steps {
-                deleteDir()
                 git branch: "${REPO_BRANCH}",
                     credentialsId: "${GITHUB_CREDENTIAL_ID}",
                     url: "${REPO_URL}"
+                // Keep Gradle's project-local incremental state between deployments.
+                // `git checkout -f` refreshes tracked files; this removes only stale,
+                // non-ignored files and leaves .gradle/, .kotlin/, and build/ intact.
+                sh 'git clean -ffd'
                 script {
                     env.GIT_REVISION = sh(
                         script: 'git rev-parse HEAD',
@@ -84,7 +87,10 @@ pipeline {
 
         stage('Test') {
             steps {
-                sh './gradlew clean test --no-daemon'
+                // Run the complete test suite and package the exact tested classes.
+                // The persistent daemon, incremental compilation, and build cache
+                // make subsequent deployments avoid recompiling unchanged inputs.
+                sh './gradlew test bootJar --build-cache --console=plain'
             }
         }
 
@@ -93,6 +99,7 @@ pipeline {
                 sh '''
                     set -eu
                     docker build \
+                      --file Dockerfile.runtime \
                       --label "org.opencontainers.image.revision=$GIT_REVISION" \
                       --label "app.jenkins.build=$BUILD_NUMBER" \
                       --tag "$IMAGE" \
