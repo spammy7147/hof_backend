@@ -91,11 +91,22 @@ class AppReleaseService(
     fun downloadAndroid(versionCode: Long): AppReleaseDownload {
         val release = queries.findByPlatformAndVersionCode(ANDROID, versionCode)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "요청한 Android APK 버전을 찾을 수 없습니다.")
-        val file = requireReleaseFile(release.fileName)
-        if (Files.size(file) != release.fileSize) {
+        return release.toDownload()
+    }
+
+    @Transactional(readOnly = true)
+    fun downloadLatestAndroid(): AppReleaseDownload {
+        val release = queries.findLatest(ANDROID)
+            ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "등록된 Android APK가 없습니다.")
+        return release.toDownload()
+    }
+
+    private fun AppReleaseEntity.toDownload(): AppReleaseDownload {
+        val file = requireReleaseFile(fileName)
+        if (Files.size(file) != fileSize) {
             throw ApiException(ErrorCode.RELEASE_CONFLICT, "저장된 APK 파일 크기가 등록 정보와 일치하지 않습니다.")
         }
-        return AppReleaseDownload(release, FileSystemResource(file))
+        return AppReleaseDownload(this, FileSystemResource(file))
     }
 
     private fun verifyPublishToken(providedToken: String?) {

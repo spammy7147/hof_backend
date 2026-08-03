@@ -3,6 +3,7 @@ package app.spammy.hof.apprelease.controller
 import app.spammy.hof.apprelease.dto.AndroidReleaseResponse
 import app.spammy.hof.apprelease.dto.LatestAndroidReleaseResponse
 import app.spammy.hof.apprelease.dto.PublishAndroidReleaseRequest
+import app.spammy.hof.apprelease.service.AppReleaseDownload
 import app.spammy.hof.apprelease.service.AppReleaseService
 import jakarta.validation.Valid
 import org.springframework.core.io.Resource
@@ -28,19 +29,27 @@ class PublicAppReleaseController(
         @RequestParam(defaultValue = "0") currentVersionCode: Long,
     ): LatestAndroidReleaseResponse = service.latestAndroid(currentVersionCode)
 
+    @GetMapping("/latest/download")
+    fun downloadLatest(): ResponseEntity<Resource> =
+        downloadResponse(service.downloadLatestAndroid(), "no-store")
+
     @GetMapping("/{versionCode}/download")
     fun download(
         @PathVariable versionCode: Long,
-    ): ResponseEntity<Resource> {
-        val download = service.downloadAndroid(versionCode)
-        return ResponseEntity.ok()
+    ): ResponseEntity<Resource> =
+        downloadResponse(service.downloadAndroid(versionCode), "public, max-age=31536000, immutable")
+
+    private fun downloadResponse(
+        download: AppReleaseDownload,
+        cacheControl: String,
+    ): ResponseEntity<Resource> =
+        ResponseEntity.ok()
             .contentType(APK_MEDIA_TYPE)
             .contentLength(download.release.fileSize)
             .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"${download.release.fileName}\"")
             .header(HttpHeaders.ETAG, "\"${download.release.sha256}\"")
-            .header(HttpHeaders.CACHE_CONTROL, "public, max-age=31536000, immutable")
+            .header(HttpHeaders.CACHE_CONTROL, cacheControl)
             .body(download.resource)
-    }
 
     companion object {
         private val APK_MEDIA_TYPE = MediaType.parseMediaType("application/vnd.android.package-archive")

@@ -74,6 +74,13 @@ class AppReleaseApiTest(
             .andExpect(header().longValue(HttpHeaders.CONTENT_LENGTH, apkBytes.size.toLong()))
             .andExpect(header().string(HttpHeaders.ETAG, "\"${sha256(apkBytes)}\""))
             .andExpect(header().string(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"$fileName\""))
+
+        mockMvc.perform(get("/api/app-releases/android/latest/download"))
+            .andExpect(status().isOk)
+            .andExpect(content().contentType("application/vnd.android.package-archive"))
+            .andExpect(content().bytes(apkBytes))
+            .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+            .andExpect(header().string(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"$fileName\""))
     }
 
     @Test
