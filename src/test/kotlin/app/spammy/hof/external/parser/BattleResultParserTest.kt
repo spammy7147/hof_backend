@@ -124,6 +124,23 @@ class BattleResultParserTest {
     }
 
     @Test
+    fun resolvesRelativeShowDetailLinkAgainstBattleResponseUrl() {
+        val result = parser.parse(
+            html = """
+                <html><body>
+                  <a href="?log=1785775740092211" style="font-size:200%">Show Detail( 44 turns. )</a>
+                  공민이은(는) 승리했다!
+                </body></html>
+            """.trimIndent(),
+            playerName = "공민이",
+            baseUrl = "http://sic.zerosic.com/ZeroHOF/index.php?common=Sky04",
+        )
+
+        assertEquals(44, result.turns)
+        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?log=1785775740092211", result.rawLogUrl)
+    }
+
+    @Test
     fun parsesVictoryWhenPlayerNameAppearsInTitle() {
         val result = parser.parse(
             html = """

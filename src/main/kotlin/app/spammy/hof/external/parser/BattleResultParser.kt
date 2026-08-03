@@ -25,8 +25,9 @@ class BattleResultParser {
     fun parse(
         html: String,
         playerName: String?,
+        baseUrl: String = "",
     ): HofBattleResult =
-        parseAll(html = html, playerName = playerName).first()
+        parseAll(html = html, playerName = playerName, baseUrl = baseUrl).first()
 
     /**
      * 3회 전투처럼 한 HTML에 여러 결과 블록이 있는 경우 모든 라운드를 파싱한다.
@@ -34,8 +35,9 @@ class BattleResultParser {
     fun parseAll(
         html: String,
         playerName: String?,
+        baseUrl: String = "",
     ): List<HofBattleResult> {
-        val document = Jsoup.parse(html)
+        val document = Jsoup.parse(html, baseUrl)
         val documentLines = DomLineCollector().collect(document)
 
         return splitRoundLines(documentLines).map { roundLines ->

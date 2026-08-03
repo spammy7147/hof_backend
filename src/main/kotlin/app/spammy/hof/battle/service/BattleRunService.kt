@@ -183,6 +183,7 @@ class BattleRunService(
         val results = battleResultParser.parseAll(
             html = battleResponse.body,
             playerName = playerName,
+            baseUrl = battleResponse.finalUrl,
         )
         val result = results.first()
         log.info(
