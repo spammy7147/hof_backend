@@ -257,6 +257,23 @@ class CaptchaService(
         return challenge.toResponse()
     }
 
+    /** 자동 인식을 끝내지 못한 active challenge에 수동 입력 안내를 남긴다. */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun markManualInputRequired(
+        accountId: Long,
+        challengeId: Long,
+        automaticAttemptCount: Int,
+    ) {
+        captchaQueryRepository.findAccountByIdForUpdate(accountId) ?: return
+        val challenge = captchaQueryRepository.findOwnedByAccountIdAndIdForUpdate(accountId, challengeId) ?: return
+        if (challenge.status == STATUS_ANSWERED) return
+        challenge.prompt = if (automaticAttemptCount > 0) {
+            "자동 인식에 ${automaticAttemptCount}회 실패했습니다. 이미지를 보고 직접 입력해 주세요."
+        } else {
+            "자동 인식을 완료하지 못했습니다. 이미지를 보고 직접 입력해 주세요."
+        }
+    }
+
     /**
      * 앱 `<Image>`가 읽을 캡차 바이너리를 반환한다.
      *

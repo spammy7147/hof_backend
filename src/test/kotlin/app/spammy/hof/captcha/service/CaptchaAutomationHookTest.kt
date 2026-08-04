@@ -7,26 +7,27 @@ import app.spammy.hof.captcha.entity.CaptchaChallengeEntity
 import java.time.Instant
 import kotlin.test.Test
 import org.mockito.Mockito
+import org.springframework.context.ApplicationEventPublisher
 import org.springframework.transaction.support.TransactionSynchronizationManager
 
 class CaptchaAutomationHookTest {
-    private val notifications = Mockito.mock(CaptchaNotificationGateway::class.java)
     private val typedRuntime = Mockito.mock(TypedAutomationRuntimeService::class.java)
     private val typedResume = Mockito.mock(TypedCaptchaAutomationResumeService::class.java)
+    private val eventPublisher = Mockito.mock(ApplicationEventPublisher::class.java)
     private val hook = CaptchaAutomationHook(
-        notifications,
         typedRuntime,
         typedResume,
+        eventPublisher,
     )
 
     @Test
-    fun `typed captcha detection enqueues account scoped push only while runtime is running`() {
+    fun `typed captcha detection publishes automatic solve event only while runtime is running`() {
         val challenge = challenge()
         Mockito.`when`(typedRuntime.isRunning(7L)).thenReturn(true)
 
         hook.detected(challenge)
 
-        Mockito.verify(notifications).captchaRequired(challenge.account, challenge.id)
+        Mockito.verify(eventPublisher).publishEvent(AutomationCaptchaDetectedEvent(challenge.account, challenge.id))
     }
 
     @Test
@@ -36,12 +37,32 @@ class CaptchaAutomationHookTest {
 
         hook.detected(challenge)
 
-        Mockito.verifyNoInteractions(notifications)
+        Mockito.verifyNoInteractions(eventPublisher)
     }
 
     @Test
     fun `development gateway ignores captcha notification`() {
         NoOpCaptchaNotificationGateway().captchaRequired(challenge().account, 91L)
+    }
+
+    @Test
+    fun `automatic solve event waits until detection transaction commits`() {
+        val challenge = challenge()
+        Mockito.`when`(typedRuntime.isRunning(7L)).thenReturn(true)
+        TransactionSynchronizationManager.setActualTransactionActive(true)
+        TransactionSynchronizationManager.initSynchronization()
+        try {
+            hook.detected(challenge)
+
+            Mockito.verifyNoInteractions(eventPublisher)
+            val synchronization = TransactionSynchronizationManager.getSynchronizations().single()
+            synchronization.afterCommit()
+
+            Mockito.verify(eventPublisher).publishEvent(AutomationCaptchaDetectedEvent(challenge.account, challenge.id))
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization()
+            TransactionSynchronizationManager.setActualTransactionActive(false)
+        }
     }
 
     @Test

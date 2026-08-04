@@ -1,0 +1,140 @@
+package app.spammy.hof.captcha.service
+
+import app.spammy.hof.captcha.config.CaptchaAutoSolveProperties
+import app.spammy.hof.captcha.dto.CaptchaChallengeResponse
+import app.spammy.hof.external.client.HofCaptchaRetryException
+import org.slf4j.LoggerFactory
+import org.springframework.stereotype.Service
+
+enum class CaptchaAutoSolveOutcome {
+    SOLVED,
+    MANUAL_INPUT_REQUIRED,
+    NO_PENDING_CHALLENGE,
+}
+
+@Service
+class CaptchaAutoSolveCoordinator(
+    private val captchaService: CaptchaService,
+    private val recognizer: CaptchaImageRecognizer,
+    private val properties: CaptchaAutoSolveProperties,
+) {
+    private val log = LoggerFactory.getLogger(javaClass)
+
+    fun solve(accountId: Long, challengeId: Long): CaptchaAutoSolveOutcome {
+        if (!properties.enabled) return CaptchaAutoSolveOutcome.MANUAL_INPUT_REQUIRED
+
+        var challenge = captchaService.findCurrent(accountId)
+            ?.takeIf { it.id == challengeId }
+            ?: return CaptchaAutoSolveOutcome.NO_PENDING_CHALLENGE
+
+        var hofFailureCount = 0
+        var consecutiveOcrFailureCount = 0
+        try {
+            while (hofFailureCount < properties.maxAttempts) {
+                challenge = prepareIfRequired(accountId, challenge)
+                if (challenge.status == STATUS_ANSWERED) return CaptchaAutoSolveOutcome.SOLVED
+                if (challenge.id != challengeId) return CaptchaAutoSolveOutcome.NO_PENDING_CHALLENGE
+
+                val image = captchaService.loadImage(accountId, challengeId, challenge.preparationVersion)
+                val answer = try {
+                    recognizer.recognize(image)
+                } catch (error: Exception) {
+                    consecutiveOcrFailureCount += 1
+                    log.warn(
+                        "CAPTCHA OCR request failed accountId={} challengeId={} consecutiveOcrFailures={} errorType={}",
+                        accountId,
+                        challengeId,
+                        consecutiveOcrFailureCount,
+                        error.javaClass.name,
+                    )
+                    if (consecutiveOcrFailureCount >= properties.maxOcrFailures) {
+                        captchaService.markManualInputRequired(accountId, challengeId, automaticAttemptCount = 0)
+                        return CaptchaAutoSolveOutcome.MANUAL_INPUT_REQUIRED
+                    }
+                    waitBeforeOcrRetry()
+                    continue
+                }
+                if (answer == null) {
+                    consecutiveOcrFailureCount += 1
+                    log.info(
+                        "CAPTCHA OCR returned no answer accountId={} challengeId={} consecutiveOcrFailures={}",
+                        accountId,
+                        challengeId,
+                        consecutiveOcrFailureCount,
+                    )
+                    if (consecutiveOcrFailureCount >= properties.maxOcrFailures) {
+                        captchaService.markManualInputRequired(accountId, challengeId, automaticAttemptCount = 0)
+                        return CaptchaAutoSolveOutcome.MANUAL_INPUT_REQUIRED
+                    }
+                    captchaService.invalidateCurrentPreparation(accountId)
+                    challenge = captchaService.findCurrent(accountId)
+                        ?: return CaptchaAutoSolveOutcome.NO_PENDING_CHALLENGE
+                    waitBeforeOcrRetry()
+                    continue
+                }
+                consecutiveOcrFailureCount = 0
+
+                log.info(
+                    "Submitting CAPTCHA OCR answer accountId={} challengeId={} hofAttempt={}",
+                    accountId,
+                    challengeId,
+                    hofFailureCount + 1,
+                )
+                challenge = retryCaptcha503 {
+                    captchaService.submitAnswer(
+                        accountId = accountId,
+                        challengeId = challengeId,
+                        answer = answer,
+                        preparationVersion = challenge.preparationVersion,
+                    )
+                }
+                if (challenge.status == STATUS_ANSWERED) return CaptchaAutoSolveOutcome.SOLVED
+                hofFailureCount += 1
+            }
+        } catch (error: Exception) {
+            log.warn(
+                "CAPTCHA automatic solve failed accountId={} challengeId={} errorType={} message={}",
+                accountId,
+                challengeId,
+                error.javaClass.name,
+                error.message,
+            )
+            captchaService.markManualInputRequired(accountId, challengeId, automaticAttemptCount = 0)
+            return CaptchaAutoSolveOutcome.MANUAL_INPUT_REQUIRED
+        }
+
+        captchaService.markManualInputRequired(accountId, challengeId, properties.maxAttempts)
+        return CaptchaAutoSolveOutcome.MANUAL_INPUT_REQUIRED
+    }
+
+    private fun prepareIfRequired(
+        accountId: Long,
+        challenge: CaptchaChallengeResponse,
+    ): CaptchaChallengeResponse =
+        if (challenge.status == STATUS_DETECTED) retryCaptcha503 { captchaService.prepareCurrent(accountId) } else challenge
+
+    private fun <T> retryCaptcha503(action: () -> T): T {
+        while (true) {
+            try {
+                return action()
+            } catch (_: HofCaptchaRetryException) {
+                // Governor가 다음 CAPTCHA 호출에 전용 간격을 적용하고 이전 transaction은 이미 종료됐다.
+            }
+        }
+    }
+
+    private fun waitBeforeOcrRetry() {
+        if (properties.ocrRetryDelay.isZero) return
+        try {
+            Thread.sleep(properties.ocrRetryDelay.toMillis())
+        } catch (error: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw IllegalStateException("Interrupted while waiting to retry OCR", error)
+        }
+    }
+
+    private companion object {
+        const val STATUS_DETECTED = "DETECTED"
+        const val STATUS_ANSWERED = "ANSWERED"
+    }
+}

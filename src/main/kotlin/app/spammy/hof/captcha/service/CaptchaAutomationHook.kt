@@ -3,6 +3,7 @@ package app.spammy.hof.captcha.service
 import app.spammy.hof.automation.service.TypedAutomationRuntimeService
 import app.spammy.hof.automation.service.TypedCaptchaAutomationResumeService
 import app.spammy.hof.captcha.entity.CaptchaChallengeEntity
+import org.springframework.context.ApplicationEventPublisher
 import org.springframework.stereotype.Component
 import org.springframework.transaction.support.TransactionSynchronization
 import org.springframework.transaction.support.TransactionSynchronizationManager
@@ -11,16 +12,18 @@ import org.slf4j.LoggerFactory
 /** 자동화 action과 전역 캡차 challenge의 일시정지·재개 상태를 연결한다. */
 @Component
 class CaptchaAutomationHook(
-    private val captchaNotifications: CaptchaNotificationGateway,
     private val typedRuntimeService: TypedAutomationRuntimeService,
     private val typedCaptchaResumeService: TypedCaptchaAutomationResumeService,
+    private val eventPublisher: ApplicationEventPublisher,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
-    /** typed 자동화 실행 중 발생한 캡차만 사용자 알림 outbox에 연결한다. */
+    /** typed 자동화 실행 중 발생한 캡차만 commit 뒤 자동 인식 작업에 연결한다. */
     fun detected(challenge: CaptchaChallengeEntity) {
         if (typedRuntimeService.isRunning(challenge.account.id)) {
-            captchaNotifications.captchaRequired(challenge.account, challenge.id)
+            afterCommit {
+                eventPublisher.publishEvent(AutomationCaptchaDetectedEvent(challenge.account, challenge.id))
+            }
         }
     }
 

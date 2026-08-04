@@ -382,6 +382,19 @@ class CaptchaServiceTest {
     }
 
     @Test
+    fun markManualInputRequiredExplainsThatThreeAutomaticAttemptsFailed() {
+        val challenge = pendingChallenge(id = 19L)
+        Mockito.`when`(queryRepository.findAccountByIdForUpdate(1L)).thenReturn(account)
+        Mockito.`when`(queryRepository.findOwnedByAccountIdAndIdForUpdate(1L, 19L)).thenReturn(challenge)
+
+        service.markManualInputRequired(1L, 19L, automaticAttemptCount = 3)
+
+        assertEquals("자동 인식에 3회 실패했습니다. 이미지를 보고 직접 입력해 주세요.", challenge.prompt)
+        assertEquals("READY", challenge.status)
+        assertEquals(1, challenge.preparationVersion)
+    }
+
+    @Test
     fun submitAnswerSendsStoredFormWithCookiesAndMarksAnsweredWhenCaptchaIsGone() {
         val challenge = pendingChallenge(
             id = 3L,
