@@ -168,6 +168,21 @@ class FishingPageParserTest {
     }
 
     @Test
+    fun `현재 분류에 교환품이 없어도 분류 드롭다운은 유지한다`() {
+        val html = fixture("exchange.html").replace(
+            Regex("<tr><td>\\$ 10</td>.*?</tr>\\s*<tr><td></td>.*?</tr>", RegexOption.DOT_MATCHES_ALL),
+            "",
+        )
+
+        val exchange = parser.parseExchange(html, url, forms.parse(html, url))
+
+        assertEquals(listOf("무기(weapon)", "방어구(armor)"), exchange.categories.map { it.label })
+        assertEquals("type_create:weapon", exchange.currentCategoryId)
+        assertTrue(exchange.items.isEmpty())
+        assertNotNull(exchange.actionId)
+    }
+
+    @Test
     fun `긴 교환 목록의 중복 Create 버튼 때문에 목록을 버리지 않는다`() {
         val html = fixture("exchange.html").replace(
             "<input type=\"submit\" name=\"Create\" value=\"Create\">",
