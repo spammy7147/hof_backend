@@ -36,7 +36,7 @@ class CaptchaAutoSolveCoordinator(
                 if (challenge.id != challengeId) return CaptchaAutoSolveOutcome.NO_PENDING_CHALLENGE
 
                 val image = captchaService.loadImage(accountId, challengeId, challenge.preparationVersion)
-                val answer = try {
+                val recognition = try {
                     recognizer.recognize(image)
                 } catch (error: Exception) {
                     consecutiveOcrFailureCount += 1
@@ -54,7 +54,7 @@ class CaptchaAutoSolveCoordinator(
                     waitBeforeOcrRetry()
                     continue
                 }
-                if (answer == null) {
+                if (recognition == null) {
                     consecutiveOcrFailureCount += 1
                     log.info(
                         "CAPTCHA OCR returned no answer accountId={} challengeId={} consecutiveOcrFailures={}",
@@ -81,10 +81,10 @@ class CaptchaAutoSolveCoordinator(
                     hofFailureCount + 1,
                 )
                 challenge = retryCaptcha503 {
-                    captchaService.submitAnswer(
+                    captchaService.submitAutomaticAnswer(
                         accountId = accountId,
                         challengeId = challengeId,
-                        answer = answer,
+                        recognition = recognition,
                         preparationVersion = challenge.preparationVersion,
                     )
                 }

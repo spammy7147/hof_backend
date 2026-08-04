@@ -23,7 +23,8 @@ class HttpCaptchaImageRecognizerTest {
             receivedToken.set(exchange.requestHeaders.getFirst("X-OCR-Token"))
             receivedContentType.set(exchange.requestHeaders.getFirst("Content-Type"))
             receivedBody.set(exchange.requestBody.readAllBytes())
-            val response = "{\"text\":\" A-B_12 \\n\"}".toByteArray(StandardCharsets.UTF_8)
+            val response = "{\"text\":\" A-B_12 \\n\",\"engineVersion\":\"2.1.1\"}"
+                .toByteArray(StandardCharsets.UTF_8)
             exchange.sendResponseHeaders(200, response.size.toLong())
             exchange.responseBody.use { it.write(response) }
         }
@@ -33,7 +34,8 @@ class HttpCaptchaImageRecognizerTest {
 
             val result = recognizer.recognize(CaptchaImageResponse("image/png", byteArrayOf(1, 2, 3)))
 
-            assertEquals("AB12", result)
+            assertEquals("AB12", result?.text)
+            assertEquals("2.1.1", result?.engineVersion)
             assertEquals(TOKEN, receivedToken.get())
             assertTrue(receivedContentType.get().startsWith("multipart/form-data; boundary="))
             val multipart = receivedBody.get().toString(StandardCharsets.ISO_8859_1)

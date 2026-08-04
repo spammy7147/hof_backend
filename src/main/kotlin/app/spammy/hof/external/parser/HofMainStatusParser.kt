@@ -45,8 +45,8 @@ class HofMainStatusParser {
      * 인증 상태바인 `#menu2`의 첫 번째 열에서 플레이어 표시명을 읽는다.
      */
     private fun findMenuPlayerName(statusContainer: Element): String? {
-        val statusRow = statusContainer.children()
-            .firstOrNull(::containsStatusMarkers)
+        val statusRow = findMinimalStatusCandidate(statusContainer.select("tr"))
+            ?: statusContainer.children().firstOrNull(::containsStatusMarkers)
             ?: return null
         val candidate = statusRow.children().firstOrNull()
             ?.text()

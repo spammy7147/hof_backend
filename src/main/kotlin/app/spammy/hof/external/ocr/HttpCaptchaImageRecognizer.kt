@@ -3,6 +3,7 @@ package app.spammy.hof.external.ocr
 import app.spammy.hof.captcha.config.CaptchaAutoSolveProperties
 import app.spammy.hof.captcha.service.CaptchaImageRecognizer
 import app.spammy.hof.captcha.service.CaptchaImageResponse
+import app.spammy.hof.captcha.service.CaptchaRecognition
 import java.io.ByteArrayOutputStream
 import java.net.URI
 import java.net.http.HttpClient
@@ -22,7 +23,7 @@ class HttpCaptchaImageRecognizer(
         .connectTimeout(properties.timeout)
         .build()
 
-    override fun recognize(image: CaptchaImageResponse): String? {
+    override fun recognize(image: CaptchaImageResponse): CaptchaRecognition? {
         check(properties.enabled) { "CAPTCHA automatic solving is disabled" }
 
         val boundary = "----HofCaptcha${UUID.randomUUID()}"
@@ -45,7 +46,11 @@ class HttpCaptchaImageRecognizer(
         }
 
         val payload = objectMapper.readValue(response.body(), CaptchaOcrResponse::class.java)
-        return normalizeOcrResponse(payload.text, properties.allowedCharacters)
+        val text = normalizeOcrResponse(payload.text, properties.allowedCharacters) ?: return null
+        return CaptchaRecognition(
+            text = text,
+            engineVersion = payload.engineVersion.trim().ifBlank { UNKNOWN_ENGINE_VERSION },
+        )
     }
 
     private fun ocrEndpoint(): URI =
@@ -72,12 +77,16 @@ class HttpCaptchaImageRecognizer(
         else -> "png"
     }
 
-    private data class CaptchaOcrResponse(val text: String = "")
+    private data class CaptchaOcrResponse(
+        val text: String = "",
+        val engineVersion: String = UNKNOWN_ENGINE_VERSION,
+    )
 
     private companion object {
         const val OCR_TOKEN_HEADER = "X-OCR-Token"
         const val SUCCESS = 200
         const val UNPROCESSABLE_CONTENT = 422
+        const val UNKNOWN_ENGINE_VERSION = "unknown"
     }
 }
 

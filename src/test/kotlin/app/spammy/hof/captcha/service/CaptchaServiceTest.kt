@@ -54,6 +54,7 @@ class CaptchaServiceTest {
     private val binaryGateway = FakeHofBinaryGateway()
     private val captchaImageFileStore = FakeCaptchaImageFileStore()
     private val automationHook = Mockito.mock(CaptchaAutomationHook::class.java)
+    private val feedbackCollector = Mockito.mock(CaptchaFeedbackCollector::class.java)
     private val cookieCipher = HofCookieCipher(
         Base64.getEncoder().encodeToString(ByteArray(32) { index -> (index + 41).toByte() }),
     )
@@ -70,6 +71,7 @@ class CaptchaServiceTest {
         imageManager = CaptchaImageManager(binaryGateway, captchaImageFileStore),
         timeProvider = TimeProvider { now },
         automationHook = automationHook,
+        feedbackCollector = feedbackCollector,
     )
 
     @Test
@@ -473,7 +475,12 @@ class CaptchaServiceTest {
             setCookies = emptyMap(),
         )
 
-        val response = service.submitAnswer(accountId = 1L, challengeId = 22L, answer = "uEjs5", preparationVersion = 1)
+        val response = service.submitAutomaticAnswer(
+            accountId = 1L,
+            challengeId = 22L,
+            recognition = CaptchaRecognition("uEjs5", "2.1.1"),
+            preparationVersion = 1,
+        )
 
         assertEquals("ANSWERED", response.status)
         assertEquals("캡차 인증이 완료되었습니다.", response.prompt)
@@ -483,6 +490,16 @@ class CaptchaServiceTest {
         assertEquals(now, challenge.answeredAt)
         assertEquals(listOf("1:22:1"), captchaImageFileStore.deletedKeys)
         assertEquals(emptyList(), binaryGateway.urls)
+        val feedback = Mockito.mockingDetails(feedbackCollector).invocations
+            .single { invocation -> invocation.method.name == "collectAfterCommit" }
+            .arguments
+            .single() as CaptchaFeedbackCandidate
+        assertEquals("uEjs5", feedback.submittedText)
+        assertEquals("uEjs5", feedback.predictedText)
+        assertEquals(true, feedback.expectedAccepted)
+        assertEquals(CaptchaFeedbackSource.AUTOMATIC, feedback.source)
+        assertEquals("2.1.1", feedback.engineVersion)
+        assertContentEquals(byteArrayOf(3, 2, 1), feedback.image.bytes)
     }
 
     @Test

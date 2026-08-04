@@ -7,6 +7,7 @@ import java.time.Instant
 import java.time.Duration
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import org.mockito.Mockito
 
 class CaptchaAutoSolveCoordinatorTest {
@@ -33,10 +34,12 @@ class CaptchaAutoSolveCoordinatorTest {
         Mockito.`when`(captchaService.prepareCurrent(1L)).thenReturn(firstReady)
         Mockito.`when`(captchaService.loadImage(1L, 7L, 1)).thenReturn(firstImage)
         Mockito.`when`(captchaService.loadImage(1L, 7L, 2)).thenReturn(secondImage)
-        Mockito.`when`(recognizer.recognize(firstImage)).thenReturn("WRONG")
-        Mockito.`when`(recognizer.recognize(secondImage)).thenReturn("AB12")
-        Mockito.`when`(captchaService.submitAnswer(1L, 7L, "WRONG", 1)).thenReturn(secondReady)
-        Mockito.`when`(captchaService.submitAnswer(1L, 7L, "AB12", 2)).thenReturn(answered)
+        val wrong = recognition("WRONG")
+        val correct = recognition("AB12")
+        Mockito.`when`(recognizer.recognize(firstImage)).thenReturn(wrong)
+        Mockito.`when`(recognizer.recognize(secondImage)).thenReturn(correct)
+        Mockito.`when`(captchaService.submitAutomaticAnswer(1L, 7L, wrong, 1)).thenReturn(secondReady)
+        Mockito.`when`(captchaService.submitAutomaticAnswer(1L, 7L, correct, 2)).thenReturn(answered)
 
         val outcome = coordinator.solve(1L, 7L)
 
@@ -54,11 +57,11 @@ class CaptchaAutoSolveCoordinatorTest {
         listOf(firstReady, secondReady, thirdReady).forEach { ready ->
             val image = CaptchaImageResponse("image/png", byteArrayOf(ready.preparationVersion.toByte()))
             Mockito.`when`(captchaService.loadImage(1L, 7L, ready.preparationVersion)).thenReturn(image)
-            Mockito.`when`(recognizer.recognize(image)).thenReturn("BAD${ready.preparationVersion}")
+            Mockito.`when`(recognizer.recognize(image)).thenReturn(recognition("BAD${ready.preparationVersion}"))
         }
-        Mockito.`when`(captchaService.submitAnswer(1L, 7L, "BAD1", 1)).thenReturn(secondReady)
-        Mockito.`when`(captchaService.submitAnswer(1L, 7L, "BAD2", 2)).thenReturn(thirdReady)
-        Mockito.`when`(captchaService.submitAnswer(1L, 7L, "BAD3", 3)).thenReturn(fourthReady)
+        Mockito.`when`(captchaService.submitAutomaticAnswer(1L, 7L, recognition("BAD1"), 1)).thenReturn(secondReady)
+        Mockito.`when`(captchaService.submitAutomaticAnswer(1L, 7L, recognition("BAD2"), 2)).thenReturn(thirdReady)
+        Mockito.`when`(captchaService.submitAutomaticAnswer(1L, 7L, recognition("BAD3"), 3)).thenReturn(fourthReady)
 
         val outcome = coordinator.solve(1L, 7L)
 
@@ -79,8 +82,8 @@ class CaptchaAutoSolveCoordinatorTest {
         Mockito.`when`(recognizer.recognize(unreadable)).thenReturn(null)
         Mockito.`when`(captchaService.prepareCurrent(1L)).thenReturn(secondReady)
         Mockito.`when`(captchaService.loadImage(1L, 7L, 2)).thenReturn(readable)
-        Mockito.`when`(recognizer.recognize(readable)).thenReturn("AB12")
-        Mockito.`when`(captchaService.submitAnswer(1L, 7L, "AB12", 2)).thenReturn(answered)
+        Mockito.`when`(recognizer.recognize(readable)).thenReturn(recognition("AB12"))
+        Mockito.`when`(captchaService.submitAutomaticAnswer(1L, 7L, recognition("AB12"), 2)).thenReturn(answered)
 
         val outcome = coordinator.solve(1L, 7L)
 
@@ -110,13 +113,13 @@ class CaptchaAutoSolveCoordinatorTest {
         Mockito.`when`(recognizer.recognize(unreadable)).thenReturn(null)
         Mockito.`when`(captchaService.prepareCurrent(1L)).thenReturn(secondReady)
         Mockito.`when`(captchaService.loadImage(1L, 7L, 2)).thenReturn(readable)
-        Mockito.`when`(recognizer.recognize(readable)).thenReturn("AB12")
-        Mockito.`when`(captchaService.submitAnswer(1L, 7L, "AB12", 2)).thenReturn(answered)
+        Mockito.`when`(recognizer.recognize(readable)).thenReturn(recognition("AB12"))
+        Mockito.`when`(captchaService.submitAutomaticAnswer(1L, 7L, recognition("AB12"), 2)).thenReturn(answered)
 
         val outcome = oneHofAttemptCoordinator.solve(1L, 7L)
 
         assertEquals(CaptchaAutoSolveOutcome.SOLVED, outcome)
-        Mockito.verify(captchaService).submitAnswer(1L, 7L, "AB12", 2)
+        Mockito.verify(captchaService).submitAutomaticAnswer(1L, 7L, recognition("AB12"), 2)
     }
 
     @Test
@@ -131,8 +134,10 @@ class CaptchaAutoSolveCoordinatorTest {
 
         assertEquals(CaptchaAutoSolveOutcome.MANUAL_INPUT_REQUIRED, outcome)
         Mockito.verify(recognizer, Mockito.times(3)).recognize(image)
-        Mockito.verify(captchaService, Mockito.never())
-            .submitAnswer(Mockito.anyLong(), Mockito.anyLong(), Mockito.anyString(), Mockito.anyInt())
+        assertFalse(
+            Mockito.mockingDetails(captchaService).invocations
+                .any { invocation -> invocation.method.name == "submitAutomaticAnswer" },
+        )
         Mockito.verify(captchaService).markManualInputRequired(1L, 7L, 0)
     }
 
@@ -153,8 +158,8 @@ class CaptchaAutoSolveCoordinatorTest {
         val image = CaptchaImageResponse("image/png", byteArrayOf(1))
         Mockito.`when`(captchaService.findCurrent(1L)).thenReturn(ready)
         Mockito.`when`(captchaService.loadImage(1L, 7L, 1)).thenReturn(image)
-        Mockito.`when`(recognizer.recognize(image)).thenReturn("AB12")
-        Mockito.`when`(captchaService.submitAnswer(1L, 7L, "AB12", 1))
+        Mockito.`when`(recognizer.recognize(image)).thenReturn(recognition("AB12"))
+        Mockito.`when`(captchaService.submitAutomaticAnswer(1L, 7L, recognition("AB12"), 1))
             .thenThrow(HofCaptchaRetryException())
             .thenReturn(answered)
 
@@ -162,8 +167,11 @@ class CaptchaAutoSolveCoordinatorTest {
 
         assertEquals(CaptchaAutoSolveOutcome.SOLVED, outcome)
         Mockito.verify(recognizer, Mockito.times(1)).recognize(image)
-        Mockito.verify(captchaService, Mockito.times(2)).submitAnswer(1L, 7L, "AB12", 1)
+        Mockito.verify(captchaService, Mockito.times(2))
+            .submitAutomaticAnswer(1L, 7L, recognition("AB12"), 1)
     }
+
+    private fun recognition(text: String) = CaptchaRecognition(text, "2.1.1")
 
     private fun challenge(
         id: Long = 7L,

@@ -50,6 +50,7 @@ class CaptchaService(
     private val imageManager: CaptchaImageManager,
     private val timeProvider: TimeProvider,
     private val automationHook: CaptchaAutomationHook? = null,
+    private val feedbackCollector: CaptchaFeedbackCollector? = null,
 ) {
     /**
      * HOF 응답 HTML에서 캡차/자경단 통행증 신호만 찾아 detected challenge로 저장한다.
@@ -309,6 +310,40 @@ class CaptchaService(
         challengeId: Long,
         answer: String,
         preparationVersion: Int,
+    ): CaptchaChallengeResponse = submitAnswerInternal(
+        accountId = accountId,
+        challengeId = challengeId,
+        answer = answer,
+        preparationVersion = preparationVersion,
+        feedbackSource = CaptchaFeedbackSource.MANUAL,
+        predictedText = null,
+        engineVersion = MANUAL_ENGINE_VERSION,
+    )
+
+    @Transactional
+    fun submitAutomaticAnswer(
+        accountId: Long,
+        challengeId: Long,
+        recognition: CaptchaRecognition,
+        preparationVersion: Int,
+    ): CaptchaChallengeResponse = submitAnswerInternal(
+        accountId = accountId,
+        challengeId = challengeId,
+        answer = recognition.text,
+        preparationVersion = preparationVersion,
+        feedbackSource = CaptchaFeedbackSource.AUTOMATIC,
+        predictedText = recognition.text,
+        engineVersion = recognition.engineVersion,
+    )
+
+    private fun submitAnswerInternal(
+        accountId: Long,
+        challengeId: Long,
+        answer: String,
+        preparationVersion: Int,
+        feedbackSource: CaptchaFeedbackSource,
+        predictedText: String?,
+        engineVersion: String,
     ): CaptchaChallengeResponse {
         val normalizedAnswer = answer.trim()
         if (normalizedAnswer.isBlank()) {
@@ -333,6 +368,9 @@ class CaptchaService(
         if (challenge.preparationVersion != preparationVersion) {
             throw ApiException(ErrorCode.CAPTCHA_STALE, "캡차가 갱신되었습니다. 최신 이미지를 다시 확인해 주세요.")
         }
+        val feedbackImage = runCatching {
+            imageManager.readStored(accountId, challengeId, preparationVersion)
+        }.getOrNull()
 
         val storedCookies = cookieQueryRepository.findByAccountId(accountId)
         val cookies = storedCookies.associate { cookie -> cookie.name to cookieCipher.decrypt(cookie.value) }
@@ -402,6 +440,16 @@ class CaptchaService(
             challenge.applyChallengeMetadata(metadata)
             replaceFormFields(challenge, metadata.formFields)
             challenge.preparationVersion = nextVersion
+            queueFeedback(
+                challenge = challenge,
+                image = feedbackImage,
+                responseHtml = response.body,
+                submittedText = normalizedAnswer,
+                expectedAccepted = false,
+                source = feedbackSource,
+                predictedText = predictedText,
+                engineVersion = engineVersion,
+            )
             imageManager.deleteAfterCommit(challenge.account.id, challenge.id, previousVersion)
             return challenge.toResponse()
         }
@@ -409,10 +457,46 @@ class CaptchaService(
         challenge.status = STATUS_ANSWERED
         challenge.answer = normalizedAnswer
         challenge.answeredAt = timeProvider.now()
+        queueFeedback(
+            challenge = challenge,
+            image = feedbackImage,
+            responseHtml = response.body,
+            submittedText = normalizedAnswer,
+            expectedAccepted = true,
+            source = feedbackSource,
+            predictedText = predictedText,
+            engineVersion = engineVersion,
+        )
         imageManager.deleteAfterCommit(challenge.account.id, challenge.id, challenge.preparationVersion)
         automationHook?.answered(challenge)
 
         return challenge.toResponse()
+    }
+
+    private fun queueFeedback(
+        challenge: CaptchaChallengeEntity,
+        image: CaptchaImageResponse?,
+        responseHtml: String,
+        submittedText: String,
+        expectedAccepted: Boolean,
+        source: CaptchaFeedbackSource,
+        predictedText: String?,
+        engineVersion: String,
+    ) {
+        val storedImage = image ?: return
+        feedbackCollector?.collectAfterCommit(
+            CaptchaFeedbackCandidate(
+                accountId = challenge.account.id,
+                challengeId = challenge.id,
+                image = storedImage,
+                responseHtml = responseHtml,
+                submittedText = submittedText,
+                expectedAccepted = expectedAccepted,
+                source = source,
+                predictedText = predictedText,
+                engineVersion = engineVersion,
+            ),
+        )
     }
 
     /**
@@ -724,5 +808,6 @@ class CaptchaService(
         const val VIGILANTE_PASS_PROMPT = "자경단에서 통행증을 발급받아주세요."
         const val DEFAULT_PROMPT = "캡차 인증이 필요합니다."
         const val CAPTCHA_SUCCESS_MESSAGE = "캡차 인증이 완료되었습니다."
+        const val MANUAL_ENGINE_VERSION = "manual"
     }
 }

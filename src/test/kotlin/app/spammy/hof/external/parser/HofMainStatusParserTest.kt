@@ -31,6 +31,21 @@ class HofMainStatusParserTest {
     }
 
     @Test
+    fun parsesAnUntitledPlayerNameFromAHeaderTable() {
+        val html = """
+            <table id="menu2">
+              <tr>
+                <td>공민이</td>
+                <td>Funds : ${'$'} 100<br>Work : Nothing</td>
+                <td>Time : 100/100<br>Auction : Nothing</td>
+              </tr>
+            </table>
+        """.trimIndent()
+
+        assertEquals("공민이", parser.parse(html).playerName)
+    }
+
+    @Test
     fun parsesFlattenedTextWithinMenu2() {
         val html = """
             <div id="menu2">
