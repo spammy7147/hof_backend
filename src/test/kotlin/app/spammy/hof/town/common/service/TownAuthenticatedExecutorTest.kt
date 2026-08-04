@@ -168,6 +168,7 @@ class TownAuthenticatedExecutorTest {
             if (calls.incrementAndGet() % 2 == 1) response(formHtml) else response("<div id='result'>획득했다.</div>")
         }
         val firstInsideFence = CountDownLatch(1)
+        val secondInsideFence = CountDownLatch(1)
         val releaseFirst = CountDownLatch(1)
         val pool = Executors.newFixedThreadPool(2)
         try {
@@ -181,11 +182,15 @@ class TownAuthenticatedExecutorTest {
             assertTrue(firstInsideFence.await(2, TimeUnit.SECONDS))
             val second = pool.submit<String> {
                 executor.executeProjected(7L, HOF_URL, resolveAction = { _, _, page ->
+                    secondInsideFence.countDown()
                     TownActionRequest(page.forms.single().actionId)
                 }) { _, _, result, _ -> result.messages.single() }
             }
-            Thread.sleep(100)
-            assertEquals(1, calls.get(), "두 번째 요청은 첫 번째 POST가 끝나기 전에 GET을 수행하면 안 된다")
+            assertFalse(
+                secondInsideFence.await(100, TimeUnit.MILLISECONDS),
+                "두 번째 요청은 첫 번째 POST가 끝나기 전에 action fence 안으로 진입하면 안 된다",
+            )
+            assertEquals(1, calls.get())
             releaseFirst.countDown()
             assertEquals("획득했다.", first.get(2, TimeUnit.SECONDS))
             assertEquals("획득했다.", second.get(2, TimeUnit.SECONDS))

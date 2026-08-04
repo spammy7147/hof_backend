@@ -9,6 +9,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import org.mockito.Mockito
 
@@ -19,16 +20,21 @@ class BattleMapCatalogSerializationTest {
         val service = BattleMapCatalogService(transactionService)
         val firstEntered = CountDownLatch(1)
         val secondAttempted = CountDownLatch(1)
+        val secondDelegateEntered = CountDownLatch(1)
         val releaseFirst = CountDownLatch(1)
         val delegateCalls = AtomicInteger()
         val activeDelegates = AtomicInteger()
         val maxActiveDelegates = AtomicInteger()
         Mockito.doAnswer {
-            delegateCalls.incrementAndGet()
+            val callNumber = delegateCalls.incrementAndGet()
             val active = activeDelegates.incrementAndGet()
             maxActiveDelegates.updateAndGet { current -> maxOf(current, active) }
-            firstEntered.countDown()
-            assertTrue(releaseFirst.await(5, TimeUnit.SECONDS))
+            if (callNumber == 1) {
+                firstEntered.countDown()
+                assertTrue(releaseFirst.await(5, TimeUnit.SECONDS))
+            } else {
+                secondDelegateEntered.countDown()
+            }
             activeDelegates.decrementAndGet()
             emptyList<HofBattleMap>()
         }.`when`(transactionService).synchronizeCategory(anyAccount(), eqCategory(CATEGORY), anyObservations())
@@ -44,8 +50,10 @@ class BattleMapCatalogSerializationTest {
                 service.synchronizeCategory(ACCOUNT, CATEGORY, emptyList())
             }
             assertTrue(secondAttempted.await(5, TimeUnit.SECONDS))
-            Thread.sleep(100)
-
+            assertFalse(
+                secondDelegateEntered.await(100, TimeUnit.MILLISECONDS),
+                "두 번째 transaction delegate는 첫 번째 synchronization fence가 해제되기 전에 진입하면 안 된다",
+            )
             assertEquals(1, delegateCalls.get())
             releaseFirst.countDown()
             first.get(5, TimeUnit.SECONDS)
