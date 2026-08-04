@@ -4,6 +4,8 @@ import app.spammy.hof.account.service.HofAccountService
 import app.spammy.hof.account.service.HofSessionRecoveryService
 import app.spammy.hof.captcha.dto.CaptchaChallengeResponse
 import app.spammy.hof.captcha.dto.SubmitCaptchaAnswerRequest
+import app.spammy.hof.captcha.service.CaptchaAutoSolveCoordinator
+import app.spammy.hof.captcha.service.CaptchaAutoSolveOutcome
 import app.spammy.hof.captcha.service.CaptchaPreparationConsumedException
 import app.spammy.hof.captcha.service.CaptchaService
 import app.spammy.hof.common.error.ApiException
@@ -19,7 +21,25 @@ import org.mockito.Mockito
 class CaptchaControllerTest {
     private val captchaService = Mockito.mock(CaptchaService::class.java)
     private val accountService = Mockito.mock(HofAccountService::class.java)
-    private val controller = CaptchaController(captchaService, HofSessionRecoveryService(accountService))
+    private val autoSolveCoordinator = Mockito.mock(CaptchaAutoSolveCoordinator::class.java)
+    private val controller = CaptchaController(
+        captchaService,
+        HofSessionRecoveryService(accountService),
+        autoSolveCoordinator,
+    )
+
+    @Test
+    fun retryAutomaticSolveStartsANewAttemptAndReturnsTheRemainingChallenge() {
+        val ready = readyCaptcha()
+        Mockito.`when`(autoSolveCoordinator.solve(1L, 7L))
+            .thenReturn(CaptchaAutoSolveOutcome.MANUAL_INPUT_REQUIRED)
+        Mockito.`when`(captchaService.findCurrent(1L)).thenReturn(ready)
+
+        val response = controller.retryAutomaticSolve(1L, 7L)
+
+        assertEquals(ready, response)
+        Mockito.verify(autoSolveCoordinator).solve(1L, 7L)
+    }
 
     @Test
     fun prepareCurrentReauthenticatesAndRetriesOnce() {

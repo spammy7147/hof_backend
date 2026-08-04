@@ -3,6 +3,7 @@ package app.spammy.hof.captcha.controller
 import app.spammy.hof.account.service.HofSessionRecoveryService
 import app.spammy.hof.captcha.dto.CaptchaChallengeResponse
 import app.spammy.hof.captcha.dto.SubmitCaptchaAnswerRequest
+import app.spammy.hof.captcha.service.CaptchaAutoSolveCoordinator
 import app.spammy.hof.captcha.service.CaptchaPreparationConsumedException
 import app.spammy.hof.captcha.service.CaptchaService
 import app.spammy.hof.common.error.ApiException
@@ -29,6 +30,7 @@ import org.springframework.web.bind.annotation.RestController
 class CaptchaController(
     private val captchaService: CaptchaService,
     private val sessionRecoveryService: HofSessionRecoveryService,
+    private val autoSolveCoordinator: CaptchaAutoSolveCoordinator,
 ) {
     private val log = LoggerFactory.getLogger(CaptchaController::class.java)
 
@@ -55,6 +57,16 @@ class CaptchaController(
             runCatching { captchaService.invalidateCurrentPreparation(accountId) }
             throw error
         }
+
+    /** 수동 입력으로 넘겨진 현재 challenge의 자동 인식 시도 횟수를 새로 시작한다. */
+    @PostMapping("/{challengeId}/auto-solve")
+    fun retryAutomaticSolve(
+        @CurrentAccountId accountId: Long,
+        @PathVariable challengeId: Long,
+    ): CaptchaChallengeResponse? {
+        autoSolveCoordinator.solve(accountId, challengeId)
+        return captchaService.findCurrent(accountId)
+    }
 
     /**
      * 서버에 임시 저장한 캡차 이미지를 앱으로 내려준다.

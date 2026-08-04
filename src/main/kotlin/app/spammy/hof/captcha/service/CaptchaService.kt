@@ -161,14 +161,6 @@ class CaptchaService(
         val responseUrl = response.finalUrl.ifBlank { policeUrl }
         val document = Jsoup.parse(response.body, responseUrl)
         val pageText = document.text().trim()
-        if (challengeParser.isCaptchaSuccessPage(pageText)) {
-            challenge.status = STATUS_ANSWERED
-            challenge.answer = null
-            challenge.answeredAt = timeProvider.now()
-            imageManager.deleteAfterCommit(accountId, challenge.id, challenge.preparationVersion)
-            automationHook?.answered(challenge)
-            return challenge.toResponse()
-        }
         val hasSimpleCaptcha = response.body.contains(
             CaptchaChallengeParser.SIMPLE_CAPTCHA_SCRIPT,
             ignoreCase = true,
@@ -193,8 +185,15 @@ class CaptchaService(
                 null
             },
         )
+        if (challengeParser.isCaptchaSuccessPage(pageText) || metadata.imageUrl == null) {
+            challenge.status = STATUS_ANSWERED
+            challenge.answer = null
+            challenge.answeredAt = timeProvider.now()
+            imageManager.deleteAfterCommit(accountId, challenge.id, challenge.preparationVersion)
+            automationHook?.answered(challenge)
+            return challenge.toResponse()
+        }
         val imageUrl = metadata.imageUrl
-            ?: throw ApiException(ErrorCode.CAPTCHA_PREPARATION_FAILED, "최신 캡차를 준비하지 못했습니다.")
         val previousVersion = challenge.preparationVersion
         val nextVersion = previousVersion + 1
         imageManager.storePrepared(

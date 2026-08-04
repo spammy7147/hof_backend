@@ -436,6 +436,7 @@ class CaptchaServicePersistenceTest {
         val controller = CaptchaController(
             service,
             HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java)),
+            Mockito.mock(CaptchaAutoSolveCoordinator::class.java),
         )
 
         val actual = assertFailsWith<ApiException> {

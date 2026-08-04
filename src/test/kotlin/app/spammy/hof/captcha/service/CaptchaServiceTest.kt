@@ -274,6 +274,34 @@ class CaptchaServiceTest {
     }
 
     @Test
+    fun prepareCurrentMarksChallengeAnsweredWhenAuthenticatedPolicePageHasNoCaptcha() {
+        val challenge = pendingChallenge(id = 27L, status = "DETECTED")
+        Mockito.`when`(queryRepository.findAccountByIdForUpdate(1L)).thenReturn(account)
+        Mockito.`when`(queryRepository.findLatestActiveByAccountId(1L)).thenReturn(challenge)
+        Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(listOf(cookie()))
+        gateway.response = HofHttpResponse(
+            statusCode = 200,
+            finalUrl = "http://sic.zerosic.com/ZeroHOF/index.php?menu=police",
+            body = """
+                <html><body>
+                  <a href="index.php?char=1">character</a>
+                  <p>자경단 업무 안내</p>
+                </body></html>
+            """.trimIndent(),
+            setCookies = emptyMap(),
+        )
+
+        val response = service.prepareCurrent(account.id)
+
+        assertEquals("ANSWERED", response.status)
+        assertEquals("ANSWERED", challenge.status)
+        assertNull(challenge.answer)
+        assertEquals(now, challenge.answeredAt)
+        assertEquals(emptyList(), binaryGateway.urls)
+        Mockito.verify(automationHook).answered(challenge)
+    }
+
+    @Test
     fun prepareCurrentRejectsLoginPageAsExpiredSession() {
         val challenge = CaptchaChallengeEntity(
             id = 8L,
