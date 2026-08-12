@@ -79,7 +79,9 @@ class RaidPubService(
                 mapName == raidName || mapName.endsWith(raidName) || raidName.endsWith(mapName)
             }.singleOrNull()
             val observed = byCode ?: byName ?: available.singleOrNull()?.takeIf { joined.size == 1 }
-            raid.copy(battleTarget = observed?.mapCode?.let { RaidBattleTarget(mapCode = it) })
+            raid.copy(battleTarget = observed?.mapCode?.let { mapCode ->
+                RaidBattleTarget(mapCode = mapCode, cooldownRemainingSeconds = observed.cooldownRemainingSeconds)
+            })
         })
     }
 

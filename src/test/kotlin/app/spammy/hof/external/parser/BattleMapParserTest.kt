@@ -56,4 +56,21 @@ class BattleMapParserTest {
         assertEquals(listOf("천공성 이지 모드", "천공성"), maps.map { it.groupName })
         assertEquals(listOf(null, null), maps.map { it.mapCode })
     }
+
+    @Test
+    fun `parses the raid next battle cooldown expressed in seconds`() {
+        val html = """
+            <div id="mapgroup1">
+              <div>
+                <span>다음 전투까지 99초 남음</span>
+                <a href="index.php?raid_common=raid001">Raid - 마을 시가지</a>
+              </div>
+            </div>
+        """.trimIndent()
+
+        val map = parser.parse("raid", "raid_common", html).single()
+
+        assertEquals("raid001", map.mapCode)
+        assertEquals(99L, map.cooldownRemainingSeconds)
+    }
 }

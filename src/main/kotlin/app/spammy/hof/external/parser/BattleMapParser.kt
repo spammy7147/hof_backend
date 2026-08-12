@@ -345,11 +345,11 @@ class BattleMapParser {
                 ?.toNumberOrNull()
         }
 
-    /**
-     * HOF의 `(시간 분) 남음` 표기를 절대 만료 시각 계산에 쓸 초 단위로 바꾼다.
-     * 시간만 있거나 분만 있는 표기도 모두 허용한다.
-     */
+    /** HOF의 시간·분 또는 레이드의 `다음 전투까지 N초 남음` 표기를 초 단위로 바꾼다. */
     private fun parseCooldownRemaining(text: String): CooldownRemaining? {
+        RAID_COOLDOWN_REMAINING_PATTERN.find(text)?.groupValues?.get(1)?.toLongNumberOrNull()?.let {
+            return CooldownRemaining(seconds = it)
+        }
         val match = COOLDOWN_REMAINING_PATTERN.find(text) ?: return null
         val hours = match.groupValues[2].toOptionalLong() ?: return null
         val combinedMinutes = match.groupValues[3].toOptionalLong() ?: return null
@@ -486,7 +486,8 @@ class BattleMapParser {
         )
         val COOLDOWN_REMAINING_PATTERN =
             Regex("""\(\s*((?:([\d,]+)\s*시간(?:\s*([\d,]+)\s*분)?)|([\d,]+)\s*분)\s*\)\s*남음""")
-        val COOLDOWN_ADVERTISEMENT_PATTERN = Regex("""\([^)]*(?:시간|분)[^)]*\)\s*남음""")
+        val RAID_COOLDOWN_REMAINING_PATTERN = Regex("""(?:다음\s*전투까지\s*)?([\d,]+)\s*초\s*남음""")
+        val COOLDOWN_ADVERTISEMENT_PATTERN = Regex("""\([^)]*(?:시간|분)[^)]*\)\s*남음|(?:다음\s*전투까지\s*)?[\d,]+\s*초\s*남음""")
         val TRAILING_COOLDOWN_STATE_PATTERN = Regex(
             """\s*\(\s*(?:(?:[\d,]+\s*시간(?:\s*[\d,]+\s*분)?)|(?:[\d,]+\s*분))\s*\)\s*남음(?:\s*\([^)]*(?:Time|타임)[^)]*\))?\s*$""",
             RegexOption.IGNORE_CASE,

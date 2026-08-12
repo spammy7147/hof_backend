@@ -123,6 +123,29 @@ class NewAutomationHandlersTest {
         assertEquals(now.plusSeconds(1294), unavailable.nextRunAt)
     }
 
+    @Test
+    fun `raid waits for the observed next battle cooldown`() {
+        val target = RaidAutomationTarget("RaidGoblin", "고블린 전투 마차", PresetSelectionMode.EXPLICIT, 3, 0, party)
+        val fighting = RaidPubRaidResponse(
+            "RaidGoblin", "고블린 전투 마차", true, null, 6, "100000+",
+            RaidStatus.IN_BATTLE, "전투 중", null, listOf("현재사용자"), true, emptySet(),
+            RaidBattleTargetResponse("raid", "raid001", 99),
+        )
+
+        val evaluation = RaidAutomationHandler().evaluate(RaidAutomationSnapshot(
+            1,
+            RaidPubResponse(listOf(fighting), true, false, null, null, emptySet(), null),
+            listOf(target),
+            null,
+            OpenRaidCycleSnapshot(9, "RaidGoblin", RaidAutomationCycleStatus.IN_BATTLE, null),
+            now,
+        ))
+
+        val unavailable = assertIs<HandlerEvaluation.Unavailable>(evaluation)
+        assertEquals("RAID_BATTLE_COOLDOWN", unavailable.reasonCode)
+        assertEquals(now.plusSeconds(99), unavailable.nextRunAt)
+    }
+
     private fun fishing(primary: FishingPrimaryAction, remaining: Int = 3) = FishingResponse(
         null, remaining, null, null, null, null, null, "낚시터", primary,
         if (primary == FishingPrimaryAction.NONE) emptySet() else setOf(if (primary == FishingPrimaryAction.START) FishingAction.START else FishingAction.CATCH),

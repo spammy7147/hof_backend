@@ -56,6 +56,13 @@ class RaidAutomationHandler : AutomationHandler<RaidAutomationSnapshot> {
         }
         if (raid.status == RaidStatus.IN_BATTLE) {
             val battle = raid.battleTarget ?: return retry(context, "RAID_BATTLE_TARGET_MISSING", "레이드 전투 대상을 다시 확인합니다.")
+            battle.cooldownRemainingSeconds?.takeIf { it > 0 }?.let { seconds ->
+                return HandlerEvaluation.Unavailable(
+                    context.now.plusSeconds(seconds),
+                    "RAID_BATTLE_COOLDOWN",
+                    "다음 레이드 전투 가능 시각까지 기다립니다.",
+                )
+            }
             val setting = context.targets.singleOrNull { it.raidId == cycle.raidId }
                 ?: return HandlerEvaluation.ConfigurationWarning("진행 중 레이드 설정을 찾을 수 없습니다.", "RAID_ACTIVE_TARGET_REMOVED")
             val presetId = setting.presetId ?: return HandlerEvaluation.ConfigurationWarning("레이드 전투 프리셋을 선택해 주세요.", "RAID_PRESET_MISSING")

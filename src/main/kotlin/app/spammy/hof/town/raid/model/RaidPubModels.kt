@@ -6,7 +6,11 @@ enum class RaidAction { REGISTER, LEAVE, START, RESET, REWARD, WAIT_RESET, REFRE
 
 enum class RaidStatus { RECRUITING, WAITING, READY, IN_BATTLE, COMPLETED, CLOSED, TESTING, UNKNOWN }
 
-data class RaidBattleTarget(val categoryId: String = "raid", val mapCode: String)
+data class RaidBattleTarget(
+    val categoryId: String = "raid",
+    val mapCode: String,
+    val cooldownRemainingSeconds: Long? = null,
+)
 
 data class RaidPubRaid(
     val id: String,

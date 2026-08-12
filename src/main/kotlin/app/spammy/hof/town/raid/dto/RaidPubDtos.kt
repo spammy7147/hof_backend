@@ -4,7 +4,11 @@ import app.spammy.hof.town.fishing.dto.TownActionResultResponse
 import app.spammy.hof.town.raid.model.*
 import jakarta.validation.constraints.Size
 
-data class RaidBattleTargetResponse(val categoryId: String, val mapCode: String)
+data class RaidBattleTargetResponse(
+    val categoryId: String,
+    val mapCode: String,
+    val cooldownRemainingSeconds: Long? = null,
+)
 data class RaidPubRaidResponse(
     val id: String,
     val name: String,
@@ -34,7 +38,7 @@ data class RaidPubResponse(
             raids = value.raids.map { raid -> RaidPubRaidResponse(
                 raid.id, raid.name, raid.playable, raid.difficulty, raid.maxPartySize, raid.rewardDamage,
                 raid.status, raid.statusText, raid.waitSeconds, raid.applicants, raid.joined, raid.actions,
-                raid.battleTarget?.let { RaidBattleTargetResponse(it.categoryId, it.mapCode) },
+                raid.battleTarget?.let { RaidBattleTargetResponse(it.categoryId, it.mapCode, it.cooldownRemainingSeconds) },
             ) },
             applied = value.applied,
             applyWait = value.applyWait,
