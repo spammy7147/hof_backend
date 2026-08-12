@@ -22,6 +22,7 @@ import app.spammy.hof.automation.entity.QAdventureAutomationMapEntity.adventureA
 import app.spammy.hof.automation.entity.QAdventureDailyRefreshEntity.adventureDailyRefreshEntity
 import app.spammy.hof.automation.entity.QAutomationRotationStateEntity.automationRotationStateEntity
 import app.spammy.hof.automation.entity.QFishingAutomationSettingEntity.fishingAutomationSettingEntity
+import app.spammy.hof.automation.entity.QFishingAutomationMapEntity.fishingAutomationMapEntity
 import app.spammy.hof.automation.entity.QRaidAutomationCycleEntity.raidAutomationCycleEntity
 import app.spammy.hof.automation.entity.QRaidAutomationTargetEntity.raidAutomationTargetEntity
 import app.spammy.hof.automation.entity.QUnionAutomationMapEntity.unionAutomationMapEntity
@@ -39,6 +40,7 @@ import app.spammy.hof.automation.entity.AdventureAutomationMapEntity
 import app.spammy.hof.automation.entity.AdventureDailyRefreshEntity
 import app.spammy.hof.automation.entity.AutomationRotationStateEntity
 import app.spammy.hof.automation.entity.FishingAutomationSettingEntity
+import app.spammy.hof.automation.entity.FishingAutomationMapEntity
 import app.spammy.hof.automation.entity.RaidAutomationCycleEntity
 import app.spammy.hof.automation.entity.RaidAutomationTargetEntity
 import app.spammy.hof.automation.entity.UnionAutomationMapEntity
@@ -211,6 +213,12 @@ class TypedAutomationQueryRepository(
         queryFactory.selectFrom(fishingAutomationSettingEntity)
             .leftJoin(fishingAutomationSettingEntity.partyPreset, partyPresetEntity).fetchJoin()
             .where(fishingAutomationSettingEntity.entry.id.eq(entryId)).fetchOne()
+
+    fun findFishingMaps(entryId: Long): List<FishingAutomationMapEntity> =
+        queryFactory.selectFrom(fishingAutomationMapEntity)
+            .leftJoin(fishingAutomationMapEntity.partyPreset, partyPresetEntity).fetchJoin()
+            .where(fishingAutomationMapEntity.entry.id.eq(entryId))
+            .orderBy(fishingAutomationMapEntity.executionOrder.asc(), fishingAutomationMapEntity.id.asc()).fetch()
 
     fun findRotationState(entryId: Long): AutomationRotationStateEntity? =
         queryFactory.selectFrom(automationRotationStateEntity)

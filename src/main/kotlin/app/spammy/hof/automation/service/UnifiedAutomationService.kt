@@ -7,6 +7,7 @@ import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.entity.BattleAutomationMapEntity
 import app.spammy.hof.automation.entity.FishingAutomationSettingEntity
+import app.spammy.hof.automation.entity.FishingAutomationMapEntity
 import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.automation.entity.QuestAutomationMapEntity
 import app.spammy.hof.automation.entity.QuestAutomationSelectionEntity
@@ -18,6 +19,7 @@ import app.spammy.hof.automation.repository.AdventureAutomationMapCommandReposit
 import app.spammy.hof.automation.repository.AutomationEntryCommandRepository
 import app.spammy.hof.automation.repository.BattleAutomationMapCommandRepository
 import app.spammy.hof.automation.repository.FishingAutomationSettingCommandRepository
+import app.spammy.hof.automation.repository.FishingAutomationMapCommandRepository
 import app.spammy.hof.automation.repository.QuestAutomationMapCommandRepository
 import app.spammy.hof.automation.repository.QuestAutomationSelectionCommandRepository
 import app.spammy.hof.automation.repository.RaidAutomationTargetCommandRepository
@@ -50,6 +52,7 @@ class UnifiedAutomationService(
     private val typedBattleMapRepository: BattleAutomationMapCommandRepository,
     private val typedAdventureMapRepository: AdventureAutomationMapCommandRepository,
     private val typedFishingSettingRepository: FishingAutomationSettingCommandRepository,
+    private val typedFishingMapRepository: FishingAutomationMapCommandRepository,
     private val typedUnionMapRepository: UnionAutomationMapCommandRepository,
     private val typedRaidTargetRepository: RaidAutomationTargetCommandRepository,
     private val automationOutboxService: AutomationOutboxService,
@@ -371,26 +374,52 @@ class UnifiedAutomationService(
     ): TypedAutomationAggregateResponse {
         lockTypedAccount(accountId)
         val entry = requireTypedEntry(accountId, AutomationType.FISHING)
-        val preset = validatePresetSelection(accountId, request.presetMode, request.partyPresetId)
+        if (request.maps.isNotEmpty() && request.presetMode != null) invalid("낚시 맵 설정과 이전 단일 프리셋을 함께 저장할 수 없습니다.")
         val old = typedAutomationQueryRepository.findFishingSetting(entry.id)
-        val changed = old == null || old.presetMode != request.presetMode || old.partyPreset?.id != request.partyPresetId
+        val oldMaps = typedAutomationQueryRepository.findFishingMaps(entry.id)
+        val normalized = request.maps.sortedWith(compareBy<FishingMapSettingRequest> { it.executionOrder }.thenBy { it.mapCode })
+        rejectDuplicates(normalized.map { it.executionOrder }, "낚시 맵 실행 순서를 중복해서 사용할 수 없습니다.")
+        rejectDuplicates(normalized.map { it.categoryId to it.mapCode }, "같은 낚시 맵을 두 번 설정할 수 없습니다.")
+        if (normalized.any { it.categoryId != FISHING_BATTLE_CATEGORY }) invalid("낚시 전투 맵만 설정할 수 있습니다.")
+        val presets = validateMapAndPresetReferences(accountId, normalized.map {
+            TypedMapReference(it.categoryId, it.mapCode, it.presetMode, it.partyPresetId)
+        })
+        val legacyPreset = request.presetMode?.let { validatePresetSelection(accountId, it, request.partyPresetId) }
+        val oldConfig = oldMaps.associate { it.categoryId to it.mapCode to (it.presetMode to it.partyPreset?.id) }
+        val newConfig = normalized.associate { it.categoryId to it.mapCode to (it.presetMode to it.partyPresetId) }
+        val changed = oldConfig != newConfig || (request.presetMode != null &&
+            (old?.presetMode != request.presetMode || old.partyPreset?.id != request.partyPresetId))
         workLifecycle.stopForConfigurationChange(
             accountId,
             entry.id,
             if (changed) setOf(FISHING_TARGET_KEY) else emptySet(),
-            wholeEntry = entry.enabled && !request.enabled,
+            wholeEntry = changed || (entry.enabled && !request.enabled),
         )
         old?.let {
             typedFishingSettingRepository.delete(it)
             typedFishingSettingRepository.flush()
         }
-        typedFishingSettingRepository.save(
+        if (oldMaps.isNotEmpty()) {
+            typedFishingMapRepository.deleteAll(oldMaps)
+            typedFishingMapRepository.flush()
+        }
+        if (request.presetMode != null) typedFishingSettingRepository.save(
             FishingAutomationSettingEntity(
                 entry = entry,
                 presetMode = request.presetMode,
-                partyPreset = preset,
+                partyPreset = legacyPreset,
             ),
         )
+        normalized.forEachIndexed { executionOrder, map ->
+            typedFishingMapRepository.save(FishingAutomationMapEntity(
+                entry = entry,
+                categoryId = map.categoryId,
+                mapCode = map.mapCode,
+                presetMode = map.presetMode,
+                partyPreset = map.partyPresetId?.let(presets::getValue),
+                executionOrder = executionOrder,
+            ))
+        }
         updateTypedEntry(entry, request.enabled)
         enqueueSettingsWake(accountId)
         return buildTypedAggregate(accountId)
@@ -595,6 +624,7 @@ class UnifiedAutomationService(
             } else {
                 null
             }
+            val fishingMaps = if (entry.type == AutomationType.FISHING) typedAutomationQueryRepository.findFishingMaps(entry.id) else emptyList()
             val union = if (entry.type == AutomationType.UNION) {
                 typedAutomationQueryRepository.findUnionSettings(entry.id)
             } else {
@@ -619,7 +649,10 @@ class UnifiedAutomationService(
                     union.map { it.categoryId to it.mapCode }.toSet(),
                 ).associateBy { it.categoryId to it.mapCode }
             }
-            val warnings = typedWarnings(entry, quests, questMaps, battle, adventure, fishing, union, raid, primaryPresetId, validPresetIds)
+            val fishingCatalog = if (fishingMaps.isEmpty()) emptyMap() else battleMapQueryRepository
+                .findMapsByCategoryIdAndMapCodePairs(fishingMaps.map { it.categoryId to it.mapCode }.toSet())
+                .associateBy { it.categoryId to it.mapCode }
+            val warnings = typedWarnings(entry, quests, questMaps, battle, adventure, fishing, fishingMaps, union, raid, primaryPresetId, validPresetIds)
             TypedAutomationEntryResponse(
                 id = entry.id,
                 type = entry.type,
@@ -669,6 +702,10 @@ class UnifiedAutomationService(
                     )
                 },
                 fishing = fishing?.let { FishingAutomationSettingResponse(it.presetMode, it.partyPreset?.id) },
+                fishingMaps = fishingMaps.map { map -> FishingMapSettingResponse(
+                    map.categoryId, map.mapCode, map.presetMode, map.partyPreset?.id, map.executionOrder,
+                    fishingCatalog[map.categoryId to map.mapCode]?.name,
+                ) },
                 unionMaps = union.map { map ->
                     UnionMapSettingResponse(
                         map.categoryId,
@@ -793,6 +830,7 @@ class UnifiedAutomationService(
         battle: List<BattleAutomationMapEntity>,
         adventure: List<AdventureAutomationMapEntity>,
         fishing: FishingAutomationSettingEntity?,
+        fishingMaps: List<FishingAutomationMapEntity>,
         union: List<UnionAutomationMapEntity>,
         raid: List<RaidAutomationTargetEntity>,
         primaryPresetId: Long?,
@@ -859,15 +897,17 @@ class UnifiedAutomationService(
                     )?.let(warnings::add)
                 }
             }
-            AutomationType.FISHING -> if (fishing == null) {
-                warnings += "낚시 전투 프리셋이 없습니다."
-            } else {
+            AutomationType.FISHING -> if (fishing == null && fishingMaps.isEmpty()) {
+                warnings += "낚시 전투 맵 설정이 없습니다."
+            } else if (fishing != null) {
                 presetWarning(
                     fishing.presetMode,
                     fishing.partyPreset?.id,
                     primaryPresetId,
                     validPresetIds,
                 )?.let(warnings::add)
+            } else fishingMaps.forEach { map ->
+                presetWarning(map.presetMode, map.partyPreset?.id, primaryPresetId, validPresetIds)?.let(warnings::add)
             }
         }
         return warnings.toList()
@@ -1063,6 +1103,7 @@ class UnifiedAutomationService(
         const val MAX_RAID_ID_LENGTH = 200
         const val MAX_SETTING_ITEMS = 100
         const val FISHING_TARGET_KEY = "fishing"
+        const val FISHING_BATTLE_CATEGORY = "battle_map"
         const val UNION_CATEGORY = "union"
         const val RAID_CATEGORY = "raid"
     }

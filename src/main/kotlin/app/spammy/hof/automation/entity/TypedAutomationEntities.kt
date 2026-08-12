@@ -173,6 +173,25 @@ class FishingAutomationSettingEntity(
 )
 
 @Entity
+@Table(name = "fishing_automation_maps")
+class FishingAutomationMapEntity(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+    @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "automation_entry_id", nullable = false)
+    var entry: AutomationEntryEntity,
+    @Column(name = "category_id", nullable = false, length = 50)
+    var categoryId: String,
+    @Column(name = "map_code", nullable = false, length = 100)
+    var mapCode: String,
+    @Enumerated(EnumType.STRING) @Column(name = "preset_mode", nullable = false, length = 20)
+    var presetMode: PresetSelectionMode,
+    @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "party_preset_id")
+    var partyPreset: PartyPresetEntity? = null,
+    @Column(name = "execution_order", nullable = false)
+    var executionOrder: Int,
+)
+
+@Entity
 @Table(name = "automation_rotation_states")
 class AutomationRotationStateEntity(
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)

@@ -12,10 +12,17 @@ import java.util.UUID
 data class FishingAutomationSnapshot(
     val accountId: Long,
     val state: FishingResponse,
-    val presetMode: PresetSelectionMode,
-    val presetId: Long?,
-    val resolvedParty: ResolvedAutomationParty?,
+    val maps: List<FishingAutomationMapSetting>,
+    val legacyPreset: FishingAutomationPreset?,
     val now: Instant,
+)
+
+data class FishingAutomationMapSetting(
+    val categoryId: String, val mapCode: String, val presetMode: PresetSelectionMode,
+    val presetId: Long?, val resolvedParty: ResolvedAutomationParty?,
+)
+data class FishingAutomationPreset(
+    val presetMode: PresetSelectionMode, val presetId: Long?, val resolvedParty: ResolvedAutomationParty?,
 )
 
 data class FishingTownAutomationAction(
@@ -32,11 +39,15 @@ class FishingAutomationHandler : AutomationHandler<FishingAutomationSnapshot> {
         }
         if (context.state.blockedByBattle) {
             val target = context.state.battleTarget ?: return retry(context, "FISHING_BATTLE_TARGET_MISSING", "낚시 전투 대상을 다시 확인합니다.")
-            val presetId = context.presetId ?: return HandlerEvaluation.ConfigurationWarning("낚시 전투 프리셋을 선택해 주세요.", "FISHING_PRESET_MISSING")
-            val party = context.resolvedParty ?: return HandlerEvaluation.ConfigurationWarning("낚시 전투 프리셋 구성을 확인해 주세요.", "FISHING_PARTY_INVALID")
+            val setting = context.maps.singleOrNull { it.categoryId == target.categoryId && it.mapCode == target.mapCode }
+            val presetId = setting?.presetId ?: context.legacyPreset?.presetId
+                ?: return HandlerEvaluation.ConfigurationWarning("${target.name} 낚시 전투 프리셋을 선택해 주세요.", "FISHING_PRESET_MISSING")
+            val party = setting?.resolvedParty ?: context.legacyPreset?.resolvedParty
+                ?: return HandlerEvaluation.ConfigurationWarning("${target.name} 낚시 전투 프리셋 구성을 확인해 주세요.", "FISHING_PARTY_INVALID")
+            val mode = setting?.presetMode ?: requireNotNull(context.legacyPreset).presetMode
             return HandlerEvaluation.Runnable(BattleMapAutomationAction(
                 context.accountId, context.now.atZone(SEOUL).toLocalDate(), target.categoryId, target.mapCode,
-                context.presetMode, presetId, 1, UUID.randomUUID().toString(),
+                mode, presetId, 1, UUID.randomUUID().toString(),
                 BattleAutomationActionSource.FISHING_AUTOMATION, party, target.name,
             ))
         }

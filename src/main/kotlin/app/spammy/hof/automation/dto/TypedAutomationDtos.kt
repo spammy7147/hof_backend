@@ -93,8 +93,17 @@ data class AdventureMapSettingRequest(
 
 data class UpdateFishingAutomationRequest(
     val enabled: Boolean,
+    val presetMode: PresetSelectionMode? = null,
+    val partyPresetId: Long? = null,
+    @field:Valid @field:Size(max = 100) val maps: List<@Valid FishingMapSettingRequest> = emptyList(),
+)
+
+data class FishingMapSettingRequest(
+    @field:NotBlank @field:Size(max = 50) val categoryId: String,
+    @field:NotBlank @field:Size(max = 100) val mapCode: String,
     val presetMode: PresetSelectionMode,
     val partyPresetId: Long?,
+    @field:Min(0) val executionOrder: Int,
 )
 
 data class UpdateUnionAutomationRequest(
@@ -179,6 +188,15 @@ data class FishingAutomationSettingResponse(
     val partyPresetId: Long?,
 )
 
+data class FishingMapSettingResponse(
+    val categoryId: String,
+    val mapCode: String,
+    val presetMode: PresetSelectionMode,
+    val partyPresetId: Long?,
+    val executionOrder: Int,
+    val displayName: String?,
+)
+
 data class UnionMapSettingResponse(
     val categoryId: String,
     val mapCode: String,
@@ -208,6 +226,7 @@ data class TypedAutomationEntryResponse(
     val battleMapProgress: List<BattleMapDailyProgressResponse> = emptyList(),
     val adventureMaps: List<AdventureMapSettingResponse> = emptyList(),
     val fishing: FishingAutomationSettingResponse? = null,
+    val fishingMaps: List<FishingMapSettingResponse> = emptyList(),
     val unionMaps: List<UnionMapSettingResponse> = emptyList(),
     val raidTargets: List<RaidTargetSettingResponse> = emptyList(),
 )

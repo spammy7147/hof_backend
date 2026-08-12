@@ -9,6 +9,7 @@ import app.spammy.hof.automation.entity.BattleAutomationDailyProgressEntity
 import app.spammy.hof.automation.entity.BattleAutomationMapEntity
 import app.spammy.hof.automation.entity.BattleAutomationProcessedResultEntity
 import app.spammy.hof.automation.entity.FishingAutomationSettingEntity
+import app.spammy.hof.automation.entity.FishingAutomationMapEntity
 import app.spammy.hof.automation.entity.QuestAutomationMapEntity
 import app.spammy.hof.automation.entity.QuestAutomationCycleEntity
 import app.spammy.hof.automation.entity.QuestAutomationProcessedResultEntity
@@ -46,6 +47,8 @@ interface UnionAutomationMapCommandRepository : CommandRepository<UnionAutomatio
 interface RaidAutomationTargetCommandRepository : CommandRepository<RaidAutomationTargetEntity, Long>
 
 interface FishingAutomationSettingCommandRepository : CommandRepository<FishingAutomationSettingEntity, Long>
+
+interface FishingAutomationMapCommandRepository : CommandRepository<FishingAutomationMapEntity, Long>
 
 interface AutomationRotationStateCommandRepository : CommandRepository<AutomationRotationStateEntity, Long>
 

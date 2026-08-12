@@ -9,6 +9,7 @@ import app.spammy.hof.automation.dto.QuestSelectionRequest
 import app.spammy.hof.automation.dto.ReorderAutomationEntriesRequest
 import app.spammy.hof.automation.dto.UpdateBattleMapAutomationRequest
 import app.spammy.hof.automation.dto.UpdateFishingAutomationRequest
+import app.spammy.hof.automation.dto.FishingMapSettingRequest
 import app.spammy.hof.automation.dto.UnionMapSettingRequest
 import app.spammy.hof.automation.dto.UpdateUnionAutomationRequest
 import app.spammy.hof.automation.dto.RaidTargetSettingRequest
@@ -22,6 +23,7 @@ import app.spammy.hof.automation.entity.AdventureAutomationMapEntity
 import app.spammy.hof.automation.entity.BattleAutomationDailyProgressEntity
 import app.spammy.hof.automation.entity.BattleAutomationMapEntity
 import app.spammy.hof.automation.entity.FishingAutomationSettingEntity
+import app.spammy.hof.automation.entity.FishingAutomationMapEntity
 import app.spammy.hof.automation.entity.UnionAutomationMapEntity
 import app.spammy.hof.automation.entity.RaidAutomationTargetEntity
 import app.spammy.hof.automation.entity.RaidAutomationCycleEntity
@@ -38,6 +40,7 @@ import app.spammy.hof.automation.repository.AdventureAutomationMapCommandReposit
 import app.spammy.hof.automation.repository.AutomationEntryCommandRepository
 import app.spammy.hof.automation.repository.BattleAutomationMapCommandRepository
 import app.spammy.hof.automation.repository.FishingAutomationSettingCommandRepository
+import app.spammy.hof.automation.repository.FishingAutomationMapCommandRepository
 import app.spammy.hof.automation.repository.UnionAutomationMapCommandRepository
 import app.spammy.hof.automation.repository.RaidAutomationTargetCommandRepository
 import app.spammy.hof.automation.repository.QuestAutomationMapCommandRepository
@@ -81,6 +84,7 @@ class UnifiedAutomationServiceTest {
     private val battleSettingRepository = Mockito.mock(BattleAutomationMapCommandRepository::class.java)
     private val adventureSettingRepository = Mockito.mock(AdventureAutomationMapCommandRepository::class.java)
     private val fishingSettingRepository = Mockito.mock(FishingAutomationSettingCommandRepository::class.java)
+    private val fishingMapRepository = Mockito.mock(FishingAutomationMapCommandRepository::class.java)
     private val unionSettingRepository = Mockito.mock(UnionAutomationMapCommandRepository::class.java)
     private val raidTargetRepository = Mockito.mock(RaidAutomationTargetCommandRepository::class.java)
     private val automationOutbox = Mockito.mock(AutomationOutboxService::class.java)
@@ -100,6 +104,7 @@ class UnifiedAutomationServiceTest {
         typedBattleMapRepository = battleSettingRepository,
         typedAdventureMapRepository = adventureSettingRepository,
         typedFishingSettingRepository = fishingSettingRepository,
+        typedFishingMapRepository = fishingMapRepository,
         typedUnionMapRepository = unionSettingRepository,
         typedRaidTargetRepository = raidTargetRepository,
         automationOutboxService = automationOutbox,
@@ -458,28 +463,38 @@ class UnifiedAutomationServiceTest {
     }
 
     @Test
-    fun `fishing update stores the battle preset and enables the singleton entry`() {
+    fun `fishing update stores a preset for each observed battle map`() {
         val fishingEntry = entry(94L, AutomationType.FISHING)
-        val persisted = FishingAutomationSettingEntity(
+        val persisted = FishingAutomationMapEntity(
             id = 901L,
             entry = fishingEntry,
+            categoryId = "battle_map",
+            mapCode = "fish-1",
             presetMode = PresetSelectionMode.PRIMARY,
+            executionOrder = 0,
         )
         Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(fishingEntry))
-        Mockito.`when`(typedQuery.findFishingSetting(fishingEntry.id)).thenReturn(null, persisted)
+        Mockito.`when`(typedQuery.findFishingMaps(fishingEntry.id)).thenReturn(emptyList(), listOf(persisted))
+        Mockito.`when`(battleMapQueryRepository.findMapsByCategoryIdAndMapCodePairs(setOf("battle_map" to "fish-1")))
+            .thenReturn(listOf(battleMap(73L, "battle_map", "fish-1", "거대 잉어")))
 
         val response = service.updateFishing(
             ACCOUNT_ID,
             UpdateFishingAutomationRequest(
                 enabled = true,
-                presetMode = PresetSelectionMode.PRIMARY,
-                partyPresetId = null,
+                maps = listOf(FishingMapSettingRequest(
+                    categoryId = "battle_map",
+                    mapCode = "fish-1",
+                    presetMode = PresetSelectionMode.PRIMARY,
+                    partyPresetId = null,
+                    executionOrder = 0,
+                )),
             ),
         )
 
-        Mockito.verify(fishingSettingRepository).save(anyFishingSetting())
-        assertEquals(PresetSelectionMode.PRIMARY, response.entries.single().fishing?.presetMode)
-        assertNull(response.entries.single().fishing?.partyPresetId)
+        Mockito.verify(fishingMapRepository).save(anyFishingMap())
+        assertEquals("fish-1", response.entries.single().fishingMaps.single().mapCode)
+        assertEquals("거대 잉어", response.entries.single().fishingMaps.single().displayName)
         assertTrue(fishingEntry.enabled)
         Mockito.verify(automationOutbox).enqueue(ACCOUNT_ID, "SETTINGS_UPDATED")
     }
@@ -1102,6 +1117,16 @@ class UnifiedAutomationServiceTest {
             ?: FishingAutomationSettingEntity(
                 entry = entry(999L, AutomationType.FISHING),
                 presetMode = PresetSelectionMode.PRIMARY,
+            )
+
+    private fun anyFishingMap(): FishingAutomationMapEntity =
+        Mockito.any(FishingAutomationMapEntity::class.java)
+            ?: FishingAutomationMapEntity(
+                entry = entry(999L, AutomationType.FISHING),
+                categoryId = "battle_map",
+                mapCode = "matcher",
+                presetMode = PresetSelectionMode.PRIMARY,
+                executionOrder = 0,
             )
 
     private fun anyUnionSetting(): UnionAutomationMapEntity =
