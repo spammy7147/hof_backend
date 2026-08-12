@@ -1,3 +1,5 @@
+alter table typed_automation_runtime_states drop constraint ck_typed_runtime_stop;
+
 update typed_automation_runtime_states
 set lifecycle_status = 'RUNNING',
     stop_action_id = null,
@@ -19,7 +21,6 @@ set stop_reason = null,
     updated_at = current_timestamp
 where stop_reason is not null;
 
-alter table typed_automation_runtime_states drop constraint ck_typed_runtime_stop;
 alter table typed_automation_runtime_states add constraint ck_typed_runtime_stop
     check (
         (lifecycle_status = 'STOPPED' and stop_reason is not null) or
