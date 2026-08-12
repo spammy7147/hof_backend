@@ -93,14 +93,12 @@ class AutomationWorkSessionService(
         val spec = action.toWorkSpec(entryId)
         val open = queries.lockOpen(accountId)
         open.firstOrNull { it.status == AutomationWorkStatus.RUNNING }?.let { running ->
-            check(running.entry.id == entryId && running.workType == spec.type && running.targetKey == spec.targetKey) {
+            check(running.matches(entryId, spec)) {
                 "A different automation work session is already running for account $accountId."
             }
             return running
         }
-        open.firstOrNull {
-            it.entry.id == entryId && it.workType == spec.type && it.targetKey == spec.targetKey
-        }?.let { parked ->
+        open.firstOrNull { it.matches(entryId, spec) }?.let { parked ->
             require(parked.configVersion == entry.updatedAt.toString()) {
                 "A parked work session belongs to an older automation configuration."
             }
@@ -343,14 +341,14 @@ class AutomationWorkSessionService(
                     WorkSpec(AutomationWorkType.BATTLE_MAP, target, targetCount = configuredTarget)
                 }
                 BattleAutomationActionSource.UNION_AUTOMATION -> WorkSpec(AutomationWorkType.UNION, target)
-                BattleAutomationActionSource.FISHING_AUTOMATION -> WorkSpec(AutomationWorkType.FISHING, target)
+                BattleAutomationActionSource.FISHING_AUTOMATION -> WorkSpec(AutomationWorkType.FISHING, FISHING_CYCLE_TARGET)
                 BattleAutomationActionSource.RAID_AUTOMATION -> WorkSpec(AutomationWorkType.RAID, target)
                 BattleAutomationActionSource.QUEST_AUTOMATION -> WorkSpec(AutomationWorkType.QUEST, target)
                 BattleAutomationActionSource.ADVENTURE_AUTOMATION -> WorkSpec(AutomationWorkType.ADVENTURE_MAP, target)
             }
         }
         is AdventureMapAutomationAction -> WorkSpec(AutomationWorkType.ADVENTURE_MAP, "$categoryId/$mapCode")
-        is FishingTownAutomationAction -> WorkSpec(AutomationWorkType.FISHING, action.name)
+        is FishingTownAutomationAction -> WorkSpec(AutomationWorkType.FISHING, FISHING_CYCLE_TARGET)
         is RaidTownAutomationAction -> WorkSpec(AutomationWorkType.RAID, raidId ?: action.name)
         is RaidCycleAbortAutomationAction -> WorkSpec(AutomationWorkType.RAID, raidId)
     }
@@ -366,7 +364,13 @@ class AutomationWorkSessionService(
         val observedRequired: Int? = null,
     )
 
+    private fun AutomationWorkSessionEntity.matches(entryId: Long, spec: WorkSpec): Boolean =
+        entry.id == entryId &&
+            workType == spec.type &&
+            (targetKey == spec.targetKey || workType == AutomationWorkType.FISHING)
+
     private companion object {
+        const val FISHING_CYCLE_TARGET = "DAILY_FISHING"
         val OPEN_SESSION_STATUSES = setOf(
             AutomationWorkStatus.RUNNING,
             AutomationWorkStatus.WAITING_COOLDOWN,
