@@ -18,9 +18,9 @@ class NewAutomationHandlersTest {
     @Test
     fun `fishing alternates primary action and waits at the daily limit`() {
         val handler = FishingAutomationHandler()
-        val start = handler.evaluate(FishingAutomationSnapshot(1, fishing(FishingPrimaryAction.START), emptyList(), preset(), null, now))
+        val start = handler.evaluate(FishingAutomationSnapshot(1, fishing(FishingPrimaryAction.START), emptyList(), null, now))
         assertEquals(FishingAction.START, assertIs<FishingTownAutomationAction>(assertIs<HandlerEvaluation.Runnable>(start).action).action)
-        val exhausted = handler.evaluate(FishingAutomationSnapshot(1, fishing(FishingPrimaryAction.NONE, remaining = 0), emptyList(), preset(), null, now))
+        val exhausted = handler.evaluate(FishingAutomationSnapshot(1, fishing(FishingPrimaryAction.NONE, remaining = 0), emptyList(), null, now))
         assertEquals("FISHING_DAILY_LIMIT", assertIs<HandlerEvaluation.Unavailable>(exhausted).reasonCode)
     }
 
@@ -30,7 +30,7 @@ class NewAutomationHandlersTest {
             blockedByBattle = true, battleTarget = FishingBattleTargetResponse("battle_map", "fish-1", "낚시 전투"),
         )
         val action = assertIs<HandlerEvaluation.Runnable>(FishingAutomationHandler().evaluate(
-            FishingAutomationSnapshot(1, state, listOf(FishingAutomationMapSetting("battle_map", "fish-1", PresetSelectionMode.EXPLICIT, 3, party)), null, null, now),
+            FishingAutomationSnapshot(1, state, listOf(FishingAutomationMapSetting("battle_map", "fish-1", PresetSelectionMode.EXPLICIT, 3, party)), null, now),
         )).action
         assertEquals(BattleAutomationActionSource.FISHING_AUTOMATION, assertIs<BattleMapAutomationAction>(action).source)
     }
@@ -50,7 +50,6 @@ class NewAutomationHandlersTest {
                     FishingAutomationMapSetting("battle_map", "fish-2", PresetSelectionMode.EXPLICIT, 8, otherParty),
                 ),
                 null,
-                null,
                 now,
             )),
         ).action)
@@ -66,7 +65,7 @@ class NewAutomationHandlersTest {
         )
         val action = assertIs<BattleMapAutomationAction>(assertIs<HandlerEvaluation.Runnable>(
             FishingAutomationHandler().evaluate(FishingAutomationSnapshot(
-                1, state, emptyList(), null,
+                1, state, emptyList(),
                 FishingAutomationPreset(PresetSelectionMode.PRIMARY, 11, party), now,
             )),
         ).action)

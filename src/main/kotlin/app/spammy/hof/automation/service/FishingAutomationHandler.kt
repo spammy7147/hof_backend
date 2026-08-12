@@ -13,7 +13,6 @@ data class FishingAutomationSnapshot(
     val accountId: Long,
     val state: FishingResponse,
     val maps: List<FishingAutomationMapSetting>,
-    val legacyPreset: FishingAutomationPreset?,
     val primaryPreset: FishingAutomationPreset?,
     val now: Instant,
 )
@@ -41,9 +40,8 @@ class FishingAutomationHandler : AutomationHandler<FishingAutomationSnapshot> {
         if (context.state.blockedByBattle) {
             val target = context.state.battleTarget ?: return retry(context, "FISHING_BATTLE_TARGET_MISSING", "낚시 전투 대상을 다시 확인합니다.")
             val setting = context.maps.singleOrNull { it.categoryId == target.categoryId && it.mapCode == target.mapCode }
-            val fallback = context.legacyPreset ?: context.primaryPreset
             val selected = setting?.let { FishingAutomationPreset(it.presetMode, it.presetId, it.resolvedParty) }
-                ?: fallback
+                ?: context.primaryPreset
                 ?: return HandlerEvaluation.ConfigurationWarning("${target.name} 낚시 전투 프리셋을 선택해 주세요.", "FISHING_PRESET_MISSING")
             val presetId = selected.presetId
                 ?: return HandlerEvaluation.ConfigurationWarning("${target.name} 낚시 전투 프리셋을 선택해 주세요.", "FISHING_PRESET_MISSING")

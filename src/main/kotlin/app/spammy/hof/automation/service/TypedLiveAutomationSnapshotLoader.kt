@@ -173,14 +173,11 @@ class TypedLiveAutomationSnapshotLoader(
             val raid = if (entry.type == AutomationType.RAID) typed.findRaidTargets(entry.id).map {
                 DetachedRaidTarget(it.raidId, it.displayName, it.presetMode, it.partyPreset?.id, it.executionOrder)
             } else emptyList()
-            val fishing = if (entry.type == AutomationType.FISHING) typed.findFishingSetting(entry.id)?.let {
-                DetachedFishingSetting(it.presetMode, it.partyPreset?.id)
-            } else null
             val fishingMaps = if (entry.type == AutomationType.FISHING) typed.findFishingMaps(entry.id).map {
                 DetachedFishingMap(it.categoryId, it.mapCode, it.presetMode, it.partyPreset?.id)
             } else emptyList()
             val rotation = if (entry.type in setOf(AutomationType.UNION, AutomationType.RAID)) typed.findRotationState(entry.id)?.currentTargetKey else null
-            DetachedEntry(entry.id, entry.type, entry.priority, entry.enabled, quest, battle, adventure, union, raid, fishing, fishingMaps, rotation)
+            DetachedEntry(entry.id, entry.type, entry.priority, entry.enabled, quest, battle, adventure, union, raid, fishingMaps, rotation)
         }
         val canonical = buildString {
             append("primary=").append(primary).append('|')
@@ -228,17 +225,13 @@ class TypedLiveAutomationSnapshotLoader(
                 }, states.map(::battleState), entry.rotationTarget, now,
             ))
             AutomationType.FISHING -> AutomationCoordinatorEntry(entry.id, entry.type, fishing = live.fishing?.let { state ->
-                val legacy = entry.fishing?.let { setting ->
-                    val resolved = resolvePreset(setting.presetMode, setting.presetId, config)
-                    FishingAutomationPreset(setting.presetMode, resolved, resolved?.let(config.parties::get))
-                }
                 val primary = config.primary?.let { presetId ->
                     FishingAutomationPreset(PresetSelectionMode.PRIMARY, presetId, config.parties[presetId])
                 }
                 FishingAutomationSnapshot(accountId, state, entry.fishingMaps.map { setting ->
                     val resolved = resolvePreset(setting.presetMode, setting.presetId, config)
                     FishingAutomationMapSetting(setting.categoryId, setting.mapCode, setting.presetMode, resolved, resolved?.let(config.parties::get))
-                }, legacy, primary, now)
+                }, primary, now)
             })
             AutomationType.RAID -> AutomationCoordinatorEntry(entry.id, entry.type, raid = live.raid?.let { pub ->
                 val open = typed.findOpenRaidCycle(accountId)?.let { OpenRaidCycleSnapshot(it.id, it.raidId, it.status, it.nextCheckAt) }
@@ -351,7 +344,7 @@ class TypedLiveAutomationSnapshotLoader(
         val id: Long, val type: AutomationType, val priority: Int, val enabled: Boolean,
         val quest: List<DetachedQuestSelection>, val battle: List<DetachedBattleSetting>, val adventure: List<DetachedAdventureSetting>,
         val union: List<DetachedUnionSetting>, val raid: List<DetachedRaidTarget>,
-        val fishing: DetachedFishingSetting?, val fishingMaps: List<DetachedFishingMap>, val rotationTarget: String?,
+        val fishingMaps: List<DetachedFishingMap>, val rotationTarget: String?,
     )
     private data class DetachedQuestSelection(val questKey: String, val enabled: Boolean, val order: Int, val maps: List<DetachedQuestMap>)
     private data class DetachedQuestMap(val missionKey: String, val categoryId: String, val mapCode: String, val presetMode: PresetSelectionMode, val presetId: Long?, val executionOrder: Int, val manuallyOverridden: Boolean)
@@ -359,7 +352,6 @@ class TypedLiveAutomationSnapshotLoader(
     private data class DetachedAdventureSetting(val id: Long, val categoryId: String, val mapCode: String, val presetMode: PresetSelectionMode, val presetId: Long?, val executionOrder: Int)
     private data class DetachedUnionSetting(val categoryId: String, val mapCode: String, val presetMode: PresetSelectionMode, val presetId: Long?, val executionOrder: Int)
     private data class DetachedRaidTarget(val raidId: String, val name: String, val presetMode: PresetSelectionMode, val presetId: Long?, val executionOrder: Int)
-    private data class DetachedFishingSetting(val presetMode: PresetSelectionMode, val presetId: Long?)
     private data class DetachedFishingMap(val categoryId: String, val mapCode: String, val presetMode: PresetSelectionMode, val presetId: Long?)
     private data class DetachedMember(val presetId: Long, val slotIndex: Int, val characterId: String?, val patternSlot: String?, val canLoad: Boolean)
     private data class LiveAutomationState(val quests: List<QuestSnapshot>, val fishing: FishingResponse?, val raid: RaidPubResponse?)

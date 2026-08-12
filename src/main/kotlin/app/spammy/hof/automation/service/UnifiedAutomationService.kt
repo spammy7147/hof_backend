@@ -6,7 +6,6 @@ import app.spammy.hof.automation.entity.AdventureAutomationMapEntity
 import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.entity.BattleAutomationMapEntity
-import app.spammy.hof.automation.entity.FishingAutomationSettingEntity
 import app.spammy.hof.automation.entity.FishingAutomationMapEntity
 import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.automation.entity.QuestAutomationMapEntity
@@ -374,7 +373,6 @@ class UnifiedAutomationService(
     ): TypedAutomationAggregateResponse {
         lockTypedAccount(accountId)
         val entry = requireTypedEntry(accountId, AutomationType.FISHING)
-        if (request.maps.isNotEmpty() && request.presetMode != null) invalid("낚시 맵 설정과 이전 단일 프리셋을 함께 저장할 수 없습니다.")
         val old = typedAutomationQueryRepository.findFishingSetting(entry.id)
         val oldMaps = typedAutomationQueryRepository.findFishingMaps(entry.id)
         val normalized = request.maps.sortedWith(compareBy<FishingMapSettingRequest> { it.executionOrder }.thenBy { it.mapCode })
@@ -384,11 +382,9 @@ class UnifiedAutomationService(
         val presets = validateMapAndPresetReferences(accountId, normalized.map {
             TypedMapReference(it.categoryId, it.mapCode, it.presetMode, it.partyPresetId)
         })
-        val legacyPreset = request.presetMode?.let { validatePresetSelection(accountId, it, request.partyPresetId) }
         val oldConfig = oldMaps.associate { it.categoryId to it.mapCode to (it.presetMode to it.partyPreset?.id) }
         val newConfig = normalized.associate { it.categoryId to it.mapCode to (it.presetMode to it.partyPresetId) }
-        val changed = oldConfig != newConfig || (request.presetMode != null &&
-            (old?.presetMode != request.presetMode || old.partyPreset?.id != request.partyPresetId))
+        val changed = oldConfig != newConfig || old != null
         workLifecycle.stopForConfigurationChange(
             accountId,
             entry.id,
@@ -403,13 +399,6 @@ class UnifiedAutomationService(
             typedFishingMapRepository.deleteAll(oldMaps)
             typedFishingMapRepository.flush()
         }
-        if (request.presetMode != null) typedFishingSettingRepository.save(
-            FishingAutomationSettingEntity(
-                entry = entry,
-                presetMode = request.presetMode,
-                partyPreset = legacyPreset,
-            ),
-        )
         normalized.forEachIndexed { executionOrder, map ->
             typedFishingMapRepository.save(FishingAutomationMapEntity(
                 entry = entry,
@@ -619,11 +608,6 @@ class UnifiedAutomationService(
             } else {
                 emptyList()
             }
-            val fishing = if (entry.type == AutomationType.FISHING) {
-                typedAutomationQueryRepository.findFishingSetting(entry.id)
-            } else {
-                null
-            }
             val fishingMaps = if (entry.type == AutomationType.FISHING) typedAutomationQueryRepository.findFishingMaps(entry.id) else emptyList()
             val union = if (entry.type == AutomationType.UNION) {
                 typedAutomationQueryRepository.findUnionSettings(entry.id)
@@ -652,7 +636,7 @@ class UnifiedAutomationService(
             val fishingCatalog = if (fishingMaps.isEmpty()) emptyMap() else battleMapQueryRepository
                 .findMapsByCategoryIdAndMapCodePairs(fishingMaps.map { it.categoryId to it.mapCode }.toSet())
                 .associateBy { it.categoryId to it.mapCode }
-            val warnings = typedWarnings(entry, quests, questMaps, battle, adventure, fishing, fishingMaps, union, raid, primaryPresetId, validPresetIds)
+            val warnings = typedWarnings(entry, quests, questMaps, battle, adventure, fishingMaps, union, raid, primaryPresetId, validPresetIds)
             TypedAutomationEntryResponse(
                 id = entry.id,
                 type = entry.type,
@@ -701,7 +685,6 @@ class UnifiedAutomationService(
                         adventureCatalog[map.categoryId to map.mapCode]?.name,
                     )
                 },
-                fishing = fishing?.let { FishingAutomationSettingResponse(it.presetMode, it.partyPreset?.id) },
                 fishingMaps = fishingMaps.map { map -> FishingMapSettingResponse(
                     map.categoryId, map.mapCode, map.presetMode, map.partyPreset?.id, map.executionOrder,
                     fishingCatalog[map.categoryId to map.mapCode]?.name,
@@ -829,7 +812,6 @@ class UnifiedAutomationService(
         questMaps: Map<Long, List<QuestAutomationMapEntity>>,
         battle: List<BattleAutomationMapEntity>,
         adventure: List<AdventureAutomationMapEntity>,
-        fishing: FishingAutomationSettingEntity?,
         fishingMaps: List<FishingAutomationMapEntity>,
         union: List<UnionAutomationMapEntity>,
         raid: List<RaidAutomationTargetEntity>,
@@ -897,17 +879,13 @@ class UnifiedAutomationService(
                     )?.let(warnings::add)
                 }
             }
-            AutomationType.FISHING -> if (fishing == null && fishingMaps.isEmpty()) {
-                warnings += "낚시 전투 맵 설정이 없습니다."
-            } else if (fishing != null) {
-                presetWarning(
-                    fishing.presetMode,
-                    fishing.partyPreset?.id,
-                    primaryPresetId,
-                    validPresetIds,
-                )?.let(warnings::add)
-            } else fishingMaps.forEach { map ->
-                presetWarning(map.presetMode, map.partyPreset?.id, primaryPresetId, validPresetIds)?.let(warnings::add)
+            AutomationType.FISHING -> {
+                if (primaryPresetId == null || primaryPresetId !in validPresetIds) {
+                    warnings += "대표 프리셋 구성을 확인해 주세요."
+                }
+                fishingMaps.forEach { map ->
+                    presetWarning(map.presetMode, map.partyPreset?.id, primaryPresetId, validPresetIds)?.let(warnings::add)
+                }
             }
         }
         return warnings.toList()
