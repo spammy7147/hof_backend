@@ -147,6 +147,30 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
     }
 
     @Test
+    fun `manual stop drains an already registered raid cycle`() {
+        val accountId = seed("raid-drain")
+        TransactionTemplate(transactionManager).executeWithoutResult {
+            entityManager.createNativeQuery("update automation_entries set automation_type = 'RAID' where account_id = ?1")
+                .setParameter(1, accountId).executeUpdate()
+            entityManager.createNativeQuery("update typed_automation_runtime_states set lifecycle_status = 'RUNNING', stop_reason = null, stop_action_id = null where account_id = ?1")
+                .setParameter(1, accountId).executeUpdate()
+            entityManager.createNativeQuery(
+                "insert into raid_automation_cycles (account_id,automation_entry_id,raid_id,raid_name,status,open_marker,started_at,updated_at,version) " +
+                    "select account_id,id,'raid-1','레이드','REGISTERED_WAITING',1,?2,?2,0 from automation_entries where account_id = ?1",
+            ).setParameter(1, accountId).setParameter(2, NOW).executeUpdate()
+        }
+
+        TransactionTemplate(transactionManager).executeWithoutResult {
+            bridge.stop(accountId, AutomationStopReason.MANUAL_STOP, "USER_STOP")
+        }
+
+        val state = requireNotNull(typedQuery.findRuntimeState(accountId))
+        assertEquals(TypedAutomationLifecycle.DRAINING, state.lifecycleStatus)
+        assertEquals(TypedAutomationLifecycle.STOPPED, state.requestedLifecycle)
+        assertNull(state.stopReason)
+    }
+
+    @Test
     fun `repeating the same terminal stop is idempotent and emits no wake`() {
         val accountId = seed("idempotent-stop")
 

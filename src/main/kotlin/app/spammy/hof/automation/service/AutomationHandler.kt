@@ -14,9 +14,19 @@ fun interface AutomationHandler<C> {
 
 sealed interface HandlerEvaluation {
     data class Runnable(val action: PreparedAutomationAction) : HandlerEvaluation
-    data object Skipped : HandlerEvaluation
-    data class Unavailable(val nextRunAt: Instant) : HandlerEvaluation
-    data class ConfigurationWarning(val message: String) : HandlerEvaluation
+    data object Skipped : HandlerEvaluation {
+        const val reasonCode: String = "NOT_RUNNABLE"
+        const val message: String = "현재 실행할 행동이 없습니다."
+    }
+    data class Unavailable(
+        val nextRunAt: Instant,
+        val reasonCode: String = "COOLDOWN",
+        val message: String = "다음 실행 가능 시각까지 대기합니다.",
+    ) : HandlerEvaluation
+    data class ConfigurationWarning(
+        val message: String,
+        val reasonCode: String = "CONFIGURATION_WARNING",
+    ) : HandlerEvaluation
     data class Fatal(val reason: AutomationStopReason, val message: String) : HandlerEvaluation
 }
 

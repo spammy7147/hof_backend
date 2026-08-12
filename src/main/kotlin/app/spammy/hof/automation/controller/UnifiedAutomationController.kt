@@ -5,6 +5,9 @@ import app.spammy.hof.automation.dto.ReorderAutomationEntriesRequest
 import app.spammy.hof.automation.dto.TypedAutomationAggregateResponse
 import app.spammy.hof.automation.dto.UpdateAdventureMapAutomationRequest
 import app.spammy.hof.automation.dto.UpdateBattleMapAutomationRequest
+import app.spammy.hof.automation.dto.UpdateFishingAutomationRequest
+import app.spammy.hof.automation.dto.UpdateUnionAutomationRequest
+import app.spammy.hof.automation.dto.UpdateRaidAutomationRequest
 import app.spammy.hof.automation.dto.UpdateQuestAutomationRequest
 import app.spammy.hof.automation.service.UnifiedAutomationService
 import app.spammy.hof.common.security.CurrentAccountId
@@ -67,6 +70,24 @@ class UnifiedAutomationController(
         @CurrentAccountId accountId: Long,
         @Valid @RequestBody request: UpdateAdventureMapAutomationRequest,
     ): TypedAutomationAggregateResponse = service.updateAdventureMaps(accountId, request)
+
+    @PutMapping("/fishing")
+    fun updateFishing(
+        @CurrentAccountId accountId: Long,
+        @Valid @RequestBody request: UpdateFishingAutomationRequest,
+    ): TypedAutomationAggregateResponse = service.updateFishing(accountId, request)
+
+    @PutMapping("/union")
+    fun updateUnion(
+        @CurrentAccountId accountId: Long,
+        @Valid @RequestBody request: UpdateUnionAutomationRequest,
+    ): TypedAutomationAggregateResponse = service.updateUnion(accountId, request)
+
+    @PutMapping("/raid")
+    fun updateRaid(
+        @CurrentAccountId accountId: Long,
+        @Valid @RequestBody request: UpdateRaidAutomationRequest,
+    ): TypedAutomationAggregateResponse = service.updateRaid(accountId, request)
 
     /** 준비된 활성 모듈이 있는 계정의 통합 자동화를 시작한다. */
     @PostMapping("/start")

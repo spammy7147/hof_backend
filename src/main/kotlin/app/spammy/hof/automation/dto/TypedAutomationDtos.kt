@@ -15,7 +15,7 @@ import app.spammy.hof.status.dto.HofObservedStatusResponse
 data class CreateAutomationEntryRequest(val type: AutomationType)
 
 data class ReorderAutomationEntriesRequest(
-    @field:Size(max = 3) val entryIds: List<Long>,
+    @field:Size(max = 6) val entryIds: List<Long>,
 )
 
 data class UpdateQuestAutomationRequest(
@@ -91,6 +91,46 @@ data class AdventureMapSettingRequest(
     @field:Min(0) val executionOrder: Int,
 )
 
+data class UpdateFishingAutomationRequest(
+    val enabled: Boolean,
+    val presetMode: PresetSelectionMode,
+    val partyPresetId: Long?,
+)
+
+data class UpdateUnionAutomationRequest(
+    val enabled: Boolean,
+    @field:Valid @field:Size(max = 100) val maps: List<@Valid UnionMapSettingRequest>,
+) {
+    @get:AssertTrue(message = "유니온 맵 실행 순서를 중복해서 사용할 수 없습니다.")
+    val hasUniqueExecutionOrders: Boolean
+        get() = maps.map { it.executionOrder }.let { it.size == it.toSet().size }
+}
+
+data class UnionMapSettingRequest(
+    @field:NotBlank @field:Size(max = 50) val categoryId: String,
+    @field:NotBlank @field:Size(max = 100) val mapCode: String,
+    val presetMode: PresetSelectionMode,
+    val partyPresetId: Long?,
+    @field:Min(0) val executionOrder: Int,
+)
+
+data class UpdateRaidAutomationRequest(
+    val enabled: Boolean,
+    @field:Valid @field:Size(max = 100) val targets: List<@Valid RaidTargetSettingRequest>,
+) {
+    @get:AssertTrue(message = "레이드 실행 순서를 중복해서 사용할 수 없습니다.")
+    val hasUniqueExecutionOrders: Boolean
+        get() = targets.map { it.executionOrder }.let { it.size == it.toSet().size }
+}
+
+data class RaidTargetSettingRequest(
+    @field:NotBlank @field:Size(max = 200) val raidId: String,
+    @field:NotBlank @field:Size(max = 255) val displayName: String,
+    val presetMode: PresetSelectionMode,
+    val partyPresetId: Long?,
+    @field:Min(0) val executionOrder: Int,
+)
+
 data class QuestMapSettingResponse(
     val missionKey: String,
     val categoryId: String,
@@ -134,6 +174,28 @@ data class AdventureMapSettingResponse(
     val displayName: String?,
 )
 
+data class FishingAutomationSettingResponse(
+    val presetMode: PresetSelectionMode,
+    val partyPresetId: Long?,
+)
+
+data class UnionMapSettingResponse(
+    val categoryId: String,
+    val mapCode: String,
+    val presetMode: PresetSelectionMode,
+    val partyPresetId: Long?,
+    val executionOrder: Int,
+    val displayName: String?,
+)
+
+data class RaidTargetSettingResponse(
+    val raidId: String,
+    val displayName: String,
+    val presetMode: PresetSelectionMode,
+    val partyPresetId: Long?,
+    val executionOrder: Int,
+)
+
 data class TypedAutomationEntryResponse(
     val id: Long,
     val type: AutomationType,
@@ -145,6 +207,9 @@ data class TypedAutomationEntryResponse(
     val battleMaps: List<BattleMapSettingResponse> = emptyList(),
     val battleMapProgress: List<BattleMapDailyProgressResponse> = emptyList(),
     val adventureMaps: List<AdventureMapSettingResponse> = emptyList(),
+    val fishing: FishingAutomationSettingResponse? = null,
+    val unionMaps: List<UnionMapSettingResponse> = emptyList(),
+    val raidTargets: List<RaidTargetSettingResponse> = emptyList(),
 )
 
 data class TypedAutomationRuntimeResponse(

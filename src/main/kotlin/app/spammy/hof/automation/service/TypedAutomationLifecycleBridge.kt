@@ -56,7 +56,15 @@ class TypedAutomationLifecycleBridge(
             states.save(TypedAutomationRuntimeStateEntity(accountId, account, TypedAutomationLifecycle.PAUSED, createdAt = now, updatedAt = now))
         } else state?.let {
             if (it.lifecycleStatus != TypedAutomationLifecycle.STOPPED) {
+                if (typed.findOpenRaidCycle(accountId) != null) {
+                    it.lifecycleStatus = TypedAutomationLifecycle.DRAINING
+                    it.requestedLifecycle = TypedAutomationLifecycle.PAUSED
+                    it.updatedAt = timeProvider.now()
+                    outbox.enqueue(accountId, wakeReason)
+                    return
+                }
                 it.lifecycleStatus = TypedAutomationLifecycle.PAUSED
+                it.requestedLifecycle = null
                 it.stopReason = null
                 it.stopActionId = null
                 it.nextAttemptAt = null
@@ -112,7 +120,16 @@ class TypedAutomationLifecycleBridge(
         if (state == null && typed.hasTypedAutomation(accountId)) {
             states.save(TypedAutomationRuntimeStateEntity(accountId, account, TypedAutomationLifecycle.STOPPED, reason.name, createdAt = now, updatedAt = now))
         } else state?.let {
+            if (typed.findOpenRaidCycle(accountId) != null) {
+                it.lifecycleStatus = TypedAutomationLifecycle.DRAINING
+                it.requestedLifecycle = TypedAutomationLifecycle.STOPPED
+                it.stopReason = null
+                it.updatedAt = now
+                outbox.enqueue(accountId, wakeReason)
+                return
+            }
             it.lifecycleStatus = TypedAutomationLifecycle.STOPPED
+            it.requestedLifecycle = null
             it.stopReason = reason.name
             it.stopActionId = null
             it.nextAttemptAt = null
@@ -134,6 +151,7 @@ class TypedAutomationLifecycleBridge(
         state.leaseUntil = null
         state.warningText = null
         state.lastError = null
+        state.requestedLifecycle = null
         state.updatedAt = now
     }
 

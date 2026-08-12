@@ -32,6 +32,9 @@ data class StoredTypedAutomationAction(
     JsonSubTypes.Type(StoredTypedActionPayload.QuestBattle::class, name = "QUEST_BATTLE"),
     JsonSubTypes.Type(StoredTypedActionPayload.BattleMap::class, name = "BATTLE_MAP"),
     JsonSubTypes.Type(StoredTypedActionPayload.AdventureMap::class, name = "ADVENTURE_MAP"),
+    JsonSubTypes.Type(StoredTypedActionPayload.FishingTown::class, name = "FISHING_TOWN"),
+    JsonSubTypes.Type(StoredTypedActionPayload.RaidTown::class, name = "RAID_TOWN"),
+    JsonSubTypes.Type(StoredTypedActionPayload.RaidCycleAbort::class, name = "RAID_CYCLE_ABORT"),
 )
 sealed interface StoredTypedActionPayload {
     val display: StoredActionDisplay?
@@ -69,6 +72,22 @@ sealed interface StoredTypedActionPayload {
         val presetId: Long,
         val battleCount: Int,
         val battleRequest: RunBattleRequest,
+        override val display: StoredActionDisplay? = null,
+        val source: BattleAutomationActionSource = BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
+    ) : StoredTypedActionPayload
+    data class FishingTown(
+        val action: app.spammy.hof.town.fishing.model.FishingAction,
+        val observedPrimaryAction: app.spammy.hof.town.fishing.model.FishingPrimaryAction,
+        val observedRemainingCasts: Int? = null,
+        override val display: StoredActionDisplay? = null,
+    ) : StoredTypedActionPayload
+    data class RaidTown(
+        val action: app.spammy.hof.town.raid.model.RaidAction,
+        val raidId: String? = null,
+        override val display: StoredActionDisplay? = null,
+    ) : StoredTypedActionPayload
+    data class RaidCycleAbort(
+        val raidId: String,
         override val display: StoredActionDisplay? = null,
     ) : StoredTypedActionPayload
     data class AdventureMap(
@@ -143,6 +162,12 @@ class StoredTypedAutomationActionCodec(private val objectMapper: ObjectMapper) {
             }
             is StoredTypedActionPayload.BattleMap -> validateBattle(payload.presetId, payload.battleCount, payload.categoryId, payload.mapCode, payload.battleRequest)
             is StoredTypedActionPayload.AdventureMap -> validateBattle(payload.presetId, payload.battleCount, payload.categoryId, payload.mapCode, payload.battleRequest)
+            is StoredTypedActionPayload.FishingTown -> {
+                require(payload.action in setOf(app.spammy.hof.town.fishing.model.FishingAction.START, app.spammy.hof.town.fishing.model.FishingAction.CATCH))
+                require(payload.observedRemainingCasts == null || payload.observedRemainingCasts >= 0)
+            }
+            is StoredTypedActionPayload.RaidTown -> require(payload.action !in setOf(app.spammy.hof.town.raid.model.RaidAction.LEAVE, app.spammy.hof.town.raid.model.RaidAction.RESET, app.spammy.hof.town.raid.model.RaidAction.WAIT_RESET))
+            is StoredTypedActionPayload.RaidCycleAbort -> require(payload.raidId.isNotBlank())
         }
     }
 
@@ -161,4 +186,7 @@ internal fun StoredTypedActionPayload.kind(): String = when (this) {
     is StoredTypedActionPayload.QuestBattle -> "QUEST_BATTLE"
     is StoredTypedActionPayload.BattleMap -> "BATTLE_MAP"
     is StoredTypedActionPayload.AdventureMap -> "ADVENTURE_MAP"
+    is StoredTypedActionPayload.FishingTown -> "FISHING_TOWN"
+    is StoredTypedActionPayload.RaidTown -> "RAID_TOWN"
+    is StoredTypedActionPayload.RaidCycleAbort -> "RAID_CYCLE_ABORT"
 }

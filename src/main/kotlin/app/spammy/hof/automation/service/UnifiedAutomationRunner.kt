@@ -1,6 +1,8 @@
 package app.spammy.hof.automation.service
 
 import app.spammy.hof.automation.entity.AutomationWaitReason
+import app.spammy.hof.automation.entity.AutomationType
+import app.spammy.hof.automation.history.*
 import app.spammy.hof.automation.port.AutomationWakeupPort
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
@@ -23,6 +25,8 @@ class UnifiedAutomationRunner @Autowired constructor(
     private val wakeupPort: AutomationWakeupPort,
     private val sharedBattleCooldowns: SharedBattleCooldownService,
     private val ambiguousReconciler: AutomationAmbiguousActionReconciler,
+    private val decisionJournal: AutomationDecisionJournal? = null,
+    private val contentProgress: AutomationContentProgressService? = null,
 ) {
     constructor(
         dailyPreflight: AutomationDailyPreflight,
@@ -84,6 +88,7 @@ class UnifiedAutomationRunner @Autowired constructor(
         val claim = typedRuntime.claim(accountId)
         if (claim !is TypedRuntimeClaim.Acquired) return
         val token = claim.token
+        var decisionCycleId: Long? = null
         val stored = claim.preparedAction?.let {
             runCatching { typedCodec.verifyPersisted(it, accountId) }.getOrElse { error ->
                 log.warn("Stored typed action integrity failure accountId={} actionId={} errorType={}", accountId, it.id, error.javaClass.name)
@@ -131,6 +136,12 @@ class UnifiedAutomationRunner @Autowired constructor(
                 return
             } catch (error: FatalAutomationException) {
                 typedRuntime.stop(accountId, token, null, AutomationStopReason.FATAL, error.message ?: "Fatal live snapshot failure")
+                return
+            }
+            try {
+                decisionCycleId = decisionJournal?.appendDecision(accountId, decision)
+            } catch (error: Exception) {
+                stopPreparationFailure(accountId, token, (decision as? AutomationCoordination.Runnable)?.entryId ?: 0, "JOURNAL", error)
                 return
             }
             when (decision) {
@@ -213,6 +224,9 @@ class UnifiedAutomationRunner @Autowired constructor(
                         row.id,
                         recoveredWakeReason(resolution.execution),
                     )
+                    if (stored.payload is StoredTypedActionPayload.RaidTown || stored.payload is StoredTypedActionPayload.RaidCycleAbort) {
+                        contentProgress?.finishDrainIfNoOpenCycle(accountId)
+                    }
                 }
                 AmbiguousActionResolution.Resubmit -> typedRuntime.retryReconciledSubmission(
                     accountId,
@@ -239,6 +253,9 @@ class UnifiedAutomationRunner @Autowired constructor(
             typedRuntime.releaseAndEnqueueWake(accountId, token, "TYPED_CONFIG_RELOAD")
             return
         }
+        decisionCycleId?.let { cycleId ->
+            decisionJournal?.appendActionResult(cycleId, actionTrace(stored, AutomationHistoryEventKind.ACTION_STARTED, "ACTION_STARTED", "자동화 행동을 시작했습니다."))
+        }
         try {
             val execution = typedActionExecutor.execute(accountId, stored)
             val wakeReason = when (execution) {
@@ -262,6 +279,13 @@ class UnifiedAutomationRunner @Autowired constructor(
                 }
             }
             typedRuntime.succeedAndEnqueueWake(accountId, token, row.id, wakeReason)
+            if (stored.payload is StoredTypedActionPayload.RaidTown || stored.payload is StoredTypedActionPayload.RaidCycleAbort) {
+                contentProgress?.finishDrainIfNoOpenCycle(accountId)
+            }
+            decisionCycleId?.let { cycleId ->
+                val kind = if (stored.payload is StoredTypedActionPayload.RaidCycleAbort) AutomationHistoryEventKind.CYCLE_ABORTED else AutomationHistoryEventKind.ACTION_SUCCEEDED
+                decisionJournal?.appendActionResult(cycleId, actionTrace(stored, kind, wakeReason, "자동화 행동을 완료했습니다."))
+            }
         } catch (error: Throwable) {
             error.findHofAutomationDeferral()?.let { deferred ->
                 if (typedRuntime.deferSubmittedAction(
@@ -286,6 +310,9 @@ class UnifiedAutomationRunner @Autowired constructor(
                 return
             }
             log.warn("Typed automation action stopped accountId={} actionId={} errorType={}", accountId, row.id, error.javaClass.name)
+            decisionCycleId?.let { cycleId -> runCatching {
+                decisionJournal?.appendActionResult(cycleId, actionTrace(stored, AutomationHistoryEventKind.ACTION_FAILED, "ACTION_FAILED", error.message ?: error.javaClass.simpleName))
+            } }
             typedRuntime.stop(
                 accountId,
                 token,
@@ -405,7 +432,8 @@ class UnifiedAutomationRunner @Autowired constructor(
                 action.progressDate, action.categoryId, action.mapCode, action.presetMode,
                 action.presetId ?: throw AutomationConfigurationException(), action.battleCount,
                 action.resolvedParty.toRequest(action.categoryId, action.mapCode, action.battleCount),
-                StoredActionDisplay(mapName = action.mapName),
+                display = StoredActionDisplay(mapName = action.mapName),
+                source = action.source,
             )
             is AdventureMapAutomationAction -> StoredTypedActionPayload.AdventureMap(
                 action.categoryId, action.mapCode, action.presetMode, action.presetId,
@@ -417,6 +445,9 @@ class UnifiedAutomationRunner @Autowired constructor(
                 observedWinRemaining = action.observedWinRemaining,
                 observedAvailableCount = action.observedAvailableCount,
             )
+            is FishingTownAutomationAction -> StoredTypedActionPayload.FishingTown(action.action, action.observedPrimaryAction, action.observedRemainingCasts)
+            is RaidTownAutomationAction -> StoredTypedActionPayload.RaidTown(action.action, action.raidId)
+            is RaidCycleAbortAutomationAction -> StoredTypedActionPayload.RaidCycleAbort(action.raidId)
         }
         return StoredTypedAutomationAction(entryId, executionId, payload)
     }
@@ -424,6 +455,31 @@ class UnifiedAutomationRunner @Autowired constructor(
     private fun ResolvedAutomationParty?.toRequest(categoryId: String, mapCode: String, battleCount: Int) =
         this?.let { app.spammy.hof.battle.dto.RunBattleRequest(categoryId, mapCode, it.characterIds, it.patternLoads, battleCount) }
             ?: throw AutomationConfigurationException("The prepared party is missing.")
+
+    private fun actionTrace(action: StoredTypedAutomationAction, kind: AutomationHistoryEventKind, code: String, message: String): AutomationActionTrace {
+        val payload = action.payload
+        val type = when (payload) {
+            is StoredTypedActionPayload.QuestClaim, is StoredTypedActionPayload.QuestAccept, is StoredTypedActionPayload.QuestBattle -> AutomationType.QUEST
+            is StoredTypedActionPayload.AdventureMap -> AutomationType.ADVENTURE_MAP
+            is StoredTypedActionPayload.FishingTown -> AutomationType.FISHING
+            is StoredTypedActionPayload.RaidTown, is StoredTypedActionPayload.RaidCycleAbort -> AutomationType.RAID
+            is StoredTypedActionPayload.BattleMap -> when (payload.source) {
+                BattleAutomationActionSource.UNION_AUTOMATION -> AutomationType.UNION
+                BattleAutomationActionSource.FISHING_AUTOMATION -> AutomationType.FISHING
+                BattleAutomationActionSource.RAID_AUTOMATION -> AutomationType.RAID
+                BattleAutomationActionSource.ADVENTURE_AUTOMATION -> AutomationType.ADVENTURE_MAP
+                BattleAutomationActionSource.QUEST_AUTOMATION -> AutomationType.QUEST
+                BattleAutomationActionSource.BATTLE_MAP_AUTOMATION -> AutomationType.BATTLE_MAP
+            }
+        }
+        return AutomationActionTrace(kind, code, message, action.entryId, type, payload.kind(),
+            targetKey = when (payload) {
+                is StoredTypedActionPayload.BattleMap -> "${payload.categoryId}/${payload.mapCode}"
+                is StoredTypedActionPayload.RaidTown -> payload.raidId
+                is StoredTypedActionPayload.RaidCycleAbort -> payload.raidId
+                else -> null
+            }, targetName = payload.display?.mapName, presetId = (payload as? StoredTypedActionPayload.BattleMap)?.presetId)
+    }
 
     private companion object {
         const val HOF_COOLDOWN_WAKE_REASON = "HOF_503_COOLDOWN"

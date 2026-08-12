@@ -29,7 +29,7 @@ class TypedAutomationRuntimeService(
 ) {
     @Transactional(readOnly = true, propagation = Propagation.REQUIRES_NEW)
     fun isRunning(accountId: Long): Boolean =
-        queryRepository.findRuntimeState(accountId)?.lifecycleStatus == TypedAutomationLifecycle.RUNNING
+        queryRepository.findRuntimeState(accountId)?.lifecycleStatus in setOf(TypedAutomationLifecycle.RUNNING, TypedAutomationLifecycle.DRAINING)
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun start(accountId: Long): Boolean {
@@ -54,7 +54,7 @@ class TypedAutomationRuntimeService(
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun claim(accountId: Long): TypedRuntimeClaim {
         val state = queryRepository.lockRuntimeState(accountId) ?: return TypedRuntimeClaim.Inactive
-        if (state.lifecycleStatus != TypedAutomationLifecycle.RUNNING) return TypedRuntimeClaim.Inactive
+        if (state.lifecycleStatus !in setOf(TypedAutomationLifecycle.RUNNING, TypedAutomationLifecycle.DRAINING)) return TypedRuntimeClaim.Inactive
         val now = timeProvider.now()
         if (state.nextAttemptAt?.isAfter(now) == true) return TypedRuntimeClaim.Busy
         if (state.leaseUntil?.isAfter(now) == true) return TypedRuntimeClaim.Busy
@@ -351,7 +351,7 @@ class TypedAutomationRuntimeService(
         reason: AutomationWaitReason,
     ): Boolean {
         val state = queryRepository.lockRuntimeState(accountId)
-            ?.takeIf { it.lifecycleStatus == TypedAutomationLifecycle.RUNNING }
+            ?.takeIf { it.lifecycleStatus in setOf(TypedAutomationLifecycle.RUNNING, TypedAutomationLifecycle.DRAINING) }
             ?: return false
         state.nextAttemptAt = retryAt
         state.waitReason = reason
@@ -438,7 +438,7 @@ class TypedAutomationRuntimeService(
     }
 
     private fun fencedState(accountId: Long, token: String) = queryRepository.lockRuntimeState(accountId)
-        ?.takeIf { it.lifecycleStatus == TypedAutomationLifecycle.RUNNING && it.leaseToken == token }
+        ?.takeIf { it.lifecycleStatus in setOf(TypedAutomationLifecycle.RUNNING, TypedAutomationLifecycle.DRAINING) && it.leaseToken == token }
 
     private fun stopState(
         state: TypedAutomationRuntimeStateEntity,

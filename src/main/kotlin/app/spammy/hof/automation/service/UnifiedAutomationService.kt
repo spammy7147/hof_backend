@@ -6,17 +6,23 @@ import app.spammy.hof.automation.entity.AdventureAutomationMapEntity
 import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.entity.BattleAutomationMapEntity
+import app.spammy.hof.automation.entity.FishingAutomationSettingEntity
 import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.automation.entity.QuestAutomationMapEntity
 import app.spammy.hof.automation.entity.QuestAutomationSelectionEntity
+import app.spammy.hof.automation.entity.RaidAutomationTargetEntity
 import app.spammy.hof.automation.entity.TypedAutomationLifecycle
+import app.spammy.hof.automation.entity.UnionAutomationMapEntity
 import app.spammy.hof.automation.outbox.AutomationOutboxService
 import app.spammy.hof.automation.repository.AdventureAutomationMapCommandRepository
 import app.spammy.hof.automation.repository.AutomationEntryCommandRepository
 import app.spammy.hof.automation.repository.BattleAutomationMapCommandRepository
+import app.spammy.hof.automation.repository.FishingAutomationSettingCommandRepository
 import app.spammy.hof.automation.repository.QuestAutomationMapCommandRepository
 import app.spammy.hof.automation.repository.QuestAutomationSelectionCommandRepository
+import app.spammy.hof.automation.repository.RaidAutomationTargetCommandRepository
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
+import app.spammy.hof.automation.repository.UnionAutomationMapCommandRepository
 import app.spammy.hof.quest.model.QuestIdentityFactory
 import app.spammy.hof.battle.repository.BattleMapQueryRepository
 import app.spammy.hof.common.error.ApiException
@@ -43,6 +49,9 @@ class UnifiedAutomationService(
     private val typedQuestMapRepository: QuestAutomationMapCommandRepository,
     private val typedBattleMapRepository: BattleAutomationMapCommandRepository,
     private val typedAdventureMapRepository: AdventureAutomationMapCommandRepository,
+    private val typedFishingSettingRepository: FishingAutomationSettingCommandRepository,
+    private val typedUnionMapRepository: UnionAutomationMapCommandRepository,
+    private val typedRaidTargetRepository: RaidAutomationTargetCommandRepository,
     private val automationOutboxService: AutomationOutboxService,
     private val storedActionCodec: StoredTypedAutomationActionCodec,
     private val hofStatusSnapshots: HofStatusSnapshotService,
@@ -85,6 +94,10 @@ class UnifiedAutomationService(
         lockTypedAccount(accountId)
         val target = typedAutomationQueryRepository.findEntry(accountId, entryId)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "자동화 항목을 찾지 못했습니다.")
+        val openRaidCycle = typedAutomationQueryRepository.findOpenRaidCycle(accountId)
+        if (target.type == AutomationType.RAID && openRaidCycle?.entry?.id == target.id) {
+            invalid("진행 중인 레이드 사이클이 끝날 때까지 레이드 자동화 항목을 삭제할 수 없습니다.")
+        }
         workLifecycle.stopForConfigurationChange(accountId, target.id, emptySet(), wholeEntry = true)
         typedEntryRepository.delete(target)
         typedEntryRepository.flush()
@@ -243,6 +256,9 @@ class UnifiedAutomationService(
         if (normalized.any { it.categoryId == app.spammy.hof.battle.model.BattleCategoryId.UNION.value }) {
             invalid("유니온은 전투 맵 자동화에 설정할 수 없습니다.")
         }
+        if (normalized.any { it.categoryId == app.spammy.hof.battle.model.BattleCategoryId.RAID.value }) {
+            invalid("레이드는 전투 맵 자동화에 설정할 수 없습니다.")
+        }
         val presets = validateMapAndPresetReferences(accountId, normalized.map(::mapReference))
         val old = typedAutomationQueryRepository.findBattleSettings(entry.id)
         val oldConfig = old.associate { setting ->
@@ -349,6 +365,150 @@ class UnifiedAutomationService(
     }
 
     @Transactional
+    fun updateFishing(
+        accountId: Long,
+        request: UpdateFishingAutomationRequest,
+    ): TypedAutomationAggregateResponse {
+        lockTypedAccount(accountId)
+        val entry = requireTypedEntry(accountId, AutomationType.FISHING)
+        val preset = validatePresetSelection(accountId, request.presetMode, request.partyPresetId)
+        val old = typedAutomationQueryRepository.findFishingSetting(entry.id)
+        val changed = old == null || old.presetMode != request.presetMode || old.partyPreset?.id != request.partyPresetId
+        workLifecycle.stopForConfigurationChange(
+            accountId,
+            entry.id,
+            if (changed) setOf(FISHING_TARGET_KEY) else emptySet(),
+            wholeEntry = entry.enabled && !request.enabled,
+        )
+        old?.let {
+            typedFishingSettingRepository.delete(it)
+            typedFishingSettingRepository.flush()
+        }
+        typedFishingSettingRepository.save(
+            FishingAutomationSettingEntity(
+                entry = entry,
+                presetMode = request.presetMode,
+                partyPreset = preset,
+            ),
+        )
+        updateTypedEntry(entry, request.enabled)
+        enqueueSettingsWake(accountId)
+        return buildTypedAggregate(accountId)
+    }
+
+    @Transactional
+    fun updateUnion(
+        accountId: Long,
+        request: UpdateUnionAutomationRequest,
+    ): TypedAutomationAggregateResponse {
+        lockTypedAccount(accountId)
+        val entry = requireTypedEntry(accountId, AutomationType.UNION)
+        if (request.maps.size > MAX_SETTING_ITEMS) invalid("유니온 맵 설정은 최대 100개까지 저장할 수 있습니다.")
+        val normalized = request.maps.map { map ->
+            if (map.executionOrder < 0) invalid("유니온 맵 실행 순서는 0 이상이어야 합니다.")
+            map.copy(
+                categoryId = bounded(map.categoryId, MAX_CATEGORY_ID_LENGTH, "카테고리"),
+                mapCode = bounded(map.mapCode, MAX_MAP_CODE_LENGTH, "맵 코드"),
+            )
+        }.sortedWith(compareBy<UnionMapSettingRequest> { it.executionOrder }.thenBy { it.mapCode })
+        rejectDuplicates(normalized.map { it.executionOrder }, "유니온 맵 실행 순서를 중복해서 사용할 수 없습니다.")
+        rejectDuplicates(normalized.map { it.categoryId to it.mapCode }, "같은 유니온 맵을 두 번 설정할 수 없습니다.")
+        if (normalized.any { it.categoryId != UNION_CATEGORY }) invalid("유니온 카테고리의 맵만 설정할 수 있습니다.")
+        val presets = validateMapAndPresetReferences(accountId, normalized.map(::mapReference))
+        val old = typedAutomationQueryRepository.findUnionSettings(entry.id)
+        val oldConfig = old.associate { setting ->
+            "${setting.categoryId}/${setting.mapCode}" to UnionTargetConfig(setting.presetMode, setting.partyPreset?.id)
+        }
+        val newConfig = normalized.associate { setting ->
+            "${setting.categoryId}/${setting.mapCode}" to UnionTargetConfig(setting.presetMode, setting.partyPresetId)
+        }
+        workLifecycle.stopForConfigurationChange(
+            accountId,
+            entry.id,
+            changedKeys(oldConfig, newConfig),
+            wholeEntry = entry.enabled && !request.enabled,
+        )
+        if (old.isNotEmpty()) {
+            typedUnionMapRepository.deleteAll(old)
+            typedUnionMapRepository.flush()
+        }
+        normalized.forEachIndexed { executionOrder, map ->
+            typedUnionMapRepository.save(
+                UnionAutomationMapEntity(
+                    entry = entry,
+                    categoryId = map.categoryId,
+                    mapCode = map.mapCode,
+                    presetMode = map.presetMode,
+                    partyPreset = map.partyPresetId?.let(presets::getValue),
+                    executionOrder = executionOrder,
+                ),
+            )
+        }
+        updateTypedEntry(entry, request.enabled)
+        enqueueSettingsWake(accountId)
+        return buildTypedAggregate(accountId)
+    }
+
+    @Transactional
+    fun updateRaid(
+        accountId: Long,
+        request: UpdateRaidAutomationRequest,
+    ): TypedAutomationAggregateResponse {
+        lockTypedAccount(accountId)
+        val entry = requireTypedEntry(accountId, AutomationType.RAID)
+        if (request.targets.size > MAX_SETTING_ITEMS) invalid("레이드 설정은 최대 100개까지 저장할 수 있습니다.")
+        val normalized = request.targets.map { target ->
+            if (target.executionOrder < 0) invalid("레이드 실행 순서는 0 이상이어야 합니다.")
+            target.copy(
+                raidId = bounded(target.raidId, MAX_RAID_ID_LENGTH, "레이드 식별자"),
+                displayName = bounded(target.displayName, MAX_QUEST_NAME_LENGTH, "레이드 이름"),
+            )
+        }.sortedWith(compareBy<RaidTargetSettingRequest> { it.executionOrder }.thenBy { it.raidId })
+        rejectDuplicates(normalized.map { it.executionOrder }, "레이드 실행 순서를 중복해서 사용할 수 없습니다.")
+        rejectDuplicates(normalized.map { it.raidId }, "같은 레이드를 두 번 설정할 수 없습니다.")
+        val openCycle = typedAutomationQueryRepository.findOpenRaidCycle(accountId)
+        if (openCycle?.entry?.id == entry.id && normalized.none { it.raidId == openCycle.raidId }) {
+            invalid("진행 중인 레이드 대상은 사이클이 끝날 때까지 제거할 수 없습니다.")
+        }
+        val references = normalized.map { target ->
+            TypedMapReference(RAID_CATEGORY, target.raidId, target.presetMode, target.partyPresetId)
+        }
+        val presets = validateMapAndPresetReferences(accountId, references)
+        val old = typedAutomationQueryRepository.findRaidTargets(entry.id)
+        val oldConfig = old.associate { target ->
+            target.raidId to RaidTargetConfig(target.displayName, target.presetMode, target.partyPreset?.id)
+        }
+        val newConfig = normalized.associate { target ->
+            target.raidId to RaidTargetConfig(target.displayName, target.presetMode, target.partyPresetId)
+        }
+        workLifecycle.stopForConfigurationChange(
+            accountId,
+            entry.id,
+            changedKeys(oldConfig, newConfig),
+            wholeEntry = entry.enabled && !request.enabled,
+        )
+        if (old.isNotEmpty()) {
+            typedRaidTargetRepository.deleteAll(old)
+            typedRaidTargetRepository.flush()
+        }
+        normalized.forEachIndexed { executionOrder, target ->
+            typedRaidTargetRepository.save(
+                RaidAutomationTargetEntity(
+                    entry = entry,
+                    raidId = target.raidId,
+                    displayName = target.displayName,
+                    presetMode = target.presetMode,
+                    partyPreset = target.partyPresetId?.let(presets::getValue),
+                    executionOrder = executionOrder,
+                ),
+            )
+        }
+        updateTypedEntry(entry, request.enabled)
+        enqueueSettingsWake(accountId)
+        return buildTypedAggregate(accountId)
+    }
+
+    @Transactional
     fun startTyped(accountId: Long): TypedAutomationAggregateResponse {
         lockTypedAccount(accountId)
         if (typedAutomationQueryRepository.findEntries(accountId).none { it.enabled }) {
@@ -430,6 +590,21 @@ class UnifiedAutomationService(
             } else {
                 emptyList()
             }
+            val fishing = if (entry.type == AutomationType.FISHING) {
+                typedAutomationQueryRepository.findFishingSetting(entry.id)
+            } else {
+                null
+            }
+            val union = if (entry.type == AutomationType.UNION) {
+                typedAutomationQueryRepository.findUnionSettings(entry.id)
+            } else {
+                emptyList()
+            }
+            val raid = if (entry.type == AutomationType.RAID) {
+                typedAutomationQueryRepository.findRaidTargets(entry.id)
+            } else {
+                emptyList()
+            }
             val adventureCatalog = if (adventure.isEmpty()) {
                 emptyMap()
             } else {
@@ -437,7 +612,14 @@ class UnifiedAutomationService(
                     adventure.map { it.categoryId to it.mapCode }.toSet(),
                 ).associateBy { it.categoryId to it.mapCode }
             }
-            val warnings = typedWarnings(entry, quests, questMaps, battle, adventure, primaryPresetId, validPresetIds)
+            val unionCatalog = if (union.isEmpty()) {
+                emptyMap()
+            } else {
+                battleMapQueryRepository.findMapsByCategoryIdAndMapCodePairs(
+                    union.map { it.categoryId to it.mapCode }.toSet(),
+                ).associateBy { it.categoryId to it.mapCode }
+            }
+            val warnings = typedWarnings(entry, quests, questMaps, battle, adventure, fishing, union, raid, primaryPresetId, validPresetIds)
             TypedAutomationEntryResponse(
                 id = entry.id,
                 type = entry.type,
@@ -484,6 +666,26 @@ class UnifiedAutomationService(
                         map.partyPreset?.id,
                         map.executionOrder,
                         adventureCatalog[map.categoryId to map.mapCode]?.name,
+                    )
+                },
+                fishing = fishing?.let { FishingAutomationSettingResponse(it.presetMode, it.partyPreset?.id) },
+                unionMaps = union.map { map ->
+                    UnionMapSettingResponse(
+                        map.categoryId,
+                        map.mapCode,
+                        map.presetMode,
+                        map.partyPreset?.id,
+                        map.executionOrder,
+                        unionCatalog[map.categoryId to map.mapCode]?.name,
+                    )
+                },
+                raidTargets = raid.map { target ->
+                    RaidTargetSettingResponse(
+                        target.raidId,
+                        target.displayName,
+                        target.presetMode,
+                        target.partyPreset?.id,
+                        target.executionOrder,
                     )
                 },
             )
@@ -539,10 +741,16 @@ class UnifiedAutomationService(
             -> AutomationType.QUEST
             is StoredTypedActionPayload.BattleMap -> AutomationType.BATTLE_MAP
             is StoredTypedActionPayload.AdventureMap -> AutomationType.ADVENTURE_MAP
+            is StoredTypedActionPayload.FishingTown -> AutomationType.FISHING
+            is StoredTypedActionPayload.RaidTown -> AutomationType.RAID
+            is StoredTypedActionPayload.RaidCycleAbort -> AutomationType.RAID
             null -> when {
                 row.actionKind.startsWith("QUEST_") -> AutomationType.QUEST
                 row.actionKind == "BATTLE_MAP" -> AutomationType.BATTLE_MAP
                 row.actionKind == "ADVENTURE_MAP" -> AutomationType.ADVENTURE_MAP
+                row.actionKind == "FISHING_TOWN" -> AutomationType.FISHING
+                row.actionKind == "RAID_TOWN" -> AutomationType.RAID
+                row.actionKind == "RAID_CYCLE_ABORT" -> AutomationType.RAID
                 else -> null
             }
         } ?: return null
@@ -563,6 +771,9 @@ class UnifiedAutomationService(
                 row.actionKind == "QUEST_BATTLE" -> "퀘스트 전투"
                 row.actionKind == "BATTLE_MAP" -> "전투맵"
                 row.actionKind == "ADVENTURE_MAP" -> "모험맵"
+                row.actionKind == "FISHING_TOWN" -> "낚시"
+                row.actionKind == "RAID_TOWN" -> "레이드"
+                row.actionKind == "RAID_CYCLE_ABORT" -> "레이드 중단 처리"
                 display != null -> "자동화 실행 중"
                 else -> "전투 진행 중"
             },
@@ -581,6 +792,9 @@ class UnifiedAutomationService(
         questMaps: Map<Long, List<QuestAutomationMapEntity>>,
         battle: List<BattleAutomationMapEntity>,
         adventure: List<AdventureAutomationMapEntity>,
+        fishing: FishingAutomationSettingEntity?,
+        union: List<UnionAutomationMapEntity>,
+        raid: List<RaidAutomationTargetEntity>,
         primaryPresetId: Long?,
         validPresetIds: Set<Long>,
     ): List<String> {
@@ -622,6 +836,38 @@ class UnifiedAutomationService(
                         validPresetIds,
                     )?.let(warnings::add)
                 }
+            }
+            AutomationType.RAID -> {
+                if (raid.isEmpty()) warnings += "레이드 설정이 없습니다."
+                raid.forEach { target ->
+                    presetWarning(
+                        target.presetMode,
+                        target.partyPreset?.id,
+                        primaryPresetId,
+                        validPresetIds,
+                    )?.let(warnings::add)
+                }
+            }
+            AutomationType.UNION -> {
+                if (union.isEmpty()) warnings += "유니온 설정이 없습니다."
+                union.forEach { map ->
+                    presetWarning(
+                        map.presetMode,
+                        map.partyPreset?.id,
+                        primaryPresetId,
+                        validPresetIds,
+                    )?.let(warnings::add)
+                }
+            }
+            AutomationType.FISHING -> if (fishing == null) {
+                warnings += "낚시 전투 프리셋이 없습니다."
+            } else {
+                presetWarning(
+                    fishing.presetMode,
+                    fishing.partyPreset?.id,
+                    primaryPresetId,
+                    validPresetIds,
+                )?.let(warnings::add)
             }
         }
         return warnings.toList()
@@ -683,6 +929,9 @@ class UnifiedAutomationService(
     private fun mapReference(map: AdventureMapSettingRequest) =
         TypedMapReference(map.categoryId, map.mapCode, map.presetMode, map.partyPresetId)
 
+    private fun mapReference(map: UnionMapSettingRequest) =
+        TypedMapReference(map.categoryId, map.mapCode, map.presetMode, map.partyPresetId)
+
     private fun validateMapAndPresetReferences(
         accountId: Long,
         references: List<TypedMapReference>,
@@ -708,6 +957,22 @@ class UnifiedAutomationService(
             .associateBy { it.id }
         if (foundPresets.keys != requestedPresets) invalid("선택한 파티 프리셋을 찾을 수 없습니다.")
         return foundPresets
+    }
+
+    private fun validatePresetSelection(
+        accountId: Long,
+        mode: PresetSelectionMode,
+        presetId: Long?,
+    ): PartyPresetEntity? = when (mode) {
+        PresetSelectionMode.PRIMARY -> {
+            if (presetId != null) invalid("기본 프리셋 모드에는 프리셋 ID를 지정할 수 없습니다.")
+            null
+        }
+        PresetSelectionMode.EXPLICIT -> {
+            val id = presetId ?: invalid("명시적 프리셋 모드에는 프리셋 ID가 필요합니다.")
+            partyPresetQueryRepository.findOwnedByAccountIdAndIds(accountId, setOf(id)).singleOrNull()
+                ?: invalid("선택한 파티 프리셋을 찾을 수 없습니다.")
+        }
     }
 
     private fun bounded(value: String, maxLength: Int, label: String): String {
@@ -761,6 +1026,17 @@ class UnifiedAutomationService(
         val presetId: Long?,
     )
 
+    private data class UnionTargetConfig(
+        val presetMode: PresetSelectionMode,
+        val presetId: Long?,
+    )
+
+    private data class RaidTargetConfig(
+        val displayName: String,
+        val presetMode: PresetSelectionMode,
+        val presetId: Long?,
+    )
+
     private data class QuestTargetConfig(
         val enabled: Boolean,
         val maps: List<QuestMapTargetConfig>,
@@ -784,6 +1060,10 @@ class UnifiedAutomationService(
         const val MAX_MAP_CODE_LENGTH = 100
         const val MAX_QUEST_CODE_LENGTH = 100
         const val MAX_QUEST_NAME_LENGTH = 255
+        const val MAX_RAID_ID_LENGTH = 200
         const val MAX_SETTING_ITEMS = 100
+        const val FISHING_TARGET_KEY = "fishing"
+        const val UNION_CATEGORY = "union"
+        const val RAID_CATEGORY = "raid"
     }
 }

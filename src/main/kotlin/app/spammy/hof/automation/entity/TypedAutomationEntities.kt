@@ -13,9 +13,10 @@ import jakarta.persistence.Id
 import jakarta.persistence.JoinColumn
 import jakarta.persistence.ManyToOne
 import jakarta.persistence.Table
+import jakarta.persistence.Version
 import java.time.Instant
 
-enum class AutomationType { QUEST, BATTLE_MAP, ADVENTURE_MAP }
+enum class AutomationType { QUEST, BATTLE_MAP, ADVENTURE_MAP, RAID, UNION, FISHING }
 
 enum class PresetSelectionMode { PRIMARY, EXPLICIT }
 
@@ -118,4 +119,109 @@ class AdventureAutomationMapEntity(
     var partyPreset: PartyPresetEntity? = null,
     @Column(name = "execution_order", nullable = false)
     var executionOrder: Int,
+)
+
+@Entity
+@Table(name = "union_automation_maps")
+class UnionAutomationMapEntity(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+    @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "automation_entry_id", nullable = false)
+    var entry: AutomationEntryEntity,
+    @Column(name = "category_id", nullable = false, length = 50)
+    var categoryId: String,
+    @Column(name = "map_code", nullable = false, length = 100)
+    var mapCode: String,
+    @Enumerated(EnumType.STRING) @Column(name = "preset_mode", nullable = false, length = 20)
+    var presetMode: PresetSelectionMode,
+    @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "party_preset_id")
+    var partyPreset: PartyPresetEntity? = null,
+    @Column(name = "execution_order", nullable = false)
+    var executionOrder: Int,
+)
+
+@Entity
+@Table(name = "raid_automation_targets")
+class RaidAutomationTargetEntity(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+    @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "automation_entry_id", nullable = false)
+    var entry: AutomationEntryEntity,
+    @Column(name = "raid_id", nullable = false, length = 200)
+    var raidId: String,
+    @Column(name = "display_name", nullable = false, length = 255)
+    var displayName: String,
+    @Enumerated(EnumType.STRING) @Column(name = "preset_mode", nullable = false, length = 20)
+    var presetMode: PresetSelectionMode,
+    @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "party_preset_id")
+    var partyPreset: PartyPresetEntity? = null,
+    @Column(name = "execution_order", nullable = false)
+    var executionOrder: Int,
+)
+
+@Entity
+@Table(name = "fishing_automation_settings")
+class FishingAutomationSettingEntity(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+    @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "automation_entry_id", nullable = false)
+    var entry: AutomationEntryEntity,
+    @Enumerated(EnumType.STRING) @Column(name = "preset_mode", nullable = false, length = 20)
+    var presetMode: PresetSelectionMode,
+    @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "party_preset_id")
+    var partyPreset: PartyPresetEntity? = null,
+)
+
+@Entity
+@Table(name = "automation_rotation_states")
+class AutomationRotationStateEntity(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+    @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "automation_entry_id", nullable = false)
+    var entry: AutomationEntryEntity,
+    @Column(name = "current_target_key", nullable = false, length = 255)
+    var currentTargetKey: String,
+    @Column(name = "updated_at", nullable = false)
+    var updatedAt: Instant,
+    @Version @Column(name = "version", nullable = false)
+    var version: Long? = null,
+)
+
+enum class RaidAutomationCycleStatus {
+    REGISTERED_WAITING,
+    IN_BATTLE,
+    REWARD_PENDING,
+    COMPLETED,
+    ABORTED_CLOSED,
+}
+
+@Entity
+@Table(name = "raid_automation_cycles")
+class RaidAutomationCycleEntity(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+    @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "account_id", nullable = false)
+    val account: HofAccountEntity,
+    @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "automation_entry_id")
+    var entry: AutomationEntryEntity?,
+    @Column(name = "raid_id", nullable = false, length = 200)
+    val raidId: String,
+    @Column(name = "raid_name", nullable = false, length = 255)
+    var raidName: String,
+    @Enumerated(EnumType.STRING) @Column(name = "status", nullable = false, length = 32)
+    var status: RaidAutomationCycleStatus,
+    @Column(name = "last_observed_status", length = 32)
+    var lastObservedStatus: String? = null,
+    @Column(name = "next_check_at")
+    var nextCheckAt: Instant? = null,
+    @Column(name = "open_marker")
+    var openMarker: Int? = 1,
+    @Column(name = "started_at", nullable = false)
+    val startedAt: Instant,
+    @Column(name = "updated_at", nullable = false)
+    var updatedAt: Instant,
+    @Column(name = "finished_at")
+    var finishedAt: Instant? = null,
+    @Version @Column(name = "version", nullable = false)
+    var version: Long? = null,
 )

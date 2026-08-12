@@ -1,19 +1,24 @@
 package app.spammy.hof.automation.repository
 
 import app.spammy.hof.automation.entity.AdventureAutomationMapEntity
+import app.spammy.hof.automation.entity.AutomationRotationStateEntity
 import app.spammy.hof.automation.entity.AdventureDailyRefreshEntity
 import app.spammy.hof.automation.entity.AdventureDailyPreflightStateEntity
 import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.BattleAutomationDailyProgressEntity
 import app.spammy.hof.automation.entity.BattleAutomationMapEntity
 import app.spammy.hof.automation.entity.BattleAutomationProcessedResultEntity
+import app.spammy.hof.automation.entity.FishingAutomationSettingEntity
 import app.spammy.hof.automation.entity.QuestAutomationMapEntity
 import app.spammy.hof.automation.entity.QuestAutomationCycleEntity
 import app.spammy.hof.automation.entity.QuestAutomationProcessedResultEntity
 import app.spammy.hof.automation.entity.QuestAutomationSelectionEntity
 import app.spammy.hof.automation.entity.QuestMapExecutionCounterEntity
+import app.spammy.hof.automation.entity.RaidAutomationCycleEntity
+import app.spammy.hof.automation.entity.RaidAutomationTargetEntity
 import app.spammy.hof.automation.entity.TypedAutomationActionRunEntity
 import app.spammy.hof.automation.entity.TypedAutomationRuntimeStateEntity
+import app.spammy.hof.automation.entity.UnionAutomationMapEntity
 import app.spammy.hof.common.persistence.CommandRepository
 
 interface AutomationEntryCommandRepository : CommandRepository<AutomationEntryEntity, Long>
@@ -35,6 +40,16 @@ interface BattleAutomationDailyProgressCommandRepository : CommandRepository<Bat
 interface BattleAutomationProcessedResultCommandRepository : CommandRepository<BattleAutomationProcessedResultEntity, Long>
 
 interface AdventureAutomationMapCommandRepository : CommandRepository<AdventureAutomationMapEntity, Long>
+
+interface UnionAutomationMapCommandRepository : CommandRepository<UnionAutomationMapEntity, Long>
+
+interface RaidAutomationTargetCommandRepository : CommandRepository<RaidAutomationTargetEntity, Long>
+
+interface FishingAutomationSettingCommandRepository : CommandRepository<FishingAutomationSettingEntity, Long>
+
+interface AutomationRotationStateCommandRepository : CommandRepository<AutomationRotationStateEntity, Long>
+
+interface RaidAutomationCycleCommandRepository : CommandRepository<RaidAutomationCycleEntity, Long>
 
 interface AdventureDailyRefreshCommandRepository : CommandRepository<AdventureDailyRefreshEntity, Long>
 

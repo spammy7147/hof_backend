@@ -17,6 +17,10 @@ import app.spammy.hof.party.repository.PartyPresetQueryRepository
 import app.spammy.hof.quest.model.QuestSnapshot
 import app.spammy.hof.quest.service.QuestGatewayService
 import app.spammy.hof.status.service.HofStatusSnapshotService
+import app.spammy.hof.town.fishing.dto.FishingResponse
+import app.spammy.hof.town.fishing.service.FishingService
+import app.spammy.hof.town.raid.dto.RaidPubResponse
+import app.spammy.hof.town.raid.service.RaidPubService
 import java.io.IOException
 import java.security.MessageDigest
 import java.time.Instant
@@ -43,6 +47,8 @@ class TypedLiveAutomationSnapshotLoader(
     private val sessionRecovery: HofSessionRecoveryExecutor,
     private val hofStatusSnapshots: HofStatusSnapshotService,
     transactionManager: PlatformTransactionManager? = null,
+    private val fishingService: FishingService? = null,
+    private val raidPubService: RaidPubService? = null,
 ) : TypedAutomationSnapshotLoader {
     private val readTransaction = transactionManager?.let { TransactionTemplate(it).apply { isReadOnly = true } }
 
@@ -51,10 +57,10 @@ class TypedLiveAutomationSnapshotLoader(
         check(!TransactionSynchronizationManager.isActualTransactionActive()) {
             "Typed automation HTTP refresh must run without a transaction."
         }
-        val liveQuests = refreshLiveState(accountId, before.categories)
+        val live = refreshLiveState(accountId, before)
         val after = inReadTransaction { materializeConfiguration(accountId) }
         if (before.version != after.version) throw TypedAutomationConfigurationChangedException()
-        return inReadTransaction { assembleSnapshot(accountId, before, liveQuests) }
+        return inReadTransaction { assembleSnapshot(accountId, before, live) }
     }
 
     override fun loadEntry(
@@ -68,31 +74,34 @@ class TypedLiveAutomationSnapshotLoader(
         check(!TransactionSynchronizationManager.isActualTransactionActive()) {
             "Typed automation HTTP refresh must run without a transaction."
         }
-        val liveQuests = if (questOverride != null) {
-            refreshLiveState(accountId, scopedBefore.categories, includeQuests = false)
-            questOverride
+        val live = if (questOverride != null) {
+            refreshLiveState(accountId, scopedBefore, includeQuests = false).copy(quests = questOverride)
         } else {
             refreshLiveState(
                 accountId,
-                scopedBefore.categories,
+                scopedBefore,
                 includeQuests = scopedBefore.entries.single().type == AutomationType.QUEST,
             )
         }
         val after = inReadTransaction { materializeConfiguration(accountId) }
         if (before.version != after.version) throw TypedAutomationConfigurationChangedException()
         return inReadTransaction {
-            assembleSnapshot(accountId, after.scoped(entryId, targetKey), liveQuests).entries.single()
+            assembleSnapshot(accountId, after.scoped(entryId, targetKey), live).entries.single()
         }
     }
 
     private fun refreshLiveState(
         accountId: Long,
-        categories: List<String>,
+        config: DetachedConfiguration,
         includeQuests: Boolean = true,
-    ): List<QuestSnapshot> = try {
+    ): LiveAutomationState = try {
         sessionRecovery.execute(accountId) {
-            categories.forEach { battleMapService.findMaps(accountId, it, HofRequestOrigin.AUTOMATION) }
-            if (includeQuests) questGateway.load(accountId, HofRequestOrigin.AUTOMATION) else emptyList()
+            config.categories.forEach { battleMapService.findMaps(accountId, it, HofRequestOrigin.AUTOMATION) }
+            LiveAutomationState(
+                if (includeQuests) questGateway.load(accountId, HofRequestOrigin.AUTOMATION) else emptyList(),
+                if (config.entries.any { it.enabled && it.type == AutomationType.FISHING }) fishingService?.load(accountId) else null,
+                if (config.entries.any { it.type == AutomationType.RAID && (it.enabled || it.id == config.openRaidEntryId) }) raidPubService?.load(accountId) else null,
+            )
         }
     } catch (error: Exception) {
         val causes = generateSequence<Throwable>(error) { it.cause }.toList()
@@ -158,7 +167,17 @@ class TypedLiveAutomationSnapshotLoader(
             val adventure = if (entry.type == AutomationType.ADVENTURE_MAP) adventureByEntry[entry.id].orEmpty().map {
                 DetachedAdventureSetting(it.id, it.categoryId, it.mapCode, it.presetMode, it.partyPreset?.id, it.executionOrder)
             } else emptyList()
-            DetachedEntry(entry.id, entry.type, entry.priority, entry.enabled, quest, battle, adventure)
+            val union = if (entry.type == AutomationType.UNION) typed.findUnionSettings(entry.id).map {
+                DetachedUnionSetting(it.categoryId, it.mapCode, it.presetMode, it.partyPreset?.id, it.executionOrder)
+            } else emptyList()
+            val raid = if (entry.type == AutomationType.RAID) typed.findRaidTargets(entry.id).map {
+                DetachedRaidTarget(it.raidId, it.displayName, it.presetMode, it.partyPreset?.id, it.executionOrder)
+            } else emptyList()
+            val fishing = if (entry.type == AutomationType.FISHING) typed.findFishingSetting(entry.id)?.let {
+                DetachedFishingSetting(it.presetMode, it.partyPreset?.id)
+            } else null
+            val rotation = if (entry.type in setOf(AutomationType.UNION, AutomationType.RAID)) typed.findRotationState(entry.id)?.currentTargetKey else null
+            DetachedEntry(entry.id, entry.type, entry.priority, entry.enabled, quest, battle, adventure, union, raid, fishing, rotation)
         }
         val canonical = buildString {
             append("primary=").append(primary).append('|')
@@ -167,27 +186,61 @@ class TypedLiveAutomationSnapshotLoader(
             entries.forEach { append("e:").append(it).append('|') }
         }
         val version = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(canonical.toByteArray()))
-        val categories = entries.filter { it.enabled }.flatMap { entry -> when (entry.type) {
+        val openRaidEntryId = typed.findOpenRaidCycle(accountId)?.entry?.id
+        val categories = entries.filter { it.enabled || it.id == openRaidEntryId }.flatMap { entry -> when (entry.type) {
             AutomationType.QUEST -> entry.quest.asSequence().filter { it.enabled }
                 .flatMap { it.maps.asSequence() }.map { it.categoryId }.toList()
             AutomationType.BATTLE_MAP -> entry.battle.map { it.categoryId }
             AutomationType.ADVENTURE_MAP -> entry.adventure.map { it.categoryId }
+            AutomationType.RAID -> listOf("raid")
+            AutomationType.UNION -> entry.union.map { it.categoryId }
+            AutomationType.FISHING -> listOf("battle_map")
         } }.filter { it.isNotBlank() }.distinct()
-        return DetachedConfiguration(entries, primary, validPresetIds, parties, categories, version)
+        return DetachedConfiguration(entries, primary, validPresetIds, parties, categories, version, openRaidEntryId)
     }
 
-    private fun assembleSnapshot(accountId: Long, config: DetachedConfiguration, quests: List<QuestSnapshot>): AutomationCoordinatorSnapshot {
+    private fun assembleSnapshot(accountId: Long, config: DetachedConfiguration, live: LiveAutomationState): AutomationCoordinatorSnapshot {
         val now = timeProvider.now()
         val states = maps.findAllStatesForExecution(accountId)
         val aliases = states.map { it.battleMap.categoryId }.distinct().flatMap(identities::loadAliasCandidates)
         val timeSnapshot = hofStatusSnapshots.findLatest(accountId)?.let {
             AutomationTimeSnapshot(it.timeCurrent, it.timeMax, it.observedAt)
         }
-        return AutomationCoordinatorSnapshot(config.entries.filter { it.enabled }.map { entry -> when (entry.type) {
-            AutomationType.QUEST -> AutomationCoordinatorEntry(entry.id, entry.type, quest = questSnapshot(accountId, entry, quests, states, aliases, config, now, timeSnapshot))
+        val runtime = typed.findRuntimeState(accountId)
+        val openRaidEntryId = if (runtime?.lifecycleStatus == TypedAutomationLifecycle.DRAINING) {
+            typed.findOpenRaidCycle(accountId)?.entry?.id
+        } else null
+        val runnableEntries = if (runtime?.lifecycleStatus == TypedAutomationLifecycle.DRAINING) {
+            config.entries.filter { it.id == openRaidEntryId && it.type == AutomationType.RAID }
+        } else config.entries.filter { it.enabled || it.id == config.openRaidEntryId }
+        return AutomationCoordinatorSnapshot(runnableEntries.map { entry -> when (entry.type) {
+            AutomationType.QUEST -> AutomationCoordinatorEntry(entry.id, entry.type, quest = questSnapshot(accountId, entry, live.quests, states, aliases, config, now, timeSnapshot))
             AutomationType.BATTLE_MAP -> AutomationCoordinatorEntry(entry.id, entry.type, battle = battleSnapshot(accountId, entry, states, config, now, timeSnapshot))
             AutomationType.ADVENTURE_MAP -> AutomationCoordinatorEntry(entry.id, entry.type, adventure = adventureSnapshot(accountId, entry, states, config, now, timeSnapshot))
+            AutomationType.UNION -> AutomationCoordinatorEntry(entry.id, entry.type, union = UnionAutomationSnapshot(
+                accountId, entry.union.map { setting ->
+                    val resolved = resolvePreset(setting.presetMode, setting.presetId, config)
+                    UnionAutomationSetting("${setting.categoryId}:${setting.mapCode}", setting.categoryId, setting.mapCode,
+                        setting.presetMode, resolved, setting.executionOrder, resolved?.let(config.parties::get))
+                }, states.map(::battleState), entry.rotationTarget, now,
+            ))
+            AutomationType.FISHING -> AutomationCoordinatorEntry(entry.id, entry.type, fishing = entry.fishing?.let { setting ->
+                val resolved = resolvePreset(setting.presetMode, setting.presetId, config)
+                live.fishing?.let { FishingAutomationSnapshot(accountId, it, setting.presetMode, resolved, resolved?.let(config.parties::get), now) }
+            })
+            AutomationType.RAID -> AutomationCoordinatorEntry(entry.id, entry.type, raid = live.raid?.let { pub ->
+                val open = typed.findOpenRaidCycle(accountId)?.let { OpenRaidCycleSnapshot(it.id, it.raidId, it.status, it.nextCheckAt) }
+                RaidAutomationSnapshot(accountId, pub, entry.raid.map { target ->
+                    val resolved = resolvePreset(target.presetMode, target.presetId, config)
+                    RaidAutomationTarget(target.raidId, target.name, target.presetMode, resolved, target.executionOrder, resolved?.let(config.parties::get))
+                }, entry.rotationTarget, open, now)
+            })
         } })
+    }
+
+    private fun resolvePreset(mode: PresetSelectionMode, presetId: Long?, config: DetachedConfiguration): Long? = when (mode) {
+        PresetSelectionMode.PRIMARY -> config.primary
+        PresetSelectionMode.EXPLICIT -> presetId?.takeIf { it in config.availablePresetIds }
     }
 
     private fun questSnapshot(accountId: Long, entry: DetachedEntry, quests: List<QuestSnapshot>, states: List<AccountBattleMapStateEntity>, aliases: List<BattleMapIdentityCandidate>, config: DetachedConfiguration, now: Instant, timeSnapshot: AutomationTimeSnapshot?): QuestAutomationSnapshot {
@@ -260,6 +313,9 @@ class TypedLiveAutomationSnapshotLoader(
         AutomationType.QUEST -> copy(quest = quest.filter { it.questKey == targetKey })
         AutomationType.BATTLE_MAP -> copy(battle = battle.filter { "${it.categoryId}/${it.mapCode}" == targetKey })
         AutomationType.ADVENTURE_MAP -> copy(adventure = adventure.filter { "${it.categoryId}/${it.mapCode}" == targetKey })
+        AutomationType.RAID -> copy(raid = raid.filter { it.raidId == targetKey })
+        AutomationType.UNION -> copy(union = union.filter { "${it.categoryId}/${it.mapCode}" == targetKey || "${it.categoryId}:${it.mapCode}" == targetKey })
+        AutomationType.FISHING -> this
     }
 
     private fun categoriesFor(entries: List<DetachedEntry>): List<String> = entries.flatMap { entry ->
@@ -268,6 +324,9 @@ class TypedLiveAutomationSnapshotLoader(
                 .flatMap { it.maps.asSequence() }.map { it.categoryId }.toList()
             AutomationType.BATTLE_MAP -> entry.battle.map { it.categoryId }
             AutomationType.ADVENTURE_MAP -> entry.adventure.map { it.categoryId }
+            AutomationType.RAID -> listOf("raid")
+            AutomationType.UNION -> entry.union.map { it.categoryId }
+            AutomationType.FISHING -> listOf("battle_map")
         }
     }.filter(String::isNotBlank).distinct()
 
@@ -275,13 +334,22 @@ class TypedLiveAutomationSnapshotLoader(
     private fun battleState(state: AccountBattleMapStateEntity) = BattleMapRunnableState(state.battleMap.categoryId, state.battleMap.mapCode, state.visible, state.battleMap.enabled, state.supportsThreeBattles, state.cooldownUntil, state.availableCount, state.attemptRemaining, state.winRemaining, state.keyMode, state.keyCount, state.battleMap.name)
     private fun adventureState(state: AccountBattleMapStateEntity) = AdventureMapRunnableState(state.battleMap.categoryId, state.battleMap.mapCode, true, state.visible, state.battleMap.enabled, state.cooldownUntil, null, state.attemptRemaining, state.winRemaining, state.availableCount, state.keyMode, state.keyCount, state.battleMap.name, state.battleMap.requiredTime)
 
-    private data class DetachedConfiguration(val entries: List<DetachedEntry>, val primary: Long?, val availablePresetIds: Set<Long>, val parties: Map<Long, ResolvedAutomationParty>, val categories: List<String>, val version: String)
-    private data class DetachedEntry(val id: Long, val type: AutomationType, val priority: Int, val enabled: Boolean, val quest: List<DetachedQuestSelection>, val battle: List<DetachedBattleSetting>, val adventure: List<DetachedAdventureSetting>)
+    private data class DetachedConfiguration(val entries: List<DetachedEntry>, val primary: Long?, val availablePresetIds: Set<Long>, val parties: Map<Long, ResolvedAutomationParty>, val categories: List<String>, val version: String, val openRaidEntryId: Long?)
+    private data class DetachedEntry(
+        val id: Long, val type: AutomationType, val priority: Int, val enabled: Boolean,
+        val quest: List<DetachedQuestSelection>, val battle: List<DetachedBattleSetting>, val adventure: List<DetachedAdventureSetting>,
+        val union: List<DetachedUnionSetting>, val raid: List<DetachedRaidTarget>,
+        val fishing: DetachedFishingSetting?, val rotationTarget: String?,
+    )
     private data class DetachedQuestSelection(val questKey: String, val enabled: Boolean, val order: Int, val maps: List<DetachedQuestMap>)
     private data class DetachedQuestMap(val missionKey: String, val categoryId: String, val mapCode: String, val presetMode: PresetSelectionMode, val presetId: Long?, val executionOrder: Int, val manuallyOverridden: Boolean)
     private data class DetachedBattleSetting(val categoryId: String, val mapCode: String, val dailyTargetCount: Int, val presetMode: PresetSelectionMode, val presetId: Long?, val executionOrder: Int)
     private data class DetachedAdventureSetting(val id: Long, val categoryId: String, val mapCode: String, val presetMode: PresetSelectionMode, val presetId: Long?, val executionOrder: Int)
+    private data class DetachedUnionSetting(val categoryId: String, val mapCode: String, val presetMode: PresetSelectionMode, val presetId: Long?, val executionOrder: Int)
+    private data class DetachedRaidTarget(val raidId: String, val name: String, val presetMode: PresetSelectionMode, val presetId: Long?, val executionOrder: Int)
+    private data class DetachedFishingSetting(val presetMode: PresetSelectionMode, val presetId: Long?)
     private data class DetachedMember(val presetId: Long, val slotIndex: Int, val characterId: String?, val patternSlot: String?, val canLoad: Boolean)
+    private data class LiveAutomationState(val quests: List<QuestSnapshot>, val fishing: FishingResponse?, val raid: RaidPubResponse?)
 
     private companion object {
         val log = LoggerFactory.getLogger(TypedLiveAutomationSnapshotLoader::class.java)

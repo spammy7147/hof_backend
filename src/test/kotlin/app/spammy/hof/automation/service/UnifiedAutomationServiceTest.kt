@@ -8,6 +8,11 @@ import app.spammy.hof.automation.dto.QuestMapSettingRequest
 import app.spammy.hof.automation.dto.QuestSelectionRequest
 import app.spammy.hof.automation.dto.ReorderAutomationEntriesRequest
 import app.spammy.hof.automation.dto.UpdateBattleMapAutomationRequest
+import app.spammy.hof.automation.dto.UpdateFishingAutomationRequest
+import app.spammy.hof.automation.dto.UnionMapSettingRequest
+import app.spammy.hof.automation.dto.UpdateUnionAutomationRequest
+import app.spammy.hof.automation.dto.RaidTargetSettingRequest
+import app.spammy.hof.automation.dto.UpdateRaidAutomationRequest
 import app.spammy.hof.automation.dto.UpdateAdventureMapAutomationRequest
 import app.spammy.hof.automation.dto.UpdateQuestAutomationRequest
 import app.spammy.hof.automation.entity.AutomationEntryEntity
@@ -16,6 +21,11 @@ import app.spammy.hof.automation.entity.AutomationWaitReason
 import app.spammy.hof.automation.entity.AdventureAutomationMapEntity
 import app.spammy.hof.automation.entity.BattleAutomationDailyProgressEntity
 import app.spammy.hof.automation.entity.BattleAutomationMapEntity
+import app.spammy.hof.automation.entity.FishingAutomationSettingEntity
+import app.spammy.hof.automation.entity.UnionAutomationMapEntity
+import app.spammy.hof.automation.entity.RaidAutomationTargetEntity
+import app.spammy.hof.automation.entity.RaidAutomationCycleEntity
+import app.spammy.hof.automation.entity.RaidAutomationCycleStatus
 import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.automation.entity.QuestAutomationMapEntity
 import app.spammy.hof.automation.entity.QuestAutomationSelectionEntity
@@ -27,6 +37,9 @@ import app.spammy.hof.automation.outbox.AutomationOutboxService
 import app.spammy.hof.automation.repository.AdventureAutomationMapCommandRepository
 import app.spammy.hof.automation.repository.AutomationEntryCommandRepository
 import app.spammy.hof.automation.repository.BattleAutomationMapCommandRepository
+import app.spammy.hof.automation.repository.FishingAutomationSettingCommandRepository
+import app.spammy.hof.automation.repository.UnionAutomationMapCommandRepository
+import app.spammy.hof.automation.repository.RaidAutomationTargetCommandRepository
 import app.spammy.hof.automation.repository.QuestAutomationMapCommandRepository
 import app.spammy.hof.automation.repository.QuestAutomationSelectionCommandRepository
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
@@ -67,6 +80,9 @@ class UnifiedAutomationServiceTest {
     private val questMapRepository = Mockito.mock(QuestAutomationMapCommandRepository::class.java)
     private val battleSettingRepository = Mockito.mock(BattleAutomationMapCommandRepository::class.java)
     private val adventureSettingRepository = Mockito.mock(AdventureAutomationMapCommandRepository::class.java)
+    private val fishingSettingRepository = Mockito.mock(FishingAutomationSettingCommandRepository::class.java)
+    private val unionSettingRepository = Mockito.mock(UnionAutomationMapCommandRepository::class.java)
+    private val raidTargetRepository = Mockito.mock(RaidAutomationTargetCommandRepository::class.java)
     private val automationOutbox = Mockito.mock(AutomationOutboxService::class.java)
     private val storedActionCodec = Mockito.mock(StoredTypedAutomationActionCodec::class.java)
     private val statusSnapshots = Mockito.mock(HofStatusSnapshotService::class.java)
@@ -83,6 +99,9 @@ class UnifiedAutomationServiceTest {
         typedQuestMapRepository = questMapRepository,
         typedBattleMapRepository = battleSettingRepository,
         typedAdventureMapRepository = adventureSettingRepository,
+        typedFishingSettingRepository = fishingSettingRepository,
+        typedUnionMapRepository = unionSettingRepository,
+        typedRaidTargetRepository = raidTargetRepository,
         automationOutboxService = automationOutbox,
         storedActionCodec = storedActionCodec,
         hofStatusSnapshots = statusSnapshots,
@@ -288,10 +307,13 @@ class UnifiedAutomationServiceTest {
     }
 
     @Test
-    fun `battle update rejects adventure and union categories but permits unrelated substrings`() {
+    fun `battle update rejects adventure union and raid categories but permits unrelated substrings`() {
         val battleEntry = entry(92L, AutomationType.BATTLE_MAP)
         Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(battleEntry))
-        listOf("adventure_map", "union").forEach { categoryId ->
+        Mockito.`when`(
+            battleMapQueryRepository.findMapsByCategoryIdAndMapCodePairs(setOf("raid" to "map")),
+        ).thenReturn(listOf(battleMap(80L, "raid", "map")))
+        listOf("adventure_map", "union", "raid").forEach { categoryId ->
             assertEquals(
                 ErrorCode.INVALID_REQUEST,
                 assertFailsWith<ApiException> {
@@ -433,6 +455,160 @@ class UnifiedAutomationServiceTest {
             setOf("adventure_map/map-1"),
             false,
         )
+    }
+
+    @Test
+    fun `fishing update stores the battle preset and enables the singleton entry`() {
+        val fishingEntry = entry(94L, AutomationType.FISHING)
+        val persisted = FishingAutomationSettingEntity(
+            id = 901L,
+            entry = fishingEntry,
+            presetMode = PresetSelectionMode.PRIMARY,
+        )
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(fishingEntry))
+        Mockito.`when`(typedQuery.findFishingSetting(fishingEntry.id)).thenReturn(null, persisted)
+
+        val response = service.updateFishing(
+            ACCOUNT_ID,
+            UpdateFishingAutomationRequest(
+                enabled = true,
+                presetMode = PresetSelectionMode.PRIMARY,
+                partyPresetId = null,
+            ),
+        )
+
+        Mockito.verify(fishingSettingRepository).save(anyFishingSetting())
+        assertEquals(PresetSelectionMode.PRIMARY, response.entries.single().fishing?.presetMode)
+        assertNull(response.entries.single().fishing?.partyPresetId)
+        assertTrue(fishingEntry.enabled)
+        Mockito.verify(automationOutbox).enqueue(ACCOUNT_ID, "SETTINGS_UPDATED")
+    }
+
+    @Test
+    fun `union update stores only ordered union maps`() {
+        val unionEntry = entry(95L, AutomationType.UNION)
+        val persisted = UnionAutomationMapEntity(
+            id = 902L,
+            entry = unionEntry,
+            categoryId = "union",
+            mapCode = "union-1",
+            presetMode = PresetSelectionMode.PRIMARY,
+            executionOrder = 0,
+        )
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(unionEntry))
+        Mockito.`when`(typedQuery.findUnionSettings(unionEntry.id)).thenReturn(emptyList(), listOf(persisted))
+        Mockito.`when`(
+            battleMapQueryRepository.findMapsByCategoryIdAndMapCodePairs(setOf("union" to "union-1")),
+        ).thenReturn(listOf(battleMap(71L, "union", "union-1")))
+
+        val response = service.updateUnion(
+            ACCOUNT_ID,
+            UpdateUnionAutomationRequest(
+                enabled = true,
+                maps = listOf(
+                    UnionMapSettingRequest(
+                        categoryId = "union",
+                        mapCode = "union-1",
+                        presetMode = PresetSelectionMode.PRIMARY,
+                        partyPresetId = null,
+                        executionOrder = 0,
+                    ),
+                ),
+            ),
+        )
+
+        Mockito.verify(unionSettingRepository).save(anyUnionSetting())
+        assertEquals(listOf("union-1"), response.entries.single().unionMaps.map { it.mapCode })
+        assertTrue(response.entries.single().enabled)
+    }
+
+    @Test
+    fun `raid update stores ordered raid targets with their presets`() {
+        val raidEntry = entry(96L, AutomationType.RAID)
+        val persisted = RaidAutomationTargetEntity(
+            id = 903L,
+            entry = raidEntry,
+            raidId = "raid-1",
+            displayName = "첫 번째 레이드",
+            presetMode = PresetSelectionMode.PRIMARY,
+            executionOrder = 0,
+        )
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(raidEntry))
+        Mockito.`when`(typedQuery.findRaidTargets(raidEntry.id)).thenReturn(emptyList(), listOf(persisted))
+        Mockito.`when`(
+            battleMapQueryRepository.findMapsByCategoryIdAndMapCodePairs(setOf("raid" to "raid-1")),
+        ).thenReturn(listOf(battleMap(72L, "raid", "raid-1", "첫 번째 레이드")))
+
+        val response = service.updateRaid(
+            ACCOUNT_ID,
+            UpdateRaidAutomationRequest(
+                enabled = true,
+                targets = listOf(
+                    RaidTargetSettingRequest(
+                        raidId = "raid-1",
+                        displayName = "첫 번째 레이드",
+                        presetMode = PresetSelectionMode.PRIMARY,
+                        partyPresetId = null,
+                        executionOrder = 0,
+                    ),
+                ),
+            ),
+        )
+
+        Mockito.verify(raidTargetRepository).save(anyRaidTarget())
+        assertEquals(listOf("raid-1"), response.entries.single().raidTargets.map { it.raidId })
+        assertTrue(response.entries.single().enabled)
+    }
+
+    @Test
+    fun `active raid target cannot be removed before its cycle finishes`() {
+        val raidEntry = entry(96L, AutomationType.RAID, enabled = true)
+        val active = RaidAutomationCycleEntity(
+            id = 904L,
+            account = account(),
+            entry = raidEntry,
+            raidId = "raid-1",
+            raidName = "첫 번째 레이드",
+            status = RaidAutomationCycleStatus.IN_BATTLE,
+            startedAt = NOW,
+            updatedAt = NOW,
+        )
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(raidEntry))
+        Mockito.`when`(typedQuery.findOpenRaidCycle(ACCOUNT_ID)).thenReturn(active)
+
+        val error = assertFailsWith<ApiException> {
+            service.updateRaid(
+                ACCOUNT_ID,
+                UpdateRaidAutomationRequest(enabled = false, targets = emptyList()),
+            )
+        }
+
+        assertEquals(ErrorCode.INVALID_REQUEST, error.errorCode)
+        assertTrue(error.message.orEmpty().contains("진행 중인 레이드"))
+        Mockito.verifyNoInteractions(raidTargetRepository)
+    }
+
+    @Test
+    fun `raid entry cannot be deleted while its cycle is open`() {
+        val raidEntry = entry(96L, AutomationType.RAID, enabled = false)
+        val active = RaidAutomationCycleEntity(
+            id = 905L,
+            account = account(),
+            entry = raidEntry,
+            raidId = "raid-1",
+            raidName = "첫 번째 레이드",
+            status = RaidAutomationCycleStatus.REGISTERED_WAITING,
+            startedAt = NOW,
+            updatedAt = NOW,
+        )
+        Mockito.`when`(typedQuery.findEntry(ACCOUNT_ID, raidEntry.id)).thenReturn(raidEntry)
+        Mockito.`when`(typedQuery.findOpenRaidCycle(ACCOUNT_ID)).thenReturn(active)
+
+        val error = assertFailsWith<ApiException> { service.deleteEntry(ACCOUNT_ID, raidEntry.id) }
+
+        assertEquals(ErrorCode.INVALID_REQUEST, error.errorCode)
+        assertTrue(error.message.orEmpty().contains("진행 중인 레이드"))
+        Mockito.verify(entryRepository, Mockito.never()).delete(raidEntry)
     }
 
     @Test
@@ -917,6 +1093,33 @@ class UnifiedAutomationServiceTest {
                 categoryId = "battle_map",
                 mapCode = "matcher",
                 dailyTargetCount = 1,
+                presetMode = PresetSelectionMode.PRIMARY,
+                executionOrder = 0,
+            )
+
+    private fun anyFishingSetting(): FishingAutomationSettingEntity =
+        Mockito.any(FishingAutomationSettingEntity::class.java)
+            ?: FishingAutomationSettingEntity(
+                entry = entry(999L, AutomationType.FISHING),
+                presetMode = PresetSelectionMode.PRIMARY,
+            )
+
+    private fun anyUnionSetting(): UnionAutomationMapEntity =
+        Mockito.any(UnionAutomationMapEntity::class.java)
+            ?: UnionAutomationMapEntity(
+                entry = entry(999L, AutomationType.UNION),
+                categoryId = "union",
+                mapCode = "matcher",
+                presetMode = PresetSelectionMode.PRIMARY,
+                executionOrder = 0,
+            )
+
+    private fun anyRaidTarget(): RaidAutomationTargetEntity =
+        Mockito.any(RaidAutomationTargetEntity::class.java)
+            ?: RaidAutomationTargetEntity(
+                entry = entry(999L, AutomationType.RAID),
+                raidId = "matcher",
+                displayName = "matcher",
                 presetMode = PresetSelectionMode.PRIMARY,
                 executionOrder = 0,
             )

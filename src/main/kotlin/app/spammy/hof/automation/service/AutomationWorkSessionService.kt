@@ -305,7 +305,7 @@ class AutomationWorkSessionService(
     private fun requireRunningRuntime(accountId: Long) {
         val runtime = typed.lockRuntimeState(accountId)
             ?: throw IllegalStateException("Automation runtime does not exist for account $accountId.")
-        check(runtime.lifecycleStatus == TypedAutomationLifecycle.RUNNING) {
+        check(runtime.lifecycleStatus in setOf(TypedAutomationLifecycle.RUNNING, TypedAutomationLifecycle.DRAINING)) {
             "Automation runtime is not running for account $accountId."
         }
     }
@@ -334,13 +334,25 @@ class AutomationWorkSessionService(
         )
         is BattleMapAutomationAction -> {
             val target = "$categoryId/$mapCode"
-            val configuredTarget = typed.findBattleSettings(entryId)
-                .singleOrNull { "${it.categoryId}/${it.mapCode}" == target }
-                ?.dailyTargetCount
-                ?: throw AutomationConfigurationException("Battle-map target $target is missing or duplicated.")
-            WorkSpec(AutomationWorkType.BATTLE_MAP, target, targetCount = configuredTarget)
+            when (source) {
+                BattleAutomationActionSource.BATTLE_MAP_AUTOMATION -> {
+                    val configuredTarget = typed.findBattleSettings(entryId)
+                        .singleOrNull { "${it.categoryId}/${it.mapCode}" == target }
+                        ?.dailyTargetCount
+                        ?: throw AutomationConfigurationException("Battle-map target $target is missing or duplicated.")
+                    WorkSpec(AutomationWorkType.BATTLE_MAP, target, targetCount = configuredTarget)
+                }
+                BattleAutomationActionSource.UNION_AUTOMATION -> WorkSpec(AutomationWorkType.UNION, target)
+                BattleAutomationActionSource.FISHING_AUTOMATION -> WorkSpec(AutomationWorkType.FISHING, target)
+                BattleAutomationActionSource.RAID_AUTOMATION -> WorkSpec(AutomationWorkType.RAID, target)
+                BattleAutomationActionSource.QUEST_AUTOMATION -> WorkSpec(AutomationWorkType.QUEST, target)
+                BattleAutomationActionSource.ADVENTURE_AUTOMATION -> WorkSpec(AutomationWorkType.ADVENTURE_MAP, target)
+            }
         }
         is AdventureMapAutomationAction -> WorkSpec(AutomationWorkType.ADVENTURE_MAP, "$categoryId/$mapCode")
+        is FishingTownAutomationAction -> WorkSpec(AutomationWorkType.FISHING, action.name)
+        is RaidTownAutomationAction -> WorkSpec(AutomationWorkType.RAID, raidId ?: action.name)
+        is RaidCycleAbortAutomationAction -> WorkSpec(AutomationWorkType.RAID, raidId)
     }
 
     private data class WorkSpec(

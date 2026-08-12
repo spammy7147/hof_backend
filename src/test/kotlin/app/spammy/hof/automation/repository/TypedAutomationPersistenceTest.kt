@@ -3,14 +3,20 @@ package app.spammy.hof.automation.repository
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.repository.HofAccountRepository
 import app.spammy.hof.automation.entity.AutomationEntryEntity
+import app.spammy.hof.automation.entity.AutomationRotationStateEntity
 import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.entity.BattleAutomationDailyProgressEntity
 import app.spammy.hof.automation.entity.BattleAutomationMapEntity
 import app.spammy.hof.automation.entity.PresetSelectionMode
+import app.spammy.hof.automation.entity.FishingAutomationSettingEntity
+import app.spammy.hof.automation.entity.RaidAutomationCycleEntity
+import app.spammy.hof.automation.entity.RaidAutomationCycleStatus
+import app.spammy.hof.automation.entity.RaidAutomationTargetEntity
 import app.spammy.hof.automation.entity.TypedAutomationActionRunEntity
 import app.spammy.hof.automation.entity.TypedAutomationActionStatus
 import app.spammy.hof.automation.entity.TypedAutomationLifecycle
 import app.spammy.hof.automation.entity.TypedAutomationRuntimeStateEntity
+import app.spammy.hof.automation.entity.UnionAutomationMapEntity
 import app.spammy.hof.automation.outbox.AutomationOutboxService
 import app.spammy.hof.automation.service.StoredTypedActionPayload
 import app.spammy.hof.automation.service.StoredTypedAutomationActionCodec
@@ -43,6 +49,11 @@ class TypedAutomationPersistenceTest {
     @Autowired private lateinit var entryRepository: AutomationEntryCommandRepository
     @Autowired private lateinit var battleMapRepository: BattleAutomationMapCommandRepository
     @Autowired private lateinit var battleProgressRepository: BattleAutomationDailyProgressCommandRepository
+    @Autowired private lateinit var unionMapRepository: UnionAutomationMapCommandRepository
+    @Autowired private lateinit var raidTargetRepository: RaidAutomationTargetCommandRepository
+    @Autowired private lateinit var fishingSettingRepository: FishingAutomationSettingCommandRepository
+    @Autowired private lateinit var rotationStateRepository: AutomationRotationStateCommandRepository
+    @Autowired private lateinit var raidCycleRepository: RaidAutomationCycleCommandRepository
     @Autowired private lateinit var queryRepository: TypedAutomationQueryRepository
     @Autowired private lateinit var runtimeRepository: TypedAutomationRuntimeStateCommandRepository
     @Autowired private lateinit var actionRepository: TypedAutomationActionRunCommandRepository
@@ -54,6 +65,9 @@ class TypedAutomationPersistenceTest {
         val account = newAccount("typed-order", now)
         entryRepository.saveAll(
             listOf(
+                newEntry(account, AutomationType.FISHING, priority = 50, now),
+                newEntry(account, AutomationType.UNION, priority = 40, now),
+                newEntry(account, AutomationType.RAID, priority = 30, now),
                 newEntry(account, AutomationType.ADVENTURE_MAP, priority = 20, now),
                 newEntry(account, AutomationType.QUEST, priority = 0, now),
                 newEntry(account, AutomationType.BATTLE_MAP, priority = 10, now),
@@ -63,7 +77,14 @@ class TypedAutomationPersistenceTest {
         entityManager.clear()
 
         assertEquals(
-            listOf(AutomationType.QUEST, AutomationType.BATTLE_MAP, AutomationType.ADVENTURE_MAP),
+            listOf(
+                AutomationType.QUEST,
+                AutomationType.BATTLE_MAP,
+                AutomationType.ADVENTURE_MAP,
+                AutomationType.RAID,
+                AutomationType.UNION,
+                AutomationType.FISHING,
+            ),
             queryRepository.findEntries(account.id).map(AutomationEntryEntity::type),
         )
     }
@@ -108,6 +129,70 @@ class TypedAutomationPersistenceTest {
             entryRepository.save(newEntry(account, AutomationType.QUEST, priority = 1, now))
             entryRepository.flush()
         }
+    }
+
+    @Test
+    fun storesNewAutomationSettingsAndRestoresTheOpenRaidCycle() {
+        val now = Instant.parse("2026-08-12T00:00:00Z")
+        val account = newAccount("typed-new-categories", now)
+        val raidEntry = entryRepository.save(newEntry(account, AutomationType.RAID, priority = 0, now))
+        val unionEntry = entryRepository.save(newEntry(account, AutomationType.UNION, priority = 1, now))
+        val fishingEntry = entryRepository.save(newEntry(account, AutomationType.FISHING, priority = 2, now))
+        unionMapRepository.save(
+            UnionAutomationMapEntity(
+                entry = unionEntry,
+                categoryId = "union",
+                mapCode = "union-1",
+                presetMode = PresetSelectionMode.PRIMARY,
+                executionOrder = 0,
+            ),
+        )
+        raidTargetRepository.save(
+            RaidAutomationTargetEntity(
+                entry = raidEntry,
+                raidId = "raid-1",
+                displayName = "첫 번째 레이드",
+                presetMode = PresetSelectionMode.PRIMARY,
+                executionOrder = 0,
+            ),
+        )
+        fishingSettingRepository.save(
+            FishingAutomationSettingEntity(
+                entry = fishingEntry,
+                presetMode = PresetSelectionMode.PRIMARY,
+            ),
+        )
+        rotationStateRepository.save(
+            AutomationRotationStateEntity(
+                entry = raidEntry,
+                currentTargetKey = "raid-1",
+                updatedAt = now,
+            ),
+        )
+        raidCycleRepository.save(
+            RaidAutomationCycleEntity(
+                account = account,
+                entry = raidEntry,
+                raidId = "raid-1",
+                raidName = "첫 번째 레이드",
+                status = RaidAutomationCycleStatus.REGISTERED_WAITING,
+                lastObservedStatus = "WAITING",
+                nextCheckAt = now.plusSeconds(120),
+                startedAt = now,
+                updatedAt = now,
+            ),
+        )
+        entityManager.flush()
+        entityManager.clear()
+
+        assertEquals(listOf("union-1"), queryRepository.findUnionSettings(unionEntry.id).map { it.mapCode })
+        assertEquals(listOf("raid-1"), queryRepository.findRaidTargets(raidEntry.id).map { it.raidId })
+        assertEquals(PresetSelectionMode.PRIMARY, queryRepository.findFishingSetting(fishingEntry.id)?.presetMode)
+        assertEquals("raid-1", queryRepository.findRotationState(raidEntry.id)?.currentTargetKey)
+        assertEquals(
+            RaidAutomationCycleStatus.REGISTERED_WAITING,
+            queryRepository.findOpenRaidCycle(account.id)?.status,
+        )
     }
 
     @Test

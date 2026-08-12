@@ -5,6 +5,10 @@ import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.quest.model.QuestState
 import app.spammy.hof.quest.service.QuestGatewayService
+import app.spammy.hof.town.fishing.service.FishingService
+import app.spammy.hof.town.raid.model.RaidAction
+import app.spammy.hof.town.raid.model.RaidStatus
+import app.spammy.hof.town.raid.service.RaidPubService
 import org.springframework.stereotype.Service
 
 @Service
@@ -15,6 +19,9 @@ class DefaultAutomationAmbiguousActionReconciler(
     private val sessionRecovery: HofSessionRecoveryExecutor,
     private val timeProvider: TimeProvider,
     private val workLifecycle: AutomationWorkLifecycle,
+    private val fishingService: FishingService? = null,
+    private val raidPubService: RaidPubService? = null,
+    private val contentProgress: AutomationContentProgressService? = null,
 ) : AutomationAmbiguousActionReconciler {
     override fun reconcile(
         accountId: Long,
@@ -30,6 +37,49 @@ class DefaultAutomationAmbiguousActionReconciler(
             action.executionIdentity,
             payload,
         )
+        is StoredTypedActionPayload.FishingTown -> reconcileFishing(accountId, payload)
+        is StoredTypedActionPayload.RaidTown -> reconcileRaid(accountId, action.entryId, payload)
+        is StoredTypedActionPayload.RaidCycleAbort -> AmbiguousActionResolution.Applied()
+    }
+
+    private fun reconcileFishing(accountId: Long, payload: StoredTypedActionPayload.FishingTown): AmbiguousActionResolution {
+        val latest = fishingService?.load(accountId)
+            ?: return AmbiguousActionResolution.VerifyLater(retryAt(), "낚시 상태 조회 연결을 기다립니다.")
+        val changed = latest.primaryAction != payload.observedPrimaryAction ||
+            (latest.remainingCasts != null && payload.observedRemainingCasts != null && latest.remainingCasts < payload.observedRemainingCasts)
+        return if (changed) AmbiguousActionResolution.Applied()
+        else AmbiguousActionResolution.Resubmit
+    }
+
+    private fun reconcileRaid(accountId: Long, entryId: Long, payload: StoredTypedActionPayload.RaidTown): AmbiguousActionResolution {
+        val latest = raidPubService?.load(accountId)
+            ?: return AmbiguousActionResolution.VerifyLater(retryAt(), "레이드 상태 조회 연결을 기다립니다.")
+        val progress = contentProgress ?: return AmbiguousActionResolution.VerifyLater(retryAt(), "레이드 사이클 저장 연결을 기다립니다.")
+        return when (payload.action) {
+            RaidAction.REGISTER -> {
+                val id = requireNotNull(payload.raidId)
+                val raid = latest.raids.singleOrNull { it.id == id }
+                    ?: return AmbiguousActionResolution.VerifyLater(retryAt(), "등록한 레이드가 아직 관측되지 않습니다.")
+                if (raid.joined || latest.applied) {
+                    progress.raidRegistered(accountId, entryId, id, raid.name, raid.waitSeconds ?: latest.applyWaitSeconds)
+                    AmbiguousActionResolution.Applied()
+                } else if (RaidAction.REGISTER in raid.actions) AmbiguousActionResolution.Resubmit
+                else AmbiguousActionResolution.VerifyLater(retryAt(), "레이드 등록 결과를 아직 확정할 수 없습니다.")
+            }
+            RaidAction.START -> {
+                val id = requireNotNull(payload.raidId)
+                val raid = latest.raids.singleOrNull { it.id == id }
+                    ?: return AmbiguousActionResolution.VerifyLater(retryAt(), "시작한 레이드가 아직 관측되지 않습니다.")
+                if (raid.status in setOf(RaidStatus.IN_BATTLE, RaidStatus.COMPLETED)) {
+                    progress.raidStarted(accountId, id); AmbiguousActionResolution.Applied()
+                } else if (RaidAction.START in raid.actions) AmbiguousActionResolution.Resubmit
+                else AmbiguousActionResolution.VerifyLater(retryAt(), "레이드 시작 결과를 아직 확정할 수 없습니다.")
+            }
+            RaidAction.REWARD -> if (RaidAction.REWARD !in latest.globalActions) {
+                progress.raidRewarded(accountId); AmbiguousActionResolution.Applied()
+            } else AmbiguousActionResolution.Resubmit
+            else -> AmbiguousActionResolution.VerifyLater(retryAt(), "허용하지 않는 레이드 자동 행동입니다.")
+        }
     }
 
     private fun reconcileQuestAccept(

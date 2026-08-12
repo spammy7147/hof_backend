@@ -20,6 +20,11 @@ import app.spammy.hof.automation.entity.QQuestAutomationMapEntity.questAutomatio
 import app.spammy.hof.automation.entity.QBattleAutomationMapEntity.battleAutomationMapEntity
 import app.spammy.hof.automation.entity.QAdventureAutomationMapEntity.adventureAutomationMapEntity
 import app.spammy.hof.automation.entity.QAdventureDailyRefreshEntity.adventureDailyRefreshEntity
+import app.spammy.hof.automation.entity.QAutomationRotationStateEntity.automationRotationStateEntity
+import app.spammy.hof.automation.entity.QFishingAutomationSettingEntity.fishingAutomationSettingEntity
+import app.spammy.hof.automation.entity.QRaidAutomationCycleEntity.raidAutomationCycleEntity
+import app.spammy.hof.automation.entity.QRaidAutomationTargetEntity.raidAutomationTargetEntity
+import app.spammy.hof.automation.entity.QUnionAutomationMapEntity.unionAutomationMapEntity
 import app.spammy.hof.party.entity.QPartyPresetEntity.partyPresetEntity
 import app.spammy.hof.automation.entity.QuestAutomationCycleEntity
 import app.spammy.hof.automation.entity.QuestAutomationProcessedResultEntity
@@ -32,6 +37,11 @@ import app.spammy.hof.automation.entity.QuestAutomationMapEntity
 import app.spammy.hof.automation.entity.BattleAutomationMapEntity
 import app.spammy.hof.automation.entity.AdventureAutomationMapEntity
 import app.spammy.hof.automation.entity.AdventureDailyRefreshEntity
+import app.spammy.hof.automation.entity.AutomationRotationStateEntity
+import app.spammy.hof.automation.entity.FishingAutomationSettingEntity
+import app.spammy.hof.automation.entity.RaidAutomationCycleEntity
+import app.spammy.hof.automation.entity.RaidAutomationTargetEntity
+import app.spammy.hof.automation.entity.UnionAutomationMapEntity
 import com.querydsl.jpa.impl.JPAQueryFactory
 import jakarta.persistence.LockModeType
 import java.time.LocalDate
@@ -70,7 +80,10 @@ class TypedAutomationQueryRepository(
         queryFactory.select(typedAutomationRuntimeStateEntity.accountId)
             .from(typedAutomationRuntimeStateEntity)
             .where(
-                typedAutomationRuntimeStateEntity.lifecycleStatus.eq(app.spammy.hof.automation.entity.TypedAutomationLifecycle.RUNNING),
+                typedAutomationRuntimeStateEntity.lifecycleStatus.`in`(
+                    app.spammy.hof.automation.entity.TypedAutomationLifecycle.RUNNING,
+                    app.spammy.hof.automation.entity.TypedAutomationLifecycle.DRAINING,
+                ),
                 typedAutomationRuntimeStateEntity.nextAttemptAt.isNull
                     .and(typedAutomationRuntimeStateEntity.leaseToken.isNull)
                     .or(
@@ -182,6 +195,35 @@ class TypedAutomationQueryRepository(
             .where(adventureAutomationMapEntity.entry.id.`in`(entryIds.toSet()))
             .orderBy(adventureAutomationMapEntity.entry.id.asc(), adventureAutomationMapEntity.executionOrder.asc(), adventureAutomationMapEntity.id.asc()).fetch()
     }
+    fun findUnionSettings(entryId: Long): List<UnionAutomationMapEntity> =
+        queryFactory.selectFrom(unionAutomationMapEntity)
+            .leftJoin(unionAutomationMapEntity.partyPreset, partyPresetEntity).fetchJoin()
+            .where(unionAutomationMapEntity.entry.id.eq(entryId))
+            .orderBy(unionAutomationMapEntity.executionOrder.asc(), unionAutomationMapEntity.id.asc()).fetch()
+
+    fun findRaidTargets(entryId: Long): List<RaidAutomationTargetEntity> =
+        queryFactory.selectFrom(raidAutomationTargetEntity)
+            .leftJoin(raidAutomationTargetEntity.partyPreset, partyPresetEntity).fetchJoin()
+            .where(raidAutomationTargetEntity.entry.id.eq(entryId))
+            .orderBy(raidAutomationTargetEntity.executionOrder.asc(), raidAutomationTargetEntity.id.asc()).fetch()
+
+    fun findFishingSetting(entryId: Long): FishingAutomationSettingEntity? =
+        queryFactory.selectFrom(fishingAutomationSettingEntity)
+            .leftJoin(fishingAutomationSettingEntity.partyPreset, partyPresetEntity).fetchJoin()
+            .where(fishingAutomationSettingEntity.entry.id.eq(entryId)).fetchOne()
+
+    fun findRotationState(entryId: Long): AutomationRotationStateEntity? =
+        queryFactory.selectFrom(automationRotationStateEntity)
+            .where(automationRotationStateEntity.entry.id.eq(entryId)).fetchOne()
+
+    fun findOpenRaidCycle(accountId: Long): RaidAutomationCycleEntity? =
+        queryFactory.selectFrom(raidAutomationCycleEntity)
+            .leftJoin(raidAutomationCycleEntity.entry, automationEntryEntity).fetchJoin()
+            .where(
+                raidAutomationCycleEntity.account.id.eq(accountId),
+                raidAutomationCycleEntity.openMarker.eq(1),
+            ).fetchOne()
+
     fun findEntries(accountId: Long): List<AutomationEntryEntity> =
         queryFactory.selectFrom(automationEntryEntity)
             .where(automationEntryEntity.account.id.eq(accountId))

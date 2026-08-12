@@ -29,6 +29,13 @@ class AutomationCoordinatorTest {
         val runnable = assertIs<AutomationCoordination.Runnable>(result)
         assertEquals(2, runnable.entryId)
         assertEquals(listOf("broken quest"), runnable.warnings)
+        assertEquals(
+            listOf(
+                Triple(1L, AutomationType.QUEST, AutomationDecisionOutcome.CONFIGURATION_WARNING),
+                Triple(2L, AutomationType.BATTLE_MAP, AutomationDecisionOutcome.SELECTED),
+            ),
+            runnable.trace.map { Triple(it.entryId, it.type, it.outcome) },
+        )
     }
 
     @Test

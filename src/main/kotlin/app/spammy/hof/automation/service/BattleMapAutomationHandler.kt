@@ -72,6 +72,9 @@ enum class BattleAutomationActionSource {
     BATTLE_MAP_AUTOMATION,
     QUEST_AUTOMATION,
     ADVENTURE_AUTOMATION,
+    UNION_AUTOMATION,
+    FISHING_AUTOMATION,
+    RAID_AUTOMATION,
 }
 
 data class BattleMapAutomationAction(

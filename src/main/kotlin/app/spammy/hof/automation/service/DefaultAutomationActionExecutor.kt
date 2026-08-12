@@ -8,6 +8,9 @@ import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.external.client.HofAutomationDeferredException
 import app.spammy.hof.quest.service.QuestGatewayService
+import app.spammy.hof.town.fishing.service.FishingService
+import app.spammy.hof.town.raid.dto.RaidPubActionRequest
+import app.spammy.hof.town.raid.service.RaidPubService
 import java.io.IOException
 import org.springframework.stereotype.Service
 
@@ -21,6 +24,9 @@ class DefaultAutomationActionExecutor(
     private val sessionRecovery: HofSessionRecoveryExecutor,
     private val executionSignals: AutomationExecutionSignals,
     private val workLifecycle: AutomationWorkLifecycle,
+    private val fishingService: FishingService? = null,
+    private val raidPubService: RaidPubService? = null,
+    private val contentProgress: AutomationContentProgressService? = null,
 ) : TypedAutomationActionExecutor {
     override fun execute(accountId: Long, action: StoredTypedAutomationAction): TypedAutomationExecution =
         try {
@@ -68,22 +74,23 @@ class DefaultAutomationActionExecutor(
                     val result = runTypedBattle(accountId, payload.battleRequest)
                     val prepared = BattleMapAutomationAction(
                         accountId, payload.progressDate, payload.categoryId, payload.mapCode, payload.presetMode,
-                        payload.presetId, payload.battleCount, action.executionIdentity,
+                        payload.presetId, payload.battleCount, action.executionIdentity, payload.source,
                     )
                     val outcomes = result.rounds.map { round ->
                         runCatching { BattleAutomationRoundOutcome.valueOf(round.outcome) }.getOrDefault(BattleAutomationRoundOutcome.UNKNOWN)
                     }
-                    val resolution = battleHandler.onBattleCompleted(
-                        prepared, BattleAutomationActionSource.BATTLE_MAP_AUTOMATION, action.executionIdentity,
-                        outcomes, battleOutcomeReconciler,
-                    )
-                    if (resolution is BattleOutcomeResolution.Fatal) throw AmbiguousAutomationSubmissionException(resolution.evaluation.message)
-                    workLifecycle.completeBattleMapAction(
-                        accountId,
-                        action.entryId,
-                        payload.categoryId,
-                        payload.mapCode,
-                    )
+                    if (payload.source == BattleAutomationActionSource.BATTLE_MAP_AUTOMATION) {
+                        val resolution = battleHandler.onBattleCompleted(
+                            prepared, payload.source, action.executionIdentity, outcomes, battleOutcomeReconciler,
+                        )
+                        if (resolution is BattleOutcomeResolution.Fatal) throw AmbiguousAutomationSubmissionException(resolution.evaluation.message)
+                        workLifecycle.completeBattleMapAction(accountId, action.entryId, payload.categoryId, payload.mapCode)
+                    } else {
+                        exactTerminalProof(accountId, action.executionIdentity, payload.battleRequest, result, payload.source)
+                        if (payload.source == BattleAutomationActionSource.UNION_AUTOMATION) {
+                            contentProgress?.unionBattleCompleted(accountId, action.entryId, payload.categoryId, payload.mapCode)
+                        }
+                    }
                     val signalRounds = result.rounds.takeIf(List<*>::isNotEmpty)
                     executionSignals.afterBattle(
                         accountId = accountId,
@@ -106,6 +113,33 @@ class DefaultAutomationActionExecutor(
                         payload.mapCode,
                     )
                     TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode)
+                }
+                is StoredTypedActionPayload.FishingTown -> {
+                    (fishingService ?: error("Fishing automation gateway is unavailable.")).act(accountId, payload.action)
+                    TypedAutomationExecution.Completed
+                }
+                is StoredTypedActionPayload.RaidTown -> {
+                    val response = (raidPubService ?: error("Raid automation gateway is unavailable."))
+                        .action(accountId, RaidPubActionRequest(payload.action, payload.raidId))
+                    when (payload.action) {
+                        app.spammy.hof.town.raid.model.RaidAction.REGISTER -> {
+                            val id = requireNotNull(payload.raidId)
+                            val raid = response.raids.singleOrNull { it.id == id }
+                                ?: error("Registered raid is missing from the response.")
+                            (contentProgress ?: error("Raid cycle service is unavailable."))
+                                .raidRegistered(accountId, action.entryId, id, raid.name, raid.waitSeconds ?: response.applyWaitSeconds)
+                        }
+                        app.spammy.hof.town.raid.model.RaidAction.START ->
+                            (contentProgress ?: error("Raid cycle service is unavailable.")).raidStarted(accountId, requireNotNull(payload.raidId))
+                        app.spammy.hof.town.raid.model.RaidAction.REWARD ->
+                            (contentProgress ?: error("Raid cycle service is unavailable.")).raidRewarded(accountId)
+                        else -> Unit
+                    }
+                    TypedAutomationExecution.Completed
+                }
+                is StoredTypedActionPayload.RaidCycleAbort -> {
+                    (contentProgress ?: error("Raid cycle service is unavailable.")).raidClosed(accountId, payload.raidId)
+                    TypedAutomationExecution.Completed
                 }
             }
         } catch (cooldown: SharedBattleCooldownRejectedException) {
@@ -185,6 +219,9 @@ class DefaultAutomationActionExecutor(
         is StoredTypedActionPayload.AdventureMap -> battleRequest
         is StoredTypedActionPayload.QuestClaim,
         is StoredTypedActionPayload.QuestAccept,
+        is StoredTypedActionPayload.FishingTown,
+        is StoredTypedActionPayload.RaidTown,
+        is StoredTypedActionPayload.RaidCycleAbort,
         -> null
     }
 
