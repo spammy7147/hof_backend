@@ -949,7 +949,7 @@ internal object FreshSchemaContract {
                 "(finished_at is null and locate(',' || status || ',', ',COMPLETED,STOPPED,') = 0)",
         ),
         check("typed_automation_runtime_states", "ck_typed_runtime_lifecycle", "locate(',' || lifecycle_status || ',', ',RUNNING,DRAINING,PAUSED,STOPPED,') > 0"),
-        check("typed_automation_runtime_states", "ck_typed_runtime_stop", "(lifecycle_status = 'STOPPED' and stop_reason is not null) or (lifecycle_status <> 'STOPPED' and stop_reason is null)"),
+        check("typed_automation_runtime_states", "ck_typed_runtime_stop", "(lifecycle_status = 'STOPPED' and stop_reason is not null) or (lifecycle_status <> 'STOPPED' and (stop_reason is null or stop_reason <> 'MANUAL_STOP'))"),
         check("typed_automation_runtime_states", "ck_typed_runtime_retry", "retry_attempt >= 0"),
         check(
             "typed_automation_runtime_states",

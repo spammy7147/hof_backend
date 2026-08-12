@@ -171,21 +171,21 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
     }
 
     @Test
-    fun `repeating the same terminal stop is idempotent and emits no wake`() {
+    fun `repeating the same manual stop is idempotent`() {
         val accountId = seed("idempotent-stop")
 
         TransactionTemplate(transactionManager).executeWithoutResult {
-            bridge.stop(accountId, AutomationStopReason.NETWORK, "PREFLIGHT_STOPPED")
+            bridge.stop(accountId, AutomationStopReason.MANUAL_STOP, "USER_STOP")
+        }
+        TransactionTemplate(transactionManager).executeWithoutResult {
+            bridge.stop(accountId, AutomationStopReason.MANUAL_STOP, "USER_STOP")
         }
 
         val state = requireNotNull(typedQuery.findRuntimeState(accountId))
         assertEquals(TypedAutomationLifecycle.STOPPED, state.lifecycleStatus)
-        assertEquals(AutomationStopReason.NETWORK.name, state.stopReason)
-        assertTrue(state.stopActionId != null)
-        assertEquals(
-            emptyList(),
-            outboxQuery.findUnpublished(NOW.plusSeconds(1)).filter { it.account.id == accountId },
-        )
+        assertEquals(AutomationStopReason.MANUAL_STOP.name, state.stopReason)
+        assertNull(state.stopActionId)
+        assertEquals(1, outboxQuery.findUnpublished(NOW.plusSeconds(1)).count { it.account.id == accountId })
     }
 
     @Test

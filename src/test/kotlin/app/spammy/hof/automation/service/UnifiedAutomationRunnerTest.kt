@@ -65,7 +65,7 @@ class UnifiedAutomationRunnerTest {
     }
 
     @Test
-    fun `prepare failure stops the claimed action before external execution`() {
+    fun `prepare failure schedules retry before external execution`() {
         val decisions = Mockito.mock(AutomationDecisionSource::class.java)
         val workTracker = Mockito.mock(AutomationWorkTracker::class.java)
         val action = QuestAction.Accept("quest-1", "accept-1")
@@ -74,24 +74,28 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(decisions.select(7)).thenReturn(AutomationCoordination.Runnable(10, action, emptyList()))
         Mockito.`when`(runtime.prepare(Mockito.eq(7L), eqString("token"), anyStoredAction()))
             .thenThrow(IllegalArgumentException("invalid stored action"))
+        val retryAt = Instant.parse("2026-07-25T00:05:00Z")
+        Mockito.`when`(runtime.scheduleAutomaticRetry(7, "token", null, AutomationStopReason.FATAL, "invalid stored action"))
+            .thenReturn(retryAt)
         val scopedRunner = UnifiedAutomationRunner(
             preflight, runtime, decisions, workTracker, executor, codec, wakeup, sharedCooldowns, ambiguousReconciler,
         )
 
         scopedRunner.runOne(7)
 
-        Mockito.verify(runtime).stop(
+        Mockito.verify(runtime).scheduleAutomaticRetry(
             Mockito.eq(7L),
             eqString("token"),
             Mockito.isNull(),
             eqValue(AutomationStopReason.FATAL),
             eqString("invalid stored action"),
         )
+        Mockito.verify(wakeup).schedule(7, retryAt, "TYPED_AUTOMATIC_RETRY")
         Mockito.verifyNoInteractions(executor)
     }
 
     @Test
-    fun `work tracking failure stops before persistence or external execution`() {
+    fun `work tracking failure schedules retry before persistence or external execution`() {
         val decisions = Mockito.mock(AutomationDecisionSource::class.java)
         val workTracker = Mockito.mock(AutomationWorkTracker::class.java)
         val action = QuestAction.Accept("quest-1", "accept-1")
@@ -100,19 +104,23 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(decisions.select(7)).thenReturn(AutomationCoordination.Runnable(10, action, emptyList()))
         Mockito.doThrow(IllegalStateException("failed to track work"))
             .`when`(workTracker).ensureForAction(7, 10, action)
+        val retryAt = Instant.parse("2026-07-25T00:05:00Z")
+        Mockito.`when`(runtime.scheduleAutomaticRetry(7, "token", null, AutomationStopReason.FATAL, "failed to track work"))
+            .thenReturn(retryAt)
         val scopedRunner = UnifiedAutomationRunner(
             preflight, runtime, decisions, workTracker, executor, codec, wakeup, sharedCooldowns, ambiguousReconciler,
         )
 
         scopedRunner.runOne(7)
 
-        Mockito.verify(runtime).stop(
+        Mockito.verify(runtime).scheduleAutomaticRetry(
             Mockito.eq(7L),
             eqString("token"),
             Mockito.isNull(),
             eqValue(AutomationStopReason.FATAL),
             eqString("failed to track work"),
         )
+        Mockito.verify(wakeup).schedule(7, retryAt, "TYPED_AUTOMATIC_RETRY")
         Mockito.verify(runtime, Mockito.never())
             .prepare(Mockito.eq(7L), eqString("token"), anyStoredAction())
         Mockito.verifyNoInteractions(executor)
@@ -129,6 +137,9 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(runtime.prepare(Mockito.eq(7L), eqString("token"), anyStoredAction())).thenThrow(
             IllegalStateException("interrupted preparation", InterruptedException("interrupted")),
         )
+        val retryAt = Instant.parse("2026-07-25T00:05:00Z")
+        Mockito.`when`(runtime.scheduleAutomaticRetry(7, "token", null, AutomationStopReason.FATAL, "interrupted preparation"))
+            .thenReturn(retryAt)
         val scopedRunner = UnifiedAutomationRunner(
             preflight, runtime, decisions, workTracker, executor, codec, wakeup, sharedCooldowns, ambiguousReconciler,
         )
@@ -137,13 +148,14 @@ class UnifiedAutomationRunnerTest {
             scopedRunner.runOne(7)
 
             assertTrue(Thread.currentThread().isInterrupted)
-            Mockito.verify(runtime).stop(
+            Mockito.verify(runtime).scheduleAutomaticRetry(
                 Mockito.eq(7L),
                 eqString("token"),
                 Mockito.isNull(),
                 eqValue(AutomationStopReason.FATAL),
                 eqString("interrupted preparation"),
             )
+            Mockito.verify(wakeup).schedule(7, retryAt, "TYPED_AUTOMATIC_RETRY")
             Mockito.verifyNoInteractions(executor)
         } finally {
             Thread.interrupted()
@@ -373,18 +385,22 @@ class UnifiedAutomationRunnerTest {
     }
 
     @Test
-    fun `preflight terminal stop transitions once and its wake cannot call preflight again`() {
-        Mockito.`when`(runtime.isRunning(7)).thenReturn(true, false)
+    fun `preflight failure remains running and schedules another attempt`() {
+        val retryAt = Instant.parse("2026-07-23T00:05:00Z")
+        Mockito.`when`(runtime.isRunning(7)).thenReturn(true)
         Mockito.`when`(preflight.ensureReady(7))
             .thenReturn(AutomationDailyPreflight.Result.Stopped(AutomationDailyPreflight.StopReason.NETWORK))
+        Mockito.`when`(runtime.scheduleAutomaticRetry(7, AutomationStopReason.NETWORK, "Daily preflight failed: NETWORK"))
+            .thenReturn(retryAt)
 
-        runner.runOne(7)
         runner.runOne(7)
 
         Mockito.verify(preflight, Mockito.times(1)).ensureReady(7)
-        Mockito.verify(runtime, Mockito.times(1)).stop(7, AutomationStopReason.NETWORK)
+        Mockito.verify(preflight).resume(7)
+        Mockito.verify(runtime).scheduleAutomaticRetry(7, AutomationStopReason.NETWORK, "Daily preflight failed: NETWORK")
+        Mockito.verify(wakeup).schedule(7, retryAt, "TYPED_AUTOMATIC_RETRY")
         Mockito.verify(runtime, Mockito.never()).claim(7)
-        Mockito.verifyNoInteractions(loader, coordinator, executor, wakeup)
+        Mockito.verifyNoInteractions(loader, coordinator, executor)
     }
 
     @Test
@@ -404,16 +420,16 @@ class UnifiedAutomationRunnerTest {
     }
 
     @Test
-    fun `session login failure stops typed runtime for authentication`() {
-        preparedActionFailure(
+    fun `session login failure keeps typed runtime alive for authentication retry`() {
+        preparedActionRetry(
             IllegalStateException("wrapped login failure", AutomationLoginRequiredException()),
             AutomationStopReason.AUTHENTICATION,
         )
     }
 
     @Test
-    fun `captcha response stops typed runtime for captcha instead of network`() {
-        preparedActionFailure(
+    fun `captcha response keeps typed runtime alive for captcha retry`() {
+        preparedActionRetry(
             IllegalStateException(
                 "wrapped captcha",
                 ApiException(ErrorCode.CAPTCHA_REQUIRED, "captcha"),
@@ -423,16 +439,16 @@ class UnifiedAutomationRunnerTest {
     }
 
     @Test
-    fun `captcha live snapshot stops typed runtime before preparing any action`() {
-        liveSnapshotFailure(
+    fun `captcha live snapshot schedules retry before preparing any action`() {
+        liveSnapshotRetry(
             ApiException(ErrorCode.CAPTCHA_REQUIRED, "captcha"),
             AutomationStopReason.CAPTCHA,
         )
     }
 
     @Test
-    fun `failed live snapshot login recovery stops typed runtime for authentication`() {
-        liveSnapshotFailure(
+    fun `failed live snapshot login recovery schedules another authentication attempt`() {
+        liveSnapshotRetry(
             AutomationLoginRequiredException(),
             AutomationStopReason.AUTHENTICATION,
         )
@@ -499,16 +515,20 @@ class UnifiedAutomationRunnerTest {
     }
 
     @Test
-    fun `captcha while reconciling stops runtime but preserves reconciling action`() {
+    fun `captcha while reconciling preserves action and schedules another verification`() {
         val (stored, row) = reconcilingQuestAction()
         Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
         Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token", row))
         Mockito.`when`(ambiguousReconciler.reconcile(7, stored))
             .thenThrow(ApiException(ErrorCode.CAPTCHA_REQUIRED, "captcha"))
+        val retryAt = Instant.parse("2026-07-25T00:05:00Z")
+        Mockito.`when`(runtime.scheduleAutomaticRetry(7, "token", 88, AutomationStopReason.CAPTCHA, "captcha"))
+            .thenReturn(retryAt)
 
         runner.runOne(7)
 
-        Mockito.verify(runtime).stop(7, "token", 88, AutomationStopReason.CAPTCHA, "captcha")
+        Mockito.verify(runtime).scheduleAutomaticRetry(7, "token", 88, AutomationStopReason.CAPTCHA, "captcha")
+        Mockito.verify(wakeup).schedule(7, retryAt, "TYPED_AUTOMATIC_RETRY")
         Mockito.verifyNoInteractions(executor)
     }
 
@@ -560,7 +580,7 @@ class UnifiedAutomationRunnerTest {
     }
 
     @Test
-    fun `tampered stored envelopes stop fatally before submitting or posting`() {
+    fun `tampered stored envelopes are isolated and retried without submitting or posting`() {
         val stored = StoredTypedAutomationAction(
             12,
             "execution-1",
@@ -633,15 +653,23 @@ class UnifiedAutomationRunnerTest {
             Mockito.`when`(casePreflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
             Mockito.`when`(caseRuntime.isRunning(7)).thenReturn(true)
             Mockito.`when`(caseRuntime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token", row))
+            val retryAt = Instant.parse("2026-07-25T00:05:00Z")
+            Mockito.`when`(
+                caseRuntime.isolateIntegrityFailureForRetry(
+                    7, "token", 88, "Stored typed action integrity check failed.",
+                ),
+            ).thenReturn(retryAt)
 
             caseRunner.runOne(7)
 
-            Mockito.verify(caseRuntime).stopForIntegrityFailure(
+            Mockito.verify(caseRuntime).isolateIntegrityFailureForRetry(
                 7,
                 "token",
                 88,
                 "Stored typed action integrity check failed.",
             )
+            Mockito.verify(wakeup).schedule(7, retryAt, "TYPED_AUTOMATIC_RETRY")
+            Mockito.clearInvocations(wakeup)
             Mockito.verifyNoInteractions(caseExecutor)
         }
     }
@@ -672,7 +700,7 @@ class UnifiedAutomationRunnerTest {
         )
     }
 
-    private fun preparedActionFailure(error: Throwable, expectedReason: AutomationStopReason) {
+    private fun preparedActionRetry(error: Throwable, expectedReason: AutomationStopReason) {
         val stored = StoredTypedAutomationAction(
             12,
             "execution-1",
@@ -698,16 +726,20 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token", row))
         Mockito.`when`(runtime.markSubmitting(7, "token", 88)).thenReturn(true)
         Mockito.doThrow(error).`when`(executor).execute(Mockito.eq(7L), anyStoredAction())
+        val retryAt = Instant.parse("2026-07-25T00:05:00Z")
+        Mockito.`when`(runtime.scheduleAutomaticRetry(Mockito.eq(7L), eqString("token"), Mockito.eq(88L), eqValue(expectedReason), anyStringValue()))
+            .thenReturn(retryAt)
 
         runner.runOne(7)
 
-        Mockito.verify(runtime).stop(
+        Mockito.verify(runtime).scheduleAutomaticRetry(
             Mockito.eq(7L),
             eqString("token"),
             Mockito.eq(88L),
             eqValue(expectedReason),
             anyStringValue(),
         )
+        Mockito.verify(wakeup).schedule(7, retryAt, "TYPED_AUTOMATIC_RETRY")
     }
 
     private fun ambiguousActionFailure(error: Throwable) {
@@ -744,20 +776,24 @@ class UnifiedAutomationRunnerTest {
     private fun <T> eqValue(value: T): T = Mockito.eq(value) ?: value
     private fun anyStringValue(): String = Mockito.anyString() ?: ""
 
-    private fun liveSnapshotFailure(error: Throwable, expectedReason: AutomationStopReason) {
+    private fun liveSnapshotRetry(error: Throwable, expectedReason: AutomationStopReason) {
         Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
         Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token"))
         Mockito.`when`(loader.loadTyped(7)).thenThrow(error)
+        val retryAt = Instant.parse("2026-07-25T00:05:00Z")
+        Mockito.`when`(runtime.scheduleAutomaticRetry(Mockito.eq(7L), eqString("token"), Mockito.isNull(), eqValue(expectedReason), anyStringValue()))
+            .thenReturn(retryAt)
 
         runner.runOne(7)
 
-        Mockito.verify(runtime).stop(
+        Mockito.verify(runtime).scheduleAutomaticRetry(
             Mockito.eq(7L),
             eqString("token"),
             Mockito.isNull(),
             eqValue(expectedReason),
             anyStringValue(),
         )
+        Mockito.verify(wakeup).schedule(7, retryAt, "TYPED_AUTOMATIC_RETRY")
         Mockito.verifyNoInteractions(coordinator, executor)
     }
 }

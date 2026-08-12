@@ -113,6 +113,9 @@ class TypedAutomationLifecycleBridge(
 
     @Transactional(propagation = Propagation.MANDATORY)
     fun stop(accountId: Long, reason: AutomationStopReason, wakeReason: String) {
+        require(reason == AutomationStopReason.MANUAL_STOP) {
+            "Only an explicit user request may stop typed automation."
+        }
         val account = accounts.findByIdForUpdate(accountId) ?: error("Account $accountId does not exist.")
         val now = timeProvider.now()
         val state = typed.lockRuntimeState(accountId)

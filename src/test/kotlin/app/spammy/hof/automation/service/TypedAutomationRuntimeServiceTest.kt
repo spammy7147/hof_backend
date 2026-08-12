@@ -29,7 +29,7 @@ class TypedAutomationRuntimeServiceTest {
     private val account = HofAccountEntity(7, "login", "encrypted", now)
 
     @Test
-    fun `safe failures schedule exact retries then stop network on fourth`() {
+    fun `safe failures keep scheduling forever with a capped delay`() {
         val state = state().apply {
             leaseToken = "token"
             leaseUntil = now.plusSeconds(300)
@@ -43,10 +43,34 @@ class TypedAutomationRuntimeServiceTest {
         state.leaseToken = "token"
         assertEquals(now.plusSeconds(60), service.scheduleSafeRetry(7, "token", "three"))
         state.leaseToken = "token"
-        assertEquals(null, service.scheduleSafeRetry(7, "token", "four"))
-        assertEquals(TypedAutomationLifecycle.STOPPED, state.lifecycleStatus)
+        assertEquals(now.plusSeconds(300), service.scheduleSafeRetry(7, "token", "four"))
+        assertEquals(TypedAutomationLifecycle.RUNNING, state.lifecycleStatus)
         assertEquals(AutomationStopReason.NETWORK.name, state.stopReason)
         assertNull(state.stopActionId)
+    }
+
+    @Test
+    fun `automatic authentication failure remains recoverable and preserves submitted action for verification`() {
+        val state = state().apply { leaseToken = "token"; leaseUntil = now.plusSeconds(300) }
+        val entry = AutomationEntryEntity(9, account, AutomationType.QUEST, 0, true, now, now)
+        val action = TypedAutomationActionRunEntity(
+            20, account, entry, "login-retry", "QUEST_CLAIM", "{}", "c".repeat(64),
+            TypedAutomationActionStatus.SUBMITTING, leaseToken = "token", createdAt = now, updatedAt = now,
+        )
+        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
+        Mockito.`when`(query.lockTypedAction(action.id)).thenReturn(action)
+
+        val retryAt = service.scheduleAutomaticRetry(
+            7, "token", action.id, AutomationStopReason.AUTHENTICATION, "login failed",
+        )
+
+        assertEquals(now.plusSeconds(10), retryAt)
+        assertEquals(TypedAutomationLifecycle.RUNNING, state.lifecycleStatus)
+        assertEquals(AutomationStopReason.AUTHENTICATION.name, state.stopReason)
+        assertEquals(AutomationWaitReason.HOF_CONNECTION, state.waitReason)
+        assertNull(state.leaseToken)
+        assertEquals(TypedAutomationActionStatus.RECONCILING, action.status)
+        assertNull(action.finishedAt)
     }
 
     @Test
@@ -78,14 +102,14 @@ class TypedAutomationRuntimeServiceTest {
         Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
         Mockito.`when`(query.lockTypedAction(action.id)).thenReturn(action)
 
-        assertTrue(service.stop(7, "token", action.id, AutomationStopReason.NETWORK, "connection reset"))
+        assertTrue(service.stop(7, "token", action.id, AutomationStopReason.MANUAL_STOP, "user stop"))
 
         assertEquals(action.id, state.stopActionId)
-        assertEquals(TypedAutomationActionStatus.RECONCILING, action.status)
+        assertEquals(TypedAutomationActionStatus.FAILED, action.status)
     }
 
     @Test
-    fun `integrity failure marks a prepared action failed`() {
+    fun `integrity failure isolates a prepared action and keeps runtime retryable`() {
         val state = state().apply { leaseToken = "token"; leaseUntil = now.plusSeconds(300) }
         val entry = AutomationEntryEntity(9, account, AutomationType.BATTLE_MAP, 0, true, now, now)
         val action = TypedAutomationActionRunEntity(
@@ -95,15 +119,16 @@ class TypedAutomationRuntimeServiceTest {
         Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
         Mockito.`when`(query.lockTypedAction(action.id)).thenReturn(action)
 
-        assertTrue(service.stopForIntegrityFailure(7, "token", action.id, "integrity"))
+        assertEquals(now.plusSeconds(10), service.isolateIntegrityFailureForRetry(7, "token", action.id, "integrity"))
 
         assertEquals(TypedAutomationActionStatus.FAILED, action.status)
-        assertEquals(TypedAutomationLifecycle.STOPPED, state.lifecycleStatus)
-        assertEquals(action.id, state.stopActionId)
+        assertEquals(TypedAutomationLifecycle.RUNNING, state.lifecycleStatus)
+        assertEquals(AutomationStopReason.FATAL.name, state.stopReason)
+        assertNull(state.stopActionId)
     }
 
     @Test
-    fun `integrity failure isolates a reconciling action as ambiguous`() {
+    fun `integrity failure isolates a reconciling action as ambiguous and retries runtime`() {
         val state = state().apply { leaseToken = "token"; leaseUntil = now.plusSeconds(300) }
         val entry = AutomationEntryEntity(9, account, AutomationType.BATTLE_MAP, 0, true, now, now)
         val action = TypedAutomationActionRunEntity(
@@ -113,11 +138,12 @@ class TypedAutomationRuntimeServiceTest {
         Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
         Mockito.`when`(query.lockTypedAction(action.id)).thenReturn(action)
 
-        assertTrue(service.stopForIntegrityFailure(7, "token", action.id, "integrity"))
+        assertEquals(now.plusSeconds(10), service.isolateIntegrityFailureForRetry(7, "token", action.id, "integrity"))
 
         assertEquals(TypedAutomationActionStatus.AMBIGUOUS, action.status)
-        assertEquals(TypedAutomationLifecycle.STOPPED, state.lifecycleStatus)
-        assertEquals(action.id, state.stopActionId)
+        assertEquals(TypedAutomationLifecycle.RUNNING, state.lifecycleStatus)
+        assertEquals(AutomationStopReason.FATAL.name, state.stopReason)
+        assertNull(state.stopActionId)
     }
 
     @Test
@@ -200,7 +226,7 @@ class TypedAutomationRuntimeServiceTest {
     }
 
     @Test
-    fun `captcha preserves submitted action for reconciliation after answer`() {
+    fun `captcha keeps submitted action for reconciliation while retrying`() {
         val state = state().apply { leaseToken = "token"; leaseUntil = now.plusSeconds(300) }
         val entry = AutomationEntryEntity(9, account, AutomationType.BATTLE_MAP, 0, true, now, now)
         val action = TypedAutomationActionRunEntity(
@@ -210,10 +236,14 @@ class TypedAutomationRuntimeServiceTest {
         Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
         Mockito.`when`(query.lockTypedAction(action.id)).thenReturn(action)
 
-        assertTrue(service.stop(7, "token", action.id, AutomationStopReason.CAPTCHA, "captcha"))
+        assertEquals(
+            now.plusSeconds(10),
+            service.scheduleAutomaticRetry(7, "token", action.id, AutomationStopReason.CAPTCHA, "captcha"),
+        )
 
-        assertEquals(action.id, state.stopActionId)
+        assertNull(state.stopActionId)
         assertEquals(TypedAutomationActionStatus.RECONCILING, action.status)
+        assertEquals(TypedAutomationLifecycle.RUNNING, state.lifecycleStatus)
         assertEquals(AutomationStopReason.CAPTCHA.name, state.stopReason)
     }
 
@@ -226,7 +256,7 @@ class TypedAutomationRuntimeServiceTest {
         }
         Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
 
-        assertTrue(service.stop(7, "token", null, AutomationStopReason.FATAL, "snapshot failed"))
+        assertTrue(service.stop(7, "token", null, AutomationStopReason.MANUAL_STOP, "user stop"))
 
         assertNull(state.stopActionId)
     }
@@ -243,7 +273,7 @@ class TypedAutomationRuntimeServiceTest {
         Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
         Mockito.`when`(query.lockTypedAction(otherAction.id)).thenReturn(otherAction)
 
-        assertTrue(service.stop(7, "token", otherAction.id, AutomationStopReason.NETWORK, "connection reset"))
+        assertTrue(service.stop(7, "token", otherAction.id, AutomationStopReason.MANUAL_STOP, "user stop"))
 
         assertNull(state.stopActionId)
         assertEquals(TypedAutomationActionStatus.SUBMITTING, otherAction.status)
@@ -260,7 +290,7 @@ class TypedAutomationRuntimeServiceTest {
         Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
         Mockito.`when`(query.lockTypedAction(completed.id)).thenReturn(completed)
 
-        assertTrue(service.stop(7, "token", completed.id, AutomationStopReason.NETWORK, "late failure"))
+        assertTrue(service.stop(7, "token", completed.id, AutomationStopReason.MANUAL_STOP, "user stop"))
 
         assertNull(state.stopActionId)
         assertEquals(TypedAutomationActionStatus.SUCCEEDED, completed.status)

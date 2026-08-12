@@ -73,15 +73,14 @@ class UnifiedAutomationRunner @Autowired constructor(
                 return
             }
             is AutomationDailyPreflight.Result.Stopped -> {
-                typedRuntime.stop(
-                    accountId,
-                    when (preflight.reason) {
-                        AutomationDailyPreflight.StopReason.AUTHENTICATION -> AutomationStopReason.AUTHENTICATION
-                        AutomationDailyPreflight.StopReason.CAPTCHA -> AutomationStopReason.CAPTCHA
-                        AutomationDailyPreflight.StopReason.NETWORK -> AutomationStopReason.NETWORK
-                        AutomationDailyPreflight.StopReason.FATAL -> AutomationStopReason.FATAL
-                    },
-                )
+                val reason = when (preflight.reason) {
+                    AutomationDailyPreflight.StopReason.AUTHENTICATION -> AutomationStopReason.AUTHENTICATION
+                    AutomationDailyPreflight.StopReason.CAPTCHA -> AutomationStopReason.CAPTCHA
+                    AutomationDailyPreflight.StopReason.NETWORK -> AutomationStopReason.NETWORK
+                    AutomationDailyPreflight.StopReason.FATAL -> AutomationStopReason.FATAL
+                }
+                dailyPreflight.resume(accountId)
+                scheduleAutomaticRetry(accountId, reason, "Daily preflight failed: ${preflight.reason}")
                 return
             }
         }
@@ -92,7 +91,11 @@ class UnifiedAutomationRunner @Autowired constructor(
         val stored = claim.preparedAction?.let {
             runCatching { typedCodec.verifyPersisted(it, accountId) }.getOrElse { error ->
                 log.warn("Stored typed action integrity failure accountId={} actionId={} errorType={}", accountId, it.id, error.javaClass.name)
-                typedRuntime.stopForIntegrityFailure(accountId, token, it.id, "Stored typed action integrity check failed.")
+                typedRuntime.isolateIntegrityFailureForRetry(
+                    accountId, token, it.id, "Stored typed action integrity check failed.",
+                )?.let { retryAt ->
+                    wakeupPort.schedule(accountId, retryAt, AUTOMATIC_RETRY_WAKE_REASON)
+                }
                 return
             }
         } ?: run {
@@ -118,13 +121,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                 }
                 return
             } catch (error: AutomationLoginRequiredException) {
-                typedRuntime.stop(
-                    accountId,
-                    token,
-                    null,
-                    AutomationStopReason.AUTHENTICATION,
-                    error.message,
-                )
+                scheduleAutomaticRetry(accountId, token, null, AutomationStopReason.AUTHENTICATION, error.message)
                 return
             } catch (error: ApiException) {
                 val reason = when (error.errorCode) {
@@ -132,10 +129,10 @@ class UnifiedAutomationRunner @Autowired constructor(
                     ErrorCode.HOF_LOGIN_FAILED, ErrorCode.HOF_SESSION_EXPIRED -> AutomationStopReason.AUTHENTICATION
                     else -> AutomationStopReason.FATAL
                 }
-                typedRuntime.stop(accountId, token, null, reason, error.message)
+                scheduleAutomaticRetry(accountId, token, null, reason, error.message)
                 return
             } catch (error: FatalAutomationException) {
-                typedRuntime.stop(accountId, token, null, AutomationStopReason.FATAL, error.message ?: "Fatal live snapshot failure")
+                scheduleAutomaticRetry(accountId, token, null, AutomationStopReason.FATAL, error.message ?: "Fatal live snapshot failure")
                 return
             }
             try {
@@ -157,7 +154,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                 }
                 is AutomationCoordination.Fatal -> {
                     typedRuntime.recordWarnings(accountId, token, decision.warnings)
-                    typedRuntime.stop(accountId, token, null, decision.reason, decision.message)
+                    scheduleAutomaticRetry(accountId, token, null, decision.reason, decision.message)
                     return
                 }
                 is AutomationCoordination.Unavailable -> {
@@ -206,11 +203,8 @@ class UnifiedAutomationRunner @Autowired constructor(
                     row.id,
                     error.javaClass.name,
                 )
-                typedRuntime.stop(
-                    accountId,
-                    token,
-                    row.id,
-                    classifyActionStop(error),
+                scheduleAutomaticRetry(
+                    accountId, token, row.id, classifyActionStop(error),
                     error.message ?: error.javaClass.simpleName,
                 )
                 return
@@ -313,11 +307,8 @@ class UnifiedAutomationRunner @Autowired constructor(
             decisionCycleId?.let { cycleId -> runCatching {
                 decisionJournal?.appendActionResult(cycleId, actionTrace(stored, AutomationHistoryEventKind.ACTION_FAILED, "ACTION_FAILED", error.message ?: error.javaClass.simpleName))
             } }
-            typedRuntime.stop(
-                accountId,
-                token,
-                row.id,
-                classifyActionStop(error),
+            scheduleAutomaticRetry(
+                accountId, token, row.id, classifyActionStop(error),
                 error.message ?: error.javaClass.simpleName,
             )
         }
@@ -358,15 +349,34 @@ class UnifiedAutomationRunner @Autowired constructor(
             error,
         )
         try {
-            typedRuntime.stop(
-                accountId,
-                token,
-                null,
-                AutomationStopReason.FATAL,
+            scheduleAutomaticRetry(
+                accountId, token, null, AutomationStopReason.FATAL,
                 error.message ?: error.javaClass.simpleName,
             )
         } finally {
             if (interrupted) Thread.currentThread().interrupt()
+        }
+    }
+
+    private fun scheduleAutomaticRetry(
+        accountId: Long,
+        reason: AutomationStopReason,
+        message: String,
+    ) {
+        typedRuntime.scheduleAutomaticRetry(accountId, reason, message)?.let {
+            wakeupPort.schedule(accountId, it, AUTOMATIC_RETRY_WAKE_REASON)
+        }
+    }
+
+    private fun scheduleAutomaticRetry(
+        accountId: Long,
+        token: String,
+        actionId: Long?,
+        reason: AutomationStopReason,
+        message: String,
+    ) {
+        typedRuntime.scheduleAutomaticRetry(accountId, token, actionId, reason, message)?.let {
+            wakeupPort.schedule(accountId, it, AUTOMATIC_RETRY_WAKE_REASON)
         }
     }
 
@@ -483,5 +493,6 @@ class UnifiedAutomationRunner @Autowired constructor(
 
     private companion object {
         const val HOF_COOLDOWN_WAKE_REASON = "HOF_503_COOLDOWN"
+        const val AUTOMATIC_RETRY_WAKE_REASON = "TYPED_AUTOMATIC_RETRY"
     }
 }

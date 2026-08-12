@@ -48,6 +48,9 @@ class TypedAutomationRuntimeService(
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun stop(accountId: Long, reason: AutomationStopReason) {
+        require(reason == AutomationStopReason.MANUAL_STOP) {
+            "Only an explicit user request may stop typed automation."
+        }
         lifecycleBridge.stop(accountId, reason, "TYPED_AUTOMATION_STOPPED")
     }
 
@@ -67,6 +70,8 @@ class TypedAutomationRuntimeService(
         }
         state.nextAttemptAt = null
         state.waitReason = null
+        state.stopReason = null
+        state.stopActionId = null
         val token = UUID.randomUUID().toString()
         state.leaseToken = token
         state.leaseUntil = now.plus(LEASE_DURATION)
@@ -280,6 +285,9 @@ class TypedAutomationRuntimeService(
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun stop(accountId: Long, token: String, actionId: Long?, reason: AutomationStopReason, message: String): Boolean {
+        require(reason == AutomationStopReason.MANUAL_STOP) {
+            "Only an explicit user request may stop typed automation."
+        }
         val state = fencedState(accountId, token) ?: return false
         val now = timeProvider.now()
         val stoppedAction = actionId?.let { id ->
@@ -308,40 +316,72 @@ class TypedAutomationRuntimeService(
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun stopForIntegrityFailure(accountId: Long, token: String, actionId: Long, message: String): Boolean {
-        val state = fencedState(accountId, token) ?: return false
-        val action = queryRepository.lockTypedAction(actionId) ?: return false
-        if (action.account.id != accountId || action.leaseToken != token) return false
+    fun isolateIntegrityFailureForRetry(accountId: Long, token: String, actionId: Long, message: String): Instant? {
+        val state = fencedState(accountId, token) ?: return null
+        val action = queryRepository.lockTypedAction(actionId) ?: return null
+        if (action.account.id != accountId || action.leaseToken != token) return null
         val terminalStatus = when (action.status) {
             TypedAutomationActionStatus.PREPARED -> TypedAutomationActionStatus.FAILED
             TypedAutomationActionStatus.RECONCILING -> TypedAutomationActionStatus.AMBIGUOUS
-            else -> return false
+            else -> return null
         }
         val now = timeProvider.now()
         action.status = terminalStatus
         action.lastError = message.take(2000)
         action.finishedAt = now
         action.updatedAt = now
-        state.lastError = sanitizeDiagnostic(message)
-        stopState(state, AutomationStopReason.FATAL, now, action.id)
-        return true
+        return scheduleAutomaticRetry(state, AutomationStopReason.FATAL, message)
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun scheduleSafeRetry(accountId: Long, token: String, message: String): Instant? {
         val state = fencedState(accountId, token) ?: return null
-        val now = timeProvider.now()
-        state.retryAttempt += 1
-        state.lastError = sanitizeDiagnostic(message)
-        state.leaseToken = null; state.leaseUntil = null; state.updatedAt = now
-        if (state.retryAttempt >= 4) {
-            stopState(state, AutomationStopReason.NETWORK, now)
-            return null
+        return scheduleAutomaticRetry(state, AutomationStopReason.NETWORK, message)
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun scheduleAutomaticRetry(accountId: Long, reason: AutomationStopReason, message: String): Instant? {
+        require(reason != AutomationStopReason.MANUAL_STOP) { "Manual stop cannot be scheduled for retry." }
+        val state = queryRepository.lockRuntimeState(accountId)
+            ?.takeIf { it.lifecycleStatus in setOf(TypedAutomationLifecycle.RUNNING, TypedAutomationLifecycle.DRAINING) }
+            ?: return null
+        return scheduleAutomaticRetry(state, reason, message)
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun scheduleAutomaticRetry(
+        accountId: Long,
+        token: String,
+        actionId: Long?,
+        reason: AutomationStopReason,
+        message: String,
+    ): Instant? {
+        require(reason != AutomationStopReason.MANUAL_STOP) { "Manual stop cannot be scheduled for retry." }
+        val state = fencedState(accountId, token) ?: return null
+        val action = actionId?.let { id ->
+            queryRepository.lockTypedAction(id)?.takeIf {
+                it.account.id == accountId &&
+                    it.leaseToken == token &&
+                    it.status in setOf(
+                        TypedAutomationActionStatus.PREPARED,
+                        TypedAutomationActionStatus.SUBMITTING,
+                        TypedAutomationActionStatus.RECONCILING,
+                    )
+            }
         }
-        return now.plusSeconds(RETRY_SECONDS[state.retryAttempt - 1]).also {
-            state.nextAttemptAt = it
-            state.waitReason = AutomationWaitReason.HOF_CONNECTION
+        val retryAt = scheduleAutomaticRetry(state, reason, message)
+        action?.apply {
+            if (status == TypedAutomationActionStatus.SUBMITTING) {
+                status = TypedAutomationActionStatus.RECONCILING
+                submittedAt = submittedAt ?: timeProvider.now()
+            }
+            retryAttempt = (retryAttempt + 1).coerceAtMost(MAX_RETRY_ATTEMPT)
+            nextAttemptAt = retryAt
+            lastError = sanitizeDiagnostic(message)
+            finishedAt = null
+            updatedAt = timeProvider.now()
         }
+        return retryAt
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -402,6 +442,9 @@ class TypedAutomationRuntimeService(
         state.updatedAt = timeProvider.now()
         state.warningText = warnings.takeIf { it.isNotEmpty() }?.joinToString("\n") { sanitizeDiagnostic(it) }
         state.lastError = null
+        state.retryAttempt = 0
+        state.stopReason = null
+        state.stopActionId = null
         return true
     }
 
@@ -433,6 +476,7 @@ class TypedAutomationRuntimeService(
         state.retryAttempt = 0; state.nextAttemptAt = null; state.waitReason = null
         state.leaseToken = null; state.leaseUntil = null; state.updatedAt = now
         state.warningText = null; state.lastError = null
+        state.stopReason = null
         state.stopActionId = null
         return true
     }
@@ -452,6 +496,26 @@ class TypedAutomationRuntimeService(
         state.leaseToken = null; state.leaseUntil = null; state.updatedAt = now
     }
 
+    private fun scheduleAutomaticRetry(
+        state: TypedAutomationRuntimeStateEntity,
+        reason: AutomationStopReason,
+        message: String,
+    ): Instant {
+        val now = timeProvider.now()
+        state.retryAttempt = (state.retryAttempt + 1).coerceAtMost(MAX_RETRY_ATTEMPT)
+        val delayIndex = (state.retryAttempt - 1).coerceAtMost(RETRY_SECONDS.lastIndex)
+        val retryAt = now.plusSeconds(RETRY_SECONDS[delayIndex])
+        state.stopReason = reason.name
+        state.stopActionId = null
+        state.nextAttemptAt = retryAt
+        state.waitReason = AutomationWaitReason.HOF_CONNECTION
+        state.leaseToken = null
+        state.leaseUntil = null
+        state.lastError = sanitizeDiagnostic(message)
+        state.updatedAt = now
+        return retryAt
+    }
+
     private fun sanitizeDiagnostic(value: String): String = value
         .replace(Regex("(?i)(password|token|cookie|authorization)\\s*[=:]\\s*[^\\s,;]+"), "$1=[redacted]")
         .replace(Regex("[\\r\\n\\t]+"), " ")
@@ -460,6 +524,7 @@ class TypedAutomationRuntimeService(
     companion object {
         private val LEASE_DURATION = Duration.ofMinutes(5)
         private val CONFIG_RECHECK = Duration.ofMinutes(5)
-        private val RETRY_SECONDS = listOf(10L, 30L, 60L)
+        private val RETRY_SECONDS = listOf(10L, 30L, 60L, 300L)
+        private const val MAX_RETRY_ATTEMPT = 4
     }
 }
