@@ -135,6 +135,14 @@ class RaidPubParserTest {
         assertEquals(1, context.requests().size)
     }
 
+    @Test fun `시작 버튼이 보여도 출발 대기 중에는 제출하지 않는다`() {
+        val context = service(fixture().replace("- [다른 사람]", "- [《테스트 길드》현재사용자]"))
+        assertFailsWith<app.spammy.hof.common.error.ApiException> {
+            context.service.action(7L, RaidPubActionRequest(RaidAction.START, "RaidSiren"))
+        }
+        assertEquals(1, context.requests().size)
+    }
+
     @Test fun `raid_hunt에서 실제 관측되고 내가 참가한 raid만 기존 전투 CTA를 노출한다`() {
         val context = service(fixture())
         val response = context.service.load(7L)
@@ -144,6 +152,17 @@ class RaidPubParserTest {
             7L,
             linkedMapOf("RaidGoblin" to "고블린 전투 마차", "RaidSiren" to "음란 해역의 괴물 (Seiren Nom)"),
         )
+    }
+
+    @Test fun `전투 정보실 id와 실제 raid_common 코드가 달라도 열린 단일 레이드 맵을 연결한다`() {
+        val context = service(fixture())
+        Mockito.`when`(context.maps.findCurrentlyObservedMaps(7L, "raid"))
+            .thenReturn(listOf(observedMap("raid001", "고블린 전투 마차")))
+
+        val response = context.service.load(7L)
+
+        assertEquals("raid001", response.raids.first().battleTarget?.mapCode)
+        assertNull(response.raids[1].battleTarget)
     }
 
     @Test fun `다른 raid의 action을 요청하면 POST 없이 fail closed한다`() {
@@ -177,7 +196,9 @@ class RaidPubParserTest {
     private fun registerableFixture() = fixture()
         .replace("현재 상태는 신청 대기 (신청 가능까지 6분 58초)", "현재 상태는 신청 가능")
         .replace("[《테스트 길드》현재사용자]", "[다른 신청자]")
-    private fun startableFixture() = fixture().replace("- [다른 사람]", "- [《테스트 길드》현재사용자]")
+    private fun startableFixture() = fixture()
+        .replace("현재 상태 : 418초 후 출발", "현재 상태 : 출발 가능")
+        .replace("- [다른 사람]", "- [《테스트 길드》현재사용자]")
     private fun service(vararg responses: String): Context {
         val accounts = Mockito.mock(AccountQueryRepository::class.java)
         val cookies = Mockito.mock(CookieQueryRepository::class.java)
@@ -195,7 +216,7 @@ class RaidPubParserTest {
         val executor = TownAuthenticatedExecutor(accounts, cookies, HofRequestFactory(), gateway, LoginStateParser(), forms, HofResultParser(), TownActionGuard())
         return Context(RaidPubService(executor, locations, parser, maps), gateway, maps)
     }
-    private fun observedMap(code: String) = BattleMapResponse("raid", code, code, null, 0, 0, null, null, null, null, null, null, BattleMapKeyMode.UNKNOWN, null, null, false, true, true, null, "?raid_common=$code")
+    private fun observedMap(code: String, name: String = code) = BattleMapResponse("raid", code, name, null, 0, 0, null, null, null, null, null, null, BattleMapKeyMode.UNKNOWN, null, null, false, true, true, null, "?raid_common=$code")
     private data class Context(val service: RaidPubService, val gateway: AccountHofGateway, val maps: BattleMapService) {
         fun requests() = Mockito.mockingDetails(gateway).invocations.mapNotNull { it.arguments.getOrNull(1) as? HofRequest }
     }

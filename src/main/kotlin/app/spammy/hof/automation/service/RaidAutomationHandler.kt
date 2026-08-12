@@ -51,7 +51,6 @@ class RaidAutomationHandler : AutomationHandler<RaidAutomationSnapshot> {
             ?: return retry(context, "RAID_TARGET_TEMPORARILY_MISSING", "진행 중인 레이드 대상을 다시 확인합니다.")
         if (raid.status == RaidStatus.CLOSED) return HandlerEvaluation.Runnable(RaidCycleAbortAutomationAction(context.accountId, cycle.raidId))
         if (raid.status in setOf(RaidStatus.TESTING, RaidStatus.UNKNOWN)) return retry(context, "RAID_STATUS_UNCERTAIN", "레이드 상태를 다시 확인합니다.")
-        if (RaidAction.START in raid.actions) return HandlerEvaluation.Runnable(RaidTownAutomationAction(context.accountId, RaidAction.START, raid.id))
         if (raid.status == RaidStatus.COMPLETED || RaidAction.REWARD in context.pub.globalActions) {
             return HandlerEvaluation.Runnable(RaidTownAutomationAction(context.accountId, RaidAction.REWARD))
         }
@@ -65,6 +64,9 @@ class RaidAutomationHandler : AutomationHandler<RaidAutomationSnapshot> {
                 context.accountId, context.now.atZone(SEOUL).toLocalDate(), battle.categoryId, battle.mapCode,
                 setting.presetMode, presetId, 1, UUID.randomUUID().toString(), BattleAutomationActionSource.RAID_AUTOMATION, party, raid.name,
             ))
+        }
+        if (raid.status == RaidStatus.READY && RaidAction.START in raid.actions) {
+            return HandlerEvaluation.Runnable(RaidTownAutomationAction(context.accountId, RaidAction.START, raid.id))
         }
         return retry(context, "RAID_WAITING_TO_START", "레이드 출발 가능 상태를 기다립니다.", raid.waitSeconds)
     }

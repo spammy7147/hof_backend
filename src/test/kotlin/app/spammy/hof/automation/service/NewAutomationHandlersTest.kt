@@ -101,6 +101,28 @@ class NewAutomationHandlersTest {
         assertIs<RaidCycleAbortAutomationAction>(assertIs<HandlerEvaluation.Runnable>(closed).action)
     }
 
+    @Test
+    fun `raid waits for departure time even while the start button is visible`() {
+        val target = RaidAutomationTarget("RaidGoblin", "고블린 전투 마차", PresetSelectionMode.EXPLICIT, 3, 0, party)
+        val waiting = RaidPubRaidResponse(
+            "RaidGoblin", "고블린 전투 마차", true, null, 6, "100000+",
+            RaidStatus.WAITING, "파티 모집 중 (1294초 후 출발 가능)", 1294,
+            listOf("현재사용자"), true, setOf(RaidAction.START), null,
+        )
+        val evaluation = RaidAutomationHandler().evaluate(RaidAutomationSnapshot(
+            1,
+            RaidPubResponse(listOf(waiting), true, false, null, null, emptySet(), null),
+            listOf(target),
+            null,
+            OpenRaidCycleSnapshot(9, "RaidGoblin", RaidAutomationCycleStatus.REGISTERED_WAITING, null),
+            now,
+        ))
+
+        val unavailable = assertIs<HandlerEvaluation.Unavailable>(evaluation)
+        assertEquals("RAID_WAITING_TO_START", unavailable.reasonCode)
+        assertEquals(now.plusSeconds(1294), unavailable.nextRunAt)
+    }
+
     private fun fishing(primary: FishingPrimaryAction, remaining: Int = 3) = FishingResponse(
         null, remaining, null, null, null, null, null, "낚시터", primary,
         if (primary == FishingPrimaryAction.NONE) emptySet() else setOf(if (primary == FishingPrimaryAction.START) FishingAction.START else FishingAction.CATCH),

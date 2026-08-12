@@ -1,6 +1,7 @@
 package app.spammy.hof.town.raid.service
 
 import app.spammy.hof.battle.service.BattleMapService
+import app.spammy.hof.battle.model.BattleMapIdentityNormalizer
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.town.common.model.TownActionRequest
@@ -67,10 +68,18 @@ class RaidPubService(
         if (snapshot.raids.none { it.playable && it.joined }) return snapshot
         val available = battleMaps.findCurrentlyObservedMaps(accountId, "raid")
             .filter { it.enabled && it.resolved }
-            .mapNotNull { it.mapCode }
-            .toSet()
+            .filter { it.mapCode != null }
+        val joined = snapshot.raids.filter { it.playable && it.joined }
         return snapshot.copy(raids = snapshot.raids.map { raid ->
-            raid.copy(battleTarget = if (raid.playable && raid.joined && raid.id in available) RaidBattleTarget(mapCode = raid.id) else null)
+            if (!raid.playable || !raid.joined) return@map raid.copy(battleTarget = null)
+            val byCode = available.singleOrNull { it.mapCode == raid.id }
+            val raidName = BattleMapIdentityNormalizer.normalize(raid.name)
+            val byName = available.filter { map ->
+                val mapName = BattleMapIdentityNormalizer.normalize(map.name)
+                mapName == raidName || mapName.endsWith(raidName) || raidName.endsWith(mapName)
+            }.singleOrNull()
+            val observed = byCode ?: byName ?: available.singleOrNull()?.takeIf { joined.size == 1 }
+            raid.copy(battleTarget = observed?.mapCode?.let { RaidBattleTarget(mapCode = it) })
         })
     }
 
@@ -85,7 +94,8 @@ class RaidPubService(
         if (action !in raid.actions || !raid.playable) return false
         return when (action) {
             RaidAction.REGISTER -> !raid.joined && !snapshot.applyWait && raid.status !in REGISTER_BLOCKED_STATUSES
-            RaidAction.LEAVE, RaidAction.START -> raid.joined
+            RaidAction.LEAVE -> raid.joined
+            RaidAction.START -> raid.joined && raid.status == RaidStatus.READY
             RaidAction.RESET -> true
             else -> false
         }
