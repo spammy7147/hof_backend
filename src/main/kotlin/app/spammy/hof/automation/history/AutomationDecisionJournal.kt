@@ -3,6 +3,7 @@ package app.spammy.hof.automation.history
 import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.service.*
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.party.entity.PartyPresetEntity
 import jakarta.persistence.EntityManager
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -56,7 +57,9 @@ class JpaAutomationDecisionJournal(private val entityManager: EntityManager, pri
                 AutomationDecisionOutcome.WAITING -> AutomationHistoryEventKind.WAITING
                 AutomationDecisionOutcome.CONFIGURATION_WARNING -> AutomationHistoryEventKind.CONFIGURATION_WARNING
                 AutomationDecisionOutcome.FATAL -> AutomationHistoryEventKind.ACTION_FAILED
-            }, reasonCode = item.reasonCode, message = item.message, nextRunAt = item.nextRunAt, occurredAt = now,
+            }, reasonCode = item.reasonCode, message = item.message, nextRunAt = item.nextRunAt,
+            actionKind = item.actionKind, targetKey = item.targetKey, targetName = item.targetName,
+            presetId = item.presetId, presetName = presetName(accountId, item.presetId), occurredAt = now,
         )) }
         entityManager.flush()
         return cycle.id
@@ -73,7 +76,7 @@ class JpaAutomationDecisionJournal(private val entityManager: EntityManager, pri
             cycle = cycle, sequence = next, entryId = result.entryId, type = result.type, kind = result.kind,
             reasonCode = result.reasonCode, message = result.message, targetKey = result.targetKey,
             targetName = result.targetName, actionKind = result.actionKind, presetId = result.presetId,
-            presetName = result.presetName, occurredAt = timeProvider.now(),
+            presetName = result.presetName ?: presetName(cycle.accountId, result.presetId), occurredAt = timeProvider.now(),
         ))
     }
 
@@ -108,5 +111,9 @@ class JpaAutomationDecisionJournal(private val entityManager: EntityManager, pri
             e.targetName, e.actionKind, e.presetId, e.presetName, e.nextRunAt, e.occurredAt,
         ) }
         return AutomationHistoryCycle(cycle.id, cycle.result, cycle.selectedEntryId, cycle.startedAt, cycle.finishedAt, events)
+    }
+
+    private fun presetName(accountId: Long, presetId: Long?): String? = presetId?.let {
+        entityManager.find(PartyPresetEntity::class.java, it)?.takeIf { preset -> preset.account.id == accountId }?.name
     }
 }

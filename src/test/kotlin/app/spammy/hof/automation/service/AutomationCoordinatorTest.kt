@@ -1,6 +1,7 @@
 package app.spammy.hof.automation.service
 
 import app.spammy.hof.automation.entity.AutomationType
+import app.spammy.hof.automation.entity.PresetSelectionMode
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -78,6 +79,44 @@ class AutomationCoordinatorTest {
             ),
         )
         assertIs<AutomationCoordination.Fatal>(result)
+    }
+
+    @Test
+    fun `selected adventure trace explains target preset and observed criteria`() {
+        val selected = AdventureMapAutomationAction(
+            accountId = 7,
+            categoryId = "0003",
+            mapCode = "0004",
+            presetMode = PresetSelectionMode.EXPLICIT,
+            presetId = 13,
+            settingIdentity = 21,
+            executionIdentity = "execution",
+            mapName = "사막의 살인적",
+            observedAttemptRemaining = 4,
+            observedWinRemaining = 2,
+            observedAvailableCount = 2,
+        )
+        val coordinator = AutomationCoordinator(
+            quest = AutomationHandler<QuestAutomationSnapshot> { HandlerEvaluation.Skipped },
+            battle = AutomationHandler<BattleMapAutomationSnapshot> { HandlerEvaluation.Skipped },
+            adventure = AutomationHandler<AdventureMapAutomationSnapshot> { HandlerEvaluation.Runnable(selected) },
+        )
+
+        val result = assertIs<AutomationCoordination.Runnable>(coordinator.coordinate(
+            AutomationCoordinatorSnapshot(listOf(AutomationCoordinatorEntry(3, AutomationType.ADVENTURE_MAP, adventure = AdventureMapAutomationSnapshot(
+                accountId = 7, settings = emptyList(), mapStates = emptyList(), presetResolutions = emptyMap(),
+                executionIdentities = emptyMap(), evaluationInstant = Instant.EPOCH,
+            )))),
+        ))
+        val trace = result.trace.single()
+
+        assertEquals("0003/0004", trace.targetKey)
+        assertEquals("사막의 살인적", trace.targetName)
+        assertEquals(13, trace.presetId)
+        assertEquals("BATTLE", trace.actionKind)
+        kotlin.test.assertTrue(trace.message.contains("남은 도전 4회"))
+        kotlin.test.assertTrue(trace.message.contains("남은 승리 2회"))
+        kotlin.test.assertTrue(trace.message.contains("실행 가능 2회"))
     }
 
     private fun questSnapshot() = QuestAutomationSnapshot(7, emptyList(), emptyList(), emptyList(), emptyMap(), emptyMap(), emptyList(), Instant.EPOCH)

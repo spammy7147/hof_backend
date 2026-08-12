@@ -32,7 +32,10 @@ class AutomationDecisionJournalTest {
         val journal = JpaAutomationDecisionJournal(entityManager, TimeProvider { now })
         val decision = AutomationCoordination.Idle(emptyList(), listOf(
             AutomationEvaluationTrace(0, quest.id, AutomationType.QUEST, AutomationDecisionOutcome.SKIPPED, "QUEST_DONE", "완료"),
-            AutomationEvaluationTrace(1, union.id, AutomationType.UNION, AutomationDecisionOutcome.WAITING, "UNION_COOLDOWN", "대기", now.plusSeconds(60)),
+            AutomationEvaluationTrace(
+                1, union.id, AutomationType.UNION, AutomationDecisionOutcome.WAITING, "UNION_COOLDOWN", "대기",
+                now.plusSeconds(60), "BATTLE", "union/0001", "도적 소탕", 99,
+            ),
         ))
 
         val cycleId = journal.appendDecision(first.id, decision)
@@ -44,6 +47,12 @@ class AutomationDecisionJournalTest {
         val page = journal.page(first.id, AutomationHistoryQuery())
         assertEquals(listOf(0, 1, 2), page.cycles.single().events.map { it.sequence })
         assertEquals(listOf("QUEST_DONE", "UNION_COOLDOWN", "DONE"), page.cycles.single().events.map { it.reasonCode })
+        with(page.cycles.single().events[1]) {
+            assertEquals("union/0001", targetKey)
+            assertEquals("도적 소탕", targetName)
+            assertEquals("BATTLE", actionKind)
+            assertEquals(99, presetId)
+        }
         assertNull(journal.page(second.id, AutomationHistoryQuery()).cycles.singleOrNull())
     }
 

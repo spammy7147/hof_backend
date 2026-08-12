@@ -484,11 +484,20 @@ class UnifiedAutomationRunner @Autowired constructor(
         }
         return AutomationActionTrace(kind, code, message, action.entryId, type, payload.kind(),
             targetKey = when (payload) {
+                is StoredTypedActionPayload.QuestClaim -> payload.questKey
+                is StoredTypedActionPayload.QuestAccept -> payload.questKey
+                is StoredTypedActionPayload.QuestBattle -> "${payload.categoryId}/${payload.mapCode}"
                 is StoredTypedActionPayload.BattleMap -> "${payload.categoryId}/${payload.mapCode}"
+                is StoredTypedActionPayload.AdventureMap -> "${payload.categoryId}/${payload.mapCode}"
                 is StoredTypedActionPayload.RaidTown -> payload.raidId
                 is StoredTypedActionPayload.RaidCycleAbort -> payload.raidId
                 else -> null
-            }, targetName = payload.display?.mapName, presetId = (payload as? StoredTypedActionPayload.BattleMap)?.presetId)
+            }, targetName = payload.display?.mapName ?: payload.display?.questName, presetId = when (payload) {
+                is StoredTypedActionPayload.QuestBattle -> payload.presetId
+                is StoredTypedActionPayload.BattleMap -> payload.presetId
+                is StoredTypedActionPayload.AdventureMap -> payload.presetId
+                else -> null
+            })
     }
 
     private companion object {
