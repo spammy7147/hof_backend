@@ -79,6 +79,25 @@ class BattleMapService(
         return if (snapshot.observations.isEmpty()) emptyList() else synchronizeSnapshot(snapshot)
     }
 
+    /** 전투 정보실에 노출된 등록 가능 레이드를 자동화 설정에서도 검증할 수 있도록 정적 카탈로그에 반영한다. */
+    fun rememberRaidTargets(accountId: Long, targets: Map<String, String>): List<BattleMapResponse> {
+        if (targets.isEmpty()) return emptyList()
+        val account = accountQueryRepository.findById(accountId)
+            ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
+        return catalogService.synchronizeCategory(
+            account,
+            BattleCategoryId.RAID.value,
+            targets.map { (mapCode, name) ->
+                HofBattleMap(
+                    categoryId = BattleCategoryId.RAID.value,
+                    mapCode = mapCode,
+                    name = name,
+                    rawHref = "",
+                )
+            },
+        ).map(BattleMapResponse::from)
+    }
+
     /**
      * Performs the authenticated `?sp_hunt` refresh used by the automation daily gate. Unlike the read endpoint,
      * an empty/unparseable page is a failed refresh because no observed account state was synchronized.

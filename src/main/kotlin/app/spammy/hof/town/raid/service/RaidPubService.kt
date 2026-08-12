@@ -21,6 +21,7 @@ class RaidPubService(
 ) {
     fun load(accountId: Long): RaidPubResponse {
         val snapshot = loadRaw(accountId)
+        rememberAutomationTargets(accountId, snapshot)
         return RaidPubResponse.from(withBattleAvailability(accountId, snapshot))
     }
 
@@ -52,6 +53,7 @@ class RaidPubService(
             acceptsActionResponse = RaidPubSnapshot::observedRaidPubForm,
         ) { html, finalUrl, result, page -> parser.parse(html, finalUrl, page, result) }
         if (!projected.observedRaidPubForm) invalid("HOF 전투 정보실 양식을 확인하지 못했습니다.")
+        rememberAutomationTargets(accountId, projected)
         return RaidPubResponse.from(withBattleAvailability(accountId, projected))
     }
 
@@ -70,6 +72,13 @@ class RaidPubService(
         return snapshot.copy(raids = snapshot.raids.map { raid ->
             raid.copy(battleTarget = if (raid.playable && raid.joined && raid.id in available) RaidBattleTarget(mapCode = raid.id) else null)
         })
+    }
+
+    private fun rememberAutomationTargets(accountId: Long, snapshot: RaidPubSnapshot) {
+        battleMaps.rememberRaidTargets(
+            accountId,
+            snapshot.raids.filter(RaidPubRaid::playable).associate { it.id to it.name },
+        )
     }
 
     private fun canExecute(snapshot: RaidPubSnapshot, raid: RaidPubRaid, action: RaidAction): Boolean {

@@ -136,9 +136,14 @@ class RaidPubParserTest {
     }
 
     @Test fun `raid_hunt에서 실제 관측되고 내가 참가한 raid만 기존 전투 CTA를 노출한다`() {
-        val response = service(fixture()).service.load(7L)
+        val context = service(fixture())
+        val response = context.service.load(7L)
         assertEquals("RaidGoblin", response.raids.first().battleTarget?.mapCode)
         assertNull(response.raids[1].battleTarget)
+        Mockito.verify(context.maps).rememberRaidTargets(
+            7L,
+            linkedMapOf("RaidGoblin" to "고블린 전투 마차", "RaidSiren" to "음란 해역의 괴물 (Seiren Nom)"),
+        )
     }
 
     @Test fun `다른 raid의 action을 요청하면 POST 없이 fail closed한다`() {
@@ -188,10 +193,10 @@ class RaidPubParserTest {
             *responses.drop(1).map { HofHttpResponse(200, URL, it, emptyMap()) }.toTypedArray(),
         )
         val executor = TownAuthenticatedExecutor(accounts, cookies, HofRequestFactory(), gateway, LoginStateParser(), forms, HofResultParser(), TownActionGuard())
-        return Context(RaidPubService(executor, locations, parser, maps), gateway)
+        return Context(RaidPubService(executor, locations, parser, maps), gateway, maps)
     }
     private fun observedMap(code: String) = BattleMapResponse("raid", code, code, null, 0, 0, null, null, null, null, null, null, BattleMapKeyMode.UNKNOWN, null, null, false, true, true, null, "?raid_common=$code")
-    private data class Context(val service: RaidPubService, val gateway: AccountHofGateway) {
+    private data class Context(val service: RaidPubService, val gateway: AccountHofGateway, val maps: BattleMapService) {
         fun requests() = Mockito.mockingDetails(gateway).invocations.mapNotNull { it.arguments.getOrNull(1) as? HofRequest }
     }
     private fun anyRequest(): HofRequest = Mockito.any(HofRequest::class.java) ?: HofRequest(HofHttpMethod.GET, URL)
