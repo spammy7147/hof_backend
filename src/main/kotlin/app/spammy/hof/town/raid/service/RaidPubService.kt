@@ -46,6 +46,9 @@ class RaidPubService(
                     raid.actionIds[request.action] ?: invalid("현재 해당 레이드에서 실행할 수 없는 동작입니다.")
                 } else {
                     if (request.raidId != null) invalid("전체 레이드 동작에는 레이드 식별자가 필요하지 않습니다.")
+                    if (request.action == RaidAction.REWARD &&
+                        (current.applyWait || current.raids.none { it.status == RaidStatus.COMPLETED })
+                    ) invalid("현재 보상을 확인할 수 있는 완료 레이드가 없습니다.")
                     current.globalActionIds[request.action]
                         ?: invalid("현재 실행할 수 없는 전투 정보실 동작입니다.")
                 }
@@ -98,7 +101,7 @@ class RaidPubService(
             RaidAction.REGISTER -> !raid.joined && !snapshot.applyWait && raid.status !in REGISTER_BLOCKED_STATUSES
             RaidAction.LEAVE -> raid.joined
             RaidAction.START -> raid.joined && raid.status == RaidStatus.READY
-            RaidAction.RESET -> true
+            RaidAction.RESET -> raid.joined && raid.status == RaidStatus.COMPLETED && snapshot.applyWait
             else -> false
         }
     }

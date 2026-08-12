@@ -138,6 +138,33 @@ class RaidPubParserTest {
         assertEquals(1, context.requests().size)
     }
 
+    @Test fun `상시 보상 버튼이 보여도 완료 레이드가 없으면 제출하지 않는다`() {
+        val context = service(fixture())
+        assertFailsWith<app.spammy.hof.common.error.ApiException> {
+            context.service.action(7L, RaidPubActionRequest(RaidAction.REWARD, null))
+        }
+        assertEquals(1, context.requests().size)
+    }
+
+    @Test fun `완료 후 보상 공유 대기가 시작된 경우에만 레이드 리셋을 제출한다`() {
+        val completed = fixture()
+            .replace("현재 상태 : 418초 후 출발", "현재 상태 : 보상 확인 시간 (남은 시간 앞으로 0시간 26분 43초)")
+            .replace("- [다른 사람]", "- [《테스트 길드》현재사용자]")
+        val beforeReward = completed.replace(
+            "현재 상태는 신청 대기 (신청 가능까지 6분 58초)",
+            "현재 상태는 신청 가능",
+        )
+        val blocked = service(beforeReward)
+        assertFailsWith<app.spammy.hof.common.error.ApiException> {
+            blocked.service.action(7L, RaidPubActionRequest(RaidAction.RESET, "RaidSiren"))
+        }
+        assertEquals(1, blocked.requests().size)
+
+        val allowed = service(completed, completed)
+        allowed.service.action(7L, RaidPubActionRequest(RaidAction.RESET, "RaidSiren"))
+        assertEquals(2, allowed.requests().size)
+    }
+
     @Test fun `참가하지 않은 raid의 시작과 나오기는 제출하지 않는다`() {
         val context = service(fixture())
         assertFailsWith<app.spammy.hof.common.error.ApiException> {
