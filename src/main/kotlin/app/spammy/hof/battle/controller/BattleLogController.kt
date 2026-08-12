@@ -2,6 +2,7 @@ package app.spammy.hof.battle.controller
 
 import app.spammy.hof.battle.dto.BattleLogResponse
 import app.spammy.hof.battle.dto.BattleStatsResponse
+import app.spammy.hof.battle.dto.AdventureMapStatsPeriod
 import app.spammy.hof.battle.service.BattleLogService
 import app.spammy.hof.common.security.CurrentAccountId
 import org.springframework.web.bind.annotation.GetMapping
@@ -36,6 +37,7 @@ class BattleLogController(
     @GetMapping("/stats")
     fun summarize(
         @CurrentAccountId accountId: Long,
+        @RequestParam(defaultValue = "DAY") adventurePeriod: AdventureMapStatsPeriod,
     ): BattleStatsResponse =
-        battleLogService.summarize(accountId)
+        battleLogService.summarize(accountId, adventurePeriod)
 }

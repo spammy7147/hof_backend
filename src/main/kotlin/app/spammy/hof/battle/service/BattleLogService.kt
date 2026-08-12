@@ -3,6 +3,7 @@ package app.spammy.hof.battle.service
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.battle.dto.BattleLogResponse
 import app.spammy.hof.battle.dto.AdventureMapOutcomeStatsResponse
+import app.spammy.hof.battle.dto.AdventureMapStatsPeriod
 import app.spammy.hof.battle.dto.BattleLootResponse
 import app.spammy.hof.battle.dto.BattleSideResponse
 import app.spammy.hof.battle.dto.BattleStatsResponse
@@ -137,14 +138,19 @@ class BattleLogService(
      * 서울 시간 기준 일/주/월 Funds와 모험맵 패배·무승부를 DB aggregate로 계산한다.
      */
     @Transactional(readOnly = true)
-    fun summarize(accountId: Long): BattleStatsResponse {
+    fun summarize(accountId: Long, adventurePeriod: AdventureMapStatsPeriod = AdventureMapStatsPeriod.DAY): BattleStatsResponse {
         val periods = battleFundPeriodStarts(timeProvider.now())
+        val adventureSince = when (adventurePeriod) {
+            AdventureMapStatsPeriod.DAY -> periods.day
+            AdventureMapStatsPeriod.WEEK -> periods.week
+            AdventureMapStatsPeriod.MONTH -> periods.month
+        }
         return BattleStatsResponse(
             accountId = accountId,
             dailyFunds = battleLogQueryRepository.sumFundsSince(accountId, periods.day),
             weeklyFunds = battleLogQueryRepository.sumFundsSince(accountId, periods.week),
             monthlyFunds = battleLogQueryRepository.sumFundsSince(accountId, periods.month),
-            adventureMapOutcomes = battleLogQueryRepository.findAdventureMapOutcomeStats(accountId)
+            adventureMapOutcomes = battleLogQueryRepository.findAdventureMapOutcomeStats(accountId, adventureSince)
                 .groupBy { stats -> stats.mapCode }
                 .map { (mapCode, entries) ->
                     AdventureMapOutcomeStatsResponse(

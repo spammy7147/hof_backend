@@ -35,6 +35,8 @@ data class BattleStatsResponse(
     val adventureMapOutcomes: List<AdventureMapOutcomeStatsResponse>,
 )
 
+enum class AdventureMapStatsPeriod { DAY, WEEK, MONTH }
+
 /** 파티 조정에 활용할 수 있도록 모험맵별 패배와 무승부 횟수를 전달한다. */
 data class AdventureMapOutcomeStatsResponse(
     val mapCode: String,

@@ -101,7 +101,7 @@ class BattleLogQueryRepository(
     }
 
     /** 모험맵 중 패배 또는 무승부가 있었던 맵만 맵별로 집계한다. */
-    fun findAdventureMapOutcomeStats(accountId: Long): List<AdventureMapOutcomeStatsProjection> {
+    fun findAdventureMapOutcomeStats(accountId: Long, since: Instant): List<AdventureMapOutcomeStatsProjection> {
         val defeats = outcomeCount("DEFEAT")
         val draws = outcomeCount("DRAW")
         return queryFactory
@@ -116,6 +116,7 @@ class BattleLogQueryRepository(
                 battleLogEntity.account.id.eq(accountId),
                 battleLogEntity.categoryIdSnapshot.eq("adventure_map"),
                 battleLogEntity.outcome.`in`("DEFEAT", "DRAW"),
+                battleLogEntity.createdAt.goe(since),
             )
             .groupBy(battleLogEntity.mapCodeSnapshot, battleLogEntity.mapNameSnapshot)
             .orderBy(defeats.desc(), draws.desc(), battleLogEntity.mapNameSnapshot.asc())

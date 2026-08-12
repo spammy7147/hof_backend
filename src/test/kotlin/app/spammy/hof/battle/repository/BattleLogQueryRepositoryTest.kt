@@ -149,8 +149,9 @@ class BattleLogQueryRepositoryTest {
                 AdventureMapOutcomeStatsProjection("snow22", "얼어붙은 산", defeats = 1, draws = 1),
                 AdventureMapOutcomeStatsProjection("desert01", "사막", defeats = 1, draws = 0),
             ),
-            queryRepository.findAdventureMapOutcomeStats(account.id),
+            queryRepository.findAdventureMapOutcomeStats(account.id, LATER),
         )
+        assertEquals(emptyList(), queryRepository.findAdventureMapOutcomeStats(account.id, LATER.plusSeconds(10)))
     }
 
     private fun savedAccount(loginId: String): HofAccountEntity =
