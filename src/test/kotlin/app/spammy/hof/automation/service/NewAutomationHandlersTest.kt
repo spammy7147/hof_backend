@@ -87,11 +87,19 @@ class NewAutomationHandlersTest {
     }
 
     @Test
-    fun `raid rewards before registration and treats closed as a local abort`() {
+    fun `raid rewards only a completed active cycle and treats closed as a local abort`() {
         val target = RaidAutomationTarget("r1", "레이드", PresetSelectionMode.EXPLICIT, 3, 0, party)
-        val reward = RaidPubResponse(emptyList(), false, false, null, null, setOf(RaidAction.REWARD), null)
+        val completedRaid = RaidPubRaidResponse(
+            "r1", "레이드", true, null, null, null, RaidStatus.COMPLETED,
+            "보상 확인 시간 (남은 시간 앞으로 0시간 26분 43초)", null,
+            listOf("현재사용자"), true, setOf(RaidAction.RESET), null,
+        )
+        val reward = RaidPubResponse(listOf(completedRaid), true, false, null, null, setOf(RaidAction.REWARD), null)
         assertEquals(RaidAction.REWARD, assertIs<RaidTownAutomationAction>(
-            assertIs<HandlerEvaluation.Runnable>(RaidAutomationHandler().evaluate(RaidAutomationSnapshot(1, reward, listOf(target), null, null, now))).action,
+            assertIs<HandlerEvaluation.Runnable>(RaidAutomationHandler().evaluate(RaidAutomationSnapshot(
+                1, reward, listOf(target), null,
+                OpenRaidCycleSnapshot(9, "r1", RaidAutomationCycleStatus.IN_BATTLE, null), now,
+            ))).action,
         ).action)
         val closedRaid = RaidPubRaidResponse("r1", "레이드", true, null, null, null, RaidStatus.CLOSED, null, null, emptyList(), true, emptySet(), null)
         val closed = RaidAutomationHandler().evaluate(RaidAutomationSnapshot(
@@ -99,6 +107,42 @@ class NewAutomationHandlersTest {
             OpenRaidCycleSnapshot(9, "r1", RaidAutomationCycleStatus.IN_BATTLE, null), now,
         ))
         assertIs<RaidCycleAbortAutomationAction>(assertIs<HandlerEvaluation.Runnable>(closed).action)
+    }
+
+    @Test
+    fun `raid does not claim the always visible reward button before completion`() {
+        val target = RaidAutomationTarget("r1", "레이드", PresetSelectionMode.EXPLICIT, 3, 0, party)
+        val recruiting = RaidPubRaidResponse(
+            "r1", "레이드", true, null, null, null, RaidStatus.RECRUITING,
+            "파티 모집 중 (신청 안됨)", null, emptyList(), false, setOf(RaidAction.REGISTER), null,
+        )
+        val evaluation = RaidAutomationHandler().evaluate(RaidAutomationSnapshot(
+            1,
+            RaidPubResponse(listOf(recruiting), false, false, null, null, setOf(RaidAction.REWARD), null),
+            listOf(target), null, null, now,
+        ))
+
+        val action = assertIs<RaidTownAutomationAction>(assertIs<HandlerEvaluation.Runnable>(evaluation).action)
+        assertEquals(RaidAction.REGISTER, action.action)
+    }
+
+    @Test
+    fun `raid resets once after reward collection before completing the cycle`() {
+        val target = RaidAutomationTarget("r1", "레이드", PresetSelectionMode.EXPLICIT, 3, 0, party)
+        val rewarded = RaidPubRaidResponse(
+            "r1", "레이드", true, null, null, null, RaidStatus.COMPLETED,
+            "보상 확인 시간", null, listOf("현재사용자"), true, setOf(RaidAction.RESET), null,
+        )
+        val evaluation = RaidAutomationHandler().evaluate(RaidAutomationSnapshot(
+            1,
+            RaidPubResponse(listOf(rewarded), true, true, 10_786, null, setOf(RaidAction.REWARD), null),
+            listOf(target), null,
+            OpenRaidCycleSnapshot(9, "r1", RaidAutomationCycleStatus.REWARD_PENDING, null), now,
+        ))
+
+        val action = assertIs<RaidTownAutomationAction>(assertIs<HandlerEvaluation.Runnable>(evaluation).action)
+        assertEquals(RaidAction.RESET, action.action)
+        assertEquals("r1", action.raidId)
     }
 
     @Test

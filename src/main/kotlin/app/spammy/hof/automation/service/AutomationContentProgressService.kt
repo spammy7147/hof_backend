@@ -46,6 +46,16 @@ class AutomationContentProgressService(
     fun raidRewarded(accountId: Long) {
         val cycle = query.findOpenRaidCycle(accountId) ?: return
         val now = timeProvider.now()
+        cycle.status = RaidAutomationCycleStatus.REWARD_PENDING; cycle.lastObservedStatus = "REWARDED"
+        cycle.nextCheckAt = null; cycle.updatedAt = now
+        cycles.save(cycle)
+    }
+
+    @Transactional
+    fun raidReset(accountId: Long, raidId: String) {
+        val cycle = query.findOpenRaidCycle(accountId) ?: return
+        check(cycle.raidId == raidId) { "Raid cycle target changed unexpectedly." }
+        val now = timeProvider.now()
         cycle.status = RaidAutomationCycleStatus.COMPLETED; cycle.lastObservedStatus = "COMPLETED"
         cycle.openMarker = null; cycle.finishedAt = now; cycle.nextCheckAt = null; cycle.updatedAt = now
         val entry = cycle.entry

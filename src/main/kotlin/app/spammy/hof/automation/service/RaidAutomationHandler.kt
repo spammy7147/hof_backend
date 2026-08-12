@@ -25,9 +25,6 @@ data class RaidCycleAbortAutomationAction(val accountId: Long, val raidId: Strin
 @Service
 class RaidAutomationHandler : AutomationHandler<RaidAutomationSnapshot> {
     override fun evaluate(context: RaidAutomationSnapshot): HandlerEvaluation {
-        if (RaidAction.REWARD in context.pub.globalActions) {
-            return HandlerEvaluation.Runnable(RaidTownAutomationAction(context.accountId, RaidAction.REWARD))
-        }
         val cycle = context.openCycle
         if (cycle != null) return evaluateCycle(context, cycle)
         val ordered = rotate(context.targets.sortedWith(compareBy(RaidAutomationTarget::executionOrder, RaidAutomationTarget::raidId)), context.currentTargetKey)
@@ -49,9 +46,16 @@ class RaidAutomationHandler : AutomationHandler<RaidAutomationSnapshot> {
         }
         val raid = context.pub.raids.singleOrNull { it.id == cycle.raidId }
             ?: return retry(context, "RAID_TARGET_TEMPORARILY_MISSING", "진행 중인 레이드 대상을 다시 확인합니다.")
+        if (cycle.status == RaidAutomationCycleStatus.REWARD_PENDING) {
+            return if (RaidAction.RESET in raid.actions) {
+                HandlerEvaluation.Runnable(RaidTownAutomationAction(context.accountId, RaidAction.RESET, raid.id))
+            } else {
+                retry(context, "RAID_RESET_PENDING", "보상 수령 후 레이드 초기화 가능 상태를 다시 확인합니다.")
+            }
+        }
         if (raid.status == RaidStatus.CLOSED) return HandlerEvaluation.Runnable(RaidCycleAbortAutomationAction(context.accountId, cycle.raidId))
         if (raid.status in setOf(RaidStatus.TESTING, RaidStatus.UNKNOWN)) return retry(context, "RAID_STATUS_UNCERTAIN", "레이드 상태를 다시 확인합니다.")
-        if (raid.status == RaidStatus.COMPLETED || RaidAction.REWARD in context.pub.globalActions) {
+        if (raid.status == RaidStatus.COMPLETED && RaidAction.REWARD in context.pub.globalActions) {
             return HandlerEvaluation.Runnable(RaidTownAutomationAction(context.accountId, RaidAction.REWARD))
         }
         if (raid.status == RaidStatus.IN_BATTLE) {

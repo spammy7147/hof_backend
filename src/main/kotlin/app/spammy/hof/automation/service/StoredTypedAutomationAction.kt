@@ -166,7 +166,7 @@ class StoredTypedAutomationActionCodec(private val objectMapper: ObjectMapper) {
                 require(payload.action in setOf(app.spammy.hof.town.fishing.model.FishingAction.START, app.spammy.hof.town.fishing.model.FishingAction.CATCH))
                 require(payload.observedRemainingCasts == null || payload.observedRemainingCasts >= 0)
             }
-            is StoredTypedActionPayload.RaidTown -> require(payload.action !in setOf(app.spammy.hof.town.raid.model.RaidAction.LEAVE, app.spammy.hof.town.raid.model.RaidAction.RESET, app.spammy.hof.town.raid.model.RaidAction.WAIT_RESET))
+            is StoredTypedActionPayload.RaidTown -> require(payload.action !in setOf(app.spammy.hof.town.raid.model.RaidAction.LEAVE, app.spammy.hof.town.raid.model.RaidAction.WAIT_RESET))
             is StoredTypedActionPayload.RaidCycleAbort -> require(payload.raidId.isNotBlank())
         }
     }

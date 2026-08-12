@@ -133,6 +133,8 @@ class DefaultAutomationActionExecutor(
                             (contentProgress ?: error("Raid cycle service is unavailable.")).raidStarted(accountId, requireNotNull(payload.raidId))
                         app.spammy.hof.town.raid.model.RaidAction.REWARD ->
                             (contentProgress ?: error("Raid cycle service is unavailable.")).raidRewarded(accountId)
+                        app.spammy.hof.town.raid.model.RaidAction.RESET ->
+                            (contentProgress ?: error("Raid cycle service is unavailable.")).raidReset(accountId, requireNotNull(payload.raidId))
                         else -> Unit
                     }
                     TypedAutomationExecution.Completed

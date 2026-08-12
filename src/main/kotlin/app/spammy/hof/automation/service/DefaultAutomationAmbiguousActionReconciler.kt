@@ -75,11 +75,25 @@ class DefaultAutomationAmbiguousActionReconciler(
                 } else if (RaidAction.START in raid.actions) AmbiguousActionResolution.Resubmit
                 else AmbiguousActionResolution.VerifyLater(retryAt(), "레이드 시작 결과를 아직 확정할 수 없습니다.")
             }
-            RaidAction.REWARD -> if (RaidAction.REWARD !in latest.globalActions) {
+            RaidAction.REWARD -> if (
+                RaidAction.REWARD !in latest.globalActions ||
+                (latest.applyWait && (latest.applyWaitSeconds ?: 0) >= RAID_REWARD_COOLDOWN_PROOF_SECONDS)
+            ) {
                 progress.raidRewarded(accountId); AmbiguousActionResolution.Applied()
             } else AmbiguousActionResolution.Resubmit
+            RaidAction.RESET -> {
+                val id = requireNotNull(payload.raidId)
+                val raid = latest.raids.singleOrNull { it.id == id }
+                if (raid == null || RaidAction.RESET !in raid.actions) {
+                    progress.raidReset(accountId, id); AmbiguousActionResolution.Applied()
+                } else AmbiguousActionResolution.Resubmit
+            }
             else -> AmbiguousActionResolution.VerifyLater(retryAt(), "허용하지 않는 레이드 자동 행동입니다.")
         }
+    }
+
+    private companion object {
+        const val RAID_REWARD_COOLDOWN_PROOF_SECONDS = 2 * 60 * 60
     }
 
     private fun reconcileQuestAccept(

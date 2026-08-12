@@ -69,6 +69,17 @@ class RaidPubParserTest {
         assertNull(page.applyWaitSeconds)
     }
 
+    @Test fun `보상 확인 상태와 보상 시점부터 시작된 세 시간 공유 쿨다운을 파싱한다`() {
+        val html = fixture()
+            .replace("현재 상태는 신청 대기 (신청 가능까지 6분 58초)", "현재 상태는 신청 대기입니다.(신청 가능 까지 2시간 59분 46초)")
+            .replace("현재 상태 : 모집 중", "현재 상태 : 보상 확인 시간 (남은 시간 앞으로 0시간 26분 43초)")
+        val page = parser.parse(html, URL, forms.parse(html, URL))
+
+        assertEquals(RaidStatus.COMPLETED, page.raids.first().status)
+        assertTrue(page.applyWait)
+        assertEquals(10_786, page.applyWaitSeconds)
+    }
+
     @Test fun `같은 submit control이 중복 관측되면 action을 노출하지 않는다`() {
         val duplicate = "<input type=\"submit\" name=\"register_goblin\" value=\"등록한다\">"
         val html = fixture().replace(duplicate, duplicate + duplicate)

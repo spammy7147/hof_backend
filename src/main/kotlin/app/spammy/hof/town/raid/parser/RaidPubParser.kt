@@ -153,6 +153,7 @@ class RaidPubParser {
     private fun classifyStatus(text: String?, playable: Boolean): RaidStatus = when {
         !playable -> RaidStatus.TESTING
         text == null -> RaidStatus.UNKNOWN
+        REWARD_CONFIRMATION.containsMatchIn(text) -> RaidStatus.COMPLETED
         COMPLETED.containsMatchIn(text) -> RaidStatus.COMPLETED
         IN_BATTLE.containsMatchIn(text) -> RaidStatus.IN_BATTLE
         READY.containsMatchIn(text) -> RaidStatus.READY
@@ -213,6 +214,7 @@ class RaidPubParser {
         val APPLIED = Regex("신청한\\s*상태|신청\\s*완료")
         val UNPLAYABLE = Regex("플레이\\s*불가|시험\\s*중")
         val COMPLETED = Regex("토벌\\s*완료|완료")
+        val REWARD_CONFIRMATION = Regex("보상\\s*확인\\s*시간")
         val IN_BATTLE = Regex("전투\\s*중")
         val READY = Regex("출발\\s*가능")
         val RECRUITING = Regex("모집\\s*중")
