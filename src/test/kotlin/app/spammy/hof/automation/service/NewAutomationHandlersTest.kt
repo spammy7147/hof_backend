@@ -18,9 +18,9 @@ class NewAutomationHandlersTest {
     @Test
     fun `fishing alternates primary action and waits at the daily limit`() {
         val handler = FishingAutomationHandler()
-        val start = handler.evaluate(FishingAutomationSnapshot(1, fishing(FishingPrimaryAction.START), emptyList(), preset(), now))
+        val start = handler.evaluate(FishingAutomationSnapshot(1, fishing(FishingPrimaryAction.START), emptyList(), preset(), null, now))
         assertEquals(FishingAction.START, assertIs<FishingTownAutomationAction>(assertIs<HandlerEvaluation.Runnable>(start).action).action)
-        val exhausted = handler.evaluate(FishingAutomationSnapshot(1, fishing(FishingPrimaryAction.NONE, remaining = 0), emptyList(), preset(), now))
+        val exhausted = handler.evaluate(FishingAutomationSnapshot(1, fishing(FishingPrimaryAction.NONE, remaining = 0), emptyList(), preset(), null, now))
         assertEquals("FISHING_DAILY_LIMIT", assertIs<HandlerEvaluation.Unavailable>(exhausted).reasonCode)
     }
 
@@ -30,7 +30,7 @@ class NewAutomationHandlersTest {
             blockedByBattle = true, battleTarget = FishingBattleTargetResponse("battle_map", "fish-1", "낚시 전투"),
         )
         val action = assertIs<HandlerEvaluation.Runnable>(FishingAutomationHandler().evaluate(
-            FishingAutomationSnapshot(1, state, listOf(FishingAutomationMapSetting("battle_map", "fish-1", PresetSelectionMode.EXPLICIT, 3, party)), null, now),
+            FishingAutomationSnapshot(1, state, listOf(FishingAutomationMapSetting("battle_map", "fish-1", PresetSelectionMode.EXPLICIT, 3, party)), null, null, now),
         )).action
         assertEquals(BattleAutomationActionSource.FISHING_AUTOMATION, assertIs<BattleMapAutomationAction>(action).source)
     }
@@ -50,12 +50,30 @@ class NewAutomationHandlersTest {
                     FishingAutomationMapSetting("battle_map", "fish-2", PresetSelectionMode.EXPLICIT, 8, otherParty),
                 ),
                 null,
+                null,
                 now,
             )),
         ).action)
 
         assertEquals(8, action.presetId)
         assertEquals(otherParty, action.resolvedParty)
+    }
+
+    @Test
+    fun `unconfigured fishing battle uses the current primary preset`() {
+        val state = fishing(FishingPrimaryAction.NONE).copy(
+            blockedByBattle = true, battleTarget = FishingBattleTargetResponse("battle_map", "new-fish", "새 낚시 몬스터"),
+        )
+        val action = assertIs<BattleMapAutomationAction>(assertIs<HandlerEvaluation.Runnable>(
+            FishingAutomationHandler().evaluate(FishingAutomationSnapshot(
+                1, state, emptyList(), null,
+                FishingAutomationPreset(PresetSelectionMode.PRIMARY, 11, party), now,
+            )),
+        ).action)
+
+        assertEquals(PresetSelectionMode.PRIMARY, action.presetMode)
+        assertEquals(11, action.presetId)
+        assertEquals(party, action.resolvedParty)
     }
 
     @Test

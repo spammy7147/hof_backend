@@ -232,10 +232,13 @@ class TypedLiveAutomationSnapshotLoader(
                     val resolved = resolvePreset(setting.presetMode, setting.presetId, config)
                     FishingAutomationPreset(setting.presetMode, resolved, resolved?.let(config.parties::get))
                 }
+                val primary = config.primary?.let { presetId ->
+                    FishingAutomationPreset(PresetSelectionMode.PRIMARY, presetId, config.parties[presetId])
+                }
                 FishingAutomationSnapshot(accountId, state, entry.fishingMaps.map { setting ->
                     val resolved = resolvePreset(setting.presetMode, setting.presetId, config)
                     FishingAutomationMapSetting(setting.categoryId, setting.mapCode, setting.presetMode, resolved, resolved?.let(config.parties::get))
-                }, legacy, now)
+                }, legacy, primary, now)
             })
             AutomationType.RAID -> AutomationCoordinatorEntry(entry.id, entry.type, raid = live.raid?.let { pub ->
                 val open = typed.findOpenRaidCycle(accountId)?.let { OpenRaidCycleSnapshot(it.id, it.raidId, it.status, it.nextCheckAt) }

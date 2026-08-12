@@ -14,6 +14,7 @@ data class FishingAutomationSnapshot(
     val state: FishingResponse,
     val maps: List<FishingAutomationMapSetting>,
     val legacyPreset: FishingAutomationPreset?,
+    val primaryPreset: FishingAutomationPreset?,
     val now: Instant,
 )
 
@@ -40,14 +41,17 @@ class FishingAutomationHandler : AutomationHandler<FishingAutomationSnapshot> {
         if (context.state.blockedByBattle) {
             val target = context.state.battleTarget ?: return retry(context, "FISHING_BATTLE_TARGET_MISSING", "낚시 전투 대상을 다시 확인합니다.")
             val setting = context.maps.singleOrNull { it.categoryId == target.categoryId && it.mapCode == target.mapCode }
-            val presetId = setting?.presetId ?: context.legacyPreset?.presetId
+            val fallback = context.legacyPreset ?: context.primaryPreset
+            val selected = setting?.let { FishingAutomationPreset(it.presetMode, it.presetId, it.resolvedParty) }
+                ?: fallback
                 ?: return HandlerEvaluation.ConfigurationWarning("${target.name} 낚시 전투 프리셋을 선택해 주세요.", "FISHING_PRESET_MISSING")
-            val party = setting?.resolvedParty ?: context.legacyPreset?.resolvedParty
+            val presetId = selected.presetId
+                ?: return HandlerEvaluation.ConfigurationWarning("${target.name} 낚시 전투 프리셋을 선택해 주세요.", "FISHING_PRESET_MISSING")
+            val party = selected.resolvedParty
                 ?: return HandlerEvaluation.ConfigurationWarning("${target.name} 낚시 전투 프리셋 구성을 확인해 주세요.", "FISHING_PARTY_INVALID")
-            val mode = setting?.presetMode ?: requireNotNull(context.legacyPreset).presetMode
             return HandlerEvaluation.Runnable(BattleMapAutomationAction(
                 context.accountId, context.now.atZone(SEOUL).toLocalDate(), target.categoryId, target.mapCode,
-                mode, presetId, 1, UUID.randomUUID().toString(),
+                selected.presetMode, presetId, 1, UUID.randomUUID().toString(),
                 BattleAutomationActionSource.FISHING_AUTOMATION, party, target.name,
             ))
         }
