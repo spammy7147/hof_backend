@@ -7,7 +7,7 @@ enum class TownFeatureId(
     internal vararg val aliases: String,
 ) {
     FISHING("낚시터", "fishing", "Fishing"),
-    FISHING_EXCHANGE("낚시 교환소", "fishchange", "Fishing Shop"),
+    FISHING_EXCHANGE("낚시 교환소", "createF", "Fishing Shop"),
     REST_ROOM("휴식처", "restroom", "Rest Room"),
 
     GENERAL_STORE("일반상점", "buy", "일반 상점", "Buy"),

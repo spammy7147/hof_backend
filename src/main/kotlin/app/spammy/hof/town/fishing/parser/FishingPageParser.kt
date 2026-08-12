@@ -3,6 +3,7 @@ package app.spammy.hof.town.fishing.parser
 import app.spammy.hof.town.common.model.ParsedTownForm
 import app.spammy.hof.town.common.model.ParsedTownPage
 import app.spammy.hof.town.common.model.ParsedTownResult
+import app.spammy.hof.town.common.parser.HofFormParser
 import app.spammy.hof.town.fishing.model.FishingAction
 import app.spammy.hof.town.fishing.model.FishingActionCandidate
 import app.spammy.hof.town.fishing.model.FishingBattleTarget
@@ -24,7 +25,9 @@ import org.jsoup.select.NodeVisitor
 import org.springframework.stereotype.Component
 
 @Component
-class FishingPageParser {
+class FishingPageParser(
+    private val formParser: HofFormParser = HofFormParser(),
+) {
     fun parse(
         html: String,
         finalUrl: String,
@@ -89,34 +92,28 @@ class FishingPageParser {
     fun parseExchange(
         html: String,
         finalUrl: String,
-        page: ParsedTownPage,
+        @Suppress("UNUSED_PARAMETER") page: ParsedTownPage,
         result: ParsedTownResult? = null,
+        categoryCandidateId: String? = null,
     ): FishingExchangeSnapshot {
-        val document = Jsoup.parse(html, finalUrl)
-        val matchingForms = page.forms.filter { candidate ->
-            candidate.submitFields.singleOrNull()?.name.equals("Create", ignoreCase = true) &&
-                candidate.candidates.any { it.inputName == EXCHANGE_CATEGORY_FIELD } &&
-                candidate.candidates.any { it.inputName == EXCHANGE_ITEM_FIELD }
-        }.ifEmpty {
-            page.forms.filter { candidate ->
-                candidate.submitFields.singleOrNull()?.name.equals("Create", ignoreCase = true) &&
-                    candidate.candidates.any { it.inputName == EXCHANGE_CATEGORY_FIELD }
-            }
+        val materialized = materializeExchange(html, finalUrl, categoryCandidateId)
+        val materializedPage = formParser.parse(materialized.html, finalUrl)
+        val form = materializedPage.forms.singleOrNull { candidate ->
+            candidate.submitFields.singleOrNull()?.name.equals(EXCHANGE_SUBMIT_FIELD, ignoreCase = true) &&
+                candidate.candidates.all { it.inputName == EXCHANGE_ITEM_FIELD }
+        } ?: throw FishingExchangeContractException("교환 제출 양식을 하나로 확인하지 못했습니다.")
+        val document = Jsoup.parse(materialized.html, finalUrl)
+        val domForm = findMaterializedExchangeForm(document, form)
+            ?: throw FishingExchangeContractException("교환 제출 DOM을 하나로 확인하지 못했습니다.")
+        val categories = materialized.categories.map { category ->
+            FishingExchangeCategory(category.id, category.label, category.id == materialized.currentCategoryId)
         }
-        // HOF의 긴 교환 목록은 같은 form 안에 Create 버튼을 위·아래로 반복할 수 있다.
-        // HofFormParser는 submit마다 action을 하나씩 만들므로, 완전히 같은 계약이면 첫 action을 사용한다.
-        val form = matchingForms.firstOrNull()?.takeIf { first ->
-            matchingForms.all { candidate -> sameExchangeContract(first, candidate) }
-        }
-        val domForm = form?.let { parsed -> findExchangeDomForm(document, parsed) }
-        val categories = parseExchangeCategories(form, domForm)
-        val currentCategoryId = categories.firstOrNull(FishingExchangeCategory::current)?.id
-        val itemTByCandidate = if (form != null && domForm != null) strictExchangeItemT(form, domForm) else emptyMap()
+        val itemTByCandidate = strictExchangeItemT(form, domForm)
         return FishingExchangeSnapshot(
-            actionId = form?.actionId,
+            actionId = form.actionId,
             categories = categories,
-            currentCategoryId = currentCategoryId,
-            items = form?.rows.orEmpty().filter { row ->
+            currentCategoryId = materialized.currentCategoryId,
+            items = form.rows.filter { row ->
                 row.candidate == null || row.candidate.inputName == EXCHANGE_ITEM_FIELD
             }.mapIndexedNotNull { index, row ->
                 val label = clean(row.label)
@@ -137,19 +134,131 @@ class FishingPageParser {
         )
     }
 
-    private fun parseExchangeCategories(form: ParsedTownForm?, domForm: Element?): List<FishingExchangeCategory> {
-        if (form == null || domForm == null) return emptyList()
-        val select = equivalentSelect(domForm, "select[name=${cssValue(EXCHANGE_CATEGORY_FIELD)}]")
-            ?: return emptyList()
-        return select.select("option[value]").filterNot { it.hasAttr("disabled") }.mapNotNull { option ->
-            val candidate = uniqueCandidate(form, EXCHANGE_CATEGORY_FIELD, option.attr("value"))
-                ?: return@mapNotNull null
-            FishingExchangeCategory(
-                candidate.id,
-                clean(option.text()).ifBlank { option.attr("value") },
-                option.hasAttr("selected") || select.`val`() == option.attr("value"),
+    fun materializeExchangeHtml(html: String, finalUrl: String, categoryCandidateId: String): String =
+        materializeExchange(html, finalUrl, categoryCandidateId).html
+
+    private fun materializeExchange(
+        html: String,
+        finalUrl: String,
+        categoryCandidateId: String?,
+    ): MaterializedExchange {
+        val document = Jsoup.parse(html, finalUrl)
+        val categorySelects = document.select("form select[name=${cssValue(EXCHANGE_CATEGORY_FIELD)}]").filter { select ->
+            select.closest("form")?.select("input[type=submit],button[type=submit],button:not([type])").orEmpty().isEmpty()
+        }
+        val select = categorySelects.singleOrNull()
+            ?: throw FishingExchangeContractException("교환 분류 선택란을 하나로 확인하지 못했습니다.")
+        val options = select.select("option[value]").filterNot { it.hasAttr("disabled") }.map { option ->
+            val value = option.attr("value").trim()
+            if (!SAFE_EXCHANGE_TOKEN.matches(value)) {
+                throw FishingExchangeContractException("안전하지 않은 교환 분류 값입니다.")
+            }
+            ExchangeCategoryContract(
+                id = "$EXCHANGE_CATEGORY_FIELD:$value",
+                value = value,
+                label = clean(option.text()).ifBlank { value },
             )
-        }.distinctBy(FishingExchangeCategory::id)
+        }
+        if (options.isEmpty() || options.map(ExchangeCategoryContract::id).distinct().size != options.size) {
+            throw FishingExchangeContractException("교환 분류 계약이 비어 있거나 중복되었습니다.")
+        }
+        val current = if (categoryCandidateId == null) {
+            val selectedValue = select.`val`().trim()
+            options.singleOrNull { it.value == selectedValue } ?: options.first()
+        } else {
+            options.singleOrNull { it.id == categoryCandidateId }
+                ?: throw FishingExchangeCategoryException(categoryCandidateId)
+        }
+        val catalog = parseStaticExchangeCatalog(document)
+        val expectedCases = options.map(ExchangeCategoryContract::value).filterNot { it == EXCHANGE_ALL_CATEGORY }.toSet()
+        if (catalog.keys != expectedCases) {
+            throw FishingExchangeContractException("교환 분류와 정적 품목 목록이 일치하지 않습니다.")
+        }
+        val fragment = if (current.value == EXCHANGE_ALL_CATEGORY) {
+            options.asSequence().map(ExchangeCategoryContract::value).filterNot { it == EXCHANGE_ALL_CATEGORY }
+                .joinToString(separator = "") { catalog.getValue(it) }
+        } else {
+            catalog.getValue(current.value)
+        }
+        val actionForms = document.select("form").filter(::isRawExchangeActionForm)
+        val actionForm = actionForms.singleOrNull()
+            ?: throw FishingExchangeContractException("교환 제출 양식을 하나로 확인하지 못했습니다.")
+        val list = actionForm.select("#list").filter { it.closest("form") === actionForm }.singleOrNull()
+            ?: throw FishingExchangeContractException("교환 품목 목록 위치를 하나로 확인하지 못했습니다.")
+        list.html("<table>$fragment</table><input type=\"hidden\" name=\"$EXCHANGE_LIST_FIELD\" value=\"${current.value}\">")
+        return MaterializedExchange(document.outerHtml(), options, current.id)
+    }
+
+    private fun parseStaticExchangeCatalog(document: org.jsoup.nodes.Document): Map<String, String> {
+        val scripts = document.select("script").map(Element::data).filter { LIST_FUNCTION_MARKER in it }
+        val script = scripts.singleOrNull()
+            ?: throw FishingExchangeContractException("정적 교환 목록 스크립트를 하나로 확인하지 못했습니다.")
+        val functionBody = LIST_FUNCTION.find(script)?.groupValues?.get(1)
+            ?: throw FishingExchangeContractException("정적 교환 목록 함수를 확인하지 못했습니다.")
+        val labels = LIST_CASE_LABEL.findAll(functionBody).map { it.groupValues[1] }.toList()
+        val assignments = LIST_CASE_ASSIGNMENT.findAll(functionBody).map { match ->
+            match.groupValues[1] to decodeStaticJavascriptExpression(match.groupValues[2])
+        }.toList()
+        if (labels.isEmpty() || labels.size != assignments.size || labels != assignments.map(Pair<String, String>::first) ||
+            labels.distinct().size != labels.size
+        ) throw FishingExchangeContractException("정적 교환 목록 case 계약이 모호합니다.")
+        return assignments.toMap()
+    }
+
+    private fun decodeStaticJavascriptExpression(value: String): String {
+        val decoded = StringBuilder(value.length)
+        var index = 0
+        while (index < value.length) {
+            while (index < value.length && value[index].isWhitespace()) index++
+            if (index >= value.length || value[index++] != '\'') {
+                throw FishingExchangeContractException("정적 교환 목록에 문자열 이외의 표현식이 있습니다.")
+            }
+            var closed = false
+            while (index < value.length) {
+                val character = value[index++]
+                if (character == '\'') {
+                    closed = true
+                    break
+                }
+                if (character != '\\') {
+                    decoded.append(character)
+                    continue
+                }
+                if (index >= value.length) throw FishingExchangeContractException("끝나지 않은 JavaScript 문자열입니다.")
+                decoded.append(when (val escaped = value[index++]) {
+                    '\\' -> '\\'
+                    '\'' -> '\''
+                    '"' -> '"'
+                    'n' -> '\n'
+                    'r' -> '\r'
+                    't' -> '\t'
+                    else -> throw FishingExchangeContractException("지원하지 않는 JavaScript escape: $escaped")
+                })
+            }
+            if (!closed) throw FishingExchangeContractException("끝나지 않은 JavaScript 문자열입니다.")
+            while (index < value.length && value[index].isWhitespace()) index++
+            if (index < value.length) {
+                if (value[index++] != '+') {
+                    throw FishingExchangeContractException("정적 교환 목록에 허용되지 않은 연산이 있습니다.")
+                }
+                if (value.substring(index).isBlank()) {
+                    throw FishingExchangeContractException("정적 교환 목록 문자열 결합이 끝나지 않았습니다.")
+                }
+            }
+        }
+        return decoded.toString()
+    }
+
+    private fun isRawExchangeActionForm(form: Element): Boolean {
+        val owned = form.select("input,button,select,textarea").filter { it.closest("form") === form && !it.hasAttr("disabled") }
+        val submits = owned.filter { control ->
+            (control.tagName() == "input" && control.attr("type").equals("submit", true)) ||
+                (control.tagName() == "button" && control.attr("type").let { it.isBlank() || it.equals("submit", true) })
+        }
+        return form.attr("method").equals("post", true) &&
+            submits.singleOrNull()?.attr("name").equals(EXCHANGE_SUBMIT_FIELD, true) &&
+            owned.count { it.attr("name") == EXCHANGE_ITEM_T_FIELD } == 1 &&
+            owned.count { it.attr("name") == EXCHANGE_AMOUNT_FIELD } == 1
     }
 
     private fun strictExchangeItemT(form: ParsedTownForm, domForm: Element): Map<app.spammy.hof.town.common.model.ParsedTownCandidate, String> =
@@ -163,52 +272,18 @@ class FishingPageParser {
             candidate to (assignments.singleOrNull() ?: return@mapNotNull null)
         }.toMap()
 
-    private fun findExchangeDomForm(document: org.jsoup.nodes.Document, form: ParsedTownForm): Element? {
+    private fun findMaterializedExchangeForm(document: org.jsoup.nodes.Document, form: ParsedTownForm): Element? {
         val forms = document.select("form").filter { dom ->
-            val category = equivalentSelect(dom, "select[name=${cssValue(EXCHANGE_CATEGORY_FIELD)}]")
             val items = dom.select("input[name=${cssValue(EXCHANGE_ITEM_FIELD)}]").filter { it.closest("form") === dom }
-            val submits = dom.select("input[name=Create],button[name=Create]").filter { it.closest("form") === dom }
-            category != null && (items.isNotEmpty() || form.candidates.none { it.inputName == EXCHANGE_ITEM_FIELD }) &&
-                submits.isNotEmpty() && equivalentActionUrl(form, dom)
+            isRawExchangeActionForm(dom) &&
+                (items.isNotEmpty() || form.candidates.none { it.inputName == EXCHANGE_ITEM_FIELD }) && equivalentActionUrl(form, dom)
         }
-        val first = forms.firstOrNull() ?: return null
-        return first.takeIf { forms.all { candidate -> exchangeDomSignature(candidate) == exchangeDomSignature(first) } }
+        return forms.singleOrNull()
     }
-
-    private fun sameExchangeContract(left: ParsedTownForm, right: ParsedTownForm): Boolean =
-        left.method == right.method &&
-            left.actionUrl == right.actionUrl &&
-            left.hiddenFields == right.hiddenFields &&
-            left.submitFields.map { it.name } == right.submitFields.map { it.name } &&
-            left.candidates.map { it.inputName to it.inputValue } == right.candidates.map { it.inputName to it.inputValue }
 
     private fun equivalentActionUrl(form: ParsedTownForm, dom: Element): Boolean = dom.attr("action").let { action ->
         action.isBlank() || form.actionUrl.endsWith(action.substringAfterLast('/')) || form.actionUrl.contains(action)
     }
-
-    private fun exchangeDomSignature(form: Element): List<Any> = listOf(
-        form.attr("method").lowercase(),
-        form.attr("action"),
-        selectSignature(equivalentSelect(form, "select[name=${cssValue(EXCHANGE_CATEGORY_FIELD)}]")!!),
-        form.select("input[name=${cssValue(EXCHANGE_ITEM_FIELD)}]").filter { it.closest("form") === form }
-            .map { it.attr("value").trim().ifBlank { "on" } },
-    )
-
-    private fun equivalentSelect(form: Element, selector: String): Element? {
-        val selects = form.select(selector).filter { it.closest("form") === form }
-        val first = selects.firstOrNull() ?: return null
-        val signature = selectSignature(first)
-        return first.takeIf { selects.all { selectSignature(it) == signature } }
-    }
-
-    private fun selectSignature(select: Element): List<Triple<String, String, Boolean>> = select.select("option").map { option ->
-        Triple(option.attr("value"), clean(option.text()), option.hasAttr("selected") || select.`val`() == option.attr("value"))
-    }
-
-    private fun uniqueCandidate(form: ParsedTownForm, field: String, value: String) = form.candidates
-        .filter { it.inputName == field && it.inputValue == value }
-        .distinctBy { listOf(it.id, it.inputName, it.inputValue, it.selectionType.name) }
-        .singleOrNull()
 
     private fun cssValue(value: String) = "'${value.replace("'", "\\'")}'"
 
@@ -358,10 +433,30 @@ class FishingPageParser {
         val EXCHANGE_HEADER = Regex("^(제작비|제작비 Item|Item|아이템|수수료)(?:\\s+(Item|아이템))?$", RegexOption.IGNORE_CASE)
         val EXCHANGE_LEADING_PRICE = Regex("^[$]\\s*[\\d,]+\\s*")
         val ITEM_T_ASSIGNMENT = Regex("(?:document\\.getElementById\\(\\s*(['\"])ItemT\\1\\s*\\)|(?:document\\.)?ItemT)\\s*\\.value\\s*=\\s*(['\"]?)([A-Za-z0-9_.:-]+)\\2", RegexOption.IGNORE_CASE)
+        const val LIST_FUNCTION_MARKER = "function Listtype_create"
+        val LIST_FUNCTION = Regex("function\\s+Listtype_create\\s*\\([^)]*\\)\\s*\\{([\\s\\S]*?)\\n\\}\\s*function\\s+ChangeTypecreate\\b")
+        val LIST_CASE_LABEL = Regex("case\\s+[\"']([A-Za-z0-9_-]{1,80})[\"']\\s*:")
+        val LIST_CASE_ASSIGNMENT = Regex("case\\s+[\"']([A-Za-z0-9_-]{1,80})[\"']\\s*:\\s*html\\s*=\\s*([\\s\\S]*?)\\s*;\\s*break\\s*;")
+        val SAFE_EXCHANGE_TOKEN = Regex("[A-Za-z0-9_-]{1,80}")
         const val EXCHANGE_CATEGORY_FIELD = "type_create"
         const val EXCHANGE_ITEM_FIELD = "ItemNo"
+        const val EXCHANGE_ITEM_T_FIELD = "ItemT"
+        const val EXCHANGE_AMOUNT_FIELD = "amount"
+        const val EXCHANGE_LIST_FIELD = "list_type"
+        const val EXCHANGE_SUBMIT_FIELD = "Create"
+        const val EXCHANGE_ALL_CATEGORY = "all"
         val USES = Regex("\\((\\d+)회 사용가능\\)")
         val QUANTITY = Regex("[x×]\\s*(\\d+)")
         val EFFECT = Regex("사용 효과\\s*[:：]\\s*([^)]+)")
     }
+
+    private data class ExchangeCategoryContract(val id: String, val value: String, val label: String)
+    private data class MaterializedExchange(
+        val html: String,
+        val categories: List<ExchangeCategoryContract>,
+        val currentCategoryId: String,
+    )
 }
+
+class FishingExchangeContractException(message: String) : IllegalStateException(message)
+class FishingExchangeCategoryException(val candidateId: String) : IllegalArgumentException(candidateId)

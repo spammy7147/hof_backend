@@ -156,47 +156,36 @@ class FishingPageParserTest {
     }
 
     @Test
-    fun `radio 없는 교환품도 숨기지 않고 선택 불가로 둔다`() {
+    fun `분리된 분류 form과 정적 script에서 선택 분류의 품목을 복원한다`() {
         val html = fixture("exchange.html")
-        val exchange = parser.parseExchange(html, url, forms.parse(html, url))
+        val exchange = parser.parseExchange(html, url, forms.parse(html, url), categoryCandidateId = "type_create:useitem")
 
-        assertEquals(listOf("무기(weapon)", "방어구(armor)"), exchange.categories.map { it.label })
-        assertEquals("type_create:weapon", exchange.currentCategoryId)
+        assertEquals(listOf("무기(weapon)", "방어구(armor)", "사용가능(useitem)", "전부(all)"), exchange.categories.map { it.label })
+        assertEquals("type_create:useitem", exchange.currentCategoryId)
         assertTrue(exchange.items.single { it.name.contains("Rank Fish") }.selectable)
-        assertFalse(exchange.items.single { it.name == "교환 불가 기념 물고기" }.selectable)
-        assertTrue(exchange.items.none { it.name.contains("weapon") || it.name.contains("armor") })
+        assertEquals("rank-fish", exchange.items.single().id)
     }
 
     @Test
     fun `현재 분류에 교환품이 없어도 분류 드롭다운은 유지한다`() {
-        val html = fixture("exchange.html").replace(
-            Regex("<tr><td>\\$ 10</td>.*?</tr>\\s*<tr><td></td>.*?</tr>", RegexOption.DOT_MATCHES_ALL),
-            "",
-        )
+        val html = fixture("exchange.html")
 
         val exchange = parser.parseExchange(html, url, forms.parse(html, url))
 
-        assertEquals(listOf("무기(weapon)", "방어구(armor)"), exchange.categories.map { it.label })
+        assertEquals(4, exchange.categories.size)
         assertEquals("type_create:weapon", exchange.currentCategoryId)
         assertTrue(exchange.items.isEmpty())
         assertNotNull(exchange.actionId)
     }
 
     @Test
-    fun `긴 교환 목록의 중복 Create 버튼 때문에 목록을 버리지 않는다`() {
-        val html = fixture("exchange.html").replace(
-            "<input type=\"submit\" name=\"Create\" value=\"Create\">",
-            """
-                <input type="submit" name="Create" value="Create">
-                <input type="submit" name="Create" value="Create">
-            """.trimIndent(),
-        )
+    fun `radio 없는 교환품도 선택한 분류에서 숨기지 않고 선택 불가로 둔다`() {
+        val html = fixture("exchange.html")
 
-        val exchange = parser.parseExchange(html, url, forms.parse(html, url))
+        val exchange = parser.parseExchange(html, url, forms.parse(html, url), categoryCandidateId = "type_create:armor")
 
-        assertEquals(2, exchange.categories.size)
-        assertTrue(exchange.items.single { it.name.contains("Rank Fish") }.selectable)
-        assertNotNull(exchange.actionId)
+        assertEquals("type_create:armor", exchange.currentCategoryId)
+        assertFalse(exchange.items.single { it.name.contains("교환 불가 기념 물고기") }.selectable)
     }
 
     private fun fixture(name: String): String = checkNotNull(javaClass.getResource("/fixtures/town/fishing/$name")).readText()

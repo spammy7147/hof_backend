@@ -501,6 +501,92 @@ class TownAuthenticatedExecutor(
     }
 
     /**
+     * HOF가 정적 JavaScript 문자열로 form control을 만드는 페이지를 위한 제한된 실행 경계다.
+     * 기능 parser는 JavaScript를 실행하지 않고 최신 GET에서 허용된 control만 materialize하며,
+     * executor는 원본 form의 action/submit/scalar 계약이 그대로인지 다시 확인한 뒤 제출한다.
+     */
+    fun <T> executeMaterializedResolvedProjectedWithScalars(
+        accountId: Long,
+        pageUrl: String,
+        requiredScalarFields: Set<String>,
+        requiredSubmitField: String,
+        requiredSyntheticFields: Set<String>,
+        materialize: (html: String, finalUrl: String) -> String,
+        resolve: (html: String, finalUrl: String, page: ParsedTownPage) -> Pair<TownActionRequest, Map<String, String>>,
+        projector: (
+            html: String,
+            finalUrl: String,
+            result: app.spammy.hof.town.common.model.ParsedTownResult,
+            page: ParsedTownPage,
+        ) -> T,
+    ): T = withAccountActionFence(accountId) {
+        require(requiredScalarFields.isNotEmpty() && requiredSyntheticFields.isNotEmpty())
+        require((requiredScalarFields + requiredSyntheticFields).size <= 8)
+        val context = authenticatedContext(accountId)
+        val current = executeAuthenticated(
+            context.account,
+            requestFactory.townPage(pageUrl, HofRequestOrigin.INTERACTIVE),
+            context.cookies,
+        )
+        val materializedHtml = materialize(current.body, current.finalUrl)
+        val materializedPage = formParser.parse(materializedHtml, current.finalUrl)
+        val (action, scalarValues) = resolve(materializedHtml, current.finalUrl, materializedPage)
+        if (scalarValues.keys != requiredScalarFields || scalarValues.values.any { it.length > 500 }) {
+            throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 입력값을 안전하게 확인하지 못했습니다.")
+        }
+        val guarded = actionGuard.guard(materializedPage, action)
+        if (guarded.form.submitFields.singleOrNull()?.name != requiredSubmitField) {
+            throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 작업 양식이 변경되었습니다.")
+        }
+
+        val rawDocument = Jsoup.parse(current.body, current.finalUrl)
+        val materializedDocument = Jsoup.parse(materializedHtml, current.finalUrl)
+        val rawForms = rawDocument.select("form").filter { rawForm ->
+            val semanticForms = formParser.parse(rawForm.outerHtml(), current.finalUrl).forms
+            semanticForms.any { raw ->
+                raw.method == guarded.form.method && raw.actionUrl == guarded.form.actionUrl &&
+                    raw.submitFields == guarded.form.submitFields
+            }
+        }
+        val rawForm = rawForms.singleOrNull()
+            ?: throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 원본 양식을 하나로 확인하지 못했습니다.")
+        val materializedForms = materializedDocument.select("form").filter { domForm ->
+            formParser.parse(domForm.outerHtml(), current.finalUrl).forms.any { it.actionId == guarded.form.actionId }
+        }
+        val materializedForm = materializedForms.singleOrNull()
+            ?: throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 변환 양식을 하나로 확인하지 못했습니다.")
+
+        val rawControls = ownedControlSignatures(rawForm)
+        val materializedControls = ownedControlSignatures(materializedForm)
+        val preservedControls = materializedControls.filterNot { it.name in requiredSyntheticFields }
+        if (rawControls != preservedControls ||
+            materializedControls.filter { it.name in requiredSyntheticFields }.map(ControlSignature::name).toSet() != requiredSyntheticFields
+        ) throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 동적 입력 양식이 변경되었습니다.")
+        val rawScalarControls = rawForm.select("input,select,textarea").filter { control ->
+            control.closest("form") === rawForm && !control.hasAttr("disabled") && control.attr("name") in requiredScalarFields
+        }.groupBy { it.attr("name") }
+        if (requiredScalarFields.any { rawScalarControls[it].orEmpty().size != 1 }) {
+            throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 입력 필드가 변경되었습니다.")
+        }
+
+        val replacements = scalarValues.toMutableMap()
+        val entries = guarded.formEntries.map { field ->
+            replacements.remove(field.name)?.let { field.copy(value = it) } ?: field
+        }.toMutableList()
+        val submitStart = entries.indexOfFirst { field -> guarded.form.submitFields.any { it.name == field.name && it.value == field.value } }
+            .let { if (it < 0) entries.size else it }
+        replacements.forEach { (name, value) -> entries.add(submitStart, HofFormField(name, value)) }
+        val actionResponse = executeAuthenticated(
+            context.account,
+            requestFactory.townForm(guarded.form.method, guarded.form.actionUrl, entries, HofRequestOrigin.INTERACTIVE),
+            context.cookies + current.setCookies,
+        )
+        val result = resultParser.parse(actionResponse.body)
+        val page = formParser.parse(actionResponse.body, actionResponse.finalUrl)
+        projector(actionResponse.body, actionResponse.finalUrl, result, page)
+    }
+
+    /**
      * 인재 모집처럼 이름 input의 서버 필드명이 페이지마다 바뀔 수 있는 단일 문자열 form 경계다.
      * 최신 GET에서 모집 form, 의미가 관측된 name input 하나와 opaque 선택지를 함께 다시 결정한다.
      */
@@ -579,6 +665,19 @@ class TownAuthenticatedExecutor(
         }
         return false
     }
+
+    private fun ownedControlSignatures(form: org.jsoup.nodes.Element): List<ControlSignature> =
+        form.select("input,button,select,textarea").filter { it.closest("form") === form && !it.hasAttr("disabled") }
+            .map { control ->
+                ControlSignature(
+                    tag = control.tagName().lowercase(),
+                    name = control.attr("name"),
+                    type = control.attr("type").lowercase(),
+                    value = control.attr("value"),
+                )
+            }
+
+    private data class ControlSignature(val tag: String, val name: String, val type: String, val value: String)
 
     /** 최신 GET 안에서 actionId까지 결정해 nonce/hidden field 변화와의 TOCTOU를 막는 variant다. */
     fun <T> executeProjectedWithScalars(

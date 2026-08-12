@@ -5,6 +5,7 @@ import app.spammy.hof.battle.service.BattleMapService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.town.common.model.ParsedTownPage
+import app.spammy.hof.town.common.model.ParsedTownResult
 import app.spammy.hof.town.common.model.TownActionRequest
 import app.spammy.hof.town.common.model.TownActionSelection
 import app.spammy.hof.town.common.model.TownFeatureId
@@ -16,6 +17,8 @@ import app.spammy.hof.town.fishing.dto.FishingResponse
 import app.spammy.hof.town.fishing.model.FishingAction
 import app.spammy.hof.town.fishing.model.FishingBattleTarget
 import app.spammy.hof.town.fishing.model.FishingSnapshot
+import app.spammy.hof.town.fishing.parser.FishingExchangeCategoryException
+import app.spammy.hof.town.fishing.parser.FishingExchangeContractException
 import app.spammy.hof.town.fishing.parser.FishingPageParser
 import org.springframework.stereotype.Service
 
@@ -47,42 +50,31 @@ class FishingService(
     fun loadExchange(accountId: Long): FishingExchangeResponse {
         val url = locationResolver.resolve(TownFeatureId.FISHING_EXCHANGE).url
         return executor.loadProjected(accountId, url) { html, finalUrl, page ->
-            FishingExchangeResponse.from(parser.parseExchange(html, finalUrl, page))
+            FishingExchangeResponse.from(parseExchange(html, finalUrl, page))
         }
     }
 
     fun loadExchangeCategory(accountId: Long, categoryCandidateId: String): FishingExchangeResponse {
         val url = locationResolver.resolve(TownFeatureId.FISHING_EXCHANGE).url
-        return executor.loadSelectedOptionProjected(
-            accountId = accountId,
-            pageUrl = url,
-            actionId = { html, finalUrl, page ->
-                parser.parseExchange(html, finalUrl, page).actionId
-                    ?: unavailable("현재 낚시 교환소의 품목 분류 양식을 찾지 못했습니다.")
-            },
-            optionCandidateId = categoryCandidateId,
-            requiredOptionField = "type_create",
-            requiredFormSubmitField = "Create",
-            excludedActionFields = setOf("Create", "ItemNo", "ItemT", "amount"),
-        ) { html, finalUrl, page ->
-            val snapshot = parser.parseExchange(html, finalUrl, page)
-            if (snapshot.currentCategoryId != categoryCandidateId) {
-                unavailable("HOF가 요청한 낚시 교환 분류로 전환하지 않았습니다.")
-            }
-            FishingExchangeResponse.from(snapshot)
+        return executor.loadProjected(accountId, url) { html, finalUrl, page ->
+            FishingExchangeResponse.from(parseExchange(html, finalUrl, page, categoryCandidateId = categoryCandidateId))
         }
     }
 
     fun exchange(accountId: Long, request: FishingExchangeRequest): FishingExchangeResponse {
         val url = locationResolver.resolve(TownFeatureId.FISHING_EXCHANGE).url
-        return executor.executeResolvedProjectedWithScalars(
+        return executor.executeMaterializedResolvedProjectedWithScalars(
             accountId = accountId,
             pageUrl = url,
             requiredScalarFields = setOf("ItemT", "amount"),
             requiredSubmitField = "Create",
+            requiredSyntheticFields = setOf("ItemNo", "list_type"),
+            materialize = { html, finalUrl -> materializeExchange(html, finalUrl, request.categoryCandidateId) },
             resolve = { html, finalUrl, page -> resolveExchangeAction(html, finalUrl, page, request) },
         ) { html, finalUrl, result, page ->
-            FishingExchangeResponse.from(parser.parseExchange(html, finalUrl, page, result))
+            FishingExchangeResponse.from(
+                parseExchange(html, finalUrl, page, result, request.categoryCandidateId),
+            )
         }
     }
 
@@ -105,7 +97,7 @@ class FishingService(
         page: ParsedTownPage,
         request: FishingExchangeRequest,
     ): Pair<TownActionRequest, Map<String, String>> {
-        val snapshot = parser.parseExchange(html, finalUrl, page)
+        val snapshot = parseExchange(html, finalUrl, page, categoryCandidateId = request.categoryCandidateId)
         if (snapshot.currentCategoryId != request.categoryCandidateId) {
             unavailable("현재 표시된 낚시 교환 분류를 다시 확인해 주세요.")
         }
@@ -113,10 +105,7 @@ class FishingService(
             ?: unavailable("현재 교환할 수 없는 품목입니다. 새로고침 후 다시 시도해 주세요.")
         return TownActionRequest(
             actionId = snapshot.actionId ?: unavailable("현재 낚시 교환 양식을 찾지 못했습니다."),
-            selections = listOf(
-                TownActionSelection(request.categoryCandidateId),
-                TownActionSelection(request.candidateId),
-            ),
+            selections = listOf(TownActionSelection(request.candidateId)),
         ) to mapOf(
             "ItemT" to (item.itemT ?: unavailable("현재 교환품의 HOF 계약을 확인하지 못했습니다.")),
             "amount" to request.quantity.toString(),
@@ -148,6 +137,28 @@ class FishingService(
             map.name.trim().startsWith("Fishing-", ignoreCase = true)
 
     private fun unavailable(message: String): Nothing = throw ApiException(ErrorCode.INVALID_REQUEST, message)
+
+    private fun parseExchange(
+        html: String,
+        finalUrl: String,
+        page: ParsedTownPage,
+        result: ParsedTownResult? = null,
+        categoryCandidateId: String? = null,
+    ) = try {
+        parser.parseExchange(html, finalUrl, page, result, categoryCandidateId)
+    } catch (_: FishingExchangeCategoryException) {
+        unavailable("현재 HOF에서 선택할 수 없는 낚시 교환 분류입니다.")
+    } catch (_: FishingExchangeContractException) {
+        throw ApiException(ErrorCode.HOF_REQUEST_FAILED, "현재 낚시 교환소 응답 형식을 확인할 수 없습니다.")
+    }
+
+    private fun materializeExchange(html: String, finalUrl: String, categoryCandidateId: String): String = try {
+        parser.materializeExchangeHtml(html, finalUrl, categoryCandidateId)
+    } catch (_: FishingExchangeCategoryException) {
+        unavailable("현재 HOF에서 선택할 수 없는 낚시 교환 분류입니다.")
+    } catch (_: FishingExchangeContractException) {
+        throw ApiException(ErrorCode.HOF_REQUEST_FAILED, "현재 낚시 교환소 응답 형식을 확인할 수 없습니다.")
+    }
 
     private companion object {
         const val BATTLE_CATEGORY_ID = "battle_map"

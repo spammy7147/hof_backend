@@ -94,20 +94,15 @@ class FishingServiceTest {
     }
 
     @Test
-    fun `낚시 교환 분류 전환은 품목 제작 action 없이 선택한 분류만 보낸다`() {
+    fun `낚시 교환 분류 전환은 원격 제출 없이 같은 정적 카탈로그를 투영한다`() {
         val initial = fixture("exchange.html")
-        val armor = initial
-            .replace("value=\"weapon\" selected", "value=\"weapon\"")
-            .replace("value=\"armor\"", "value=\"armor\" selected")
-        stubExchange(initial, armor)
+        stubExchange(initial)
 
         val response = service.loadExchangeCategory(7L, "type_create:armor")
 
         assertEquals("type_create:armor", response.currentCategoryId)
         val requests = captureRequests()
-        assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.POST), requests.map(HofRequest::method))
-        assertEquals(listOf("type_create"), requests.last().formEntries.map { it.name })
-        assertEquals(listOf("armor"), requests.last().formEntries.map { it.value })
+        assertEquals(listOf(HofHttpMethod.GET), requests.map(HofRequest::method))
     }
 
     @Test
@@ -115,12 +110,39 @@ class FishingServiceTest {
         val html = fixture("exchange.html")
         stubExchange(html, html)
 
-        service.exchange(7L, FishingExchangeRequest("rank-fish", "type_create:weapon", 3))
+        service.exchange(7L, FishingExchangeRequest("rank-fish", "type_create:useitem", 3))
 
         val posted = captureRequests().last()
         assertEquals(CREATE_URL, posted.url)
-        assertEquals(listOf("type_create", "ItemT", "amount", "ItemNo", "Create"), posted.formEntries.map { it.name })
-        assertEquals(listOf("weapon", "fish-17", "3", "rank-fish", "Create"), posted.formEntries.map { it.value })
+        assertEquals(listOf("ItemNo", "list_type", "ItemT", "amount", "Create", "Create"), posted.formEntries.map { it.name })
+        assertEquals(listOf("rank-fish", "useitem", "0", "3", "Create", "1"), posted.formEntries.map { it.value })
+    }
+
+    @Test
+    fun `정적 교환 목록 계약이 손상되면 빈 정상 응답으로 숨기지 않는다`() {
+        val malformed = fixture("exchange.html").replace("case \"weapon\": html = '';", "case \"weapon\": html = window.renderCatalog();")
+        stubExchange(malformed)
+
+        val error = assertFailsWith<ApiException> { service.loadExchange(7L) }
+
+        assertEquals(ErrorCode.HOF_REQUEST_FAILED, error.errorCode)
+        assertEquals(listOf(HofHttpMethod.GET), captureRequests().map(HofRequest::method))
+    }
+
+    @Test
+    fun `임의 javascript ItemT는 선택 가능하게 만들거나 제출하지 않는다`() {
+        val arbitrary = fixture("exchange.html").replace(
+            "document.getElementById(\"ItemT\").value=0",
+            "window.pickRecipe(0)",
+        )
+        stubExchange(arbitrary)
+
+        val error = assertFailsWith<ApiException> {
+            service.exchange(7L, FishingExchangeRequest("rank-fish", "type_create:useitem", 3))
+        }
+
+        assertEquals(ErrorCode.INVALID_REQUEST, error.errorCode)
+        assertEquals(listOf(HofHttpMethod.GET), captureRequests().map(HofRequest::method))
     }
 
     private fun stubAccount() {
@@ -179,7 +201,7 @@ class FishingServiceTest {
 
     private companion object {
         const val URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=fishing"
-        const val EXCHANGE_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=fishchange"
+        const val EXCHANGE_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=createF"
         const val CREATE_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=createF"
     }
 }

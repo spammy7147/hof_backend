@@ -28,11 +28,11 @@ class TownEntryPageParserTest {
         assertEquals("ann", TownFeatureId.ANN_SHOP.menuCode)
         assertEquals("soulecho", TownFeatureId.SOUL_ECHO.menuCode)
         assertEquals("pantheon", TownFeatureId.PANTHEON.menuCode)
-        assertEquals("fishchange", TownFeatureId.FISHING_EXCHANGE.menuCode)
+        assertEquals("createF", TownFeatureId.FISHING_EXCHANGE.menuCode)
         assertEquals(
             setOf(
                 "buy", "buy2", "sbuy", "sell", "combine", "auction", "colosseum", "colosseumshop", "recruit", "housing",
-                "cardshop", "cardmix", "cardmix2", "cardsell", "fishing", "fishchange",
+                "cardshop", "cardmix", "cardmix2", "cardsell", "fishing", "createF",
                 "stash", "orbboxshop", "sewingshop", "workbase", "refine", "create", "refine2", "create2", "raidpub",
                 "restroom", "quest", "legacy", "ann", "soulecho", "pantheon",
             ),
