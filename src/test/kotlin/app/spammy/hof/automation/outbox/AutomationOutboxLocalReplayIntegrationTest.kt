@@ -24,6 +24,7 @@ import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
 import org.springframework.boot.test.context.TestConfiguration
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Import
+import org.springframework.scheduling.config.ScheduledTaskHolder
 import org.springframework.test.context.ActiveProfiles
 import org.springframework.transaction.PlatformTransactionManager
 import org.springframework.transaction.annotation.Propagation
@@ -57,6 +58,15 @@ class AutomationOutboxLocalReplayIntegrationTest {
     @Autowired private lateinit var wakeups: AutomationWakeupPort
     @Autowired private lateinit var transactionManager: PlatformTransactionManager
     @Autowired private lateinit var lifecycle: TypedAutomationLifecycleBridge
+    @Autowired private lateinit var scheduledTasks: ScheduledTaskHolder
+
+    @Test
+    fun `test transport has no background outbox poll competing with explicit replay`() {
+        assertTrue(
+            scheduledTasks.scheduledTasks.none { it.toString().contains("publishBatch") },
+            "The test outbox publisher must only run when the test invokes it.",
+        )
+    }
 
     @Test
     fun `no-profile publisher marks a wake only after synchronous local execution completes`() {

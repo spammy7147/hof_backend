@@ -45,7 +45,7 @@ class KafkaAutomationOutboxTransport(
     }
 }
 
-/** Polling exists in every profile; only the transport changes between local execution and Kafka. */
+/** Publishes one due batch. Scheduling is a production concern kept outside test replay contexts. */
 @Component
 class AutomationOutboxPublisher(
     private val queryRepository: AutomationOutboxQueryRepository,
@@ -53,13 +53,21 @@ class AutomationOutboxPublisher(
     private val transport: AutomationOutboxTransport,
     private val timeProvider: TimeProvider,
 ) {
-    @Scheduled(fixedDelayString = "\${hof.automation.outbox-delay-ms:500}")
     fun publishBatch() {
         queryRepository.findUnpublished(timeProvider.now(), topics = transport.supportedTopics).forEach { row ->
             transport.publish(row)
             marker.markPublished(row.id)
         }
     }
+}
+
+@Component
+@Profile("dev | prod")
+class AutomationOutboxPollingScheduler(
+    private val publisher: AutomationOutboxPublisher,
+) {
+    @Scheduled(fixedDelayString = "\${hof.automation.outbox-delay-ms:500}")
+    fun publishDueBatch() = publisher.publishBatch()
 }
 
 @Component
