@@ -44,6 +44,33 @@ class PantheonTest {
     }
 
     @Test
+    fun `실제 신전의 한 form에 함께 있는 네 submit을 각각 action으로 파싱한다`() {
+        val url = "http://sic.zerosic.com/ZeroHOF/index.php?menu=marduktemple"
+        val html = """
+            <h4>마르두크의 전당 - 군신 마르두크(Marduk)</h4>
+            <form method="post" action="?menu=marduktemple">
+              <input type="submit" name="MardukTempleRule" value="교리를 확인한다.">
+              <input type="submit" name="MardukTempleBaptism" value="세례 아이템을 구입한다(10,000 Funds).">
+              <input type="submit" name="MardukTempleDonation" value="교단에 기부한다(50,000 Funds).">
+              <input type="submit" name="MardukTempleDonation2" value="교단에 기부한다(자신의 Funds의 1%,최대 10,000,000).">
+            </form>
+        """.trimIndent()
+
+        val actions = parser.parseDetail("marduk", html, url, forms.parse(html, url)).actions
+
+        assertEquals(4, actions.size)
+        assertEquals(
+            setOf(
+                ShrineAction.CHECK_DOCTRINE,
+                ShrineAction.BUY_PRIEST_ITEM,
+                ShrineAction.DONATE_FIXED,
+                ShrineAction.DONATE_PERCENT,
+            ),
+            actions.map { it.type }.toSet(),
+        )
+    }
+
+    @Test
     fun `외부 링크와 추측 동작은 노출하지 않는다`() {
         val html = """<a href='https://evil.example/?menu=pantheon&shrine=x'>악신의 신전</a><a href='?menu=pantheon&shrine=x'>알 수 없는 곳</a>"""
         assertTrue(parser.parseStreet(html, base).shrines.isEmpty())
@@ -64,7 +91,7 @@ class PantheonTest {
     }
 
     @Test
-    fun `POST는 단일 submit과 유일 hidden만 허용하고 비율 기부는 명시된 1퍼센트만 허용한다`() {
+    fun `POST는 여러 submit을 개별 허용하되 유일 hidden과 명시된 1퍼센트만 허용한다`() {
         val url = "$base&shrine=Marduk"
         val html = """
             <h4>신전</h4>
@@ -79,7 +106,11 @@ class PantheonTest {
             <a href='?menu=pantheon&shrine=Marduk&donate=2'>교단에 기부한다(자신의 Funds의 2%)</a>
         """.trimIndent()
         val actions = parser.parseDetail("x", html, url, forms.parse(html, url)).actions
-        assertTrue(actions.isEmpty(), actions.toString())
+        assertEquals(2, actions.size, actions.toString())
+        assertEquals(
+            setOf(ShrineAction.CHECK_DOCTRINE, ShrineAction.BUY_PRIEST_ITEM),
+            actions.map { it.type }.toSet(),
+        )
     }
 
     @Test

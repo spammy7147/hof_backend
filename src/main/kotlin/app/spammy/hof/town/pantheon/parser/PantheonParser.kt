@@ -87,8 +87,8 @@ class PantheonParser {
                 .filter { it.closest("form") === domForm && !it.hasAttr("disabled") }
             if (controls.size > MAX_CONTROLS) return@forEach
             val submits = controls.filter(::isSubmit)
-            if (submits.size != 1 || controls.any { control ->
-                    control !== submits.single() && !(control.tagName() == "input" && control.attr("type").equals("hidden", true))
+            if (submits.isEmpty() || controls.any { control ->
+                    control !in submits && !(control.tagName() == "input" && control.attr("type").equals("hidden", true))
                 }
             ) return@forEach
             val hiddenNames = controls.filter { it.tagName() == "input" && it.attr("type").equals("hidden", true) }.map { it.attr("name").trim() }
@@ -281,7 +281,7 @@ class PantheonParser {
         val RELATION = Regex("(?:관계|신앙)\\s*[:：]?\\s*(.+?)(?=\\s*(?:공민|사제와|$))")
         val CURRENT_JOB = Regex("(?:현재\\s*)?(?:Work|작업)\\s*[:：]\\s*(.+?)(?=\\s*(?:Auction|F[■□]|$))", RegexOption.IGNORE_CASE)
         val CHECK = Regex("^(?:교리|가르침|교단)\\s*(?:을|를)?\\s*(?:확인한다|확인|본다|보기)$")
-        val BUY = Regex("^사제\\s*아이템(?:을)?\\s*(?:구입한다|구입|산다)(?:\\s*\\(.+\\))?$")
+        val BUY = Regex("^(?:사제|세례)\\s*아이템(?:을)?\\s*(?:구입한다|구입|산다)(?:\\s*\\(.+\\))?$")
         val DONATE_ITEM = Regex("^(?:아이템|.+?\\s+x?\\s*\\d+)\\s*(?:을)?\\s*(?:교단에\\s*)?(?:기부한다|기부)$")
         val DONATE_PERCENT = Regex("^(?:교단에\\s*)?기부한다.*(?:%|퍼센트).*$")
         val DONATE_FIXED = Regex("^(?:교단에\\s*)?기부한다(?:\\s*\\(.+Funds.*\\))?$")
