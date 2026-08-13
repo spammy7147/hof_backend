@@ -147,6 +147,91 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
     }
 
     @Test
+    fun `manual stop discards a reconciling action so resume starts from a fresh decision`() {
+        val accountId = seed("manual-stop-fresh-decision")
+        val activeActionId = TransactionTemplate(transactionManager).execute {
+            val account = requireNotNull(entityManager.find(HofAccountEntity::class.java, accountId))
+            val entry = typedQuery.findEntries(accountId).single()
+            val action = actions.save(
+                TypedAutomationActionRunEntity(
+                    account = account,
+                    entry = entry,
+                    executionIdentity = "stuck-raid-registration",
+                    actionKind = "RAID_TOWN",
+                    payloadJson = "{}",
+                    actionFingerprint = "b".repeat(64),
+                    status = TypedAutomationActionStatus.RECONCILING,
+                    leaseToken = "expired-lease",
+                    createdAt = NOW,
+                    submittedAt = NOW,
+                    updatedAt = NOW,
+                ),
+            )
+            requireNotNull(typedQuery.lockRuntimeState(accountId)).apply {
+                lifecycleStatus = TypedAutomationLifecycle.RUNNING
+                stopReason = AutomationStopReason.AUTHENTICATION.name
+                stopActionId = null
+                nextAttemptAt = NOW.plusSeconds(300)
+                waitReason = AutomationWaitReason.HOF_CONNECTION
+            }
+            action.id
+        }
+
+        TransactionTemplate(transactionManager).executeWithoutResult {
+            bridge.stop(accountId, AutomationStopReason.MANUAL_STOP, "USER_STOP")
+        }
+
+        assertNull(typedQuery.findActiveTypedAction(accountId))
+        val discarded = requireNotNull(typedQuery.findStoppedTypedAction(accountId, requireNotNull(activeActionId)))
+        assertEquals(TypedAutomationActionStatus.AMBIGUOUS, discarded.status)
+        assertEquals(NOW, discarded.finishedAt)
+
+        TransactionTemplate(transactionManager).executeWithoutResult {
+            bridge.resume(accountId, "USER_RESUME")
+        }
+
+        assertNull(typedQuery.findActiveTypedAction(accountId))
+        assertEquals(TypedAutomationLifecycle.RUNNING, requireNotNull(typedQuery.findRuntimeState(accountId)).lifecycleStatus)
+    }
+
+    @Test
+    fun `pause preserves a reconciling action for continuation`() {
+        val accountId = seed("pause-preserves-action")
+        val activeActionId = TransactionTemplate(transactionManager).execute {
+            val account = requireNotNull(entityManager.find(HofAccountEntity::class.java, accountId))
+            val entry = typedQuery.findEntries(accountId).single()
+            val action = actions.save(
+                TypedAutomationActionRunEntity(
+                    account = account,
+                    entry = entry,
+                    executionIdentity = "paused-action",
+                    actionKind = "BATTLE_MAP",
+                    payloadJson = "{}",
+                    actionFingerprint = "c".repeat(64),
+                    status = TypedAutomationActionStatus.RECONCILING,
+                    leaseToken = "paused-lease",
+                    createdAt = NOW,
+                    submittedAt = NOW,
+                    updatedAt = NOW,
+                ),
+            )
+            requireNotNull(typedQuery.lockRuntimeState(accountId)).apply {
+                lifecycleStatus = TypedAutomationLifecycle.RUNNING
+                stopReason = null
+                stopActionId = null
+            }
+            action.id
+        }
+
+        TransactionTemplate(transactionManager).executeWithoutResult {
+            bridge.pause(accountId, "USER_PAUSE")
+        }
+
+        assertEquals(activeActionId, typedQuery.findActiveTypedAction(accountId)?.id)
+        assertEquals(TypedAutomationLifecycle.PAUSED, requireNotNull(typedQuery.findRuntimeState(accountId)).lifecycleStatus)
+    }
+
+    @Test
     fun `manual stop drains an already registered raid cycle`() {
         val accountId = seed("raid-drain")
         TransactionTemplate(transactionManager).executeWithoutResult {

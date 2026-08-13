@@ -2,6 +2,7 @@ package app.spammy.hof.automation.service
 
 import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.automation.entity.TypedAutomationLifecycle
+import app.spammy.hof.automation.entity.TypedAutomationActionStatus
 import app.spammy.hof.automation.entity.TypedAutomationRuntimeStateEntity
 import app.spammy.hof.automation.outbox.AutomationOutboxService
 import app.spammy.hof.automation.repository.AdventureDailyPreflightQueryRepository
@@ -131,6 +132,7 @@ class TypedAutomationLifecycleBridge(
                 outbox.enqueue(accountId, wakeReason)
                 return
             }
+            discardActiveActionForFreshRestart(accountId, now)
             it.lifecycleStatus = TypedAutomationLifecycle.STOPPED
             it.requestedLifecycle = null
             it.stopReason = reason.name
@@ -142,6 +144,28 @@ class TypedAutomationLifecycleBridge(
             it.updatedAt = now
         }
         outbox.enqueue(accountId, wakeReason)
+    }
+
+    /**
+     * 수동 정지는 일시정지와 달리 이전 실행을 이어받지 않는다. 제출 여부가 불명확한 작업은 이력상
+     * AMBIGUOUS로 보존하고, 아직 제출하지 않은 작업은 FAILED로 닫아 다음 재개가 최신 화면부터 판단하게 한다.
+     */
+    private fun discardActiveActionForFreshRestart(accountId: Long, now: java.time.Instant) {
+        val active = typed.findActiveTypedAction(accountId) ?: return
+        val action = typed.lockTypedAction(active.id)
+            ?.takeIf { it.account.id == accountId }
+            ?: return
+        action.status = when (action.status) {
+            TypedAutomationActionStatus.PREPARED -> TypedAutomationActionStatus.FAILED
+            TypedAutomationActionStatus.SUBMITTING,
+            TypedAutomationActionStatus.RECONCILING,
+            -> TypedAutomationActionStatus.AMBIGUOUS
+            else -> return
+        }
+        action.nextAttemptAt = null
+        action.lastError = "사용자 정지로 이전 작업을 종료했습니다. 다음 시작에서 최신 상태를 다시 판단합니다."
+        action.finishedAt = now
+        action.updatedAt = now
     }
 
     private fun clearRuntime(state: TypedAutomationRuntimeStateEntity, now: java.time.Instant) {
