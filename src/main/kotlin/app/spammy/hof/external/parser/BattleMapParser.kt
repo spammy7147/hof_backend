@@ -73,10 +73,13 @@ class BattleMapParser {
                     return@mapNotNull null
                 }
                 val parsedKey = parseKey(displayName)
-                val name = displayName
+                val parsedName = displayName
                     .withoutKeySuffix()
                     .withoutTrailingMapState()
                     .ifBlank { mapCode.orEmpty() }
+                val name = KNOWN_UNION_MAP_NAMES[mapCode]
+                    ?.takeIf { categoryId == UNION_CATEGORY && parsedName == mapCode }
+                    ?: parsedName
                 if (name.isBlank()) return@mapNotNull null
 
                 val isNewObservation = if (mapCode == null) {
@@ -472,6 +475,7 @@ class BattleMapParser {
     private companion object {
         const val HOF_BASE_URL = "http://sic.zerosic.com/ZeroHOF/index.php"
         const val MAP_GROUP_ID_PREFIX = "mapgroup"
+        const val UNION_CATEGORY = "union"
         const val SECONDS_PER_MINUTE = 60L
         const val SECONDS_PER_HOUR = 3_600L
         const val MAX_WARNING_SOURCE_LENGTH = 300
@@ -501,6 +505,10 @@ class BattleMapParser {
         val KEY_ADVERTISEMENT_PATTERN = Regex("""\(\s*x[^)]*\)\s*$""", RegexOption.IGNORE_CASE)
         val RECOMMENDED_LEVEL_PATTERN = Regex("""\(\s*적정\s*레벨\s*:\s*([^)]+)\)""")
         val TRAILING_GROUP_COUNT_PATTERN = Regex("""\(\s*[\d,]+\s*\)\s*$""")
+        val KNOWN_UNION_MAP_NAMES = mapOf(
+            "0003" to "도적소탕",
+            "0004" to "사막의 살인적",
+        )
     }
 
     private data class GroupMetadata(

@@ -73,4 +73,16 @@ class BattleMapParserTest {
         assertEquals("raid001", map.mapCode)
         assertEquals(99L, map.cooldownRemainingSeconds)
     }
+
+    @Test
+    fun `resolves numeric union link labels to their map names`() {
+        val html = """
+            <div><a href="index.php?union=0003">0003</a></div>
+            <div><a href="index.php?union=0004">0004</a></div>
+        """.trimIndent()
+
+        val maps = parser.parse("union", "union", html)
+
+        assertEquals(listOf("도적소탕", "사막의 살인적"), maps.map { it.name })
+    }
 }

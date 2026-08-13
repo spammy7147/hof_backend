@@ -121,13 +121,14 @@ class FishingPageParser(
                 if (label.isBlank() || EXCHANGE_HEADER.matches(label)) return@mapIndexedNotNull null
                 val candidate = row.candidate
                 val itemT = candidate?.let(itemTByCandidate::get)
+                val parsedLabel = parseExchangeItemLabel(label)
                 FishingExchangeItem(
                     id = candidate?.id ?: "display-$index",
-                    name = label.replace(EXCHANGE_LEADING_PRICE, "").trim(),
+                    name = parsedLabel.name,
                     selectable = candidate != null && itemT != null,
-                    detail = null,
+                    detail = parsedLabel.detail,
                     price = PRICE.find(label)?.groupValues?.get(1)?.replace(",", "")?.toLongOrNull(),
-                    materials = MATERIAL.findAll(label).map { it.groupValues[1].trim() }.distinct().toList(),
+                    materials = parsedLabel.materials,
                     itemT = itemT,
                 )
             }.distinctBy(FishingExchangeItem::id),
@@ -393,6 +394,24 @@ class FishingPageParser(
 
     private fun clean(value: String): String = value.replace(Regex("\\s+"), " ").trim()
 
+    private fun parseExchangeItemLabel(label: String): ExchangeItemLabel {
+        val content = clean(label.replace(EXCHANGE_LEADING_PRICE, ""))
+        val sections = content.split('/').map(::clean).filter(String::isNotBlank)
+        val name = sections.firstOrNull().orEmpty().ifBlank { content }
+        val materials = MATERIAL.findAll(content)
+            .map { clean(it.value) }
+            .filter(String::isNotBlank)
+            .distinct()
+            .toList()
+        val detail = sections.drop(1)
+            .map { section -> clean(section.replace(MATERIAL, "")) }
+            .map { it.trim(' ', '·', ',', ';') }
+            .filter(String::isNotBlank)
+            .joinToString(" · ")
+            .ifBlank { null }
+        return ExchangeItemLabel(name, detail, materials)
+    }
+
     private companion object {
         val DATE_NOTICE = Regex("날짜가 갱신되었습니다[.!]?")
         val REMAINING = Regex("오늘의 남은 낚시 횟수\\s*[:：]?\\s*(\\d+)회")
@@ -430,7 +449,7 @@ class FishingPageParser(
         val WATER_STATUS_SENTENCE_END = Regex("[。.!?]")
         const val MAX_WATER_STATUS_LENGTH = 160
         val PRICE = Regex("[$]\\s*([\\d,]+)")
-        val MATERIAL = Regex("([A-Za-z가-힣][A-Za-z가-힣 '\\-]{1,60})\\s*[x×]\\s*\\d+")
+        val MATERIAL = Regex("[A-Za-z가-힣][A-Za-z가-힣0-9 '&+.,()\\-]{1,100}?\\s*[x×]\\s*\\d+(?:\\s*\\([^)]*\\))?")
         val EXCHANGE_HEADER = Regex("^(제작비|제작비 Item|Item|아이템|수수료)(?:\\s+(Item|아이템))?$", RegexOption.IGNORE_CASE)
         val EXCHANGE_LEADING_PRICE = Regex("^[$]\\s*[\\d,]+\\s*")
         val ITEM_T_ASSIGNMENT = Regex("(?:document\\.getElementById\\(\\s*(['\"])ItemT\\1\\s*\\)|(?:document\\.)?ItemT)\\s*\\.value\\s*=\\s*(['\"]?)([A-Za-z0-9_.:-]+)\\2", RegexOption.IGNORE_CASE)
@@ -452,6 +471,7 @@ class FishingPageParser(
     }
 
     private data class ExchangeCategoryContract(val id: String, val value: String, val label: String)
+    private data class ExchangeItemLabel(val name: String, val detail: String?, val materials: List<String>)
     private data class MaterializedExchange(
         val html: String,
         val categories: List<ExchangeCategoryContract>,

@@ -167,6 +167,44 @@ class FishingPageParserTest {
     }
 
     @Test
+    fun `교환 품목의 이름 설명 재료를 구조화한다`() {
+        val html = fixture("exchange.html")
+
+        val item = parser.parseExchange(
+            html,
+            url,
+            forms.parse(html, url),
+            categoryCandidateId = "type_create:useitem",
+        ).items.single()
+
+        assertEquals("Rank Fish (100회 사용가능)", item.name)
+        assertEquals("h:2", item.detail)
+        assertEquals(listOf("Fishing Coin x 30"), item.materials)
+        assertEquals(10L, item.price)
+    }
+
+    @Test
+    fun `사용 횟수와 보유량이 포함된 여러 교환 재료를 분리한다`() {
+        val html = fixture("exchange.html").replace(
+            "Fishing Coin x 30",
+            "Flat Fish (100회 사용가능) x 1(11.9) Scale Fish (100회 사용가능) x 1(104)",
+        )
+
+        val item = parser.parseExchange(
+            html,
+            url,
+            forms.parse(html, url),
+            categoryCandidateId = "type_create:useitem",
+        ).items.single()
+
+        assertEquals("h:2", item.detail)
+        assertEquals(
+            listOf("Flat Fish (100회 사용가능) x 1(11.9)", "Scale Fish (100회 사용가능) x 1(104)"),
+            item.materials,
+        )
+    }
+
+    @Test
     fun `현재 분류에 교환품이 없어도 분류 드롭다운은 유지한다`() {
         val html = fixture("exchange.html")
 
