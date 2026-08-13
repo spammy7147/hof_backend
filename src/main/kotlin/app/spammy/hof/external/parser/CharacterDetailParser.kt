@@ -8,7 +8,6 @@ import app.spammy.hof.external.model.HofPatternSlot
 import app.spammy.hof.external.model.HofPositionChoice
 import app.spammy.hof.external.model.HofPositionGuard
 import app.spammy.hof.external.model.HofSkill
-import org.jsoup.Jsoup
 import org.jsoup.nodes.DataNode
 import org.jsoup.nodes.Element
 import org.jsoup.nodes.Node
@@ -27,7 +26,7 @@ class CharacterDetailParser {
         characterId: String,
         html: String,
     ): HofCharacter {
-        val document = Jsoup.parse(html, HOF_BASE_URL)
+        val document = HofHtmlParser.parse(html, HOF_BASE_URL)
         val carpet = document.selectFirst(".carpet_frame")
         val name = carpet?.readCharacterName().orEmpty()
         val levelJob = carpet?.readLevelJob()

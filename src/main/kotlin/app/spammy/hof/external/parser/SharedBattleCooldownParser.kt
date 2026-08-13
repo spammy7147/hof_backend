@@ -1,6 +1,5 @@
 package app.spammy.hof.external.parser
 
-import org.jsoup.Jsoup
 import org.springframework.stereotype.Component
 
 data class SharedBattleCooldownNotice(val remainingSeconds: Long)
@@ -8,7 +7,7 @@ data class SharedBattleCooldownNotice(val remainingSeconds: Long)
 @Component
 class SharedBattleCooldownParser {
     fun parse(html: String): SharedBattleCooldownNotice? {
-        val text = Jsoup.parse(html).text()
+        val text = HofHtmlParser.parse(html).text()
         if (!SHARED_COOLDOWN_MARKER.containsMatchIn(text)) return null
         val seconds = REMAINING_SECONDS.find(text)
             ?.groupValues

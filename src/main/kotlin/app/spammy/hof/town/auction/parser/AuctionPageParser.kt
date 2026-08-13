@@ -1,5 +1,7 @@
 package app.spammy.hof.town.auction.parser
 
+import app.spammy.hof.external.parser.HofHtmlParser
+
 import app.spammy.hof.town.auction.service.AuctionAction
 import app.spammy.hof.town.auction.service.AuctionCapabilities
 import app.spammy.hof.town.auction.service.AuctionDuration
@@ -11,13 +13,12 @@ import app.spammy.hof.town.auction.service.ObservationKind
 import app.spammy.hof.town.common.model.ParsedTownForm
 import app.spammy.hof.town.common.model.ParsedTownPage
 import java.security.MessageDigest
-import org.jsoup.Jsoup
 import org.springframework.stereotype.Component
 
 @Component
 class AuctionPageParser {
     fun parse(html: String, page: ParsedTownPage, query: String? = null): AuctionPage {
-        val document = Jsoup.parse(html)
+        val document = HofHtmlParser.parse(html)
         val bidActionId = actionId(page, "Bid", "BidPrice")
         val listings = document.select("table tr").mapNotNull { tr ->
             val cells = tr.children().filter { it.tagName() in setOf("td", "th") }
@@ -61,7 +62,7 @@ class AuctionPageParser {
     }
 
     fun parseExhibit(html: String, page: ParsedTownPage): AuctionExhibitPage {
-        val document = Jsoup.parse(html)
+        val document = HofHtmlParser.parse(html)
         val form = page.forms.singleOrNull { parsed ->
             parsed.submitFields.any { it.name == "PutAuction" } &&
                 parsed.candidates.any { it.inputName == "item_no" }
@@ -98,7 +99,7 @@ class AuctionPageParser {
         val current = parse(html, page).listings.filter { it.action == AuctionAction.BID }.map { row ->
             AuctionSnapshot(row.listingId, row.name, row.type, row.quantity, row.totalPrice, ObservationKind.CURRENT)
         }
-        val text = Jsoup.parse(html).body().text()
+        val text = HofHtmlParser.parse(html).body().text()
         val sold = text.split(Regex("(?=No\\.\\s*\\d+)", RegexOption.IGNORE_CASE)).mapNotNull { body ->
             if (!SOLD_INCLUDE.containsMatchIn(body) || SOLD_EXCLUDE.containsMatchIn(body)) return@mapNotNull null
             val no = Regex("No\\.\\s*(\\d+)", RegexOption.IGNORE_CASE).find(body)?.groupValues?.get(1) ?: return@mapNotNull null

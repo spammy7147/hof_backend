@@ -1,7 +1,6 @@
 package app.spammy.hof.external.parser
 
 import app.spammy.hof.external.model.HofLoginState
-import org.jsoup.Jsoup
 import org.springframework.stereotype.Component
 
 @Component
@@ -13,7 +12,7 @@ class LoginStateParser {
      * 로그인 form, 캐릭터 링크, 로그아웃 텍스트, 상태바 존재 여부로 로그인 상태를 추정한다.
      */
     fun parse(html: String): HofLoginState {
-        val document = Jsoup.parse(html)
+        val document = HofHtmlParser.parse(html)
         val text = document.text()
         val hasLoginForm = document.select("""input[name=id]""").isNotEmpty() &&
             document.select("""input[name=pass]""").isNotEmpty() &&

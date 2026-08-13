@@ -1,7 +1,6 @@
 package app.spammy.hof.external.parser
 
 import app.spammy.hof.external.model.HofMainStatus
-import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.springframework.stereotype.Component
 
@@ -14,7 +13,7 @@ class HofMainStatusParser {
      * 플레이어명, Funds, Time, Work, Auction 값을 읽는다.
      */
     fun parse(html: String): HofMainStatus {
-        val statusContainer = Jsoup.parse(html).selectFirst("#menu2")
+        val statusContainer = HofHtmlParser.parse(html).selectFirst("#menu2")
             ?: return incompleteStatus()
         val ownTexts = statusContainer.allElements
             .map { element -> element.ownText().normalizeSpaces() }

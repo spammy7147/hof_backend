@@ -1,5 +1,7 @@
 package app.spammy.hof.town.pantheon.parser
 
+import app.spammy.hof.external.parser.HofHtmlParser
+
 import app.spammy.hof.external.model.HofFormField
 import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.town.common.model.ParsedTownPage
@@ -9,7 +11,6 @@ import java.net.URI
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
-import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import org.springframework.stereotype.Component
@@ -17,7 +18,7 @@ import org.springframework.stereotype.Component
 @Component
 class PantheonParser {
     fun parseStreet(html: String, finalUrl: String): PantheonStreetSnapshot {
-        val document = Jsoup.parse(html, finalUrl)
+        val document = HofHtmlParser.parse(html, finalUrl)
         val baseQuery = safeQuery(finalUrl) ?: return PantheonStreetSnapshot(emptyList())
         val observed = document.select("a[href]").asSequence().take(MAX_LINKS).mapNotNull { link ->
             val target = safeShrineTarget(finalUrl, link.attr("href"), baseQuery) ?: return@mapNotNull null
@@ -53,7 +54,7 @@ class PantheonParser {
         page: ParsedTownPage,
         result: ParsedTownResult? = null,
     ): PantheonDetailSnapshot {
-        val document = Jsoup.parse(html, finalUrl)
+        val document = HofHtmlParser.parse(html, finalUrl)
         val heading = document.select("h1,h2,h3,h4").firstOrNull { SHRINE_DETAIL_WORD.containsMatchIn(clean(it.text())) }
         val title = clean(heading?.text().orEmpty()).ifBlank { "신전" }.take(MAX_NAME)
         val (name, alias) = splitName(title)

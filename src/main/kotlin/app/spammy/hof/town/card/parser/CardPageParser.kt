@@ -1,11 +1,12 @@
 package app.spammy.hof.town.card.parser
 
+import app.spammy.hof.external.parser.HofHtmlParser
+
 import app.spammy.hof.town.card.model.*
 import app.spammy.hof.town.common.model.ParsedTownCandidate
 import app.spammy.hof.town.common.model.ParsedTownForm
 import app.spammy.hof.town.common.model.ParsedTownPage
 import app.spammy.hof.town.common.model.ParsedTownResult
-import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.springframework.stereotype.Component
 
@@ -46,17 +47,17 @@ class CardPageParser {
         val form = actionForm(page, setOf("ItemSell", "Sell"), setOf("check_"))
         val cards = candidates(form).map { candidate ->
             val code = candidate.fieldName?.removePrefix("check_")
-            val row = Jsoup.parse(html, finalUrl).selectFirst("input[name=check_$code]")?.closest("tr")
+            val row = HofHtmlParser.parse(html, finalUrl).selectFirst("input[name=check_$code]")?.closest("tr")
             val cells = row?.select("td").orEmpty()
             val value = cells.getOrNull(1)?.text()?.let { CARD_VALUE.find(clean(it))?.groupValues?.get(1)?.toIntOrNull() }
             candidate.copy(blankCardValue = value, maxQuantity = candidate.maxQuantity ?: owned(candidate.label))
         }
-        val blank = BLANK_OWNED.find(clean(Jsoup.parse(html, finalUrl).text()))?.groupValues?.get(1)?.replace(",", "")?.toIntOrNull()
+        val blank = BLANK_OWNED.find(clean(HofHtmlParser.parse(html, finalUrl).text()))?.groupValues?.get(1)?.replace(",", "")?.toIntOrNull()
         return CardSellSnapshot(form?.actionId, cards, true, CardRewardKind.BLANK_CARD, blank, structuredResult(html, result, SELL_RESULT))
     }
 
     fun parseSoulEcho(html: String, finalUrl: String, page: ParsedTownPage, result: ParsedTownResult? = null): SoulEchoSnapshot {
-        val document = Jsoup.parse(html, finalUrl)
+        val document = HofHtmlParser.parse(html, finalUrl)
         val form = actionForm(page, setOf("Create"), setOf("ItemNo", "type"))
         val recipeRows = form?.rows.orEmpty().filter { it.candidate?.inputName != "type" }
         val candidateByLabel = recipeRows.associate { clean(it.label) to it.candidate }
@@ -117,18 +118,18 @@ class CardPageParser {
     }
 
     private fun quantityBounds(html: String, defaultMin: Int, defaultMax: Int): Pair<Int, Int> {
-        val input = Jsoup.parse(html).selectFirst("input[name=amount]") ?: return defaultMin to defaultMax
+        val input = HofHtmlParser.parse(html).selectFirst("input[name=amount]") ?: return defaultMin to defaultMax
         return (input.attr("min").toIntOrNull()?.coerceAtLeast(1) ?: defaultMin) to
             (input.attr("max").toIntOrNull() ?: defaultMax)
     }
 
-    private fun parseHistory(html: String, signal: Regex): List<String> = Jsoup.parse(html).select("p,li,div")
+    private fun parseHistory(html: String, signal: Regex): List<String> = HofHtmlParser.parse(html).select("p,li,div")
         .map { clean(it.ownText()) }.filter { it.length in 2..500 && signal.containsMatchIn(it) }.distinct().takeLast(30)
 
     /** 공통 result selector가 없는 HOF의 bare text 결과도 짧은 텍스트만 복구한다. */
     private fun structuredResult(html: String, result: ParsedTownResult?, signal: Regex): ParsedTownResult? {
         if (result == null || result.messages.isNotEmpty() || result.items.isNotEmpty()) return result
-        val document = Jsoup.parse(html)
+        val document = HofHtmlParser.parse(html)
         val form = document.selectFirst("form")
         val explicit = document.select(".result,.message,.msg,.notice,.success,.error,[data-town-result]")
             .map { clean(it.text()) }

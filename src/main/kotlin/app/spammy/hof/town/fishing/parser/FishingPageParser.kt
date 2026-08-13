@@ -1,5 +1,7 @@
 package app.spammy.hof.town.fishing.parser
 
+import app.spammy.hof.external.parser.HofHtmlParser
+
 import app.spammy.hof.town.common.model.ParsedTownForm
 import app.spammy.hof.town.common.model.ParsedTownPage
 import app.spammy.hof.town.common.model.ParsedTownResult
@@ -17,7 +19,6 @@ import app.spammy.hof.town.fishing.model.FishingSnapshot
 import java.net.URI
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
-import org.jsoup.Jsoup
 import org.jsoup.nodes.Node
 import org.jsoup.nodes.Element
 import org.jsoup.nodes.TextNode
@@ -34,7 +35,7 @@ class FishingPageParser(
         page: ParsedTownPage,
         result: ParsedTownResult? = null,
     ): FishingSnapshot {
-        val document = Jsoup.parse(html, finalUrl)
+        val document = HofHtmlParser.parse(html, finalUrl)
         document.select("script, style, noscript, header, nav, .nav, .menu, #menu").remove()
         val contentRoot = document.selectFirst("#fishing, main, #content, .content") ?: document.body()
         val text = clean(contentRoot.text())
@@ -102,7 +103,7 @@ class FishingPageParser(
             candidate.submitFields.singleOrNull()?.name.equals(EXCHANGE_SUBMIT_FIELD, ignoreCase = true) &&
                 candidate.candidates.all { it.inputName == EXCHANGE_ITEM_FIELD }
         } ?: throw FishingExchangeContractException("교환 제출 양식을 하나로 확인하지 못했습니다.")
-        val document = Jsoup.parse(materialized.html, finalUrl)
+        val document = HofHtmlParser.parse(materialized.html, finalUrl)
         val domForm = findMaterializedExchangeForm(document, form)
             ?: throw FishingExchangeContractException("교환 제출 DOM을 하나로 확인하지 못했습니다.")
         val categories = materialized.categories.map { category ->
@@ -142,7 +143,7 @@ class FishingPageParser(
         finalUrl: String,
         categoryCandidateId: String?,
     ): MaterializedExchange {
-        val document = Jsoup.parse(html, finalUrl)
+        val document = HofHtmlParser.parse(html, finalUrl)
         val categorySelects = document.select("form select[name=${cssValue(EXCHANGE_CATEGORY_FIELD)}]").filter { select ->
             select.closest("form")?.select("input[type=submit],button[type=submit],button:not([type])").orEmpty().isEmpty()
         }

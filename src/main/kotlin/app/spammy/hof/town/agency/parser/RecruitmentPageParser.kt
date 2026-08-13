@@ -1,5 +1,7 @@
 package app.spammy.hof.town.agency.parser
 
+import app.spammy.hof.external.parser.HofHtmlParser
+
 import app.spammy.hof.town.agency.model.RecruitmentGender
 import app.spammy.hof.town.agency.model.RecruitmentJob
 import app.spammy.hof.town.agency.model.RecruitmentSnapshot
@@ -8,7 +10,6 @@ import app.spammy.hof.town.common.model.ParsedTownPage
 import app.spammy.hof.town.common.model.ParsedTownResult
 import app.spammy.hof.town.common.model.TownSelectionType
 import java.net.URI
-import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.springframework.stereotype.Component
 
@@ -20,7 +21,7 @@ class RecruitmentPageParser {
         page: ParsedTownPage,
         result: ParsedTownResult? = null,
     ): RecruitmentSnapshot {
-        val document = Jsoup.parse(html, finalUrl)
+        val document = HofHtmlParser.parse(html, finalUrl)
         val domForms = document.select("form").filter(::isRecruitmentForm)
         val semanticForms = page.forms.filter(::isRecruitmentForm)
         val domForm = domForms.singleOrNull()

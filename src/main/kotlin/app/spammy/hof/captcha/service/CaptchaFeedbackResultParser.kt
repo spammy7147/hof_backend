@@ -1,6 +1,7 @@
 package app.spammy.hof.captcha.service
 
-import org.jsoup.Jsoup
+import app.spammy.hof.external.parser.HofHtmlParser
+
 import org.springframework.stereotype.Component
 
 data class CaptchaFeedbackLabel(
@@ -22,7 +23,7 @@ class CaptchaFeedbackResultParser {
             return null
         }
 
-        val pageText = Jsoup.parse(html).text()
+        val pageText = HofHtmlParser.parse(html).text()
         val matches = HISTORY_ENTRY.findAll(pageText)
             .mapNotNull { match ->
                 val playerName = match.groups[PLAYER_GROUP]?.value?.canonicalPlayerName() ?: return@mapNotNull null

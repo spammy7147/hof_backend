@@ -1,5 +1,7 @@
 package app.spammy.hof.quest.parser
 
+import app.spammy.hof.external.parser.HofHtmlParser
+
 import app.spammy.hof.quest.model.QuestMission
 import app.spammy.hof.quest.model.QuestMissionType
 import app.spammy.hof.quest.model.QuestProgress
@@ -11,7 +13,6 @@ import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.Locale
-import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.jsoup.nodes.Node
 import org.jsoup.nodes.TextNode
@@ -20,7 +21,7 @@ import org.springframework.stereotype.Component
 @Component
 class QuestPageParser {
     fun parse(html: String): List<QuestSnapshot> {
-        val document = Jsoup.parse(html)
+        val document = HofHtmlParser.parse(html)
         val scope = document.selectFirst("#contents") ?: document
         var sourceOrder = 0
         val occurrences = questBlocks(scope)

@@ -1,5 +1,7 @@
 package app.spammy.hof.captcha.service
 
+import app.spammy.hof.external.parser.HofHtmlParser
+
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.entity.HofCookieEntity
 import app.spammy.hof.account.repository.CookieQueryRepository
@@ -21,7 +23,6 @@ import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofRequest
 import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.external.parser.LoginStateParser
-import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
@@ -66,7 +67,7 @@ class CaptchaService(
         html: String,
         sourceUrl: String,
     ): CaptchaChallengeResponse? {
-        val document = Jsoup.parse(html, sourceUrl)
+        val document = HofHtmlParser.parse(html, sourceUrl)
         val pageText = document.text().trim()
         if (!challengeParser.hasCaptchaSignal(document, pageText)) {
             return null
@@ -159,7 +160,7 @@ class CaptchaService(
 
         val activeCookies = mergeResponseCookies(account, storedCookies, response.setCookies)
         val responseUrl = response.finalUrl.ifBlank { policeUrl }
-        val document = Jsoup.parse(response.body, responseUrl)
+        val document = HofHtmlParser.parse(response.body, responseUrl)
         val pageText = document.text().trim()
         val hasSimpleCaptcha = response.body.contains(
             CaptchaChallengeParser.SIMPLE_CAPTCHA_SCRIPT,
@@ -409,7 +410,7 @@ class CaptchaService(
         if (login.hasLoginForm && !login.isLoggedIn) {
             throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "HOF 로그인 세션이 만료되었습니다.")
         }
-        val document = Jsoup.parse(response.body, responseUrl)
+        val document = HofHtmlParser.parse(response.body, responseUrl)
         val pageText = document.text().trim()
         if (!challengeParser.isCaptchaSuccessPage(pageText) && challengeParser.hasCaptchaSignal(document, pageText)) {
             val metadata = try {
@@ -568,7 +569,7 @@ class CaptchaService(
         )
 
         val responseUrl = response.finalUrl.ifBlank { policeUrl }
-        val policeDocument = Jsoup.parse(response.body, responseUrl)
+        val policeDocument = HofHtmlParser.parse(response.body, responseUrl)
         val policePageText = policeDocument.text().trim()
         val hasSimpleCaptcha = response.body.contains(
             CaptchaChallengeParser.SIMPLE_CAPTCHA_SCRIPT,

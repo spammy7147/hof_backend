@@ -1,7 +1,6 @@
 package app.spammy.hof.external.parser
 
 import app.spammy.hof.external.model.HofCharacter
-import org.jsoup.Jsoup
 import org.springframework.stereotype.Component
 
 @Component
@@ -13,7 +12,7 @@ class CharacterRosterParser {
      * href/action/onclick/data-href와 전체 HTML에서 `char=` 링크를 찾아 캐릭터 목록을 만든다.
      */
     fun parse(html: String): List<HofCharacter> {
-        val document = Jsoup.parse(html, HOF_BASE_URL)
+        val document = HofHtmlParser.parse(html, HOF_BASE_URL)
         val byId = linkedMapOf<String, HofCharacter>()
 
         document.select("""[href*=char=], [action*=char=], [onclick*=char=], [data-href*=char=]""").forEach { element ->

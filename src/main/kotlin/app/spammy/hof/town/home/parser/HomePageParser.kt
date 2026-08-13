@@ -1,5 +1,7 @@
 package app.spammy.hof.town.home.parser
 
+import app.spammy.hof.external.parser.HofHtmlParser
+
 import app.spammy.hof.town.common.model.ParsedTownPage
 import app.spammy.hof.town.common.model.ParsedTownResult
 import app.spammy.hof.external.model.HofHttpMethod
@@ -8,14 +10,13 @@ import java.net.URI
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
-import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.springframework.stereotype.Component
 
 @Component
 class HomePageParser {
     fun parse(mode: HomeMode, html: String, finalUrl: String, page: ParsedTownPage, result: ParsedTownResult? = null): HomeSnapshot {
-        val document = Jsoup.parse(html, finalUrl)
+        val document = HofHtmlParser.parse(html, finalUrl)
         return when (mode) {
             HomeMode.HOME -> HomeSnapshot(mode, parseQuests(document, finalUrl), emptyList(), result = result)
             HomeMode.REST -> {

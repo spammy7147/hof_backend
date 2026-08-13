@@ -1,5 +1,7 @@
 package app.spammy.hof.town.common.parser
 
+import app.spammy.hof.external.parser.HofHtmlParser
+
 import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofFormField
 import app.spammy.hof.town.common.model.ParsedTownCandidate
@@ -9,14 +11,13 @@ import app.spammy.hof.town.common.model.ParsedTownRow
 import app.spammy.hof.town.common.model.TownSelectionType
 import java.net.URI
 import java.security.MessageDigest
-import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.springframework.stereotype.Component
 
 @Component
 class HofFormParser {
     fun parse(html: String, pageUrl: String = HOF_BASE_URL): ParsedTownPage {
-        val document = Jsoup.parse(html, pageUrl)
+        val document = HofHtmlParser.parse(html, pageUrl)
         val parsed = document.select("form").flatMap { form -> parseForm(form, pageUrl) }
         val actionIdCounts = parsed.groupingBy(ParsedTownForm::actionId).eachCount()
         val unique = parsed.mapIndexed { index, form ->

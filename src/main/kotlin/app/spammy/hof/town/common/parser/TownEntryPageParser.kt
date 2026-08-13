@@ -1,9 +1,10 @@
 package app.spammy.hof.town.common.parser
 
+import app.spammy.hof.external.parser.HofHtmlParser
+
 import app.spammy.hof.town.common.model.TownFeatureId
 import java.net.URI
 import java.text.Normalizer
-import org.jsoup.Jsoup
 import org.springframework.stereotype.Component
 
 data class DiscoveredTownLocation(
@@ -20,7 +21,7 @@ class TownEntryPageParser {
         val source = runCatching { URI(sourceUrl) }.getOrNull() ?: return emptyMap()
         val candidates = mutableMapOf<TownFeatureId, MutableSet<String>>()
 
-        Jsoup.parse(html, sourceUrl).select("a[href]").forEach { anchor ->
+        HofHtmlParser.parse(html, sourceUrl).select("a[href]").forEach { anchor ->
             val href = publicMenuHref(source, anchor.attr("href")) ?: return@forEach
             val labels = labelCandidates(anchor.text())
             val matches = TownFeatureId.entries.filter { feature ->

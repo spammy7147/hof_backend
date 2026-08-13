@@ -4,7 +4,6 @@ import app.spammy.hof.external.model.HofBattleLoot
 import app.spammy.hof.external.model.HofBattleOutcome
 import app.spammy.hof.external.model.HofBattleResult
 import app.spammy.hof.external.model.HofBattleSide
-import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import org.jsoup.nodes.Node
@@ -37,7 +36,7 @@ class BattleResultParser {
         playerName: String?,
         baseUrl: String = "",
     ): List<HofBattleResult> {
-        val document = Jsoup.parse(html, baseUrl)
+        val document = HofHtmlParser.parse(html, baseUrl)
         val documentLines = DomLineCollector().collect(document)
 
         return splitRoundLines(documentLines).map { roundLines ->

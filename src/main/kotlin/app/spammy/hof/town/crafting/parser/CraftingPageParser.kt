@@ -1,8 +1,11 @@
 package app.spammy.hof.town.crafting.parser
 
+import app.spammy.hof.external.parser.HofHtmlParser
+
+import org.jsoup.Jsoup
+
 import app.spammy.hof.town.common.model.*
 import app.spammy.hof.town.crafting.model.*
-import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.springframework.stereotype.Component
 
@@ -16,7 +19,7 @@ class CraftingPageParser {
         result: ParsedTownResult? = null,
         warningCode: String? = null,
     ): CraftingSnapshot {
-        val document = Jsoup.parse(html, finalUrl)
+        val document = HofHtmlParser.parse(html, finalUrl)
         val contract = contract(mode)
         val submitForms = page.forms.filter { form -> form.submitFields.singleOrNull()?.name == contract.submit }
         val itemActionForms = submitForms.filter { form -> form.candidates.any { it.inputName == contract.itemField } }

@@ -3,7 +3,6 @@ package app.spammy.hof.external.parser
 import app.spammy.hof.battle.model.BattleMapIdentityNormalizer
 import app.spammy.hof.battle.model.BattleMapKeyMode
 import app.spammy.hof.external.model.HofBattleMap
-import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
@@ -25,7 +24,7 @@ class BattleMapParser {
         queryName: String,
         html: String,
     ): List<HofBattleMap> {
-        val document = Jsoup.parse(html, HOF_BASE_URL)
+        val document = HofHtmlParser.parse(html, HOF_BASE_URL)
         val queryPattern = Regex("""[?&]${Regex.escape(queryName)}=([^&"'#\s]+)""")
         val placeholderQueryNames = placeholderQueryNames(categoryId, queryName)
         val seenCodes = linkedSetOf<String>()
@@ -217,7 +216,7 @@ class BattleMapParser {
         html: String,
         authoritativeCurrentMapCode: String? = null,
     ): Boolean? {
-        val document = Jsoup.parse(html, HOF_BASE_URL)
+        val document = HofHtmlParser.parse(html, HOF_BASE_URL)
         val queryPattern = Regex("""[?&]${Regex.escape(queryName)}=([^&"'#\s]+)""")
         val executionForm = document.select("form").singleOrNull { form ->
             val action = form.attr("action").trim()

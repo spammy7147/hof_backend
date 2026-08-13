@@ -1,12 +1,13 @@
 package app.spammy.hof.town.raid.parser
 
+import app.spammy.hof.external.parser.HofHtmlParser
+
 import app.spammy.hof.town.common.model.ParsedTownPage
 import app.spammy.hof.town.common.model.ParsedTownResult
 import app.spammy.hof.town.raid.model.*
 import app.spammy.hof.external.model.HofHttpMethod
 import java.math.BigInteger
 import java.net.URI
-import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.jsoup.nodes.Node
 import org.jsoup.nodes.TextNode
@@ -22,7 +23,7 @@ class RaidPubParser {
         result: ParsedTownResult? = null,
         availableRaidCodes: Set<String> = emptySet(),
     ): RaidPubSnapshot {
-        val doc = Jsoup.parse(html, finalUrl)
+        val doc = HofHtmlParser.parse(html, finalUrl)
         val forms = doc.select("form").filter { form ->
             form.attr("method").equals("post", true) &&
                 form.attr("action").contains("raidpub", true) && safeRaidPubUrl(resolve(finalUrl, form.attr("action")))

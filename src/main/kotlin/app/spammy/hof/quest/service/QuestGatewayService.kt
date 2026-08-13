@@ -1,5 +1,7 @@
 package app.spammy.hof.quest.service
 
+import app.spammy.hof.external.parser.HofHtmlParser
+
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.model.HofFormField
@@ -11,7 +13,6 @@ import app.spammy.hof.town.common.service.TownAuthenticatedExecutor
 import java.net.URI
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
-import org.jsoup.Jsoup
 import org.springframework.stereotype.Service
 
 @Service
@@ -49,7 +50,7 @@ class QuestGatewayService(
     /** 링크 자체의 origin/path와 query 중복까지 검사해 재구성한 GET이 관측 링크와 동치임을 보장한다. */
     private fun requireObservedLink(html: String, finalUrl: String, action: String, actionNo: String) {
         val base = URI(finalUrl.ifBlank { QUEST_URL })
-        val matches = Jsoup.parse(html, base.toString()).select("a[href]").mapNotNull { anchor ->
+        val matches = HofHtmlParser.parse(html, base.toString()).select("a[href]").mapNotNull { anchor ->
             val href = anchor.attr("href")
             runCatching {
                 if (href.startsWith("?")) URI("${base.scheme}://${base.authority}${base.path}$href").normalize()

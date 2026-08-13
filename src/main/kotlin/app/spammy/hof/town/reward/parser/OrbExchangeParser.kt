@@ -1,11 +1,12 @@
 package app.spammy.hof.town.reward.parser
 
+import app.spammy.hof.external.parser.HofHtmlParser
+
 import app.spammy.hof.town.common.model.ParsedTownForm
 import app.spammy.hof.town.common.model.ParsedTownPage
 import app.spammy.hof.town.common.model.ParsedTownResult
 import app.spammy.hof.town.reward.model.*
 import java.security.MessageDigest
-import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.jsoup.nodes.Node
 import org.jsoup.nodes.TextNode
@@ -19,7 +20,7 @@ class OrbExchangeParser {
         page: ParsedTownPage,
         result: ParsedTownResult? = null,
     ): OrbExchangeSnapshot {
-        val text = clean(Jsoup.parse(html, finalUrl).body().text())
+        val text = clean(HofHtmlParser.parse(html, finalUrl).body().text())
         return OrbExchangeSnapshot(
             displayedOrbs = parseCounts(text),
             orbCountsEstimated = false,
@@ -85,7 +86,7 @@ class OrbExchangeParser {
         .find(text)?.groupValues?.get(1)?.number()
 
     private fun parseRewards(html: String, finalUrl: String): List<OrbLimitedReward> {
-        val document = Jsoup.parse(html, finalUrl)
+        val document = HofHtmlParser.parse(html, finalUrl)
         val candidates = document.select("body *").filter { element ->
             REMAINING_REWARD.containsMatchIn(clean(element.text())) && element.children().none { child ->
                 REMAINING_REWARD.containsMatchIn(clean(child.text()))
@@ -127,7 +128,7 @@ class OrbExchangeParser {
     }
 
     private fun resultSectionNodes(html: String, finalUrl: String): List<Node> {
-        val document = Jsoup.parse(html, finalUrl)
+        val document = HofHtmlParser.parse(html, finalUrl)
         val anchorHeading = document.selectFirst("a[name=OrbboxShopinfo2]")?.closest("h1,h2,h3,h4,legend")
         val heading = anchorHeading ?: document.select("h1,h2,h3,h4,legend").firstOrNull {
             clean(it.text()).matches(Regex("^(Result|결과|처리 결과)$", RegexOption.IGNORE_CASE))
@@ -181,7 +182,7 @@ class OrbExchangeParser {
 
     private fun parseFailures(nodes: List<Node>, fallback: ParsedTownResult): List<String> {
         val sectionText = clean(nodes.joinToString(" ") { it.toString() })
-        val matches = ORB_SHORTAGE.findAll(sectionText).map { clean(Jsoup.parse(it.value).text()) }.filter(String::isNotBlank).toList()
+        val matches = ORB_SHORTAGE.findAll(sectionText).map { clean(HofHtmlParser.parse(it.value).text()) }.filter(String::isNotBlank).toList()
         if (matches.isNotEmpty()) return matches.take(5)
         return fallback.messages.flatMap { message -> ORB_SHORTAGE.findAll(message).map { clean(it.value) }.toList() }.take(5)
     }

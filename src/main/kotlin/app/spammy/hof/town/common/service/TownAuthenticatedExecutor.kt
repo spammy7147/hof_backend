@@ -1,5 +1,7 @@
 package app.spammy.hof.town.common.service
 
+import app.spammy.hof.external.parser.HofHtmlParser
+
 import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.CookieQueryRepository
 import app.spammy.hof.account.entity.HofAccountEntity
@@ -21,7 +23,6 @@ import app.spammy.hof.town.common.parser.HofResultParser
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
-import org.jsoup.Jsoup
 import org.springframework.stereotype.Service
 
 sealed interface TownObservedAction {
@@ -401,7 +402,7 @@ class TownAuthenticatedExecutor(
         if (guarded.form.submitFields.singleOrNull()?.name != requiredSubmitField) {
             throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 작업 양식이 변경되었습니다.")
         }
-        val document = Jsoup.parse(current.body, current.finalUrl)
+        val document = HofHtmlParser.parse(current.body, current.finalUrl)
         val matchingForms = document.select("form").filter { domForm ->
             val names = domForm.select("input,button,select,textarea")
                 .filter { it.closest("form") === domForm && !it.hasAttr("disabled") }
@@ -466,7 +467,7 @@ class TownAuthenticatedExecutor(
         if (guarded.form.submitFields.singleOrNull()?.name != requiredSubmitField) {
             throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 작업 양식이 변경되었습니다.")
         }
-        val document = Jsoup.parse(current.body, current.finalUrl)
+        val document = HofHtmlParser.parse(current.body, current.finalUrl)
         val matchingForms = document.select("form").filter { domForm ->
             val names = domForm.select("input,button,select,textarea")
                 .filter { it.closest("form") === domForm && !it.hasAttr("disabled") }
@@ -539,8 +540,8 @@ class TownAuthenticatedExecutor(
             throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 작업 양식이 변경되었습니다.")
         }
 
-        val rawDocument = Jsoup.parse(current.body, current.finalUrl)
-        val materializedDocument = Jsoup.parse(materializedHtml, current.finalUrl)
+        val rawDocument = HofHtmlParser.parse(current.body, current.finalUrl)
+        val materializedDocument = HofHtmlParser.parse(materializedHtml, current.finalUrl)
         val rawForms = rawDocument.select("form").filter { rawForm ->
             val semanticForms = formParser.parse(rawForm.outerHtml(), current.finalUrl).forms
             semanticForms.any { raw ->
@@ -614,7 +615,7 @@ class TownAuthenticatedExecutor(
         if (submit == null || !submit.name.equals("Recruit", true) ||
             !Regex("(?:Recruit|모집|고용)", RegexOption.IGNORE_CASE).matches(submit.value.trim())
         ) throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 모집 양식이 변경되었습니다.")
-        val document = Jsoup.parse(current.body, current.finalUrl)
+        val document = HofHtmlParser.parse(current.body, current.finalUrl)
         val matchingForms = document.select("form").filter { domForm ->
             val semantic = formParser.parse(domForm.outerHtml(), current.finalUrl).forms
             semantic.any { it.actionId == guarded.form.actionId && it.method == guarded.form.method && it.actionUrl == guarded.form.actionUrl }
@@ -703,7 +704,7 @@ class TownAuthenticatedExecutor(
         if (guarded.form.submitFields.singleOrNull()?.name != requiredSubmitField) {
             throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 작업 양식이 변경되었습니다.")
         }
-        val document = Jsoup.parse(current.body, current.finalUrl)
+        val document = HofHtmlParser.parse(current.body, current.finalUrl)
         val matchingForms = document.select("form").filter { domForm ->
             val names = domForm.select("input,button,select,textarea")
                 .filter { it.closest("form") === domForm && !it.hasAttr("disabled") }
@@ -765,7 +766,7 @@ class TownAuthenticatedExecutor(
         if (guardedFinal.form.submitFields.singleOrNull()?.name != requiredFinalSubmitField) {
             throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 최종 작업 양식이 변경되었습니다.")
         }
-        val document = Jsoup.parse(entryResponse.body, entryResponse.finalUrl)
+        val document = HofHtmlParser.parse(entryResponse.body, entryResponse.finalUrl)
         val matchingForms = document.select("form").filter { domForm ->
             val names = domForm.select("input,button,select,textarea")
                 .filter { it.closest("form") === domForm && !it.hasAttr("disabled") }
@@ -870,7 +871,7 @@ class TownAuthenticatedExecutor(
         if (guardedFinal.form.submitFields.singleOrNull()?.name != requiredFinalSubmitField) {
             throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 최종 작업 양식이 변경되었습니다.")
         }
-        val matchingForms = Jsoup.parse(entryResponse.body, entryResponse.finalUrl).select("form").filter { domForm ->
+        val matchingForms = HofHtmlParser.parse(entryResponse.body, entryResponse.finalUrl).select("form").filter { domForm ->
             val controls = domForm.select("input,button,select,textarea")
                 .filter { it.closest("form") === domForm && !it.hasAttr("disabled") }
             val names = controls.map { it.attr("name") }.toSet()

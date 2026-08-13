@@ -87,4 +87,24 @@ class HomePageParserTest {
 
         assertEquals(emptyList(), snapshot.restStatus?.facilities)
     }
+
+    @Test
+    fun `rest excludes nested foot content from facility descriptions`() {
+        val html = """
+            <header>Time : 1,112/6,000</header>
+            <p>기본적으로 300의 Time이 회복됩니다.</p>
+            <ul class="facilities"><li data-facility>
+                Sleep Wear (Housing) 편안한 숙면에 도움을 줍니다. 효과 : 휴식 시 1개를 소모하여 Time 회복량을 250 증가시킵니다.
+                <div id="foot">UpDate - Manual - Tutorial - GameData - Top</div>
+            </li></ul>
+        """.trimIndent()
+        val url = "http://sic.zerosic.com/ZeroHOF/index.php?menu=rest"
+
+        val snapshot = parser.parse(HomeMode.REST, html, url, forms.parse(html, url))
+
+        assertEquals(
+            listOf("Sleep Wear (Housing) 편안한 숙면에 도움을 줍니다. 효과 : 휴식 시 1개를 소모하여 Time 회복량을 250 증가시킵니다."),
+            snapshot.restStatus?.facilities,
+        )
+    }
 }

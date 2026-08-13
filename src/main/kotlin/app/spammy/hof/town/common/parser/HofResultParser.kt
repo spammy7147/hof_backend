@@ -1,15 +1,16 @@
 package app.spammy.hof.town.common.parser
 
+import app.spammy.hof.external.parser.HofHtmlParser
+
 import app.spammy.hof.town.common.model.ParsedTownResult
 import app.spammy.hof.town.common.model.ParsedTownResultItem
-import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.springframework.stereotype.Component
 
 @Component
 class HofResultParser {
     fun parse(html: String): ParsedTownResult {
-        val document = Jsoup.parse(html)
+        val document = HofHtmlParser.parse(html)
         document.select("script, style, noscript, header, nav, footer, form").remove()
         document.select("body *")
             .filter { element -> EXCLUDED_TEXT.containsMatchIn(element.ownText()) }

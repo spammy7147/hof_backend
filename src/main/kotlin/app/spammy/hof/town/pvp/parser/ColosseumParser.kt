@@ -1,17 +1,18 @@
 package app.spammy.hof.town.pvp.parser
 
+import app.spammy.hof.external.parser.HofHtmlParser
+
 import app.spammy.hof.town.common.model.*
 import app.spammy.hof.town.pvp.model.*
 import java.net.URI
 import java.security.MessageDigest
-import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.springframework.stereotype.Component
 
 @Component
 class ColosseumParser {
     fun parseBattle(html: String, finalUrl: String, page: ParsedTownPage, result: ParsedTownResult? = null): ColosseumBattleSnapshot {
-        val doc = Jsoup.parse(html, finalUrl)
+        val doc = HofHtmlParser.parse(html, finalUrl)
         val semanticTeamForms = page.forms.filter { form ->
             form.submitFields.singleOrNull()?.let { TEAM.matchesSemantic(it.name, it.value) } == true &&
                 form.candidates.any { it.selectionType == TownSelectionType.CHECKBOX } &&
@@ -50,7 +51,7 @@ class ColosseumParser {
     }
 
     fun parseShop(html: String, finalUrl: String, page: ParsedTownPage, result: ParsedTownResult? = null): ColosseumShopSnapshot {
-        val doc = Jsoup.parse(html, finalUrl)
+        val doc = HofHtmlParser.parse(html, finalUrl)
         val titleObserved = SHOP_TITLE.containsMatchIn(clean(doc.text()))
         val form = page.forms.singleOrNull { f ->
             val candidate = f.submitFields.singleOrNull()?.let { it.name == "Create" && TRADE.matchesSemantic(it.name, it.value) } == true &&

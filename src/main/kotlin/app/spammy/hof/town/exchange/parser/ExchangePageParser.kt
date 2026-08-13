@@ -1,9 +1,10 @@
 package app.spammy.hof.town.exchange.parser
 
+import app.spammy.hof.external.parser.HofHtmlParser
+
 import app.spammy.hof.town.common.model.*
 import app.spammy.hof.town.common.parser.HofFormParser
 import app.spammy.hof.town.exchange.model.*
-import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.springframework.stereotype.Component
 
@@ -16,7 +17,7 @@ class ExchangePageParser(private val formParser: HofFormParser = HofFormParser()
         page: ParsedTownPage,
         result: ParsedTownResult? = null,
     ): ExchangeSnapshot {
-        val document = Jsoup.parse(html, finalUrl)
+        val document = HofHtmlParser.parse(html, finalUrl)
         val domForms = mapDomForms(document, page)
         val forms = page.forms.filter { it.submitFields.size == 1 }
         val gradeForms = if (mode == ExchangeMode.LEGACY) forms.filter(::isLegacyGradeForm) else emptyList()
