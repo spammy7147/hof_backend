@@ -47,15 +47,15 @@ class CraftingServiceTest {
         assertEquals(listOf("fresh-123", "weapon", "17", "2", "coat01", "Create"), requests.last().formEntries.map { it.value })
     }
 
-    @Test fun `장로대장간은 최신 timesA 기본값과 허용 timesB만 제출한다`() {
+    @Test fun `장로대장간은 최신 timesA 기본값과 고정 1회를 제출한다`() {
         val html = fixture("veteran.html")
         stub(TownFeatureId.VETERAN_SMITHY, VETERAN_URL, html)
 
-        service.refine(7L, CraftingMode.VETERAN, RefineRequest("vet-1", "type:weapon", 3))
+        service.refine(7L, CraftingMode.VETERAN, RefineRequest("vet-1", "type:weapon", 1))
 
         val posted = captureRequests().last()
         assertEquals(listOf("type", "timesA", "timesB", "item_no", "refine"), posted.formEntries.map { it.name })
-        assertEquals(listOf("weapon", "safe", "3", "mask09", "Refine"), posted.formEntries.map { it.value })
+        assertEquals(listOf("weapon", "safe", "1", "mask09", "Refine"), posted.formEntries.map { it.value })
     }
 
     @Test fun `분류 전환은 최신 form의 opaque option과 안전한 hidden만 보내고 작업 submit은 보내지 않는다`() {

@@ -74,11 +74,22 @@ class CraftingParserTest {
         assertThat(cloak.rows.single { it.label.contains("Dreamweave Cloak") }.selectable).isTrue()
     }
 
-    @Test fun `제련과 장로대장간은 timesB 선택 가능 횟수를 노출한다`() {
+    @Test fun `일반 제련은 timesB 선택지를 노출하고 장로대장간은 1회로 고정한다`() {
         val refine = parse("refine.html", CraftingMode.REFINE)
         assertThat(refine.allowedRefineCounts).containsExactly(1, 2, 3)
         assertThat(refine.history).containsExactly("제련 성공: +1 Short Sword")
-        assertThat(parse("veteran.html", CraftingMode.VETERAN).allowedRefineCounts).containsExactly(1, 2, 3)
+        assertThat(parse("veteran.html", CraftingMode.VETERAN).allowedRefineCounts).containsExactly(1)
+    }
+
+    @Test fun `장로대장간의 제련가능 Item 표 헤더는 품목으로 노출하지 않는다`() {
+        val html = resource("veteran.html").replace(
+            "<table>",
+            "<table><tr><th>제련가능</th><th>Item</th></tr>",
+        )
+
+        val value = parser.parse(CraftingMode.VETERAN, html, URL, forms.parse(html, URL))
+
+        assertThat(value.rows).noneMatch { !it.selectable && it.label.contains("제련가능") }
     }
 
     @Test fun `제련 기록에서 사용자명과 링크 안의 아이템명을 모두 보존한다`() {
@@ -166,7 +177,7 @@ class CraftingParserTest {
 
         assertThat(value.rows).anyMatch { it.label.contains("Mask of Scorn") }
         assertThat(value.actionId).isNotBlank()
-        assertThat(value.allowedRefineCounts).containsExactly(1, 2, 3)
+        assertThat(value.allowedRefineCounts).containsExactly(1)
     }
 
     @Test fun `제작공방 AJAX 목록이 form 밖에 렌더링되어도 품목을 누락하지 않는다`() {

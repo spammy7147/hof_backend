@@ -72,7 +72,10 @@ class CraftingPageParser(
             parseDetachedItemRows(document, actionForm, contract, mode)
         }
         val quantity = parseQuantity(domForm, mode)
-        val refineOptions = parseRefineOptions(actionForm, domForm)
+        val parsedRefineOptions = parseRefineOptions(actionForm, domForm)
+        val refineOptions = if (mode == CraftingMode.VETERAN) {
+            parsedRefineOptions.first to parsedRefineOptions.second.filterKeys { it == 1 }
+        } else parsedRefineOptions
         val additional = parseAdditionalMaterials(actionForm, domForm, mode)
         val remaining = REMAINING_SECONDS.find(clean(document.text()))?.groupValues?.get(1)?.intNumber()
         val activeText = ACTIVE_JOB.find(clean(document.text()))?.value?.let(::clean)
@@ -387,7 +390,7 @@ class CraftingPageParser(
         val HISTORY_WORD = Regex("제련|성공|실패|파괴")
         val HALL_OF_PAIN = Regex("Hall\\s+of\\s+Pain", RegexOption.IGNORE_CASE)
         val FOOTER_WORD = Regex("Copy\\s*Right|UpDate\\s+Manual|GameData\\s+Top", RegexOption.IGNORE_CASE)
-        val HEADER = Regex("^(제작비|제작비 Item|Item|아이템|수수료)(?:\\s+(Item|아이템))?$", RegexOption.IGNORE_CASE)
+        val HEADER = Regex("^(?:(?:제작비|제련가능)(?:\\s+(?:Item|아이템))?|Item|아이템|수수료)$", RegexOption.IGNORE_CASE)
         const val CLARIS_LIST_FUNCTION_MARKER = "function Listtype_create"
         val CLARIS_LIST_FUNCTION = Regex("function\\s+Listtype_create\\s*\\([^)]*\\)\\s*\\{([\\s\\S]*?)\\n\\s*\\}\\s*function\\s+ChangeTypecreate\\b")
         val CLARIS_CASE_LABEL = Regex("case\\s+[\"']([A-Za-z0-9_-]{1,80})[\"']\\s*:")
