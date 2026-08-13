@@ -51,4 +51,11 @@ enum class TownFeatureId(
 
     val allAliases: Set<String>
         get() = setOf(displayName, *aliases)
+
+    /** HOF가 `menu=` 없이 노출하는 예외 링크까지 포함한 검증된 직접 진입 경로다. */
+    val directHref: String?
+        get() = when (this) {
+            TALENT_AGENCY -> "?recruit"
+            else -> menuCode?.let { "?menu=$it" }
+        }
 }

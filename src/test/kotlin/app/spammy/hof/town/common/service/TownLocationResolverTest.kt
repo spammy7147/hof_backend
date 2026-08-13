@@ -42,7 +42,7 @@ class TownLocationResolverTest {
     @Test
     fun `recruitment and housing resolve directly without town page discovery`() {
         assertEquals(
-            "http://sic.zerosic.com/ZeroHOF/index.php?menu=recruit",
+            "http://sic.zerosic.com/ZeroHOF/index.php?recruit",
             resolver.resolve(TownFeatureId.TALENT_AGENCY).url,
         )
         assertEquals(

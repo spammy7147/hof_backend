@@ -31,7 +31,7 @@ class TownLocationResolver(
         featureId: TownFeatureId,
         townEntryHtml: String? = null,
     ): ResolvedTownLocation {
-        featureId.menuCode?.let { return resolved(featureId, "?menu=$it") }
+        featureId.directHref?.let { return resolved(featureId, it) }
         val now = clock.instant()
         val cached = queryRepository.findByFeatureIdForUpdate(featureId)
             ?: throw missing(featureId)
@@ -66,6 +66,6 @@ class TownLocationResolver(
 
     private companion object {
         const val HOF_ENTRY_URL = "http://sic.zerosic.com/ZeroHOF/index.php"
-        val PUBLIC_MENU_HREF = Regex("^[?]menu=[A-Za-z0-9_-]{1,80}$")
+        val PUBLIC_MENU_HREF = Regex("^(?:[?]menu=[A-Za-z0-9_-]{1,80}|[?][A-Za-z0-9_-]{1,80})$")
     }
 }

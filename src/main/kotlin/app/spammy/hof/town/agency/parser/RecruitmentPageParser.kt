@@ -11,6 +11,7 @@ import app.spammy.hof.town.common.model.ParsedTownResult
 import app.spammy.hof.town.common.model.TownSelectionType
 import java.net.URI
 import org.jsoup.nodes.Element
+import org.jsoup.nodes.TextNode
 import org.springframework.stereotype.Component
 
 @Component
@@ -30,25 +31,30 @@ class RecruitmentPageParser {
         val radioGroups = semanticForm?.candidates.orEmpty()
             .filter { it.selectionType == TownSelectionType.RADIO }
             .groupBy { it.inputName }
-        val genderGroup = radioGroups.entries.filter { (_, values) ->
-            values.size == 2 && values.all { candidate -> genderMeaning(candidate.label) != null }
+        val domRadioGroups = domForm?.select("input[type=radio]").orEmpty().groupBy { it.attr("name") }
+        val genderGroup = radioGroups.entries.filter { (name, values) ->
+            val radios = domRadioGroups[name].orEmpty()
+            values.size == 2 && radios.size == 2 && values.mapNotNull { candidate ->
+                matchingRadio(radios, candidate.inputValue)?.let(::genderMeaning)
+            }.toSet() == setOf("남성", "여성")
         }.singleOrNull()
         val jobGroup = radioGroups.entries.filter { (name, values) ->
             name != genderGroup?.key && values.isNotEmpty() && values.all { candidate ->
-                price(candidate.label) != null && cleanJobName(candidate.label).isNotBlank()
+                matchingRadio(domRadioGroups[name].orEmpty(), candidate.inputValue)?.let(::jobDetails) != null
             }
         }.singleOrNull()
         val jobs = jobGroup?.value.orEmpty().mapNotNull { candidate ->
-            val price = price(candidate.label) ?: return@mapNotNull null
-            val domRadio = domForm?.select("input[type=radio]")?.singleOrNull {
-                it.attr("name") == candidate.inputName && it.attr("value").ifBlank { "on" } == candidate.inputValue
-            } ?: return@mapNotNull null
-            val owner = candidateOwner(domRadio)
-            val image = owner.select("img[src]").singleOrNull()?.absUrl("src")?.takeIf(::safeImageUrl)
-            RecruitmentJob(candidate.id, cleanJobName(candidate.label), price, image)
+            val domRadio = matchingRadio(domRadioGroups[candidate.inputName].orEmpty(), candidate.inputValue)
+                ?: return@mapNotNull null
+            val details = jobDetails(domRadio) ?: return@mapNotNull null
+            val image = details.owner.select("img[src]").asSequence()
+                .map { it.absUrl("src") }.firstOrNull(::safeImageUrl)
+            RecruitmentJob(candidate.id, details.name, details.price, image)
         }
         val genders = genderGroup?.value.orEmpty().mapNotNull { candidate ->
-            genderMeaning(candidate.label)?.let { RecruitmentGender(candidate.id, it) }
+            val radio = matchingRadio(domRadioGroups[candidate.inputName].orEmpty(), candidate.inputValue)
+                ?: return@mapNotNull null
+            genderMeaning(radio)?.let { RecruitmentGender(candidate.id, it) }
         }
         val counts = parseCapacity(document.text())
         val available = domForm != null && semanticForm != null && nameInput != null && jobs.isNotEmpty() &&
@@ -91,9 +97,39 @@ class RecruitmentPageParser {
         return NAME_MEANING.containsMatchIn(meaning)
     }
 
+    private fun matchingRadio(radios: List<Element>, value: String): Element? = radios.singleOrNull {
+        it.attr("value").ifBlank { "on" } == value
+    }
     private fun candidateOwner(radio: Element): Element = radio.closest("td") ?: radio.closest("label") ?: radio.parent() ?: radio
+    private fun jobDetails(radio: Element): JobDetails? {
+        val owner = candidateOwner(radio)
+        val parsedPrice = price(owner.text()) ?: return null
+        val inlineName = cleanJobName(owner.text())
+        val name = inlineName.ifBlank {
+            val row = owner.closest("tr") ?: return@ifBlank ""
+            val cells = row.children().filter { it.tagName() in setOf("td", "th") }
+            val cellIndex = cells.indexOf(owner)
+            if (cellIndex < 0) return@ifBlank ""
+            row.nextElementSibling()?.children()?.filter { it.tagName() in setOf("td", "th") }
+                ?.getOrNull(cellIndex)?.text()?.let(::clean).orEmpty()
+        }
+        return name.takeIf(String::isNotBlank)?.let { JobDetails(it, parsedPrice, owner) }
+    }
     private fun price(label: String): Long? = PRICE.find(label)?.groupValues?.get(1)?.replace(",", "")?.toLongOrNull()
     private fun cleanJobName(label: String): String = clean(label.replace(PRICE, " ").replace(GENDER_WORD, " "))
+    private fun genderMeaning(radio: Element): String? {
+        val label = radio.closest("label")?.text()?.let(::clean).orEmpty()
+        val adjacent = generateSequence(radio.nextSibling()) { it.nextSibling() }
+            .takeWhile { it !is Element || it.tagName() != "input" }
+            .joinToString(" ") { node ->
+                when (node) {
+                    is TextNode -> node.text()
+                    is Element -> node.text()
+                    else -> ""
+                }
+            }.let(::clean)
+        return genderMeaning(label) ?: genderMeaning(adjacent)
+    }
     private fun genderMeaning(label: String): String? = when {
         MALE.matches(clean(label)) -> "남성"
         FEMALE.matches(clean(label)) -> "여성"
@@ -113,6 +149,8 @@ class RecruitmentPageParser {
             uri.path.startsWith("/ZeroHOF/")
     }.getOrDefault(false)
     private fun clean(value: String) = value.replace(Regex("\\s+"), " ").trim()
+
+    private data class JobDetails(val name: String, val price: Long, val owner: Element)
 
     private companion object {
         val RECRUIT_LABEL = Regex("(?:Recruit|모집|고용)", RegexOption.IGNORE_CASE)

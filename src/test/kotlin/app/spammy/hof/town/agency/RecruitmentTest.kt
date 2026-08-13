@@ -41,6 +41,18 @@ class RecruitmentTest {
         assertTrue(snapshot.jobs.all { it.id != it.name })
     }
 
+    @Test fun `실제 HOF의 분리된 직업 행과 인접 성별 문구를 파싱한다`() {
+        val html = liveFixture()
+        val snapshot = parser.parse(html, LIVE_URL, forms.parse(html, LIVE_URL))
+
+        assertEquals(45, snapshot.currentCharacters)
+        assertEquals(129, snapshot.capacity)
+        assertEquals(listOf("Warrior", "Sorcerer", "Monk"), snapshot.jobs.map { it.name })
+        assertEquals(listOf(2_000L, 2_000L, 10_000L), snapshot.jobs.map { it.price })
+        assertEquals(listOf("남성", "여성"), snapshot.genders.map { it.label })
+        assertTrue(snapshot.recruitmentAvailable)
+    }
+
     @Test fun `외부 이미지는 노출하지 않고 카드와 radio가 유일하게 연결되지 않으면 모집을 닫는다`() {
         val foreign = fixture().replace("/image/job/monk.gif", "https://evil.example/monk.gif")
         assertNull(parser.parse(foreign, URL, forms.parse(foreign, URL)).jobs.single { it.name == "Monk" }.imageUrl)
@@ -67,6 +79,21 @@ class RecruitmentTest {
         assertEquals(listOf("nonce", "Job", "Gender", "NewName", "Recruit"), requests.last().formEntries.map { it.name })
         assertEquals(listOf("fresh-recruitment", "job-opaque-9", "gender-server-f", "새동료", "Recruit"), requests.last().formEntries.map { it.value })
         assertTrue(response.result?.messages?.any { it.contains("모집") } == true)
+    }
+
+    @Test fun `실제 HOF 모집 필드와 중복 recruit control을 관측 순서대로 제출한다`() {
+        val harness = Harness()
+        harness.stub(liveFixture(), liveFixture())
+        val initial = parser.parse(liveFixture(), LIVE_URL, forms.parse(liveFixture(), LIVE_URL))
+
+        harness.service.recruit(
+            7L,
+            RecruitCharacterRequest(initial.jobs.last().id, "새동료", initial.genders.last().id),
+        )
+
+        val submitted = harness.requests().last().formEntries
+        assertEquals(listOf("recruit_no", "recruit_gend", "recruit_name", "recruit", "recruit"), submitted.map { it.name })
+        assertEquals(listOf("9", "1", "새동료", "Recruit", ""), submitted.map { it.value })
     }
 
     @Test fun `빈 이름과 관측되지 않은 선택은 POST 전에 거부한다`() {
@@ -149,5 +176,9 @@ class RecruitmentTest {
     }
 
     private fun fixture() = requireNotNull(javaClass.getResource("/fixtures/town/agency/recruitment.html")).readText()
-    private companion object { const val URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=recruit" }
+    private fun liveFixture() = requireNotNull(javaClass.getResource("/fixtures/town/agency/recruitment-live.html")).readText()
+    private companion object {
+        const val URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=recruit"
+        const val LIVE_URL = "http://sic.zerosic.com/ZeroHOF/index.php?recruit"
+    }
 }

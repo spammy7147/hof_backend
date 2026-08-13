@@ -1,0 +1,21 @@
+<!doctype html><html><body>
+<p>최대 캐릭터: 129</p><p>현재 캐릭터: 45</p>
+<form action="?recruit" method="post">
+  <h4>Sort of New Character</h4>
+  <table><tbody>
+    <tr>
+      <td><img src="./image/char/warrior-m.gif"><img src="./image/char/warrior-f.gif"><br><input type="radio" name="recruit_no" value="1"><br>$ 2,000</td>
+      <td><img src="./image/char/sorcerer-m.gif"><img src="./image/char/sorcerer-f.gif"><br><input type="radio" name="recruit_no" value="2"><br>$ 2,000</td>
+      <td><img src="./image/char/monk-m.gif"><img src="./image/char/monk-f.gif"><br><input type="radio" name="recruit_no" value="9"><br>$ 10,000</td>
+    </tr>
+    <tr><td>Warrior</td><td>Sorcerer</td><td>Monk</td></tr>
+  </tbody></table>
+  <h4>New Character's Name &amp; Gender</h4>
+  <table><tr><td>
+    <input type="text" name="recruit_name" maxlength="16">
+    <div><input type="radio" name="recruit_gend" value="0">male <input type="radio" name="recruit_gend" value="1">female</div>
+    <input type="submit" name="recruit" value="Recruit">
+    <input type="hidden" name="recruit" value="">
+  </td></tr></table>
+</form>
+</body></html>
