@@ -67,7 +67,7 @@ class HofRequestFactoryTest {
         assertEquals(
             mapOf(
                 "char_111" to "1",
-                "monster_battle" to "Battle !",
+                "union_battle" to "1",
             ),
             request.formFields,
         )

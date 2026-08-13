@@ -155,16 +155,18 @@ class HofRequestFactory {
             HofBattleType.UNION -> "union"
         }
         val characterFields = characterIds.associate { "char_$it" to "1" }
-        val submitName = when (battleCount) {
-            1 -> "monster_battle"
-            3 -> "monster_battle_10"
+        val submitFields = when {
+            type == HofBattleType.UNION && battleCount == 1 -> mapOf("union_battle" to "1")
+            type == HofBattleType.UNION -> throw IllegalArgumentException("Union battle only supports one battle at a time")
+            battleCount == 1 -> mapOf("monster_battle" to "Battle !")
+            battleCount == 3 -> mapOf("monster_battle_10" to "Battle !")
             else -> throw IllegalArgumentException("Unsupported battle count: $battleCount")
         }
 
         return HofRequest(
             method = HofHttpMethod.POST,
             url = "$HOF_BASE_URL?$queryName=$code",
-            formFields = characterFields + (submitName to "Battle !"),
+            formFields = characterFields + submitFields,
             origin = origin,
         )
     }
