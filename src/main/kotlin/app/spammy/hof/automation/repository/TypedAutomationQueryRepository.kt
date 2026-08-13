@@ -23,6 +23,7 @@ import app.spammy.hof.automation.entity.QAdventureDailyRefreshEntity.adventureDa
 import app.spammy.hof.automation.entity.QAutomationRotationStateEntity.automationRotationStateEntity
 import app.spammy.hof.automation.entity.QFishingAutomationSettingEntity.fishingAutomationSettingEntity
 import app.spammy.hof.automation.entity.QFishingAutomationMapEntity.fishingAutomationMapEntity
+import app.spammy.hof.automation.entity.QHomeQuestAutomationSelectionEntity.homeQuestAutomationSelectionEntity
 import app.spammy.hof.automation.entity.QRaidAutomationCycleEntity.raidAutomationCycleEntity
 import app.spammy.hof.automation.entity.QRaidAutomationTargetEntity.raidAutomationTargetEntity
 import app.spammy.hof.automation.entity.QUnionAutomationMapEntity.unionAutomationMapEntity
@@ -41,6 +42,7 @@ import app.spammy.hof.automation.entity.AdventureDailyRefreshEntity
 import app.spammy.hof.automation.entity.AutomationRotationStateEntity
 import app.spammy.hof.automation.entity.FishingAutomationSettingEntity
 import app.spammy.hof.automation.entity.FishingAutomationMapEntity
+import app.spammy.hof.automation.entity.HomeQuestAutomationSelectionEntity
 import app.spammy.hof.automation.entity.RaidAutomationCycleEntity
 import app.spammy.hof.automation.entity.RaidAutomationTargetEntity
 import app.spammy.hof.automation.entity.UnionAutomationMapEntity
@@ -160,6 +162,23 @@ class TypedAutomationQueryRepository(
                 questAutomationSelectionEntity.entry.id.asc(),
                 questAutomationSelectionEntity.sourceOrder.asc(),
                 questAutomationSelectionEntity.id.asc(),
+            ).fetch()
+    }
+
+    fun findHomeQuestSelections(entryId: Long): List<HomeQuestAutomationSelectionEntity> =
+        queryFactory.selectFrom(homeQuestAutomationSelectionEntity)
+            .where(homeQuestAutomationSelectionEntity.entry.id.eq(entryId))
+            .orderBy(homeQuestAutomationSelectionEntity.sourceOrder.asc(), homeQuestAutomationSelectionEntity.id.asc())
+            .fetch()
+
+    fun findHomeQuestSelectionsByEntryIds(entryIds: Collection<Long>): List<HomeQuestAutomationSelectionEntity> {
+        if (entryIds.isEmpty()) return emptyList()
+        return queryFactory.selectFrom(homeQuestAutomationSelectionEntity)
+            .where(homeQuestAutomationSelectionEntity.entry.id.`in`(entryIds.toSet()))
+            .orderBy(
+                homeQuestAutomationSelectionEntity.entry.id.asc(),
+                homeQuestAutomationSelectionEntity.sourceOrder.asc(),
+                homeQuestAutomationSelectionEntity.id.asc(),
             ).fetch()
     }
 

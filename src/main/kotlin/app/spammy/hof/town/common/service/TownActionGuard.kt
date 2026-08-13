@@ -32,6 +32,19 @@ class TownActionGuard {
             }
             candidate to selection.quantity
         }
+        val duplicateFieldIds = request.values.groupingBy { it.fieldId }.eachCount().filterValues { it > 1 }
+        if (duplicateFieldIds.isNotEmpty()) invalid("같은 입력란을 중복 제출할 수 없습니다.")
+        val editableValues = request.values.map { submitted ->
+            val field = form.editableFields.singleOrNull { it.id == submitted.fieldId }
+                ?: invalid("현재 입력할 수 없는 항목입니다. 새로고침 후 다시 시도해 주세요.")
+            if (field.maxLength != null && submitted.value.length > field.maxLength) {
+                invalid("${field.label}은(는) ${field.maxLength}자 이하로 입력해 주세요.")
+            }
+            if (field.inputType == app.spammy.hof.town.common.model.TownEditableFieldType.NUMBER &&
+                submitted.value.isNotBlank() && submitted.value.toLongOrNull() == null
+            ) invalid("${field.label}에는 숫자만 입력할 수 있습니다.")
+            field to submitted.value
+        }
         candidates.filter { it.first.selectionType == TownSelectionType.RADIO }
             .groupingBy { it.first.inputName }
             .eachCount()
@@ -54,12 +67,15 @@ class TownActionGuard {
         }
         candidates.forEach { (candidate, quantity) ->
             fields += PositionedField(candidate.inputPosition, HofFormField(candidate.inputName, candidate.inputValue))
-            candidate.quantityFieldName?.let { name ->
+            candidate.quantityFieldName?.takeUnless { name -> editableValues.any { it.first.inputName == name } }?.let { name ->
                 fields += PositionedField(
                     candidate.quantityPosition ?: candidate.inputPosition + 1,
                     HofFormField(name, quantity.toString()),
                 )
             }
+        }
+        editableValues.forEach { (field, value) ->
+            fields += PositionedField(field.inputPosition, HofFormField(field.inputName, value))
         }
         return GuardedTownAction(form, fields.sortedBy(PositionedField::position).map(PositionedField::field))
     }

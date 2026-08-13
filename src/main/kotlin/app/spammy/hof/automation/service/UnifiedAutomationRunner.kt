@@ -438,6 +438,12 @@ class UnifiedAutomationRunner @Autowired constructor(
                 observedCurrent = action.missionCurrent,
                 observedRequired = action.missionRequired,
             )
+            is HomeQuestAutomationAction -> StoredTypedActionPayload.HomeQuest(
+                action.questId,
+                action.actionId,
+                action.action,
+                StoredActionDisplay(questName = action.questName),
+            )
             is BattleMapAutomationAction -> StoredTypedActionPayload.BattleMap(
                 action.progressDate, action.categoryId, action.mapCode, action.presetMode,
                 action.presetId ?: throw AutomationConfigurationException(), action.battleCount,
@@ -470,6 +476,7 @@ class UnifiedAutomationRunner @Autowired constructor(
         val payload = action.payload
         val type = when (payload) {
             is StoredTypedActionPayload.QuestClaim, is StoredTypedActionPayload.QuestAccept, is StoredTypedActionPayload.QuestBattle -> AutomationType.QUEST
+            is StoredTypedActionPayload.HomeQuest -> AutomationType.HOME_QUEST
             is StoredTypedActionPayload.AdventureMap -> AutomationType.ADVENTURE_MAP
             is StoredTypedActionPayload.FishingTown -> AutomationType.FISHING
             is StoredTypedActionPayload.RaidTown, is StoredTypedActionPayload.RaidCycleAbort -> AutomationType.RAID
@@ -487,6 +494,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                 is StoredTypedActionPayload.QuestClaim -> payload.questKey
                 is StoredTypedActionPayload.QuestAccept -> payload.questKey
                 is StoredTypedActionPayload.QuestBattle -> "${payload.categoryId}/${payload.mapCode}"
+                is StoredTypedActionPayload.HomeQuest -> payload.questId
                 is StoredTypedActionPayload.BattleMap -> "${payload.categoryId}/${payload.mapCode}"
                 is StoredTypedActionPayload.AdventureMap -> "${payload.categoryId}/${payload.mapCode}"
                 is StoredTypedActionPayload.RaidTown -> payload.raidId

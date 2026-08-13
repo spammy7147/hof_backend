@@ -321,6 +321,7 @@ class AutomationWorkSessionService(
     private fun PreparedAutomationAction.toWorkSpec(entryId: Long): WorkSpec = when (this) {
         is QuestAction.Claim -> WorkSpec(AutomationWorkType.QUEST, questKey)
         is QuestAction.Accept -> WorkSpec(AutomationWorkType.QUEST, questKey)
+        is HomeQuestAutomationAction -> WorkSpec(AutomationWorkType.HOME_QUEST, questId)
         is QuestAction.Battle -> WorkSpec(
             type = AutomationWorkType.QUEST,
             targetKey = questKey,

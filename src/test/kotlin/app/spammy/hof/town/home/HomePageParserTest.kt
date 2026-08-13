@@ -39,6 +39,29 @@ class HomePageParserTest {
     }
 
     @Test
+    fun `home quest id remains stable when progress and section change`() {
+        val url = "http://sic.zerosic.com/ZeroHOF/index.php?menu=housing"
+        val availableHtml = """
+            <h4>수락 가능한 퀘스트</h4><table>
+            <tr><td>[H001] 손님 맞이</td><td>미션 0/1</td><td>보상 Item</td><td><a href="?menu=housing&amp;action=get&amp;no=11">수락</a></td></tr>
+            </table>
+        """.trimIndent()
+        val claimableHtml = """
+            <h4>진행 중</h4><table>
+            <tr><td>[OTHER] 먼저 표시된 작업</td><td>조건 0/1</td><td>-</td><td>-</td></tr>
+            <tr><td>[H001] 손님 맞이</td><td>미션 1/1</td><td>보상 Item</td><td><a href="?menu=housing&amp;action=complete&amp;no=11">완료</a></td></tr>
+            </table>
+        """.trimIndent()
+
+        val available = parser.parse(HomeMode.HOME, availableHtml, url, forms.parse(availableHtml, url)).quests.single()
+        val claimable = parser.parse(HomeMode.HOME, claimableHtml, url, forms.parse(claimableHtml, url))
+            .quests.single { it.name.contains("H001") }
+
+        assertEquals(available.id, claimable.id)
+        assertEquals(HomeQuestState.CLAIMABLE, claimable.state)
+    }
+
+    @Test
     fun `home quests parse the observed three row housing tables by section`() {
         val html = """
             <div id="contents">

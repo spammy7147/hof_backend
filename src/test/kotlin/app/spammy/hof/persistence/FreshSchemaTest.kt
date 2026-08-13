@@ -70,6 +70,7 @@ class FreshSchemaTest {
                 "19" to "add automation drain state",
                 "20" to "keep automation retryable",
                 "21" to "add fishing automation maps",
+                "22" to "add home quest automation",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -95,6 +96,7 @@ class FreshSchemaTest {
                 "V1__initialize_schema.sql",
                 "V20__keep_automation_retryable.sql",
                 "V21__add_fishing_automation_maps.sql",
+                "V22__add_home_quest_automation.sql",
                 "V2__order_party_presets.sql",
                 "V3__add_automation_work_sessions.sql",
                 "V4__prepare_captcha_on_demand.sql",

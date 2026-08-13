@@ -20,12 +20,35 @@ data class ParsedTownForm(
     @get:JsonIgnore
     internal val submitFields: List<HofFormField>,
     @get:JsonIgnore
+    internal val submitLabel: String = "",
+    @get:JsonIgnore
+    internal val submitSource: String = submitFields.joinToString("+") { it.name },
+    @get:JsonIgnore
     internal val hiddenFieldPositions: List<Int> = hiddenFields.indices.toList(),
     @get:JsonIgnore
     internal val submitFieldPositions: List<Int> = submitFields.indices.map { hiddenFields.size + it },
+    @get:JsonIgnore
+    internal val editableFields: List<ParsedTownEditableField> = emptyList(),
 ) {
     val candidates: List<ParsedTownCandidate>
         get() = rows.mapNotNull(ParsedTownRow::candidate)
+}
+
+data class ParsedTownEditableField(
+    val id: String,
+    val label: String,
+    @get:JsonIgnore
+    internal val inputName: String,
+    val value: String = "",
+    val inputType: TownEditableFieldType = TownEditableFieldType.TEXT,
+    val maxLength: Int? = null,
+    @get:JsonIgnore
+    internal val inputPosition: Int = Int.MAX_VALUE - 1,
+)
+
+enum class TownEditableFieldType {
+    TEXT,
+    NUMBER,
 }
 
 data class ParsedTownRow(
@@ -54,6 +77,7 @@ data class ParsedTownCandidate(
     internal val quantityFieldName: String? = null,
     val minQuantity: Int = 1,
     val maxQuantity: Int? = null,
+    val selected: Boolean = false,
     @get:JsonIgnore
     internal val selectionType: TownSelectionType = TownSelectionType.RADIO,
     @get:JsonIgnore
@@ -65,6 +89,12 @@ data class ParsedTownCandidate(
 data class TownActionRequest(
     val actionId: String,
     val selections: List<TownActionSelection> = emptyList(),
+    val values: List<TownFieldValue> = emptyList(),
+)
+
+data class TownFieldValue(
+    val fieldId: String,
+    val value: String,
 )
 
 data class TownActionSelection(

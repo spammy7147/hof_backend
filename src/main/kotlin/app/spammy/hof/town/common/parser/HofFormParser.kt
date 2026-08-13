@@ -5,10 +5,12 @@ import app.spammy.hof.external.parser.HofHtmlParser
 import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofFormField
 import app.spammy.hof.town.common.model.ParsedTownCandidate
+import app.spammy.hof.town.common.model.ParsedTownEditableField
 import app.spammy.hof.town.common.model.ParsedTownForm
 import app.spammy.hof.town.common.model.ParsedTownPage
 import app.spammy.hof.town.common.model.ParsedTownRow
 import app.spammy.hof.town.common.model.TownSelectionType
+import app.spammy.hof.town.common.model.TownEditableFieldType
 import java.net.URI
 import java.security.MessageDigest
 import org.jsoup.nodes.Element
@@ -50,15 +52,28 @@ class HofFormParser {
             }
         }
         val submitControls = ownedControls.filter(::isSubmitControl)
-        val submitVariants = submitControls.mapNotNull { control ->
-            namedValue(control)?.let { field -> listOf(field) to listOf(ownedControls.indexOf(control)) }
-        }.ifEmpty { listOf(emptyList<HofFormField>() to emptyList()) }
+        val submitVariants = submitControls.map { control ->
+            val field = namedValue(control)
+            SubmitVariant(
+                fields = listOfNotNull(field),
+                positions = if (field == null) emptyList() else listOf(ownedControls.indexOf(control)),
+                label = submitLabel(control),
+                source = field?.name ?: "unnamed-submit",
+                controlPosition = ownedControls.indexOf(control),
+            )
+        }.ifEmpty { listOf(SubmitVariant()) }
         val rows = parseRows(form, ownedControls)
+        val editableFields = ownedControls.mapIndexedNotNull { index, control ->
+            control.toEditableField(index)
+        }
 
-        return submitVariants.map { (submitFields, submitFieldPositions) ->
+        return submitVariants.map { variant ->
+            val submitFields = variant.fields
+            val submitFieldPositions = variant.positions
             val fingerprint = buildString {
                 append(method.name).append('|').append(actionUrl).append('|')
                 append(canonicalFields(submitFields))
+                append('|').append(variant.source).append(':').append(variant.label).append('@').append(variant.controlPosition)
                 append('|')
                 append(ownedControls.map { it.attr("name") }.filter(String::isNotBlank).distinct().sorted().joinToString(","))
                 append('|')
@@ -75,10 +90,35 @@ class HofFormParser {
                 rows = rows,
                 hiddenFields = hiddenFields,
                 submitFields = submitFields,
+                submitLabel = variant.label,
+                submitSource = variant.source,
                 hiddenFieldPositions = hiddenFieldPositions,
                 submitFieldPositions = submitFieldPositions,
+                editableFields = editableFields,
             )
         }
+    }
+
+    private fun Element.toEditableField(position: Int): ParsedTownEditableField? {
+        if (tagName() != "input" && tagName() != "textarea") return null
+        val type = attr("type").lowercase()
+        if (tagName() == "input" && type !in setOf("", "text", "number", "tel")) return null
+        val name = attr("name").trim()
+        if (name.isBlank()) return null
+        val fieldType = if (type in setOf("number", "tel")) TownEditableFieldType.NUMBER else TownEditableFieldType.TEXT
+        val label = closest("label")?.text()?.let(::cleanText)?.takeIf { it.isNotBlank() }
+            ?: closest("tr")?.selectFirst("th, td")?.text()?.let(::cleanText)?.takeIf { it.isNotBlank() }
+            ?: attr("placeholder").trim().takeIf { it.isNotBlank() }
+            ?: name
+        return ParsedTownEditableField(
+            id = sha256("$name|$position"),
+            label = label.ifBlank { name },
+            inputName = name,
+            value = if (tagName() == "textarea") text() else attr("value"),
+            inputType = fieldType,
+            maxLength = attr("maxlength").toIntOrNull()?.takeIf { it > 0 },
+            inputPosition = position,
+        )
     }
 
     private fun parseRows(form: Element, controls: List<Element>): List<ParsedTownRow> {
@@ -134,6 +174,8 @@ class HofFormParser {
                                 },
                                 minQuantity = quantityControl?.attr("min")?.toIntOrNull()?.coerceAtLeast(1) ?: 1,
                                 maxQuantity = quantityControl?.attr("max")?.toIntOrNull(),
+                                selected = option.hasAttr("selected") ||
+                                    (select.selectFirst("option[selected]") == null && option === select.selectFirst("option")),
                                 selectionType = TownSelectionType.SELECT,
                                 inputPosition = controls.indexOf(select),
                                 quantityPosition = quantityControl?.let(controls::indexOf),
@@ -172,6 +214,7 @@ class HofFormParser {
                 quantityFieldName = quantityControl?.attr("name"),
                 minQuantity = quantityControl?.attr("min")?.toIntOrNull()?.coerceAtLeast(1) ?: 1,
                 maxQuantity = quantityControl?.attr("max")?.toIntOrNull(),
+                selected = selection.hasAttr("checked"),
                 selectionType = if (selection.attr("type").equals("checkbox", true)) {
                     TownSelectionType.CHECKBOX
                 } else {
@@ -199,6 +242,10 @@ class HofFormParser {
         }
         return HofFormField(name, value)
     }
+
+    private fun submitLabel(element: Element): String = cleanText(
+        element.attr("value").ifBlank { element.text() },
+    ).ifBlank { "실행" }
 
     private fun Element.quantityContainer(): Element? = closest("tr") ?: closest("li") ?: parent()
 
@@ -239,4 +286,12 @@ class HofFormParser {
         val TEXT_INPUT_TYPES = setOf("", "text", "tel")
         val QUANTITY_NAME = Regex("^(qty|quantity|count|amount|num|number|many|suu)(_|\\[|$).*", RegexOption.IGNORE_CASE)
     }
+
+    private data class SubmitVariant(
+        val fields: List<HofFormField> = emptyList(),
+        val positions: List<Int> = emptyList(),
+        val label: String = "",
+        val source: String = "form-submit",
+        val controlPosition: Int = -1,
+    )
 }

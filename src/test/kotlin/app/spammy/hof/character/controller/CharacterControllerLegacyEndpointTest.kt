@@ -2,6 +2,7 @@ package app.spammy.hof.character.controller
 
 import app.spammy.hof.account.service.HofSessionRecoveryService
 import app.spammy.hof.character.service.CharacterPatternService
+import app.spammy.hof.character.service.CharacterManagementService
 import app.spammy.hof.character.service.CharacterService
 import app.spammy.hof.character.service.CharacterSyncJobService
 import kotlin.test.Test
@@ -17,6 +18,7 @@ class CharacterControllerLegacyEndpointTest {
             characterService = Mockito.mock(CharacterService::class.java),
             characterSyncJobService = Mockito.mock(CharacterSyncJobService::class.java),
             characterPatternService = Mockito.mock(CharacterPatternService::class.java),
+            characterManagementService = Mockito.mock(CharacterManagementService::class.java),
             sessionRecoveryService = Mockito.mock(HofSessionRecoveryService::class.java),
         )
         val mockMvc = MockMvcBuilders.standaloneSetup(controller).build()

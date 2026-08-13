@@ -130,6 +130,48 @@ class HofFormParserTest {
         assertEquals(listOf("opaque-a", "opaque-b"), form.candidates.map { it.inputValue })
     }
 
+    @Test
+    fun `unnamed submit remains an executable observed action without inventing a field`() {
+        val form = parser.parse(
+            """
+                <form action='?char=123' method='post'>
+                  <select name='guard'><option value='none' selected>호위하지 않는다</option></select>
+                  <input type='submit' value='Set'>
+                </form>
+            """.trimIndent(),
+        ).forms.single()
+
+        assertEquals("Set", form.submitLabel)
+        assertEquals("unnamed-submit", form.submitSource)
+        assertTrue(form.submitFields.isEmpty())
+        assertTrue(form.candidates.single().selected)
+        val guarded = app.spammy.hof.town.common.service.TownActionGuard().guard(
+            app.spammy.hof.town.common.model.ParsedTownPage(listOf(form)),
+            app.spammy.hof.town.common.model.TownActionRequest(
+                form.actionId,
+                selections = listOf(app.spammy.hof.town.common.model.TownActionSelection(form.candidates.single().id)),
+            ),
+        )
+        assertEquals(listOf("guard"), guarded.formEntries.map { it.name })
+    }
+
+    @Test
+    fun `text and number inputs are exposed as safe editable fields`() {
+        val form = parser.parse(
+            """
+                <form action='?char=123' method='post'>
+                  <input type='text' name='newname' value='old' maxlength='16'>
+                  <input type='number' name='quantity0' value='40'>
+                  <input type='submit' name='rename2' value='Change'>
+                </form>
+            """.trimIndent(),
+        ).forms.single()
+
+        assertEquals(listOf("old", "40"), form.editableFields.map { it.value })
+        assertEquals(listOf(16, null), form.editableFields.map { it.maxLength })
+        assertEquals("rename2", form.submitSource)
+    }
+
     private fun fixture(path: String): String = requireNotNull(javaClass.classLoader.getResource(path))
         .readText(StandardCharsets.UTF_8)
 }

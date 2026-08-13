@@ -13,6 +13,7 @@ data class AutomationCoordinatorEntry(
     val raid: RaidAutomationSnapshot? = null,
     val union: UnionAutomationSnapshot? = null,
     val fishing: FishingAutomationSnapshot? = null,
+    val homeQuest: HomeQuestAutomationSnapshot? = null,
 )
 
 data class AutomationCoordinatorSnapshot(val entries: List<AutomationCoordinatorEntry>)
@@ -77,6 +78,7 @@ class AutomationCoordinator(
     private val raid: AutomationHandler<RaidAutomationSnapshot>? = null,
     private val union: AutomationHandler<UnionAutomationSnapshot>? = null,
     private val fishing: AutomationHandler<FishingAutomationSnapshot>? = null,
+    private val homeQuest: AutomationHandler<HomeQuestAutomationSnapshot>? = null,
 ) {
     fun coordinate(snapshot: AutomationCoordinatorSnapshot): AutomationCoordination {
         val warnings = mutableListOf<String>()
@@ -85,6 +87,7 @@ class AutomationCoordinator(
         snapshot.entries.forEach { entry ->
             val evaluation = when (entry.type) {
                 AutomationType.QUEST -> entry.quest?.let(quest::evaluate)
+                AutomationType.HOME_QUEST -> entry.homeQuest?.let { homeQuest?.evaluate(it) }
                 AutomationType.BATTLE_MAP -> entry.battle?.let(battle::evaluate)
                 AutomationType.ADVENTURE_MAP -> entry.adventure?.let(adventure::evaluate)
                 AutomationType.RAID -> entry.raid?.let { raid?.evaluate(it) }
@@ -138,6 +141,12 @@ private fun PreparedAutomationAction.selectionTrace(): SelectedActionTrace = whe
     )
     is QuestAction.Accept -> SelectedActionTrace(
         "QUEST_ACCEPT", "수락 가능하고 자동화가 활성화된 퀘스트를 선택했습니다.", questKey, questName,
+    )
+    is HomeQuestAutomationAction -> SelectedActionTrace(
+        "HOME_QUEST",
+        if (action == HomeQuestAutomationActionType.ACCEPT) "수락 가능한 자택 퀘스트를 선택했습니다." else "완료 보상을 받을 수 있는 자택 퀘스트를 선택했습니다.",
+        questId,
+        questName,
     )
     is QuestAction.Battle -> SelectedActionTrace(
         "BATTLE",

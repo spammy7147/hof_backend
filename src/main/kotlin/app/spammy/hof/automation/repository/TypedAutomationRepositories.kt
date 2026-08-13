@@ -10,6 +10,7 @@ import app.spammy.hof.automation.entity.BattleAutomationMapEntity
 import app.spammy.hof.automation.entity.BattleAutomationProcessedResultEntity
 import app.spammy.hof.automation.entity.FishingAutomationSettingEntity
 import app.spammy.hof.automation.entity.FishingAutomationMapEntity
+import app.spammy.hof.automation.entity.HomeQuestAutomationSelectionEntity
 import app.spammy.hof.automation.entity.QuestAutomationMapEntity
 import app.spammy.hof.automation.entity.QuestAutomationCycleEntity
 import app.spammy.hof.automation.entity.QuestAutomationProcessedResultEntity
@@ -27,6 +28,8 @@ interface AutomationEntryCommandRepository : CommandRepository<AutomationEntryEn
 interface QuestAutomationSelectionCommandRepository : CommandRepository<QuestAutomationSelectionEntity, Long>
 
 interface QuestAutomationMapCommandRepository : CommandRepository<QuestAutomationMapEntity, Long>
+
+interface HomeQuestAutomationSelectionCommandRepository : CommandRepository<HomeQuestAutomationSelectionEntity, Long>
 
 interface QuestAutomationCycleCommandRepository : CommandRepository<QuestAutomationCycleEntity, Long>
 

@@ -5,10 +5,12 @@ import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofFormField
 import app.spammy.hof.town.common.model.ParsedTownCandidate
 import app.spammy.hof.town.common.model.ParsedTownForm
+import app.spammy.hof.town.common.model.ParsedTownEditableField
 import app.spammy.hof.town.common.model.ParsedTownPage
 import app.spammy.hof.town.common.model.ParsedTownRow
 import app.spammy.hof.town.common.model.TownActionRequest
 import app.spammy.hof.town.common.model.TownActionSelection
+import app.spammy.hof.town.common.model.TownFieldValue
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -66,6 +68,31 @@ class TownActionGuardTest {
 
         assertFailsWith<ApiException> {
             guard.guard(current, TownActionRequest("action-1", listOf(TownActionSelection("item-1", 2))))
+        }
+    }
+
+    @Test
+    fun `submits only freshly observed editable fields and enforces their contract`() {
+        val current = page.copy(forms = listOf(form.copy(editableFields = listOf(
+            ParsedTownEditableField(
+                id = "name-field",
+                label = "새 이름",
+                inputName = "newname",
+                maxLength = 16,
+                inputPosition = 1,
+            ),
+        ))))
+
+        val guarded = guard.guard(
+            current,
+            TownActionRequest("action-1", values = listOf(TownFieldValue("name-field", "새이름"))),
+        )
+        assertEquals("새이름", guarded.formFields["newname"])
+        assertFailsWith<ApiException> {
+            guard.guard(current, TownActionRequest("action-1", values = listOf(TownFieldValue("unknown", "x"))))
+        }
+        assertFailsWith<ApiException> {
+            guard.guard(current, TownActionRequest("action-1", values = listOf(TownFieldValue("name-field", "12345678901234567"))))
         }
     }
 }

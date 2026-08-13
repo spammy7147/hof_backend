@@ -15,7 +15,7 @@ import jakarta.persistence.Table
 import jakarta.persistence.Version
 import java.time.Instant
 
-enum class AutomationWorkType { QUEST, BATTLE_MAP, ADVENTURE_MAP, RAID, UNION, FISHING }
+enum class AutomationWorkType { QUEST, HOME_QUEST, BATTLE_MAP, ADVENTURE_MAP, RAID, UNION, FISHING }
 
 enum class AutomationWorkStatus {
     RUNNING,

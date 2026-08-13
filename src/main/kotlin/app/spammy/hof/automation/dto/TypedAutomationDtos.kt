@@ -15,7 +15,19 @@ import app.spammy.hof.status.dto.HofObservedStatusResponse
 data class CreateAutomationEntryRequest(val type: AutomationType)
 
 data class ReorderAutomationEntriesRequest(
-    @field:Size(max = 6) val entryIds: List<Long>,
+    @field:Size(max = 7) val entryIds: List<Long>,
+)
+
+data class UpdateHomeQuestAutomationRequest(
+    val enabled: Boolean,
+    @field:Valid @field:Size(max = 100) val quests: List<@Valid HomeQuestSelectionRequest>,
+)
+
+data class HomeQuestSelectionRequest(
+    @field:NotBlank @field:Size(max = 64) val questId: String,
+    @field:NotBlank @field:Size(max = 300) val questName: String,
+    val enabled: Boolean,
+    @field:Min(0) val sourceOrder: Int,
 )
 
 data class UpdateQuestAutomationRequest(
@@ -157,6 +169,13 @@ data class QuestSelectionResponse(
     val questName: String,
 )
 
+data class HomeQuestSelectionResponse(
+    val questId: String,
+    val questName: String,
+    val enabled: Boolean,
+    val sourceOrder: Int,
+)
+
 data class BattleMapSettingResponse(
     val categoryId: String,
     val mapCode: String,
@@ -215,6 +234,7 @@ data class TypedAutomationEntryResponse(
     val ready: Boolean,
     val warnings: List<String>,
     val quests: List<QuestSelectionResponse> = emptyList(),
+    val homeQuests: List<HomeQuestSelectionResponse> = emptyList(),
     val battleMaps: List<BattleMapSettingResponse> = emptyList(),
     val battleMapProgress: List<BattleMapDailyProgressResponse> = emptyList(),
     val adventureMaps: List<AdventureMapSettingResponse> = emptyList(),

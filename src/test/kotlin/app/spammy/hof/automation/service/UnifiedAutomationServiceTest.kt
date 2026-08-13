@@ -10,11 +10,13 @@ import app.spammy.hof.automation.dto.ReorderAutomationEntriesRequest
 import app.spammy.hof.automation.dto.UpdateBattleMapAutomationRequest
 import app.spammy.hof.automation.dto.UpdateFishingAutomationRequest
 import app.spammy.hof.automation.dto.FishingMapSettingRequest
+import app.spammy.hof.automation.dto.HomeQuestSelectionRequest
 import app.spammy.hof.automation.dto.UnionMapSettingRequest
 import app.spammy.hof.automation.dto.UpdateUnionAutomationRequest
 import app.spammy.hof.automation.dto.RaidTargetSettingRequest
 import app.spammy.hof.automation.dto.UpdateRaidAutomationRequest
 import app.spammy.hof.automation.dto.UpdateAdventureMapAutomationRequest
+import app.spammy.hof.automation.dto.UpdateHomeQuestAutomationRequest
 import app.spammy.hof.automation.dto.UpdateQuestAutomationRequest
 import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.AutomationType
@@ -24,6 +26,7 @@ import app.spammy.hof.automation.entity.BattleAutomationDailyProgressEntity
 import app.spammy.hof.automation.entity.BattleAutomationMapEntity
 import app.spammy.hof.automation.entity.FishingAutomationSettingEntity
 import app.spammy.hof.automation.entity.FishingAutomationMapEntity
+import app.spammy.hof.automation.entity.HomeQuestAutomationSelectionEntity
 import app.spammy.hof.automation.entity.UnionAutomationMapEntity
 import app.spammy.hof.automation.entity.RaidAutomationTargetEntity
 import app.spammy.hof.automation.entity.RaidAutomationCycleEntity
@@ -41,6 +44,7 @@ import app.spammy.hof.automation.repository.AutomationEntryCommandRepository
 import app.spammy.hof.automation.repository.BattleAutomationMapCommandRepository
 import app.spammy.hof.automation.repository.FishingAutomationSettingCommandRepository
 import app.spammy.hof.automation.repository.FishingAutomationMapCommandRepository
+import app.spammy.hof.automation.repository.HomeQuestAutomationSelectionCommandRepository
 import app.spammy.hof.automation.repository.UnionAutomationMapCommandRepository
 import app.spammy.hof.automation.repository.RaidAutomationTargetCommandRepository
 import app.spammy.hof.automation.repository.QuestAutomationMapCommandRepository
@@ -81,6 +85,7 @@ class UnifiedAutomationServiceTest {
     private val entryRepository = Mockito.mock(AutomationEntryCommandRepository::class.java)
     private val questSelectionRepository = Mockito.mock(QuestAutomationSelectionCommandRepository::class.java)
     private val questMapRepository = Mockito.mock(QuestAutomationMapCommandRepository::class.java)
+    private val homeQuestSelectionRepository = Mockito.mock(HomeQuestAutomationSelectionCommandRepository::class.java)
     private val battleSettingRepository = Mockito.mock(BattleAutomationMapCommandRepository::class.java)
     private val adventureSettingRepository = Mockito.mock(AdventureAutomationMapCommandRepository::class.java)
     private val fishingSettingRepository = Mockito.mock(FishingAutomationSettingCommandRepository::class.java)
@@ -101,6 +106,7 @@ class UnifiedAutomationServiceTest {
         typedEntryRepository = entryRepository,
         typedQuestSelectionRepository = questSelectionRepository,
         typedQuestMapRepository = questMapRepository,
+        typedHomeQuestSelectionRepository = homeQuestSelectionRepository,
         typedBattleMapRepository = battleSettingRepository,
         typedAdventureMapRepository = adventureSettingRepository,
         typedFishingSettingRepository = fishingSettingRepository,
@@ -460,6 +466,35 @@ class UnifiedAutomationServiceTest {
             setOf("adventure_map/map-1"),
             false,
         )
+    }
+
+    @Test
+    fun `home quest update stores selected quests in source order`() {
+        val homeEntry = entry(97L, AutomationType.HOME_QUEST)
+        val persisted = HomeQuestAutomationSelectionEntity(
+            id = 904L,
+            entry = homeEntry,
+            questId = "home-1",
+            questName = "[HQ1] 빗자루 제작",
+            enabled = true,
+            sourceOrder = 0,
+        )
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(homeEntry))
+        Mockito.`when`(typedQuery.findHomeQuestSelections(homeEntry.id)).thenReturn(emptyList(), listOf(persisted))
+
+        val response = service.updateHomeQuests(
+            ACCOUNT_ID,
+            UpdateHomeQuestAutomationRequest(
+                enabled = true,
+                quests = listOf(HomeQuestSelectionRequest("home-1", "[HQ1] 빗자루 제작", true, 4)),
+            ),
+        )
+
+        Mockito.verify(homeQuestSelectionRepository).save(anyHomeQuestSelection())
+        assertEquals(listOf("home-1"), response.entries.single().homeQuests.map { it.questId })
+        assertEquals(0, response.entries.single().homeQuests.single().sourceOrder)
+        assertTrue(homeEntry.enabled)
+        Mockito.verify(automationOutbox).enqueue(ACCOUNT_ID, "SETTINGS_UPDATED")
     }
 
     @Test
@@ -1099,6 +1134,17 @@ class UnifiedAutomationServiceTest {
                 presetMode = PresetSelectionMode.PRIMARY,
                 executionOrder = 0,
                 manuallyOverridden = false,
+            )
+
+    private fun anyHomeQuestSelection(): HomeQuestAutomationSelectionEntity =
+        Mockito.any(HomeQuestAutomationSelectionEntity::class.java)
+            ?: HomeQuestAutomationSelectionEntity(
+                id = 999L,
+                entry = entry(999L, AutomationType.HOME_QUEST),
+                questId = "matcher",
+                questName = "matcher",
+                enabled = true,
+                sourceOrder = 0,
             )
 
     private fun anyBattleSetting(): BattleAutomationMapEntity =

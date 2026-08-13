@@ -72,7 +72,6 @@ class HomePageParser {
 
     /** HOF 자택 작업은 한 작업을 rowspan으로 묶은 3개 tr에 나눠 표시한다. */
     private fun parseQuests(document: org.jsoup.nodes.Document, finalUrl: String): List<HomeQuest> = buildList {
-        var questIndex = 0
         document.select("table").take(MAX_QUEST_TABLES).forEach { table ->
             if (size >= MAX_QUESTS) return@forEach
             val heading = previousHeading(table)
@@ -119,7 +118,9 @@ class HomePageParser {
                 val actionId = observed?.let { opaque("${it.action}\u0000${it.no}") }
                 add(
                     HomeQuest(
-                        id = opaque("$questIndex\u0000$name\u0000${details.joinToString("\u0000")}"),
+                        // 상태가 바뀌면 작업이 다른 섹션으로 이동한다. 작업명(HQ 코드 포함)을
+                        // 식별자로 사용해 수락 전후에도 저장된 자동화 설정을 유지한다.
+                        id = opaque(name),
                         name = name,
                         state = state,
                         mission = details.firstOrNull { MISSION.containsMatchIn(it) },
@@ -130,7 +131,6 @@ class HomePageParser {
                         actionNo = observed?.no,
                     ),
                 )
-                questIndex++
                 rowIndex += rowSpan
             }
         }

@@ -5,6 +5,9 @@ import app.spammy.hof.character.dto.CharacterDetailResponse
 import app.spammy.hof.character.dto.CharacterResponse
 import app.spammy.hof.character.dto.CharacterSyncJobResponse
 import app.spammy.hof.character.dto.LoadPatternResponse
+import app.spammy.hof.character.dto.CharacterManagementActionRequest
+import app.spammy.hof.character.dto.CharacterManagementSnapshotResponse
+import app.spammy.hof.character.service.CharacterManagementService
 import app.spammy.hof.character.service.CharacterPatternService
 import app.spammy.hof.character.service.CharacterSyncJobService
 import app.spammy.hof.character.service.CharacterService
@@ -14,6 +17,7 @@ import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RestController
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter
 
@@ -26,6 +30,7 @@ class CharacterController(
     private val characterService: CharacterService,
     private val characterSyncJobService: CharacterSyncJobService,
     private val characterPatternService: CharacterPatternService,
+    private val characterManagementService: CharacterManagementService,
     private val sessionRecoveryService: HofSessionRecoveryService,
 ) {
     /**
@@ -88,4 +93,21 @@ class CharacterController(
                 slot = slot,
             )
         }
+
+    @GetMapping("/{hofCharacterId}/management")
+    fun loadManagement(
+        @CurrentAccountId accountId: Long,
+        @PathVariable hofCharacterId: String,
+    ): CharacterManagementSnapshotResponse = sessionRecoveryService.execute(accountId) {
+        characterManagementService.load(accountId, hofCharacterId)
+    }
+
+    @PostMapping("/{hofCharacterId}/management/actions")
+    fun executeManagementAction(
+        @CurrentAccountId accountId: Long,
+        @PathVariable hofCharacterId: String,
+        @RequestBody request: CharacterManagementActionRequest,
+    ): CharacterManagementSnapshotResponse = sessionRecoveryService.execute(accountId) {
+        characterManagementService.execute(accountId, hofCharacterId, request.action)
+    }
 }

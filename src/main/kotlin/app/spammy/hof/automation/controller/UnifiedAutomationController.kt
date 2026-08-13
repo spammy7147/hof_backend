@@ -6,6 +6,7 @@ import app.spammy.hof.automation.dto.TypedAutomationAggregateResponse
 import app.spammy.hof.automation.dto.UpdateAdventureMapAutomationRequest
 import app.spammy.hof.automation.dto.UpdateBattleMapAutomationRequest
 import app.spammy.hof.automation.dto.UpdateFishingAutomationRequest
+import app.spammy.hof.automation.dto.UpdateHomeQuestAutomationRequest
 import app.spammy.hof.automation.dto.UpdateUnionAutomationRequest
 import app.spammy.hof.automation.dto.UpdateRaidAutomationRequest
 import app.spammy.hof.automation.dto.UpdateQuestAutomationRequest
@@ -58,6 +59,12 @@ class UnifiedAutomationController(
         @CurrentAccountId accountId: Long,
         @Valid @RequestBody request: UpdateQuestAutomationRequest,
     ): TypedAutomationAggregateResponse = service.updateQuest(accountId, request)
+
+    @PutMapping("/home-quests")
+    fun updateHomeQuests(
+        @CurrentAccountId accountId: Long,
+        @Valid @RequestBody request: UpdateHomeQuestAutomationRequest,
+    ): TypedAutomationAggregateResponse = service.updateHomeQuests(accountId, request)
 
     @PutMapping("/battle-maps")
     fun updateBattleMaps(

@@ -365,6 +365,11 @@ internal object FreshSchemaContract {
             requiredVarchar("display_code", 100), requiredVarchar("quest_name", 255),
         ),
         table(
+            "home_quest_automation_selections",
+            serialId(), requiredBigint("automation_entry_id"), requiredVarchar("quest_id", 64),
+            requiredVarchar("quest_name", 300), requiredBoolean("enabled"), requiredInteger("source_order"),
+        ),
+        table(
             "quest_automation_maps",
             serialId(), requiredBigint("quest_selection_id"), requiredVarchar("mission_key", 100),
             requiredVarchar("category_id", 50), requiredVarchar("map_code", 100),
@@ -599,6 +604,8 @@ internal object FreshSchemaContract {
             "quest_automation_selections", "uk_quest_automation_selections_entry_quest",
             "automation_entry_id", "quest_code",
         ),
+        key("home_quest_automation_selections", "uk_home_quest_automation_selection", "automation_entry_id", "quest_id"),
+        key("home_quest_automation_selections", "uk_home_quest_automation_order", "automation_entry_id", "source_order"),
         key(
             "quest_automation_maps", "uk_quest_automation_maps_selection_mission_map",
             "quest_selection_id", "mission_key", "category_id", "map_code",
@@ -699,6 +706,10 @@ internal object FreshSchemaContract {
         fk("fk_automation_work_entry", "automation_work_sessions.automation_entry_id", "automation_entries.id", DeleteAction.CASCADE),
         fk(
             "fk_quest_automation_selections_entry", "quest_automation_selections.automation_entry_id",
+            "automation_entries.id", DeleteAction.CASCADE,
+        ),
+        fk(
+            "fk_home_quest_automation_selections_entry", "home_quest_automation_selections.automation_entry_id",
             "automation_entries.id", DeleteAction.CASCADE,
         ),
         fk(
@@ -846,6 +857,10 @@ internal object FreshSchemaContract {
             "automation_entry_id", "source_order", "id",
         ),
         index(
+            "home_quest_automation_selections", "idx_home_quest_automation_entry_order",
+            "automation_entry_id", "source_order", "id",
+        ),
+        index(
             "quest_automation_maps", "idx_quest_automation_maps_selection_order",
             "quest_selection_id", "execution_order", "id",
         ),
@@ -939,7 +954,7 @@ internal object FreshSchemaContract {
         check("characters", "ck_characters_pattern_slot_count", "pattern_slot_count >= 0"),
         check(
             "automation_work_sessions", "ck_automation_work_type",
-            "locate(',' || work_type || ',', ',QUEST,BATTLE_MAP,ADVENTURE_MAP,RAID,UNION,FISHING,') > 0",
+            "locate(',' || work_type || ',', ',QUEST,HOME_QUEST,BATTLE_MAP,ADVENTURE_MAP,RAID,UNION,FISHING,') > 0",
         ),
         check(
             "automation_work_sessions", "ck_automation_work_status",
@@ -1051,13 +1066,13 @@ internal object FreshSchemaContract {
         ),
         check(
             "automation_entries", "ck_automation_entries_type",
-            "case automation_type when 'QUEST' then true when 'BATTLE_MAP' then true " +
-                "when 'ADVENTURE_MAP' then true when 'RAID' then true when 'UNION' then true when 'FISHING' then true else false end",
+            "locate(',' || automation_type || ',', ',QUEST,HOME_QUEST,BATTLE_MAP,ADVENTURE_MAP,RAID,UNION,FISHING,') > 0",
         ),
         check("automation_entries", "ck_automation_entries_priority", "priority >= 0"),
         check(
             "quest_automation_selections", "ck_quest_automation_selections_source_order", "source_order >= 0",
         ),
+        check("home_quest_automation_selections", "ck_home_quest_automation_order", "source_order >= 0"),
         check(
             "quest_automation_maps", "ck_quest_automation_maps_preset_mode",
             "case preset_mode when 'PRIMARY' then true when 'EXPLICIT' then true else false end",

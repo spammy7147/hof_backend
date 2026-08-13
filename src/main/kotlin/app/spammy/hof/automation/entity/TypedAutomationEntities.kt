@@ -16,7 +16,7 @@ import jakarta.persistence.Table
 import jakarta.persistence.Version
 import java.time.Instant
 
-enum class AutomationType { QUEST, BATTLE_MAP, ADVENTURE_MAP, RAID, UNION, FISHING }
+enum class AutomationType { QUEST, HOME_QUEST, BATTLE_MAP, ADVENTURE_MAP, RAID, UNION, FISHING }
 
 enum class PresetSelectionMode { PRIMARY, EXPLICIT }
 
@@ -56,6 +56,23 @@ class QuestAutomationSelectionEntity(
     var displayCode: String = questKey,
     @Column(name = "quest_name", nullable = false, length = 255)
     var questName: String = questKey,
+)
+
+@Entity
+@Table(name = "home_quest_automation_selections")
+class HomeQuestAutomationSelectionEntity(
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+    @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "automation_entry_id", nullable = false)
+    var entry: AutomationEntryEntity,
+    @Column(name = "quest_id", nullable = false, length = 64)
+    var questId: String,
+    @Column(name = "quest_name", nullable = false, length = 300)
+    var questName: String,
+    @Column(name = "enabled", nullable = false)
+    var enabled: Boolean,
+    @Column(name = "source_order", nullable = false)
+    var sourceOrder: Int,
 )
 
 @Entity

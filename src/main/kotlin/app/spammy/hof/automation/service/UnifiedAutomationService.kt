@@ -7,6 +7,7 @@ import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.entity.BattleAutomationMapEntity
 import app.spammy.hof.automation.entity.FishingAutomationMapEntity
+import app.spammy.hof.automation.entity.HomeQuestAutomationSelectionEntity
 import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.automation.entity.QuestAutomationMapEntity
 import app.spammy.hof.automation.entity.QuestAutomationSelectionEntity
@@ -19,6 +20,7 @@ import app.spammy.hof.automation.repository.AutomationEntryCommandRepository
 import app.spammy.hof.automation.repository.BattleAutomationMapCommandRepository
 import app.spammy.hof.automation.repository.FishingAutomationSettingCommandRepository
 import app.spammy.hof.automation.repository.FishingAutomationMapCommandRepository
+import app.spammy.hof.automation.repository.HomeQuestAutomationSelectionCommandRepository
 import app.spammy.hof.automation.repository.QuestAutomationMapCommandRepository
 import app.spammy.hof.automation.repository.QuestAutomationSelectionCommandRepository
 import app.spammy.hof.automation.repository.RaidAutomationTargetCommandRepository
@@ -48,6 +50,7 @@ class UnifiedAutomationService(
     private val typedEntryRepository: AutomationEntryCommandRepository,
     private val typedQuestSelectionRepository: QuestAutomationSelectionCommandRepository,
     private val typedQuestMapRepository: QuestAutomationMapCommandRepository,
+    private val typedHomeQuestSelectionRepository: HomeQuestAutomationSelectionCommandRepository,
     private val typedBattleMapRepository: BattleAutomationMapCommandRepository,
     private val typedAdventureMapRepository: AdventureAutomationMapCommandRepository,
     private val typedFishingSettingRepository: FishingAutomationSettingCommandRepository,
@@ -231,6 +234,50 @@ class UnifiedAutomationService(
                         ),
                     )
                 }
+            }
+        updateTypedEntry(entry, request.enabled)
+        enqueueSettingsWake(accountId)
+        return buildTypedAggregate(accountId)
+    }
+
+    @Transactional
+    fun updateHomeQuests(accountId: Long, request: UpdateHomeQuestAutomationRequest): TypedAutomationAggregateResponse {
+        lockTypedAccount(accountId)
+        val entry = requireTypedEntry(accountId, AutomationType.HOME_QUEST)
+        val normalized = request.quests.map { selection ->
+            selection.copy(
+                questId = bounded(selection.questId, 64, "자택 퀘스트 식별자"),
+                questName = bounded(selection.questName, 300, "자택 퀘스트명"),
+            )
+        }
+        rejectDuplicates(normalized.map { it.questId }, "같은 자택 퀘스트를 두 번 설정할 수 없습니다.")
+        rejectDuplicates(normalized.map { it.sourceOrder }, "자택 퀘스트 순서를 중복해서 사용할 수 없습니다.")
+        if (normalized.any { it.sourceOrder < 0 }) invalid("자택 퀘스트 순서는 0 이상이어야 합니다.")
+
+        val old = typedAutomationQueryRepository.findHomeQuestSelections(entry.id)
+        val oldConfig = old.associate { it.questId to it.enabled }
+        val newConfig = normalized.associate { it.questId to it.enabled }
+        workLifecycle.stopForConfigurationChange(
+            accountId,
+            entry.id,
+            changedKeys(oldConfig, newConfig),
+            wholeEntry = entry.enabled && !request.enabled,
+        )
+        if (old.isNotEmpty()) {
+            typedHomeQuestSelectionRepository.deleteAll(old)
+            typedHomeQuestSelectionRepository.flush()
+        }
+        normalized.sortedWith(compareBy<HomeQuestSelectionRequest> { it.sourceOrder }.thenBy { it.questId })
+            .forEachIndexed { sourceOrder, selection ->
+                typedHomeQuestSelectionRepository.save(
+                    HomeQuestAutomationSelectionEntity(
+                        entry = entry,
+                        questId = selection.questId,
+                        questName = selection.questName,
+                        enabled = selection.enabled,
+                        sourceOrder = sourceOrder,
+                    ),
+                )
             }
         updateTypedEntry(entry, request.enabled)
         enqueueSettingsWake(accountId)
@@ -596,6 +643,11 @@ class UnifiedAutomationService(
             } else {
                 emptyList()
             }
+            val homeQuests = if (entry.type == AutomationType.HOME_QUEST) {
+                typedAutomationQueryRepository.findHomeQuestSelections(entry.id)
+            } else {
+                emptyList()
+            }
             val questMaps = typedAutomationQueryRepository.findQuestMaps(quests.map { it.id })
                 .groupBy { it.questSelection.id }
             val battle = if (entry.type == AutomationType.BATTLE_MAP) {
@@ -636,7 +688,7 @@ class UnifiedAutomationService(
             val fishingCatalog = if (fishingMaps.isEmpty()) emptyMap() else battleMapQueryRepository
                 .findMapsByCategoryIdAndMapCodePairs(fishingMaps.map { it.categoryId to it.mapCode }.toSet())
                 .associateBy { it.categoryId to it.mapCode }
-            val warnings = typedWarnings(entry, quests, questMaps, battle, adventure, fishingMaps, union, raid, primaryPresetId, validPresetIds)
+            val warnings = typedWarnings(entry, quests, homeQuests, questMaps, battle, adventure, fishingMaps, union, raid, primaryPresetId, validPresetIds)
             TypedAutomationEntryResponse(
                 id = entry.id,
                 type = entry.type,
@@ -663,6 +715,9 @@ class UnifiedAutomationService(
                         selection.displayCode,
                         selection.questName,
                     )
+                },
+                homeQuests = homeQuests.map { selection ->
+                    HomeQuestSelectionResponse(selection.questId, selection.questName, selection.enabled, selection.sourceOrder)
                 },
                 battleMaps = battle.map { map ->
                     BattleMapSettingResponse(
@@ -759,6 +814,7 @@ class UnifiedAutomationService(
             is StoredTypedActionPayload.QuestAccept,
             is StoredTypedActionPayload.QuestBattle,
             -> AutomationType.QUEST
+            is StoredTypedActionPayload.HomeQuest -> AutomationType.HOME_QUEST
             is StoredTypedActionPayload.BattleMap -> AutomationType.BATTLE_MAP
             is StoredTypedActionPayload.AdventureMap -> AutomationType.ADVENTURE_MAP
             is StoredTypedActionPayload.FishingTown -> AutomationType.FISHING
@@ -766,6 +822,7 @@ class UnifiedAutomationService(
             is StoredTypedActionPayload.RaidCycleAbort -> AutomationType.RAID
             null -> when {
                 row.actionKind.startsWith("QUEST_") -> AutomationType.QUEST
+                row.actionKind == "HOME_QUEST" -> AutomationType.HOME_QUEST
                 row.actionKind == "BATTLE_MAP" -> AutomationType.BATTLE_MAP
                 row.actionKind == "ADVENTURE_MAP" -> AutomationType.ADVENTURE_MAP
                 row.actionKind == "FISHING_TOWN" -> AutomationType.FISHING
@@ -789,6 +846,7 @@ class UnifiedAutomationService(
                 row.actionKind == "QUEST_CLAIM" -> "퀘스트 완료"
                 row.actionKind == "QUEST_ACCEPT" -> "퀘스트 수락"
                 row.actionKind == "QUEST_BATTLE" -> "퀘스트 전투"
+                row.actionKind == "HOME_QUEST" -> "자택 퀘스트"
                 row.actionKind == "BATTLE_MAP" -> "전투맵"
                 row.actionKind == "ADVENTURE_MAP" -> "모험맵"
                 row.actionKind == "FISHING_TOWN" -> "낚시"
@@ -809,6 +867,7 @@ class UnifiedAutomationService(
     private fun typedWarnings(
         entry: AutomationEntryEntity,
         quests: List<QuestAutomationSelectionEntity>,
+        homeQuests: List<HomeQuestAutomationSelectionEntity>,
         questMaps: Map<Long, List<QuestAutomationMapEntity>>,
         battle: List<BattleAutomationMapEntity>,
         adventure: List<AdventureAutomationMapEntity>,
@@ -834,6 +893,9 @@ class UnifiedAutomationService(
                         )?.let(warnings::add)
                     }
                 }
+            }
+            AutomationType.HOME_QUEST -> {
+                if (homeQuests.none { it.enabled }) warnings += "활성화된 자택 퀘스트가 없습니다."
             }
             AutomationType.BATTLE_MAP -> {
                 if (battle.isEmpty()) warnings += "전투 맵 설정이 없습니다."
