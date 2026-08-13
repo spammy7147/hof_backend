@@ -24,7 +24,7 @@ enum class TownFeatureId(
     ADVENTURE_AGENCY("모험 알선소", "quest", "Quest", "Quest Agency"),
     TALENT_AGENCY("인재 알선소", "recruit", "Recruit", "Talent Agency"),
 
-    HOME_MANAGEMENT("자택 관리", "housing", "Housing"),
+    HOME_MANAGEMENT("자택 관리", "quest2", "Housing"),
     WORKBASE("작업장-재봉틀", "workbase", "작업장", "Work", "Sewing Work"),
 
     REFINE_WORKSHOP("제련공방", "refine", "Refine"),

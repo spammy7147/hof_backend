@@ -46,7 +46,7 @@ class TownLocationResolverTest {
             resolver.resolve(TownFeatureId.TALENT_AGENCY).url,
         )
         assertEquals(
-            "http://sic.zerosic.com/ZeroHOF/index.php?menu=housing",
+            "http://sic.zerosic.com/ZeroHOF/index.php?menu=quest2",
             resolver.resolve(TownFeatureId.HOME_MANAGEMENT).url,
         )
         verify(queryRepository, never()).findByFeatureIdForUpdate(TownFeatureId.TALENT_AGENCY)

@@ -39,6 +39,61 @@ class HomePageParserTest {
     }
 
     @Test
+    fun `home quests parse the observed three row housing tables by section`() {
+        val html = """
+            <div id="contents">
+              <h4>진행중인 작업 목록</h4>
+              <table>
+                <tr><td>작업명</td><td>타입</td><td>제한</td><td>보상</td><td>행동</td></tr>
+                <tr>
+                  <td rowspan="3">[HQ9024] 선물 나눠주기</td><td>크리스마스(복각)</td><td>-</td>
+                  <td>아이템( Present Box ) x1</td><td rowspan="3">-</td>
+                </tr>
+                <tr><td colspan="3">미션 : 아이템 반납( Present Sack ) - [ 0 / 4 ]</td></tr>
+                <tr><td colspan="3">아직 나눠주지 못한 선물이 많습니다.</td></tr>
+              </table>
+              <h4>수락 가능한 작업 목록</h4>
+              <table>
+                <tr><td>작업명</td><td>타입</td><td>제한</td><td>보상</td><td>행동</td></tr>
+                <tr>
+                  <td rowspan="3">[HQ1] 빗자루 제작</td><td>자택 관리</td><td>-</td>
+                  <td>아이템( Broom (Housing) ) x1</td>
+                  <td rowspan="3"><a href="?menu=quest2&amp;action=get&amp;no=HQ1">수락</a></td>
+                </tr>
+                <tr><td colspan="3">미션 : 아이템 반납( Staff ) - [ 40 / 1 ]</td></tr>
+                <tr><td colspan="3">마당을 깨끗이 청소해 주세요.</td></tr>
+              </table>
+              <h4>대기중인 작업 목록</h4>
+              <table>
+                <tr><td>작업명</td><td>타입</td><td>제한</td><td>보상</td><td>행동</td></tr>
+                <tr>
+                  <td rowspan="3">[0000] 마당 청소</td><td>자택 관리</td><td>-</td>
+                  <td>아이템( Garbage Bag ) x1</td>
+                  <td rowspan="3"><a href="?menu=quest2&amp;action=get&amp;no=HQ2">수락</a></td>
+                </tr>
+                <tr><td colspan="3">미션 : 아이템 반납( Broom (Housing) ) - [ 0 / 1 ]</td></tr>
+                <tr><td colspan="3">빗자루 제작을 먼저 완료해야 합니다.</td></tr>
+              </table>
+            </div>
+        """.trimIndent()
+        val url = "http://sic.zerosic.com/ZeroHOF/index.php?menu=quest2"
+
+        val snapshot = parser.parse(HomeMode.HOME, html, url, forms.parse(html, url))
+
+        assertEquals(3, snapshot.quests.size)
+        val active = snapshot.quests.single { it.name.contains("HQ9024") }
+        assertEquals(HomeQuestState.ACTIVE, active.state)
+        assertEquals("미션 : 아이템 반납( Present Sack ) - [ 0 / 4 ]", active.mission)
+        assertEquals("아이템( Present Box ) x1", active.reward)
+        val available = snapshot.quests.single { it.name.contains("HQ1") }
+        assertEquals(HomeQuestState.AVAILABLE, available.state)
+        assertNotNull(available.actionId)
+        assertEquals("미션 : 아이템 반납( Staff ) - [ 40 / 1 ]", available.mission)
+        val waiting = snapshot.quests.single { it.name.contains("마당 청소") }
+        assertEquals(HomeQuestState.WAITING, waiting.state)
+    }
+
+    @Test
     fun `rest exposes only observed restore form`() {
         val html = """
             <header>Time : 371/6,000</header>

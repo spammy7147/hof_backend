@@ -70,38 +70,71 @@ class HomePageParser {
             .toList()
     }
 
-    private fun parseQuests(document: org.jsoup.nodes.Document, finalUrl: String): List<HomeQuest> = document.select("tr").asSequence()
-        .filter { row -> row.select("td").size >= 2 && (row.select("a[href*='action=']").isNotEmpty() || questLike(row.text())) }
-        .take(MAX_QUESTS)
-        .mapIndexedNotNull { index, row ->
-            val cells = row.children().filter { it.tagName() == "td" }
-            val text = clean(row.text())
-            val link = row.select("a[href*='action=']").singleOrNull()
-            val observed = link?.let { parseQuestLink(it, finalUrl) }
-            val heading = previousHeading(row)
-            val state = when {
-                observed?.action == "complete" || Regex("완료|수령|보상").containsMatchIn(link?.text().orEmpty()) -> HomeQuestState.CLAIMABLE
-                observed?.action == "get" -> HomeQuestState.AVAILABLE
-                Regex("완료한|완료됨").containsMatchIn(heading) -> HomeQuestState.COMPLETED
-                Regex("대기|조건\\s*미달").containsMatchIn(heading + " " + text) -> HomeQuestState.WAITING
-                else -> HomeQuestState.ACTIVE
+    /** HOF 자택 작업은 한 작업을 rowspan으로 묶은 3개 tr에 나눠 표시한다. */
+    private fun parseQuests(document: org.jsoup.nodes.Document, finalUrl: String): List<HomeQuest> = buildList {
+        var questIndex = 0
+        document.select("table").take(MAX_QUEST_TABLES).forEach { table ->
+            if (size >= MAX_QUESTS) return@forEach
+            val heading = previousHeading(table)
+            val rows = table.select("tr").filter { it.closest("table") === table }
+            var rowIndex = 0
+            while (rowIndex < rows.size && size < MAX_QUESTS) {
+                val row = rows[rowIndex]
+                val cells = row.children().filter { it.tagName() == "td" }
+                val name = clean(cells.firstOrNull()?.text().orEmpty()).take(MAX_QUEST_NAME)
+                if (cells.size < 4 || name.isBlank() || name == "작업명") {
+                    rowIndex++
+                    continue
+                }
+
+                val rowSpan = cells.first().attr("rowspan").toIntOrNull()?.coerceIn(1, MAX_QUEST_ROW_SPAN) ?: 1
+                val groupedRows = rows.subList(rowIndex, minOf(rows.size, rowIndex + rowSpan))
+                val groupedText = clean(groupedRows.joinToString(" ") { it.text() })
+                val links = groupedRows.flatMap { it.select("a[href*='action=']") }
+                val link = links.singleOrNull()
+                val observed = link?.let { parseQuestLink(it, finalUrl) }
+                if (observed == null && !questLike(groupedText) && !HOME_SECTION.containsMatchIn(heading)) {
+                    rowIndex += rowSpan
+                    continue
+                }
+
+                // 보상 열은 reward로 별도 전달하므로 타입/제한만 일반 상세에 포함한다.
+                val mainDetails = cells.drop(1).take(2).map { clean(it.text()) }
+                val continuationDetails = groupedRows.drop(1).flatMap { continuation ->
+                    continuation.children().filter { it.tagName() == "td" }.map { clean(it.text()) }
+                }
+                val details = (mainDetails + continuationDetails).asSequence()
+                    .map { it.take(MAX_QUEST_DETAIL) }
+                    .filter { it.isNotBlank() && it != "-" && !ACTION_ONLY.matches(it) }
+                    .distinct()
+                    .take(MAX_QUEST_DETAIL_CELLS)
+                    .toList()
+                val state = when {
+                    observed?.action == "complete" || Regex("완료|수령|보상").containsMatchIn(link?.text().orEmpty()) -> HomeQuestState.CLAIMABLE
+                    Regex("대기|조건\\s*미달").containsMatchIn(heading) -> HomeQuestState.WAITING
+                    observed?.action == "get" -> HomeQuestState.AVAILABLE
+                    Regex("완료한|완료됨").containsMatchIn(heading) -> HomeQuestState.COMPLETED
+                    else -> HomeQuestState.ACTIVE
+                }
+                val actionId = observed?.let { opaque("${it.action}\u0000${it.no}") }
+                add(
+                    HomeQuest(
+                        id = opaque("$questIndex\u0000$name\u0000${details.joinToString("\u0000")}"),
+                        name = name,
+                        state = state,
+                        mission = details.firstOrNull { MISSION.containsMatchIn(it) },
+                        reward = clean(cells.getOrNull(3)?.text().orEmpty()).take(MAX_QUEST_DETAIL).takeIf { it.isNotBlank() && it != "-" },
+                        details = details,
+                        actionId = actionId,
+                        action = observed?.action,
+                        actionNo = observed?.no,
+                    ),
+                )
+                questIndex++
+                rowIndex += rowSpan
             }
-            val name = clean(cells.firstOrNull()?.text().orEmpty()).take(MAX_QUEST_NAME).ifBlank { return@mapIndexedNotNull null }
-            val details = cells.drop(1).take(MAX_QUEST_DETAIL_CELLS)
-                .map { clean(it.text()).take(MAX_QUEST_DETAIL) }.filter(String::isNotBlank)
-            val actionId = observed?.let { opaque("${it.action}\u0000${it.no}") }
-            HomeQuest(
-                id = opaque("$index\u0000$name\u0000${details.joinToString("\u0000")}"),
-                name = name,
-                state = state,
-                mission = details.firstOrNull { !Regex("보상|수락|완료|수령").containsMatchIn(it) },
-                reward = details.firstOrNull { Regex("보상|아이템|Funds|Time", RegexOption.IGNORE_CASE).containsMatchIn(it) },
-                details = details,
-                actionId = actionId,
-                action = observed?.action,
-                actionNo = observed?.no,
-            )
-        }.toList()
+        }
+    }
 
     private fun parseRestActions(document: org.jsoup.nodes.Document, page: ParsedTownPage): List<HomeAction> {
         return document.select("form").asSequence().take(MAX_FORMS_SCANNED).mapNotNull { domForm ->
@@ -157,8 +190,8 @@ class HomePageParser {
         return ObservedQuestLink(action, no)
     }
 
-    private fun previousHeading(row: Element): String {
-        var current: Element? = row.closest("table")?.previousElementSibling()
+    private fun previousHeading(element: Element): String {
+        var current: Element? = (if (element.tagName() == "table") element else element.closest("table"))?.previousElementSibling()
         while (current != null) {
             if (current.tagName() in setOf("h3", "h4")) return clean(current.text())
             current = current.previousElementSibling()
@@ -193,6 +226,8 @@ class HomePageParser {
     private data class ObservedQuestLink(val action: String, val no: String)
     private companion object {
         const val MAX_QUESTS = 500
+        const val MAX_QUEST_TABLES = 100
+        const val MAX_QUEST_ROW_SPAN = 10
         const val MAX_QUEST_NAME = 300
         const val MAX_QUEST_DETAIL = 1_000
         const val MAX_QUEST_DETAIL_CELLS = 20
@@ -209,6 +244,9 @@ class HomePageParser {
         val FACILITY_RECOVERY = Regex("(?:시설|추가)[^0-9]{0,80}([0-9][0-9,]*)\\s*(?:의\\s*)?Time(?:이|을)?\\s*(?:추가로\\s*)?회복", RegexOption.IGNORE_CASE)
         val USED_TODAY = Regex("오늘[^.。\\n]{0,80}(?:이미\\s*)?(?:휴식|회복)[^.。\\n]{0,40}(?:했습니다|사용했습니다|할 수 없습니다)")
         val RESTORE_WORD = Regex("회복|복구|휴식|Rest|보충", RegexOption.IGNORE_CASE)
+        val HOME_SECTION = Regex("(?:진행중인|수락 가능한|대기중인|완료한) 작업 목록")
+        val MISSION = Regex("^미션\\s*[:：]")
+        val ACTION_ONLY = Regex("^(?:수락|완료|수령|-)$")
         val FOOTER_TEXT = Regex("^(?:[•·\\-]\\s*)?(?:UpDate|Update|Copy\\s*Right)\\b", RegexOption.IGNORE_CASE)
     }
 }
