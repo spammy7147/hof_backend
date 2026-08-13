@@ -1,0 +1,26 @@
+<html><body>
+<form id="create">
+  <select name="type_create" onchange="ChangeTypecreate()">
+    <option value="weapon" selected>무기(weapon)</option>
+    <option value="cloak">외투(cloak)</option>
+  </select>
+</form>
+<form method="post" action="?menu=sewingshop">
+  <input type="hidden" name="ItemT" value="">
+  <input type="submit" name="Create" value="Create">
+  <input type="reset" value="Reset">
+  <input name="amount" value="1">
+  <input type="hidden" name="Create" value="Create">
+  <div id="list"></div>
+</form>
+<script>
+function Listtype_create(mode) {
+switch(mode) {
+case "weapon": html = ''; break;
+case "cloak": html = '<tr><td>$ 1</td><td><input id="claris-live-cloak" type="radio" name="ItemNo" value="cloak" onclick="document.getElementById(\'ItemT\').value=42">Dreamweave Cloak x1</td></tr>'; break;
+}
+return html;
+}
+function ChangeTypecreate() {}
+</script>
+</body></html>

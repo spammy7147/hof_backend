@@ -30,6 +30,50 @@ class CraftingParserTest {
         assertThat(value.rows.single { it.label.contains("Avatar Ticket") }.selectable).isFalse()
     }
 
+    @Test fun `실제 클라리스의 분리된 javascript 분류 선택기를 노출한다`() {
+        val html = """
+            <form id="create">
+              <select name="type_create" onchange="ChangeTypecreate()">
+                <option value="weapon" selected>무기(weapon)</option>
+                <option value="cloak">외투(cloak)</option>
+              </select>
+            </form>
+            <form method="post" action="?menu=sewingshop">
+              <input type="hidden" name="ItemT" value="">
+              <input type="submit" name="Create" value="Create">
+              <input name="amount" value="1">
+              <input type="hidden" name="Create" value="Create">
+              <div id="list"></div>
+            </form>
+            <script>
+              function Listtype_create(mode) {
+                switch(mode) {
+                  case "weapon": html = ''; break;
+                  case "cloak": html = '<tr><td>${'$'} 1</td><td><input type="radio" name="ItemNo" value="cloak" onclick="document.ItemT.value=42">Dreamweave Cloak</td></tr>'; break;
+                }
+                return html;
+              }
+              function ChangeTypecreate() {}
+            </script>
+        """.trimIndent()
+        val url = "http://sic.zerosic.com/ZeroHOF/index.php?menu=sewingshop"
+
+        val value = parser.parse(CraftingMode.CLARIS, html, url, forms.parse(html, url))
+
+        assertThat(value.categories.map { it.label }).containsExactly("무기(weapon)", "외투(cloak)")
+        assertThat(value.currentCategoryId).isNotNull()
+
+        val cloak = parser.parse(
+            CraftingMode.CLARIS,
+            html,
+            url,
+            forms.parse(html, url),
+            categoryCandidateId = "type_create:cloak",
+        )
+        assertThat(cloak.currentCategoryId).isEqualTo("type_create:cloak")
+        assertThat(cloak.rows.single { it.label.contains("Dreamweave Cloak") }.selectable).isTrue()
+    }
+
     @Test fun `제련과 장로대장간은 timesB 선택 가능 횟수를 노출한다`() {
         val refine = parse("refine.html", CraftingMode.REFINE)
         assertThat(refine.allowedRefineCounts).containsExactly(1, 2, 3)

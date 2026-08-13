@@ -20,8 +20,13 @@ class CraftingService(
         CraftingResponse.from(parser.parse(mode, html, finalUrl, page))
     }
 
-    fun loadCategory(accountId: Long, mode: CraftingMode, categoryCandidateId: String): CraftingResponse =
-        executor.loadSelectedOptionProjected(
+    fun loadCategory(accountId: Long, mode: CraftingMode, categoryCandidateId: String): CraftingResponse {
+        if (mode == CraftingMode.CLARIS) {
+            return executor.loadProjected(accountId, url(mode)) { html, finalUrl, page ->
+                CraftingResponse.from(parser.parse(mode, html, finalUrl, page, categoryCandidateId = categoryCandidateId))
+            }
+        }
+        return executor.loadSelectedOptionProjected(
             accountId = accountId,
             pageUrl = url(mode),
             actionId = { html, finalUrl, page ->
@@ -39,6 +44,7 @@ class CraftingService(
             }
             CraftingResponse.from(snapshot)
         }
+    }
 
     fun startWorkbase(accountId: Long, request: WorkbaseStartRequest): CraftingResponse = executeItemT(
         accountId, CraftingMode.WORKBASE, request.candidateId, request.categoryCandidateId, request.quantity,
@@ -54,9 +60,32 @@ class CraftingService(
         },
     ) { html, finalUrl, result, page -> CraftingResponse.from(parser.parse(CraftingMode.WORKBASE, html, finalUrl, page, result)) }
 
-    fun craftClaris(accountId: Long, request: ClarisCraftRequest): CraftingResponse = executeItemT(
-        accountId, CraftingMode.CLARIS, request.candidateId, request.categoryCandidateId, request.quantity,
-    )
+    fun craftClaris(accountId: Long, request: ClarisCraftRequest): CraftingResponse {
+        val mode = CraftingMode.CLARIS
+        return executor.executeMaterializedResolvedProjectedWithScalars(
+            accountId = accountId,
+            pageUrl = url(mode),
+            requiredScalarFields = setOf("ItemT", "amount"),
+            requiredSubmitField = "Create",
+            requiredSyntheticFields = setOf("ItemNo", "list_type"),
+            materialize = { html, finalUrl -> parser.materializeClarisHtml(html, finalUrl, request.categoryCandidateId) },
+            resolve = { html, finalUrl, page ->
+                val snapshot = parser.parse(mode, html, finalUrl, page, categoryCandidateId = request.categoryCandidateId)
+                validateCategory(snapshot, request.categoryCandidateId)
+                val row = validateRow(snapshot, request.candidateId)
+                validateQuantity(request.quantity, snapshot)
+                TownActionRequest(
+                    snapshot.actionId ?: invalid("현재 HOF 클라리스 제작 양식을 찾지 못했습니다."),
+                    listOf(TownActionSelection(row.id)),
+                ) to mapOf(
+                    "ItemT" to (row.itemT ?: invalid("현재 품목의 HOF ItemT 계약을 안전하게 확인하지 못했습니다.")),
+                    "amount" to request.quantity.toString(),
+                )
+            },
+        ) { html, finalUrl, result, page ->
+            CraftingResponse.from(parser.parse(mode, html, finalUrl, page, result, categoryCandidateId = request.categoryCandidateId))
+        }
+    }
 
     fun refine(accountId: Long, mode: CraftingMode, request: RefineRequest): CraftingResponse {
         require(mode == CraftingMode.REFINE || mode == CraftingMode.VETERAN)

@@ -12,6 +12,7 @@ import app.spammy.hof.town.common.parser.HofFormParser
 import app.spammy.hof.town.common.parser.HofResultParser
 import app.spammy.hof.town.common.service.*
 import app.spammy.hof.town.crafting.dto.RefineRequest
+import app.spammy.hof.town.crafting.dto.ClarisCraftRequest
 import app.spammy.hof.town.crafting.dto.CreateCraftRequest
 import app.spammy.hof.town.crafting.dto.WorkbaseStartRequest
 import app.spammy.hof.town.crafting.model.CraftingMode
@@ -78,6 +79,29 @@ class CraftingServiceTest {
         assertEquals(listOf("fresh-123", "armor"), requests.last().formEntries.map { it.value })
     }
 
+    @Test fun `클라리스 분류 전환은 HOF 제출 없이 정적 목록을 선택한다`() {
+        val html = fixture("claris-live.html")
+        stub(TownFeatureId.SEWING_SHOP, CLARIS_URL, html)
+
+        val response = service.loadCategory(7L, CraftingMode.CLARIS, "type_create:cloak")
+
+        assertEquals("type_create:cloak", response.currentCategoryId)
+        assertEquals(true, response.rows.single { it.label.contains("Dreamweave Cloak") }.selectable)
+        assertEquals(listOf(HofHttpMethod.GET), captureRequests().map(HofRequest::method))
+    }
+
+    @Test fun `클라리스 제작은 javascript 품목을 제한적으로 변환해 실제 form으로 제출한다`() {
+        val html = fixture("claris-live.html")
+        stub(TownFeatureId.SEWING_SHOP, CLARIS_URL, html, html)
+
+        service.craftClaris(7L, ClarisCraftRequest("claris-live-cloak", "type_create:cloak", 3))
+
+        val requests = captureRequests()
+        assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.POST), requests.map(HofRequest::method))
+        assertEquals(listOf("ItemT", "amount", "Create", "Create", "ItemNo", "list_type"), requests.last().formEntries.map { it.name })
+        assertEquals(listOf("42", "3", "Create", "Create", "cloak", "cloak"), requests.last().formEntries.map { it.value })
+    }
+
     @Test fun `작업 완료는 자동 실행 없이 사용자가 호출할 때 최신 WSend form만 제출한다`() {
         val html = fixture("workbase-active.html")
         stub(TownFeatureId.WORKBASE, WORK_URL, html)
@@ -131,5 +155,6 @@ class CraftingServiceTest {
         const val WORK_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=workbase"
         const val VETERAN_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=refine2"
         const val CREATE_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=create"
+        const val CLARIS_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=sewingshop"
     }
 }
