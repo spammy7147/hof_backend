@@ -44,6 +44,21 @@ class RewardControllerTest {
         assertTrue(snapshot.actions.none { it.action == StashOpenAction.THOUSAND })
     }
 
+    @Test fun `실서버 AllOpen 필드의 1000개 action을 관측한 그대로 제출한다`() {
+        val html = fixture("stash.html")
+            .replace("  <input type=\"submit\" name=\"Open1000\" value=\"1000개 열기\">\n", "")
+            .replace("name=\"AllOpen\" value=\"전부 열기\"", "name=\"AllOpen\" value=\"1000개 열기\"")
+        val page = forms.parse(html, STASH_URL)
+        val snapshot = stash.parse(html, STASH_URL, page)
+        val action = snapshot.actions.single { it.action == StashOpenAction.THOUSAND }
+        val box = snapshot.boxes.single { it.selectable }
+
+        val guarded = guard.guard(page, TownActionRequest(action.actionId, listOf(TownActionSelection(box.id))))
+
+        assertEquals(listOf("ItemNo", "AllOpen"), guarded.formEntries.map { it.name })
+        assertEquals("1000개 열기", guarded.formEntries.last().value)
+    }
+
     @Test fun `orb actions submit only the confirmed HOF one or five button`() {
         val html = fixture("orbs-before.html")
         val page = forms.parse(html, ORB_URL)

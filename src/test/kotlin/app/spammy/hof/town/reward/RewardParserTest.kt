@@ -49,6 +49,20 @@ class RewardParserTest {
         assertEquals(8, box.owned)
     }
 
+    @Test fun `실서버 AllOpen 필드의 1000개 문구를 thousand action으로 해석한다`() {
+        val html = fixture("stash.html")
+            .replace("  <input type=\"submit\" name=\"Open1000\" value=\"1000개 열기\">\n", "")
+            .replace("name=\"AllOpen\" value=\"전부 열기\"", "name=\"AllOpen\" value=\"1000개 열기\"")
+
+        val snapshot = stash.parse(html, STASH_URL, forms.parse(html, STASH_URL))
+
+        assertEquals(
+            listOf(StashOpenAction.ONE, StashOpenAction.TWENTY, StashOpenAction.HUNDRED, StashOpenAction.THOUSAND),
+            snapshot.actions.map { it.action },
+        )
+        assertEquals("1000개 열기", snapshot.actions.single { it.action == StashOpenAction.THOUSAND }.label)
+    }
+
     @Test fun `orb parser keeps actual GET balances and confirmed one and five actions`() {
         val html = fixture("orbs-before.html")
         val snapshot = orbs.parse(html, ORB_URL, forms.parse(html, ORB_URL))

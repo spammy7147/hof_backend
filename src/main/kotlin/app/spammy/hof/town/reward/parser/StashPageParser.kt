@@ -46,12 +46,15 @@ class StashPageParser {
 
     private fun stashAction(form: ParsedTownForm): StashOpenAction? {
         val submit = form.submitFields.singleOrNull() ?: return null
-        val action = ACTION_FIELDS[submit.name] ?: return null
+        val allowedActions = ACTION_FIELDS[submit.name] ?: return null
         val label = clean(submit.value)
         if (!OPEN_WORD.containsMatchIn(label)) return null
-        if (action == StashOpenAction.ALL) return action.takeIf { ALL_WORD.containsMatchIn(label) }
         val count = DRAW_COUNT.find(label)?.groupValues?.get(1)?.replace(",", "")?.toIntOrNull()
-        return action.takeIf { count == it.drawCount }
+        val semanticActions = buildSet {
+            if (ALL_WORD.containsMatchIn(label)) add(StashOpenAction.ALL)
+            ORDER.filter { it.drawCount == count }.forEach(::add)
+        }
+        return allowedActions.intersect(semanticActions).singleOrNull()
     }
 
     private fun clean(value: String) = value.replace(Regex("\\s+"), " ").trim()
@@ -61,11 +64,13 @@ class StashPageParser {
         // APK가 관측한 고정 submit 계약만 허용한다. 표시 문구가 우연히 같은 임의 submit을
         // action으로 승격하면 서버가 추가한 다른 기능을 상자 개봉으로 오인할 수 있다.
         val ACTION_FIELDS = mapOf(
-            "Open" to StashOpenAction.ONE,
-            "Open20" to StashOpenAction.TWENTY,
-            "Open100" to StashOpenAction.HUNDRED,
-            "Open1000" to StashOpenAction.THOUSAND,
-            "AllOpen" to StashOpenAction.ALL,
+            "Open" to setOf(StashOpenAction.ONE),
+            "Open20" to setOf(StashOpenAction.TWENTY),
+            "Open100" to setOf(StashOpenAction.HUNDRED),
+            "Open1000" to setOf(StashOpenAction.THOUSAND),
+            // HOF 실서버는 같은 필드를 과거의 "전부"와 현재의 "1000개" 의미로 재사용한다.
+            // field 이름과 표시 문구의 의미가 정확히 하나로 교차할 때만 action으로 인정한다.
+            "AllOpen" to setOf(StashOpenAction.THOUSAND, StashOpenAction.ALL),
         )
         val OPEN_WORD = Regex("열기|개봉|open", RegexOption.IGNORE_CASE)
         val ALL_WORD = Regex("전부|전체|모두|all", RegexOption.IGNORE_CASE)
