@@ -1,0 +1,30 @@
+<html><body>
+<h3>교환소(Emblem Shop)</h3>
+<form id="create">
+  <select name="type_create" onchange="ChangeTypecreate()">
+    <option value="weapon">무기(weapon)</option>
+    <option value="armor">방어구(armor)</option>
+    <option value="all">전부(all)</option>
+  </select>
+</form>
+<script>
+function Listtype_create(mode) {
+  switch(mode) {
+    case "weapon":
+      html = '<tr><td>$ 100,000</td><td><input type="radio" name="ItemNo" value="mura" onclick="document.getElementById(\'ItemT\').value=37;"> Muramasa (Sword) / Upgrade Ticket x 3</td></tr>';
+      break;
+    case "armor":
+      html = '<tr><td>$ 50,000</td><td><input type="radio" name="ItemNo" value="plate" onclick="document.getElementById(\'ItemT\').value=11;"> Guardian Plate (Armor) / Upgrade Ticket x 2</td></tr>';
+      break;
+  }
+  return(html);
+}
+function ChangeTypecreate() { return Listtype_create('weapon'); }
+</script>
+<form method="post" action="?menu=create2">
+  <input type="hidden" id="ItemT" name="ItemT">
+  <div id="list"><table><tr><td>$ 100,000</td><td><input type="radio" name="ItemNo" value="mura" onclick="document.getElementById('ItemT').value=37;"> Muramasa (Sword) / Upgrade Ticket x 3</td></tr></table></div>
+  <input type="text" name="amount" value="1">
+  <input type="submit" name="Create" value="Create">
+</form>
+</body></html>

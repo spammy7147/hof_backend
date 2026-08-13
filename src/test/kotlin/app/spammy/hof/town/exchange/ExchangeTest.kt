@@ -32,6 +32,24 @@ class ExchangeTest {
         assertEquals(999, muramasa.maxQuantity)
     }
 
+    @Test fun `실제 교환상점의 분리된 category form과 정적 품목 목록을 구조화한다`() {
+        val html = fixture("emblem-live-categories.html")
+        val initial = parser.parse(ExchangeMode.EMBLEM, html, BASE, forms.parse(html, BASE))
+        assertEquals(listOf("무기(weapon)", "방어구(armor)", "전부(all)"), initial.categories.map { it.label })
+        assertEquals("type_create:weapon", initial.currentCategoryId)
+        assertEquals(listOf("Muramasa (Sword)"), initial.rows.map { it.label })
+
+        val armor = parser.parse(
+            ExchangeMode.EMBLEM,
+            html,
+            BASE,
+            forms.parse(html, BASE),
+            categoryCandidateId = "type_create:armor",
+        )
+        assertEquals("type_create:armor", armor.currentCategoryId)
+        assertEquals(listOf("Guardian Plate (Armor)"), armor.rows.map { it.label })
+    }
+
     @Test fun `유물 등급 교환은 대상 선택을 허용하지 않고 1개만 HOF에 위임한다`() {
         val value = parse("legacy.html", ExchangeMode.LEGACY)
         assertEquals(2, value.gradeActions.size)
@@ -47,24 +65,30 @@ class ExchangeTest {
         assertTrue(value.annActions.single { it.type == AnnAction.GIVE_GIFT }.rows.isEmpty())
     }
 
-    @Test fun `동적 category 전환은 관측한 select 이름과 안전 hidden만 제출한다`() {
-        val initial = fixture("emblem.html").replace("type_create", "catalog_kind")
-        val transitioned = initial.replace("value=\"all\" selected", "value=\"all\"").replace("value=\"weapon\"", "value=\"weapon\" selected")
-        val context = service(TownFeatureId.EMBLEM_SHOP, EMBLEM_URL, initial, transitioned)
-        val response = context.service.loadCategory(7L, ExchangeMode.EMBLEM, "catalog_kind:weapon")
-        assertEquals("catalog_kind:weapon", response.currentCategoryId)
-        val post = context.requests().last()
-        assertEquals(listOf("nonce", "catalog_kind"), post.formEntries.map { it.name })
-        assertEquals(listOf("fresh-e", "weapon"), post.formEntries.map { it.value })
+    @Test fun `정적 category 전환은 HOF에 POST하지 않고 해당 품목을 구조화한다`() {
+        val html = fixture("emblem-live-categories.html")
+        val context = service(TownFeatureId.EMBLEM_SHOP, EMBLEM_URL, html)
+        val response = context.service.loadCategory(7L, ExchangeMode.EMBLEM, "type_create:armor")
+        assertEquals("type_create:armor", response.currentCategoryId)
+        assertEquals(listOf("Guardian Plate (Armor)"), response.rows.map { it.label })
+        assertEquals(listOf(HofHttpMethod.GET), context.requests().map { it.method })
     }
 
-    @Test fun `교환은 최신 GET radio의 strict ItemT와 현재 category를 scalar로 제출한다`() {
-        val html = fixture("emblem.html")
+    @Test fun `교환은 선택 category를 물질화하고 최신 GET radio의 strict ItemT를 제출한다`() {
+        val html = fixture("emblem-live-categories.html")
         val context = service(TownFeatureId.EMBLEM_SHOP, EMBLEM_URL, html)
-        context.service.trade(7L, ExchangeMode.EMBLEM, ExchangeTradeRequest("emblem-1", "type_create:all", 9))
+        val all = parser.parse(
+            ExchangeMode.EMBLEM,
+            html,
+            BASE,
+            forms.parse(html, BASE),
+            categoryCandidateId = "type_create:all",
+        )
+        val muramasa = all.rows.single { it.label == "Muramasa (Sword)" }
+        context.service.trade(7L, ExchangeMode.EMBLEM, ExchangeTradeRequest(muramasa.id, "type_create:all", 9))
         val post = context.requests().last()
         assertEquals(
-            mapOf("nonce" to "fresh-e", "ItemT" to "37", "list_type" to "all", "amount" to "9", "ItemNo" to "mura", "Create" to "Create"),
+            mapOf("ItemT" to "37", "list_type" to "all", "ItemNo" to "mura", "amount" to "9", "Create" to "Create"),
             post.formEntries.associate { it.name to it.value },
         )
     }

@@ -512,6 +512,7 @@ class TownAuthenticatedExecutor(
         requiredScalarFields: Set<String>,
         requiredSubmitField: String,
         requiredSyntheticFields: Set<String>,
+        requiredReplacedFields: Set<String> = emptySet(),
         materialize: (html: String, finalUrl: String) -> String,
         resolve: (html: String, finalUrl: String, page: ParsedTownPage) -> Pair<TownActionRequest, Map<String, String>>,
         projector: (
@@ -522,7 +523,8 @@ class TownAuthenticatedExecutor(
         ) -> T,
     ): T = withAccountActionFence(accountId) {
         require(requiredScalarFields.isNotEmpty() && requiredSyntheticFields.isNotEmpty())
-        require((requiredScalarFields + requiredSyntheticFields).size <= 8)
+        require(requiredSyntheticFields.intersect(requiredReplacedFields).isEmpty())
+        require((requiredScalarFields + requiredSyntheticFields + requiredReplacedFields).size <= 8)
         val context = authenticatedContext(accountId)
         val current = executeAuthenticated(
             context.account,
@@ -559,9 +561,12 @@ class TownAuthenticatedExecutor(
 
         val rawControls = ownedControlSignatures(rawForm)
         val materializedControls = ownedControlSignatures(materializedForm)
-        val preservedControls = materializedControls.filterNot { it.name in requiredSyntheticFields }
-        if (rawControls != preservedControls ||
-            materializedControls.filter { it.name in requiredSyntheticFields }.map(ControlSignature::name).toSet() != requiredSyntheticFields
+        val ignoredMaterializedFields = requiredSyntheticFields + requiredReplacedFields
+        val preservedRawControls = rawControls.filterNot { it.name in requiredReplacedFields }
+        val preservedMaterializedControls = materializedControls.filterNot { it.name in ignoredMaterializedFields }
+        if (preservedRawControls != preservedMaterializedControls ||
+            materializedControls.filter { it.name in requiredSyntheticFields }.map(ControlSignature::name).toSet() != requiredSyntheticFields ||
+            requiredReplacedFields.any { name -> rawControls.none { it.name == name } || materializedControls.none { it.name == name } }
         ) throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 동적 입력 양식이 변경되었습니다.")
         val rawScalarControls = rawForm.select("input,select,textarea").filter { control ->
             control.closest("form") === rawForm && !control.hasAttr("disabled") && control.attr("name") in requiredScalarFields

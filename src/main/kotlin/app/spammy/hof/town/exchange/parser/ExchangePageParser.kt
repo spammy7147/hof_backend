@@ -16,10 +16,16 @@ class ExchangePageParser(private val formParser: HofFormParser = HofFormParser()
         finalUrl: String,
         page: ParsedTownPage,
         result: ParsedTownResult? = null,
+        categoryCandidateId: String? = null,
     ): ExchangeSnapshot {
-        val document = HofHtmlParser.parse(html, finalUrl)
-        val domForms = mapDomForms(document, page)
-        val forms = page.forms.filter { it.submitFields.size == 1 }
+        val materialized = if (mode in STATIC_CATALOG_MODES && LIST_FUNCTION_MARKER in html) {
+            materializeStaticCatalog(html, finalUrl, categoryCandidateId)
+        } else null
+        val effectiveHtml = materialized?.html ?: html
+        val effectivePage = materialized?.let { formParser.parse(effectiveHtml, finalUrl) } ?: page
+        val document = HofHtmlParser.parse(effectiveHtml, finalUrl)
+        val domForms = mapDomForms(document, effectivePage)
+        val forms = effectivePage.forms.filter { it.submitFields.size == 1 }
         val gradeForms = if (mode == ExchangeMode.LEGACY) forms.filter(::isLegacyGradeForm) else emptyList()
         val annForms = if (mode == ExchangeMode.ANN) forms.mapNotNull { form ->
             annType(form, annSection(document, domForms[form.actionId]))?.let { type ->
@@ -31,7 +37,9 @@ class ExchangePageParser(private val formParser: HofFormParser = HofFormParser()
             .filter { form -> form.candidates.any { it.selectionType != TownSelectionType.SELECT } }
             .singleOrNull { isTradeForm(it) }
         val domTradeForm = tradeForm?.let { domForms[it.actionId] }
-        val categories = tradeForm?.let { parseCategories(it, document) }.orEmpty()
+        val categories = materialized?.categories?.map { category ->
+            ExchangeCategory(category.id, category.label, category.id == materialized.currentCategoryId)
+        } ?: tradeForm?.let { parseCategories(it, document) }.orEmpty()
         val current = categories.singleOrNull { it.current }?.id
         val itemTByCandidate = if (tradeForm != null && domTradeForm != null && hasScalar(domTradeForm, "ItemT")) {
             strictItemTByCandidate(tradeForm, domTradeForm)
@@ -54,6 +62,105 @@ class ExchangePageParser(private val formParser: HofFormParser = HofFormParser()
                 tradeForm?.candidates?.singleOrNull { it.id == categoryId }?.inputName
             },
         )
+    }
+
+    fun materializeStaticCatalogHtml(html: String, finalUrl: String, categoryCandidateId: String): String =
+        materializeStaticCatalog(html, finalUrl, categoryCandidateId).html
+
+    private fun materializeStaticCatalog(
+        html: String,
+        finalUrl: String,
+        categoryCandidateId: String?,
+    ): MaterializedCatalog {
+        val document = HofHtmlParser.parse(html, finalUrl)
+        val select = document.select("form select[name=${css(CATEGORY_FIELD)}]").filter { candidate ->
+            candidate.closest("form")?.select("input[type=submit],button[type=submit],button:not([type])").orEmpty().isEmpty()
+        }.singleOrNull() ?: throw ExchangeContractException("교환 분류 선택란을 하나로 확인하지 못했습니다.")
+        val categories = select.select("option[value]").filterNot { it.hasAttr("disabled") }.map { option ->
+            val value = option.attr("value").trim()
+            if (!SAFE_CATEGORY_TOKEN.matches(value)) throw ExchangeContractException("안전하지 않은 교환 분류 값입니다.")
+            CategoryContract("$CATEGORY_FIELD:$value", value, clean(option.text()).ifBlank { value })
+        }
+        if (categories.isEmpty() || categories.map(CategoryContract::id).distinct().size != categories.size) {
+            throw ExchangeContractException("교환 분류 계약이 비어 있거나 중복되었습니다.")
+        }
+        val current = if (categoryCandidateId == null) {
+            val selectedValue = select.`val`().trim()
+            categories.singleOrNull { it.value == selectedValue } ?: categories.first()
+        } else {
+            categories.singleOrNull { it.id == categoryCandidateId }
+                ?: throw ExchangeCategoryException(categoryCandidateId)
+        }
+        val catalog = parseStaticCatalog(document)
+        val expected = categories.map(CategoryContract::value).filterNot { it == ALL_CATEGORY }.toSet()
+        if (catalog.keys != expected) throw ExchangeContractException("교환 분류와 정적 품목 목록이 일치하지 않습니다.")
+        val fragment = if (current.value == ALL_CATEGORY) {
+            categories.asSequence().map(CategoryContract::value).filterNot { it == ALL_CATEGORY }
+                .joinToString("") { catalog.getValue(it) }
+        } else catalog.getValue(current.value)
+        val actionForm = document.select("form").filter(::isRawStaticActionForm).singleOrNull()
+            ?: throw ExchangeContractException("교환 제출 양식을 하나로 확인하지 못했습니다.")
+        val list = actionForm.select("#list").filter { it.closest("form") === actionForm }.singleOrNull()
+            ?: throw ExchangeContractException("교환 품목 목록 위치를 하나로 확인하지 못했습니다.")
+        list.html("<table>$fragment</table><input type=\"hidden\" name=\"$LIST_FIELD\" value=\"${current.value}\">")
+        return MaterializedCatalog(document.outerHtml(), categories, current.id)
+    }
+
+    private fun parseStaticCatalog(document: org.jsoup.nodes.Document): Map<String, String> {
+        val script = document.select("script").map(Element::data).filter { LIST_FUNCTION_MARKER in it }.singleOrNull()
+            ?: throw ExchangeContractException("정적 교환 목록 스크립트를 하나로 확인하지 못했습니다.")
+        val body = LIST_FUNCTION.find(script)?.groupValues?.get(1)
+            ?: throw ExchangeContractException("정적 교환 목록 함수를 확인하지 못했습니다.")
+        val labels = LIST_CASE_LABEL.findAll(body).map { it.groupValues[1] }.toList()
+        val assignments = LIST_CASE_ASSIGNMENT.findAll(body).map { match ->
+            match.groupValues[1] to decodeStaticJavascriptExpression(match.groupValues[2])
+        }.toList()
+        if (labels.isEmpty() || labels.size != assignments.size || labels != assignments.map { it.first } || labels.distinct().size != labels.size) {
+            throw ExchangeContractException("정적 교환 목록 case 계약이 모호합니다.")
+        }
+        return assignments.toMap()
+    }
+
+    private fun decodeStaticJavascriptExpression(value: String): String {
+        val decoded = StringBuilder(value.length)
+        var index = 0
+        while (index < value.length) {
+            while (index < value.length && value[index].isWhitespace()) index++
+            if (index >= value.length || value[index++] != '\'') {
+                throw ExchangeContractException("정적 교환 목록에 문자열 이외의 표현식이 있습니다.")
+            }
+            var closed = false
+            while (index < value.length) {
+                val character = value[index++]
+                if (character == '\'') { closed = true; break }
+                if (character != '\\') { decoded.append(character); continue }
+                if (index >= value.length) throw ExchangeContractException("끝나지 않은 JavaScript 문자열입니다.")
+                decoded.append(when (val escaped = value[index++]) {
+                    '\\' -> '\\'; '\'' -> '\''; '"' -> '"'; 'n' -> '\n'; 'r' -> '\r'; 't' -> '\t'
+                    else -> throw ExchangeContractException("지원하지 않는 JavaScript escape: $escaped")
+                })
+            }
+            if (!closed) throw ExchangeContractException("끝나지 않은 JavaScript 문자열입니다.")
+            while (index < value.length && value[index].isWhitespace()) index++
+            if (index < value.length) {
+                if (value[index++] != '+' || value.substring(index).isBlank()) {
+                    throw ExchangeContractException("정적 교환 목록에 허용되지 않은 문자열 결합이 있습니다.")
+                }
+            }
+        }
+        return decoded.toString()
+    }
+
+    private fun isRawStaticActionForm(form: Element): Boolean {
+        val controls = form.select("input,button,select,textarea").filter { it.closest("form") === form && !it.hasAttr("disabled") }
+        val submits = controls.filter { control ->
+            (control.tagName() == "input" && control.attr("type").equals("submit", true)) ||
+                (control.tagName() == "button" && control.attr("type").let { it.isBlank() || it.equals("submit", true) })
+        }
+        return form.attr("method").equals("post", true) &&
+            submits.singleOrNull()?.attr("name").equals("Create", true) &&
+            controls.count { it.attr("name") == "ItemT" } == 1 &&
+            controls.count { it.attr("name") == "amount" } == 1
     }
 
     private fun rows(
@@ -195,6 +302,25 @@ class ExchangePageParser(private val formParser: HofFormParser = HofFormParser()
         val HISTORY_MARKER = Regex("마제즈.*이력|최근.*결과|history", RegexOption.IGNORE_CASE)
         val HEADER = Regex("^(제작비|수수료|Item|아이템|제작비 Item|수수료 Item)$", RegexOption.IGNORE_CASE)
         val ITEM_T_ASSIGNMENT = Regex("(?:document\\.getElementById\\(\\s*(['\"])ItemT\\1\\s*\\)|(?:document\\.)?ItemT)\\s*\\.value\\s*=\\s*(['\"]?)([A-Za-z0-9_.:-]+)\\2", RegexOption.IGNORE_CASE)
+        val STATIC_CATALOG_MODES = setOf(ExchangeMode.EMBLEM, ExchangeMode.EVENT)
+        const val LIST_FUNCTION_MARKER = "function Listtype_create"
+        val LIST_FUNCTION = Regex("function\\s+Listtype_create\\s*\\([^)]*\\)\\s*\\{([\\s\\S]*?)\\n\\}\\s*function\\s+ChangeTypecreate\\b")
+        val LIST_CASE_LABEL = Regex("case\\s+[\"']([A-Za-z0-9_-]{1,80})[\"']\\s*:")
+        val LIST_CASE_ASSIGNMENT = Regex("case\\s+[\"']([A-Za-z0-9_-]{1,80})[\"']\\s*:\\s*html\\s*=\\s*([\\s\\S]*?)\\s*;\\s*break\\s*;")
+        val SAFE_CATEGORY_TOKEN = Regex("[A-Za-z0-9_-]{1,80}")
+        const val CATEGORY_FIELD = "type_create"
+        const val LIST_FIELD = "list_type"
+        const val ALL_CATEGORY = "all"
         const val MAX_TRADE_QUANTITY = 999
     }
+
+    private data class CategoryContract(val id: String, val value: String, val label: String)
+    private data class MaterializedCatalog(
+        val html: String,
+        val categories: List<CategoryContract>,
+        val currentCategoryId: String,
+    )
 }
+
+class ExchangeContractException(message: String) : IllegalStateException(message)
+class ExchangeCategoryException(val candidateId: String) : IllegalArgumentException(candidateId)

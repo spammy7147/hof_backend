@@ -8,6 +8,8 @@ import app.spammy.hof.town.common.service.TownLocationResolver
 import app.spammy.hof.town.exchange.dto.*
 import app.spammy.hof.town.exchange.model.*
 import app.spammy.hof.town.exchange.parser.ExchangePageParser
+import app.spammy.hof.town.exchange.parser.ExchangeCategoryException
+import app.spammy.hof.town.exchange.parser.ExchangeContractException
 import org.springframework.stereotype.Service
 
 @Service
@@ -17,11 +19,16 @@ class ExchangeService(
     private val parser: ExchangePageParser,
 ) {
     fun load(accountId: Long, mode: ExchangeMode): ExchangeResponse = executor.loadProjected(accountId, url(mode)) { html, finalUrl, page ->
-        ExchangeResponse.from(parser.parse(mode, html, finalUrl, page))
+        ExchangeResponse.from(parse(mode, html, finalUrl, page))
     }
 
     fun loadCategory(accountId: Long, mode: ExchangeMode, candidateId: String): ExchangeResponse {
         if (mode == ExchangeMode.ANN) invalid("앤의 가게에는 품목 분류가 없습니다.")
+        if (mode in STATIC_CATALOG_MODES) return executor.loadProjected(accountId, url(mode)) { html, finalUrl, page ->
+            val snapshot = parse(mode, html, finalUrl, page, categoryCandidateId = candidateId)
+            if (snapshot.currentCategoryId != candidateId) invalid("HOF가 요청한 분류로 전환하지 않았습니다.")
+            ExchangeResponse.from(snapshot)
+        }
         return executor.loadResolvedSelectedOptionProjected(
             accountId = accountId,
             pageUrl = url(mode),
@@ -44,6 +51,7 @@ class ExchangeService(
 
     fun trade(accountId: Long, mode: ExchangeMode, request: ExchangeTradeRequest): ExchangeResponse {
         if (mode == ExchangeMode.ANN) invalid("앤의 가게 action을 선택해 주세요.")
+        if (mode in STATIC_CATALOG_MODES) return tradeStaticCatalog(accountId, mode, request)
         return executor.executeResolvedProjectedWithScalars(
             accountId = accountId,
             pageUrl = url(mode),
@@ -70,6 +78,35 @@ class ExchangeService(
                 )
             },
         ) { html, finalUrl, result, page -> ExchangeResponse.from(parser.parse(mode, html, finalUrl, page, result)) }
+    }
+
+    private fun tradeStaticCatalog(accountId: Long, mode: ExchangeMode, request: ExchangeTradeRequest): ExchangeResponse {
+        val categoryCandidateId = request.categoryCandidateId ?: invalid("현재 교환 분류를 선택해 주세요.")
+        return executor.executeMaterializedResolvedProjectedWithScalars(
+            accountId = accountId,
+            pageUrl = url(mode),
+            requiredScalarFields = setOf("ItemT", "amount"),
+            requiredSubmitField = tradeSubmit(mode),
+            requiredSyntheticFields = setOf("list_type"),
+            requiredReplacedFields = setOf("ItemNo"),
+            materialize = { html, finalUrl -> materialize(html, finalUrl, categoryCandidateId) },
+            resolve = { html, finalUrl, page ->
+                val snapshot = parse(mode, html, finalUrl, page, categoryCandidateId = categoryCandidateId)
+                validateCategory(snapshot, categoryCandidateId)
+                val row = snapshot.rows.singleOrNull { it.id == request.candidateId && it.selectable }
+                    ?: invalid("현재 선택할 수 없는 교환 품목입니다.")
+                validateQuantity(request.quantity, row)
+                TownActionRequest(
+                    snapshot.tradeActionId ?: invalid("현재 교환 양식을 찾지 못했습니다."),
+                    listOf(TownActionSelection(row.id)),
+                ) to mapOf(
+                    "ItemT" to (row.itemT ?: invalid("현재 품목의 HOF ItemT 계약을 안전하게 확인하지 못했습니다.")),
+                    "amount" to request.quantity.toString(),
+                )
+            },
+        ) { html, finalUrl, result, page ->
+            ExchangeResponse.from(parse(mode, html, finalUrl, page, result, categoryCandidateId))
+        }
     }
 
     fun exchangeLegacyGrade(accountId: Long, request: LegacyGradeExchangeRequest): ExchangeResponse = executor.executeProjected(
@@ -123,5 +160,32 @@ class ExchangeService(
     }).url
 
     private fun tradeSubmit(mode: ExchangeMode) = if (mode == ExchangeMode.LEGACY) "Trade" else "Create"
+    private fun parse(
+        mode: ExchangeMode,
+        html: String,
+        finalUrl: String,
+        page: ParsedTownPage,
+        result: ParsedTownResult? = null,
+        categoryCandidateId: String? = null,
+    ) = try {
+        parser.parse(mode, html, finalUrl, page, result, categoryCandidateId)
+    } catch (_: ExchangeCategoryException) {
+        invalid("현재 HOF에서 선택할 수 없는 교환 분류입니다.")
+    } catch (_: ExchangeContractException) {
+        throw ApiException(ErrorCode.HOF_REQUEST_FAILED, "현재 교환상점 응답 형식을 확인할 수 없습니다.")
+    }
+
+    private fun materialize(html: String, finalUrl: String, categoryCandidateId: String): String = try {
+        parser.materializeStaticCatalogHtml(html, finalUrl, categoryCandidateId)
+    } catch (_: ExchangeCategoryException) {
+        invalid("현재 HOF에서 선택할 수 없는 교환 분류입니다.")
+    } catch (_: ExchangeContractException) {
+        throw ApiException(ErrorCode.HOF_REQUEST_FAILED, "현재 교환상점 응답 형식을 확인할 수 없습니다.")
+    }
+
     private fun invalid(message: String): Nothing = throw ApiException(ErrorCode.INVALID_REQUEST, message)
+
+    private companion object {
+        val STATIC_CATALOG_MODES = setOf(ExchangeMode.EMBLEM, ExchangeMode.EVENT)
+    }
 }
