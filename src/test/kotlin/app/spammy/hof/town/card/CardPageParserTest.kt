@@ -57,6 +57,18 @@ class CardPageParserTest {
         assertNotNull(page.actionId)
     }
 
+    @Test fun `sell table header is not exposed as an unavailable card`() {
+        val html = fixture("sell.html").replace(
+            "<form method=\"post\" action=\"?menu=cardsell\"><table>",
+            "<form method=\"post\" action=\"?menu=cardsell\"><table><tr><th>가격</th><th>수</th><th>아이템</th></tr>",
+        )
+
+        val page = parser.parseSell(html, URL, forms.parse(html, URL))
+
+        assertEquals(2, page.cards.size)
+        assertTrue(page.cards.none { it.label.contains("가격") || !it.selectable })
+    }
+
     @Test fun `soul echo separates recipes owned materials and history`() {
         val html = fixture("soul-echo.html")
         val page = parser.parseSoulEcho(html, URL, forms.parse(html, URL))

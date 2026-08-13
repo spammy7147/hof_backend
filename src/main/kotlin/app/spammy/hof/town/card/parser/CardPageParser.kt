@@ -45,7 +45,7 @@ class CardPageParser {
 
     fun parseSell(html: String, finalUrl: String, page: ParsedTownPage, result: ParsedTownResult? = null): CardSellSnapshot {
         val form = actionForm(page, setOf("ItemSell", "Sell"), setOf("check_"))
-        val cards = candidates(form).map { candidate ->
+        val cards = candidates(form).filterNot { CARD_SELL_HEADER.matches(it.label) }.map { candidate ->
             val code = candidate.fieldName?.removePrefix("check_")
             val row = HofHtmlParser.parse(html, finalUrl).selectFirst("input[name=check_$code]")?.closest("tr")
             val cells = row?.select("td").orEmpty()
@@ -172,6 +172,7 @@ class CardPageParser {
         val RARITY = Regex("[★☆]+")
         val RESTRICTION = Regex("Base\\s*Only|Drop\\s*Only|Can'?t\\s*Mix|Bind", RegexOption.IGNORE_CASE)
         val CARD_VALUE = Regex("[x×]\\s*(\\d+)")
+        val CARD_SELL_HEADER = Regex("^(?:(?:가격|수|수량|아이템|카드)(?:\\s+|$))+$", RegexOption.IGNORE_CASE)
         val BLANK_OWNED = Regex("Blank\\s*Card\\s*[:：]\\s*([\\d,]+)\\s*장", RegexOption.IGNORE_CASE)
         val ECHO_REQUIREMENT = Regex("Soul\\s+Echo\\s*\\([^)]*\\)[^x×]{0,80}[x×]\\s*([\\d,]+)", RegexOption.IGNORE_CASE)
         val OWNED_ECHO = Regex("(Soul\\s+Echo\\s*\\([^)]*\\)[^x×]*)[x×]\\s*([\\d,]+)", RegexOption.IGNORE_CASE)
