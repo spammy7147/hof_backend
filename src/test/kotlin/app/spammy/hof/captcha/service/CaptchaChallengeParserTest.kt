@@ -72,6 +72,31 @@ class CaptchaChallengeParserTest {
     }
 
     @Test
+    fun readsRedPassAndActiveCountdownOnlyFromTheInternalMenu() {
+        val required = Jsoup.parse("""
+            <div id="menu2"><font color="red">통행증</font> Funds : ${'$'} 10 Time : 1/10</div>
+            <div id="menu"><font color="red">통행증</font></div>
+        """.trimIndent())
+        val active = Jsoup.parse("""
+            <div id="menu">Top | <span>0:26:09</span> | 전투 | 모험</div>
+            <p>통행증 이용 안내</p>
+        """.trimIndent())
+
+        assertEquals(VigilantePassState(required = true, remainingSeconds = null), parser.parseVigilantePassState(required))
+        assertTrue(parser.hasCaptchaSignal(required, required.text()))
+        assertEquals(VigilantePassState(required = false, remainingSeconds = 1_569), parser.parseVigilantePassState(active))
+        assertFalse(parser.hasCaptchaSignal(active, active.text()))
+    }
+
+    @Test
+    fun doesNotTreatRedPassOutsideTheInternalMenuAsTheMenuGate() {
+        val document = Jsoup.parse("<main><font color='red'>통행증</font></main><div id='menu'>Top · 전투</div>")
+
+        assertEquals(VigilantePassState(required = false, remainingSeconds = null), parser.parseVigilantePassState(document))
+        assertFalse(parser.hasCaptchaSignal(document, document.text()))
+    }
+
+    @Test
     fun buildsPoliceAndSimpleCaptchaUrlsFromTheSameInstallationDirectory() {
         val sourceUrl = "http://sic.zerosic.com/ZeroHOF/index.php?common=gb0"
 

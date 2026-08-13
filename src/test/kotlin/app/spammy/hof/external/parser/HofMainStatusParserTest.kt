@@ -31,6 +31,26 @@ class HofMainStatusParserTest {
     }
 
     @Test
+    fun readsAccountStatusOnlyFromMenu2AndIgnoresInternalMenuDecoys() {
+        val html = """
+            <div id="menu">Funds : ${'$'} 999 Time : 999/999 Work : Wrong Auction : Wrong</div>
+            <table id="menu2"><tr>
+              <td>공민이</td>
+              <td>Funds : ${'$'} 100<br>Work : Nothing</td>
+              <td>Time : 10/6000<br>Auction : Nothing</td>
+            </tr></table>
+        """.trimIndent()
+
+        val status = parser.parse(html)
+
+        assertEquals(100L, status.funds)
+        assertEquals(10, status.timeCurrent)
+        assertEquals(6000, status.timeMax)
+        assertEquals("Nothing", status.work)
+        assertEquals("Nothing", status.auction)
+    }
+
+    @Test
     fun parsesAnUntitledPlayerNameFromAHeaderTable() {
         val html = """
             <table id="menu2">

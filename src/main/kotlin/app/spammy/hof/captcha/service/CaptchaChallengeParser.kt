@@ -23,6 +23,12 @@ data class CaptchaChallengeMetadata(
     val imageCookies: Map<String, String>? = null,
 )
 
+/** `#menu`에 표시되는 자경단 통행증 상태다. */
+data class VigilantePassState(
+    val required: Boolean,
+    val remainingSeconds: Int?,
+)
+
 /**
  * HOF HTML에서 캡차·자경단 신호와 제출 form metadata를 추출하는 순수 parser다.
  *
@@ -39,9 +45,27 @@ class CaptchaChallengeParser {
     ): Boolean =
         CAPTCHA_SIGNAL.containsMatchIn(pageText) ||
             pageText.contains(VIGILANTE_PASS_PROMPT) ||
+            parseVigilantePassState(element).required ||
             hasRedVigilanteSignal(element) ||
             findCaptchaNamedInput(element) != null ||
             findChallengeImage(element) != null
+
+    /**
+     * 게임 내부 메뉴인 `#menu`만 대상으로 빨간 `통행증`과 인증 유효시간 `H:MM:SS`를 읽는다.
+     * 계정 정보 영역 `#menu2`나 본문의 같은 문자열은 통행증 상태에 영향을 주지 않는다.
+     */
+    fun parseVigilantePassState(document: Element): VigilantePassState {
+        val menu = document.selectFirst("#menu")
+            ?: return VigilantePassState(required = false, remainingSeconds = null)
+        val required = menu.getAllElements().any { element ->
+            element.ownText().contains(PASS_LABEL) &&
+                (hasRedCue(element) || element.parents().any(::hasRedCue))
+        }
+        val remainingSeconds = PASS_REMAINING.find(menu.text())?.destructured?.let { (hours, minutes, seconds) ->
+            hours.toIntOrNull()?.let { hour -> hour * 3_600 + minutes.toInt() * 60 + seconds.toInt() }
+        }
+        return VigilantePassState(required = required, remainingSeconds = remainingSeconds)
+    }
 
     /**
      * 현재 문서에서 가장 가능성이 높은 form을 골라 이미지, action, method와 input snapshot을 만든다.
@@ -84,7 +108,9 @@ class CaptchaChallengeParser {
     fun isVigilantePassGate(
         document: Element,
         pageText: String,
-    ): Boolean = isVigilantePassText(pageText) || hasRedVigilanteSignal(document)
+    ): Boolean = isVigilantePassText(pageText) ||
+        parseVigilantePassState(document).required ||
+        hasRedVigilanteSignal(document)
 
     /** 안내 문구가 축약된 화면도 `통행증`과 `자경단`이 함께 있으면 같은 gate로 처리한다. */
     fun isVigilantePassText(text: String): Boolean =
@@ -246,6 +272,7 @@ class CaptchaChallengeParser {
 
     companion object {
         const val VIGILANTE_PASS_PROMPT = "자경단에서 통행증을 발급받아주세요."
+        const val PASS_LABEL = "통행증"
         const val CAPTCHA_ENTRY_PROMPT = "이미지의 보안문자를 입력하세요."
         const val DEFAULT_ANSWER_FIELD = "captcha"
         const val SIMPLE_CAPTCHA_SCRIPT = "simple-php-captcha"
@@ -256,7 +283,7 @@ class CaptchaChallengeParser {
 
         private const val DEFAULT_SUBMIT_METHOD = "POST"
         private val CAPTCHA_SIGNAL = Regex(
-            """(captcha|캡차|통행증|인증\s*문자|자동\s*입력\s*방지)""",
+            """(captcha|캡차|인증\s*문자|자동\s*입력\s*방지)""",
             RegexOption.IGNORE_CASE,
         )
         private val CAPTCHA_PROMPT_ACTION = Regex("""(입력|적어|작성|enter|type)""", RegexOption.IGNORE_CASE)
@@ -268,6 +295,7 @@ class CaptchaChallengeParser {
         private val ANSWER_FIELD_MARKERS = listOf("captcha", "pass", "auth", "code")
         private val IMAGE_SOURCE_MARKERS = listOf("captcha", "pass", "auth")
         private val CAPTCHA_SUCCESS_MARKERS = listOf("통행증이 발급되었습니다", "정답입니다")
+        private val PASS_REMAINING = Regex("""(?<!\d)(\d{1,3}):([0-5]\d):([0-5]\d)(?!\d)""")
         private val TEXT_INPUT_TYPES = setOf("text", "password", "tel", "number", "search")
         private val RED_VALUES = setOf("red", "#f00", "#ff0000")
         private const val MAX_PROMPT_LENGTH = 160
