@@ -97,6 +97,15 @@ class CaptchaChallengeParserTest {
     }
 
     @Test
+    fun refreshesPassRemainingTimeFromEachHtmlResponse() {
+        val issued = Jsoup.parse("<div id='menu'>Top | 0:30:00 | 전투</div>")
+        val later = Jsoup.parse("<div id='menu'>Top | 0:26:09 | 전투</div>")
+
+        assertEquals(1_800, parser.parseVigilantePassState(issued).remainingSeconds)
+        assertEquals(1_569, parser.parseVigilantePassState(later).remainingSeconds)
+    }
+
+    @Test
     fun buildsPoliceAndSimpleCaptchaUrlsFromTheSameInstallationDirectory() {
         val sourceUrl = "http://sic.zerosic.com/ZeroHOF/index.php?common=gb0"
 
