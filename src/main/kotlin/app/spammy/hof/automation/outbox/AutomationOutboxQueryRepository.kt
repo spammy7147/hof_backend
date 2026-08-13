@@ -29,6 +29,13 @@ class AutomationOutboxQueryRepository(
         .where(automationOutboxEntity.id.eq(id))
         .fetchOne()
 
+    fun deleteUnpublishedForAccount(accountId: Long): Long = queryFactory.delete(automationOutboxEntity)
+        .where(
+            automationOutboxEntity.account.id.eq(accountId),
+            automationOutboxEntity.publishedAt.isNull,
+        )
+        .execute()
+
     fun consumed(eventId: String): Boolean = queryFactory.selectOne()
         .from(automationConsumedEventEntity)
         .where(automationConsumedEventEntity.eventId.eq(eventId))

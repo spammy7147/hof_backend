@@ -11,6 +11,8 @@ import app.spammy.hof.quest.service.QuestGatewayService
 import app.spammy.hof.town.fishing.service.FishingService
 import app.spammy.hof.town.home.service.HomeService
 import app.spammy.hof.town.raid.dto.RaidPubActionRequest
+import app.spammy.hof.town.raid.dto.RaidPubResponse
+import app.spammy.hof.town.raid.model.RaidAction
 import app.spammy.hof.town.raid.service.RaidPubService
 import java.io.IOException
 import org.springframework.stereotype.Service
@@ -142,14 +144,26 @@ class DefaultAutomationActionExecutor(
                             (contentProgress ?: error("Raid cycle service is unavailable.")).raidStarted(accountId, requireNotNull(payload.raidId))
                         app.spammy.hof.town.raid.model.RaidAction.REWARD ->
                             (contentProgress ?: error("Raid cycle service is unavailable.")).raidRewarded(accountId)
-                        app.spammy.hof.town.raid.model.RaidAction.RESET ->
-                            (contentProgress ?: error("Raid cycle service is unavailable.")).raidReset(accountId, requireNotNull(payload.raidId))
+                        app.spammy.hof.town.raid.model.RaidAction.REFRESH ->
+                            (contentProgress ?: error("Raid cycle service is unavailable.")).raidStatusRefreshed(accountId)
+                        app.spammy.hof.town.raid.model.RaidAction.RESET -> {
+                            val raidId = requireNotNull(payload.raidId)
+                            if (!response.provesSuccessfulReset(raidId)) {
+                                throw AmbiguousAutomationSubmissionException(
+                                    "Raid reset response did not prove that registration became available.",
+                                )
+                            }
+                            (contentProgress ?: error("Raid cycle service is unavailable."))
+                                .raidReset(accountId, raidId)
+                            workLifecycle.completeRaidCycle(accountId, action.entryId)
+                        }
                         else -> Unit
                     }
                     TypedAutomationExecution.Completed
                 }
                 is StoredTypedActionPayload.RaidCycleAbort -> {
                     (contentProgress ?: error("Raid cycle service is unavailable.")).raidClosed(accountId, payload.raidId)
+                    workLifecycle.completeRaidCycle(accountId, action.entryId)
                     TypedAutomationExecution.Completed
                 }
             }
@@ -224,6 +238,13 @@ class DefaultAutomationActionExecutor(
     private fun Throwable.findApiException(): ApiException? =
         generateSequence(this) { it.cause }.filterIsInstance<ApiException>().firstOrNull()
 
+    private fun RaidPubResponse.provesSuccessfulReset(raidId: String): Boolean {
+        val resultText = result?.messages.orEmpty().joinToString(" ")
+        if (RAID_RESET_SUCCEEDED.containsMatchIn(resultText)) return true
+        val raid = raids.singleOrNull { it.id == raidId } ?: return false
+        return !raid.joined && RaidAction.REGISTER in raid.actions
+    }
+
     private fun StoredTypedActionPayload.battleRequestOrNull(): RunBattleRequest? = when (this) {
         is StoredTypedActionPayload.QuestBattle -> battleRequest
         is StoredTypedActionPayload.BattleMap -> battleRequest
@@ -262,5 +283,9 @@ class DefaultAutomationActionExecutor(
     }
 
     private data class TerminalProof(val resultIdentity: String, val outcomes: List<BattleAutomationRoundOutcome>)
+
+    private companion object {
+        val RAID_RESET_SUCCEEDED = Regex("전투가\\s*신청\\s*가능\\s*상태로\\s*바뀌었습니다\\.?")
+    }
 
 }

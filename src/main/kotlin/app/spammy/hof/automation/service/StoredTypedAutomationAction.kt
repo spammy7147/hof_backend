@@ -91,6 +91,7 @@ sealed interface StoredTypedActionPayload {
     data class RaidTown(
         val action: app.spammy.hof.town.raid.model.RaidAction,
         val raidId: String? = null,
+        val targetRaidId: String? = raidId,
         override val display: StoredActionDisplay? = null,
     ) : StoredTypedActionPayload
     data class RaidCycleAbort(

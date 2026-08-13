@@ -44,7 +44,7 @@ class DefaultAutomationAmbiguousActionReconciler(
         )
         is StoredTypedActionPayload.FishingTown -> reconcileFishing(accountId, payload)
         is StoredTypedActionPayload.RaidTown -> reconcileRaid(accountId, action.entryId, payload)
-        is StoredTypedActionPayload.RaidCycleAbort -> AmbiguousActionResolution.Applied()
+        is StoredTypedActionPayload.RaidCycleAbort -> reconcileRaidAbort(accountId, action.entryId, payload)
     }
 
     private fun reconcileHomeQuest(accountId: Long, payload: StoredTypedActionPayload.HomeQuest): AmbiguousActionResolution {
@@ -100,15 +100,37 @@ class DefaultAutomationAmbiguousActionReconciler(
             ) {
                 progress.raidRewarded(accountId); AmbiguousActionResolution.Applied()
             } else AmbiguousActionResolution.Resubmit
+            RaidAction.REFRESH -> {
+                progress.raidStatusRefreshed(accountId)
+                AmbiguousActionResolution.Applied()
+            }
             RaidAction.RESET -> {
                 val id = requireNotNull(payload.raidId)
                 val raid = latest.raids.singleOrNull { it.id == id }
-                if (raid == null || RaidAction.RESET !in raid.actions) {
-                    progress.raidReset(accountId, id); AmbiguousActionResolution.Applied()
-                } else AmbiguousActionResolution.Resubmit
+                if (raid != null && !raid.joined && RaidAction.REGISTER in raid.actions) {
+                    progress.raidReset(accountId, id)
+                    workLifecycle.completeRaidCycle(accountId, entryId)
+                    AmbiguousActionResolution.Applied()
+                } else if (raid != null && RaidAction.RESET in raid.actions) {
+                    AmbiguousActionResolution.Resubmit
+                } else {
+                    AmbiguousActionResolution.VerifyLater(retryAt(), "레이드 리셋 결과를 아직 확정할 수 없습니다.")
+                }
             }
             else -> AmbiguousActionResolution.VerifyLater(retryAt(), "허용하지 않는 레이드 자동 행동입니다.")
         }
+    }
+
+    private fun reconcileRaidAbort(
+        accountId: Long,
+        entryId: Long,
+        payload: StoredTypedActionPayload.RaidCycleAbort,
+    ): AmbiguousActionResolution {
+        val progress = contentProgress
+            ?: return AmbiguousActionResolution.VerifyLater(retryAt(), "레이드 사이클 저장 연결을 기다립니다.")
+        progress.raidClosed(accountId, payload.raidId)
+        workLifecycle.completeRaidCycle(accountId, entryId)
+        return AmbiguousActionResolution.Applied()
     }
 
     private companion object {

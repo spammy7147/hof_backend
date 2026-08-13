@@ -579,9 +579,6 @@ class UnifiedAutomationService(
         if (typedAutomationQueryRepository.findEntries(accountId).none { it.enabled }) {
             invalid("활성화된 자동화 항목이 없습니다.")
         }
-        if (typedAutomationQueryRepository.findRuntimeState(accountId)?.lifecycleStatus == TypedAutomationLifecycle.STOPPED) {
-            invalid("중지된 자동화는 명시적으로 재개해 주세요.")
-        }
         typedLifecycleBridge.start(accountId, "USER_START")
         return buildTypedAggregate(accountId)
     }

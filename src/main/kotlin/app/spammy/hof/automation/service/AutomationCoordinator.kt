@@ -115,7 +115,12 @@ class AutomationCoordinator(
                 }
                 is HandlerEvaluation.Unavailable -> {
                     if (earliest == null || evaluation.nextRunAt < earliest) earliest = evaluation.nextRunAt
-                    trace += AutomationEvaluationTrace(sequence, entry.id, entry.type, AutomationDecisionOutcome.WAITING, evaluation.reasonCode, evaluation.message, evaluation.nextRunAt)
+                    val detail = entry.waitingTrace(evaluation)
+                    trace += AutomationEvaluationTrace(
+                        sequence, entry.id, entry.type, AutomationDecisionOutcome.WAITING,
+                        evaluation.reasonCode, detail?.message ?: evaluation.message, evaluation.nextRunAt,
+                        detail?.actionKind, detail?.targetKey, detail?.targetName, detail?.presetId,
+                    )
                 }
                 HandlerEvaluation.Skipped -> {
                     trace += AutomationEvaluationTrace(sequence, entry.id, entry.type, AutomationDecisionOutcome.SKIPPED, HandlerEvaluation.Skipped.reasonCode, HandlerEvaluation.Skipped.message)
@@ -125,6 +130,56 @@ class AutomationCoordinator(
         return earliest?.let { AutomationCoordination.Unavailable(it, warnings, trace.toList()) }
             ?: AutomationCoordination.Idle(warnings, trace.toList())
     }
+}
+
+private fun AutomationCoordinatorEntry.waitingTrace(evaluation: HandlerEvaluation.Unavailable): SelectedActionTrace? {
+    fishing?.let { snapshot ->
+        val observations = listOfNotNull(
+            snapshot.state.primaryAction.name.let { "현재 동작 $it" },
+            snapshot.state.remainingCasts?.let { "남은 낚시 ${it}회" },
+            snapshot.state.escapeSeconds?.let { "도망까지 ${it}초" },
+            snapshot.state.lastOutcome?.name?.let { "직전 결과 $it" },
+        ).joinToString(" · ")
+        return SelectedActionTrace(
+            actionKind = "WAIT",
+            message = "${evaluation.message}${if (observations.isBlank()) "" else " · $observations"}",
+        )
+    }
+    union?.let { snapshot ->
+        val target = snapshot.settings.sortedBy(UnionAutomationSetting::executionOrder).firstOrNull()
+        return SelectedActionTrace(
+            actionKind = "WAIT",
+            message = "${evaluation.message} · 설정 맵 ${snapshot.settings.size}개 · 현재 순환 기준 ${snapshot.currentTargetKey ?: "첫 대상"}",
+            targetKey = target?.let { "${it.categoryId}/${it.mapCode}" },
+            presetId = target?.presetId,
+        )
+    }
+    val snapshot = raid ?: return null
+    val cycle = snapshot.openCycle
+    val targetId = cycle?.raidId ?: snapshot.currentTargetKey
+    val raid = snapshot.pub.raids.singleOrNull { it.id == targetId }
+    val configured = snapshot.targets.singleOrNull { it.raidId == targetId }
+    val phase = when (evaluation.reasonCode) {
+        "RAID_WAITING_TO_START" -> "출발 대기"
+        "RAID_BATTLE_COOLDOWN" -> "반복 전투 쿨다운"
+        "RAID_BATTLE_TARGET_MISSING" -> "전투 맵 확인"
+        "RAID_RESET_PENDING" -> "리셋 가능 상태 확인"
+        "RAID_NEXT_CHECK" -> if (cycle?.status == app.spammy.hof.automation.entity.RaidAutomationCycleStatus.REWARD_PENDING) "보상 후 상태 갱신 대기" else "다음 상태 확인 대기"
+        "RAID_SHARED_COOLDOWN" -> "공유 쿨다운"
+        else -> "레이드 상태 확인"
+    }
+    val observations = listOfNotNull(
+        raid?.status?.name?.let { "상태 $it" },
+        raid?.statusText?.let { "HOF 표시 '$it'" },
+        raid?.waitSeconds?.let { "남은 대기 ${it}초" },
+    ).joinToString(" · ")
+    return SelectedActionTrace(
+        actionKind = "WAIT",
+        message = "$phase 단계 · ${evaluation.message}${if (observations.isBlank()) "" else " · $observations"}",
+        targetKey = targetId,
+        targetName = raid?.name ?: configured?.name,
+        presetId = configured?.presetId,
+    )
 }
 
 private data class SelectedActionTrace(
@@ -177,16 +232,22 @@ private fun PreparedAutomationAction.selectionTrace(): SelectedActionTrace = whe
         )
     }
     is FishingTownAutomationAction -> SelectedActionTrace(
-        action.name, "낚시 화면의 다음 동작이 ${action.name}입니다.${observedRemainingCasts?.let { " · 남은 낚시 ${it}회" } ?: ""}",
+        action.name,
+        when (action) {
+            app.spammy.hof.town.fishing.model.FishingAction.START -> "낚시 1회 사이클의 시작 단계입니다. 시작 다음에는 반드시 잡기(CATCH)를 실행합니다."
+            app.spammy.hof.town.fishing.model.FishingAction.CATCH -> "낚시 1회 사이클의 잡기 단계입니다. 잡기 응답 이후 물고기 획득 또는 전투 발생 결과를 확인합니다."
+            else -> "낚시 화면의 다음 동작이 ${action.name}입니다."
+        } + (observedRemainingCasts?.let { " · 실행 전 남은 낚시 ${it}회" } ?: ""),
     )
     is RaidTownAutomationAction -> SelectedActionTrace(
         action.name, when (action) {
             app.spammy.hof.town.raid.model.RaidAction.REGISTER -> "공유 쿨다운이 끝나 순환 차례의 레이드에 파티 등록을 시작합니다."
             app.spammy.hof.town.raid.model.RaidAction.START -> "파티 모집 대기가 끝나 전투 시작이 활성화되었습니다."
             app.spammy.hof.town.raid.model.RaidAction.REWARD -> "레이드 완료를 확인했고 30분 보상 확인 시간 안에 보상을 수령합니다."
-            app.spammy.hof.town.raid.model.RaidAction.RESET -> "보상 수령을 확인해 다음 사이클을 위한 레이드 초기화를 진행합니다."
+            app.spammy.hof.town.raid.model.RaidAction.REFRESH -> "보상 수령 후 진행 중인 레이드의 리셋 가능 상태를 새로 확인합니다."
+            app.spammy.hof.town.raid.model.RaidAction.RESET -> "진행 중인 레이드가 '보상 확인 종료(리셋 가능)' 상태여서 다음 사이클을 위한 초기화를 진행합니다."
             else -> "레이드 상태에서 실행 가능한 ${action.name} 동작을 선택했습니다."
-        }, raidId,
+        }, targetRaidId ?: raidId, raidName,
     )
     is RaidCycleAbortAutomationAction -> SelectedActionTrace(
         "CYCLE_ABORT", "레이드가 CLOSED 상태여서 현재 사이클을 중단으로 기록합니다.", raidId,

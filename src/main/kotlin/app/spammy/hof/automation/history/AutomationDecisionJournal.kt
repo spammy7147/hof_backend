@@ -14,6 +14,7 @@ data class AutomationActionTrace(
     val entryId: Long? = null, val type: AutomationType? = null, val actionKind: String? = null,
     val targetKey: String? = null, val targetName: String? = null,
     val presetId: Long? = null, val presetName: String? = null,
+    val nextRunAt: Instant? = null,
 )
 data class AutomationHistoryQuery(
     val beforeCycleId: Long? = null, val limit: Int = 20, val type: AutomationType? = null,
@@ -33,6 +34,7 @@ data class AutomationHistoryPage(val cycles: List<AutomationHistoryCycle>, val n
 
 interface AutomationDecisionJournal {
     fun appendDecision(accountId: Long, decision: AutomationCoordination): Long
+    fun appendPreparedActionAttempt(accountId: Long, result: AutomationActionTrace): Long
     fun appendActionResult(cycleId: Long, result: AutomationActionTrace)
     fun page(accountId: Long, query: AutomationHistoryQuery): AutomationHistoryPage
 }
@@ -66,18 +68,29 @@ class JpaAutomationDecisionJournal(private val entityManager: EntityManager, pri
     }
 
     @Transactional
+    override fun appendPreparedActionAttempt(accountId: Long, result: AutomationActionTrace): Long {
+        val now = timeProvider.now()
+        val cycle = AutomationDecisionCycleEntity(
+            accountId = accountId,
+            result = AutomationDecisionResult.ACTION_SELECTED,
+            selectedEntryId = result.entryId,
+            startedAt = now,
+            finishedAt = now,
+        )
+        entityManager.persist(cycle)
+        entityManager.persist(result.toEntity(cycle, 0, accountId, now))
+        entityManager.flush()
+        return cycle.id
+    }
+
+    @Transactional
     override fun appendActionResult(cycleId: Long, result: AutomationActionTrace) {
         val cycle = entityManager.find(AutomationDecisionCycleEntity::class.java, cycleId)
             ?: throw IllegalArgumentException("Automation decision cycle not found.")
         val next = entityManager.createQuery(
             "select coalesce(max(e.sequence), -1) + 1 from AutomationDecisionEventEntity e where e.cycle.id = :cycleId", java.lang.Integer::class.java,
         ).setParameter("cycleId", cycleId).singleResult.toInt()
-        entityManager.persist(AutomationDecisionEventEntity(
-            cycle = cycle, sequence = next, entryId = result.entryId, type = result.type, kind = result.kind,
-            reasonCode = result.reasonCode, message = result.message, targetKey = result.targetKey,
-            targetName = result.targetName, actionKind = result.actionKind, presetId = result.presetId,
-            presetName = result.presetName ?: presetName(cycle.accountId, result.presetId), occurredAt = timeProvider.now(),
-        ))
+        entityManager.persist(result.toEntity(cycle, next, cycle.accountId, timeProvider.now()))
     }
 
     @Transactional(readOnly = true)
@@ -116,4 +129,26 @@ class JpaAutomationDecisionJournal(private val entityManager: EntityManager, pri
     private fun presetName(accountId: Long, presetId: Long?): String? = presetId?.let {
         entityManager.find(PartyPresetEntity::class.java, it)?.takeIf { preset -> preset.account.id == accountId }?.name
     }
+
+    private fun AutomationActionTrace.toEntity(
+        cycle: AutomationDecisionCycleEntity,
+        sequence: Int,
+        accountId: Long,
+        occurredAt: Instant,
+    ) = AutomationDecisionEventEntity(
+        cycle = cycle,
+        sequence = sequence,
+        entryId = entryId,
+        type = type,
+        kind = kind,
+        reasonCode = reasonCode,
+        message = message,
+        targetKey = targetKey,
+        targetName = targetName,
+        actionKind = actionKind,
+        presetId = presetId,
+        presetName = presetName ?: presetName(accountId, presetId),
+        nextRunAt = nextRunAt,
+        occurredAt = occurredAt,
+    )
 }

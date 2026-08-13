@@ -8,6 +8,7 @@ import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.repository.AdventureDailyPreflightQueryRepository
 import app.spammy.hof.automation.repository.AutomationEntryCommandRepository
+import app.spammy.hof.automation.repository.AutomationWorkSessionQueryRepository
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import app.spammy.hof.automation.service.TypedAutomationLifecycleBridge
 import app.spammy.hof.common.persistence.QueryDslConfig
@@ -43,6 +44,7 @@ import tools.jackson.module.kotlin.jacksonObjectMapper
     AutomationOutboxService::class,
     TypedAutomationQueryRepository::class,
     AdventureDailyPreflightQueryRepository::class,
+    AutomationWorkSessionQueryRepository::class,
     TypedAutomationLifecycleBridge::class,
     AutomationOutboxPublishMarker::class,
     AutomationOutboxPublisher::class,

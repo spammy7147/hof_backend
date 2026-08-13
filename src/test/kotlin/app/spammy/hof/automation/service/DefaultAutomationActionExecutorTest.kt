@@ -12,6 +12,11 @@ import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.quest.model.QuestMissionType
 import app.spammy.hof.quest.service.QuestGatewayService
+import app.spammy.hof.town.raid.dto.RaidPubActionRequest
+import app.spammy.hof.town.raid.dto.RaidPubResponse
+import app.spammy.hof.town.raid.model.RaidAction
+import app.spammy.hof.town.raid.service.RaidPubService
+import app.spammy.hof.town.fishing.dto.TownActionResultResponse
 import java.io.IOException
 import java.time.Instant
 import java.time.LocalDate
@@ -59,6 +64,127 @@ class DefaultAutomationActionExecutorTest {
             "quest-accept-1",
             QuestAction.Accept("Q-1", "accept-no"),
         )
+    }
+
+    @Test
+    fun `raid reset closes both the persisted cycle and its work session`() {
+        val raidPub = Mockito.mock(RaidPubService::class.java)
+        val progress = Mockito.mock(AutomationContentProgressService::class.java)
+        val raidExecutor = DefaultAutomationActionExecutor(
+            questGateway,
+            battleRun,
+            questHandler,
+            battleHandler,
+            reconciler,
+            HofSessionRecoveryExecutor(HofSessionRecoveryService(accountService)),
+            executionSignals,
+            workLifecycle,
+            raidPubService = raidPub,
+            contentProgress = progress,
+        )
+        Mockito.`when`(raidPub.action(7L, RaidPubActionRequest(RaidAction.RESET, "RaidGoblin")))
+            .thenReturn(RaidPubResponse(
+                emptyList(), false, false, null, null, emptySet(),
+                TownActionResultResponse("SUCCESS", listOf("전투가 신청 가능 상태로 바뀌었습니다."), emptyList()),
+            ))
+        val action = StoredTypedAutomationAction(
+            entryId = 13L,
+            executionIdentity = "raid-reset-1",
+            payload = StoredTypedActionPayload.RaidTown(RaidAction.RESET, "RaidGoblin"),
+        )
+
+        assertEquals(TypedAutomationExecution.Completed, raidExecutor.execute(7L, action))
+
+        Mockito.verify(progress).raidReset(7L, "RaidGoblin")
+        Mockito.verify(workLifecycle).completeRaidCycle(7L, 13L)
+    }
+
+    @Test
+    fun `raid reset without a success message or registerable target remains ambiguous`() {
+        val raidPub = Mockito.mock(RaidPubService::class.java)
+        val progress = Mockito.mock(AutomationContentProgressService::class.java)
+        val raidExecutor = DefaultAutomationActionExecutor(
+            questGateway,
+            battleRun,
+            questHandler,
+            battleHandler,
+            reconciler,
+            HofSessionRecoveryExecutor(HofSessionRecoveryService(accountService)),
+            executionSignals,
+            workLifecycle,
+            raidPubService = raidPub,
+            contentProgress = progress,
+        )
+        Mockito.`when`(raidPub.action(7L, RaidPubActionRequest(RaidAction.RESET, "RaidGoblin")))
+            .thenReturn(RaidPubResponse(emptyList(), false, false, null, null, emptySet(), null))
+        val action = StoredTypedAutomationAction(
+            entryId = 13L,
+            executionIdentity = "raid-reset-unproven",
+            payload = StoredTypedActionPayload.RaidTown(RaidAction.RESET, "RaidGoblin"),
+        )
+
+        assertFailsWith<AmbiguousAutomationSubmissionException> {
+            raidExecutor.execute(7L, action)
+        }
+
+        Mockito.verifyNoInteractions(progress)
+        Mockito.verify(workLifecycle, Mockito.never()).completeRaidCycle(Mockito.anyLong(), Mockito.anyLong())
+    }
+
+    @Test
+    fun `raid refresh schedules the next status check without closing the cycle`() {
+        val raidPub = Mockito.mock(RaidPubService::class.java)
+        val progress = Mockito.mock(AutomationContentProgressService::class.java)
+        val raidExecutor = DefaultAutomationActionExecutor(
+            questGateway,
+            battleRun,
+            questHandler,
+            battleHandler,
+            reconciler,
+            HofSessionRecoveryExecutor(HofSessionRecoveryService(accountService)),
+            executionSignals,
+            workLifecycle,
+            raidPubService = raidPub,
+            contentProgress = progress,
+        )
+        Mockito.`when`(raidPub.action(7L, RaidPubActionRequest(RaidAction.REFRESH, null)))
+            .thenReturn(RaidPubResponse(emptyList(), false, false, null, null, emptySet(), null))
+        val action = StoredTypedAutomationAction(
+            entryId = 13L,
+            executionIdentity = "raid-refresh-1",
+            payload = StoredTypedActionPayload.RaidTown(RaidAction.REFRESH, null),
+        )
+
+        assertEquals(TypedAutomationExecution.Completed, raidExecutor.execute(7L, action))
+
+        Mockito.verify(progress).raidStatusRefreshed(7L)
+        Mockito.verify(workLifecycle, Mockito.never()).completeRaidCycle(Mockito.anyLong(), Mockito.anyLong())
+    }
+
+    @Test
+    fun `closed raid abort closes both the persisted cycle and its work session`() {
+        val progress = Mockito.mock(AutomationContentProgressService::class.java)
+        val raidExecutor = DefaultAutomationActionExecutor(
+            questGateway,
+            battleRun,
+            questHandler,
+            battleHandler,
+            reconciler,
+            HofSessionRecoveryExecutor(HofSessionRecoveryService(accountService)),
+            executionSignals,
+            workLifecycle,
+            contentProgress = progress,
+        )
+        val action = StoredTypedAutomationAction(
+            entryId = 13L,
+            executionIdentity = "raid-abort-1",
+            payload = StoredTypedActionPayload.RaidCycleAbort("RaidGoblin"),
+        )
+
+        assertEquals(TypedAutomationExecution.Completed, raidExecutor.execute(7L, action))
+
+        Mockito.verify(progress).raidClosed(7L, "RaidGoblin")
+        Mockito.verify(workLifecycle).completeRaidCycle(7L, 13L)
     }
 
     @Test

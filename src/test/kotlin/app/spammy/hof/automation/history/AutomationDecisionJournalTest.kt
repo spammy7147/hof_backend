@@ -56,6 +56,37 @@ class AutomationDecisionJournalTest {
         assertNull(journal.page(second.id, AutomationHistoryQuery()).cycles.singleOrNull())
     }
 
+    @Test
+    fun `stores a resumed prepared action as a separately visible attempt`() {
+        val account = account("history-resume")
+        val raid = entry(account, AutomationType.RAID, 0)
+        entityManager.flush()
+        val journal = JpaAutomationDecisionJournal(entityManager, TimeProvider { now })
+
+        journal.appendPreparedActionAttempt(account.id, AutomationActionTrace(
+            kind = AutomationHistoryEventKind.WAITING,
+            reasonCode = "AMBIGUOUS_RESULT_VERIFY",
+            message = "전투 시작 단계의 적용 여부를 재확인합니다.",
+            entryId = raid.id,
+            type = AutomationType.RAID,
+            actionKind = "START",
+            targetKey = "Raid001",
+            targetName = "고블린 전투 마차",
+            nextRunAt = now.plusSeconds(10),
+        ))
+        entityManager.flush(); entityManager.clear()
+
+        val cycle = journal.page(account.id, AutomationHistoryQuery()).cycles.single()
+        assertEquals(AutomationDecisionResult.ACTION_SELECTED, cycle.result)
+        assertEquals(raid.id, cycle.selectedEntryId)
+        with(cycle.events.single()) {
+            assertEquals("AMBIGUOUS_RESULT_VERIFY", reasonCode)
+            assertEquals("START", actionKind)
+            assertEquals("고블린 전투 마차", targetName)
+            assertEquals(now.plusSeconds(10), nextRunAt)
+        }
+    }
+
     private fun account(login: String) = accounts.save(HofAccountEntity(
         loginId = login, encryptedPassword = "encrypted", createdAt = now,
     ))

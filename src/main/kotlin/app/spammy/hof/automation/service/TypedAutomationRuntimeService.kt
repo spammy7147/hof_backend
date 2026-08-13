@@ -31,6 +31,13 @@ class TypedAutomationRuntimeService(
     fun isRunning(accountId: Long): Boolean =
         queryRepository.findRuntimeState(accountId)?.lifecycleStatus in setOf(TypedAutomationLifecycle.RUNNING, TypedAutomationLifecycle.DRAINING)
 
+    @Transactional(readOnly = true, propagation = Propagation.REQUIRES_NEW)
+    fun isCompletingCurrentAction(accountId: Long): Boolean =
+        queryRepository.findRuntimeState(accountId)?.let { state ->
+            state.lifecycleStatus == TypedAutomationLifecycle.DRAINING &&
+                state.requestedLifecycle == TypedAutomationLifecycle.PAUSED
+        } == true
+
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun start(accountId: Long): Boolean {
         return lifecycleBridge.start(accountId, "TYPED_AUTOMATION_STARTED")
@@ -269,7 +276,8 @@ class TypedAutomationRuntimeService(
         state.lastError = null
         state.stopActionId = null
         state.updatedAt = now
-        outbox.enqueue(accountId, reason)
+        val paused = completeRequestedLifecycle(state, now)
+        if (!paused) outbox.enqueue(accountId, reason)
         return true
     }
 
@@ -279,7 +287,9 @@ class TypedAutomationRuntimeService(
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun succeedAndEnqueueWake(accountId: Long, token: String, actionId: Long, reason: String): Boolean {
         val succeeded = finish(accountId, token, actionId, TypedAutomationActionStatus.SUCCEEDED, null)
-        if (succeeded) outbox.enqueue(accountId, reason)
+        if (succeeded && queryRepository.findRuntimeState(accountId)?.lifecycleStatus == TypedAutomationLifecycle.RUNNING) {
+            outbox.enqueue(accountId, reason)
+        }
         return succeeded
     }
 
@@ -423,7 +433,9 @@ class TypedAutomationRuntimeService(
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun releaseAndEnqueueWake(accountId: Long, token: String, reason: String): Boolean {
         val released = releaseCore(accountId, token, null, null, emptyList())
-        if (released) outbox.enqueue(accountId, reason)
+        if (released && queryRepository.findRuntimeState(accountId)?.lifecycleStatus == TypedAutomationLifecycle.RUNNING) {
+            outbox.enqueue(accountId, reason)
+        }
         return released
     }
 
@@ -438,13 +450,31 @@ class TypedAutomationRuntimeService(
             "nextRunAt and waitReason must either both be null or both be present."
         }
         val state = fencedState(accountId, token) ?: return false
+        val now = timeProvider.now()
         state.leaseToken = null; state.leaseUntil = null; state.nextAttemptAt = nextRunAt; state.waitReason = waitReason
-        state.updatedAt = timeProvider.now()
+        state.updatedAt = now
         state.warningText = warnings.takeIf { it.isNotEmpty() }?.joinToString("\n") { sanitizeDiagnostic(it) }
         state.lastError = null
         state.retryAttempt = 0
         state.stopReason = null
         state.stopActionId = null
+        completeRequestedLifecycle(state, now)
+        return true
+    }
+
+    private fun completeRequestedLifecycle(state: TypedAutomationRuntimeStateEntity, now: Instant): Boolean {
+        val requested = state.requestedLifecycle ?: return false
+        if (state.lifecycleStatus != TypedAutomationLifecycle.DRAINING) return false
+        state.lifecycleStatus = requested
+        state.requestedLifecycle = null
+        state.nextAttemptAt = null
+        state.waitReason = null
+        state.leaseToken = null
+        state.leaseUntil = null
+        if (requested == TypedAutomationLifecycle.STOPPED) {
+            state.stopReason = AutomationStopReason.MANUAL_STOP.name
+        }
+        state.updatedAt = now
         return true
     }
 
@@ -478,6 +508,7 @@ class TypedAutomationRuntimeService(
         state.warningText = null; state.lastError = null
         state.stopReason = null
         state.stopActionId = null
+        completeRequestedLifecycle(state, now)
         return true
     }
 

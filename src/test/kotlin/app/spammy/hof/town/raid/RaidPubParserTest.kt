@@ -1,6 +1,7 @@
 package app.spammy.hof.town.raid
 
 import app.spammy.hof.town.common.parser.HofFormParser
+import app.spammy.hof.town.common.model.ParsedTownResult
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.CookieQueryRepository
@@ -96,6 +97,18 @@ class RaidPubParserTest {
         assertTrue(RaidAction.RESET in page.raids.first().actions)
     }
 
+    @Test fun `레이드 리셋 성공의 초록색 문구를 결과 메시지로 보존한다`() {
+        val html = fixture().replace(
+            "<input type=\"submit\" name=\"leave_goblin\" value=\"파티에서 나온다\">",
+            "<input type=\"submit\" name=\"leave_goblin\" value=\"파티에서 나온다\">" +
+                "<font color=\"green\">전투가 신청 가능 상태로 바뀌었습니다.</font>",
+        )
+
+        val page = parser.parse(html, URL, forms.parse(html, URL), ParsedTownResult(emptyList(), emptyList()))
+
+        assertTrue(page.result?.messages.orEmpty().contains("전투가 신청 가능 상태로 바뀌었습니다."))
+    }
+
     @Test fun `같은 submit control이 중복 관측되면 action을 노출하지 않는다`() {
         val duplicate = "<input type=\"submit\" name=\"register_goblin\" value=\"등록한다\">"
         val html = fixture().replace(duplicate, duplicate + duplicate)
@@ -162,7 +175,7 @@ class RaidPubParserTest {
         assertEquals(1, context.requests().size)
     }
 
-    @Test fun `완료 후 보상 공유 대기가 시작된 경우에만 레이드 리셋을 제출한다`() {
+    @Test fun `보상 공유 대기만으로는 레이드 리셋을 제출하지 않는다`() {
         val completed = fixture()
             .replace("현재 상태 : 418초 후 출발", "현재 상태 : 보상 확인 시간 (남은 시간 앞으로 0시간 26분 43초)")
             .replace("- [다른 사람]", "- [《테스트 길드》현재사용자]")
@@ -176,9 +189,11 @@ class RaidPubParserTest {
         }
         assertEquals(1, blocked.requests().size)
 
-        val allowed = service(completed, completed)
-        allowed.service.action(7L, RaidPubActionRequest(RaidAction.RESET, "RaidSiren"))
-        assertEquals(2, allowed.requests().size)
+        val sharedCooldown = service(completed)
+        assertFailsWith<app.spammy.hof.common.error.ApiException> {
+            sharedCooldown.service.action(7L, RaidPubActionRequest(RaidAction.RESET, "RaidSiren"))
+        }
+        assertEquals(1, sharedCooldown.requests().size)
     }
 
     @Test fun `보상 확인이 종료되어 리셋 가능하면 공유 대기 표기가 없어도 실제 레이드 리셋을 제출한다`() {

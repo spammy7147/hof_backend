@@ -53,6 +53,16 @@ class FishingAutomationHandler : AutomationHandler<FishingAutomationSnapshot> {
                 BattleAutomationActionSource.FISHING_AUTOMATION, party, target.name,
             ))
         }
+        if (
+            context.state.primaryAction == FishingPrimaryAction.START &&
+            context.state.lastOutcome == app.spammy.hof.town.fishing.model.FishingOutcome.STARTED
+        ) {
+            return HandlerEvaluation.Unavailable(
+                context.now.plusSeconds(5),
+                "FISHING_CATCH_TRANSITION_PENDING",
+                "낚시 시작은 처리됐지만 잡기 동작이 아직 표시되지 않아 상태 전환을 다시 확인합니다.",
+            )
+        }
         return when (context.state.primaryAction) {
             FishingPrimaryAction.START -> HandlerEvaluation.Runnable(FishingTownAutomationAction(context.accountId, FishingAction.START, context.state.primaryAction, context.state.remainingCasts))
             FishingPrimaryAction.CATCH -> HandlerEvaluation.Runnable(FishingTownAutomationAction(context.accountId, FishingAction.CATCH, context.state.primaryAction, context.state.remainingCasts))

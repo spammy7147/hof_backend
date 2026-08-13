@@ -256,6 +256,65 @@ class AutomationWorkSessionServiceTest {
     }
 
     @Test
+    fun `raid battle continues the work session opened by registration`() {
+        val raidEntry = AutomationEntryEntity(14, account, AutomationType.RAID, 4, true, now, now)
+        val session = AutomationWorkSessionEntity(
+            id = 29,
+            account = account,
+            entry = raidEntry,
+            workType = AutomationWorkType.RAID,
+            targetKey = "RaidGoblin",
+            status = AutomationWorkStatus.RUNNING,
+            configVersion = raidEntry.updatedAt.toString(),
+            createdAt = now,
+            updatedAt = now,
+        )
+        val action = BattleMapAutomationAction(
+            accountId = 7,
+            progressDate = java.time.LocalDate.parse("2026-07-23"),
+            categoryId = "raid",
+            mapCode = "raid001",
+            presetMode = PresetSelectionMode.PRIMARY,
+            presetId = 3,
+            battleCount = 1,
+            executionIdentity = "raid-battle-1",
+            source = BattleAutomationActionSource.RAID_AUTOMATION,
+        )
+        Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
+        Mockito.`when`(typed.findEntry(7, raidEntry.id)).thenReturn(raidEntry)
+        Mockito.`when`(queries.lockOpen(7)).thenReturn(listOf(session))
+
+        val resumed = service.ensureForAction(7, raidEntry.id, action)
+
+        assertEquals(session, resumed)
+        Mockito.verifyNoInteractions(commands)
+    }
+
+    @Test
+    fun `raid reset completes the whole raid cycle work session`() {
+        val raidEntry = AutomationEntryEntity(14, account, AutomationType.RAID, 4, true, now, now)
+        val session = AutomationWorkSessionEntity(
+            id = 30,
+            account = account,
+            entry = raidEntry,
+            workType = AutomationWorkType.RAID,
+            targetKey = "RaidGoblin",
+            status = AutomationWorkStatus.RUNNING,
+            configVersion = raidEntry.updatedAt.toString(),
+            createdAt = now,
+            updatedAt = now,
+        )
+        Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
+        Mockito.`when`(queries.lockOpen(7)).thenReturn(listOf(session))
+
+        service.completeRaidCycle(7, raidEntry.id)
+
+        assertEquals(AutomationWorkStatus.COMPLETED, session.status)
+        assertEquals(now, session.finishedAt)
+        Mockito.verify(commands).save(session)
+    }
+
+    @Test
     fun `map clear victories advance optimistic quest progress`() {
         val session = AutomationWorkSessionEntity(
             id = 24,

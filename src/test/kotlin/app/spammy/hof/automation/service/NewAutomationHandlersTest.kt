@@ -20,12 +20,26 @@ class NewAutomationHandlersTest {
         val handler = FishingAutomationHandler()
         val start = handler.evaluate(FishingAutomationSnapshot(1, fishing(FishingPrimaryAction.START), emptyList(), null, now))
         assertEquals(FishingAction.START, assertIs<FishingTownAutomationAction>(assertIs<HandlerEvaluation.Runnable>(start).action).action)
+        val catch = handler.evaluate(FishingAutomationSnapshot(1, fishing(FishingPrimaryAction.CATCH), emptyList(), null, now))
+        assertEquals(FishingAction.CATCH, assertIs<FishingTownAutomationAction>(assertIs<HandlerEvaluation.Runnable>(catch).action).action)
         val exhausted = handler.evaluate(FishingAutomationSnapshot(1, fishing(FishingPrimaryAction.NONE, remaining = 0), emptyList(), null, now))
         assertEquals("FISHING_DAILY_LIMIT", assertIs<HandlerEvaluation.Unavailable>(exhausted).reasonCode)
     }
 
     @Test
-    fun `fishing battle uses configured preset then returns one battle action`() {
+    fun `fishing does not submit start again while the catch transition is pending`() {
+        val staleStartedPage = fishing(FishingPrimaryAction.START).copy(lastOutcome = FishingOutcome.STARTED)
+
+        val result = assertIs<HandlerEvaluation.Unavailable>(FishingAutomationHandler().evaluate(
+            FishingAutomationSnapshot(1, staleStartedPage, emptyList(), null, now),
+        ))
+
+        assertEquals("FISHING_CATCH_TRANSITION_PENDING", result.reasonCode)
+        assertEquals(now.plusSeconds(5), result.nextRunAt)
+    }
+
+    @Test
+    fun `fishing branches to battle only after catch exposes a blocked battle state`() {
         val state = fishing(FishingPrimaryAction.NONE).copy(
             blockedByBattle = true, battleTarget = FishingBattleTargetResponse("battle_map", "fish-1", "낚시 전투"),
         )
@@ -127,7 +141,7 @@ class NewAutomationHandlersTest {
     }
 
     @Test
-    fun `raid resets once after reward collection before completing the cycle`() {
+    fun `raid refreshes status after reward instead of trusting a visible reset action`() {
         val target = RaidAutomationTarget("r1", "레이드", PresetSelectionMode.EXPLICIT, 3, 0, party)
         val rewarded = RaidPubRaidResponse(
             "r1", "레이드", true, null, null, null, RaidStatus.COMPLETED,
@@ -136,6 +150,29 @@ class NewAutomationHandlersTest {
         val evaluation = RaidAutomationHandler().evaluate(RaidAutomationSnapshot(
             1,
             RaidPubResponse(listOf(rewarded), true, true, 10_786, null, setOf(RaidAction.REWARD), null),
+            listOf(target), null,
+            OpenRaidCycleSnapshot(9, "r1", RaidAutomationCycleStatus.REWARD_PENDING, null), now,
+        ))
+
+        val action = assertIs<RaidTownAutomationAction>(assertIs<HandlerEvaluation.Runnable>(evaluation).action)
+        assertEquals(RaidAction.REFRESH, action.action)
+        assertEquals(null, action.raidId)
+        assertEquals("r1", action.targetRaidId)
+        assertEquals("레이드", action.raidName)
+        assertEquals("보상 확인 시간", action.observedStatus)
+    }
+
+    @Test
+    fun `raid resets after reward only when the active raid reports reward confirmation ended`() {
+        val target = RaidAutomationTarget("r1", "레이드", PresetSelectionMode.EXPLICIT, 3, 0, party)
+        val resettable = RaidPubRaidResponse(
+            "r1", "레이드", true, null, null, null, RaidStatus.COMPLETED,
+            "현재 상태 : 보상 확인 종료(리셋 가능)", null, listOf("현재사용자"), true,
+            setOf(RaidAction.RESET), null,
+        )
+        val evaluation = RaidAutomationHandler().evaluate(RaidAutomationSnapshot(
+            1,
+            RaidPubResponse(listOf(resettable), true, true, 10_786, null, setOf(RaidAction.REWARD), null),
             listOf(target), null,
             OpenRaidCycleSnapshot(9, "r1", RaidAutomationCycleStatus.REWARD_PENDING, null), now,
         ))

@@ -104,7 +104,7 @@ class RaidPubService(
             RaidAction.LEAVE -> raid.joined
             RaidAction.START -> raid.joined && raid.status == RaidStatus.READY
             RaidAction.RESET -> raid.joined && raid.status == RaidStatus.COMPLETED &&
-                (snapshot.applyWait || isRaidResetRequiredStatus(raid.statusText))
+                isRaidResetRequiredStatus(raid.statusText)
             else -> false
         }
     }

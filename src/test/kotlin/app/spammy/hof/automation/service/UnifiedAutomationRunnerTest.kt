@@ -490,6 +490,21 @@ class UnifiedAutomationRunnerTest {
     }
 
     @Test
+    fun `pause drain resumes only the current stored action without starting daily preflight`() {
+        val (stored, row) = reconcilingQuestAction()
+        Mockito.`when`(runtime.isCompletingCurrentAction(7)).thenReturn(true)
+        Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token", row))
+        Mockito.`when`(ambiguousReconciler.reconcile(7, stored))
+            .thenReturn(AmbiguousActionResolution.Applied())
+
+        runner.runOne(7)
+
+        Mockito.verify(preflight, Mockito.never()).ensureReady(7)
+        Mockito.verify(ambiguousReconciler).reconcile(7, stored)
+        Mockito.verify(runtime).succeedReconciliation(7, "token", 88, "TYPED_ACTION_COMPLETED")
+    }
+
+    @Test
     fun `503 while reconciling preserves action and schedules authoritative recheck`() {
         val retryAt = Instant.parse("2026-07-25T00:00:30Z")
         val (stored, row) = reconcilingQuestAction()

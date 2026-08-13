@@ -24,11 +24,18 @@ class RaidPubParser {
         availableRaidCodes: Set<String> = emptySet(),
     ): RaidPubSnapshot {
         val doc = HofHtmlParser.parse(html, finalUrl)
+        val normalizedResult = result?.let { parsed ->
+            if (RESET_SUCCEEDED.containsMatchIn(clean(doc.text())) && RESET_SUCCESS_MESSAGE !in parsed.messages) {
+                parsed.copy(messages = (parsed.messages + RESET_SUCCESS_MESSAGE).distinct())
+            } else {
+                parsed
+            }
+        }
         val forms = doc.select("form").filter { form ->
             form.attr("method").equals("post", true) &&
                 form.attr("action").contains("raidpub", true) && safeRaidPubUrl(resolve(finalUrl, form.attr("action")))
         }
-        if (forms.size != 1) return empty(result)
+        if (forms.size != 1) return empty(normalizedResult)
         val form = forms.single()
         val submitControlCounts = form.children()
             .filter { it.tagName() in setOf("input", "button") && isSubmit(it) }
@@ -128,7 +135,7 @@ class RaidPubParser {
             applyWaitSeconds = applyWait,
             myStatus = MY_STATUS.find(pageText)?.value?.take(MAX_TEXT),
             globalActions = global.keys + RaidAction.REFRESH,
-            result = result,
+            result = normalizedResult,
             globalActionIds = global,
             observedRaidPubForm = true,
         )
@@ -193,6 +200,8 @@ class RaidPubParser {
     }
 
     private companion object {
+        const val RESET_SUCCESS_MESSAGE = "전투가 신청 가능 상태로 바뀌었습니다."
+        val RESET_SUCCEEDED = Regex("전투가\\s*신청\\s*가능\\s*상태로\\s*바뀌었습니다\\.?")
         val RAID_ACTIONS = setOf(RaidAction.REGISTER, RaidAction.LEAVE, RaidAction.START, RaidAction.RESET)
         val GLOBAL_ACTIONS = setOf(RaidAction.REWARD, RaidAction.WAIT_RESET, RaidAction.REFRESH)
         val REGISTER = Regex("^(?:(?:파티에\\s*)?등록(?:한다)?|신청(?:한다)?|register)$", RegexOption.IGNORE_CASE)

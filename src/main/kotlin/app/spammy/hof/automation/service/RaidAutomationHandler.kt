@@ -20,7 +20,14 @@ data class RaidAutomationSnapshot(
     val accountId: Long, val pub: RaidPubResponse, val targets: List<RaidAutomationTarget>,
     val currentTargetKey: String?, val openCycle: OpenRaidCycleSnapshot?, val now: Instant,
 )
-data class RaidTownAutomationAction(val accountId: Long, val action: RaidAction, val raidId: String? = null) : PreparedAutomationAction
+data class RaidTownAutomationAction(
+    val accountId: Long,
+    val action: RaidAction,
+    val raidId: String? = null,
+    val targetRaidId: String? = raidId,
+    val raidName: String? = null,
+    val observedStatus: String? = null,
+) : PreparedAutomationAction
 data class RaidCycleAbortAutomationAction(val accountId: Long, val raidId: String) : PreparedAutomationAction
 
 @Service
@@ -38,7 +45,9 @@ class RaidAutomationHandler : AutomationHandler<RaidAutomationSnapshot> {
         if (!raid.playable || RaidAction.REGISTER !in raid.actions) {
             return HandlerEvaluation.ConfigurationWarning("차례인 레이드는 현재 등록할 수 없습니다.", "RAID_REGISTER_UNAVAILABLE")
         }
-        return HandlerEvaluation.Runnable(RaidTownAutomationAction(context.accountId, RaidAction.REGISTER, target.raidId))
+        return HandlerEvaluation.Runnable(RaidTownAutomationAction(
+            context.accountId, RaidAction.REGISTER, target.raidId, target.raidId, target.name, raid.statusText,
+        ))
     }
 
     private fun evaluateCycle(context: RaidAutomationSnapshot, cycle: OpenRaidCycleSnapshot): HandlerEvaluation {
@@ -48,15 +57,18 @@ class RaidAutomationHandler : AutomationHandler<RaidAutomationSnapshot> {
         val raid = context.pub.raids.singleOrNull { it.id == cycle.raidId }
             ?: return retry(context, "RAID_TARGET_TEMPORARILY_MISSING", "진행 중인 레이드 대상을 다시 확인합니다.")
         if (cycle.status == RaidAutomationCycleStatus.REWARD_PENDING) {
-            return if (RaidAction.RESET in raid.actions) {
-                HandlerEvaluation.Runnable(RaidTownAutomationAction(context.accountId, RaidAction.RESET, raid.id))
-            } else {
-                retry(context, "RAID_RESET_PENDING", "보상 수령 후 레이드 초기화 가능 상태를 다시 확인합니다.")
+            if (isRaidResetRequiredStatus(raid.statusText)) {
+                return if (RaidAction.RESET in raid.actions) {
+                    HandlerEvaluation.Runnable(raidAction(context, cycle, raid, RaidAction.RESET, raid.id))
+                } else {
+                    retry(context, "RAID_RESET_PENDING", "보상 확인 종료 상태지만 초기화 동작이 아직 활성화되지 않았습니다.")
+                }
             }
+            return HandlerEvaluation.Runnable(raidAction(context, cycle, raid, RaidAction.REFRESH))
         }
         if (isRaidResetRequiredStatus(raid.statusText)) {
             return if (RaidAction.RESET in raid.actions) {
-                HandlerEvaluation.Runnable(RaidTownAutomationAction(context.accountId, RaidAction.RESET, raid.id))
+                HandlerEvaluation.Runnable(raidAction(context, cycle, raid, RaidAction.RESET, raid.id))
             } else {
                 retry(context, "RAID_RESET_PENDING", "보상 확인이 종료된 레이드의 초기화 가능 상태를 다시 확인합니다.")
             }
@@ -64,7 +76,7 @@ class RaidAutomationHandler : AutomationHandler<RaidAutomationSnapshot> {
         if (raid.status == RaidStatus.CLOSED) return HandlerEvaluation.Runnable(RaidCycleAbortAutomationAction(context.accountId, cycle.raidId))
         if (raid.status in setOf(RaidStatus.TESTING, RaidStatus.UNKNOWN)) return retry(context, "RAID_STATUS_UNCERTAIN", "레이드 상태를 다시 확인합니다.")
         if (raid.status == RaidStatus.COMPLETED && RaidAction.REWARD in context.pub.globalActions) {
-            return HandlerEvaluation.Runnable(RaidTownAutomationAction(context.accountId, RaidAction.REWARD))
+            return HandlerEvaluation.Runnable(raidAction(context, cycle, raid, RaidAction.REWARD))
         }
         if (raid.status == RaidStatus.IN_BATTLE) {
             val battle = raid.battleTarget ?: return retry(context, "RAID_BATTLE_TARGET_MISSING", "레이드 전투 대상을 다시 확인합니다.")
@@ -85,13 +97,22 @@ class RaidAutomationHandler : AutomationHandler<RaidAutomationSnapshot> {
             ))
         }
         if (raid.status == RaidStatus.READY && RaidAction.START in raid.actions) {
-            return HandlerEvaluation.Runnable(RaidTownAutomationAction(context.accountId, RaidAction.START, raid.id))
+            return HandlerEvaluation.Runnable(raidAction(context, cycle, raid, RaidAction.START, raid.id))
         }
         return retry(context, "RAID_WAITING_TO_START", "레이드 출발 가능 상태를 기다립니다.", raid.waitSeconds)
     }
 
     private fun retry(context: RaidAutomationSnapshot, code: String, message: String, seconds: Int? = null) =
         HandlerEvaluation.Unavailable(context.now.plusSeconds((seconds ?: 30).coerceAtLeast(5).toLong()), code, message)
+    private fun raidAction(
+        context: RaidAutomationSnapshot,
+        cycle: OpenRaidCycleSnapshot,
+        raid: app.spammy.hof.town.raid.dto.RaidPubRaidResponse,
+        action: RaidAction,
+        requestRaidId: String? = null,
+    ) = RaidTownAutomationAction(
+        context.accountId, action, requestRaidId, cycle.raidId, raid.name, raid.statusText,
+    )
     private fun rotate(values: List<RaidAutomationTarget>, key: String?): List<RaidAutomationTarget> {
         val index = values.indexOfFirst { it.raidId == key }
         return if (index <= 0) values else values.drop(index) + values.take(index)

@@ -28,6 +28,7 @@ class AutomationTargetSelectorTest {
     private val questEntry = AutomationEntryEntity(10, account, AutomationType.QUEST, 0, true, now, now)
     private val battleEntry = AutomationEntryEntity(11, account, AutomationType.BATTLE_MAP, 1, true, now, now)
     private val adventureEntry = AutomationEntryEntity(12, account, AutomationType.ADVENTURE_MAP, 2, true, now, now)
+    private val raidEntry = AutomationEntryEntity(13, account, AutomationType.RAID, 0, true, now, now)
     private val typed = Mockito.mock(TypedAutomationQueryRepository::class.java)
     private val work = Mockito.mock(AutomationWorkSessionQueryRepository::class.java)
     private val loader = Mockito.mock(TypedAutomationSnapshotLoader::class.java)
@@ -81,6 +82,40 @@ class AutomationTargetSelectorTest {
         val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
 
         assertEquals(12, selected.entryId)
+    }
+
+    @Test
+    fun `raid cooldown parks its cycle and releases the next automation entry`() {
+        val runningRaid = session(30, raidEntry, AutomationWorkType.RAID, "RaidGoblin", AutomationWorkStatus.RUNNING)
+        val raidSnapshot = AutomationCoordinatorEntry(13, AutomationType.RAID)
+        val retryAt = now.plusSeconds(120)
+        val battleSnapshot = AutomationCoordinatorEntry(11, AutomationType.BATTLE_MAP)
+        val battleAction = BattleMapAutomationAction(
+            accountId = 7,
+            progressDate = java.time.LocalDate.parse("2026-07-23"),
+            categoryId = "battle_map",
+            mapCode = "map-1",
+            presetMode = PresetSelectionMode.PRIMARY,
+            presetId = 3,
+            battleCount = 1,
+            executionIdentity = "battle-after-raid-wait",
+        )
+        Mockito.`when`(work.findRunning(7)).thenReturn(runningRaid)
+        Mockito.`when`(loader.loadEntry(7, 13, "RaidGoblin")).thenReturn(raidSnapshot)
+        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(raidSnapshot))))
+            .thenReturn(AutomationCoordination.Unavailable(retryAt, emptyList()))
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(raidEntry, battleEntry))
+        Mockito.`when`(work.findWaiting(7)).thenReturn(listOf(
+            session(30, raidEntry, AutomationWorkType.RAID, "RaidGoblin", AutomationWorkStatus.WAITING_COOLDOWN, nextCheckAt = retryAt),
+        ))
+        Mockito.`when`(loader.loadEntry(7, 11, null, null)).thenReturn(battleSnapshot)
+        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(battleSnapshot))))
+            .thenReturn(AutomationCoordination.Runnable(11, battleAction, emptyList()))
+
+        val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
+
+        assertEquals(11, selected.entryId)
+        Mockito.verify(lifecycle).waitForCooldown(7, 30, retryAt)
     }
 
     @Test

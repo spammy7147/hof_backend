@@ -39,6 +39,7 @@ import tools.jackson.module.kotlin.jacksonObjectMapper
     AccountQueryRepository::class,
     TypedAutomationQueryRepository::class,
     AdventureDailyPreflightQueryRepository::class,
+    AutomationWorkSessionQueryRepository::class,
     AutomationOutboxQueryRepository::class,
     AutomationOutboxService::class,
     TypedAutomationLifecycleBridge::class,
@@ -48,10 +49,13 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
     @Autowired private lateinit var accounts: HofAccountRepository
     @Autowired private lateinit var entries: AutomationEntryCommandRepository
     @Autowired private lateinit var actions: TypedAutomationActionRunCommandRepository
+    @Autowired private lateinit var workSessionCommands: AutomationWorkSessionCommandRepository
     @Autowired private lateinit var preflightStates: AdventureDailyPreflightStateCommandRepository
     @Autowired private lateinit var typedQuery: TypedAutomationQueryRepository
     @Autowired private lateinit var preflightQuery: AdventureDailyPreflightQueryRepository
     @Autowired private lateinit var outboxQuery: AutomationOutboxQueryRepository
+    @Autowired private lateinit var outbox: AutomationOutboxService
+    @Autowired private lateinit var workSessionQuery: AutomationWorkSessionQueryRepository
     @Autowired private lateinit var bridge: TypedAutomationLifecycleBridge
     @Autowired private lateinit var transactionManager: PlatformTransactionManager
     @Autowired private lateinit var entityManager: EntityManager
@@ -109,17 +113,17 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
     }
 
     @Test
-    fun `start and pause cannot clear a stopped typed runtime`() {
+    fun `start resumes a stopped typed runtime and pause then stops new work`() {
         val accountId = seed("stopped-invariant")
 
         val started = TransactionTemplate(transactionManager).execute { bridge.start(accountId, "USER_START") }
         TransactionTemplate(transactionManager).executeWithoutResult { bridge.pause(accountId, "USER_PAUSE") }
 
-        assertFalse(requireNotNull(started))
+        assertTrue(requireNotNull(started))
         val state = requireNotNull(typedQuery.findRuntimeState(accountId))
-        assertEquals(TypedAutomationLifecycle.STOPPED, state.lifecycleStatus)
-        assertEquals(AutomationStopReason.NETWORK.name, state.stopReason)
-        assertTrue(state.stopActionId != null)
+        assertEquals(TypedAutomationLifecycle.PAUSED, state.lifecycleStatus)
+        assertNull(state.stopReason)
+        assertNull(state.stopActionId)
         val events = outboxQuery.findUnpublished(NOW.plusSeconds(1)).filter { it.account.id == accountId }
         assertEquals(1, events.size)
     }
@@ -128,6 +132,22 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
     fun `manual stop clears a previous action stop context`() {
         val accountId = seed("manual-stop")
         TransactionTemplate(transactionManager).executeWithoutResult {
+            val account = requireNotNull(entityManager.find(HofAccountEntity::class.java, accountId))
+            val entry = typedQuery.findEntries(accountId).single()
+            workSessionCommands.save(
+                AutomationWorkSessionEntity(
+                    account = account,
+                    entry = entry,
+                    workType = AutomationWorkType.BATTLE_MAP,
+                    targetKey = "queued-map",
+                    status = AutomationWorkStatus.WAITING_COOLDOWN,
+                    configVersion = "queued-config",
+                    nextCheckAt = NOW.plusSeconds(60),
+                    createdAt = NOW,
+                    updatedAt = NOW,
+                ),
+            )
+            outbox.enqueue(accountId, "QUEUED_BEFORE_STOP")
             requireNotNull(typedQuery.lockRuntimeState(accountId)).apply {
                 nextAttemptAt = NOW.plusSeconds(300)
                 waitReason = AutomationWaitReason.HOF_CONNECTION
@@ -144,6 +164,8 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
         assertNull(state.stopActionId)
         assertNull(state.nextAttemptAt)
         assertNull(state.waitReason)
+        assertEquals(emptyList(), workSessionQuery.findDue(NOW.plusSeconds(120), 10).filter { it.accountId == accountId })
+        assertEquals(emptyList(), outboxQuery.findUnpublished(NOW.plusSeconds(1)).filter { it.account.id == accountId })
     }
 
     @Test
@@ -195,7 +217,7 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
     }
 
     @Test
-    fun `pause preserves a reconciling action for continuation`() {
+    fun `pause waits for a reconciling action before becoming paused`() {
         val accountId = seed("pause-preserves-action")
         val activeActionId = TransactionTemplate(transactionManager).execute {
             val account = requireNotNull(entityManager.find(HofAccountEntity::class.java, accountId))
@@ -228,11 +250,13 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
         }
 
         assertEquals(activeActionId, typedQuery.findActiveTypedAction(accountId)?.id)
-        assertEquals(TypedAutomationLifecycle.PAUSED, requireNotNull(typedQuery.findRuntimeState(accountId)).lifecycleStatus)
+        val state = requireNotNull(typedQuery.findRuntimeState(accountId))
+        assertEquals(TypedAutomationLifecycle.DRAINING, state.lifecycleStatus)
+        assertEquals(TypedAutomationLifecycle.PAUSED, state.requestedLifecycle)
     }
 
     @Test
-    fun `manual stop drains an already registered raid cycle`() {
+    fun `manual stop immediately stops even when a raid cycle is open`() {
         val accountId = seed("raid-drain")
         TransactionTemplate(transactionManager).executeWithoutResult {
             entityManager.createNativeQuery("update automation_entries set automation_type = 'RAID' where account_id = ?1")
@@ -250,9 +274,9 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
         }
 
         val state = requireNotNull(typedQuery.findRuntimeState(accountId))
-        assertEquals(TypedAutomationLifecycle.DRAINING, state.lifecycleStatus)
-        assertEquals(TypedAutomationLifecycle.STOPPED, state.requestedLifecycle)
-        assertNull(state.stopReason)
+        assertEquals(TypedAutomationLifecycle.STOPPED, state.lifecycleStatus)
+        assertNull(state.requestedLifecycle)
+        assertEquals(AutomationStopReason.MANUAL_STOP.name, state.stopReason)
     }
 
     @Test
@@ -270,7 +294,7 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
         assertEquals(TypedAutomationLifecycle.STOPPED, state.lifecycleStatus)
         assertEquals(AutomationStopReason.MANUAL_STOP.name, state.stopReason)
         assertNull(state.stopActionId)
-        assertEquals(1, outboxQuery.findUnpublished(NOW.plusSeconds(1)).count { it.account.id == accountId })
+        assertEquals(0, outboxQuery.findUnpublished(NOW.plusSeconds(1)).count { it.account.id == accountId })
     }
 
     @Test

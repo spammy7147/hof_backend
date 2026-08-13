@@ -11,6 +11,7 @@ import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Service
 import org.springframework.transaction.support.TransactionSynchronizationManager
+import java.time.Instant
 import java.util.UUID
 
 /** 최신 타입별 스냅샷 결정 또는 저장된 prepared payload 중 action 하나만 실행하는 자동화 루프다. */
@@ -58,7 +59,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             "Typed automation runner must not be called with an active transaction."
         }
         if (!typedRuntime.isRunning(accountId)) return
-        when (val preflight = dailyPreflight.ensureReady(accountId)) {
+        if (!typedRuntime.isCompletingCurrentAction(accountId)) when (val preflight = dailyPreflight.ensureReady(accountId)) {
             AutomationDailyPreflight.Result.Ready -> Unit
             is AutomationDailyPreflight.Result.Busy -> { wakeupPort.schedule(accountId, preflight.retryAt, "DAILY_PREFLIGHT_BUSY"); return }
             is AutomationDailyPreflight.Result.RetryScheduled -> {
@@ -186,12 +187,42 @@ class UnifiedAutomationRunner @Autowired constructor(
                 return
             }
         }
+        if (decisionCycleId == null) {
+            decisionCycleId = try {
+                val reconciling = row.status == app.spammy.hof.automation.entity.TypedAutomationActionStatus.RECONCILING
+                decisionJournal?.appendPreparedActionAttempt(
+                    accountId,
+                    actionTrace(
+                        stored,
+                        if (reconciling) AutomationHistoryEventKind.WAITING else AutomationHistoryEventKind.SELECTED,
+                        if (reconciling) "AMBIGUOUS_RESULT_VERIFY" else "PREPARED_ACTION_RETRY",
+                        if (reconciling) {
+                            "이전 요청의 처리 결과가 불확실해 HOF 최신 상태로 적용 여부를 재확인합니다."
+                        } else {
+                            "저장된 작업을 이어서 재시도합니다."
+                        },
+                    ),
+                )
+            } catch (error: Exception) {
+                stopPreparationFailure(accountId, token, stored.entryId, "JOURNAL_RETRY", error)
+                return
+            }
+        }
         if (row.status == app.spammy.hof.automation.entity.TypedAutomationActionStatus.RECONCILING) {
             val resolution = try {
                 ambiguousReconciler.reconcile(accountId, stored)
             } catch (error: Throwable) {
                 error.findHofAutomationDeferral()?.let { deferred ->
                     val message = deferred.message ?: "HOF server returned 503 while verifying an ambiguous action."
+                    decisionCycleId?.let { cycleId -> runCatching {
+                        decisionJournal?.appendActionResult(cycleId, actionTrace(
+                            stored,
+                            AutomationHistoryEventKind.WAITING,
+                            "RECONCILIATION_HOF_DEFERRED",
+                            "적용 여부를 확인하는 중 HOF 응답이 지연되어 다시 확인합니다. 사유: $message",
+                            deferred.retryAt,
+                        ))
+                    } }
                     if (typedRuntime.deferReconciliation(accountId, token, row.id, deferred.retryAt, message)) {
                         wakeupPort.schedule(accountId, deferred.retryAt, HOF_COOLDOWN_WAKE_REASON)
                     }
@@ -221,14 +252,36 @@ class UnifiedAutomationRunner @Autowired constructor(
                     if (stored.payload is StoredTypedActionPayload.RaidTown || stored.payload is StoredTypedActionPayload.RaidCycleAbort) {
                         contentProgress?.finishDrainIfNoOpenCycle(accountId)
                     }
+                    decisionCycleId?.let { cycleId ->
+                        decisionJournal?.appendActionResult(cycleId, actionTrace(
+                            stored,
+                            AutomationHistoryEventKind.ACTION_SUCCEEDED,
+                            "AMBIGUOUS_RESULT_APPLIED",
+                            "상태 재확인 결과 이전 요청이 이미 적용된 것으로 확인했습니다.",
+                        ))
+                    }
                 }
-                AmbiguousActionResolution.Resubmit -> typedRuntime.retryReconciledSubmission(
-                    accountId,
-                    token,
-                    row.id,
-                    "TYPED_RECONCILED_RESUBMIT",
-                )
+                AmbiguousActionResolution.Resubmit -> {
+                    decisionCycleId?.let { cycleId ->
+                        decisionJournal?.appendActionResult(cycleId, actionTrace(
+                            stored,
+                            AutomationHistoryEventKind.WAITING,
+                            "AMBIGUOUS_RESULT_RESUBMIT",
+                            "상태 재확인 결과 적용되지 않아 같은 단계를 다시 제출합니다.",
+                        ))
+                    }
+                    typedRuntime.retryReconciledSubmission(accountId, token, row.id, "TYPED_RECONCILED_RESUBMIT")
+                }
                 is AmbiguousActionResolution.VerifyLater -> {
+                    decisionCycleId?.let { cycleId ->
+                        decisionJournal?.appendActionResult(cycleId, actionTrace(
+                            stored,
+                            AutomationHistoryEventKind.WAITING,
+                            "AMBIGUOUS_RESULT_VERIFY_LATER",
+                            "아직 적용 여부를 확정할 수 없어 다음 확인 시각까지 기다립니다. 사유: ${resolution.reason}",
+                            resolution.retryAt,
+                        ))
+                    }
                     if (typedRuntime.deferReconciliation(
                             accountId,
                             token,
@@ -282,6 +335,15 @@ class UnifiedAutomationRunner @Autowired constructor(
             }
         } catch (error: Throwable) {
             error.findHofAutomationDeferral()?.let { deferred ->
+                decisionCycleId?.let { cycleId -> runCatching {
+                    decisionJournal?.appendActionResult(cycleId, actionTrace(
+                        stored,
+                        AutomationHistoryEventKind.WAITING,
+                        "ACTION_HOF_DEFERRED",
+                        "HOF 서버가 잠시 요청을 받지 않아 현재 단계를 보존하고 재시도합니다. 사유: ${deferred.message ?: "일시적 응답 지연"}",
+                        deferred.retryAt,
+                    ))
+                } }
                 if (typedRuntime.deferSubmittedAction(
                         accountId,
                         token,
@@ -295,6 +357,14 @@ class UnifiedAutomationRunner @Autowired constructor(
                 return
             }
             error.findAmbiguousSubmission()?.let { ambiguous ->
+                decisionCycleId?.let { cycleId -> runCatching {
+                    decisionJournal?.appendActionResult(cycleId, actionTrace(
+                        stored,
+                        AutomationHistoryEventKind.WAITING,
+                        "ACTION_RESULT_AMBIGUOUS",
+                        "요청 전송 후 결과가 불확실합니다. 같은 동작을 즉시 다시 보내지 않고 HOF 상태를 재확인합니다. 사유: ${ambiguous.message ?: "응답 확인 실패"}",
+                    ))
+                } }
                 typedRuntime.markReconcilingAndEnqueueWake(
                     accountId,
                     token,
@@ -462,7 +532,12 @@ class UnifiedAutomationRunner @Autowired constructor(
                 observedAvailableCount = action.observedAvailableCount,
             )
             is FishingTownAutomationAction -> StoredTypedActionPayload.FishingTown(action.action, action.observedPrimaryAction, action.observedRemainingCasts)
-            is RaidTownAutomationAction -> StoredTypedActionPayload.RaidTown(action.action, action.raidId)
+            is RaidTownAutomationAction -> StoredTypedActionPayload.RaidTown(
+                action.action,
+                action.raidId,
+                action.targetRaidId,
+                StoredActionDisplay(mapName = action.raidName, missionLabel = action.observedStatus),
+            )
             is RaidCycleAbortAutomationAction -> StoredTypedActionPayload.RaidCycleAbort(action.raidId)
         }
         return StoredTypedAutomationAction(entryId, executionId, payload)
@@ -472,7 +547,13 @@ class UnifiedAutomationRunner @Autowired constructor(
         this?.let { app.spammy.hof.battle.dto.RunBattleRequest(categoryId, mapCode, it.characterIds, it.patternLoads, battleCount) }
             ?: throw AutomationConfigurationException("The prepared party is missing.")
 
-    private fun actionTrace(action: StoredTypedAutomationAction, kind: AutomationHistoryEventKind, code: String, message: String): AutomationActionTrace {
+    private fun actionTrace(
+        action: StoredTypedAutomationAction,
+        kind: AutomationHistoryEventKind,
+        code: String,
+        message: String,
+        nextRunAt: Instant? = null,
+    ): AutomationActionTrace {
         val payload = action.payload
         val type = when (payload) {
             is StoredTypedActionPayload.QuestClaim, is StoredTypedActionPayload.QuestAccept, is StoredTypedActionPayload.QuestBattle -> AutomationType.QUEST
@@ -489,7 +570,65 @@ class UnifiedAutomationRunner @Autowired constructor(
                 BattleAutomationActionSource.BATTLE_MAP_AUTOMATION -> AutomationType.BATTLE_MAP
             }
         }
-        return AutomationActionTrace(kind, code, message, action.entryId, type, payload.kind(),
+        val actionKind = when (payload) {
+            is StoredTypedActionPayload.RaidTown -> payload.action.name
+            is StoredTypedActionPayload.RaidCycleAbort -> "CYCLE_ABORT"
+            is StoredTypedActionPayload.FishingTown -> payload.action.name
+            is StoredTypedActionPayload.HomeQuest -> "HOME_${payload.action.name}"
+            else -> payload.kind()
+        }
+        val actionContext = when (payload) {
+            is StoredTypedActionPayload.QuestClaim -> "퀘스트 보상 수령 · ${payload.display?.questName ?: payload.questKey}"
+            is StoredTypedActionPayload.QuestAccept -> "퀘스트 수락 · ${payload.display?.questName ?: payload.questKey}"
+            is StoredTypedActionPayload.HomeQuest -> "자택 퀘스트 ${if (payload.action == HomeQuestAutomationActionType.ACCEPT) "수락" else "완료"} · ${payload.display?.questName ?: payload.questId}"
+            is StoredTypedActionPayload.QuestBattle -> listOfNotNull(
+                "퀘스트 전투 · ${payload.display?.questName ?: payload.questKey}",
+                payload.display?.missionLabel,
+                payload.observedCurrent?.let { current -> "실행 전 진행 $current/${payload.observedRequired ?: "?"}" },
+                "맵 ${payload.display?.mapName ?: "${payload.categoryId}/${payload.mapCode}"}",
+                "${payload.battleCount}회 전투",
+            ).joinToString(" · ")
+            is StoredTypedActionPayload.BattleMap -> listOf(
+                when (payload.source) {
+                    BattleAutomationActionSource.BATTLE_MAP_AUTOMATION -> "일반 전투"
+                    BattleAutomationActionSource.UNION_AUTOMATION -> "유니온 전투"
+                    BattleAutomationActionSource.FISHING_AUTOMATION -> "낚시 방해 전투"
+                    BattleAutomationActionSource.RAID_AUTOMATION -> "레이드 누적 전투"
+                    BattleAutomationActionSource.ADVENTURE_AUTOMATION -> "모험 전투"
+                    BattleAutomationActionSource.QUEST_AUTOMATION -> "퀘스트 전투"
+                },
+                "맵 ${payload.display?.mapName ?: "${payload.categoryId}/${payload.mapCode}"}",
+                "${payload.battleCount}회",
+                "파티 ${payload.battleRequest.characterIds.size}명",
+            ).joinToString(" · ")
+            is StoredTypedActionPayload.AdventureMap -> listOfNotNull(
+                "모험 맵 전투 · ${payload.display?.mapName ?: "${payload.categoryId}/${payload.mapCode}"}",
+                "${payload.battleCount}회",
+                payload.observedAttemptRemaining?.let { "실행 전 남은 도전 ${it}회" },
+                payload.observedWinRemaining?.let { "실행 전 남은 승리 ${it}회" },
+                payload.observedAvailableCount?.let { "실행 가능 ${it}회" },
+                payload.observedCooldownUntil?.let { "관측 쿨다운 $it" },
+            ).joinToString(" · ")
+            is StoredTypedActionPayload.FishingTown -> when (payload.action) {
+                app.spammy.hof.town.fishing.model.FishingAction.START -> "낚시 사이클 시작 · 다음 필수 단계 잡기(CATCH)${payload.observedRemainingCasts?.let { " · 실행 전 남은 ${it}회" } ?: ""}"
+                app.spammy.hof.town.fishing.model.FishingAction.CATCH -> "낚시 사이클 잡기 · 이후 물고기 획득/전투 발생 결과와 남은 횟수 재확인${payload.observedRemainingCasts?.let { " · 실행 전 남은 ${it}회" } ?: ""}"
+                else -> "낚시 ${payload.action.name}"
+            }
+            is StoredTypedActionPayload.RaidTown -> {
+                val phase = when (payload.action) {
+                app.spammy.hof.town.raid.model.RaidAction.REGISTER -> "파티 등록"
+                app.spammy.hof.town.raid.model.RaidAction.START -> "전투 시작"
+                app.spammy.hof.town.raid.model.RaidAction.REWARD -> "보상 수령"
+                app.spammy.hof.town.raid.model.RaidAction.REFRESH -> "상태 갱신"
+                app.spammy.hof.town.raid.model.RaidAction.RESET -> "레이드 리셋"
+                else -> payload.action.name
+                }
+                "$phase 단계${payload.display?.missionLabel?.let { " · 관측 상태: $it" } ?: ""}"
+            }
+            is StoredTypedActionPayload.RaidCycleAbort -> "레이드 사이클 중단 · ${payload.raidId}"
+        }
+        val detailedMessage = "$actionContext · $message"
+        return AutomationActionTrace(kind, code, detailedMessage, action.entryId, type, actionKind,
             targetKey = when (payload) {
                 is StoredTypedActionPayload.QuestClaim -> payload.questKey
                 is StoredTypedActionPayload.QuestAccept -> payload.questKey
@@ -497,7 +636,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                 is StoredTypedActionPayload.HomeQuest -> payload.questId
                 is StoredTypedActionPayload.BattleMap -> "${payload.categoryId}/${payload.mapCode}"
                 is StoredTypedActionPayload.AdventureMap -> "${payload.categoryId}/${payload.mapCode}"
-                is StoredTypedActionPayload.RaidTown -> payload.raidId
+                is StoredTypedActionPayload.RaidTown -> payload.targetRaidId ?: payload.raidId
                 is StoredTypedActionPayload.RaidCycleAbort -> payload.raidId
                 else -> null
             }, targetName = payload.display?.mapName ?: payload.display?.questName, presetId = when (payload) {
@@ -505,7 +644,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                 is StoredTypedActionPayload.BattleMap -> payload.presetId
                 is StoredTypedActionPayload.AdventureMap -> payload.presetId
                 else -> null
-            })
+            }, nextRunAt = nextRunAt)
     }
 
     private companion object {

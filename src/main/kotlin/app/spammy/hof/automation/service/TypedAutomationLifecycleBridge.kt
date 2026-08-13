@@ -4,9 +4,13 @@ import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.automation.entity.TypedAutomationLifecycle
 import app.spammy.hof.automation.entity.TypedAutomationActionStatus
 import app.spammy.hof.automation.entity.TypedAutomationRuntimeStateEntity
+import app.spammy.hof.automation.entity.AutomationWorkStatus
 import app.spammy.hof.automation.outbox.AutomationOutboxService
+import app.spammy.hof.automation.outbox.AutomationOutboxQueryRepository
 import app.spammy.hof.automation.repository.AdventureDailyPreflightQueryRepository
 import app.spammy.hof.automation.repository.AdventureDailyPreflightStateCommandRepository
+import app.spammy.hof.automation.repository.AutomationWorkSessionCommandRepository
+import app.spammy.hof.automation.repository.AutomationWorkSessionQueryRepository
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import app.spammy.hof.automation.repository.TypedAutomationRuntimeStateCommandRepository
 import app.spammy.hof.common.time.TimeProvider
@@ -26,6 +30,9 @@ class TypedAutomationLifecycleBridge(
     private val preflight: AdventureDailyPreflightQueryRepository,
     private val preflightStates: AdventureDailyPreflightStateCommandRepository,
     private val outbox: AutomationOutboxService,
+    private val outboxQuery: AutomationOutboxQueryRepository,
+    private val workSessions: AutomationWorkSessionQueryRepository,
+    private val workSessionCommands: AutomationWorkSessionCommandRepository,
     private val timeProvider: TimeProvider,
 ) {
     @Transactional(propagation = Propagation.MANDATORY)
@@ -37,13 +44,13 @@ class TypedAutomationLifecycleBridge(
         }
         val now = timeProvider.now()
         val state = typed.lockRuntimeState(accountId)
-        if (state?.lifecycleStatus == TypedAutomationLifecycle.STOPPED) return false
         if (state == null) {
             states.save(TypedAutomationRuntimeStateEntity(accountId, account, TypedAutomationLifecycle.RUNNING, createdAt = now, updatedAt = now))
         } else {
             state.lifecycleStatus = TypedAutomationLifecycle.RUNNING
             clearRuntime(state, now)
         }
+        clearPreflight(accountId, now)
         outbox.enqueue(accountId, wakeReason)
         return true
     }
@@ -57,13 +64,15 @@ class TypedAutomationLifecycleBridge(
             states.save(TypedAutomationRuntimeStateEntity(accountId, account, TypedAutomationLifecycle.PAUSED, createdAt = now, updatedAt = now))
         } else state?.let {
             if (it.lifecycleStatus != TypedAutomationLifecycle.STOPPED) {
-                if (typed.findOpenRaidCycle(accountId) != null) {
+                val active = typed.findActiveTypedAction(accountId)
+                if (active?.status in setOf(TypedAutomationActionStatus.SUBMITTING, TypedAutomationActionStatus.RECONCILING)) {
                     it.lifecycleStatus = TypedAutomationLifecycle.DRAINING
                     it.requestedLifecycle = TypedAutomationLifecycle.PAUSED
                     it.updatedAt = timeProvider.now()
                     outbox.enqueue(accountId, wakeReason)
                     return
                 }
+                discardPreparedActionForPause(accountId, timeProvider.now())
                 it.lifecycleStatus = TypedAutomationLifecycle.PAUSED
                 it.requestedLifecycle = null
                 it.stopReason = null
@@ -75,7 +84,6 @@ class TypedAutomationLifecycleBridge(
                 it.updatedAt = timeProvider.now()
             }
         }
-        outbox.enqueue(accountId, wakeReason)
     }
 
     @Transactional(propagation = Propagation.MANDATORY)
@@ -120,18 +128,9 @@ class TypedAutomationLifecycleBridge(
         val account = accounts.findByIdForUpdate(accountId) ?: error("Account $accountId does not exist.")
         val now = timeProvider.now()
         val state = typed.lockRuntimeState(accountId)
-        if (state?.lifecycleStatus == TypedAutomationLifecycle.STOPPED && state.stopReason == reason.name) return
         if (state == null && typed.hasTypedAutomation(accountId)) {
             states.save(TypedAutomationRuntimeStateEntity(accountId, account, TypedAutomationLifecycle.STOPPED, reason.name, createdAt = now, updatedAt = now))
         } else state?.let {
-            if (typed.findOpenRaidCycle(accountId) != null) {
-                it.lifecycleStatus = TypedAutomationLifecycle.DRAINING
-                it.requestedLifecycle = TypedAutomationLifecycle.STOPPED
-                it.stopReason = null
-                it.updatedAt = now
-                outbox.enqueue(accountId, wakeReason)
-                return
-            }
             discardActiveActionForFreshRestart(accountId, now)
             it.lifecycleStatus = TypedAutomationLifecycle.STOPPED
             it.requestedLifecycle = null
@@ -143,7 +142,23 @@ class TypedAutomationLifecycleBridge(
             it.leaseUntil = null
             it.updatedAt = now
         }
-        outbox.enqueue(accountId, wakeReason)
+        clearPreflight(accountId, now)
+        stopOpenWorkSessions(accountId, now)
+        outboxQuery.deleteUnpublishedForAccount(accountId)
+    }
+
+    private fun discardPreparedActionForPause(accountId: Long, now: java.time.Instant) {
+        val active = typed.findActiveTypedAction(accountId)
+            ?.takeIf { it.status == TypedAutomationActionStatus.PREPARED }
+            ?: return
+        val action = typed.lockTypedAction(active.id)
+            ?.takeIf { it.account.id == accountId && it.status == TypedAutomationActionStatus.PREPARED }
+            ?: return
+        action.status = TypedAutomationActionStatus.FAILED
+        action.nextAttemptAt = null
+        action.lastError = "일시정지 전에 대기 중이던 작업을 종료했습니다. 실행 시 최신 상태를 다시 판단합니다."
+        action.finishedAt = now
+        action.updatedAt = now
     }
 
     /**
@@ -191,6 +206,16 @@ class TypedAutomationLifecycleBridge(
             value.inFlightUntil = null
             value.updatedAt = now
             preflightStates.save(value)
+        }
+    }
+
+    private fun stopOpenWorkSessions(accountId: Long, now: java.time.Instant) {
+        workSessions.lockOpen(accountId).forEach { session ->
+            session.status = AutomationWorkStatus.STOPPED
+            session.nextCheckAt = null
+            session.finishedAt = now
+            session.updatedAt = now
+            workSessionCommands.save(session)
         }
     }
 }

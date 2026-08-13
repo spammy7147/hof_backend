@@ -226,6 +226,30 @@ class TypedAutomationRuntimeServiceTest {
     }
 
     @Test
+    fun `finishing the current action completes a requested pause without queuing more work`() {
+        val state = state().apply {
+            lifecycleStatus = TypedAutomationLifecycle.DRAINING
+            requestedLifecycle = TypedAutomationLifecycle.PAUSED
+            leaseToken = "token"
+            leaseUntil = now.plusSeconds(300)
+        }
+        val entry = AutomationEntryEntity(9, account, AutomationType.BATTLE_MAP, 0, true, now, now)
+        val action = TypedAutomationActionRunEntity(
+            21, account, entry, "pause-after-current", "BATTLE_MAP", "{}", "d".repeat(64),
+            TypedAutomationActionStatus.SUBMITTING, leaseToken = "token", createdAt = now, updatedAt = now,
+        )
+        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
+        Mockito.`when`(query.lockTypedAction(action.id)).thenReturn(action)
+
+        assertTrue(service.succeedAndEnqueueWake(7, "token", action.id, "TYPED_ACTION_COMPLETED"))
+
+        assertEquals(TypedAutomationActionStatus.SUCCEEDED, action.status)
+        assertEquals(TypedAutomationLifecycle.PAUSED, state.lifecycleStatus)
+        assertNull(state.requestedLifecycle)
+        Mockito.verifyNoInteractions(outbox)
+    }
+
+    @Test
     fun `captcha keeps submitted action for reconciliation while retrying`() {
         val state = state().apply { leaseToken = "token"; leaseUntil = now.plusSeconds(300) }
         val entry = AutomationEntryEntity(9, account, AutomationType.BATTLE_MAP, 0, true, now, now)

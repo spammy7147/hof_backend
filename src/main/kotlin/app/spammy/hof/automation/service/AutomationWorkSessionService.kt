@@ -33,6 +33,7 @@ interface AutomationWorkLifecycle {
     fun complete(accountId: Long, sessionId: Long)
     fun completeBattleMapAction(accountId: Long, entryId: Long, categoryId: String, mapCode: String)
     fun completeAdventureAction(accountId: Long, entryId: Long, categoryId: String, mapCode: String)
+    fun completeRaidCycle(accountId: Long, entryId: Long)
     fun stopForConfigurationChange(
         accountId: Long,
         entryId: Long,
@@ -282,6 +283,22 @@ class AutomationWorkSessionService(
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
+    override fun completeRaidCycle(accountId: Long, entryId: Long) {
+        requireRunningRuntime(accountId)
+        val session = queries.lockOpen(accountId).singleOrNull {
+            it.status == AutomationWorkStatus.RUNNING &&
+                it.entry.id == entryId &&
+                it.workType == AutomationWorkType.RAID
+        } ?: return
+        val now = timeProvider.now()
+        session.status = AutomationWorkStatus.COMPLETED
+        session.nextCheckAt = null
+        session.finishedAt = now
+        session.updatedAt = now
+        commands.save(session)
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     override fun stopForConfigurationChange(
         accountId: Long,
         entryId: Long,
@@ -368,7 +385,7 @@ class AutomationWorkSessionService(
     private fun AutomationWorkSessionEntity.matches(entryId: Long, spec: WorkSpec): Boolean =
         entry.id == entryId &&
             workType == spec.type &&
-            (targetKey == spec.targetKey || workType == AutomationWorkType.FISHING)
+            (targetKey == spec.targetKey || workType in setOf(AutomationWorkType.FISHING, AutomationWorkType.RAID))
 
     private companion object {
         const val FISHING_CYCLE_TARGET = "DAILY_FISHING"

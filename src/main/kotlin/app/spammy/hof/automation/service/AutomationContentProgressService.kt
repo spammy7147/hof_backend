@@ -52,6 +52,19 @@ class AutomationContentProgressService(
     }
 
     @Transactional
+    fun raidStatusRefreshed(accountId: Long) {
+        val cycle = query.findOpenRaidCycle(accountId) ?: return
+        check(cycle.status == RaidAutomationCycleStatus.REWARD_PENDING) {
+            "Raid status refresh is only valid after reward collection."
+        }
+        val now = timeProvider.now()
+        cycle.lastObservedStatus = "REWARD_STATUS_REFRESHED"
+        cycle.nextCheckAt = now.plusSeconds(RAID_STATUS_REFRESH_INTERVAL_SECONDS)
+        cycle.updatedAt = now
+        cycles.save(cycle)
+    }
+
+    @Transactional
     fun raidReset(accountId: Long, raidId: String) {
         val cycle = query.findOpenRaidCycle(accountId) ?: return
         check(cycle.raidId == raidId) { "Raid cycle target changed unexpectedly." }
@@ -99,5 +112,9 @@ class AutomationContentProgressService(
         val state = query.findRotationState(entry.id)
         if (state == null) rotations.save(AutomationRotationStateEntity(entry = entry, currentTargetKey = key, updatedAt = now))
         else { state.currentTargetKey = key; state.updatedAt = now; rotations.save(state) }
+    }
+
+    private companion object {
+        const val RAID_STATUS_REFRESH_INTERVAL_SECONDS = 30L
     }
 }
