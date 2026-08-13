@@ -154,6 +154,7 @@ class RaidPubParser {
     private fun classifyStatus(text: String?, playable: Boolean): RaidStatus = when {
         !playable -> RaidStatus.TESTING
         text == null -> RaidStatus.UNKNOWN
+        isRaidResetRequiredStatus(text) -> RaidStatus.COMPLETED
         REWARD_CONFIRMATION.containsMatchIn(text) -> RaidStatus.COMPLETED
         COMPLETED.containsMatchIn(text) -> RaidStatus.COMPLETED
         IN_BATTLE.containsMatchIn(text) -> RaidStatus.IN_BATTLE
@@ -197,7 +198,7 @@ class RaidPubParser {
         val REGISTER = Regex("^(?:(?:파티에\\s*)?등록(?:한다)?|신청(?:한다)?|register)$", RegexOption.IGNORE_CASE)
         val LEAVE = Regex("^(?:파티에서\\s*)?(?:나온다|나오기|탈퇴(?:한다)?|leave)$", RegexOption.IGNORE_CASE)
         val START = Regex("^(?:전투를?\\s*)?시작(?:한다)?$|^start$", RegexOption.IGNORE_CASE)
-        val RESET = Regex("^(?:파티를?\\s*)?리셋(?:한다)?$|^reset$", RegexOption.IGNORE_CASE)
+        val RESET = Regex("^(?:(?:파티|전투)를?\\s*)?리셋(?:한다)?$|^reset$", RegexOption.IGNORE_CASE)
         val REWARD = Regex("^(?:보상(?:을)?\\s*(?:확인|받기|받는다)|reward)$", RegexOption.IGNORE_CASE)
         val WAIT_RESET = Regex("^(?:신청\\s*)?대기(?:시간)?\\s*(?:초기화|리셋)|^wait\\s*reset$", RegexOption.IGNORE_CASE)
         val REFRESH = Regex("^(?:상태\\s*)?(?:갱신|새로고침)|^refresh$", RegexOption.IGNORE_CASE)

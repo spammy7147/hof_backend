@@ -80,6 +80,22 @@ class RaidPubParserTest {
         assertEquals(10_786, page.applyWaitSeconds)
     }
 
+    @Test fun `보상 확인 종료 상태와 실제 전투 리셋 버튼을 리셋 가능한 완료 레이드로 파싱한다`() {
+        val html = fixture()
+            .replace("현재 상태는 신청 대기 (신청 가능까지 6분 58초)", "현재 상태는 신청 가능")
+            .replace("현재 상태 : 모집 중", "현재 상태 : 보상 확인 종료(리셋 가능)")
+            .replace(
+                "<input type=\"submit\" name=\"leave_goblin\" value=\"파티에서 나온다\">",
+                "<input type=\"submit\" name=\"leave_goblin\" value=\"파티에서 나온다\">" +
+                    "<input type=\"submit\" name=\"reset_goblin\" value=\"전투를 리셋한다\">",
+            )
+
+        val page = parser.parse(html, URL, forms.parse(html, URL))
+
+        assertEquals(RaidStatus.COMPLETED, page.raids.first().status)
+        assertTrue(RaidAction.RESET in page.raids.first().actions)
+    }
+
     @Test fun `같은 submit control이 중복 관측되면 action을 노출하지 않는다`() {
         val duplicate = "<input type=\"submit\" name=\"register_goblin\" value=\"등록한다\">"
         val html = fixture().replace(duplicate, duplicate + duplicate)
@@ -163,6 +179,32 @@ class RaidPubParserTest {
         val allowed = service(completed, completed)
         allowed.service.action(7L, RaidPubActionRequest(RaidAction.RESET, "RaidSiren"))
         assertEquals(2, allowed.requests().size)
+    }
+
+    @Test fun `보상 확인이 종료되어 리셋 가능하면 공유 대기 표기가 없어도 실제 레이드 리셋을 제출한다`() {
+        val resettable = fixture()
+            .replace("현재 상태는 신청 대기 (신청 가능까지 6분 58초)", "현재 상태는 신청 가능")
+            .replace("현재 상태 : 모집 중", "현재 상태 : 보상 확인 종료(리셋 가능)")
+            .replace(
+                "<input type=\"submit\" name=\"leave_goblin\" value=\"파티에서 나온다\">",
+                "<input type=\"submit\" name=\"leave_goblin\" value=\"파티에서 나온다\">" +
+                    "<input type=\"submit\" name=\"reset_goblin\" value=\"전투를 리셋한다\">",
+            )
+        val context = service(resettable, resettable)
+
+        context.service.action(7L, RaidPubActionRequest(RaidAction.RESET, "RaidGoblin"))
+
+        assertEquals(2, context.requests().size)
+        assertEquals(
+            "전투를 리셋한다",
+            context.requests().last().formEntries.single { it.name == "reset_goblin" }.value,
+        )
+
+        val rewardContext = service(resettable)
+        assertFailsWith<app.spammy.hof.common.error.ApiException> {
+            rewardContext.service.action(7L, RaidPubActionRequest(RaidAction.REWARD, null))
+        }
+        assertEquals(1, rewardContext.requests().size)
     }
 
     @Test fun `참가하지 않은 raid의 시작과 나오기는 제출하지 않는다`() {

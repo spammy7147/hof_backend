@@ -5,6 +5,7 @@ import app.spammy.hof.automation.entity.RaidAutomationCycleStatus
 import app.spammy.hof.town.raid.dto.RaidPubResponse
 import app.spammy.hof.town.raid.model.RaidAction
 import app.spammy.hof.town.raid.model.RaidStatus
+import app.spammy.hof.town.raid.model.isRaidResetRequiredStatus
 import org.springframework.stereotype.Service
 import java.time.Instant
 import java.time.ZoneId
@@ -51,6 +52,13 @@ class RaidAutomationHandler : AutomationHandler<RaidAutomationSnapshot> {
                 HandlerEvaluation.Runnable(RaidTownAutomationAction(context.accountId, RaidAction.RESET, raid.id))
             } else {
                 retry(context, "RAID_RESET_PENDING", "보상 수령 후 레이드 초기화 가능 상태를 다시 확인합니다.")
+            }
+        }
+        if (isRaidResetRequiredStatus(raid.statusText)) {
+            return if (RaidAction.RESET in raid.actions) {
+                HandlerEvaluation.Runnable(RaidTownAutomationAction(context.accountId, RaidAction.RESET, raid.id))
+            } else {
+                retry(context, "RAID_RESET_PENDING", "보상 확인이 종료된 레이드의 초기화 가능 상태를 다시 확인합니다.")
             }
         }
         if (raid.status == RaidStatus.CLOSED) return HandlerEvaluation.Runnable(RaidCycleAbortAutomationAction(context.accountId, cycle.raidId))

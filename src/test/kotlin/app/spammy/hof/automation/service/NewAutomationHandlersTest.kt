@@ -146,6 +146,26 @@ class NewAutomationHandlersTest {
     }
 
     @Test
+    fun `raid resets an expired reward confirmation instead of aborting or requesting reward again`() {
+        val target = RaidAutomationTarget("r1", "레이드", PresetSelectionMode.EXPLICIT, 3, 0, party)
+        val resettable = RaidPubRaidResponse(
+            "r1", "레이드", true, null, null, null, RaidStatus.COMPLETED,
+            "보상 확인 종료(리셋 가능)", null, listOf("현재사용자"), true,
+            setOf(RaidAction.RESET), null,
+        )
+        val evaluation = RaidAutomationHandler().evaluate(RaidAutomationSnapshot(
+            1,
+            RaidPubResponse(listOf(resettable), true, false, null, null, setOf(RaidAction.REWARD), null),
+            listOf(target), null,
+            OpenRaidCycleSnapshot(9, "r1", RaidAutomationCycleStatus.IN_BATTLE, null), now,
+        ))
+
+        val action = assertIs<RaidTownAutomationAction>(assertIs<HandlerEvaluation.Runnable>(evaluation).action)
+        assertEquals(RaidAction.RESET, action.action)
+        assertEquals("r1", action.raidId)
+    }
+
+    @Test
     fun `raid waits for departure time even while the start button is visible`() {
         val target = RaidAutomationTarget("RaidGoblin", "고블린 전투 마차", PresetSelectionMode.EXPLICIT, 3, 0, party)
         val waiting = RaidPubRaidResponse(
