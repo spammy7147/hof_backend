@@ -188,6 +188,36 @@ class DefaultAutomationActionExecutorTest {
     }
 
     @Test
+    fun `lost raid registration closes the stale cycle and its work session`() {
+        val progress = Mockito.mock(AutomationContentProgressService::class.java)
+        val raidExecutor = DefaultAutomationActionExecutor(
+            questGateway,
+            battleRun,
+            questHandler,
+            battleHandler,
+            reconciler,
+            HofSessionRecoveryExecutor(HofSessionRecoveryService(accountService)),
+            executionSignals,
+            workLifecycle,
+            contentProgress = progress,
+        )
+        val action = StoredTypedAutomationAction(
+            entryId = 13L,
+            executionIdentity = "raid-registration-lost-1",
+            payload = StoredTypedActionPayload.RaidCycleAbort(
+                "RaidGoblin",
+                RaidCycleAbortReason.REGISTRATION_LOST,
+            ),
+        )
+
+        assertEquals(TypedAutomationExecution.Completed, raidExecutor.execute(7L, action))
+
+        Mockito.verify(progress).raidRegistrationLost(7L, "RaidGoblin")
+        Mockito.verify(progress, Mockito.never()).raidClosed(Mockito.anyLong(), Mockito.anyString())
+        Mockito.verify(workLifecycle).completeRaidCycle(7L, 13L)
+    }
+
+    @Test
     fun `expired session reauthenticates then replays the exact action once`() {
         val action = StoredTypedAutomationAction(
             entryId = 11L,

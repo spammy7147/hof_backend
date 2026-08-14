@@ -86,6 +86,16 @@ class StoredTypedAutomationActionCodecTest {
     }
 
     @Test
+    fun `legacy raid cycle abort defaults to a closed reason`() {
+        val json = """{"entryId":12,"executionIdentity":"raid-abort","payload":{"kind":"RAID_CYCLE_ABORT","raidId":"RaidGoblin"}}"""
+
+        val decoded = codec.decode(json)
+
+        val payload = decoded.payload as StoredTypedActionPayload.RaidCycleAbort
+        assertEquals(RaidCycleAbortReason.CLOSED, payload.reason)
+    }
+
+    @Test
     fun `all current payload kinds remain decodable when display is absent`() {
         val request = RunBattleRequest(
             "battle_map", "gb0", listOf("c1"),

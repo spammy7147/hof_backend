@@ -162,7 +162,11 @@ class DefaultAutomationActionExecutor(
                     TypedAutomationExecution.Completed
                 }
                 is StoredTypedActionPayload.RaidCycleAbort -> {
-                    (contentProgress ?: error("Raid cycle service is unavailable.")).raidClosed(accountId, payload.raidId)
+                    val progress = contentProgress ?: error("Raid cycle service is unavailable.")
+                    when (payload.reason) {
+                        RaidCycleAbortReason.CLOSED -> progress.raidClosed(accountId, payload.raidId)
+                        RaidCycleAbortReason.REGISTRATION_LOST -> progress.raidRegistrationLost(accountId, payload.raidId)
+                    }
                     workLifecycle.completeRaidCycle(accountId, action.entryId)
                     TypedAutomationExecution.Completed
                 }

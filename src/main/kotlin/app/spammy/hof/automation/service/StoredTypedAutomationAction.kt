@@ -96,6 +96,7 @@ sealed interface StoredTypedActionPayload {
     ) : StoredTypedActionPayload
     data class RaidCycleAbort(
         val raidId: String,
+        val reason: RaidCycleAbortReason = RaidCycleAbortReason.CLOSED,
         override val display: StoredActionDisplay? = null,
     ) : StoredTypedActionPayload
     data class AdventureMap(

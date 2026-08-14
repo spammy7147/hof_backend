@@ -538,7 +538,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                 action.targetRaidId,
                 StoredActionDisplay(mapName = action.raidName, missionLabel = action.observedStatus),
             )
-            is RaidCycleAbortAutomationAction -> StoredTypedActionPayload.RaidCycleAbort(action.raidId)
+            is RaidCycleAbortAutomationAction -> StoredTypedActionPayload.RaidCycleAbort(action.raidId, action.reason)
         }
         return StoredTypedAutomationAction(entryId, executionId, payload)
     }
@@ -625,7 +625,10 @@ class UnifiedAutomationRunner @Autowired constructor(
                 }
                 "$phase 단계${payload.display?.missionLabel?.let { " · 관측 상태: $it" } ?: ""}"
             }
-            is StoredTypedActionPayload.RaidCycleAbort -> "레이드 사이클 중단 · ${payload.raidId}"
+            is StoredTypedActionPayload.RaidCycleAbort -> when (payload.reason) {
+                RaidCycleAbortReason.CLOSED -> "레이드 사이클 중단 · ${payload.raidId}"
+                RaidCycleAbortReason.REGISTRATION_LOST -> "레이드 등록 상태 유실 복구 · ${payload.raidId}"
+            }
         }
         val detailedMessage = "$actionContext · $message"
         return AutomationActionTrace(kind, code, detailedMessage, action.entryId, type, actionKind,

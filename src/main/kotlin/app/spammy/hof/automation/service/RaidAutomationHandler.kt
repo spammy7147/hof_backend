@@ -5,6 +5,7 @@ import app.spammy.hof.automation.entity.RaidAutomationCycleStatus
 import app.spammy.hof.town.raid.dto.RaidPubResponse
 import app.spammy.hof.town.raid.model.RaidAction
 import app.spammy.hof.town.raid.model.RaidStatus
+import app.spammy.hof.town.raid.model.isRaidRegistrationMissingStatus
 import app.spammy.hof.town.raid.model.isRaidResetRequiredStatus
 import org.springframework.stereotype.Service
 import java.time.Instant
@@ -28,7 +29,12 @@ data class RaidTownAutomationAction(
     val raidName: String? = null,
     val observedStatus: String? = null,
 ) : PreparedAutomationAction
-data class RaidCycleAbortAutomationAction(val accountId: Long, val raidId: String) : PreparedAutomationAction
+enum class RaidCycleAbortReason { CLOSED, REGISTRATION_LOST }
+data class RaidCycleAbortAutomationAction(
+    val accountId: Long,
+    val raidId: String,
+    val reason: RaidCycleAbortReason = RaidCycleAbortReason.CLOSED,
+) : PreparedAutomationAction
 
 @Service
 class RaidAutomationHandler : AutomationHandler<RaidAutomationSnapshot> {
@@ -56,6 +62,20 @@ class RaidAutomationHandler : AutomationHandler<RaidAutomationSnapshot> {
         }
         val raid = context.pub.raids.singleOrNull { it.id == cycle.raidId }
             ?: return retry(context, "RAID_TARGET_TEMPORARILY_MISSING", "진행 중인 레이드 대상을 다시 확인합니다.")
+        if (
+            cycle.status == RaidAutomationCycleStatus.REGISTERED_WAITING &&
+            !raid.joined &&
+            isRaidRegistrationMissingStatus(raid.statusText) &&
+            RaidAction.REGISTER in raid.actions
+        ) {
+            return HandlerEvaluation.Runnable(
+                RaidCycleAbortAutomationAction(
+                    context.accountId,
+                    cycle.raidId,
+                    RaidCycleAbortReason.REGISTRATION_LOST,
+                ),
+            )
+        }
         if (cycle.status == RaidAutomationCycleStatus.REWARD_PENDING) {
             if (isRaidResetRequiredStatus(raid.statusText)) {
                 return if (RaidAction.RESET in raid.actions) {

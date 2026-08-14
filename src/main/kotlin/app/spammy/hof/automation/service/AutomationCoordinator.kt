@@ -250,6 +250,11 @@ private fun PreparedAutomationAction.selectionTrace(): SelectedActionTrace = whe
         }, targetRaidId ?: raidId, raidName,
     )
     is RaidCycleAbortAutomationAction -> SelectedActionTrace(
-        "CYCLE_ABORT", "레이드가 CLOSED 상태여서 현재 사이클을 중단으로 기록합니다.", raidId,
+        "CYCLE_ABORT",
+        when (reason) {
+            RaidCycleAbortReason.CLOSED -> "레이드가 CLOSED 상태여서 현재 사이클을 중단으로 기록합니다."
+            RaidCycleAbortReason.REGISTRATION_LOST -> "저장된 등록 상태와 달리 현재 신청되지 않아 기존 사이클을 정리하고 다시 등록합니다."
+        },
+        raidId,
     )
 }

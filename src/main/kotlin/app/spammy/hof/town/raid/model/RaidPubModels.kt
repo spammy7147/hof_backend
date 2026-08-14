@@ -9,7 +9,11 @@ enum class RaidStatus { RECRUITING, WAITING, READY, IN_BATTLE, COMPLETED, CLOSED
 fun isRaidResetRequiredStatus(statusText: String?): Boolean =
     statusText?.let { RESET_REQUIRED_STATUS.containsMatchIn(it) } == true
 
+fun isRaidRegistrationMissingStatus(statusText: String?): Boolean =
+    statusText?.let { REGISTRATION_MISSING_STATUS.containsMatchIn(it) } == true
+
 private val RESET_REQUIRED_STATUS = Regex("보상\\s*확인\\s*종료\\s*\\(\\s*리셋\\s*가능\\s*\\)")
+private val REGISTRATION_MISSING_STATUS = Regex("신청\\s*안됨")
 
 data class RaidBattleTarget(
     val categoryId: String = "raid",

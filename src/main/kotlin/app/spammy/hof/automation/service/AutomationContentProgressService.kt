@@ -87,6 +87,12 @@ class AutomationContentProgressService(
     }
 
     @Transactional
+    fun raidRegistrationLost(accountId: Long, raidId: String) = updateOpen(accountId, raidId) { cycle, now ->
+        cycle.status = RaidAutomationCycleStatus.ABORTED_CLOSED; cycle.lastObservedStatus = "REGISTRATION_LOST"
+        cycle.openMarker = null; cycle.finishedAt = now; cycle.nextCheckAt = null; cycle.updatedAt = now
+    }
+
+    @Transactional
     fun finishDrainIfNoOpenCycle(accountId: Long) {
         if (query.findOpenRaidCycle(accountId) != null) return
         val now = timeProvider.now()

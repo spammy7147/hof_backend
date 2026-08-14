@@ -225,6 +225,54 @@ class NewAutomationHandlersTest {
     }
 
     @Test
+    fun `raid abandons a stale registered cycle before registering again`() {
+        val target = RaidAutomationTarget("RaidGoblin", "고블린 전투 마차", PresetSelectionMode.EXPLICIT, 3, 0, party)
+        val registerable = RaidPubRaidResponse(
+            "RaidGoblin", "고블린 전투 마차", true, null, 6, "100000+",
+            RaidStatus.RECRUITING, "파티 모집 중 (신청 안됨)", null,
+            emptyList(), false, setOf(RaidAction.REGISTER), null,
+        )
+        val snapshot = RaidAutomationSnapshot(
+            1,
+            RaidPubResponse(listOf(registerable), false, false, null, null, emptySet(), null),
+            listOf(target),
+            null,
+            OpenRaidCycleSnapshot(9, "RaidGoblin", RaidAutomationCycleStatus.REGISTERED_WAITING, null),
+            now,
+        )
+
+        val recovery = RaidAutomationHandler().evaluate(snapshot)
+        val abort = assertIs<RaidCycleAbortAutomationAction>(assertIs<HandlerEvaluation.Runnable>(recovery).action)
+        assertEquals(RaidCycleAbortReason.REGISTRATION_LOST, abort.reason)
+
+        val registration = RaidAutomationHandler().evaluate(snapshot.copy(openCycle = null))
+        val action = assertIs<RaidTownAutomationAction>(assertIs<HandlerEvaluation.Runnable>(registration).action)
+        assertEquals(RaidAction.REGISTER, action.action)
+        assertEquals("RaidGoblin", action.raidId)
+    }
+
+    @Test
+    fun `raid does not abandon a cycle from joined parsing alone`() {
+        val target = RaidAutomationTarget("RaidGoblin", "고블린 전투 마차", PresetSelectionMode.EXPLICIT, 3, 0, party)
+        val uncertain = RaidPubRaidResponse(
+            "RaidGoblin", "고블린 전투 마차", true, null, 6, "100000+",
+            RaidStatus.RECRUITING, "파티 모집 중", null,
+            emptyList(), false, setOf(RaidAction.REGISTER), null,
+        )
+
+        val evaluation = RaidAutomationHandler().evaluate(RaidAutomationSnapshot(
+            1,
+            RaidPubResponse(listOf(uncertain), false, false, null, null, emptySet(), null),
+            listOf(target),
+            null,
+            OpenRaidCycleSnapshot(9, "RaidGoblin", RaidAutomationCycleStatus.REGISTERED_WAITING, null),
+            now,
+        ))
+
+        assertEquals("RAID_WAITING_TO_START", assertIs<HandlerEvaluation.Unavailable>(evaluation).reasonCode)
+    }
+
+    @Test
     fun `raid waits for the observed next battle cooldown`() {
         val target = RaidAutomationTarget("RaidGoblin", "고블린 전투 마차", PresetSelectionMode.EXPLICIT, 3, 0, party)
         val fighting = RaidPubRaidResponse(

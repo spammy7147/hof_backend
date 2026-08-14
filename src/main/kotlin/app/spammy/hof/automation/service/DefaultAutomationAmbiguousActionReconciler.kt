@@ -128,7 +128,10 @@ class DefaultAutomationAmbiguousActionReconciler(
     ): AmbiguousActionResolution {
         val progress = contentProgress
             ?: return AmbiguousActionResolution.VerifyLater(retryAt(), "레이드 사이클 저장 연결을 기다립니다.")
-        progress.raidClosed(accountId, payload.raidId)
+        when (payload.reason) {
+            RaidCycleAbortReason.CLOSED -> progress.raidClosed(accountId, payload.raidId)
+            RaidCycleAbortReason.REGISTRATION_LOST -> progress.raidRegistrationLost(accountId, payload.raidId)
+        }
         workLifecycle.completeRaidCycle(accountId, entryId)
         return AmbiguousActionResolution.Applied()
     }
