@@ -59,10 +59,12 @@ class FishingPageParser(
             result.messages.isNotEmpty() || result.items.isNotEmpty() -> FishingOutcome.INFORMATIONAL
             else -> FishingOutcome.INFORMATIONAL
         } else if (STARTED.containsMatchIn(text)) FishingOutcome.STARTED else null
-        // HOF는 실제 낚시 전투 차단 문구를 빨간 글씨로 표시한다. 낚시 action 직후에는
-        // 같은 문구가 본문 경고가 아니라 결과 영역으로만 반환될 수 있으므로 구조화된
-        // action 결과도 함께 본다. 일반 안내문은 result가 아니므로 차단으로 오인하지 않는다.
-        val blocked = battleMessagePresent || BATTLE_BLOCKED.containsMatchIn(resultText)
+        // HOF는 실제 낚시 전투 차단 문구를 빨간 계열 글씨로 표시하지만 색상 값은
+        // 고정되어 있지 않다. 따라서 낚시터 몬스터를 직접 지칭하는 강한 문구는 본문
+        // 전체에서도 확인하고, 일반 도움말과 겹칠 수 있는 넓은 패턴은 경고/결과에만 쓴다.
+        val blocked = DIRECT_BATTLE_BLOCKED.containsMatchIn(text) ||
+            battleMessagePresent ||
+            BATTLE_BLOCKED.containsMatchIn(resultText)
         val battleTarget = detectedBattleTarget.takeIf { blocked }
         val available = if (blocked) emptyList() else actions
         val catches = if (result != null) parseCaughtItems(document, fishingResultLines) else emptyList()
@@ -428,6 +430,10 @@ class FishingPageParser(
         val ESCAPED = Regex("도망(?:쳤|갔|가 버렸|쳐)|놓쳤|escaped", RegexOption.IGNORE_CASE)
         val CAUGHT = Regex("낚았다|획득했다|낚는데!|caught", RegexOption.IGNORE_CASE)
         val STARTED = Regex("지금부터 낚시를 시작|물고기 그림자|낚시를 시작합니다")
+        val DIRECT_BATTLE_BLOCKED = Regex(
+            "낚시터에\\s*나타난\\s*몬스터[^。.!?]*(?:때문에|먼저)[^。.!?]*낚시(?:가|를)?\\s*(?:할 수 없|불가능)",
+            RegexOption.IGNORE_CASE,
+        )
         val BATTLE_BLOCKED = Regex("(?:전투몹|몬스터)[^。.!?]*(?:출몰|등장|낚시(?:가|를)?\\s*(?:할 수 없|불가능))", RegexOption.IGNORE_CASE)
         val CSS_COLOR = Regex("(?:^|;)\\s*color\\s*:\\s*([^;\\s]+)", RegexOption.IGNORE_CASE)
         val RED_COLOR_VALUES = setOf("red", "#f00", "#ff0000", "rgb(255,0,0)", "rgb(255, 0, 0)")

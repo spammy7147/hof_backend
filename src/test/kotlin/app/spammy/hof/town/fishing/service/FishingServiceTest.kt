@@ -78,6 +78,21 @@ class FishingServiceTest {
     }
 
     @Test
+    fun `낚시 경고 문구가 없어도 전투 탭에 낚시 맵이 출현하면 전투 상태로 보완한다`() {
+        stubFishing(fixture("reset.html"))
+        Mockito.`when`(battleMaps.findCurrentlyObservedMaps(7L, "battle_map"))
+            .thenReturn(listOf(observedMap("Fish03", "Fishing- 악어", "낚시")))
+
+        val response = service.load(7L)
+
+        assertEquals(true, response.blockedByBattle)
+        assertEquals("NONE", response.primaryAction.name)
+        assertEquals(emptySet(), response.availableActions)
+        assertEquals("Fish03", response.battleTarget?.mapCode)
+        assertEquals("Fishing- 악어", response.battleTarget?.name)
+    }
+
+    @Test
     fun `전투 출몰 상태에서는 HOF 낚시 form을 제출하지 않는다`() {
         val html = fixture("monster.html")
         stubAccount()

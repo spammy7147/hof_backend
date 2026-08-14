@@ -16,6 +16,7 @@ import app.spammy.hof.town.fishing.dto.FishingExchangeResponse
 import app.spammy.hof.town.fishing.dto.FishingResponse
 import app.spammy.hof.town.fishing.model.FishingAction
 import app.spammy.hof.town.fishing.model.FishingBattleTarget
+import app.spammy.hof.town.fishing.model.FishingPrimaryAction
 import app.spammy.hof.town.fishing.model.FishingSnapshot
 import app.spammy.hof.town.fishing.parser.FishingExchangeCategoryException
 import app.spammy.hof.town.fishing.parser.FishingExchangeContractException
@@ -113,17 +114,20 @@ class FishingService(
     }
 
     /**
-     * 실서버의 낚시 경고에는 전투 링크가 없을 수 있다. 그 경우 전투 탭의 이번 응답에서 실제로 관측된
-     * `낚시` 그룹 맵을 찾아 전투 화면으로 이동할 수 있는 목표를 보완한다.
+     * 실서버는 낚시 전투가 발생해도 낚시 페이지에 경고나 전투 링크를 항상 표시하지 않는다.
+     * 전투 탭의 이번 응답에서 실제로 관측된 `낚시` 그룹 맵을 권위 있는 차단 상태로 사용한다.
      */
     private fun withObservedBattleTarget(accountId: Long, snapshot: FishingSnapshot): FishingSnapshot {
-        if (!snapshot.blockedByBattle || snapshot.battleTarget != null) return snapshot
+        if (snapshot.battleTarget != null) return snapshot
 
         val observed = battleMaps.findCurrentlyObservedMaps(accountId, BATTLE_CATEGORY_ID)
             .filter { it.enabled && it.resolved && !it.mapCode.isNullOrBlank() }
             .filter(::isFishingBattleMap)
             .firstOrNull() ?: return snapshot
         return snapshot.copy(
+            primaryAction = FishingPrimaryAction.NONE,
+            availableActions = emptyList(),
+            blockedByBattle = true,
             battleTarget = FishingBattleTarget(
                 categoryId = BATTLE_CATEGORY_ID,
                 mapCode = requireNotNull(observed.mapCode),

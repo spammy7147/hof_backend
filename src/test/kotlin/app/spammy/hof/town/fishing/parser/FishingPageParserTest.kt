@@ -73,6 +73,23 @@ class FishingPageParserTest {
     }
 
     @Test
+    fun `실서버 경고 색상이 표준 red가 아니어도 낚시터 몬스터 문구를 차단 상태로 인식한다`() {
+        val html = """
+            <html><body><section id="fishing">
+              <font color="#ff4500">낚시터에 나타난 몬스터 때문에 낚시가 불가능합니다! 전투를 끝내면 됩니다.</font>
+              <p>(오늘의 남은 낚시 횟수 : 3회)</p>
+              <form method="post"><input type="submit" name="do" value="낚시를 시작한다"></form>
+            </section></body></html>
+        """.trimIndent()
+
+        val snapshot = parser.parse(html, url, forms.parse(html, url))
+
+        assertTrue(snapshot.blockedByBattle)
+        assertEquals(FishingPrimaryAction.NONE, snapshot.primaryAction)
+        assertTrue(snapshot.availableActions.isEmpty())
+    }
+
+    @Test
     fun `낚시 action 결과에만 몬스터 차단 문구가 있어도 전투 상태로 전환한다`() {
         val html = fixture("reset.html")
         val result = ParsedTownResult(
