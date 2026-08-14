@@ -13,8 +13,10 @@ import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.quest.model.QuestMissionType
 import app.spammy.hof.quest.service.QuestGatewayService
 import app.spammy.hof.town.raid.dto.RaidPubActionRequest
+import app.spammy.hof.town.raid.dto.RaidPubRaidResponse
 import app.spammy.hof.town.raid.dto.RaidPubResponse
 import app.spammy.hof.town.raid.model.RaidAction
+import app.spammy.hof.town.raid.model.RaidStatus
 import app.spammy.hof.town.raid.service.RaidPubService
 import app.spammy.hof.town.fishing.dto.TownActionResultResponse
 import java.io.IOException
@@ -129,6 +131,78 @@ class DefaultAutomationActionExecutorTest {
 
         Mockito.verifyNoInteractions(progress)
         Mockito.verify(workLifecycle, Mockito.never()).completeRaidCycle(Mockito.anyLong(), Mockito.anyLong())
+    }
+
+    @Test
+    fun `fixed register button does not prove raid reset succeeded while reset is still required`() {
+        val raidPub = Mockito.mock(RaidPubService::class.java)
+        val progress = Mockito.mock(AutomationContentProgressService::class.java)
+        val raidExecutor = DefaultAutomationActionExecutor(
+            questGateway,
+            battleRun,
+            questHandler,
+            battleHandler,
+            reconciler,
+            HofSessionRecoveryExecutor(HofSessionRecoveryService(accountService)),
+            executionSignals,
+            workLifecycle,
+            raidPubService = raidPub,
+            contentProgress = progress,
+        )
+        val unchanged = RaidPubRaidResponse(
+            "RaidGoblin", "고블린 전투 마차", true, null, null, null,
+            RaidStatus.COMPLETED, "보상 확인 종료(리셋 가능)", null,
+            emptyList(), false, setOf(RaidAction.REGISTER, RaidAction.RESET), null,
+        )
+        Mockito.`when`(raidPub.action(7L, RaidPubActionRequest(RaidAction.RESET, "RaidGoblin")))
+            .thenReturn(RaidPubResponse(listOf(unchanged), false, false, null, null, emptySet(), null))
+        val action = StoredTypedAutomationAction(
+            entryId = 13L,
+            executionIdentity = "raid-reset-fixed-buttons",
+            payload = StoredTypedActionPayload.RaidTown(RaidAction.RESET, "RaidGoblin"),
+        )
+
+        assertFailsWith<AmbiguousAutomationSubmissionException> {
+            raidExecutor.execute(7L, action)
+        }
+
+        Mockito.verifyNoInteractions(progress)
+        Mockito.verify(workLifecycle, Mockito.never()).completeRaidCycle(Mockito.anyLong(), Mockito.anyLong())
+    }
+
+    @Test
+    fun `explicit recruitment state transition proves raid reset succeeded`() {
+        val raidPub = Mockito.mock(RaidPubService::class.java)
+        val progress = Mockito.mock(AutomationContentProgressService::class.java)
+        val raidExecutor = DefaultAutomationActionExecutor(
+            questGateway,
+            battleRun,
+            questHandler,
+            battleHandler,
+            reconciler,
+            HofSessionRecoveryExecutor(HofSessionRecoveryService(accountService)),
+            executionSignals,
+            workLifecycle,
+            raidPubService = raidPub,
+            contentProgress = progress,
+        )
+        val registerable = RaidPubRaidResponse(
+            "RaidGoblin", "고블린 전투 마차", true, null, null, null,
+            RaidStatus.RECRUITING, "파티 모집 중 (신청 안됨)", null,
+            emptyList(), false, setOf(RaidAction.REGISTER, RaidAction.RESET), null,
+        )
+        Mockito.`when`(raidPub.action(7L, RaidPubActionRequest(RaidAction.RESET, "RaidGoblin")))
+            .thenReturn(RaidPubResponse(listOf(registerable), false, false, null, null, emptySet(), null))
+        val action = StoredTypedAutomationAction(
+            entryId = 13L,
+            executionIdentity = "raid-reset-state-transition",
+            payload = StoredTypedActionPayload.RaidTown(RaidAction.RESET, "RaidGoblin"),
+        )
+
+        assertEquals(TypedAutomationExecution.Completed, raidExecutor.execute(7L, action))
+
+        Mockito.verify(progress).raidReset(7L, "RaidGoblin")
+        Mockito.verify(workLifecycle).completeRaidCycle(7L, 13L)
     }
 
     @Test

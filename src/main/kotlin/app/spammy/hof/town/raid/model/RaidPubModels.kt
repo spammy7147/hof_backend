@@ -12,6 +12,9 @@ fun isRaidResetRequiredStatus(statusText: String?): Boolean =
 fun isRaidRegistrationMissingStatus(statusText: String?): Boolean =
     statusText?.let { REGISTRATION_MISSING_STATUS.containsMatchIn(it) } == true
 
+fun isRaidRegistrationAvailable(status: RaidStatus, statusText: String?): Boolean =
+    status == RaidStatus.RECRUITING && isRaidRegistrationMissingStatus(statusText)
+
 private val RESET_REQUIRED_STATUS = Regex("보상\\s*확인\\s*종료\\s*\\(\\s*리셋\\s*가능\\s*\\)")
 private val REGISTRATION_MISSING_STATUS = Regex("신청\\s*안됨")
 

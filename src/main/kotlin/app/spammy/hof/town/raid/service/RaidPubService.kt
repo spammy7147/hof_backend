@@ -100,11 +100,11 @@ class RaidPubService(
     private fun canExecute(snapshot: RaidPubSnapshot, raid: RaidPubRaid, action: RaidAction): Boolean {
         if (action !in raid.actions || !raid.playable) return false
         return when (action) {
-            RaidAction.REGISTER -> !raid.joined && !snapshot.applyWait && raid.status !in REGISTER_BLOCKED_STATUSES
+            RaidAction.REGISTER -> !raid.joined && !snapshot.applyWait &&
+                isRaidRegistrationAvailable(raid.status, raid.statusText)
             RaidAction.LEAVE -> raid.joined
             RaidAction.START -> raid.joined && raid.status == RaidStatus.READY
-            RaidAction.RESET -> raid.joined && raid.status == RaidStatus.COMPLETED &&
-                isRaidResetRequiredStatus(raid.statusText)
+            RaidAction.RESET -> raid.status == RaidStatus.COMPLETED && isRaidResetRequiredStatus(raid.statusText)
             else -> false
         }
     }
@@ -113,6 +113,5 @@ class RaidPubService(
     private fun invalid(message: String): Nothing = throw ApiException(ErrorCode.INVALID_REQUEST, message)
     private companion object {
         val RAID_ACTIONS = setOf(RaidAction.REGISTER, RaidAction.LEAVE, RaidAction.START, RaidAction.RESET)
-        val REGISTER_BLOCKED_STATUSES = setOf(RaidStatus.IN_BATTLE, RaidStatus.COMPLETED, RaidStatus.CLOSED, RaidStatus.TESTING)
     }
 }

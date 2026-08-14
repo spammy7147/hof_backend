@@ -17,6 +17,11 @@ import app.spammy.hof.quest.model.QuestProgress
 import app.spammy.hof.quest.model.QuestSnapshot
 import app.spammy.hof.quest.model.QuestState
 import app.spammy.hof.quest.service.QuestGatewayService
+import app.spammy.hof.town.raid.dto.RaidPubRaidResponse
+import app.spammy.hof.town.raid.dto.RaidPubResponse
+import app.spammy.hof.town.raid.model.RaidAction
+import app.spammy.hof.town.raid.model.RaidStatus
+import app.spammy.hof.town.raid.service.RaidPubService
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertIs
@@ -51,6 +56,39 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
             .thenReturn(listOf(quest("Q-1", QuestState.AVAILABLE, "accept-no")))
 
         assertIs<AmbiguousActionResolution.Resubmit>(reconciler.reconcile(7, questAccept()))
+    }
+
+    @Test
+    fun `fixed register button does not prove ambiguous raid reset succeeded`() {
+        val raidPub = Mockito.mock(RaidPubService::class.java)
+        val progress = Mockito.mock(AutomationContentProgressService::class.java)
+        val localWorkLifecycle = Mockito.mock(AutomationWorkLifecycle::class.java)
+        val raidReconciler = DefaultAutomationAmbiguousActionReconciler(
+            questGateway,
+            battleMapService,
+            battleHandler,
+            HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
+            TimeProvider { now },
+            localWorkLifecycle,
+            raidPubService = raidPub,
+            contentProgress = progress,
+        )
+        val resettable = RaidPubRaidResponse(
+            "RaidGoblin", "고블린 전투 마차", true, null, null, null,
+            RaidStatus.COMPLETED, "보상 확인 종료(리셋 가능)", null,
+            emptyList(), false, setOf(RaidAction.REGISTER, RaidAction.RESET), null,
+        )
+        Mockito.`when`(raidPub.load(7L))
+            .thenReturn(RaidPubResponse(listOf(resettable), false, false, null, null, emptySet(), null))
+        val action = StoredTypedAutomationAction(
+            13L,
+            "raid-reset-ambiguous",
+            StoredTypedActionPayload.RaidTown(RaidAction.RESET, "RaidGoblin"),
+        )
+
+        assertIs<AmbiguousActionResolution.Resubmit>(raidReconciler.reconcile(7L, action))
+        Mockito.verifyNoInteractions(progress)
+        Mockito.verifyNoInteractions(localWorkLifecycle)
     }
 
     @Test

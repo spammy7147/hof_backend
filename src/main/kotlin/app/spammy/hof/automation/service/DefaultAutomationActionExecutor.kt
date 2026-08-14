@@ -13,6 +13,7 @@ import app.spammy.hof.town.home.service.HomeService
 import app.spammy.hof.town.raid.dto.RaidPubActionRequest
 import app.spammy.hof.town.raid.dto.RaidPubResponse
 import app.spammy.hof.town.raid.model.RaidAction
+import app.spammy.hof.town.raid.model.isRaidRegistrationAvailable
 import app.spammy.hof.town.raid.service.RaidPubService
 import java.io.IOException
 import org.springframework.stereotype.Service
@@ -246,7 +247,7 @@ class DefaultAutomationActionExecutor(
         val resultText = result?.messages.orEmpty().joinToString(" ")
         if (RAID_RESET_SUCCEEDED.containsMatchIn(resultText)) return true
         val raid = raids.singleOrNull { it.id == raidId } ?: return false
-        return !raid.joined && RaidAction.REGISTER in raid.actions
+        return !raid.joined && isRaidRegistrationAvailable(raid.status, raid.statusText)
     }
 
     private fun StoredTypedActionPayload.battleRequestOrNull(): RunBattleRequest? = when (this) {

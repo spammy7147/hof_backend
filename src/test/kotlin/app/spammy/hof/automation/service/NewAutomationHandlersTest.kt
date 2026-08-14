@@ -223,6 +223,42 @@ class NewAutomationHandlersTest {
     }
 
     @Test
+    fun `raid resets an expired reward confirmation before registration even without an open cycle`() {
+        val target = RaidAutomationTarget("r1", "레이드", PresetSelectionMode.EXPLICIT, 3, 0, party)
+        val resettable = RaidPubRaidResponse(
+            "r1", "레이드", true, null, null, null, RaidStatus.COMPLETED,
+            "보상 확인 종료(리셋 가능)", null, emptyList(), false,
+            setOf(RaidAction.REGISTER, RaidAction.RESET), null,
+        )
+        val evaluation = RaidAutomationHandler().evaluate(RaidAutomationSnapshot(
+            1,
+            RaidPubResponse(listOf(resettable), false, true, 10_786, null, emptySet(), null),
+            listOf(target), null, null, now,
+        ))
+
+        val action = assertIs<RaidTownAutomationAction>(assertIs<HandlerEvaluation.Runnable>(evaluation).action)
+        assertEquals(RaidAction.RESET, action.action)
+        assertEquals("r1", action.raidId)
+    }
+
+    @Test
+    fun `raid does not register unless status explicitly says recruitment is not applied`() {
+        val target = RaidAutomationTarget("r1", "레이드", PresetSelectionMode.EXPLICIT, 3, 0, party)
+        val waiting = RaidPubRaidResponse(
+            "r1", "레이드", true, null, null, null, RaidStatus.WAITING,
+            "파티 모집 중 (30초 후 출발 가능)", 30, emptyList(), false,
+            setOf(RaidAction.REGISTER), null,
+        )
+        val evaluation = RaidAutomationHandler().evaluate(RaidAutomationSnapshot(
+            1,
+            RaidPubResponse(listOf(waiting), false, false, null, null, emptySet(), null),
+            listOf(target), null, null, now,
+        ))
+
+        assertIs<HandlerEvaluation.ConfigurationWarning>(evaluation)
+    }
+
+    @Test
     fun `raid waits for departure time even while the start button is visible`() {
         val target = RaidAutomationTarget("RaidGoblin", "고블린 전투 마차", PresetSelectionMode.EXPLICIT, 3, 0, party)
         val waiting = RaidPubRaidResponse(

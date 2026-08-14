@@ -181,6 +181,18 @@ class RaidPubParserTest {
         assertEquals(1, context.requests().size)
     }
 
+    @Test fun `신청 안됨 상태가 아니면 고정 등록 submit이 있어도 등록하지 않는다`() {
+        val recruitingWithoutProof = fixture()
+            .replace("현재 상태는 신청 대기 (신청 가능까지 6분 58초)", "현재 상태는 신청 가능")
+            .replace("[《테스트 길드》현재사용자]", "[다른 신청자]")
+        val context = service(recruitingWithoutProof)
+
+        assertFailsWith<app.spammy.hof.common.error.ApiException> {
+            context.service.action(7L, RaidPubActionRequest(RaidAction.REGISTER, "RaidGoblin"))
+        }
+        assertEquals(1, context.requests().size)
+    }
+
     @Test fun `상시 보상 버튼이 보여도 완료 레이드가 없으면 제출하지 않는다`() {
         val context = service(fixture())
         assertFailsWith<app.spammy.hof.common.error.ApiException> {
@@ -214,6 +226,7 @@ class RaidPubParserTest {
         val resettable = fixture()
             .replace("현재 상태는 신청 대기 (신청 가능까지 6분 58초)", "현재 상태는 신청 가능")
             .replace("현재 상태 : 모집 중", "현재 상태 : 보상 확인 종료(리셋 가능)")
+            .replace("[《테스트 길드》현재사용자]", "[다른 신청자]")
             .replace(
                 "<input type=\"submit\" name=\"leave_goblin\" value=\"파티에서 나온다\">",
                 "<input type=\"submit\" name=\"leave_goblin\" value=\"파티에서 나온다\">" +
@@ -304,6 +317,7 @@ class RaidPubParserTest {
     private fun fixture() = requireNotNull(javaClass.getResource("/fixtures/town/raid/raidpub.html")).readText()
     private fun registerableFixture() = fixture()
         .replace("현재 상태는 신청 대기 (신청 가능까지 6분 58초)", "현재 상태는 신청 가능")
+        .replace("현재 상태 : 모집 중", "현재 상태 : 파티 모집 중 (신청 안됨)")
         .replace("[《테스트 길드》현재사용자]", "[다른 신청자]")
     private fun startableFixture() = fixture()
         .replace("현재 상태 : 418초 후 출발", "현재 상태 : 출발 가능")

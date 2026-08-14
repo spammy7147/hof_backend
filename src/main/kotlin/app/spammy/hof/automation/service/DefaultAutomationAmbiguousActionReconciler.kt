@@ -11,6 +11,8 @@ import app.spammy.hof.town.home.model.HomeQuestState
 import app.spammy.hof.town.home.service.HomeService
 import app.spammy.hof.town.raid.model.RaidAction
 import app.spammy.hof.town.raid.model.RaidStatus
+import app.spammy.hof.town.raid.model.isRaidRegistrationAvailable
+import app.spammy.hof.town.raid.model.isRaidResetRequiredStatus
 import app.spammy.hof.town.raid.service.RaidPubService
 import org.springframework.stereotype.Service
 
@@ -82,7 +84,7 @@ class DefaultAutomationAmbiguousActionReconciler(
                 if (raid.joined || latest.applied) {
                     progress.raidRegistered(accountId, entryId, id, raid.name, raid.waitSeconds ?: latest.applyWaitSeconds)
                     AmbiguousActionResolution.Applied()
-                } else if (RaidAction.REGISTER in raid.actions) AmbiguousActionResolution.Resubmit
+                } else if (isRaidRegistrationAvailable(raid.status, raid.statusText)) AmbiguousActionResolution.Resubmit
                 else AmbiguousActionResolution.VerifyLater(retryAt(), "레이드 등록 결과를 아직 확정할 수 없습니다.")
             }
             RaidAction.START -> {
@@ -91,7 +93,7 @@ class DefaultAutomationAmbiguousActionReconciler(
                     ?: return AmbiguousActionResolution.VerifyLater(retryAt(), "시작한 레이드가 아직 관측되지 않습니다.")
                 if (raid.status in setOf(RaidStatus.IN_BATTLE, RaidStatus.COMPLETED)) {
                     progress.raidStarted(accountId, id); AmbiguousActionResolution.Applied()
-                } else if (RaidAction.START in raid.actions) AmbiguousActionResolution.Resubmit
+                } else if (raid.joined && raid.status == RaidStatus.READY) AmbiguousActionResolution.Resubmit
                 else AmbiguousActionResolution.VerifyLater(retryAt(), "레이드 시작 결과를 아직 확정할 수 없습니다.")
             }
             RaidAction.REWARD -> if (
@@ -107,11 +109,11 @@ class DefaultAutomationAmbiguousActionReconciler(
             RaidAction.RESET -> {
                 val id = requireNotNull(payload.raidId)
                 val raid = latest.raids.singleOrNull { it.id == id }
-                if (raid != null && !raid.joined && RaidAction.REGISTER in raid.actions) {
+                if (raid != null && !raid.joined && isRaidRegistrationAvailable(raid.status, raid.statusText)) {
                     progress.raidReset(accountId, id)
                     workLifecycle.completeRaidCycle(accountId, entryId)
                     AmbiguousActionResolution.Applied()
-                } else if (raid != null && RaidAction.RESET in raid.actions) {
+                } else if (raid != null && isRaidResetRequiredStatus(raid.statusText)) {
                     AmbiguousActionResolution.Resubmit
                 } else {
                     AmbiguousActionResolution.VerifyLater(retryAt(), "레이드 리셋 결과를 아직 확정할 수 없습니다.")

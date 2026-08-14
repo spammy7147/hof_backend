@@ -5,7 +5,7 @@ import app.spammy.hof.automation.entity.RaidAutomationCycleStatus
 import app.spammy.hof.town.raid.dto.RaidPubResponse
 import app.spammy.hof.town.raid.model.RaidAction
 import app.spammy.hof.town.raid.model.RaidStatus
-import app.spammy.hof.town.raid.model.isRaidRegistrationMissingStatus
+import app.spammy.hof.town.raid.model.isRaidRegistrationAvailable
 import app.spammy.hof.town.raid.model.isRaidResetRequiredStatus
 import org.springframework.stereotype.Service
 import java.time.Instant
@@ -43,12 +43,26 @@ class RaidAutomationHandler : AutomationHandler<RaidAutomationSnapshot> {
         if (cycle != null) return evaluateCycle(context, cycle)
         val ordered = rotate(context.targets.sortedWith(compareBy(RaidAutomationTarget::executionOrder, RaidAutomationTarget::raidId)), context.currentTargetKey)
         val target = ordered.firstOrNull() ?: return HandlerEvaluation.ConfigurationWarning("레이드를 하나 이상 선택해 주세요.", "RAID_TARGET_MISSING")
+        val resettable = ordered.firstNotNullOfOrNull { candidate ->
+            context.pub.raids.singleOrNull { it.id == candidate.raidId }
+                ?.takeIf { isRaidResetRequiredStatus(it.statusText) }
+                ?.let { candidate to it }
+        }
+        if (resettable != null) {
+            val (resetTarget, raid) = resettable
+            if (RaidAction.RESET !in raid.actions) {
+                return HandlerEvaluation.ConfigurationWarning("리셋 가능한 레이드의 실행 정보를 확인할 수 없습니다.", "RAID_RESET_UNAVAILABLE")
+            }
+            return HandlerEvaluation.Runnable(RaidTownAutomationAction(
+                context.accountId, RaidAction.RESET, raid.id, raid.id, resetTarget.name, raid.statusText,
+            ))
+        }
         if (context.pub.applyWait) return HandlerEvaluation.Unavailable(
             context.now.plusSeconds((context.pub.applyWaitSeconds ?: 30).coerceAtLeast(5).toLong()), "RAID_SHARED_COOLDOWN", "레이드 등록 쿨다운을 기다립니다.",
         )
         val raid = context.pub.raids.singleOrNull { it.id == target.raidId }
             ?: return HandlerEvaluation.ConfigurationWarning("차례인 레이드가 현재 보이지 않아 이번 판단을 건너뜁니다.", "RAID_TARGET_NOT_VISIBLE")
-        if (!raid.playable || RaidAction.REGISTER !in raid.actions) {
+        if (!raid.playable || !isRaidRegistrationAvailable(raid.status, raid.statusText) || RaidAction.REGISTER !in raid.actions) {
             return HandlerEvaluation.ConfigurationWarning("차례인 레이드는 현재 등록할 수 없습니다.", "RAID_REGISTER_UNAVAILABLE")
         }
         return HandlerEvaluation.Runnable(RaidTownAutomationAction(
@@ -65,8 +79,7 @@ class RaidAutomationHandler : AutomationHandler<RaidAutomationSnapshot> {
         if (
             cycle.status == RaidAutomationCycleStatus.REGISTERED_WAITING &&
             !raid.joined &&
-            isRaidRegistrationMissingStatus(raid.statusText) &&
-            RaidAction.REGISTER in raid.actions
+            isRaidRegistrationAvailable(raid.status, raid.statusText)
         ) {
             return HandlerEvaluation.Runnable(
                 RaidCycleAbortAutomationAction(
