@@ -84,6 +84,13 @@ class RaidAutomationHandler : AutomationHandler<RaidAutomationSnapshot> {
                     retry(context, "RAID_RESET_PENDING", "보상 확인 종료 상태지만 초기화 동작이 아직 활성화되지 않았습니다.")
                 }
             }
+            raid.waitSeconds?.takeIf { it > 0 }?.let { seconds ->
+                return HandlerEvaluation.Unavailable(
+                    context.now.plusSeconds(seconds.toLong()),
+                    "RAID_REWARD_CONFIRMATION_WAIT",
+                    "레이드 보상 확인 종료 시각까지 기다립니다.",
+                )
+            }
             return HandlerEvaluation.Runnable(raidAction(context, cycle, raid, RaidAction.REFRESH))
         }
         if (isRaidResetRequiredStatus(raid.statusText)) {

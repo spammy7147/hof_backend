@@ -97,7 +97,10 @@ class RaidPubParser {
             if (codeCounts[code] != 1) return@mapNotNull null
             val text = clean(section.text.toString())
             val statusText = STATUS.find(text)?.groupValues?.get(1)?.trim()?.take(MAX_TEXT)
-            val wait = statusText?.let { DEPART.find(it)?.groupValues?.get(1)?.boundedInt(MAX_WAIT_SECONDS) }
+            val wait = statusText?.let { status ->
+                DEPART.find(status)?.groupValues?.get(1)?.boundedInt(MAX_WAIT_SECONDS)
+                    ?: REWARD_WAIT.find(status)?.let(::boundedDurationSeconds)
+            }
             val applicantsText = text.substringAfter("신청자", "")
             val applicants = APPLICANT.findAll(applicantsText).map { clean(it.groupValues[1]).take(MAX_TEXT) }
                 .filter(String::isNotBlank).distinct().take(MAX_APPLICANTS).toList()
@@ -218,6 +221,7 @@ class RaidPubParser {
         val REWARD_DAMAGE = Regex("특별\\s*보상\\s*데미지\\s*:\\s*([0-9,]+\\s*\\+?)")
         val STATUS = Regex("현재\\s*상태\\s*:\\s*(.+?)(?=\\s*(?:◎|신청자|$))")
         val DEPART = Regex("(\\d+)\\s*초\\s*후\\s*출발")
+        val REWARD_WAIT = Regex("남은\\s*시간\\s*앞으로\\s*(?:(\\d+)\\s*시간)?\\s*(?:(\\d+)\\s*분)?\\s*(?:(\\d+)\\s*초)?")
         val APPLICANT = Regex("-\\s*\\[([^]]+)]")
         val APPLY_WAIT = Regex("신청\\s*가능\\s*까지\\s*(?:(\\d+)\\s*시간)?\\s*(?:(\\d+)\\s*분)?\\s*(?:(\\d+)\\s*초)?")
         val APPLY_WAIT_STATE = Regex("신청\\s*대기|신청\\s*가능\\s*까지")

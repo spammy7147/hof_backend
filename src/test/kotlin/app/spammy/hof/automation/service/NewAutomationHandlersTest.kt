@@ -163,6 +163,26 @@ class NewAutomationHandlersTest {
     }
 
     @Test
+    fun `raid waits until the reported reward confirmation time instead of polling every thirty seconds`() {
+        val target = RaidAutomationTarget("r1", "레이드", PresetSelectionMode.EXPLICIT, 3, 0, party)
+        val rewarded = RaidPubRaidResponse(
+            "r1", "레이드", true, null, null, null, RaidStatus.COMPLETED,
+            "보상 확인 시간 (남은 시간 앞으로 0시간 23분 10초)", 1_390,
+            listOf("현재사용자"), true, setOf(RaidAction.RESET), null,
+        )
+        val evaluation = RaidAutomationHandler().evaluate(RaidAutomationSnapshot(
+            1,
+            RaidPubResponse(listOf(rewarded), true, true, 10_786, null, setOf(RaidAction.REWARD), null),
+            listOf(target), null,
+            OpenRaidCycleSnapshot(9, "r1", RaidAutomationCycleStatus.REWARD_PENDING, null), now,
+        ))
+
+        val unavailable = assertIs<HandlerEvaluation.Unavailable>(evaluation)
+        assertEquals("RAID_REWARD_CONFIRMATION_WAIT", unavailable.reasonCode)
+        assertEquals(now.plusSeconds(1_390), unavailable.nextRunAt)
+    }
+
+    @Test
     fun `raid resets after reward only when the active raid reports reward confirmation ended`() {
         val target = RaidAutomationTarget("r1", "레이드", PresetSelectionMode.EXPLICIT, 3, 0, party)
         val resettable = RaidPubRaidResponse(

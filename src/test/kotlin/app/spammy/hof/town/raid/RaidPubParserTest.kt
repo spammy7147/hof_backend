@@ -90,6 +90,7 @@ class RaidPubParserTest {
         val page = parser.parse(html, URL, forms.parse(html, URL))
 
         assertEquals(RaidStatus.COMPLETED, page.raids.first().status)
+        assertEquals(1_603, page.raids.first().waitSeconds)
         assertTrue(page.applyWait)
         assertEquals(10_786, page.applyWaitSeconds)
     }

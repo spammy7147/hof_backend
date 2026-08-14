@@ -164,6 +164,7 @@ private fun AutomationCoordinatorEntry.waitingTrace(evaluation: HandlerEvaluatio
         "RAID_BATTLE_COOLDOWN" -> "반복 전투 쿨다운"
         "RAID_BATTLE_TARGET_MISSING" -> "전투 맵 확인"
         "RAID_RESET_PENDING" -> "리셋 가능 상태 확인"
+        "RAID_REWARD_CONFIRMATION_WAIT" -> "보상 확인 종료 대기"
         "RAID_NEXT_CHECK" -> if (cycle?.status == app.spammy.hof.automation.entity.RaidAutomationCycleStatus.REWARD_PENDING) "보상 후 상태 갱신 대기" else "다음 상태 확인 대기"
         "RAID_SHARED_COOLDOWN" -> "공유 쿨다운"
         else -> "레이드 상태 확인"
