@@ -22,8 +22,9 @@ class CardPageParser {
 
     fun parseUpgrade(html: String, finalUrl: String, page: ParsedTownPage, result: ParsedTownResult? = null): CardUpgradeSnapshot {
         val form = actionForm(page, setOf("Create"), setOf("ItemNo", ADD_MATERIAL))
-        val base = candidates(form).filter { it.fieldName != ADD_MATERIAL }
-        val material = candidates(form).filter { it.fieldName == ADD_MATERIAL }
+        val parsedCandidates = candidates(form, materialLabels(html, finalUrl))
+        val base = parsedCandidates.filter { it.fieldName != ADD_MATERIAL }
+        val material = parsedCandidates.filter { it.fieldName == ADD_MATERIAL }
         val bounds = quantityBounds(html, 1, material.mapNotNull { it.owned }.maxOrNull() ?: 1)
         return CardUpgradeSnapshot(
             form?.actionId,
@@ -35,8 +36,9 @@ class CardPageParser {
 
     fun parseChange(html: String, finalUrl: String, page: ParsedTownPage, result: ParsedTownResult? = null): CardChangeSnapshot {
         val form = actionForm(page, setOf("Create"), setOf("ItemNo", ADD_MATERIAL))
-        val base = candidates(form).filter { it.fieldName != ADD_MATERIAL }
-        val material = candidates(form).filter { it.fieldName == ADD_MATERIAL }
+        val parsedCandidates = candidates(form, materialLabels(html, finalUrl))
+        val base = parsedCandidates.filter { it.fieldName != ADD_MATERIAL }
+        val material = parsedCandidates.filter { it.fieldName == ADD_MATERIAL }
         val bounds = quantityBounds(html, 1, 10)
         return CardChangeSnapshot(
             form?.actionId,
@@ -92,9 +94,13 @@ class CardPageParser {
         return SoulEchoSnapshot(form?.actionId, categories, recipes, currentCategoryId, owned, history, structuredResult(html, result, SOUL_RESULT))
     }
 
-    private fun candidates(form: ParsedTownForm?): List<CardCandidate> = form?.rows.orEmpty().mapIndexed { index, row ->
+    private fun candidates(
+        form: ParsedTownForm?,
+        observedLabels: Map<Pair<String, String>, String> = emptyMap(),
+    ): List<CardCandidate> = form?.rows.orEmpty().mapIndexedNotNull { index, row ->
         val candidate = row.candidate
-        val label = clean(row.label)
+        val label = clean(candidate?.let { observedLabels[it.inputName to it.inputValue] } ?: row.label)
+        if (candidate == null && CARD_LIST_HEADER.matches(label)) return@mapIndexedNotNull null
         CardCandidate(
             id = candidate?.id ?: "display-$index", label = label, selectable = candidate != null,
             fieldName = candidate?.inputName, owned = owned(label), rarity = RARITY.find(label)?.value,
@@ -103,6 +109,20 @@ class CardPageParser {
             sourceKey = candidate?.inputValue,
         )
     }
+
+    /** 실제 카드 페이지의 AddMaterial은 table row가 아니라 `<br>`로 구분된 평면 radio 목록이다. */
+    private fun materialLabels(html: String, finalUrl: String): Map<Pair<String, String>, String> =
+        HofHtmlParser.parse(html, finalUrl).select("input[name=$ADD_MATERIAL]").associate { input ->
+            val rowText = input.closest("tr")?.let { clean(it.text()) }
+            val lineText = buildString {
+                var sibling = input.nextSibling()
+                while (sibling != null && !(sibling is Element && sibling.tagName() == "br")) {
+                    append(nodeText(sibling)).append(' ')
+                    sibling = sibling.nextSibling()
+                }
+            }.let(::clean)
+            (ADD_MATERIAL to input.attr("value")) to (rowText?.takeIf(String::isNotBlank) ?: lineText)
+        }
 
     private fun slots(base: List<CardCandidate>, material: List<CardCandidate>) = buildList {
         base.firstOrNull()?.fieldName?.let { add(CardSelectionSlot("base", "베이스 카드", it)) }
@@ -227,6 +247,7 @@ class CardPageParser {
         val RESTRICTION = Regex("Base\\s*Only|Drop\\s*Only|Can'?t\\s*Mix|Bind", RegexOption.IGNORE_CASE)
         val CARD_VALUE = Regex("[x×]\\s*(\\d+)")
         val CARD_SELL_HEADER = Regex("^(?:(?:가격|수|수량|아이템|카드)(?:\\s+|$))+$", RegexOption.IGNORE_CASE)
+        val CARD_LIST_HEADER = Regex("^(?:제작비|수수료)?\\s*(?:Item|아이템)$", RegexOption.IGNORE_CASE)
         val BLANK_OWNED = Regex("Blank\\s*Card\\s*[:：]\\s*([\\d,]+)\\s*장", RegexOption.IGNORE_CASE)
         val ECHO_REQUIREMENT = Regex("Soul\\s+Echo\\s*\\([^)]*\\)[^x×]{0,80}[x×]\\s*([\\d,]+)", RegexOption.IGNORE_CASE)
         val OWNED_ECHO = Regex("(Soul\\s+Echo\\s*\\([^)]*\\)[^x×]*)[x×]\\s*([\\d,]+)", RegexOption.IGNORE_CASE)

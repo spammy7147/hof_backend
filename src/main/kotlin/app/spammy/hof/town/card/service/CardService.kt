@@ -38,22 +38,20 @@ class CardService(
     fun upgrade(accountId: Long, request: CardUpgradeRequest): CardUpgradeResponse {
         distinctCards(request.baseCandidateId, request.materialCandidateId)
         val pageUrl = url(TownFeatureId.CARD_UPGRADE)
-        return executor.executeResolvedTwoStepProjectedWithScalars(
+        return executor.executeResolvedProjectedWithScalars(
             accountId, pageUrl,
-            requiredEntrySubmitField = "Create",
-            entryAction = { html, finalUrl, page ->
+            requiredScalarFields = setOf("amount"), requiredSubmitField = "Create",
+            resolve = { html, finalUrl, page ->
                 val snapshot = parser.parseUpgrade(html, finalUrl, page)
-                requireInitialStage(snapshot.baseCards, snapshot.materialCards)
-                validateBase(snapshot.baseCards, request.baseCandidateId)
-                TownActionRequest(requireAction(snapshot.actionId), listOf(TownActionSelection(request.baseCandidateId)))
-            },
-            finalAction = { html, finalUrl, page ->
-                val snapshot = parser.parseUpgrade(html, finalUrl, page)
+                requireCombinedStage(snapshot.baseCards, snapshot.materialCards)
+                val base = validateBase(snapshot.baseCards, request.baseCandidateId)
                 val material = validateMaterial(snapshot.materialCards, request.materialCandidateId)
-                validateQuantity(request.quantity, snapshot.minQuantity, minOf(snapshot.maxQuantity, material.owned ?: snapshot.maxQuantity))
-                TownActionRequest(requireAction(snapshot.actionId), listOf(TownActionSelection(request.materialCandidateId)))
+                validateQuantity(request.quantity, snapshot.minQuantity, selectedMax(snapshot.maxQuantity, base.owned, material.owned))
+                TownActionRequest(
+                    requireAction(snapshot.actionId),
+                    listOf(TownActionSelection(request.baseCandidateId), TownActionSelection(request.materialCandidateId)),
+                ) to mapOf("amount" to request.quantity.toString())
             },
-            scalarValues = mapOf("amount" to request.quantity.toString()), requiredScalarFields = setOf("amount"), requiredFinalSubmitField = "Create",
         ) { html, finalUrl, result, page -> CardUpgradeResponse.from(parser.parseUpgrade(html, finalUrl, page, result).copy(selectedBaseCandidateId = request.baseCandidateId)) }
     }
 
@@ -68,22 +66,20 @@ class CardService(
     fun change(accountId: Long, request: CardChangeRequest): CardChangeResponse {
         distinctCards(request.baseCandidateId, request.materialCandidateId)
         val pageUrl = url(TownFeatureId.CARD_CHANGE)
-        return executor.executeResolvedTwoStepProjectedWithScalars(
+        return executor.executeResolvedProjectedWithScalars(
             accountId, pageUrl,
-            requiredEntrySubmitField = "Create",
-            entryAction = { html, finalUrl, page ->
+            requiredScalarFields = setOf("amount"), requiredSubmitField = "Create",
+            resolve = { html, finalUrl, page ->
                 val snapshot = parser.parseChange(html, finalUrl, page)
-                requireInitialStage(snapshot.baseCards, snapshot.materialCards)
-                validateBase(snapshot.baseCards, request.baseCandidateId)
-                TownActionRequest(requireAction(snapshot.actionId), listOf(TownActionSelection(request.baseCandidateId)))
-            },
-            finalAction = { html, finalUrl, page ->
-                val snapshot = parser.parseChange(html, finalUrl, page)
+                requireCombinedStage(snapshot.baseCards, snapshot.materialCards)
+                val base = validateBase(snapshot.baseCards, request.baseCandidateId)
                 val material = validateMaterial(snapshot.materialCards, request.materialCandidateId)
-                validateQuantity(request.quantity, snapshot.minQuantity, minOf(snapshot.maxQuantity, material.owned ?: snapshot.maxQuantity))
-                TownActionRequest(requireAction(snapshot.actionId), listOf(TownActionSelection(request.materialCandidateId)))
+                validateQuantity(request.quantity, snapshot.minQuantity, selectedMax(snapshot.maxQuantity, base.owned, material.owned))
+                TownActionRequest(
+                    requireAction(snapshot.actionId),
+                    listOf(TownActionSelection(request.baseCandidateId), TownActionSelection(request.materialCandidateId)),
+                ) to mapOf("amount" to request.quantity.toString())
             },
-            scalarValues = mapOf("amount" to request.quantity.toString()), requiredScalarFields = setOf("amount"), requiredFinalSubmitField = "Create",
         ) { html, finalUrl, result, page -> CardChangeResponse.from(parser.parseChange(html, finalUrl, page, result).copy(selectedBaseCandidateId = request.baseCandidateId)) }
     }
 
@@ -129,41 +125,31 @@ class CardService(
     private fun requireAction(actionId: String?) = actionId ?: invalid("현재 HOF 카드 작업 양식을 찾지 못했습니다.")
     private fun loadOptions(accountId: Long, feature: TownFeatureId, baseId: String): CardUpgradeResponse {
         val pageUrl = url(feature)
-        return executor.loadSecondStageProjected(accountId, pageUrl, "Create", entryAction = { html, finalUrl, page ->
+        return executor.loadProjected(accountId, pageUrl) { html, finalUrl, page ->
             val snapshot = parser.parseUpgrade(html, finalUrl, page)
-            requireInitialStage(snapshot.baseCards, snapshot.materialCards)
+            requireCombinedStage(snapshot.baseCards, snapshot.materialCards)
             validateBase(snapshot.baseCards, baseId)
-            TownActionRequest(requireAction(snapshot.actionId), listOf(TownActionSelection(baseId)))
-        }) { html, finalUrl, page ->
-            val snapshot = parser.parseUpgrade(html, finalUrl, page)
-            requireMaterialStage(snapshot.materialCards)
             CardUpgradeResponse.from(snapshot.copy(selectedBaseCandidateId = baseId))
         }
     }
     private fun loadChangeOptions(accountId: Long, feature: TownFeatureId, baseId: String): CardChangeResponse {
         val pageUrl = url(feature)
-        return executor.loadSecondStageProjected(accountId, pageUrl, "Create", entryAction = { html, finalUrl, page ->
+        return executor.loadProjected(accountId, pageUrl) { html, finalUrl, page ->
             val snapshot = parser.parseChange(html, finalUrl, page)
-            requireInitialStage(snapshot.baseCards, snapshot.materialCards)
+            requireCombinedStage(snapshot.baseCards, snapshot.materialCards)
             validateBase(snapshot.baseCards, baseId)
-            TownActionRequest(requireAction(snapshot.actionId), listOf(TownActionSelection(baseId)))
-        }) { html, finalUrl, page ->
-            val snapshot = parser.parseChange(html, finalUrl, page)
-            requireMaterialStage(snapshot.materialCards)
             CardChangeResponse.from(snapshot.copy(selectedBaseCandidateId = baseId))
         }
     }
     private fun distinctCards(base: String, material: String) { if (base == material) invalid("베이스 카드와 추가 카드는 서로 달라야 합니다.") }
-    private fun requireInitialStage(base: List<app.spammy.hof.town.card.model.CardCandidate>, material: List<app.spammy.hof.town.card.model.CardCandidate>) {
-        if (base.none { it.selectable } || material.any { it.selectable }) invalid("현재 HOF 카드 1단계 양식이 변경되었습니다.")
-    }
-    private fun requireMaterialStage(material: List<app.spammy.hof.town.card.model.CardCandidate>) {
-        if (material.none { it.selectable }) invalid("현재 HOF 카드 재료 양식을 찾지 못했습니다.")
+    private fun requireCombinedStage(base: List<app.spammy.hof.town.card.model.CardCandidate>, material: List<app.spammy.hof.town.card.model.CardCandidate>) {
+        if (base.none { it.selectable } || material.none { it.selectable }) invalid("현재 HOF 카드 양식이 변경되었습니다.")
     }
     private fun validateBase(cards: List<app.spammy.hof.town.card.model.CardCandidate>, id: String) =
         cards.singleOrNull { it.id == id && it.selectable } ?: invalid("현재 카드 목록에서 베이스 카드를 다시 선택해 주세요.")
     private fun validateMaterial(cards: List<app.spammy.hof.town.card.model.CardCandidate>, id: String) =
         cards.singleOrNull { it.id == id && it.selectable } ?: invalid("현재 카드 목록에서 추가 카드를 다시 선택해 주세요.")
+    private fun selectedMax(max: Int, baseOwned: Int?, materialOwned: Int?) = minOf(max, baseOwned ?: max, materialOwned ?: max)
     private fun validateQuantity(quantity: Int, min: Int, max: Int) { if (quantity !in min..max) invalid("수량은 $min~$max 사이여야 합니다.") }
     private fun invalid(message: String): Nothing = throw ApiException(ErrorCode.INVALID_REQUEST, message)
     private companion object { const val TOWN_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=town" }

@@ -89,6 +89,26 @@ class CardPageParserTest {
         assertTrue(afterAction.result!!.messages.any { it.contains("합성 성공") })
     }
 
+    @Test fun `upgrade omits the repeated cost item table header from live card candidates`() {
+        val html = """
+            <html><body><form method="post" action="?menu=cardmix">
+              <table>
+                <tr><td></td><td>제작비</td><td>Item</td></tr>
+                <tr><td><input type="radio" name="ItemNo" value="201"></td><td>${'$'} 100,000</td><td>Soul Taker's Card x2 / ★★ / Base Only</td></tr>
+                <tr><td></td><td>제작비</td><td>Item</td></tr>
+              </table>
+              <input name="amount" value="1">
+              <input type="radio" name="AddMaterial" value="202"> Material Card x3 / ★★
+              <input type="submit" name="Create" value="Create">
+            </form></body></html>
+        """.trimIndent()
+
+        val page = parser.parseUpgrade(html, URL, forms.parse(html, URL))
+
+        assertEquals(listOf("${'$'} 100,000 Soul Taker's Card x2 / ★★ / Base Only"), page.baseCards.map { it.label })
+        assertEquals(listOf("Material Card x3 / ★★"), page.materialCards.map { it.label })
+    }
+
     @Test fun `upgrade and change keep candidates when the live form repeats its submit control`() {
         val html = """
             <html><body><form method="post">
