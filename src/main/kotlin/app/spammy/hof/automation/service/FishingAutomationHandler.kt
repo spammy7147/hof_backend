@@ -33,10 +33,6 @@ data class FishingTownAutomationAction(
 @Service
 class FishingAutomationHandler : AutomationHandler<FishingAutomationSnapshot> {
     override fun evaluate(context: FishingAutomationSnapshot): HandlerEvaluation {
-        if (context.state.remainingCasts == 0) {
-            val next = context.now.atZone(SEOUL).toLocalDate().plusDays(1).atStartOfDay(SEOUL).toInstant()
-            return HandlerEvaluation.Unavailable(next, "FISHING_DAILY_LIMIT", "오늘의 낚시 횟수를 모두 사용했습니다.")
-        }
         if (context.state.blockedByBattle) {
             val target = context.state.battleTarget ?: return retry(context, "FISHING_BATTLE_TARGET_MISSING", "낚시 전투 대상을 다시 확인합니다.")
             val setting = context.maps.singleOrNull { it.categoryId == target.categoryId && it.mapCode == target.mapCode }
@@ -62,6 +58,10 @@ class FishingAutomationHandler : AutomationHandler<FishingAutomationSnapshot> {
                 "FISHING_CATCH_TRANSITION_PENDING",
                 "낚시 시작은 처리됐지만 잡기 동작이 아직 표시되지 않아 상태 전환을 다시 확인합니다.",
             )
+        }
+        if (context.state.remainingCasts == 0 && context.state.primaryAction != FishingPrimaryAction.CATCH) {
+            val next = context.now.atZone(SEOUL).toLocalDate().plusDays(1).atStartOfDay(SEOUL).toInstant()
+            return HandlerEvaluation.Unavailable(next, "FISHING_DAILY_LIMIT", "오늘의 낚시 횟수를 모두 사용했습니다.")
         }
         return when (context.state.primaryAction) {
             FishingPrimaryAction.START -> HandlerEvaluation.Runnable(FishingTownAutomationAction(context.accountId, FishingAction.START, context.state.primaryAction, context.state.remainingCasts))

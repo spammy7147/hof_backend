@@ -27,6 +27,18 @@ class NewAutomationHandlersTest {
     }
 
     @Test
+    fun `fishing catches the final cast even after the remaining count reaches zero`() {
+        val finalCatch = FishingAutomationHandler().evaluate(
+            FishingAutomationSnapshot(1, fishing(FishingPrimaryAction.CATCH, remaining = 0), emptyList(), null, now),
+        )
+
+        assertEquals(
+            FishingAction.CATCH,
+            assertIs<FishingTownAutomationAction>(assertIs<HandlerEvaluation.Runnable>(finalCatch).action).action,
+        )
+    }
+
+    @Test
     fun `fishing does not submit start again while the catch transition is pending`() {
         val staleStartedPage = fishing(FishingPrimaryAction.START).copy(lastOutcome = FishingOutcome.STARTED)
 
