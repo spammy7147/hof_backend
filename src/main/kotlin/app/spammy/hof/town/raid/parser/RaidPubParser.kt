@@ -165,8 +165,8 @@ class RaidPubParser {
         REWARD_CONFIRMATION.containsMatchIn(text) -> RaidStatus.COMPLETED
         COMPLETED.containsMatchIn(text) -> RaidStatus.COMPLETED
         IN_BATTLE.containsMatchIn(text) -> RaidStatus.IN_BATTLE
-        READY.containsMatchIn(text) -> RaidStatus.READY
         DEPART.containsMatchIn(text) -> RaidStatus.WAITING
+        READY.containsMatchIn(text) -> RaidStatus.READY
         RECRUITING.containsMatchIn(text) -> RaidStatus.RECRUITING
         CLOSED.containsMatchIn(text) -> RaidStatus.CLOSED
         else -> RaidStatus.UNKNOWN

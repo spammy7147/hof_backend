@@ -45,6 +45,19 @@ class RaidPubParserTest {
         assertTrue(page.applyWait)
     }
 
+    @Test fun `출발 가능 문구가 있어도 남은 모집 시간이 있으면 대기 상태로 파싱한다`() {
+        val html = fixture().replace(
+            "현재 상태 : 418초 후 출발",
+            "현재 상태 : 파티 모집 중 (1643초 후 출발 가능)",
+        )
+
+        val page = parser.parse(html, URL, forms.parse(html, URL))
+
+        assertEquals(RaidStatus.WAITING, page.raids[1].status)
+        assertEquals(1643, page.raids[1].waitSeconds)
+        assertTrue(RaidAction.START in page.raids[1].actions)
+    }
+
     @Test fun `의미가 비슷해도 허용하지 않은 submit value는 action으로 노출하지 않는다`() {
         val html = fixture().replace("value=\"등록한다\"", "value=\"등록 상태를 본다\"")
         val page = parser.parse(html, URL, forms.parse(html, URL))
