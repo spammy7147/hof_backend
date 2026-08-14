@@ -84,7 +84,7 @@ class DefaultAutomationAmbiguousActionReconciler(
                 if (raid.joined || latest.applied) {
                     progress.raidRegistered(accountId, entryId, id, raid.name, raid.waitSeconds ?: latest.applyWaitSeconds)
                     AmbiguousActionResolution.Applied()
-                } else if (isRaidRegistrationAvailable(raid.status, raid.statusText)) AmbiguousActionResolution.Resubmit
+                } else if (isRaidRegistrationAvailable(raid.status)) AmbiguousActionResolution.Resubmit
                 else AmbiguousActionResolution.VerifyLater(retryAt(), "레이드 등록 결과를 아직 확정할 수 없습니다.")
             }
             RaidAction.START -> {
@@ -106,7 +106,7 @@ class DefaultAutomationAmbiguousActionReconciler(
             RaidAction.RESET -> {
                 val id = requireNotNull(payload.raidId)
                 val raid = latest.raids.singleOrNull { it.id == id }
-                if (raid != null && !raid.joined && isRaidRegistrationAvailable(raid.status, raid.statusText)) {
+                if (raid != null && !raid.joined && isRaidRegistrationAvailable(raid.status)) {
                     progress.raidReset(accountId, id)
                     workLifecycle.completeRaidCycle(accountId, entryId)
                     AmbiguousActionResolution.Applied()

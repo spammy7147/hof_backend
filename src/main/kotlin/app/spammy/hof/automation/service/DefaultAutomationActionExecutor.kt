@@ -247,7 +247,7 @@ class DefaultAutomationActionExecutor(
         val resultText = result?.messages.orEmpty().joinToString(" ")
         if (RAID_RESET_SUCCEEDED.containsMatchIn(resultText)) return true
         val raid = raids.singleOrNull { it.id == raidId } ?: return false
-        return !raid.joined && isRaidRegistrationAvailable(raid.status, raid.statusText)
+        return !raid.joined && isRaidRegistrationAvailable(raid.status)
     }
 
     private fun StoredTypedActionPayload.battleRequestOrNull(): RunBattleRequest? = when (this) {

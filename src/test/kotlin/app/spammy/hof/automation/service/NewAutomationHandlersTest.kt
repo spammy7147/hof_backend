@@ -242,7 +242,7 @@ class NewAutomationHandlersTest {
     }
 
     @Test
-    fun `raid does not register unless status explicitly says recruitment is not applied`() {
+    fun `raid registers while departure is pending when the current user is not an applicant`() {
         val target = RaidAutomationTarget("r1", "레이드", PresetSelectionMode.EXPLICIT, 3, 0, party)
         val waiting = RaidPubRaidResponse(
             "r1", "레이드", true, null, null, null, RaidStatus.WAITING,
@@ -255,7 +255,9 @@ class NewAutomationHandlersTest {
             listOf(target), null, null, now, registrationCooldownChecked = true,
         ))
 
-        assertIs<HandlerEvaluation.ConfigurationWarning>(evaluation)
+        val action = assertIs<RaidTownAutomationAction>(assertIs<HandlerEvaluation.Runnable>(evaluation).action)
+        assertEquals(RaidAction.REGISTER, action.action)
+        assertEquals("r1", action.raidId)
     }
 
     @Test
@@ -346,7 +348,29 @@ class NewAutomationHandlersTest {
     }
 
     @Test
-    fun `raid does not abandon a cycle from joined parsing alone`() {
+    fun `raid abandons a stale registered cycle when departure is possible but the current user is not an applicant`() {
+        val target = RaidAutomationTarget("RaidGoblin", "고블린 전투 마차", PresetSelectionMode.EXPLICIT, 3, 0, party)
+        val registerable = RaidPubRaidResponse(
+            "RaidGoblin", "고블린 전투 마차", true, null, 6, "100000+",
+            RaidStatus.READY, "파티 모집 중 (출발 가능)", null,
+            listOf("다른 사용자"), false, setOf(RaidAction.REGISTER, RaidAction.START), null,
+        )
+
+        val evaluation = RaidAutomationHandler().evaluate(RaidAutomationSnapshot(
+            1,
+            RaidPubResponse(listOf(registerable), false, false, null, null, emptySet(), null),
+            listOf(target),
+            null,
+            OpenRaidCycleSnapshot(9, "RaidGoblin", RaidAutomationCycleStatus.REGISTERED_WAITING, null),
+            now,
+        ))
+
+        val abort = assertIs<RaidCycleAbortAutomationAction>(assertIs<HandlerEvaluation.Runnable>(evaluation).action)
+        assertEquals(RaidCycleAbortReason.REGISTRATION_LOST, abort.reason)
+    }
+
+    @Test
+    fun `raid treats missing current user applicant membership as a lost registration`() {
         val target = RaidAutomationTarget("RaidGoblin", "고블린 전투 마차", PresetSelectionMode.EXPLICIT, 3, 0, party)
         val uncertain = RaidPubRaidResponse(
             "RaidGoblin", "고블린 전투 마차", true, null, 6, "100000+",
@@ -363,7 +387,8 @@ class NewAutomationHandlersTest {
             now,
         ))
 
-        assertEquals("RAID_WAITING_TO_START", assertIs<HandlerEvaluation.Unavailable>(evaluation).reasonCode)
+        val abort = assertIs<RaidCycleAbortAutomationAction>(assertIs<HandlerEvaluation.Runnable>(evaluation).action)
+        assertEquals(RaidCycleAbortReason.REGISTRATION_LOST, abort.reason)
     }
 
     @Test

@@ -72,7 +72,7 @@ class RaidAutomationHandler : AutomationHandler<RaidAutomationSnapshot> {
         )
         val raid = context.pub.raids.singleOrNull { it.id == target.raidId }
             ?: return HandlerEvaluation.ConfigurationWarning("차례인 레이드가 현재 보이지 않아 이번 판단을 건너뜁니다.", "RAID_TARGET_NOT_VISIBLE")
-        if (!raid.playable || !isRaidRegistrationAvailable(raid.status, raid.statusText) || RaidAction.REGISTER !in raid.actions) {
+        if (raid.joined || !raid.playable || !isRaidRegistrationAvailable(raid.status) || RaidAction.REGISTER !in raid.actions) {
             return HandlerEvaluation.ConfigurationWarning("차례인 레이드는 현재 등록할 수 없습니다.", "RAID_REGISTER_UNAVAILABLE")
         }
         return HandlerEvaluation.Runnable(RaidTownAutomationAction(
@@ -89,7 +89,7 @@ class RaidAutomationHandler : AutomationHandler<RaidAutomationSnapshot> {
         if (
             cycle.status == RaidAutomationCycleStatus.REGISTERED_WAITING &&
             !raid.joined &&
-            isRaidRegistrationAvailable(raid.status, raid.statusText)
+            isRaidRegistrationAvailable(raid.status)
         ) {
             return HandlerEvaluation.Runnable(
                 RaidCycleAbortAutomationAction(

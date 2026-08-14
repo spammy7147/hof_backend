@@ -97,7 +97,7 @@ class RaidPubService(
         if (action !in raid.actions || !raid.playable) return false
         return when (action) {
             RaidAction.REGISTER -> !raid.joined && !snapshot.applyWait &&
-                isRaidRegistrationAvailable(raid.status, raid.statusText)
+                isRaidRegistrationAvailable(raid.status)
             RaidAction.LEAVE -> raid.joined
             RaidAction.START -> raid.joined && raid.status == RaidStatus.READY
             RaidAction.RESET -> raid.status == RaidStatus.COMPLETED && isRaidResetRequiredStatus(raid.statusText)

@@ -203,16 +203,19 @@ class RaidPubParserTest {
         assertEquals(1, context.requests().size)
     }
 
-    @Test fun `신청 안됨 상태가 아니면 고정 등록 submit이 있어도 등록하지 않는다`() {
-        val recruitingWithoutProof = fixture()
+    @Test fun `현재 사용자가 신청자에 없으면 신청 안됨 문구 없이도 등록한다`() {
+        val recruitingForCurrentUser = fixture()
             .replace("현재 상태는 신청 대기 (신청 가능까지 6분 58초)", "현재 상태는 신청 가능")
             .replace("[《테스트 길드》현재사용자]", "[다른 신청자]")
-        val context = service(recruitingWithoutProof)
+        val context = service(recruitingForCurrentUser, recruitingForCurrentUser)
 
-        assertFailsWith<app.spammy.hof.common.error.ApiException> {
-            context.service.action(7L, RaidPubActionRequest(RaidAction.REGISTER, "RaidGoblin"))
-        }
-        assertEquals(1, context.requests().size)
+        context.service.action(7L, RaidPubActionRequest(RaidAction.REGISTER, "RaidGoblin"))
+
+        assertEquals(2, context.requests().size)
+        assertEquals(
+            "등록한다",
+            context.requests().last().formEntries.single { it.name == "register_goblin" }.value,
+        )
     }
 
     @Test fun `상시 보상 버튼이 보여도 완료 레이드가 없으면 제출하지 않는다`() {
