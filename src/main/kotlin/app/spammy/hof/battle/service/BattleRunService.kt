@@ -277,7 +277,7 @@ class BattleRunService(
         message: String,
     ) {
         val loginState = loginStateParser.parse(response.body)
-        if (loginState.hasLoginForm && !loginState.isLoggedIn) {
+        if (!loginState.isLoggedIn) {
             throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, message)
         }
     }

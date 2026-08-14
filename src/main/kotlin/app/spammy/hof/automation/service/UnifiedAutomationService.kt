@@ -812,7 +812,10 @@ class UnifiedAutomationService(
             is StoredTypedActionPayload.QuestBattle,
             -> AutomationType.QUEST
             is StoredTypedActionPayload.HomeQuest -> AutomationType.HOME_QUEST
-            is StoredTypedActionPayload.BattleMap -> AutomationType.BATTLE_MAP
+            is StoredTypedActionPayload.BattleMap -> when (payload.source) {
+                BattleAutomationActionSource.UNION_AUTOMATION -> AutomationType.UNION
+                else -> AutomationType.BATTLE_MAP
+            }
             is StoredTypedActionPayload.AdventureMap -> AutomationType.ADVENTURE_MAP
             is StoredTypedActionPayload.FishingTown -> AutomationType.FISHING
             is StoredTypedActionPayload.RaidTown -> AutomationType.RAID
@@ -839,6 +842,7 @@ class UnifiedAutomationService(
             source = source,
             kind = row.actionKind,
             actionLabel = when {
+                source == AutomationType.UNION -> "유니온"
                 payload is StoredTypedActionPayload.BattleMap && display == null -> "전투 진행 중"
                 row.actionKind == "QUEST_CLAIM" -> "퀘스트 완료"
                 row.actionKind == "QUEST_ACCEPT" -> "퀘스트 수락"

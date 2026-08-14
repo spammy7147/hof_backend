@@ -9,4 +9,5 @@ data class HofLoginState(
     val hasCharacterLinks: Boolean,
     val hasLogoutText: Boolean,
     val hasStatusHeader: Boolean,
+    val hasUserHeader: Boolean,
 )

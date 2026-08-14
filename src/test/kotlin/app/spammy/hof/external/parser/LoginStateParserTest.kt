@@ -45,4 +45,23 @@ class LoginStateParserTest {
         assertTrue(state.isLoggedIn)
         assertTrue(state.hasStatusHeader)
     }
+
+    @Test
+    fun detectsLoggedInPageByMenu2UserHeader() {
+        val state = parser.parse("""<div id="menu2">《길드》사용자</div>""")
+
+        assertTrue(state.isLoggedIn)
+        assertTrue(state.hasUserHeader)
+    }
+
+    @Test
+    fun keepsPublicBattleRankingLoggedOut() {
+        val state = parser.parse("""
+            <div id="menu"><a href="index.php?menu=login">로그인</a></div>
+            <h4>최근의 보스전 승리 랭킹(Recent Battles)</h4>
+        """.trimIndent())
+
+        assertFalse(state.isLoggedIn)
+        assertFalse(state.hasUserHeader)
+    }
 }

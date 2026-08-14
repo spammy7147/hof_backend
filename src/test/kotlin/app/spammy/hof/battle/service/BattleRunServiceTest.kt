@@ -276,6 +276,7 @@ class BattleRunServiceTest {
         prepareRunnableBattle()
         gateway.nextBattleBody = """
             <html><body>
+              <div id="menu2">Funds : ${'$'} 1 Time : 10/10</div>
               <h1>《얼어붙은 손길》공민이은(는) 승리했다!</h1>
               <div>
                 남은 HP : 25955/26197<br>
@@ -328,6 +329,32 @@ class BattleRunServiceTest {
         assertEquals(ErrorCode.INVALID_REQUEST, error.errorCode)
         assertEquals(56, error.retryAfterSeconds)
         assertEquals("1분 공유 쿨타임이 남아 있습니다.", error.message)
+        assertTrue(battleLogRepository.savedEntities.isEmpty())
+    }
+
+    @Test
+    fun `union battle rejects logged out ranking page before recording a battle log`() {
+        prepareRunnableBattle()
+        Mockito.`when`(
+            battleMapQueryRepository.findStateForExecution(1L, "union", "0003"),
+        ).thenReturn(battleMapState(categoryId = "union", mapCode = "0003"))
+        gateway.nextBattleBody = """
+            <html><body>
+              <div id="menu"><a href="index.php?menu=login">로그인</a></div>
+              <h4>최근의 보스전 승리 랭킹(Recent Battles)</h4>
+              <a href="index.php?alog=123">도적소탕</a>
+            </body></html>
+        """.trimIndent()
+
+        val error = assertFailsWith<ApiException> {
+            service.runBattle(
+                1L,
+                runRequest().copy(categoryId = "union", mapCode = "0003"),
+                HofRequestOrigin.AUTOMATION,
+            )
+        }
+
+        assertEquals(ErrorCode.HOF_SESSION_EXPIRED, error.errorCode)
         assertTrue(battleLogRepository.savedEntities.isEmpty())
     }
 
@@ -422,6 +449,7 @@ class BattleRunServiceTest {
         captchaChallengeRepository.nextId = 7L
         gateway.nextBattleBody = """
             <html><body>
+              <div id="menu2">Funds : ${'$'} 1 Time : 10/10</div>
               <font color="red">자경단</font>
               <p>자경단에서 통행증을 발급받아주세요.</p>
             </body></html>
@@ -573,12 +601,13 @@ class BattleRunServiceTest {
     }
 
     private fun sharedCooldownHtml(countdown: String): String = """
-        <html><body><div class="error">
+        <html><body><div id="menu2">Funds : ${'$'} 1 Time : 10/10</div><div class="error">
           대형 데이터를 읽는 전투를 실행한 상태입니다. ($countdown)
         </div></body></html>
     """.trimIndent()
 
     private fun battleMapState(
+        categoryId: String = "battle_map",
         mapCode: String = "snow22",
         visible: Boolean = true,
         staticEnabled: Boolean = true,
@@ -594,7 +623,7 @@ class BattleRunServiceTest {
             account = account,
             battleMap = BattleMapEntity(
                 id = 100L,
-                categoryId = "battle_map",
+                categoryId = categoryId,
                 mapCode = mapCode,
                 name = "Frosty Mountain- 대충산",
                 normalizedName = "frosty mountain- 대충산",
@@ -617,6 +646,7 @@ class BattleRunServiceTest {
     private fun threeBattleResultHtml(): String =
         """
             <html><body>
+              <div id="menu2">Funds : ${'$'} 1 Time : 10/10</div>
               <h2>Show Detail( 6 turns. )</h2>
               <a href="http://sic.zerosic.com/ZeroHOF/index.php?common=gb0#">로그 주소 복사</a>
               《얼어붙은 손길》공민이은(는) 승리했다!
@@ -690,6 +720,7 @@ class BattleRunServiceTest {
             } else {
                 nextBattleBody ?: """
                     <html><body>
+                      <div id="menu2">Funds : ${'$'} 1 Time : 10/10</div>
                       <h2>Show Detail( 36 turns. )</h2>
                       <h1>《얼어붙은 손길》공민이은(는) 승리했다!</h1>
                       <div>

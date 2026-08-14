@@ -853,6 +853,30 @@ class UnifiedAutomationServiceTest {
     }
 
     @Test
+    fun `union battle is exposed as union instead of a generic battle map`() {
+        val payload = StoredTypedActionPayload.BattleMap(
+            progressDate = LocalDate.parse("2026-07-19"),
+            categoryId = "union",
+            mapCode = "0003",
+            presetMode = PresetSelectionMode.PRIMARY,
+            presetId = 7L,
+            battleCount = 1,
+            battleRequest = battleRequest("union", "0003"),
+            display = StoredActionDisplay(mapName = "도적소탕"),
+            source = BattleAutomationActionSource.UNION_AUTOMATION,
+        )
+        stubActiveAction("BATTLE_MAP", payload)
+
+        val action = service.getTyped(ACCOUNT_ID).runtime.currentAction
+
+        assertEquals(AutomationType.UNION, action?.source)
+        assertEquals("BATTLE_MAP", action?.kind)
+        assertEquals("유니온", action?.actionLabel)
+        assertEquals("도적소탕", action?.mapName)
+        assertEquals(1, action?.battleCount)
+    }
+
+    @Test
     fun `claim accept and unknown action kinds use safe labels without raw identifiers`() {
         val claim = StoredTypedActionPayload.QuestClaim(
             "claim-raw-code", "claim-raw-action", StoredActionDisplay(questName = "완료할 퀘스트"),
