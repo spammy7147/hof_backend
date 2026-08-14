@@ -27,10 +27,6 @@ class RaidPubService(
     }
 
     fun action(accountId: Long, request: RaidPubActionRequest): RaidPubResponse {
-        if (request.action == RaidAction.REFRESH) {
-            if (request.raidId != null) invalid("갱신에는 레이드 식별자가 필요하지 않습니다.")
-            return load(accountId)
-        }
         val projected = executor.executeProjectedWithSingleFallbackGet(
             accountId = accountId,
             pageUrl = url(),

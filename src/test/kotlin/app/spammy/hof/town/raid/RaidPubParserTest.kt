@@ -137,7 +137,7 @@ class RaidPubParserTest {
         )
         val page = parser.parse(html, URL, forms.parse(html, URL))
         assertTrue(page.raids.all { it.actions.isEmpty() })
-        assertEquals(setOf(RaidAction.REFRESH), page.globalActions)
+        assertTrue(page.globalActions.isEmpty())
     }
 
     @Test fun `POST HOF raidpub action이 아닌 form은 화면으로 관측하지 않는다`() {
@@ -170,6 +170,28 @@ class RaidPubParserTest {
         assertEquals(
             mapOf("nonce" to "raid-fresh", "register_goblin" to "등록한다"),
             context.requests().last().formEntries.associate { it.name to it.value },
+        )
+    }
+
+    @Test fun `상태 갱신은 실제 submit을 실행하고 응답의 신청 쿨타임을 반환한다`() {
+        val withRefresh = fixture().replace(
+            "<input type=\"submit\" name=\"reward_nonce\" value=\"보상 확인\">",
+            "<input type=\"submit\" name=\"refresh_nonce\" value=\"상태 갱신\">" +
+                "<input type=\"submit\" name=\"reward_nonce\" value=\"보상 확인\">",
+        )
+        val refreshed = withRefresh.replace(
+            "현재 상태는 신청 대기 (신청 가능까지 6분 58초)",
+            "현재 상태는 신청 대기입니다.(신청 가능 까지 1시간 37분 58초)",
+        )
+        val context = service(withRefresh, refreshed)
+
+        val response = context.service.action(7L, RaidPubActionRequest(RaidAction.REFRESH, null))
+
+        assertEquals(5_878, response.applyWaitSeconds)
+        assertEquals(2, context.requests().size)
+        assertEquals(
+            "상태 갱신",
+            context.requests().last().formEntries.single { it.name == "refresh_nonce" }.value,
         )
     }
 

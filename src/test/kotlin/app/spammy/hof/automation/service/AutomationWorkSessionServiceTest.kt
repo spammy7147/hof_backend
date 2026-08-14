@@ -16,6 +16,7 @@ import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.town.fishing.model.FishingAction
 import app.spammy.hof.town.fishing.model.FishingPrimaryAction
+import app.spammy.hof.town.raid.model.RaidAction
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -288,6 +289,26 @@ class AutomationWorkSessionServiceTest {
 
         assertEquals(session, resumed)
         Mockito.verifyNoInteractions(commands)
+    }
+
+    @Test
+    fun `raid cooldown refresh opens a session for the configured raid target`() {
+        val raidEntry = AutomationEntryEntity(14, account, AutomationType.RAID, 4, true, now, now)
+        val action = RaidTownAutomationAction(
+            accountId = 7,
+            action = RaidAction.REFRESH,
+            targetRaidId = "RaidGoblin",
+        )
+        Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
+        Mockito.`when`(typed.findEntry(7, raidEntry.id)).thenReturn(raidEntry)
+        Mockito.`when`(queries.lockOpen(7)).thenReturn(emptyList())
+
+        val started = service.ensureForAction(7, raidEntry.id, action)
+
+        assertEquals(AutomationWorkType.RAID, started.workType)
+        assertEquals("RaidGoblin", started.targetKey)
+        assertEquals(AutomationWorkStatus.RUNNING, started.status)
+        Mockito.verify(commands).save(started)
     }
 
     @Test

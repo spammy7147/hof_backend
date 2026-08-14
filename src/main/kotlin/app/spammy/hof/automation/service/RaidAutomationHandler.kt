@@ -20,6 +20,7 @@ data class OpenRaidCycleSnapshot(val id: Long, val raidId: String, val status: R
 data class RaidAutomationSnapshot(
     val accountId: Long, val pub: RaidPubResponse, val targets: List<RaidAutomationTarget>,
     val currentTargetKey: String?, val openCycle: OpenRaidCycleSnapshot?, val now: Instant,
+    val registrationCooldownChecked: Boolean = false,
 )
 data class RaidTownAutomationAction(
     val accountId: Long,
@@ -55,6 +56,15 @@ class RaidAutomationHandler : AutomationHandler<RaidAutomationSnapshot> {
             }
             return HandlerEvaluation.Runnable(RaidTownAutomationAction(
                 context.accountId, RaidAction.RESET, raid.id, raid.id, resetTarget.name, raid.statusText,
+            ))
+        }
+        if (!context.registrationCooldownChecked) {
+            if (RaidAction.REFRESH !in context.pub.globalActions) {
+                return HandlerEvaluation.ConfigurationWarning("레이드 상태 갱신 실행 정보를 확인할 수 없습니다.", "RAID_REFRESH_UNAVAILABLE")
+            }
+            return HandlerEvaluation.Runnable(RaidTownAutomationAction(
+                context.accountId, RaidAction.REFRESH, targetRaidId = target.raidId,
+                raidName = target.name, observedStatus = "신청 쿨타임 확인",
             ))
         }
         if (context.pub.applyWait) return HandlerEvaluation.Unavailable(

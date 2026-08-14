@@ -133,7 +133,7 @@ class NewAutomationHandlersTest {
         val evaluation = RaidAutomationHandler().evaluate(RaidAutomationSnapshot(
             1,
             RaidPubResponse(listOf(recruiting), false, false, null, null, setOf(RaidAction.REWARD), null),
-            listOf(target), null, null, now,
+            listOf(target), null, null, now, registrationCooldownChecked = true,
         ))
 
         val action = assertIs<RaidTownAutomationAction>(assertIs<HandlerEvaluation.Runnable>(evaluation).action)
@@ -252,10 +252,48 @@ class NewAutomationHandlersTest {
         val evaluation = RaidAutomationHandler().evaluate(RaidAutomationSnapshot(
             1,
             RaidPubResponse(listOf(waiting), false, false, null, null, emptySet(), null),
-            listOf(target), null, null, now,
+            listOf(target), null, null, now, registrationCooldownChecked = true,
         ))
 
         assertIs<HandlerEvaluation.ConfigurationWarning>(evaluation)
+    }
+
+    @Test
+    fun `raid refreshes status before checking registration cooldown`() {
+        val target = RaidAutomationTarget("r1", "레이드", PresetSelectionMode.EXPLICIT, 3, 0, party)
+        val apparentlyRegisterable = RaidPubRaidResponse(
+            "r1", "레이드", true, null, null, null, RaidStatus.RECRUITING,
+            "파티 모집 중 (신청 안됨)", null, emptyList(), false,
+            setOf(RaidAction.REGISTER), null,
+        )
+        val evaluation = RaidAutomationHandler().evaluate(RaidAutomationSnapshot(
+            1,
+            RaidPubResponse(listOf(apparentlyRegisterable), false, false, null, null, setOf(RaidAction.REFRESH), null),
+            listOf(target), null, null, now,
+        ))
+
+        val action = assertIs<RaidTownAutomationAction>(assertIs<HandlerEvaluation.Runnable>(evaluation).action)
+        assertEquals(RaidAction.REFRESH, action.action)
+        assertEquals("r1", action.targetRaidId)
+    }
+
+    @Test
+    fun `raid waits for refreshed registration cooldown`() {
+        val target = RaidAutomationTarget("r1", "레이드", PresetSelectionMode.EXPLICIT, 3, 0, party)
+        val raid = RaidPubRaidResponse(
+            "r1", "레이드", true, null, null, null, RaidStatus.RECRUITING,
+            "파티 모집 중 (신청 안됨)", null, emptyList(), false,
+            setOf(RaidAction.REGISTER), null,
+        )
+        val evaluation = RaidAutomationHandler().evaluate(RaidAutomationSnapshot(
+            1,
+            RaidPubResponse(listOf(raid), false, true, 5_878, null, setOf(RaidAction.REFRESH), null),
+            listOf(target), null, null, now, registrationCooldownChecked = true,
+        ))
+
+        val unavailable = assertIs<HandlerEvaluation.Unavailable>(evaluation)
+        assertEquals("RAID_SHARED_COOLDOWN", unavailable.reasonCode)
+        assertEquals(now.plusSeconds(5_878), unavailable.nextRunAt)
     }
 
     @Test
@@ -301,7 +339,7 @@ class NewAutomationHandlersTest {
         val abort = assertIs<RaidCycleAbortAutomationAction>(assertIs<HandlerEvaluation.Runnable>(recovery).action)
         assertEquals(RaidCycleAbortReason.REGISTRATION_LOST, abort.reason)
 
-        val registration = RaidAutomationHandler().evaluate(snapshot.copy(openCycle = null))
+        val registration = RaidAutomationHandler().evaluate(snapshot.copy(openCycle = null, registrationCooldownChecked = true))
         val action = assertIs<RaidTownAutomationAction>(assertIs<HandlerEvaluation.Runnable>(registration).action)
         assertEquals(RaidAction.REGISTER, action.action)
         assertEquals("RaidGoblin", action.raidId)

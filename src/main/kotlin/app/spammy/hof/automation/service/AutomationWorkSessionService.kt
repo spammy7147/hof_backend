@@ -367,7 +367,7 @@ class AutomationWorkSessionService(
         }
         is AdventureMapAutomationAction -> WorkSpec(AutomationWorkType.ADVENTURE_MAP, "$categoryId/$mapCode")
         is FishingTownAutomationAction -> WorkSpec(AutomationWorkType.FISHING, FISHING_CYCLE_TARGET)
-        is RaidTownAutomationAction -> WorkSpec(AutomationWorkType.RAID, raidId ?: action.name)
+        is RaidTownAutomationAction -> WorkSpec(AutomationWorkType.RAID, targetRaidId ?: raidId ?: action.name)
         is RaidCycleAbortAutomationAction -> WorkSpec(AutomationWorkType.RAID, raidId)
     }
 

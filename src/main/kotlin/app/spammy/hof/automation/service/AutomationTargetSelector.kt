@@ -1,6 +1,8 @@
 package app.spammy.hof.automation.service
 
 import app.spammy.hof.automation.entity.AutomationType
+import app.spammy.hof.automation.entity.AutomationWorkStatus
+import app.spammy.hof.automation.entity.AutomationWorkType
 import app.spammy.hof.automation.repository.AutomationWorkSessionQueryRepository
 import app.spammy.hof.automation.repository.AutomationWorkSessionView
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
@@ -39,6 +41,9 @@ class AutomationTargetSelector(
     ): AutomationCoordination {
         val optimisticQuest = session.optimisticMapClearQuest()
         val entry = loader.loadEntry(accountId, session.entryId, session.targetKey, optimisticQuest)
+            .withRaidRegistrationCooldownChecked(
+                session.workType == AutomationWorkType.RAID && session.status == AutomationWorkStatus.RUNNING,
+            )
         return when (val result = coordinate(entry)) {
                 is AutomationCoordination.Runnable -> {
                     val battle = result.action as? QuestAction.Battle
@@ -145,6 +150,9 @@ class AutomationTargetSelector(
             ),
         )
     }
+
+    private fun AutomationCoordinatorEntry.withRaidRegistrationCooldownChecked(checked: Boolean): AutomationCoordinatorEntry =
+        if (type == AutomationType.RAID && raid != null) copy(raid = raid.copy(registrationCooldownChecked = checked)) else this
 
     private fun AutomationWorkSessionView.optimisticMapClearQuest(): List<QuestSnapshot>? {
         val current = observedCurrent ?: return null

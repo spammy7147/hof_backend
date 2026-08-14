@@ -245,7 +245,11 @@ private fun PreparedAutomationAction.selectionTrace(): SelectedActionTrace = whe
             app.spammy.hof.town.raid.model.RaidAction.REGISTER -> "공유 쿨다운이 끝나 순환 차례의 레이드에 파티 등록을 시작합니다."
             app.spammy.hof.town.raid.model.RaidAction.START -> "파티 모집 대기가 끝나 전투 시작이 활성화되었습니다."
             app.spammy.hof.town.raid.model.RaidAction.REWARD -> "레이드 완료를 확인했고 30분 보상 확인 시간 안에 보상을 수령합니다."
-            app.spammy.hof.town.raid.model.RaidAction.REFRESH -> "보상 수령 후 진행 중인 레이드의 리셋 가능 상태를 새로 확인합니다."
+            app.spammy.hof.town.raid.model.RaidAction.REFRESH -> if (observedStatus == "신청 쿨타임 확인") {
+                "파티 등록 전에 상태를 갱신해 최신 신청 쿨타임을 확인합니다."
+            } else {
+                "보상 수령 후 진행 중인 레이드의 리셋 가능 상태를 새로 확인합니다."
+            }
             app.spammy.hof.town.raid.model.RaidAction.RESET -> "진행 중인 레이드가 '보상 확인 종료(리셋 가능)' 상태여서 다음 사이클을 위한 초기화를 진행합니다."
             else -> "레이드 상태에서 실행 가능한 ${action.name} 동작을 선택했습니다."
         }, targetRaidId ?: raidId, raidName,

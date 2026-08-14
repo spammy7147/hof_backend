@@ -137,14 +137,14 @@ class RaidPubParser {
             applyWait = applyWaiting,
             applyWaitSeconds = applyWait,
             myStatus = MY_STATUS.find(pageText)?.value?.take(MAX_TEXT),
-            globalActions = global.keys + RaidAction.REFRESH,
+            globalActions = global.keys,
             result = normalizedResult,
             globalActionIds = global,
             observedRaidPubForm = true,
         )
     }
 
-    private fun empty(result: ParsedTownResult?) = RaidPubSnapshot(emptyList(), false, false, null, null, setOf(RaidAction.REFRESH), result, emptyMap(), false)
+    private fun empty(result: ParsedTownResult?) = RaidPubSnapshot(emptyList(), false, false, null, null, emptySet(), result, emptyMap(), false)
     private fun nodeText(node: Node): String = when (node) { is TextNode -> node.text(); is Element -> node.text(); else -> "" }
     private fun isSubmit(element: Element): Boolean = when (element.tagName()) {
         "button" -> element.attr("type").lowercase().let { it.isBlank() || it == "submit" }

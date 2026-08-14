@@ -102,10 +102,7 @@ class DefaultAutomationAmbiguousActionReconciler(
             ) {
                 progress.raidRewarded(accountId); AmbiguousActionResolution.Applied()
             } else AmbiguousActionResolution.Resubmit
-            RaidAction.REFRESH -> {
-                progress.raidStatusRefreshed(accountId)
-                AmbiguousActionResolution.Applied()
-            }
+            RaidAction.REFRESH -> AmbiguousActionResolution.Resubmit
             RaidAction.RESET -> {
                 val id = requireNotNull(payload.raidId)
                 val raid = latest.raids.singleOrNull { it.id == id }

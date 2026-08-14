@@ -92,6 +92,32 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
     }
 
     @Test
+    fun `ambiguous raid status refresh is safely resubmitted`() {
+        val raidPub = Mockito.mock(RaidPubService::class.java)
+        val progress = Mockito.mock(AutomationContentProgressService::class.java)
+        val raidReconciler = DefaultAutomationAmbiguousActionReconciler(
+            questGateway,
+            battleMapService,
+            battleHandler,
+            HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
+            TimeProvider { now },
+            Mockito.mock(AutomationWorkLifecycle::class.java),
+            raidPubService = raidPub,
+            contentProgress = progress,
+        )
+        Mockito.`when`(raidPub.load(7L))
+            .thenReturn(RaidPubResponse(emptyList(), false, false, null, null, setOf(RaidAction.REFRESH), null))
+        val action = StoredTypedAutomationAction(
+            13L,
+            "raid-refresh-ambiguous",
+            StoredTypedActionPayload.RaidTown(RaidAction.REFRESH, null, "RaidGoblin"),
+        )
+
+        assertIs<AmbiguousActionResolution.Resubmit>(raidReconciler.reconcile(7L, action))
+        Mockito.verifyNoInteractions(progress)
+    }
+
+    @Test
     fun `missing quest confirms ambiguous claim was applied`() {
         Mockito.`when`(questGateway.load(7, HofRequestOrigin.AUTOMATION)).thenReturn(emptyList())
 
