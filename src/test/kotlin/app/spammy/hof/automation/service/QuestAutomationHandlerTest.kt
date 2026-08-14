@@ -82,6 +82,70 @@ class QuestAutomationHandlerTest {
     }
 
     @Test
+    fun `claimable quest with TIME reward runs when reward reaches but does not exceed max`() {
+        val result = handler.evaluate(snapshot(
+            quests = listOf(
+                quest("claimable", QuestState.CLAIMABLE, 0, immediate())
+                    .copy(rewards = listOf("Time +2,000")),
+            ),
+            selections = listOf(selection("claimable")),
+            timeCurrent = 4_000,
+        ))
+
+        assertEquals(
+            "claimable",
+            assertIs<QuestAction.Claim>(assertIs<HandlerEvaluation.Runnable>(result).action).questKey,
+        )
+    }
+
+    @Test
+    fun `claimable quest is skipped when TIME reward would exceed max`() {
+        val result = handler.evaluate(snapshot(
+            quests = listOf(
+                quest("claimable", QuestState.CLAIMABLE, 0, immediate())
+                    .copy(rewards = listOf("Time +2000")),
+            ),
+            selections = listOf(selection("claimable")),
+            timeCurrent = 4_001,
+        ))
+
+        assertIs<HandlerEvaluation.Skipped>(result)
+    }
+
+    @Test
+    fun `unsafe TIME reward does not hide a later safe claimable quest`() {
+        val result = handler.evaluate(snapshot(
+            quests = listOf(
+                quest("unsafe", QuestState.CLAIMABLE, 0, immediate())
+                    .copy(rewards = listOf("Time +2000")),
+                quest("safe", QuestState.CLAIMABLE, 1, immediate())
+                    .copy(rewards = listOf("Gold x10")),
+            ),
+            selections = listOf(selection("unsafe"), selection("safe")),
+            timeCurrent = 4_001,
+        ))
+
+        assertEquals(
+            "safe",
+            assertIs<QuestAction.Claim>(assertIs<HandlerEvaluation.Runnable>(result).action).questKey,
+        )
+    }
+
+    @Test
+    fun `TIME reward is not claimed without a current TIME snapshot`() {
+        val result = handler.evaluate(snapshot(
+            quests = listOf(
+                quest("claimable", QuestState.CLAIMABLE, 0, immediate())
+                    .copy(rewards = listOf("Time +2000")),
+            ),
+            selections = listOf(selection("claimable")),
+            timeCurrent = null,
+        ))
+
+        assertIs<HandlerEvaluation.Skipped>(result)
+    }
+
+    @Test
     fun `configured waiting quest with no action number still matches by stable key`() {
         val questKey = "q:stable-quest-key"
         val waiting = QuestSnapshot(

@@ -284,7 +284,9 @@ class QuestAutomationHandler(
                 ?: HandlerEvaluation.ConfigurationWarning("Quest ${quest.questKey} has no accept action.")
         }
 
-        candidates.firstOrNull { it.state == QuestState.CLAIMABLE }?.let { quest ->
+        candidates.firstOrNull {
+            it.state == QuestState.CLAIMABLE && it.canClaimWithoutWastingTime(context.timeSnapshot, context.now)
+        }?.let { quest ->
             return quest.actionNo?.let { HandlerEvaluation.Runnable(QuestAction.Claim(quest.questKey, it, quest.name)) }
                 ?: HandlerEvaluation.ConfigurationWarning("Quest ${quest.questKey} has no claim action.")
         }
@@ -539,6 +541,26 @@ class QuestAutomationHandler(
 
     private fun AutomationMapState.displayName(): String? = mapName.trim().takeIf(String::isNotBlank)
 
+    private fun QuestSnapshot.canClaimWithoutWastingTime(
+        timeSnapshot: AutomationTimeSnapshot?,
+        now: Instant,
+    ): Boolean {
+        var totalTimeReward = 0L
+        var hasTimeReward = false
+        rewards.forEach { reward ->
+            TIME_REWARD.findAll(reward).forEach { match ->
+                hasTimeReward = true
+                val amount = match.groupValues[1].replace(",", "").toLongOrNull() ?: return false
+                if (amount > Long.MAX_VALUE - totalTimeReward) return false
+                totalTimeReward += amount
+            }
+        }
+        if (!hasTimeReward) return true
+
+        val snapshot = timeSnapshot ?: return false
+        return snapshot.estimateAt(now).toLong() + totalTimeReward <= snapshot.max.toLong()
+    }
+
     private fun QuestAutomationMapSelection.hasValidPreset(): Boolean =
         when (preset.mode) {
             PresetSelectionMode.EXPLICIT -> preset.presetId != null && (!preset.resolutionChecked || preset.resolvedPresetId == preset.presetId)
@@ -549,5 +571,6 @@ class QuestAutomationHandler(
         const val INITIAL_CYCLE = "0"
         const val DEFAULT_BATTLE_CATEGORY = "battle_map"
         const val ADVENTURE_MAP_CATEGORY = "adventure_map"
+        val TIME_REWARD = Regex("""\bTime\s*\+\s*([\d,]+)\b""", RegexOption.IGNORE_CASE)
     }
 }
