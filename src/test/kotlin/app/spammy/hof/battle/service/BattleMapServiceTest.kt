@@ -376,6 +376,52 @@ class BattleMapServiceTest {
     }
 
     @Test
+    fun `union page without a target applies its page level cooldown to the last visible map`() {
+        val account = savedAccount("union-cooldown-without-target")
+        gateway.defaultBody = """
+            <div id="menu2">Funds : ${'$'} 1 Time : 10/10</div>
+            <h4>UnionMonster</h4>
+            <a href="index.php?union=0003">도적소탕</a>
+            <h4>Union Battle Log 전투표시</h4>
+        """.trimIndent()
+        service.findMaps(account.id, "union")
+
+        gateway.defaultBody = """
+            <div id="menu2">Funds : ${'$'} 1 Time : 10/10</div>
+            <h4>UnionMonster</h4>
+            <div>Time left to next battle : 8:32</div>
+            <h4>Union Battle Log 전투표시</h4>
+        """.trimIndent()
+
+        val refreshed = service.findMaps(account.id, "union").single()
+
+        assertFalse(refreshed.enabled)
+        assertEquals(512L, refreshed.cooldownRemainingSeconds)
+    }
+
+    @Test
+    fun `authenticated union page without target or cooldown marks stale maps invisible`() {
+        val account = savedAccount("union-empty-authoritative")
+        gateway.defaultBody = """
+            <div id="menu2">Funds : ${'$'} 1 Time : 10/10</div>
+            <h4>UnionMonster</h4>
+            <a href="index.php?union=0003">도적소탕</a>
+            <h4>Union Battle Log 전투표시</h4>
+        """.trimIndent()
+        service.findMaps(account.id, "union")
+
+        gateway.defaultBody = """
+            <div id="menu2">Funds : ${'$'} 1 Time : 10/10</div>
+            <h4>Union Battle Log 전투표시</h4>
+        """.trimIndent()
+
+        val refreshed = service.findMaps(account.id, "union").single()
+
+        assertFalse(refreshed.enabled)
+        assertFalse(requireNotNull(queryRepository.findStateForExecution(account.id, "union", "0003")).visible)
+    }
+
+    @Test
     fun manualMapListDoesNotDetectOrCreateCaptchaChallenges() {
         val account = savedAccount("battle-map-manual-captcha")
         gateway.defaultBody = directAdventureHtml(sharedCount = 3, includeStale = false)

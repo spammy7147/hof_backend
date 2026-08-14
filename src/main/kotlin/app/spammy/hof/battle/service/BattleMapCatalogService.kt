@@ -54,6 +54,16 @@ class BattleMapCatalogService(
     ): List<HofBattleMap> =
         transactionService.findObservedByCategory(accountId, categoryId)
 
+    /** 정상 카테고리 페이지가 대상 없음 또는 공통 쿨다운을 표시한 상태를 반영한다. */
+    fun synchronizeUnavailableCategory(
+        account: HofAccountEntity,
+        categoryId: String,
+        cooldownRemainingSeconds: Long?,
+    ): List<HofBattleMap> =
+        withSynchronizationFence {
+            transactionService.synchronizeUnavailableCategory(account, categoryId, cooldownRemainingSeconds)
+        }
+
     companion object {
         private val SYNCHRONIZATION_LOCK = ReentrantLock(true)
 
@@ -145,6 +155,48 @@ class BattleMapCatalogTransactionService(
             unresolved = queryRepository.findVisibleUnresolvedByAccountIdAndCategoryId(accountId, categoryId),
             now = timeProvider.now(),
         )
+
+    @Transactional
+    fun synchronizeUnavailableCategory(
+        account: HofAccountEntity,
+        categoryId: String,
+        cooldownRemainingSeconds: Long?,
+    ): List<HofBattleMap> {
+        val now = timeProvider.now()
+        val index = preloadIndex(account.id, categoryId)
+        val retryAt = cooldownRemainingSeconds
+            ?.takeIf { it > 0L }
+            ?.let(now::plusSeconds)
+        if (retryAt == null) {
+            hideExistingRows(index)
+        } else {
+            index.states()
+                .filter(AccountBattleMapStateEntity::visible)
+                .onEach { state ->
+                    if (state.cooldownUntil == null || state.cooldownUntil!!.isBefore(retryAt)) {
+                        state.cooldownUntil = retryAt
+                    }
+                }
+                .takeIf(List<AccountBattleMapStateEntity>::isNotEmpty)
+                ?.let(stateRepository::saveAll)
+            index.unresolvedRows()
+                .filter(UnresolvedBattleMapEntity::visible)
+                .onEach { row ->
+                    if (row.cooldownUntil == null || row.cooldownUntil!!.isBefore(retryAt)) {
+                        row.cooldownUntil = retryAt
+                    }
+                }
+                .takeIf(List<UnresolvedBattleMapEntity>::isNotEmpty)
+                ?.let(unresolvedRepository::saveAll)
+        }
+        stateRepository.flush()
+        unresolvedRepository.flush()
+        return assembleObservedTree(
+            states = index.states(),
+            unresolved = index.unresolvedRows().filter(UnresolvedBattleMapEntity::visible),
+            now = now,
+        )
+    }
 
     private fun preloadIndex(
         accountId: Long,

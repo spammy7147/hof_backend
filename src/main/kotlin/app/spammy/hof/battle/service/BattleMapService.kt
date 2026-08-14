@@ -61,6 +61,12 @@ class BattleMapService(
     ): List<BattleMapResponse> {
         val snapshot = fetchMapSnapshot(accountId, categoryId, requireObservations = false, origin)
         if (snapshot.observations.isEmpty()) {
+            if (snapshot.category == BattleCategoryId.UNION) {
+                val pageState = battleMapParser.parseUnionPageState(snapshot.responseBody)
+                if (pageState.authoritative) {
+                    return synchronizeUnavailableSnapshot(snapshot, pageState.cooldownRemainingSeconds)
+                }
+            }
             return catalogService.findObservedByCategory(accountId, snapshot.category.value).map(BattleMapResponse::from)
         }
         return synchronizeSnapshot(snapshot)
@@ -215,7 +221,7 @@ class BattleMapService(
             }
         }
 
-        return BattleMapSnapshot(account.id, category, maps.toList())
+        return BattleMapSnapshot(account.id, category, maps.toList(), mapPageResponse.body)
     }
 
     private fun synchronizeSnapshot(snapshot: BattleMapSnapshot): List<BattleMapResponse> {
@@ -223,6 +229,19 @@ class BattleMapService(
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
         return catalogService.synchronizeCategory(account, snapshot.category.value, snapshot.observations)
             .map(BattleMapResponse::from)
+    }
+
+    private fun synchronizeUnavailableSnapshot(
+        snapshot: BattleMapSnapshot,
+        cooldownRemainingSeconds: Long?,
+    ): List<BattleMapResponse> {
+        val account = accountQueryRepository.findById(snapshot.accountId)
+            ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
+        return catalogService.synchronizeUnavailableCategory(
+            account,
+            snapshot.category.value,
+            cooldownRemainingSeconds,
+        ).map(BattleMapResponse::from)
     }
 
     /**
@@ -251,6 +270,7 @@ class BattleMapService(
         val accountId: Long,
         val category: BattleCategoryId,
         val observations: List<HofBattleMap>,
+        val responseBody: String = "",
     )
 
     private fun Throwable.causes(): Sequence<Throwable> = generateSequence(this) { it.cause }

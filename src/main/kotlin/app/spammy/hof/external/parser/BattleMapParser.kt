@@ -165,6 +165,15 @@ class BattleMapParser {
             }
     }
 
+    /** 유니온 대상이 없어도 정상 전투 페이지와 페이지 공통 쿨다운을 구분한다. */
+    fun parseUnionPageState(html: String): UnionBattlePageState {
+        val text = HofHtmlParser.parse(html, HOF_BASE_URL).text()
+        return UnionBattlePageState(
+            authoritative = UNION_PAGE_MARKER.containsMatchIn(text),
+            cooldownRemainingSeconds = UnionBattleCooldownTextParser.parseRemainingSeconds(text),
+        )
+    }
+
     private fun coalesceMapLinks(
         candidateLinks: List<Element>,
         queryPattern: Regex,
@@ -514,6 +523,7 @@ class BattleMapParser {
             "0003" to "도적소탕",
             "0004" to "사막의 살인적",
         )
+        val UNION_PAGE_MARKER = Regex("Union(?:\\s*Monster|\\s*Battle\\s*Log)", RegexOption.IGNORE_CASE)
     }
 
     private data class GroupMetadata(
@@ -543,3 +553,8 @@ class BattleMapParser {
         val contextText: String,
     )
 }
+
+data class UnionBattlePageState(
+    val authoritative: Boolean,
+    val cooldownRemainingSeconds: Long?,
+)
