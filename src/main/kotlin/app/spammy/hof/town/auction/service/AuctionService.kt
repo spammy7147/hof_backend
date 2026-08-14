@@ -90,13 +90,11 @@ class AuctionObservationService(
         snapshots.forEach { snapshot ->
             if (snapshot.quantity <= 0 || snapshot.totalPrice < 0) return@forEach
             val itemKey = hash("${snapshot.name.lowercase()}|${snapshot.type.orEmpty().lowercase()}")
-            val bucket = observedAt.epochSecond / 3600
-            val key = if (snapshot.kind == ObservationKind.SOLD) {
-                hash("sold|${snapshot.listingId.orEmpty()}|$itemKey|${snapshot.quantity}|${snapshot.totalPrice}")
-            } else {
-                hash(snapshot.listingId?.let { "id:$it|$bucket|${snapshot.kind}" }
-                    ?: "$itemKey|${snapshot.quantity}|${snapshot.totalPrice}|$bucket|${snapshot.kind}")
-            }
+            val listingId = snapshot.listingId?.trim()?.takeIf(String::isNotEmpty)
+            val key = hash(
+                listingId?.let { "auction:${it.trimStart('0').ifBlank { "0" }}" }
+                    ?: "anonymous|${snapshot.kind}|$itemKey|${snapshot.quantity}|${snapshot.totalPrice}",
+            )
             val existing = queryRepository.findByKey(key)
             val entity = existing ?: AuctionObservationEntity(observationKey = key)
             entity.listingId = snapshot.listingId
@@ -117,13 +115,13 @@ class AuctionObservationService(
     fun market(query: String?): AuctionMarket {
         val now = clock.instant()
         val observations = queryRepository.findRecent(query, now.minus(Duration.ofDays(30)))
-        val items = observations.groupBy { it.itemKey }.map { (itemKey, rows) ->
+        val items = observations.groupBy { it.itemKey }.mapNotNull { (itemKey, rows) ->
             val sold = rows.filter { it.observationKind == ObservationKind.SOLD.name }
-            val priced = sold.ifEmpty { rows }
-            val ordered = priced.sortedBy { it.observedAt }
+            if (sold.isEmpty()) return@mapNotNull null
+            val ordered = sold.sortedBy { it.observedAt }
             MarketItem(
                 itemKey, ordered.last().itemName, ordered.last().itemType, ordered.last().unitPrice,
-                checkedAverage(priced.map { it.unitPrice }), priced.minOf { it.unitPrice }, priced.maxOf { it.unitPrice },
+                checkedAverage(sold.map { it.unitPrice }), sold.minOf { it.unitPrice }, sold.maxOf { it.unitPrice },
                 sold.size, sold.sumOf { it.quantity.toLong() }, ordered.takeLast(100).map {
                     MarketPoint(it.totalPrice, it.unitPrice, it.quantity, it.observedAt, ObservationKind.valueOf(it.observationKind))
                 },
@@ -165,7 +163,7 @@ class AuctionService(
             accountId, url, TownActionRequest(command.actionId),
             mapOf("ArticleNo" to command.listingId, "BidPrice" to command.bidPrice.toString()),
             BID_SCALARS,
-            "Bid",
+            null,
         ) { html, _, result, page ->
             observeBestEffort(html, page)
             parser.parse(html, page).copy(result = anonymousResult(result))
@@ -221,13 +219,6 @@ class AuctionService(
             observations.observe(parser.snapshots(html, page))
         } catch (failure: Exception) {
             logger.warn("Auction observation failed; serving the live auction response: {}", failure.javaClass.simpleName)
-        }
-    }
-
-    fun collectorPage(accountId: Long): List<AuctionSnapshot> {
-        val url = resolveLocation(accountId, HofRequestOrigin.AUTOMATION)
-        return executor.loadProjected(accountId, url, HofRequestOrigin.AUTOMATION) { html, _, page ->
-            parser.snapshots(html, page)
         }
     }
 

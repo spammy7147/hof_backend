@@ -14,6 +14,7 @@ import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.external.model.HofFormField
 import app.spammy.hof.external.parser.LoginStateParser
 import app.spammy.hof.town.common.model.ExecutedTownAction
+import app.spammy.hof.town.common.model.ParsedTownForm
 import app.spammy.hof.town.common.model.ParsedTownPage
 import app.spammy.hof.town.common.model.TownActionRequest
 import app.spammy.hof.town.common.model.TownActionSelection
@@ -385,7 +386,7 @@ class TownAuthenticatedExecutor(
         action: TownActionRequest,
         scalarValues: Map<String, String>,
         requiredScalarFields: Set<String>,
-        requiredSubmitField: String,
+        requiredSubmitField: String?,
         projector: (
             html: String,
             finalUrl: String,
@@ -399,7 +400,7 @@ class TownAuthenticatedExecutor(
         val current = executeAuthenticated(context.account, requestFactory.townPage(pageUrl, HofRequestOrigin.INTERACTIVE), context.cookies)
         val currentPage = formParser.parse(current.body, current.finalUrl)
         val guarded = actionGuard.guard(currentPage, action)
-        if (guarded.form.submitFields.singleOrNull()?.name != requiredSubmitField) {
+        if (!matchesSubmitContract(guarded.form, requiredSubmitField)) {
             throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 작업 양식이 변경되었습니다.")
         }
         val document = HofHtmlParser.parse(current.body, current.finalUrl)
@@ -434,6 +435,14 @@ class TownAuthenticatedExecutor(
         val page = formParser.parse(actionResponse.body, actionResponse.finalUrl)
         projector(actionResponse.body, actionResponse.finalUrl, result, page)
     }
+
+    /** null은 실제 HOF처럼 이름 없는 submit 하나만 존재하고 제출 필드가 없는 계약을 뜻한다. */
+    private fun matchesSubmitContract(form: ParsedTownForm, requiredSubmitField: String?): Boolean =
+        if (requiredSubmitField == null) {
+            form.submitFields.isEmpty() && form.submitSource == "unnamed-submit"
+        } else {
+            form.submitFields.singleOrNull()?.name == requiredSubmitField
+        }
 
     /**
      * opaque candidate에서 파생되는 scalar도 최신 GET 안에서만 해석하는 variant다.

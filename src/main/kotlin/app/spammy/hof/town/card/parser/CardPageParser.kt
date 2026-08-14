@@ -7,14 +7,17 @@ import app.spammy.hof.town.common.model.ParsedTownCandidate
 import app.spammy.hof.town.common.model.ParsedTownForm
 import app.spammy.hof.town.common.model.ParsedTownPage
 import app.spammy.hof.town.common.model.ParsedTownResult
+import app.spammy.hof.town.common.model.ParsedTownResultItem
 import org.jsoup.nodes.Element
+import org.jsoup.nodes.Node
+import org.jsoup.nodes.TextNode
 import org.springframework.stereotype.Component
 
 @Component
 class CardPageParser {
     fun parseIdentify(html: String, finalUrl: String, page: ParsedTownPage, result: ParsedTownResult? = null): CardIdentifySnapshot {
-        val form = actionForm(page, setOf("Identify", "CardIdentify", "Create"), setOf("ItemNo"))
-        return CardIdentifySnapshot(form?.actionId, 1, candidates(form), structuredResult(html, result, IDENTIFY_RESULT))
+        val form = actionForm(page, setOf("Identify", "CardIdentify", "Create", "cardshop"), setOf("ItemNo", "item_no"))
+        return CardIdentifySnapshot(form?.actionId, 1, candidates(form), identifyResult(html, finalUrl, result))
     }
 
     fun parseUpgrade(html: String, finalUrl: String, page: ParsedTownPage, result: ParsedTownResult? = null): CardUpgradeSnapshot {
@@ -114,7 +117,22 @@ class CardPageParser {
                 }
             }
         }
-        return matches.singleOrNull()
+        val equivalentContracts = matches.groupBy { form ->
+            listOf<Any?>(
+                form.method,
+                form.actionUrl,
+                form.rows,
+                form.hiddenFields,
+                form.submitFields,
+                form.submitLabel,
+                form.submitSource,
+                form.hiddenFieldPositions,
+                form.editableFields,
+            )
+        }
+        // HOF의 실제 카드 폼은 같은 submit을 목록 위·아래에 반복한다. 공통 폼 파서는 버튼마다
+        // 별도 action을 만들므로, 계약이 완전히 같은 경우에만 하나로 접고 마지막 버튼을 사용한다.
+        return equivalentContracts.values.singleOrNull()?.lastOrNull()
     }
 
     private fun quantityBounds(html: String, defaultMin: Int, defaultMax: Int): Pair<Int, Int> {
@@ -125,6 +143,42 @@ class CardPageParser {
 
     private fun parseHistory(html: String, signal: Regex): List<String> = HofHtmlParser.parse(html).select("p,li,div")
         .map { clean(it.ownText()) }.filter { it.length in 2..500 && signal.containsMatchIn(it) }.distinct().takeLast(30)
+
+    /** 감정 성공 페이지가 form 앞에 `<br>` 단위로 삽입하는 장비별 옵션을 구조화한다. */
+    private fun identifyResult(html: String, finalUrl: String, result: ParsedTownResult?): ParsedTownResult? {
+        val parsed = structuredResult(html, result, IDENTIFY_RESULT) ?: return null
+        if (result == null) return parsed
+        val liveItems = identifyOptionRows(html, finalUrl)
+        if (liveItems.isEmpty()) return parsed
+        return parsed.copy(items = (parsed.items + liveItems).distinctBy(ParsedTownResultItem::label).take(100))
+    }
+
+    private fun identifyOptionRows(html: String, finalUrl: String): List<ParsedTownResultItem> {
+        val document = HofHtmlParser.parse(html, finalUrl)
+        val form = document.select("form").firstOrNull { candidate ->
+            candidate.select("input[type=radio][name=item_no],input[type=radio][name=ItemNo]").isNotEmpty() &&
+                candidate.select("input[type=submit][name=cardshop],button[name=cardshop]").isNotEmpty()
+        } ?: return emptyList()
+        val siblings = form.parent()?.childNodes() ?: return emptyList()
+        val formIndex = siblings.indexOf(form).takeIf { it >= 0 } ?: return emptyList()
+        return siblings.subList(0, formIndex).mapIndexedNotNull { index, node ->
+            val image = node as? Element ?: return@mapIndexedNotNull null
+            if (image.tagName() != "img" || !image.hasClass("vcent")) return@mapIndexedNotNull null
+            val line = buildString {
+                for (next in siblings.subList(index + 1, formIndex)) {
+                    if (next is Element && next.tagName() == "br") break
+                    append(nodeText(next)).append(' ')
+                }
+            }.let(::clean)
+            line.takeIf { IDENTIFY_OPTION.containsMatchIn(it) }?.let(::ParsedTownResultItem)
+        }.distinctBy(ParsedTownResultItem::label).take(100)
+    }
+
+    private fun nodeText(node: Node): String = when (node) {
+        is TextNode -> node.text()
+        is Element -> node.text()
+        else -> ""
+    }
 
     /** 공통 result selector가 없는 HOF의 bare text 결과도 짧은 텍스트만 복구한다. */
     private fun structuredResult(html: String, result: ParsedTownResult?, signal: Regex): ParsedTownResult? {
@@ -181,6 +235,7 @@ class CardPageParser {
         val HISTORY_SIGNAL = Regex("Soul Echo|소울 에코|창조|실패|성공", RegexOption.IGNORE_CASE)
         val FAILURE = Regex("실패|failed", RegexOption.IGNORE_CASE)
         val IDENTIFY_RESULT = Regex("감정|사용한 금액|부여한 카드 목록|Joker", RegexOption.IGNORE_CASE)
+        val IDENTIFY_OPTION = Regex("옵션\\s*:", RegexOption.IGNORE_CASE)
         val UPGRADE_RESULT = Regex("합성 성공|합성 실패|강화 성공|강화 실패|되돌려|소멸|보존|환급", RegexOption.IGNORE_CASE)
         val CHANGE_RESULT = Regex("카드 변화|카드 변환|업그레이드 성공|업그레이드 실패|되돌려|소멸", RegexOption.IGNORE_CASE)
         val SELL_RESULT = Regex("Blank\\s*Card|카드 판매|카드 교환|교환.*(?:성공|완료)|판매.*(?:성공|완료)", RegexOption.IGNORE_CASE)

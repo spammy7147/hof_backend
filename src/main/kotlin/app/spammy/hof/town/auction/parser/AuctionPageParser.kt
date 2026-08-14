@@ -166,8 +166,8 @@ class AuctionPageParser {
 
     companion object {
         private val PRICE = Regex("[$￦]\\s*([0-9][0-9,]*)")
-        private val QUANTITY = Regex("(?:x|×|수량\\s*[:：]?)\\s*([0-9][0-9,]*)", RegexOption.IGNORE_CASE)
-        private val TYPE = Regex("\\((weapon|armor|cloak|shoes|item|accessory|jobitem|head|avatar|skillseal|char|useitem|addmaterial|housing[^)]*|other)\\)", RegexOption.IGNORE_CASE)
+        private val QUANTITY = Regex("(?:x|×|수량\\s*[:：]?)\\s*([0-9][0-9,]*)\\s*(?:개)?", RegexOption.IGNORE_CASE)
+        private val TYPE = Regex("\\((weapon|armor|cloak|shoes|hat|item|accessory|jobitem|head|avatar|skillseal|char|useitem|addmaterial|housing[^)]*|other)\\)", RegexOption.IGNORE_CASE)
         private val LISTING_ID = Regex("(?:No\\.?|#|번호\\s*[:：]?)\\s*([A-Za-z0-9_-]{1,100})", RegexOption.IGNORE_CASE)
         private val SOLD_INCLUDE = Regex("낙찰하였습니다|낙찰되었습니다|\\bsold\\b|\\bwon\\b", RegexOption.IGNORE_CASE)
         private val SOLD_EXCLUDE = Regex("입찰하였습니다|출품되었습니다|취소되었습니다|입찰자가\\s*없어|Exhibit|Put Auction", RegexOption.IGNORE_CASE)
@@ -176,7 +176,9 @@ class AuctionPageParser {
     }
 
     private fun actionId(page: ParsedTownPage, vararg names: String): String? = page.forms.firstOrNull { form ->
-        form.submitFields.any { it.name in names } || form.hiddenFields.any { it.name in names }
+        form.submitFields.any { it.name in names } ||
+            form.hiddenFields.any { it.name in names } ||
+            form.editableFields.any { it.inputName in names }
     }?.actionId
     private fun money(text: String): Long? = PRICE.find(text)?.groupValues?.get(1)?.replace(",", "")?.toLongOrNull()
     private fun item(text: String): Triple<String, String?, Int> {

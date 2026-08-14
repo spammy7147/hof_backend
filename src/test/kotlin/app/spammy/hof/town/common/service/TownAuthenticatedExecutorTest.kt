@@ -226,6 +226,33 @@ class TownAuthenticatedExecutorTest {
     }
 
     @Test
+    fun `scalar action accepts one unnamed submit without inventing a submit field`() {
+        stubAccount()
+        val html = """
+            <form action="index.php?menu=auction" method="post">
+              <input type="text" name="BidPrice" value="0">
+              <input type="submit" value="입찰">
+              <input type="hidden" name="ArticleNo" value="0">
+            </form>
+        """.trimIndent()
+        val actionId = HofFormParser().parse(html, AUCTION_URL).forms.single().actionId
+        Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies()))
+            .thenReturn(response(html), response("<div id='result'>입찰했습니다.</div>"))
+
+        executor.executeProjectedWithScalars(
+            7L, AUCTION_URL, TownActionRequest(actionId),
+            mapOf("ArticleNo" to "12", "BidPrice" to "3456"), setOf("ArticleNo", "BidPrice"),
+            null,
+        ) { _, _, result, _ -> result }
+
+        val requests = ArgumentCaptor.forClass(HofRequest::class.java)
+        Mockito.verify(gateway, Mockito.times(2)).execute(
+            Mockito.eq(7L), capture(requests, HofRequest(HofHttpMethod.GET, AUCTION_URL)), anyCookies(),
+        )
+        assertEquals(mapOf("BidPrice" to "3456", "ArticleNo" to "12"), requests.allValues[1].formFields)
+    }
+
+    @Test
     fun `scalar action rejects fields assembled from another form`() {
         stubAccount()
         val html = """

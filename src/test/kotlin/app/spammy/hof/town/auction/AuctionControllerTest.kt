@@ -3,6 +3,10 @@ package app.spammy.hof.town.auction
 import app.spammy.hof.account.service.HofSessionRecoveryService
 import app.spammy.hof.town.auction.controller.AuctionController
 import app.spammy.hof.town.auction.parser.AuctionPageParser
+import app.spammy.hof.town.auction.entity.AuctionObservationEntity
+import app.spammy.hof.town.auction.repository.AuctionObservationRepository
+import app.spammy.hof.town.auction.repository.AuctionQueryRepository
+import app.spammy.hof.town.auction.service.AuctionAction
 import app.spammy.hof.town.auction.service.AuctionMarket
 import app.spammy.hof.town.auction.service.AuctionObservationService
 import app.spammy.hof.town.auction.service.AuctionService
@@ -11,10 +15,13 @@ import app.spammy.hof.town.common.service.TownAuthenticatedExecutor
 import app.spammy.hof.town.common.service.TownLocationResolver
 import app.spammy.hof.town.common.parser.HofFormParser
 import java.time.Instant
+import java.time.Clock
+import java.time.ZoneOffset
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.mockito.ArgumentCaptor
 import org.mockito.Mockito
 
 class AuctionControllerTest {
@@ -59,6 +66,32 @@ class AuctionControllerTest {
     }
 
     @Test
+    fun `live auction visit forwards current and sold rows to market observation`() {
+        val html = """
+          <table><tr><th>No</th><th>나머지</th><th>가격</th><th>Item</th><th>Bids</th><th>입찰자</th><th>출품자</th></tr>
+          <tr><td>250</td><td>1시간</td><td>${'$'} 3,000,000</td><td>Guiltnie's Card (Card) x2</td><td>1</td><td>PRIVATE_BIDDER</td><td>PRIVATE_SELLER</td></tr></table>
+          <form method="post"><input type="text" name="BidPrice"><input type="submit" value="입찰"><input type="hidden" name="ArticleNo"></form>
+          <div>옥션 로그(AuctionLog) No. 249 출품한 Potion (item) x3를 사용자에게 ${'$'} 9,000에 낙찰하였습니다.</div>
+        """.trimIndent()
+        val parsedPage = HofFormParser().parse(html)
+        val executor = Mockito.mock(TownAuthenticatedExecutor::class.java)
+        val locations = Mockito.mock(TownLocationResolver::class.java)
+        val repository = Mockito.mock(AuctionObservationRepository::class.java)
+        val queryRepository = Mockito.mock(AuctionQueryRepository::class.java)
+        val observations = AuctionObservationService(
+            repository,
+            queryRepository,
+            Clock.fixed(Instant.parse("2026-08-14T06:00:00Z"), ZoneOffset.UTC),
+        )
+
+        AuctionService(executor, locations, AuctionPageParser(), observations).observeBestEffort(html, parsedPage)
+
+        val captor = ArgumentCaptor.forClass(AuctionObservationEntity::class.java)
+        Mockito.verify(repository, Mockito.times(2)).save(captor.capture() ?: AuctionObservationEntity())
+        assertEquals(setOf("CURRENT", "SOLD"), captor.allValues.map { it.observationKind }.toSet())
+    }
+
+    @Test
     fun `persisted auction entity defines no seller bidder or account identity columns`() {
         val names = app.spammy.hof.town.auction.entity.AuctionObservationEntity::class.java.declaredFields.map { it.name.lowercase() }
         assertTrue(names.none { it.contains("seller") || it.contains("bidder") || it.contains("account") })
@@ -88,6 +121,30 @@ class AuctionControllerTest {
     }
 
     @Test
+    fun `live auction contract accepts editable bid price with unnamed submit`() {
+        val html = """
+          <table>
+            <tr><th>No</th><th>나머지</th><th>가격</th><th>Item</th><th>Bids</th><th>입찰자</th><th>출품자</th></tr>
+            <tr><td>252</td><td>16분</td><td>${'$'} 120,000,000</td><td>Mask of Scorn (Hat) x3</td><td>1</td><td>PRIVATE_BIDDER</td><td>PRIVATE_SELLER</td></tr>
+            <tr><td>250</td><td>1시간20분</td><td>${'$'} 3,000,000</td><td>Guiltnie's Card (Card) x2</td><td>1</td><td>PRIVATE_BIDDER</td><td>PRIVATE_SELLER</td></tr>
+            <tr><td>249</td><td>3시간4분</td><td>${'$'} 8,000,000</td><td>Skill Seal - 'Armor Coating' (SkillSeal) x1</td><td>1</td><td>PRIVATE_BIDDER</td><td>PRIVATE_SELLER</td></tr>
+          </table>
+          <form action="index.php?menu=auction" method="post">
+            <input type="text" name="BidPrice" value="0">
+            <input type="submit" value="입찰">
+            <input type="hidden" name="ArticleNo" value="0">
+          </form>
+        """.trimIndent()
+
+        val page = AuctionPageParser().parse(html, HofFormParser().parse(html))
+
+        assertEquals(listOf("252", "250", "249"), page.listings.mapNotNull { it.listingId })
+        assertTrue(page.capabilities.bidActionId != null)
+        assertTrue(AuctionAction.BID in page.actions)
+        assertFalse(page.toString().contains("PRIVATE_"))
+    }
+
+    @Test
     fun `sold observation includes only completed sale logs`() {
         val html = """
           <div>옥션 로그(AuctionLog)
@@ -108,6 +165,25 @@ class AuctionControllerTest {
         assertEquals("item", english.type)
         assertEquals(3, english.quantity)
         assertEquals(9_000, english.totalPrice)
+    }
+
+    @Test
+    fun `market observation uses completed sale total and quantity for auction number 252`() {
+        val html = """
+          <div>옥션 로그(AuctionLog)
+          No.252 에 Mask of Scorn (Hat) x3개가 출품되었습니다.
+          No.252 판매자가 출품한 Mask of Scorn (Hat) x3개를 구매자가 ${'$'} 120,000,000 로 낙찰하였습니다.
+          </div>
+        """.trimIndent()
+
+        val sold = AuctionPageParser().snapshots(html, HofFormParser().parse(html))
+            .single { it.kind == app.spammy.hof.town.auction.service.ObservationKind.SOLD }
+
+        assertEquals("252", sold.listingId)
+        assertEquals("Mask of Scorn", sold.name)
+        assertEquals("Hat", sold.type)
+        assertEquals(3, sold.quantity)
+        assertEquals(120_000_000, sold.totalPrice)
     }
 
     @Test

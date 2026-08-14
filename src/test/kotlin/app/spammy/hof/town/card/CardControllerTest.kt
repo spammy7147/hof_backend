@@ -49,6 +49,27 @@ class CardControllerTest {
         assertFalse(final.formEntries.any { it.name == "amount" }, "amount는 scalar allowlist에서만 추가한다")
     }
 
+    @Test fun `identify preserves the live item and duplicate cardshop fields in DOM order`() {
+        val html = """
+            <form action="?menu=cardshop" method="post">
+              <input type="submit" name="cardshop" value="감정">
+              <input type="radio" name="item_no" value="7101"> Bat's Card x13
+              <input type="submit" name="cardshop" value="감정">
+              <input type="hidden" name="cardshop" value="1">
+            </form>
+        """.trimIndent()
+        val page = forms.parse(html, URL)
+        val snapshot = parser.parseIdentify(html, URL, page)
+
+        val guarded = guard.guard(
+            page,
+            TownActionRequest(snapshot.actionId!!, listOf(TownActionSelection(snapshot.cards.single().id))),
+        )
+
+        assertEquals(listOf("item_no", "cardshop", "cardshop"), guarded.formEntries.map { it.name })
+        assertEquals(listOf("7101", "감정", "1"), guarded.formEntries.map { it.value })
+    }
+
     @Test fun `sell preserves each check amount pair and one ItemSell submit`() {
         val html = fixture("sell.html")
         val page = forms.parse(html, URL)

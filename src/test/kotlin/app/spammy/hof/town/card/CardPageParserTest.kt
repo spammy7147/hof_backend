@@ -24,6 +24,55 @@ class CardPageParserTest {
         assertEquals(50_000, page.cards.first().cost)
     }
 
+    @Test fun `identify accepts the live cardshop field contract and duplicate submit controls`() {
+        val html = """
+            <html><body><form method="post" action="?menu=cardshop">
+              <input type="submit" name="cardshop" value="감정">
+              <table><tr><td>${'$'} 50,000</td><td><input type="radio" name="item_no" value="101"> Bat's Card x13 / ★</td></tr></table>
+              <input type="submit" name="cardshop" value="감정">
+              <input type="hidden" name="cardshop" value="1">
+            </form></body></html>
+        """.trimIndent()
+
+        val page = parser.parseIdentify(html, URL, forms.parse(html, URL))
+
+        assertEquals(1, page.cards.size)
+        assertTrue(page.cards.single().selectable)
+        assertNotNull(page.actionId)
+    }
+
+    @Test fun `identify extracts equipment option rows inserted before the live cardshop form`() {
+        val html = """
+            <html><body><div style="margin:0 20px">
+              <img src="./image/char/ArgonPlanet.gif"> <b>아스트로맨서 '아르곤'</b>
+              <p><font>˝가,감정...할게요...˝</font></p>
+              <img src="./image/icon/sword.gif" class="vcent">Bat's Sword<span class="light"> (Sword)</span> / <font>M:Metal</font> / <span>옵션 : DEX+22 ,SPD+5</span><br>
+              <img src="./image/icon/armor.gif" class="vcent">Bat's Armor<span class="light"> (Armor)</span> / <font>M:Metal</font> / <span>옵션 : DEX+22 ,SPD+5</span><br>
+              보유한 카드의 목록
+              <form action="?menu=cardshop" method="post">
+                <input type="radio" name="item_no" value="7101"> Bat's Card x13
+                <input type="submit" name="cardshop" value="감정">
+                <input type="hidden" name="cardshop" value="1">
+              </form>
+            </div></body></html>
+        """.trimIndent()
+
+        val page = parser.parseIdentify(
+            html,
+            URL,
+            forms.parse(html, URL),
+            ParsedTownResult(emptyList(), emptyList()),
+        )
+
+        assertEquals(
+            listOf(
+                "Bat's Sword (Sword) / M:Metal / 옵션 : DEX+22 ,SPD+5",
+                "Bat's Armor (Armor) / M:Metal / 옵션 : DEX+22 ,SPD+5",
+            ),
+            page.result?.items?.map { it.label },
+        )
+    }
+
     @Test fun `upgrade keeps base and material as distinct two stage HOF fields`() {
         val html = fixture("upgrade.html")
         val page = parser.parseUpgrade(html, URL, forms.parse(html, URL))
@@ -38,6 +87,30 @@ class CardPageParserTest {
         assertTrue(page.history.isNotEmpty())
         val afterAction = parser.parseUpgrade(html, URL, forms.parse(html, URL), ParsedTownResult(emptyList(), emptyList()))
         assertTrue(afterAction.result!!.messages.any { it.contains("합성 성공") })
+    }
+
+    @Test fun `upgrade and change keep candidates when the live form repeats its submit control`() {
+        val html = """
+            <html><body><form method="post">
+              <input type="submit" name="Create" value="Create">
+              <table><tr><td><input type="radio" name="ItemNo" value="201"> Base Card x2</td></tr></table>
+              <input type="text" name="amount" value="1">
+              <input type="hidden" name="Create" value="1">
+              <table><tr><td><input type="radio" name="AddMaterial" value="202"> Material Card x3</td></tr></table>
+              <input type="submit" name="Create" value="Create">
+            </form></body></html>
+        """.trimIndent()
+        val parsed = forms.parse(html, URL)
+
+        val upgrade = parser.parseUpgrade(html, URL, parsed)
+        val change = parser.parseChange(html, URL, parsed)
+
+        assertEquals(1, upgrade.baseCards.size)
+        assertEquals(1, upgrade.materialCards.size)
+        assertNotNull(upgrade.actionId)
+        assertEquals(1, change.baseCards.size)
+        assertEquals(1, change.materialCards.size)
+        assertNotNull(change.actionId)
     }
 
     @Test fun `change reads HOF max ten and actual labels`() {
