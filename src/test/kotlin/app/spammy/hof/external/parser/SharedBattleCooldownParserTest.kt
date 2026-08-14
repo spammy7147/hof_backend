@@ -42,6 +42,16 @@ class SharedBattleCooldownParserTest {
     }
 
     @Test
+    fun `extracts the union shared cooldown shown as minutes and seconds`() {
+        val html = """
+            <h4>UnionMonster</h4>
+            <div>Time left to next battle : 8:32</div>
+        """.trimIndent()
+
+        assertEquals(SharedBattleCooldownNotice(512), parser.parse(html))
+    }
+
+    @Test
     fun `rejects countdowns and old mistaken marker without confirmed marker`() {
         listOf(
             "<div>56초 후 전투 가능</div>",

@@ -318,6 +318,25 @@ class BattleRunServiceTest {
     }
 
     @Test
+    fun `automation union cooldown response schedules after the displayed minutes and seconds`() {
+        prepareRunnableBattle()
+        gateway.nextBattleBody = """
+            <html><body>
+              <div id="menu2">Funds : ${'$'} 1 Time : 10/10</div>
+              <h4>UnionMonster</h4>
+              <div>Time left to next battle : 8:32</div>
+            </body></html>
+        """.trimIndent()
+
+        val error = assertFailsWith<SharedBattleCooldownRejectedException> {
+            service.runBattle(1L, runRequest(), HofRequestOrigin.AUTOMATION)
+        }
+
+        assertEquals(now.plusSeconds(514), error.retryAt)
+        assertTrue(battleLogRepository.savedEntities.isEmpty())
+    }
+
+    @Test
     fun `interactive cooldown exposes source retry seconds`() {
         prepareRunnableBattle()
         gateway.nextBattleBody = sharedCooldownHtml("56초 후 전투 가능")

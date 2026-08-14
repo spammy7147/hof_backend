@@ -25,6 +25,11 @@ class BattleMapParser {
         html: String,
     ): List<HofBattleMap> {
         val document = HofHtmlParser.parse(html, HOF_BASE_URL)
+        val pageLevelUnionCooldown = if (categoryId == UNION_CATEGORY) {
+            UnionBattleCooldownTextParser.parseRemainingSeconds(document.text())
+        } else {
+            null
+        }
         val queryPattern = Regex("""[?&]${Regex.escape(queryName)}=([^&"'#\s]+)""")
         val placeholderQueryNames = placeholderQueryNames(categoryId, queryName)
         val seenCodes = linkedSetOf<String>()
@@ -147,7 +152,7 @@ class BattleMapParser {
                     availableCount = parseAvailableCount(contextText),
                     attemptCount = attemptCount,
                     winCount = winCount,
-                    cooldownRemainingSeconds = cooldownRemaining?.seconds,
+                    cooldownRemainingSeconds = cooldownRemaining?.seconds ?: pageLevelUnionCooldown,
                     keyMode = parsedKey.mode,
                     keyCount = parsedKey.count,
                     requiredTime = parseRequiredTime(contextText),

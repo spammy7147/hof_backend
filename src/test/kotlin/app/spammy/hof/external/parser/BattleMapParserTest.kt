@@ -85,4 +85,20 @@ class BattleMapParserTest {
 
         assertEquals(listOf("도적소탕", "사막의 살인적"), maps.map { it.name })
     }
+
+    @Test
+    fun `applies the page level union cooldown to every visible union map`() {
+        val html = """
+            <div id="mapgroup1">
+              <a href="index.php?union=0003">도적소탕</a>
+              <a href="index.php?union=0004">사막의 살인적</a>
+            </div>
+            <h4>UnionMonster</h4>
+            <div>Time left to next battle : 8:32</div>
+        """.trimIndent()
+
+        val maps = parser.parse("union", "union", html)
+
+        assertEquals(listOf(512L, 512L), maps.map { it.cooldownRemainingSeconds })
+    }
 }
