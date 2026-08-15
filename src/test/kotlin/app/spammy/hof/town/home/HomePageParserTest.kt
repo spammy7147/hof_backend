@@ -185,4 +185,74 @@ class HomePageParserTest {
             snapshot.restStatus?.facilities,
         )
     }
+
+    @Test
+    fun `rest parses every facility cell when the housing table has two columns`() {
+        val html = """
+            <h3>보유 중인 시설</h3>
+            <table border="3"><tbody>
+              <tr>
+                <td width="50%"><img src="./image/icon/stove.gif"> <b><font>Iron Stove (Housing)</font></b><p></p><font>추위로부터 집안을 따뜻하게 해줍니다.</font></td>
+                <td width="50%"><img src="./image/icon/armor_027.gif"> <b><font>Sleep Wear (Housing)</font></b><p></p><font>편안한 숙면에 도움을 줍니다.</font></td>
+              </tr>
+              <tr>
+                <td width="50%"><img src="./image/icon/artifact_7.gif"> <b><font>Dragon's Ink Print (Housing)</font></b><p></p><font>멋진 수룡의 어탁입니다.</font></td>
+                <td width="50%"><img src="./image/icon/goldscreen.gif"> <b><font>Golden Folding Screen (Housing)</font></b><p></p><font>화려한 금박 병풍입니다.</font></td>
+              </tr>
+              <tr>
+                <td width="50%"><img src="./image/icon/meltrobe.gif"> <b><font>Fire Curtain (Housing)</font></b><p></p><font>따뜻한 온기를 퍼트립니다.</font></td>
+                <td width="50%"><img src="./image/icon/mat_025.png"> <b><font>Aromatic Wood (Housing)</font></b><p></p><font>고대의 숨결이 서린 향목입니다.</font></td>
+              </tr>
+              <tr>
+                <td width="50%"><img src="./image/icon/ProtonShield.gif"> <b><font>Nanocell Energy Plate (Housing)</font></b><p></p><font>자가 증식하는 금속판입니다.</font></td>
+                <td width="50%"><img src="./image/icon/OldCloak.gif"> <b><font>Antique Emblem Flag (Housing)</font></b><p></p><font>고풍스러운 문장 깃발입니다.</font></td>
+              </tr>
+              <tr>
+                <td width="50%"><img src="./image/icon/mat_006.gif"> <b><font>Angel's Glass Feather (Housing)</font></b><p></p><font>무색 투명한 천사의 날개 비늘입니다.</font></td>
+                <td width="50%"><img src="./image/icon/book.gif"> <b><font>Magical Card Book (Housing)</font></b><p></p><font>생생한 마법 도감입니다.</font></td>
+              </tr>
+              <tr></tr>
+            </tbody></table>
+        """.trimIndent()
+        val url = "http://sic.zerosic.com/ZeroHOF/index.php?menu=rest"
+
+        val snapshot = parser.parse(HomeMode.REST, html, url, forms.parse(html, url))
+        val facilities = snapshot.restStatus?.facilities.orEmpty()
+
+        val expectedNames =
+            listOf(
+                "Iron Stove (Housing)",
+                "Sleep Wear (Housing)",
+                "Dragon's Ink Print (Housing)",
+                "Golden Folding Screen (Housing)",
+                "Fire Curtain (Housing)",
+                "Aromatic Wood (Housing)",
+                "Nanocell Energy Plate (Housing)",
+                "Antique Emblem Flag (Housing)",
+                "Angel's Glass Feather (Housing)",
+                "Magical Card Book (Housing)",
+            )
+
+        assertEquals(10, facilities.size)
+        expectedNames.forEachIndexed { index, name -> assertTrue(facilities[index].startsWith(name)) }
+    }
+
+    @Test
+    fun `rest keeps parsing facilities when more rows are added`() {
+        val facilityCount = 240
+        val rows = (1..facilityCount).chunked(2).joinToString("") { indexes ->
+            val cells = indexes.joinToString("") { index ->
+                "<td><b>Facility $index (Housing)</b><p></p><font>시설 설명 $index</font></td>"
+            }
+            "<tr>$cells</tr>"
+        }
+        val html = "<h3>보유 중인 시설</h3><table>$rows</table>"
+        val url = "http://sic.zerosic.com/ZeroHOF/index.php?menu=rest"
+
+        val facilities = parser.parse(HomeMode.REST, html, url, forms.parse(html, url))
+            .restStatus?.facilities.orEmpty()
+
+        assertEquals(facilityCount, facilities.size)
+        assertTrue(facilities.last().startsWith("Facility 240 (Housing)"))
+    }
 }

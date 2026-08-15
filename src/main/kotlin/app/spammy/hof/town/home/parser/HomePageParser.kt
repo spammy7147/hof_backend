@@ -60,8 +60,13 @@ class HomePageParser {
             .takeWhile { it.tagName() !in HEADING_TAGS && !FOOTER_TEXT.containsMatchIn(clean(it.text())) }
             .take(MAX_FACILITY_SIBLINGS)
             .flatMap { sibling ->
-                val rows = sibling.select("li,tr")
-                (if (rows.isEmpty()) listOf(sibling) else rows).asSequence()
+                val listItems = sibling.select("li")
+                if (listItems.isNotEmpty()) return@flatMap listItems.asSequence()
+
+                val cells = sibling.select("tr").flatMap { row ->
+                    row.children().filter { it.tagName() == "td" }
+                }
+                (if (cells.isEmpty()) listOf(sibling) else cells).asSequence()
             }
             .map { clean(it.text()) }
             .filter { it.isNotBlank() && it.length <= MAX_FACILITY_TEXT }
@@ -235,7 +240,7 @@ class HomePageParser {
         const val MAX_FORMS_SCANNED = 100
         const val MAX_HIDDEN_FIELDS = 32
         const val MAX_PAGE_TEXT = 200_000
-        const val MAX_FACILITIES = 100
+        const val MAX_FACILITIES = 500
         const val MAX_FACILITY_SIBLINGS = 20
         const val MAX_FACILITY_TEXT = 300
         val HEADING_TAGS = setOf("h1", "h2", "h3", "h4", "h5", "h6")
