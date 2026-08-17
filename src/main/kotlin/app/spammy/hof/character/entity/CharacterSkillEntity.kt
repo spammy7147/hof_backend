@@ -48,6 +48,12 @@ class CharacterSkillEntity(
 
     @Column(name = "category", nullable = false, columnDefinition = "text")
     var category: String,
+
+    @Column(name = "target_text", columnDefinition = "text") var targetText: String? = null,
+    @Column(name = "scope_text", columnDefinition = "text") var scopeText: String? = null,
+    @Column(name = "sp_cost") var spCost: Int? = null,
+    @Column(name = "multiplier_text", columnDefinition = "text") var multiplierText: String? = null,
+    @Column(name = "description", columnDefinition = "text") var description: String? = null,
 )
 
 /**

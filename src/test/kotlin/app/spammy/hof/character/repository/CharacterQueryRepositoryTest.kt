@@ -10,6 +10,7 @@ import app.spammy.hof.character.dto.CharacterPositionGuardResponse
 import app.spammy.hof.character.dto.CharacterSkillResponse
 import app.spammy.hof.character.dto.CharacterStatsResponse
 import app.spammy.hof.character.entity.CharacterEntity
+import app.spammy.hof.character.entity.CharacterLifecycle
 import app.spammy.hof.character.entity.CharacterSyncFailureEntity
 import app.spammy.hof.character.entity.CharacterSyncJobEntity
 import app.spammy.hof.character.entity.CharacterSyncJobStatus
@@ -47,6 +48,7 @@ import org.springframework.transaction.annotation.Transactional
 @Import(
     QueryDslConfig::class,
     CharacterQueryRepository::class,
+    CharacterIdentityQueryRepository::class,
     CharacterSyncJobQueryRepository::class,
     CharacterService::class,
     CharacterQueryRepositoryTest.ClockConfig::class,
@@ -58,6 +60,9 @@ class CharacterQueryRepositoryTest {
 
     @Autowired
     private lateinit var characterQueryRepository: CharacterQueryRepository
+
+    @Autowired
+    private lateinit var characterIdentityRepository: CharacterIdentityQueryRepository
 
     @Autowired
     private lateinit var characterService: CharacterService
@@ -96,6 +101,10 @@ class CharacterQueryRepositoryTest {
         val characterIds = listOf(character.id)
 
         assertEquals(NOW, character.detailSyncedAt)
+        assertEquals(
+            CHARACTER_ID,
+            characterIdentityRepository.findOpenHistory(character.id)?.hofCharacterId,
+        )
         assertEquals(1L, characterQueryRepository.countByAccountId(account.id))
         assertEquals(parsed.statusLines, characterQueryRepository.findStatusLinesByCharacterIds(characterIds).map { it.content })
         assertEquals(listOf("0", "1"), characterQueryRepository.findPatternSlotsByCharacterIds(characterIds).map { it.slotCode })
@@ -199,6 +208,23 @@ class CharacterQueryRepositoryTest {
             ),
             detail.learnableSkills,
         )
+    }
+
+    @Test
+    fun rosterAbsenceMarksCharacterMissingWithoutDeletingStableIdentity() {
+        val account = accountRepository.save(account("missing-character"))
+        characterService.upsertCharacterSnapshot(
+            account = account,
+            rosterCharacter = HofCharacter(id = CHARACTER_ID, name = "소셜"),
+            detail = HofCharacter(id = CHARACTER_ID, name = "소셜"),
+        )
+
+        characterService.deleteCharactersAbsentFromRoster(account.id, setOf("another-character"))
+
+        val character = assertNotNull(characterIdentityRepository.findByAccountIdAndAnyHofCharacterId(account.id, CHARACTER_ID))
+        assertEquals(CharacterLifecycle.MISSING, character.lifecycle)
+        assertEquals(NOW, character.missingSince)
+        assertEquals(1L, characterQueryRepository.countByAccountId(account.id))
     }
 
     @Test

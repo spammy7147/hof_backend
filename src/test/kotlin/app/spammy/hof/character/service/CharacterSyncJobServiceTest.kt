@@ -19,7 +19,6 @@ import app.spammy.hof.external.client.testAccountHofGateway
 import app.spammy.hof.external.model.HofCharacter
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
-import app.spammy.hof.external.parser.CharacterDetailParser
 import app.spammy.hof.external.parser.CharacterRosterParser
 import java.time.Instant
 import kotlin.test.assertEquals
@@ -27,6 +26,7 @@ import kotlin.test.assertNull
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito
 import org.springframework.core.task.SyncTaskExecutor
+import org.springframework.core.task.TaskExecutor
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter
 
 class CharacterSyncJobServiceTest {
@@ -43,13 +43,17 @@ class CharacterSyncJobServiceTest {
     private val syncFailureRepository = Mockito.mock(CharacterSyncFailureCommandRepository::class.java)
     private val syncJobQueryRepository = Mockito.mock(CharacterSyncJobQueryRepository::class.java)
     private val characterService = Mockito.mock(CharacterService::class.java)
+    private val snapshotSynchronizer = Mockito.mock(CharacterSnapshotSynchronizer::class.java)
     private val eventService = Mockito.mock(CharacterSyncEventService::class.java)
     private val gateway = FakeHofGateway()
     private val savedJobs = mutableMapOf<Long, CharacterSyncJobEntity>()
     private val savedFailures = mutableListOf<CharacterSyncFailureEntity>()
     private val savedCharacters = linkedMapOf<String, CharacterResponse>()
     private val publishedEvents = mutableListOf<CharacterSyncEventResponse>()
-    private val service = CharacterSyncJobService(
+    private var requestStopAfterFirstCharacter = false
+    private val service = createService(SyncTaskExecutor())
+
+    private fun createService(taskExecutor: TaskExecutor) = CharacterSyncJobService(
         accountQueryRepository = accountQueryRepository,
         cookieQueryRepository = cookieQueryRepository,
         syncJobRepository = syncJobRepository,
@@ -59,36 +63,29 @@ class CharacterSyncJobServiceTest {
         requestFactory = HofRequestFactory(),
         gateway = testAccountHofGateway(gateway, TimeProvider { now }),
         rosterParser = CharacterRosterParser(),
-        detailParser = CharacterDetailParser(),
+        snapshotSynchronizer = snapshotSynchronizer,
         eventService = eventService,
-        taskExecutor = SyncTaskExecutor(),
+        taskExecutor = taskExecutor,
         timeProvider = TimeProvider { now },
     )
 
     @Test
     fun startSyncJobReusesTheActiveAccountJob() {
         arrangeRepositories()
+        val pendingService = createService(TaskExecutor { })
 
-        val first = service.startSyncJob(1L)
-        val second = service.startSyncJob(1L)
+        val first = pendingService.startSyncJob(1L)
+        val second = pendingService.startSyncJob(1L)
 
         assertEquals(first.jobId, second.jobId)
         Mockito.verify(syncJobRepository, Mockito.times(1)).save(anySyncJob())
     }
 
     @Test
-    fun streamSyncJobEventsStartsParsingAndPublishesCharactersOneByOne() {
+    fun startSyncJobStartsParsingWithoutSseAndPublishesCharactersOneByOne() {
         arrangeRepositories()
 
         val started = service.startSyncJob(1L)
-
-        assertEquals("pending", started.status)
-        assertEquals(emptyList(), started.failedCharacterIds)
-        assertEquals(emptyList(), savedFailures)
-        assertEquals(emptyList(), gateway.requests.map { it.url })
-        assertEquals(emptyList(), publishedEvents.map { it.eventType })
-
-        service.streamSyncJobEvents(accountId = 1L, jobId = started.jobId)
         val snapshot = service.findSyncJob(accountId = 1L, jobId = started.jobId)
 
         assertEquals("completed", snapshot.status)
@@ -99,8 +96,6 @@ class CharacterSyncJobServiceTest {
         assertEquals(
             listOf(
                 "http://sic.zerosic.com/ZeroHOF/index.php",
-                "http://sic.zerosic.com/ZeroHOF/index.php?char=111",
-                "http://sic.zerosic.com/ZeroHOF/index.php?char=222",
             ),
             gateway.requests.map { it.url },
         )
@@ -123,7 +118,6 @@ class CharacterSyncJobServiceTest {
         gateway.failedCharacterId = "222"
 
         val started = service.startSyncJob(1L)
-        service.streamSyncJobEvents(accountId = 1L, jobId = started.jobId)
         val snapshot = service.findSyncJob(accountId = 1L, jobId = started.jobId)
 
         assertEquals("completed", snapshot.status)
@@ -152,7 +146,6 @@ class CharacterSyncJobServiceTest {
         gateway.failHome = true
 
         val started = service.startSyncJob(1L)
-        service.streamSyncJobEvents(accountId = 1L, jobId = started.jobId)
         val snapshot = service.findSyncJob(accountId = 1L, jobId = started.jobId)
 
         assertEquals("failed", snapshot.status)
@@ -161,6 +154,45 @@ class CharacterSyncJobServiceTest {
         assertEquals(listOf("started", "failed"), publishedEvents.map { it.eventType })
         assertEquals("home failed", publishedEvents.last().message)
         Mockito.verify(eventService).complete(started.jobId)
+    }
+
+    @Test
+    fun stopRequestFinishesCurrentCharacterAndCheckpointsBeforeStopping() {
+        arrangeRepositories()
+        requestStopAfterFirstCharacter = true
+
+        val started = service.startSyncJob(1L)
+        val snapshot = service.findSyncJob(1L, started.jobId)
+
+        assertEquals("stopped", snapshot.status)
+        assertEquals(listOf("111"), snapshot.characters.map { it.hofCharacterId })
+        assertEquals(0, snapshot.lastCompletedRosterIndex)
+        assertNull(snapshot.currentHofCharacterId)
+        assertEquals(listOf("started", "rosterParsed", "characterSynced", "stopped"), publishedEvents.map { it.eventType })
+    }
+
+    @Test
+    fun resumedJobSkipsCompletedCharactersAndRestartsAtNextCheckpoint() {
+        arrangeRepositories()
+        savedJobs[12L] = CharacterSyncJobEntity(
+            id = 12L,
+            account = account,
+            status = CharacterSyncJobStatus.PENDING,
+            syncedCount = 1,
+            startedAt = now,
+            lastCompletedRosterIndex = 0,
+            currentHofCharacterId = "222",
+        )
+        savedCharacters["111"] = CharacterResponse(111L, "111", "소셜", "", null, 0, null, revision = now)
+
+        service.startSyncJob(1L)
+        val snapshot = service.findSyncJob(1L, 12L)
+
+        assertEquals("completed", snapshot.status)
+        assertEquals(2, snapshot.syncedCount)
+        assertEquals(1, snapshot.lastCompletedRosterIndex)
+        assertEquals(listOf("111", "222"), snapshot.characters.map { it.hofCharacterId })
+        assertEquals(listOf("222"), publishedEvents.mapNotNull { it.character?.hofCharacterId })
     }
 
     private fun arrangeRepositories() {
@@ -187,6 +219,9 @@ class CharacterSyncJobServiceTest {
                         message = job.message,
                         startedAt = job.startedAt,
                         finishedAt = job.finishedAt,
+                        stopRequested = job.stopRequested,
+                        lastCompletedRosterIndex = job.lastCompletedRosterIndex,
+                        currentHofCharacterId = job.currentHofCharacterId,
                     )
                 } else {
                     job
@@ -239,6 +274,7 @@ class CharacterSyncJobServiceTest {
                 level = detail.level,
                 patternSlotCount = detail.patternSlots.size,
                 imageUrl = detail.imageUrl.ifBlank { null },
+                revision = now,
                 patternSlots = detail.patternSlots.map { slot ->
                     CharacterPatternSlotResponse(slot = slot.slot, label = slot.label, canLoad = slot.canLoad)
                 },
@@ -248,6 +284,37 @@ class CharacterSyncJobServiceTest {
         }
         Mockito.`when`(characterService.findAll(1L)).thenAnswer {
             savedCharacters.values.sortedWith(compareBy(CharacterResponse::name, CharacterResponse::id))
+        }
+        Mockito.`when`(
+            snapshotSynchronizer.synchronize(
+                anyAccount(),
+                Mockito.anyMap(),
+                anyHofCharacter(),
+                Mockito.anyBoolean(),
+                Mockito.anySet(),
+            ),
+        ).thenAnswer { invocation ->
+            val roster = invocation.arguments[2] as HofCharacter
+            val response = CharacterResponse(
+                id = roster.id.toLong(),
+                hofCharacterId = roster.id,
+                name = roster.name,
+                job = "",
+                level = null,
+                patternSlotCount = 0,
+                imageUrl = when (roster.id) {
+                    "111" -> "http://sic.zerosic.com/ZeroHOF/image/char/sknight02.gif"
+                    else -> "http://sic.zerosic.com/ZeroHOF/image/char/cavalry.gif"
+                },
+                revision = now,
+                patternSlots = emptyList(),
+            )
+            savedCharacters[response.hofCharacterId] = response
+            if (gateway.failedCharacterId == roster.id) error("detail failed")
+            if (requestStopAfterFirstCharacter && roster.id == "111") {
+                savedJobs[12L]?.stopRequested = true
+            }
+            response
         }
     }
 

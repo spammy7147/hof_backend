@@ -71,6 +71,12 @@ class FreshSchemaTest {
                 "20" to "keep automation retryable",
                 "21" to "add fishing automation maps",
                 "22" to "add home quest automation",
+                "23" to "stabilize character identity",
+                "24" to "add character section snapshots",
+                "25" to "checkpoint character sync jobs",
+                "26" to "add character points",
+                "27" to "add character operation jobs",
+                "28" to "add character candidate quantity",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -97,6 +103,12 @@ class FreshSchemaTest {
                 "V20__keep_automation_retryable.sql",
                 "V21__add_fishing_automation_maps.sql",
                 "V22__add_home_quest_automation.sql",
+                "V23__stabilize_character_identity.sql",
+                "V24__add_character_section_snapshots.sql",
+                "V25__checkpoint_character_sync_jobs.sql",
+                "V26__add_character_points.sql",
+                "V27__add_character_operation_jobs.sql",
+                "V28__add_character_candidate_quantity.sql",
                 "V2__order_party_presets.sql",
                 "V3__add_automation_work_sessions.sql",
                 "V4__prepare_captcha_on_demand.sql",
@@ -119,6 +131,7 @@ class FreshSchemaTest {
             assertTrue(connection.columnExists("party_presets", "folder_id"))
             assertTrue(connection.columnExists("captcha_challenges", "preparation_version"))
             assertTrue(connection.columnExists("characters", "detail_synced_at"))
+            assertTrue(connection.tableExists("character_operation_jobs"))
             assertTrue(connection.columnExists("battle_maps", "shares_minute_cooldown"))
             assertTrue(connection.columnExists("quest_automation_selections", "display_code"))
             assertTrue(connection.columnExists("quest_automation_selections", "quest_name"))

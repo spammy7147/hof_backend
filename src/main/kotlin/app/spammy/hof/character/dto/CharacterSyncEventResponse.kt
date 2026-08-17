@@ -17,4 +17,7 @@ data class CharacterSyncEventResponse(
     val character: CharacterResponse?,
     val message: String?,
     val emittedAt: Instant,
+    val stopRequested: Boolean = false,
+    val lastCompletedRosterIndex: Int = -1,
+    val currentHofCharacterId: String? = null,
 )

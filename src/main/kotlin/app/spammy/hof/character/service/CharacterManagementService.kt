@@ -5,6 +5,12 @@ import app.spammy.hof.character.dto.CharacterActionCandidateResponse
 import app.spammy.hof.character.dto.CharacterActionFieldResponse
 import app.spammy.hof.character.dto.CharacterManagementSnapshotResponse
 import app.spammy.hof.character.dto.CharacterObservedActionResponse
+import app.spammy.hof.character.dto.CharacterIdentityCandidateResponse
+import app.spammy.hof.character.identity.CharacterIdentityEvidence
+import app.spammy.hof.character.identity.CharacterIdentityResolution
+import app.spammy.hof.character.identity.CharacterIdentityResolver
+import app.spammy.hof.character.identity.CharacterLifecycleService
+import app.spammy.hof.character.entity.CharacterHofIdLinkReason
 import app.spammy.hof.character.repository.CharacterQueryRepository
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
@@ -24,8 +30,11 @@ class CharacterManagementService(
     private val requestFactory: HofRequestFactory,
     private val executor: TownAuthenticatedExecutor,
     private val detailParser: CharacterDetailParser,
+    private val snapshotSynchronizer: CharacterSnapshotSynchronizer,
     private val rosterParser: CharacterRosterParser,
     private val characterService: CharacterService,
+    private val identityResolver: CharacterIdentityResolver,
+    private val lifecycleService: CharacterLifecycleService,
 ) {
     fun load(accountId: Long, hofCharacterId: String): CharacterManagementSnapshotResponse {
         requireOwnedCharacter(accountId, hofCharacterId)
@@ -71,6 +80,8 @@ class CharacterManagementService(
         characterService.deleteCharactersAbsentFromRoster(accountId, roster.mapTo(linkedSetOf()) { it.id })
 
         if (actionSource.startsWith("byebye")) {
+            previousCharacters.singleOrNull { it.hofCharacterId == previousHofCharacterId }
+                ?.let { lifecycleService.archive(accountId, it.id) }
             return CharacterManagementSnapshotResponse(
                 character = null,
                 actions = emptyList(),
@@ -80,32 +91,80 @@ class CharacterManagementService(
             )
         }
 
-        val previousIds = previousCharacters.mapTo(linkedSetOf()) { it.hofCharacterId }
-        val previousName = previousCharacters.singleOrNull { it.hofCharacterId == previousHofCharacterId }?.name
-        val replacement = roster.filter { it.id !in previousIds }.singleOrNull()
-            ?: roster.filter { it.id != previousHofCharacterId && it.name.isNotBlank() && it.name == previousName }.singleOrNull()
-            ?: throw ApiException(ErrorCode.HOF_REQUEST_FAILED, "순서 변경 후 새 캐릭터 ID를 안전하게 확인하지 못했습니다. 캐릭터 동기화를 다시 실행해 주세요.")
+        val target = previousCharacters.singleOrNull { it.hofCharacterId == previousHofCharacterId }
+            ?: throw ApiException(ErrorCode.HOF_REQUEST_FAILED, "순서 변경 전 캐릭터를 확인하지 못했습니다.")
+        val resolution = identityResolver.resolveKnockback(
+            targetBefore = target.toIdentityEvidence(),
+            rosterBefore = previousCharacters.map { it.toIdentityEvidence() },
+            rosterAfter = roster.map { CharacterIdentityEvidence(it.id, it.name, it.job, it.level) },
+        )
+        val replacement = when (resolution) {
+            is CharacterIdentityResolution.Confirmed -> resolution.replacement
+            is CharacterIdentityResolution.Candidates -> return identityResolutionResponse(
+                accountId,
+                messages,
+                roster.map { rosterCharacter ->
+                    val candidate = resolution.candidates.singleOrNull {
+                        it.character.hofCharacterId == rosterCharacter.id
+                    }
+                    CharacterIdentityCandidateResponse(
+                        rosterCharacter.id,
+                        rosterCharacter.name,
+                        rosterCharacter.job,
+                        rosterCharacter.level,
+                        candidate?.matchingFields.orEmpty(),
+                    )
+                },
+            )
+            is CharacterIdentityResolution.Unresolved -> return identityResolutionResponse(
+                accountId,
+                messages,
+                resolution.roster.map { candidate ->
+                    CharacterIdentityCandidateResponse(candidate.hofCharacterId, candidate.name, candidate.job, candidate.level)
+                },
+            )
+        }
+        lifecycleService.link(
+            accountId,
+            target.id,
+            replacement.hofCharacterId,
+            CharacterHofIdLinkReason.KNOCKBACK,
+            userConfirmed = false,
+        )
         val snapshot = loadFresh(
             accountId = accountId,
-            hofCharacterId = replacement.id,
+            hofCharacterId = replacement.hofCharacterId,
             messages = messages.ifEmpty { listOf("캐릭터를 맨 뒤로 이동했습니다.") },
         )
         return snapshot.copy(characters = characterService.findAll(accountId))
     }
+
+    private fun identityResolutionResponse(
+        accountId: Long,
+        messages: List<String>,
+        candidates: List<CharacterIdentityCandidateResponse>,
+    ) = CharacterManagementSnapshotResponse(
+        character = null,
+        actions = emptyList(),
+        messages = messages.ifEmpty { listOf("새 캐릭터 연결을 선택해 주세요.") },
+        characters = characterService.findAll(accountId),
+        identityResolutionRequired = true,
+        identityCandidates = candidates,
+    )
 
     private fun loadFresh(
         accountId: Long,
         hofCharacterId: String,
         messages: List<String> = emptyList(),
     ): CharacterManagementSnapshotResponse {
-        val account = accountQueryRepository.findById(accountId)
+        accountQueryRepository.findById(accountId)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
         return executor.loadProjected(accountId, characterUrl(hofCharacterId)) { html, _, page ->
-            val parsed = detailParser.parse(hofCharacterId, html)
-            val refreshed = characterService.refreshParsedCharacter(account, parsed)
+            val parsed = detailParser.parsePage(hofCharacterId, html)
+            val refreshed = snapshotSynchronizer.writeParsed(accountId, hofCharacterId, parsed)
             CharacterManagementSnapshotResponse(
                 character = refreshed,
-                actions = page.toActions(parsed.patternSlots.associate { it.slot to it.label }),
+                actions = page.toActions(parsed.snapshot.patternSlots.associate { it.slot to it.label }),
                 messages = messages,
                 characters = characterService.findAll(accountId),
             )
@@ -164,5 +223,8 @@ class CharacterManagementService(
     private fun characterUrl(hofCharacterId: String): String = requestFactory.characterPage(hofCharacterId).url
 
     private fun String.isTerminalIdentityAction(): Boolean =
-        matches(Regex("^(byebye|knockback)\\d+$", RegexOption.IGNORE_CASE))
+        equals("byebye", ignoreCase = true) || equals("knockback", ignoreCase = true)
 }
+
+private fun app.spammy.hof.character.dto.CharacterResponse.toIdentityEvidence() =
+    CharacterIdentityEvidence(hofCharacterId, name, job, level)

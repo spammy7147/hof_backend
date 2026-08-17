@@ -16,4 +16,7 @@ data class CharacterSyncJobResponse(
     val message: String?,
     val startedAt: Instant,
     val finishedAt: Instant?,
+    val stopRequested: Boolean = false,
+    val lastCompletedRosterIndex: Int = -1,
+    val currentHofCharacterId: String? = null,
 )

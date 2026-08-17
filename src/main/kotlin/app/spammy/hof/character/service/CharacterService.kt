@@ -9,20 +9,36 @@ import app.spammy.hof.character.dto.CharacterPositionChoiceResponse
 import app.spammy.hof.character.dto.CharacterPositionGuardResponse
 import app.spammy.hof.character.dto.CharacterResponse
 import app.spammy.hof.character.dto.CharacterSkillResponse
+import app.spammy.hof.character.dto.CharacterSectionStateResponse
 import app.spammy.hof.character.dto.CharacterStatsResponse
+import app.spammy.hof.character.dto.CharacterStatusEffectResponse
+import app.spammy.hof.character.dto.CharacterFaithResponse
+import app.spammy.hof.character.dto.CharacterPatternOptionResponse
+import app.spammy.hof.character.dto.CharacterEquipmentCandidateResponse
+import app.spammy.hof.character.dto.CharacterHofIdHistoryResponse
 import app.spammy.hof.character.entity.CharacterActionPatternEntity
 import app.spammy.hof.character.entity.CharacterEntity
 import app.spammy.hof.character.entity.CharacterEquipmentEntity
 import app.spammy.hof.character.entity.CharacterGuardSettingEntity
+import app.spammy.hof.character.entity.CharacterHofIdHistoryEntity
+import app.spammy.hof.character.entity.CharacterHofIdLinkReason
+import app.spammy.hof.character.entity.CharacterLifecycle
 import app.spammy.hof.character.entity.CharacterPatternSlotEntity
 import app.spammy.hof.character.entity.CharacterPositionChoiceEntity
 import app.spammy.hof.character.entity.CharacterSkillEntity
 import app.spammy.hof.character.entity.CharacterSkillType
 import app.spammy.hof.character.entity.CharacterStatsEntity
 import app.spammy.hof.character.entity.CharacterStatusLineEntity
+import app.spammy.hof.character.entity.CharacterSectionSyncStateEntity
+import app.spammy.hof.character.entity.CharacterStatusEffectEntity
+import app.spammy.hof.character.entity.CharacterFaithEntity
+import app.spammy.hof.character.entity.CharacterPatternOptionEntity
+import app.spammy.hof.character.entity.CharacterEquipmentCandidateEntity
 import app.spammy.hof.character.repository.CharacterActionPatternCommandRepository
 import app.spammy.hof.character.repository.CharacterEquipmentCommandRepository
 import app.spammy.hof.character.repository.CharacterGuardSettingCommandRepository
+import app.spammy.hof.character.repository.CharacterHofIdHistoryRepository
+import app.spammy.hof.character.repository.CharacterIdentityQueryRepository
 import app.spammy.hof.character.repository.CharacterPatternSlotCommandRepository
 import app.spammy.hof.character.repository.CharacterPositionChoiceCommandRepository
 import app.spammy.hof.character.repository.CharacterQueryRepository
@@ -47,6 +63,8 @@ import org.springframework.transaction.annotation.Transactional
 class CharacterService(
     private val characterRepository: CharacterRepository,
     private val characterQueryRepository: CharacterQueryRepository,
+    private val characterHofIdHistoryRepository: CharacterHofIdHistoryRepository,
+    private val characterIdentityQueryRepository: CharacterIdentityQueryRepository,
     private val statsRepository: CharacterStatsCommandRepository,
     private val statusLineRepository: CharacterStatusLineCommandRepository,
     private val patternSlotRepository: CharacterPatternSlotCommandRepository,
@@ -61,16 +79,20 @@ class CharacterService(
      * 계정 캐릭터를 이름과 ID 순서로 읽고 패턴 슬롯을 한 번의 bulk query로 결합한다.
      */
     @Transactional(readOnly = true)
-    fun findAll(accountId: Long): List<CharacterResponse> {
+    fun findAll(accountId: Long, lifecycle: CharacterLifecycle? = null): List<CharacterResponse> {
         val characters = characterQueryRepository.findAllByAccountId(accountId)
+            .filter { lifecycle == null || it.lifecycle == lifecycle }
         if (characters.isEmpty()) return emptyList()
 
         val slotsByCharacterId = characterQueryRepository
             .findPatternSlotsByCharacterIds(characters.map { it.id })
             .groupBy { it.character.id }
+        val statesByCharacterId = characterQueryRepository
+            .findSectionStatesByCharacterIds(characters.map { it.id })
+            .groupBy { it.character.id }
 
         return characters.map { character ->
-            character.toResponse(slotsByCharacterId[character.id].orEmpty())
+            character.toResponse(slotsByCharacterId[character.id].orEmpty(), statesByCharacterId[character.id].orEmpty())
         }
     }
 
@@ -84,18 +106,41 @@ class CharacterService(
     ): CharacterDetailResponse {
         val character = characterQueryRepository.findByAccountIdAndHofCharacterId(accountId, hofCharacterId)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "캐릭터를 찾지 못했습니다.")
+        return findDetail(character)
+    }
+
+    /** 변경 가능한 HOF ID와 무관하게 앱의 안정 캐릭터 기록으로 상세를 조회한다. */
+    @Transactional(readOnly = true)
+    fun findDetailById(accountId: Long, characterId: Long): CharacterDetailResponse {
+        val character = characterQueryRepository.findByAccountIdAndId(accountId, characterId)
+            ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "캐릭터를 찾지 못했습니다.")
+        return findDetail(character)
+    }
+
+    @Transactional(readOnly = true)
+    fun findCurrentHofCharacterId(accountId: Long, characterId: Long): String =
+        characterQueryRepository.findByAccountIdAndId(accountId, characterId)?.hofCharacterId
+            ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "캐릭터를 찾지 못했습니다.")
+
+    private fun findDetail(character: CharacterEntity): CharacterDetailResponse {
         val characterIds = listOf(character.id)
         val positions = characterQueryRepository.findPositionChoicesByCharacterIds(characterIds)
 
         return character.toDetailResponse(
             statusLines = characterQueryRepository.findStatusLinesByCharacterIds(characterIds),
+            statusEffects = characterQueryRepository.findStatusEffects(character.id),
+            faith = characterQueryRepository.findFaith(character.id),
             patternSlots = characterQueryRepository.findPatternSlotsByCharacterIds(characterIds),
             stats = characterQueryRepository.findStatsByCharacterId(character.id),
             actionPatterns = characterQueryRepository.findActionPatternsByCharacterIds(characterIds),
+            patternOptions = characterQueryRepository.findPatternOptions(character.id),
             guardSetting = characterQueryRepository.findGuardSettingByCharacterId(character.id),
             positions = positions,
             equipment = characterQueryRepository.findEquipmentByCharacterIds(characterIds),
+            equipmentCandidates = characterQueryRepository.findEquipmentCandidates(character.id),
             skills = characterQueryRepository.findSkillsByCharacterIds(characterIds),
+            sectionStates = characterQueryRepository.findSectionStates(character.id),
+            hofIdHistory = characterIdentityQueryRepository.findHistory(character.id),
         )
     }
 
@@ -147,8 +192,25 @@ class CharacterService(
             }
         }
         character.updatedAt = now
+        character.lastSeenAt = now
+        if (character.lifecycle == CharacterLifecycle.MISSING) {
+            character.lifecycle = CharacterLifecycle.ACTIVE
+            character.missingSince = null
+        }
 
         val savedCharacter = characterRepository.save(character)
+        if (existing == null) {
+            characterHofIdHistoryRepository.save(
+                CharacterHofIdHistoryEntity(
+                    character = savedCharacter,
+                    account = account,
+                    hofCharacterId = rosterCharacter.id,
+                    validFrom = now,
+                    linkReason = CharacterHofIdLinkReason.INITIAL_SYNC,
+                    userConfirmed = true,
+                ),
+            )
+        }
         if (hasParsedDetail) {
             replaceStatusLines(savedCharacter, detail)
             upsertPatternSlots(savedCharacter, detail)
@@ -175,13 +237,18 @@ class CharacterService(
         return findDetail(account.id, detail.id)
     }
 
-    /** 신뢰 가능한 원격 명단에 없는 로컬 캐릭터를 제거한다. */
+    /** 신뢰 가능한 원격 명단에 없는 로컬 캐릭터를 삭제하지 않고 사라짐 상태로 전환한다. */
     @Transactional
     fun deleteCharactersAbsentFromRoster(accountId: Long, rosterIds: Set<String>) {
         require(rosterIds.isNotEmpty()) { "빈 캐릭터 명단으로 로컬 상태를 정리할 수 없습니다." }
-        val stale = characterQueryRepository.findAllByAccountId(accountId)
-            .filterNot { it.hofCharacterId in rosterIds }
-        characterRepository.deleteAll(stale)
+        val missingSince = timeProvider.now()
+        characterQueryRepository.findAllByAccountId(accountId)
+            .filter { it.lifecycle == CharacterLifecycle.ACTIVE && it.hofCharacterId !in rosterIds }
+            .forEach { character ->
+                character.lifecycle = CharacterLifecycle.MISSING
+                character.missingSince = missingSince
+                character.updatedAt = missingSince
+            }
     }
 
     private fun replaceStatusLines(
@@ -240,6 +307,8 @@ class CharacterService(
     ) {
         val stats = characterQueryRepository.findStatsByCharacterId(character.id)
             ?: CharacterStatsEntity(character = character)
+        stats.statusPoints = detail.stats.statusPoints
+        stats.skillPoints = detail.stats.skillPoints
         stats.atk = detail.stats.atk
         stats.matk = detail.stats.matk
         stats.defBase = detail.stats.defBase
@@ -392,7 +461,10 @@ class CharacterService(
             learnedSkills.isNotEmpty() ||
             learnableSkills.isNotEmpty()
 
-    private fun CharacterEntity.toResponse(patternSlots: List<CharacterPatternSlotEntity>): CharacterResponse =
+    private fun CharacterEntity.toResponse(
+        patternSlots: List<CharacterPatternSlotEntity>,
+        sectionStates: List<CharacterSectionSyncStateEntity> = emptyList(),
+    ): CharacterResponse =
         CharacterResponse(
             id = id,
             hofCharacterId = hofCharacterId,
@@ -402,17 +474,40 @@ class CharacterService(
             patternSlotCount = patternSlotCount,
             imageUrl = imageUrl,
             patternSlots = patternSlots.map { it.toResponse() },
+            lifecycle = lifecycle.name,
+            lastSeenAt = lastSeenAt,
+            missingSince = missingSince,
+            archivedAt = archivedAt,
+            rosterOrder = rosterOrder,
+            revision = updatedAt,
+            detailSyncedAt = detailSyncedAt,
+            sectionStates = sectionStates.map { state ->
+                CharacterSectionStateResponse(
+                    section = state.section.name,
+                    status = state.status.name,
+                    lastAttemptedAt = state.lastAttemptedAt,
+                    lastSucceededAt = state.lastSucceededAt,
+                    errorCode = state.errorCode,
+                    errorMessage = state.errorMessage,
+                )
+            },
         )
 
     private fun CharacterEntity.toDetailResponse(
         statusLines: List<CharacterStatusLineEntity>,
+        statusEffects: List<CharacterStatusEffectEntity>,
+        faith: CharacterFaithEntity?,
         patternSlots: List<CharacterPatternSlotEntity>,
         stats: CharacterStatsEntity?,
         actionPatterns: List<CharacterActionPatternEntity>,
+        patternOptions: List<CharacterPatternOptionEntity>,
         guardSetting: CharacterGuardSettingEntity?,
         positions: List<CharacterPositionChoiceEntity>,
         equipment: List<CharacterEquipmentEntity>,
+        equipmentCandidates: List<CharacterEquipmentCandidateEntity>,
         skills: List<CharacterSkillEntity>,
+        sectionStates: List<CharacterSectionSyncStateEntity>,
+        hofIdHistory: List<CharacterHofIdHistoryEntity>,
     ): CharacterDetailResponse =
         CharacterDetailResponse(
             id = id,
@@ -423,9 +518,16 @@ class CharacterService(
             patternSlotCount = patternSlotCount,
             imageUrl = imageUrl,
             statusLines = statusLines.map { it.content },
+            statusEffects = statusEffects.map {
+                CharacterStatusEffectResponse(it.effectType.name, it.name, it.valueText, it.description, it.active)
+            },
+            faith = faith?.let { CharacterFaithResponse(it.godName, it.currentValue, it.maxValue) },
             patternSlots = patternSlots.map { it.toResponse() },
             stats = stats?.toResponse() ?: CharacterStatsResponse(),
             actionPatterns = actionPatterns.map { it.toResponse() },
+            patternOptions = patternOptions.map {
+                CharacterPatternOptionResponse(it.optionType.name, it.sourceValue, it.label, it.category)
+            },
             positionGuard = CharacterPositionGuardResponse(
                 positions = positions.map { it.toResponse() },
                 selectedPosition = guardSetting?.selectedPosition.orEmpty(),
@@ -433,12 +535,43 @@ class CharacterService(
                 guardText = guardSetting?.guardText.orEmpty(),
             ),
             equipment = equipment.map { it.toResponse() },
+            equipmentCandidates = equipmentCandidates.map {
+                CharacterEquipmentCandidateResponse(
+                    it.sourceValue, it.typeCode, it.name, it.iconUrl, it.description, it.quantity,
+                )
+            },
             learnedSkills = skills
                 .filter { it.skillType == CharacterSkillType.LEARNED }
                 .map { it.toResponse() },
             learnableSkills = skills
                 .filter { it.skillType == CharacterSkillType.LEARNABLE }
                 .map { it.toResponse() },
+            lifecycle = lifecycle.name,
+            lastSeenAt = lastSeenAt,
+            missingSince = missingSince,
+            archivedAt = archivedAt,
+            rosterOrder = rosterOrder,
+            revision = updatedAt,
+            detailSyncedAt = detailSyncedAt,
+            sectionStates = sectionStates.map { state ->
+                CharacterSectionStateResponse(
+                    section = state.section.name,
+                    status = state.status.name,
+                    lastAttemptedAt = state.lastAttemptedAt,
+                    lastSucceededAt = state.lastSucceededAt,
+                    errorCode = state.errorCode,
+                    errorMessage = state.errorMessage,
+                )
+            },
+            hofIdHistory = hofIdHistory.map { history ->
+                CharacterHofIdHistoryResponse(
+                    hofCharacterId = history.hofCharacterId,
+                    validFrom = history.validFrom,
+                    validTo = history.validTo,
+                    linkReason = history.linkReason.name,
+                    userConfirmed = history.userConfirmed,
+                )
+            },
         )
 
     private fun CharacterPatternSlotEntity.toResponse(): CharacterPatternSlotResponse =
@@ -450,6 +583,8 @@ class CharacterService(
 
     private fun CharacterStatsEntity.toResponse(): CharacterStatsResponse =
         CharacterStatsResponse(
+            statusPoints = statusPoints,
+            skillPoints = skillPoints,
             atk = atk,
             matk = matk,
             defBase = defBase,
@@ -460,6 +595,28 @@ class CharacterService(
             handleMax = handleMax,
             costUsed = costUsed,
             costMax = costMax,
+            expCurrent = expCurrent,
+            expMax = expMax,
+            expMaxed = expMaxed,
+            hpBase = hpBase,
+            hpBonus = hpBonus,
+            spBase = spBase,
+            spBonus = spBonus,
+            strReal = strReal,
+            strBonus = strBonus,
+            intReal = intReal,
+            intBonus = intBonus,
+            dexReal = dexReal,
+            dexBonus = dexBonus,
+            spdReal = spdReal,
+            spdBonus = spdBonus,
+            lukReal = lukReal,
+            lukBonus = lukBonus,
+            descriptions = listOf(
+                "Exp" to expDescription, "HP" to hpDescription, "SP" to spDescription,
+                "STR" to strDescription, "INT" to intDescription, "DEX" to dexDescription,
+                "SPD" to spdDescription, "LUK" to lukDescription,
+            ).mapNotNull { (name, description) -> description?.let { name to it } }.toMap(),
         )
 
     private fun CharacterActionPatternEntity.toResponse(): CharacterActionPatternResponse =
@@ -495,5 +652,10 @@ class CharacterService(
             name = name,
             iconUrl = iconUrl,
             category = category,
+            targetText = targetText.orEmpty(),
+            scopeText = scopeText.orEmpty(),
+            spCost = spCost,
+            multiplierText = multiplierText.orEmpty(),
+            description = description.orEmpty(),
         )
 }

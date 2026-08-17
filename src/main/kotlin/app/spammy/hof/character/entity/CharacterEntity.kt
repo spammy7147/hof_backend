@@ -3,6 +3,8 @@ package app.spammy.hof.character.entity
 import app.spammy.hof.account.entity.HofAccountEntity
 import jakarta.persistence.Column
 import jakarta.persistence.Entity
+import jakarta.persistence.EnumType
+import jakarta.persistence.Enumerated
 import jakarta.persistence.FetchType
 import jakarta.persistence.GeneratedValue
 import jakarta.persistence.GenerationType
@@ -26,7 +28,7 @@ class CharacterEntity(
     @JoinColumn(name = "account_id", nullable = false)
     var account: HofAccountEntity,
 
-    @Column(name = "hof_character_id", nullable = false, length = 50)
+    @Column(name = "current_hof_character_id", nullable = false, length = 50)
     var hofCharacterId: String,
 
     @Column(name = "name", nullable = false, length = 100)
@@ -49,4 +51,26 @@ class CharacterEntity(
 
     @Column(name = "detail_synced_at")
     var detailSyncedAt: Instant? = null,
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "lifecycle", nullable = false, length = 20)
+    var lifecycle: CharacterLifecycle = CharacterLifecycle.ACTIVE,
+
+    @Column(name = "last_seen_at")
+    var lastSeenAt: Instant? = updatedAt,
+
+    @Column(name = "missing_since")
+    var missingSince: Instant? = null,
+
+    @Column(name = "archived_at")
+    var archivedAt: Instant? = null,
+
+    @Column(name = "roster_order")
+    var rosterOrder: Int? = null,
 )
+
+enum class CharacterLifecycle {
+    ACTIVE,
+    MISSING,
+    ARCHIVED,
+}

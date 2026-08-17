@@ -17,8 +17,6 @@ import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.client.AccountHofGateway
 import app.spammy.hof.external.client.HofRequestFactory
-import app.spammy.hof.external.model.HofCharacter
-import app.spammy.hof.external.parser.CharacterDetailParser
 import app.spammy.hof.external.parser.CharacterRosterParser
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
@@ -28,6 +26,8 @@ import org.springframework.core.task.TaskExecutor
 import org.springframework.stereotype.Service
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter
 import org.springframework.transaction.annotation.Transactional
+import org.springframework.transaction.support.TransactionSynchronization
+import org.springframework.transaction.support.TransactionSynchronizationManager
 
 @Service
 /**
@@ -43,7 +43,7 @@ class CharacterSyncJobService(
     private val requestFactory: HofRequestFactory,
     private val gateway: AccountHofGateway,
     private val rosterParser: CharacterRosterParser,
-    private val detailParser: CharacterDetailParser,
+    private val snapshotSynchronizer: CharacterSnapshotSynchronizer,
     private val eventService: CharacterSyncEventService,
     @Qualifier("characterSyncTaskExecutor")
     private val taskExecutor: TaskExecutor,
@@ -56,7 +56,7 @@ class CharacterSyncJobService(
     /**
      * 실패 행이 없는 대기 상태의 캐릭터 동기화 job을 먼저 생성한다.
      *
-     * 실제 파싱은 SSE 연결 뒤 시작해 앱이 증분 이벤트를 놓치지 않게 한다.
+     * 실제 작업은 SSE 구독 여부와 무관하게 생성 직후 시작한다.
      */
     @Transactional
     fun startSyncJob(accountId: Long): CharacterSyncJobResponse {
@@ -68,6 +68,7 @@ class CharacterSyncJobService(
         }
 
         syncJobQueryRepository.findNewestActiveByAccountId(accountId)?.let { active ->
+            startAfterCommit(accountId = accountId, jobId = active.id)
             return active.toResponse(
                 characters = characterService.findAll(accountId),
                 failedCharacterIds = syncJobQueryRepository.findFailuresByJobId(active.id).toFailedCharacterIds(),
@@ -83,7 +84,42 @@ class CharacterSyncJobService(
         )
         log.info("Character sync job created accountId={} jobId={}", accountId, job.id)
 
+        startAfterCommit(accountId = accountId, jobId = job.id)
+
         return job.toResponse(characters = emptyList(), failedCharacterIds = emptyList())
+    }
+
+    /** 현재 처리 중인 캐릭터까지 마친 뒤 다음 캐릭터 진입을 막는다. */
+    @Transactional
+    fun stopSyncJob(accountId: Long, jobId: Long): CharacterSyncJobResponse {
+        val job = loadJob(accountId, jobId)
+        if (job.status == CharacterSyncJobStatus.PENDING || job.status == CharacterSyncJobStatus.RUNNING) {
+            job.stopRequested = true
+            syncJobRepository.save(job)
+        }
+        return job.toResponse(
+            characters = characterService.findAll(accountId),
+            failedCharacterIds = syncJobQueryRepository.findFailuresByJobId(job.id).toFailedCharacterIds(),
+        )
+    }
+
+    /** 중단된 동일 job의 체크포인트 다음 캐릭터부터 다시 시작한다. */
+    @Transactional
+    fun resumeSyncJob(accountId: Long, jobId: Long): CharacterSyncJobResponse {
+        val job = loadJob(accountId, jobId)
+        if (job.status != CharacterSyncJobStatus.STOPPED) {
+            throw ApiException(ErrorCode.INVALID_REQUEST, "중단된 캐릭터 동기화 작업만 재개할 수 있습니다.")
+        }
+        job.stopRequested = false
+        job.status = CharacterSyncJobStatus.PENDING
+        job.finishedAt = null
+        job.currentHofCharacterId = null
+        syncJobRepository.save(job)
+        startAfterCommit(accountId, job.id)
+        return job.toResponse(
+            characters = characterService.findAll(accountId),
+            failedCharacterIds = syncJobQueryRepository.findFailuresByJobId(job.id).toFailedCharacterIds(),
+        )
     }
 
     /**
@@ -101,7 +137,7 @@ class CharacterSyncJobService(
     }
 
     /**
-     * SSE 연결을 등록하고 대기 중인 job만 한 번 실행하며 종료된 job은 현재 상태를 재전송한다.
+     * SSE 연결은 실행을 시작하지 않고 현재 상태와 이후 이벤트만 관찰한다.
      */
     fun streamSyncJobEvents(
         accountId: Long,
@@ -112,6 +148,7 @@ class CharacterSyncJobService(
         val initialEventType = when (job.status) {
             CharacterSyncJobStatus.COMPLETED -> "completed"
             CharacterSyncJobStatus.FAILED -> "failed"
+            CharacterSyncJobStatus.STOPPED -> "stopped"
             else -> "started"
         }
         val emitter = eventService.connect(
@@ -122,10 +159,8 @@ class CharacterSyncJobService(
                 failedCharacterIds = failedCharacterIds,
             ),
         )
-        if (job.status == CharacterSyncJobStatus.COMPLETED || job.status == CharacterSyncJobStatus.FAILED) {
+        if (job.status in TERMINAL_STATUSES) {
             eventService.complete(job.id)
-        } else if (job.status == CharacterSyncJobStatus.PENDING) {
-            startPendingJob(accountId = accountId, jobId = job.id)
         }
 
         return emitter
@@ -147,6 +182,18 @@ class CharacterSyncJobService(
                     startingJobIds.remove(jobId)
                 }
         }
+    }
+
+    private fun startAfterCommit(accountId: Long, jobId: Long) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            startPendingJob(accountId, jobId)
+            return
+        }
+        TransactionSynchronizationManager.registerSynchronization(
+            object : TransactionSynchronization {
+                override fun afterCommit() = startPendingJob(accountId, jobId)
+            },
+        )
     }
 
     /**
@@ -193,14 +240,16 @@ class CharacterSyncJobService(
             ),
         )
 
-        roster.forEach { rosterCharacter ->
+        roster.withIndex()
+            .drop(job.lastCompletedRosterIndex + 1)
+            .forEach { (rosterIndex, rosterCharacter) ->
+            job.currentHofCharacterId = rosterCharacter.id
+            syncJobRepository.save(job)
             val character = runCatching {
-                val detailResponse = gateway.execute(account.id, requestFactory.characterPage(rosterCharacter.id), cookies)
-                val detail = detailParser.parse(rosterCharacter.id, detailResponse.body)
-                characterService.upsertCharacterSnapshot(
+                snapshotSynchronizer.synchronize(
                     account = account,
+                    cookies = cookies,
                     rosterCharacter = rosterCharacter,
-                    detail = detail,
                 )
             }.getOrElse {
                 log.warn(
@@ -211,14 +260,12 @@ class CharacterSyncJobService(
                     it.message,
                 )
                 appendFailure(job, failures, rosterCharacter.id)
-                characterService.upsertCharacterSnapshot(
-                    account = account,
-                    rosterCharacter = rosterCharacter,
-                    detail = HofCharacter(id = rosterCharacter.id),
-                ).also { savedCharacter ->
-                    eventService.publish(
-                        job.toEvent(
-                            eventType = "characterFailed",
+                characterService.findAll(accountId)
+                    .singleOrNull { saved -> saved.hofCharacterId == rosterCharacter.id }
+                    .also { savedCharacter ->
+                        eventService.publish(
+                            job.toEvent(
+                                eventType = "characterFailed",
                             character = savedCharacter,
                             failedCharacterIds = failures.toFailedCharacterIds(),
                         ),
@@ -228,7 +275,6 @@ class CharacterSyncJobService(
 
             if (rosterCharacter.id !in failures.toFailedCharacterIds()) {
                 job.syncedCount += 1
-                syncJobRepository.save(job)
                 eventService.publish(
                     job.toEvent(
                         eventType = "characterSynced",
@@ -236,6 +282,22 @@ class CharacterSyncJobService(
                         failedCharacterIds = failures.toFailedCharacterIds(),
                     ),
                 )
+            }
+            job.lastCompletedRosterIndex = rosterIndex
+            job.currentHofCharacterId = null
+            syncJobRepository.save(job)
+
+            val control = syncJobQueryRepository.findById(job.id)
+            if (control?.stopRequested == true) {
+                job.stopRequested = true
+                job.status = CharacterSyncJobStatus.STOPPED
+                job.finishedAt = timeProvider.now()
+                syncJobRepository.save(job)
+                eventService.publish(
+                    job.toEvent("stopped", character = null, failedCharacterIds = failures.toFailedCharacterIds()),
+                )
+                eventService.complete(job.id)
+                return
             }
         }
 
@@ -323,6 +385,9 @@ class CharacterSyncJobService(
             message = message,
             startedAt = startedAt,
             finishedAt = finishedAt,
+            stopRequested = stopRequested,
+            lastCompletedRosterIndex = lastCompletedRosterIndex,
+            currentHofCharacterId = currentHofCharacterId,
         )
 
     private fun CharacterSyncJobEntity.toEvent(
@@ -342,6 +407,9 @@ class CharacterSyncJobService(
             character = character,
             message = message,
             emittedAt = timeProvider.now(),
+            stopRequested = stopRequested,
+            lastCompletedRosterIndex = lastCompletedRosterIndex,
+            currentHofCharacterId = currentHofCharacterId,
         )
 
     private fun List<CharacterSyncFailureEntity>.toFailedCharacterIds(): List<String> =
@@ -349,4 +417,12 @@ class CharacterSyncJobService(
 
     private fun CharacterSyncJobStatus.apiValue(): String =
         name.lowercase()
+
+    private companion object {
+        val TERMINAL_STATUSES = setOf(
+            CharacterSyncJobStatus.COMPLETED,
+            CharacterSyncJobStatus.FAILED,
+            CharacterSyncJobStatus.STOPPED,
+        )
+    }
 }

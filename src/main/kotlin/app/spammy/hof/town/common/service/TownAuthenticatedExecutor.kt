@@ -48,6 +48,10 @@ class TownAuthenticatedExecutor(
     private val resultParser: HofResultParser,
     private val actionGuard: TownActionGuard,
 ) {
+    /** 여러 GET/POST가 한 의미 명령인 경우 같은 계정의 다른 변경이 중간에 끼어들지 않게 한다. */
+    fun <T> executeAccountSequence(accountId: Long, sequence: () -> T): T =
+        withAccountActionFence(accountId, sequence)
+
     private val actionLocks = ConcurrentHashMap<Long, ReentrantLock>()
 
     /** HOF 원격 요청 없이 로그인 사용자의 저장된 HOF 계정과 세션 쿠키 존재 여부만 확인한다. */

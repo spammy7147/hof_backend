@@ -46,6 +46,15 @@ class CharacterSyncJobEntity(
 
     @Column(name = "finished_at")
     var finishedAt: Instant? = null,
+
+    @Column(name = "stop_requested", nullable = false)
+    var stopRequested: Boolean = false,
+
+    @Column(name = "last_completed_roster_index", nullable = false)
+    var lastCompletedRosterIndex: Int = -1,
+
+    @Column(name = "current_hof_character_id", length = 50)
+    var currentHofCharacterId: String? = null,
 )
 
 /**
@@ -56,4 +65,5 @@ enum class CharacterSyncJobStatus {
     RUNNING,
     COMPLETED,
     FAILED,
+    STOPPED,
 }

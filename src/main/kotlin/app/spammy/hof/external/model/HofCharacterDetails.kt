@@ -4,6 +4,8 @@ package app.spammy.hof.external.model
  * HOF 캐릭터 상세 HTML에서 파싱한 주요 스탯 묶음이다.
  */
 data class HofCharacterStats(
+    val statusPoints: Int? = null,
+    val skillPoints: Int? = null,
     val atk: Int? = null,
     val matk: Int? = null,
     val defBase: Int? = null,
@@ -14,6 +16,50 @@ data class HofCharacterStats(
     val handleMax: Int? = null,
     val costUsed: Int? = null,
     val costMax: Int? = null,
+    val expCurrent: Long? = null,
+    val expMax: Long? = null,
+    val expMaxed: Boolean? = null,
+    val hpBase: Int? = null,
+    val hpBonus: Int? = null,
+    val spBase: Int? = null,
+    val spBonus: Int? = null,
+    val strReal: Int? = null,
+    val strBonus: Int? = null,
+    val intReal: Int? = null,
+    val intBonus: Int? = null,
+    val dexReal: Int? = null,
+    val dexBonus: Int? = null,
+    val spdReal: Int? = null,
+    val spdBonus: Int? = null,
+    val lukReal: Int? = null,
+    val lukBonus: Int? = null,
+    val descriptions: Map<String, String> = emptyMap(),
+)
+
+data class HofStatusEffect(
+    val type: String,
+    val name: String,
+    val valueText: String,
+    val description: String = "",
+    val active: Boolean? = null,
+)
+
+data class HofFaith(val godName: String, val current: Long, val max: Long)
+
+data class HofPatternOption(
+    val type: String,
+    val value: String,
+    val label: String,
+    val category: String = "",
+)
+
+data class HofEquipmentCandidate(
+    val value: String,
+    val typeCode: String,
+    val name: String,
+    val iconUrl: String = "",
+    val description: String = "",
+    val quantity: Int? = null,
 )
 
 /**
@@ -67,4 +113,9 @@ data class HofSkill(
     val name: String = "",
     val iconUrl: String = "",
     val category: String = "",
+    val targetText: String = "",
+    val scopeText: String = "",
+    val spCost: Int? = null,
+    val multiplierText: String = "",
+    val description: String = "",
 )

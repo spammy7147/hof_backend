@@ -14,6 +14,8 @@ import app.spammy.hof.external.model.HofRequest
 import app.spammy.hof.external.parser.LoginStateParser
 import app.spammy.hof.external.parser.CharacterDetailParser
 import app.spammy.hof.character.dto.CharacterDetailResponse
+import app.spammy.hof.character.pattern.CharacterPatternRemoteFactory
+import app.spammy.hof.character.command.CharacterAutomationGate
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito
 import java.time.Instant
@@ -42,6 +44,11 @@ class CharacterPatternServiceTest {
     private val gateway = FakeHofGateway()
     private val sessionPatternLoadTracker = SessionPatternLoadTracker()
     private val characterService = Mockito.mock(CharacterService::class.java)
+    private val snapshotSynchronizer = Mockito.mock(CharacterSnapshotSynchronizer::class.java)
+    private val patternRemoteFactory = Mockito.mock(CharacterPatternRemoteFactory::class.java)
+    private val automationGate = object : CharacterAutomationGate {
+        override fun <T> execute(accountId: Long, unavailable: () -> T, operation: () -> T): T = operation()
+    }
     private val service = CharacterPatternService(
         accountQueryRepository = accountQueryRepository,
         cookieQueryRepository = cookieQueryRepository,
@@ -51,7 +58,10 @@ class CharacterPatternServiceTest {
         loginStateParser = LoginStateParser(),
         detailParser = CharacterDetailParser(),
         characterService = characterService,
+        snapshotSynchronizer = snapshotSynchronizer,
         sessionPatternLoadTracker = sessionPatternLoadTracker,
+        patternRemoteFactory = patternRemoteFactory,
+        automationGate = automationGate,
     )
 
     @Test
@@ -90,7 +100,14 @@ class CharacterPatternServiceTest {
             <form><input name="patternno" value="0"><input name="loadpattern" value="LOAD"></form>
         """.trimIndent()
         val refreshed = Mockito.mock(CharacterDetailResponse::class.java)
-        Mockito.`when`(characterService.refreshParsedCharacter(anyAccount(), anyHofCharacter()))
+        Mockito.`when`(
+            snapshotSynchronizer.writeParsed(
+                Mockito.anyLong(),
+                Mockito.anyString(),
+                anyPage(),
+                Mockito.anySet(),
+            ),
+        )
             .thenReturn(refreshed)
 
         val response = service.loadPattern(1L, character.hofCharacterId, 0)
@@ -144,4 +161,11 @@ class CharacterPatternServiceTest {
 
     private fun anyAccount(): HofAccountEntity =
         Mockito.any(HofAccountEntity::class.java) ?: account
+
+    private fun anyPage(): app.spammy.hof.external.parser.CharacterPageParseResult =
+        Mockito.any(app.spammy.hof.external.parser.CharacterPageParseResult::class.java)
+            ?: app.spammy.hof.external.parser.CharacterPageParseResult(
+                app.spammy.hof.external.model.HofCharacter(id = ""),
+                emptyMap(),
+            )
 }

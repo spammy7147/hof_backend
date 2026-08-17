@@ -210,18 +210,54 @@ internal object FreshSchemaContract {
         ),
         table(
             "characters",
-            serialId(), requiredBigint("account_id"), requiredVarchar("hof_character_id", 50),
+            serialId(), requiredBigint("account_id"), requiredVarchar("current_hof_character_id", 50),
             requiredVarchar("name", 100), requiredVarchar("job", 100), optionalInteger("level"),
             requiredInteger("pattern_slot_count"), optionalText("image_url"), requiredInstant("updated_at"),
-            optionalInstant("detail_synced_at"),
+            optionalInstant("detail_synced_at"), requiredVarchar("lifecycle", 20),
+            optionalInstant("last_seen_at"), optionalInstant("missing_since"), optionalInstant("archived_at"),
+            optionalInteger("roster_order"),
+        ),
+        table(
+            "character_hof_id_history",
+            serialId(), requiredBigint("character_id"), requiredBigint("account_id"),
+            requiredVarchar("hof_character_id", 50), requiredInstant("valid_from"), optionalInstant("valid_to"),
+            requiredVarchar("link_reason", 30), requiredBoolean("user_confirmed"), optionalInteger("open_marker"),
+        ),
+        table(
+            "character_section_sync_states",
+            requiredBigint("character_id"), requiredVarchar("section", 30), requiredVarchar("status", 20),
+            requiredVarchar("parser_version", 40), requiredInstant("last_attempted_at"),
+            optionalInstant("last_succeeded_at"), optionalVarchar("error_code", 60),
+            optionalVarchar("error_message", 500), optionalInteger("observed_count"),
+            primaryKey = listOf("character_id", "section"),
         ),
         table(
             "character_stats",
-            requiredBigint("character_id"), optionalInteger("atk"), optionalInteger("matk"),
+            requiredBigint("character_id"), optionalInteger("status_points"), optionalInteger("skill_points"),
+            optionalInteger("atk"), optionalInteger("matk"),
             optionalInteger("def_base"), optionalInteger("def_bonus"), optionalInteger("mdef_base"),
             optionalInteger("mdef_bonus"), optionalInteger("handle_used"), optionalInteger("handle_max"),
             optionalInteger("cost_used"), optionalInteger("cost_max"),
+            optionalBigint("exp_current"), optionalBigint("exp_max"), optionalBoolean("exp_maxed"),
+            optionalInteger("hp_base"), optionalInteger("hp_bonus"), optionalInteger("sp_base"), optionalInteger("sp_bonus"),
+            optionalInteger("str_real"), optionalInteger("str_bonus"), optionalInteger("int_real"), optionalInteger("int_bonus"),
+            optionalInteger("dex_real"), optionalInteger("dex_bonus"), optionalInteger("spd_real"), optionalInteger("spd_bonus"),
+            optionalInteger("luk_real"), optionalInteger("luk_bonus"), optionalText("exp_description"),
+            optionalText("hp_description"), optionalText("sp_description"), optionalText("str_description"),
+            optionalText("int_description"), optionalText("dex_description"), optionalText("spd_description"),
+            optionalText("luk_description"),
             primaryKey = listOf("character_id"),
+        ),
+        table(
+            "character_status_effects",
+            serialId(), requiredBigint("character_id"), requiredInteger("effect_order"),
+            requiredVarchar("effect_type", 20), requiredText("name"), requiredText("value_text"),
+            requiredText("description"), optionalBoolean("active"),
+        ),
+        table(
+            "character_faith",
+            requiredBigint("character_id"), requiredText("god_name"), requiredBigint("current_value"),
+            requiredBigint("max_value"), primaryKey = listOf("character_id"),
         ),
         table(
             "character_status_lines",
@@ -230,7 +266,19 @@ internal object FreshSchemaContract {
         table(
             "character_pattern_slots",
             serialId(), requiredBigint("character_id"), requiredVarchar("slot_code"), requiredText("label"),
-            requiredBoolean("can_load"),
+            requiredBoolean("can_load"), optionalText("selected_position"), optionalText("guard_value"),
+            optionalText("guard_text"),
+        ),
+        table(
+            "character_pattern_options",
+            serialId(), requiredBigint("character_id"), requiredVarchar("option_type", 20),
+            requiredInteger("option_order"), requiredText("source_value"), requiredText("label"), optionalText("category"),
+        ),
+        table(
+            "character_saved_pattern_rows",
+            serialId(), requiredBigint("pattern_slot_id"), requiredInteger("row_index"), requiredText("judge"),
+            requiredText("judge_text"), requiredText("quantity"), requiredText("quantity_text"),
+            requiredText("skill"), requiredText("skill_text"),
         ),
         table(
             "character_action_patterns",
@@ -256,21 +304,47 @@ internal object FreshSchemaContract {
             requiredBoolean("checked"),
         ),
         table(
+            "character_equipment_candidates",
+            serialId(), requiredBigint("character_id"), requiredInteger("candidate_order"),
+            requiredText("source_value"), requiredVarchar("type_code", 40), requiredText("name"),
+            requiredText("icon_url"), requiredText("description"), optionalInteger("quantity"),
+        ),
+        table(
+            "character_equipment_saved_slots",
+            serialId(), requiredBigint("character_id"), requiredInteger("slot_number"), requiredInstant("observed_at"),
+        ),
+        table(
+            "character_equipment_saved_items",
+            serialId(), requiredBigint("equipment_saved_slot_id"), requiredInteger("item_order"),
+            requiredText("equipment_part"), requiredText("name"), requiredText("icon_url"), requiredText("description"),
+        ),
+        table(
             "character_skills",
             serialId(), requiredBigint("character_id"), requiredVarchar("skill_type"),
             requiredInteger("skill_order"), requiredText("source_value"), requiredText("name"),
-            requiredText("icon_url"), requiredText("category"),
+            requiredText("icon_url"), requiredText("category"), optionalText("target_text"), optionalText("scope_text"),
+            optionalInteger("sp_cost"), optionalText("multiplier_text"), optionalText("description"),
         ),
         table(
             "character_sync_jobs",
             serialId(), requiredBigint("account_id"), requiredVarchar("status"), requiredInteger("roster_count"),
             requiredInteger("synced_count"), optionalText("message"), requiredInstant("started_at"),
-            optionalInstant("finished_at"),
+            optionalInstant("finished_at"), requiredBoolean("stop_requested"),
+            requiredInteger("last_completed_roster_index"), optionalVarchar("current_hof_character_id", 50),
         ),
         table(
             "character_sync_failures",
             serialId(), requiredBigint("sync_job_id"), requiredInteger("failure_order"),
             requiredVarchar("hof_character_id"),
+        ),
+        table(
+            "character_operation_jobs",
+            serialId(), requiredBigint("account_id"), requiredVarchar("operation_type", 30),
+            requiredVarchar("status", 20), optionalBigint("source_character_id"),
+            requiredBigint("target_character_id"), optionalText("request_payload"),
+            requiredText("progress_payload"), requiredText("completed_step_ids"),
+            optionalText("result_payload"), optionalText("message"), requiredInstant("started_at"),
+            requiredInstant("updated_at"), optionalInstant("finished_at"),
         ),
         table(
             "battle_map_groups",
@@ -579,12 +653,39 @@ internal object FreshSchemaContract {
         key("latest_hof_status", "uk_latest_hof_status_account", "account_id"),
         key("hof_cookies", "uk_hof_cookies_account_name", "account_id", "name"),
         key("refresh_tokens", "uk_refresh_tokens_token_hash", "token_hash"),
-        key("characters", "uk_characters_account_hof_character", "account_id", "hof_character_id"),
+        key("characters", "uk_characters_account_current_hof_character", "account_id", "current_hof_character_id"),
+        key("characters", "uk_characters_id_account", "id", "account_id"),
+        key(
+            "character_hof_id_history", "uk_character_hof_id_history_account_hof_character",
+            "account_id", "hof_character_id",
+        ),
+        key(
+            "character_hof_id_history", "uk_character_hof_id_history_character_open",
+            "character_id", "open_marker",
+        ),
         key("character_status_lines", "uk_character_status_lines_character_order", "character_id", "line_order"),
+        key("character_status_effects", "uk_character_status_effects_character_order", "character_id", "effect_order"),
         key("character_pattern_slots", "uk_character_pattern_slots_character_code", "character_id", "slot_code"),
+        key(
+            "character_pattern_options", "uk_character_pattern_options_character_type_order",
+            "character_id", "option_type", "option_order",
+        ),
+        key("character_saved_pattern_rows", "uk_character_saved_pattern_rows_slot_row", "pattern_slot_id", "row_index"),
         key("character_action_patterns", "uk_character_action_patterns_character_row", "character_id", "row_index"),
         key("character_position_choices", "uk_character_position_choices_character_order", "character_id", "choice_order"),
         key("character_equipment", "uk_character_equipment_character_order", "character_id", "equipment_order"),
+        key(
+            "character_equipment_candidates", "uk_character_equipment_candidates_character_order",
+            "character_id", "candidate_order",
+        ),
+        key(
+            "character_equipment_saved_slots", "uk_character_equipment_saved_slots_character_number",
+            "character_id", "slot_number",
+        ),
+        key(
+            "character_equipment_saved_items", "uk_character_equipment_saved_items_slot_order",
+            "equipment_saved_slot_id", "item_order",
+        ),
         key("character_skills", "uk_character_skills_character_type_order", "character_id", "skill_type", "skill_order"),
         key("character_sync_failures", "uk_character_sync_failures_job_character", "sync_job_id", "hof_character_id"),
         key("character_sync_failures", "uk_character_sync_failures_job_order", "sync_job_id", "failure_order"),
@@ -669,16 +770,46 @@ internal object FreshSchemaContract {
         fk("fk_latest_hof_status_account", "latest_hof_status.account_id", "hof_accounts.id", DeleteAction.CASCADE),
         fk("fk_refresh_tokens_account", "refresh_tokens.account_id", "hof_accounts.id", DeleteAction.CASCADE),
         fk("fk_characters_account", "characters.account_id", "hof_accounts.id", DeleteAction.CASCADE),
+        fk(
+            "fk_character_hof_id_history_character_account", "character_hof_id_history.account_id",
+            "characters.account_id", DeleteAction.CASCADE,
+        ),
         fk("fk_character_stats_character", "character_stats.character_id", "characters.id", DeleteAction.CASCADE),
+        fk(
+            "fk_character_section_sync_states_character", "character_section_sync_states.character_id",
+            "characters.id", DeleteAction.CASCADE,
+        ),
+        fk("fk_character_status_effects_character", "character_status_effects.character_id", "characters.id", DeleteAction.CASCADE),
+        fk("fk_character_faith_character", "character_faith.character_id", "characters.id", DeleteAction.CASCADE),
         fk("fk_character_status_lines_character", "character_status_lines.character_id", "characters.id", DeleteAction.CASCADE),
         fk("fk_character_pattern_slots_character", "character_pattern_slots.character_id", "characters.id", DeleteAction.CASCADE),
+        fk("fk_character_pattern_options_character", "character_pattern_options.character_id", "characters.id", DeleteAction.CASCADE),
+        fk(
+            "fk_character_saved_pattern_rows_slot", "character_saved_pattern_rows.pattern_slot_id",
+            "character_pattern_slots.id", DeleteAction.CASCADE,
+        ),
         fk("fk_character_action_patterns_character", "character_action_patterns.character_id", "characters.id", DeleteAction.CASCADE),
         fk("fk_character_guard_settings_character", "character_guard_settings.character_id", "characters.id", DeleteAction.CASCADE),
         fk("fk_character_position_choices_character", "character_position_choices.character_id", "characters.id", DeleteAction.CASCADE),
         fk("fk_character_equipment_character", "character_equipment.character_id", "characters.id", DeleteAction.CASCADE),
+        fk(
+            "fk_character_equipment_candidates_character", "character_equipment_candidates.character_id",
+            "characters.id", DeleteAction.CASCADE,
+        ),
+        fk(
+            "fk_character_equipment_saved_slots_character", "character_equipment_saved_slots.character_id",
+            "characters.id", DeleteAction.CASCADE,
+        ),
+        fk(
+            "fk_character_equipment_saved_items_slot", "character_equipment_saved_items.equipment_saved_slot_id",
+            "character_equipment_saved_slots.id", DeleteAction.CASCADE,
+        ),
         fk("fk_character_skills_character", "character_skills.character_id", "characters.id", DeleteAction.CASCADE),
         fk("fk_character_sync_jobs_account", "character_sync_jobs.account_id", "hof_accounts.id", DeleteAction.CASCADE),
         fk("fk_character_sync_failures_job", "character_sync_failures.sync_job_id", "character_sync_jobs.id", DeleteAction.CASCADE),
+        fk("fk_character_operation_jobs_account", "character_operation_jobs.account_id", "hof_accounts.id", DeleteAction.CASCADE),
+        fk("fk_character_operation_jobs_source", "character_operation_jobs.source_character_id", "characters.id", DeleteAction.SET_NULL),
+        fk("fk_character_operation_jobs_target", "character_operation_jobs.target_character_id", "characters.id", DeleteAction.CASCADE),
         fk("fk_battle_maps_group", "battle_maps.group_id", "battle_map_groups.id", DeleteAction.SET_NULL),
         fk("fk_battle_map_aliases_map", "battle_map_aliases.battle_map_id", "battle_maps.id", DeleteAction.CASCADE),
         fk("fk_account_battle_map_states_account", "account_battle_map_states.account_id", "hof_accounts.id", DeleteAction.CASCADE),
@@ -818,7 +949,40 @@ internal object FreshSchemaContract {
         index("refresh_tokens", "idx_refresh_tokens_account_active", "account_id", "revoked_at", "expires_at", "id"),
         index("characters", "idx_characters_account_name", "account_id", "name", "id"),
         index("characters", "idx_characters_account_detail_synced", "account_id", "detail_synced_at", "id"),
+        index(
+            "characters", "idx_characters_account_lifecycle_roster",
+            "account_id", "lifecycle", "roster_order", "id",
+        ),
+        index(
+            "character_hof_id_history", "idx_character_hof_id_history_character_time",
+            "character_id", "valid_from", "id",
+        ),
+        index(
+            "character_section_sync_states", "idx_character_section_sync_states_status",
+            "character_id", "status", "last_attempted_at",
+        ),
+        index(
+            "character_status_effects", "idx_character_status_effects_character",
+            "character_id", "effect_order", "id",
+        ),
+        index(
+            "character_pattern_options", "idx_character_pattern_options_character",
+            "character_id", "option_type", "option_order", "id",
+        ),
+        index(
+            "character_equipment_candidates", "idx_character_equipment_candidates_character",
+            "character_id", "type_code", "candidate_order", "id",
+        ),
+        index(
+            "character_saved_pattern_rows", "idx_character_saved_pattern_rows_slot",
+            "pattern_slot_id", "row_index", "id",
+        ),
+        index(
+            "character_equipment_saved_items", "idx_character_equipment_saved_items_slot",
+            "equipment_saved_slot_id", "item_order", "id",
+        ),
         index("character_sync_jobs", "idx_character_sync_jobs_account_started", "account_id", "started_at", "id"),
+        index("character_operation_jobs", "idx_character_operation_jobs_account_started", "account_id", "started_at", "id"),
         index("battle_map_groups", "idx_battle_map_groups_category_display", "category_id", "display_order", "name", "id"),
         index("battle_maps", "idx_battle_maps_category_display", "category_id", "group_id", "display_order", "name", "id"),
         index("battle_maps", "idx_battle_maps_category_normalized_name", "category_id", "normalized_name", "id"),
@@ -953,6 +1117,65 @@ internal object FreshSchemaContract {
         check("town_global_job_lease", "ck_town_global_job_lease_pair", "((lease_owner is null) and (lease_until is null)) or ((lease_owner is not null) and (lease_until is not null))"),
         check("characters", "ck_characters_pattern_slot_count", "pattern_slot_count >= 0"),
         check(
+            "characters", "ck_characters_lifecycle",
+            "case lifecycle when 'ACTIVE' then true when 'MISSING' then true when 'ARCHIVED' then true else false end",
+        ),
+        check("characters", "ck_characters_roster_order", "roster_order is null or roster_order >= 0"),
+        check(
+            "character_hof_id_history", "ck_character_hof_id_history_reason",
+            "case link_reason when 'INITIAL_SYNC' then true when 'KNOCKBACK' then true " +
+                "when 'MANUAL_LINK' then true when 'REAPPEARED' then true else false end",
+        ),
+        check(
+            "character_hof_id_history", "ck_character_hof_id_history_open_marker",
+            "(valid_to is null and open_marker = 1) or (valid_to is not null and open_marker is null)",
+        ),
+        check(
+            "character_section_sync_states", "ck_character_section_sync_states_section",
+            "case section when 'PROFILE' then true when 'STATS' then true when 'EFFECTS_FAITH' then true " +
+                "when 'CURRENT_PATTERN' then true when 'POSITION_GUARD' then true when 'SAVED_PATTERNS' then true " +
+                "when 'EQUIPMENT' then true when 'EQUIPMENT_CANDIDATES' then true when 'SKILLS' then true " +
+                "when 'MANAGEMENT' then true else false end",
+        ),
+        check(
+            "character_section_sync_states", "ck_character_section_sync_states_status",
+            "case status when 'SUCCESS' then true when 'FAILED' then true else false end",
+        ),
+        check(
+            "character_section_sync_states", "ck_character_section_sync_states_success",
+            "(status = 'FAILED' and error_code is not null and error_message is not null) or " +
+                "(status = 'SUCCESS' and last_succeeded_at is not null and error_code is null and error_message is null)",
+        ),
+        check(
+            "character_section_sync_states", "ck_character_section_sync_states_count",
+            "observed_count is null or observed_count >= 0",
+        ),
+        check("character_status_effects", "ck_character_status_effects_order", "effect_order >= 0"),
+        check(
+            "character_status_effects", "ck_character_status_effects_type",
+            "case effect_type when 'SET' then true when 'EFFECT' then true else false end",
+        ),
+        check(
+            "character_faith", "ck_character_faith_values",
+            "current_value >= cast(0 as bigint) and max_value >= cast(0 as bigint)",
+        ),
+        check(
+            "character_pattern_options", "ck_character_pattern_options_type",
+            "case option_type when 'CONDITION' then true when 'SKILL' then true when 'CLASS' then true else false end",
+        ),
+        check("character_pattern_options", "ck_character_pattern_options_order", "option_order >= 0"),
+        check("character_equipment_candidates", "ck_character_equipment_candidates_order", "candidate_order >= 0"),
+        check(
+            "character_equipment_candidates", "ck_character_equipment_candidates_quantity",
+            "quantity is null or quantity >= 0",
+        ),
+        check("character_saved_pattern_rows", "ck_character_saved_pattern_rows_index", "row_index >= 0"),
+        check(
+            "character_equipment_saved_slots", "ck_character_equipment_saved_slots_number",
+            "slot_number between 1 and 2",
+        ),
+        check("character_equipment_saved_items", "ck_character_equipment_saved_items_order", "item_order >= 0"),
+        check(
             "automation_work_sessions", "ck_automation_work_type",
             "locate(',' || work_type || ',', ',QUEST,HOME_QUEST,BATTLE_MAP,ADVENTURE_MAP,RAID,UNION,FISHING,') > 0",
         ),
@@ -999,9 +1222,26 @@ internal object FreshSchemaContract {
         check("character_position_choices", "ck_character_position_choices_order", "choice_order >= 0"),
         check("character_equipment", "ck_character_equipment_order", "equipment_order >= 0"),
         check("character_skills", "ck_character_skills_order", "skill_order >= 0"),
+        check("character_stats", "ck_character_stats_status_points", "status_points is null or status_points >= 0"),
+        check("character_stats", "ck_character_stats_skill_points", "skill_points is null or skill_points >= 0"),
         check("character_sync_jobs", "ck_character_sync_jobs_roster_count", "roster_count >= 0"),
         check("character_sync_jobs", "ck_character_sync_jobs_synced_count", "synced_count >= 0"),
+        check(
+            "character_sync_jobs",
+            "ck_character_sync_jobs_last_completed_index",
+            "last_completed_roster_index >= -1",
+        ),
         check("character_sync_failures", "ck_character_sync_failures_order", "failure_order >= 0"),
+        check(
+            "character_operation_jobs",
+            "ck_character_operation_jobs_type",
+            "operation_type in ('DEEP_SYNC', 'RESTORE', 'TRANSFER')",
+        ),
+        check(
+            "character_operation_jobs",
+            "ck_character_operation_jobs_status",
+            "status in ('PENDING', 'RUNNING', 'COMPLETED', 'FAILED', 'STOPPED')",
+        ),
         check("battle_map_groups", "ck_battle_map_groups_display_order", "display_order >= 0"),
         check("battle_maps", "ck_battle_maps_display_order", "display_order >= 0"),
         check("battle_maps", "ck_battle_maps_required_time", "required_time is null or required_time >= 0"),
@@ -1294,6 +1534,7 @@ private fun optionalVarchar(name: String, length: Int = 255): ColumnContract =
 private fun requiredText(name: String): ColumnContract = ColumnContract(name, TypeFamily.TEXT, nullable = false)
 private fun optionalText(name: String): ColumnContract = ColumnContract(name, TypeFamily.TEXT, nullable = true)
 private fun requiredBoolean(name: String): ColumnContract = ColumnContract(name, TypeFamily.BOOLEAN, nullable = false)
+private fun optionalBoolean(name: String): ColumnContract = ColumnContract(name, TypeFamily.BOOLEAN, nullable = true)
 private fun requiredDate(name: String): ColumnContract = ColumnContract(name, TypeFamily.DATE, nullable = false)
 private fun requiredInstant(name: String): ColumnContract =
     ColumnContract(name, TypeFamily.TIMESTAMP_WITH_TIME_ZONE, nullable = false)

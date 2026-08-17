@@ -15,6 +15,13 @@ import app.spammy.hof.external.parser.CharacterDetailParser
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import app.spammy.hof.character.pattern.CharacterPatternDraft
+import app.spammy.hof.character.pattern.CharacterPatternOperationResult
+import app.spammy.hof.character.pattern.CharacterPatternOrchestrator
+import app.spammy.hof.character.pattern.CharacterPatternRemoteFactory
+import app.spammy.hof.character.pattern.CharacterPatternSetting
+import app.spammy.hof.character.pattern.PatternSlotAfterApply
+import app.spammy.hof.character.command.CharacterAutomationGate
 
 @Service
 /**
@@ -29,9 +36,42 @@ class CharacterPatternService(
     private val loginStateParser: LoginStateParser,
     private val detailParser: CharacterDetailParser,
     private val characterService: CharacterService,
+    private val snapshotSynchronizer: CharacterSnapshotSynchronizer,
     private val sessionPatternLoadTracker: SessionPatternLoadTracker,
+    private val patternRemoteFactory: CharacterPatternRemoteFactory,
+    private val automationGate: CharacterAutomationGate,
 ) {
     private val log = LoggerFactory.getLogger(CharacterPatternService::class.java)
+    private val orchestrator = CharacterPatternOrchestrator()
+
+    fun applyDraft(
+        accountId: Long,
+        characterId: Long,
+        base: CharacterPatternSetting,
+        baseRevision: java.time.Instant,
+        draft: CharacterPatternDraft,
+        slotAfterApply: PatternSlotAfterApply = PatternSlotAfterApply.None,
+        force: Boolean = false,
+    ): CharacterPatternOperationResult = automationGate.execute(
+        accountId,
+        unavailable = { CharacterPatternOperationResult.RefreshRequired("자동화 일시정지를 기다리고 있습니다.") },
+    ) {
+        patternRemoteFactory.withRemote(accountId, characterId) { remote ->
+            orchestrator.apply(remote, base, baseRevision, draft, slotAfterApply, force)
+        }
+    }
+
+    fun loadSavedPattern(accountId: Long, characterId: Long, slotCode: String): CharacterPatternOperationResult =
+        automationGate.execute(
+            accountId,
+            unavailable = { CharacterPatternOperationResult.RefreshRequired("자동화 일시정지를 기다리고 있습니다.") },
+        ) { patternRemoteFactory.withRemote(accountId, characterId) { remote -> orchestrator.load(remote, slotCode) } }
+
+    fun deleteSavedPattern(accountId: Long, characterId: Long, slotCode: String): CharacterPatternOperationResult =
+        automationGate.execute(
+            accountId,
+            unavailable = { CharacterPatternOperationResult.RefreshRequired("자동화 일시정지를 기다리고 있습니다.") },
+        ) { patternRemoteFactory.withRemote(accountId, characterId) { remote -> orchestrator.delete(remote, slotCode) } }
 
     /**
      * 특정 캐릭터의 저장 패턴 슬롯을 HOF 원본에 로드한다.
@@ -89,9 +129,10 @@ class CharacterPatternService(
         val loaded = response.statusCode in 200..399
         val refreshedCharacter = if (loaded) {
             runCatching {
-                characterService.refreshParsedCharacter(
-                    account,
-                    detailParser.parse(hofCharacterId, response.body),
+                snapshotSynchronizer.writeParsed(
+                    account.id,
+                    hofCharacterId,
+                    detailParser.parsePage(hofCharacterId, response.body),
                 )
             }.onFailure { error ->
                 log.warn(

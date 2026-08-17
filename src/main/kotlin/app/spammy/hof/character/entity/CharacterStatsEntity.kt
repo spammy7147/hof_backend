@@ -24,6 +24,12 @@ class CharacterStatsEntity(
     @JoinColumn(name = "character_id", nullable = false)
     var character: CharacterEntity,
 
+    @Column(name = "status_points")
+    var statusPoints: Int? = null,
+
+    @Column(name = "skill_points")
+    var skillPoints: Int? = null,
+
     @Column(name = "atk")
     var atk: Int? = null,
 
@@ -53,4 +59,30 @@ class CharacterStatsEntity(
 
     @Column(name = "cost_max")
     var costMax: Int? = null,
+
+    @Column(name = "exp_current") var expCurrent: Long? = null,
+    @Column(name = "exp_max") var expMax: Long? = null,
+    @Column(name = "exp_maxed") var expMaxed: Boolean? = null,
+    @Column(name = "hp_base") var hpBase: Int? = null,
+    @Column(name = "hp_bonus") var hpBonus: Int? = null,
+    @Column(name = "sp_base") var spBase: Int? = null,
+    @Column(name = "sp_bonus") var spBonus: Int? = null,
+    @Column(name = "str_real") var strReal: Int? = null,
+    @Column(name = "str_bonus") var strBonus: Int? = null,
+    @Column(name = "int_real") var intReal: Int? = null,
+    @Column(name = "int_bonus") var intBonus: Int? = null,
+    @Column(name = "dex_real") var dexReal: Int? = null,
+    @Column(name = "dex_bonus") var dexBonus: Int? = null,
+    @Column(name = "spd_real") var spdReal: Int? = null,
+    @Column(name = "spd_bonus") var spdBonus: Int? = null,
+    @Column(name = "luk_real") var lukReal: Int? = null,
+    @Column(name = "luk_bonus") var lukBonus: Int? = null,
+    @Column(name = "exp_description", columnDefinition = "text") var expDescription: String? = null,
+    @Column(name = "hp_description", columnDefinition = "text") var hpDescription: String? = null,
+    @Column(name = "sp_description", columnDefinition = "text") var spDescription: String? = null,
+    @Column(name = "str_description", columnDefinition = "text") var strDescription: String? = null,
+    @Column(name = "int_description", columnDefinition = "text") var intDescription: String? = null,
+    @Column(name = "dex_description", columnDefinition = "text") var dexDescription: String? = null,
+    @Column(name = "spd_description", columnDefinition = "text") var spdDescription: String? = null,
+    @Column(name = "luk_description", columnDefinition = "text") var lukDescription: String? = null,
 )

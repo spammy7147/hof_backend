@@ -9,6 +9,15 @@ import app.spammy.hof.character.entity.CharacterPositionChoiceEntity
 import app.spammy.hof.character.entity.CharacterSkillEntity
 import app.spammy.hof.character.entity.CharacterStatsEntity
 import app.spammy.hof.character.entity.CharacterStatusLineEntity
+import app.spammy.hof.character.entity.CharacterSection
+import app.spammy.hof.character.entity.CharacterSectionSyncStateEntity
+import app.spammy.hof.character.entity.CharacterStatusEffectEntity
+import app.spammy.hof.character.entity.CharacterFaithEntity
+import app.spammy.hof.character.entity.CharacterPatternOptionEntity
+import app.spammy.hof.character.entity.CharacterEquipmentCandidateEntity
+import app.spammy.hof.character.entity.CharacterSavedPatternRowEntity
+import app.spammy.hof.character.entity.CharacterEquipmentSavedSlotEntity
+import app.spammy.hof.character.entity.CharacterEquipmentSavedItemEntity
 import app.spammy.hof.character.entity.QCharacterActionPatternEntity.characterActionPatternEntity
 import app.spammy.hof.character.entity.QCharacterEntity.characterEntity
 import app.spammy.hof.character.entity.QCharacterEquipmentEntity.characterEquipmentEntity
@@ -18,6 +27,14 @@ import app.spammy.hof.character.entity.QCharacterPositionChoiceEntity.characterP
 import app.spammy.hof.character.entity.QCharacterSkillEntity.characterSkillEntity
 import app.spammy.hof.character.entity.QCharacterStatsEntity.characterStatsEntity
 import app.spammy.hof.character.entity.QCharacterStatusLineEntity.characterStatusLineEntity
+import app.spammy.hof.character.entity.QCharacterSectionSyncStateEntity.characterSectionSyncStateEntity
+import app.spammy.hof.character.entity.QCharacterStatusEffectEntity.characterStatusEffectEntity
+import app.spammy.hof.character.entity.QCharacterFaithEntity.characterFaithEntity
+import app.spammy.hof.character.entity.QCharacterPatternOptionEntity.characterPatternOptionEntity
+import app.spammy.hof.character.entity.QCharacterEquipmentCandidateEntity.characterEquipmentCandidateEntity
+import app.spammy.hof.character.entity.QCharacterSavedPatternRowEntity.characterSavedPatternRowEntity
+import app.spammy.hof.character.entity.QCharacterEquipmentSavedSlotEntity.characterEquipmentSavedSlotEntity
+import app.spammy.hof.character.entity.QCharacterEquipmentSavedItemEntity.characterEquipmentSavedItemEntity
 import com.querydsl.jpa.impl.JPAQueryFactory
 import org.springframework.stereotype.Repository
 
@@ -25,6 +42,78 @@ import org.springframework.stereotype.Repository
 class CharacterQueryRepository(
     private val queryFactory: JPAQueryFactory,
 ) {
+    fun findSectionState(characterId: Long, section: CharacterSection): CharacterSectionSyncStateEntity? =
+        queryFactory.selectFrom(characterSectionSyncStateEntity)
+            .where(
+                characterSectionSyncStateEntity.character.id.eq(characterId),
+                characterSectionSyncStateEntity.section.eq(section),
+            )
+            .fetchOne()
+
+    fun findSectionStates(characterId: Long): List<CharacterSectionSyncStateEntity> =
+        queryFactory.selectFrom(characterSectionSyncStateEntity)
+            .where(characterSectionSyncStateEntity.character.id.eq(characterId))
+            .orderBy(characterSectionSyncStateEntity.section.asc())
+            .fetch()
+
+    fun findSectionStatesByCharacterIds(characterIds: Collection<Long>): List<CharacterSectionSyncStateEntity> {
+        if (characterIds.isEmpty()) return emptyList()
+        return queryFactory.selectFrom(characterSectionSyncStateEntity)
+            .where(characterSectionSyncStateEntity.character.id.`in`(characterIds))
+            .orderBy(characterSectionSyncStateEntity.character.id.asc(), characterSectionSyncStateEntity.section.asc())
+            .fetch()
+    }
+
+    fun findStatusEffects(characterId: Long): List<CharacterStatusEffectEntity> =
+        queryFactory.selectFrom(characterStatusEffectEntity)
+            .where(characterStatusEffectEntity.character.id.eq(characterId))
+            .orderBy(characterStatusEffectEntity.effectOrder.asc(), characterStatusEffectEntity.id.asc())
+            .fetch()
+
+    fun findFaith(characterId: Long): CharacterFaithEntity? =
+        queryFactory.selectFrom(characterFaithEntity)
+            .where(characterFaithEntity.character.id.eq(characterId))
+            .fetchOne()
+
+    fun findPatternOptions(characterId: Long): List<CharacterPatternOptionEntity> =
+        queryFactory.selectFrom(characterPatternOptionEntity)
+            .where(characterPatternOptionEntity.character.id.eq(characterId))
+            .orderBy(characterPatternOptionEntity.optionType.asc(), characterPatternOptionEntity.optionOrder.asc())
+            .fetch()
+
+    fun findEquipmentCandidates(characterId: Long): List<CharacterEquipmentCandidateEntity> =
+        queryFactory.selectFrom(characterEquipmentCandidateEntity)
+            .where(characterEquipmentCandidateEntity.character.id.eq(characterId))
+            .orderBy(characterEquipmentCandidateEntity.candidateOrder.asc(), characterEquipmentCandidateEntity.id.asc())
+            .fetch()
+
+    fun findPatternSlot(characterId: Long, slotCode: String): CharacterPatternSlotEntity? =
+        queryFactory.selectFrom(characterPatternSlotEntity)
+            .where(
+                characterPatternSlotEntity.character.id.eq(characterId),
+                characterPatternSlotEntity.slotCode.eq(slotCode),
+            )
+            .fetchOne()
+
+    fun findSavedPatternRows(patternSlotId: Long): List<CharacterSavedPatternRowEntity> =
+        queryFactory.selectFrom(characterSavedPatternRowEntity)
+            .where(characterSavedPatternRowEntity.patternSlot.id.eq(patternSlotId))
+            .orderBy(characterSavedPatternRowEntity.rowIndex.asc(), characterSavedPatternRowEntity.id.asc())
+            .fetch()
+
+    fun findEquipmentSavedSlot(characterId: Long, slotNumber: Int): CharacterEquipmentSavedSlotEntity? =
+        queryFactory.selectFrom(characterEquipmentSavedSlotEntity)
+            .where(
+                characterEquipmentSavedSlotEntity.character.id.eq(characterId),
+                characterEquipmentSavedSlotEntity.slotNumber.eq(slotNumber),
+            )
+            .fetchOne()
+
+    fun findEquipmentSavedItems(savedSlotId: Long): List<CharacterEquipmentSavedItemEntity> =
+        queryFactory.selectFrom(characterEquipmentSavedItemEntity)
+            .where(characterEquipmentSavedItemEntity.equipmentSavedSlot.id.eq(savedSlotId))
+            .orderBy(characterEquipmentSavedItemEntity.itemOrder.asc(), characterEquipmentSavedItemEntity.id.asc())
+            .fetch()
     /**
      * 계정의 캐릭터 핵심 행을 이름과 DB ID 오름차순으로 안정적으로 조회한다.
      */
@@ -48,6 +137,11 @@ class CharacterQueryRepository(
                 characterEntity.account.id.eq(accountId),
                 characterEntity.hofCharacterId.eq(hofCharacterId),
             )
+            .fetchOne()
+
+    fun findByAccountIdAndId(accountId: Long, characterId: Long): CharacterEntity? =
+        queryFactory.selectFrom(characterEntity)
+            .where(characterEntity.account.id.eq(accountId), characterEntity.id.eq(characterId))
             .fetchOne()
 
     /**

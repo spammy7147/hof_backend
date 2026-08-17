@@ -5,6 +5,8 @@ import app.spammy.hof.character.entity.CharacterActionPatternEntity
 import app.spammy.hof.character.entity.CharacterEntity
 import app.spammy.hof.character.entity.CharacterEquipmentEntity
 import app.spammy.hof.character.entity.CharacterGuardSettingEntity
+import app.spammy.hof.character.entity.CharacterHofIdHistoryEntity
+import app.spammy.hof.character.entity.CharacterHofIdLinkReason
 import app.spammy.hof.character.entity.CharacterPatternSlotEntity
 import app.spammy.hof.character.entity.CharacterPositionChoiceEntity
 import app.spammy.hof.character.entity.CharacterSkillEntity
@@ -14,6 +16,8 @@ import app.spammy.hof.character.entity.CharacterStatusLineEntity
 import app.spammy.hof.character.repository.CharacterActionPatternCommandRepository
 import app.spammy.hof.character.repository.CharacterEquipmentCommandRepository
 import app.spammy.hof.character.repository.CharacterGuardSettingCommandRepository
+import app.spammy.hof.character.repository.CharacterHofIdHistoryRepository
+import app.spammy.hof.character.repository.CharacterIdentityQueryRepository
 import app.spammy.hof.character.repository.CharacterPatternSlotCommandRepository
 import app.spammy.hof.character.repository.CharacterPositionChoiceCommandRepository
 import app.spammy.hof.character.repository.CharacterQueryRepository
@@ -22,8 +26,10 @@ import app.spammy.hof.character.repository.CharacterSkillCommandRepository
 import app.spammy.hof.character.repository.CharacterStatsCommandRepository
 import app.spammy.hof.character.repository.CharacterStatusLineCommandRepository
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.common.error.ApiException
 import java.time.Instant
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito
@@ -38,6 +44,8 @@ class CharacterServiceTest {
     )
     private val characterRepository = Mockito.mock(CharacterRepository::class.java)
     private val characterQueryRepository = Mockito.mock(CharacterQueryRepository::class.java)
+    private val characterHofIdHistoryRepository = Mockito.mock(CharacterHofIdHistoryRepository::class.java)
+    private val characterIdentityQueryRepository = Mockito.mock(CharacterIdentityQueryRepository::class.java)
     private val statsRepository = Mockito.mock(CharacterStatsCommandRepository::class.java)
     private val statusLineRepository = Mockito.mock(CharacterStatusLineCommandRepository::class.java)
     private val patternSlotRepository = Mockito.mock(CharacterPatternSlotCommandRepository::class.java)
@@ -49,6 +57,8 @@ class CharacterServiceTest {
     private val service = CharacterService(
         characterRepository = characterRepository,
         characterQueryRepository = characterQueryRepository,
+        characterHofIdHistoryRepository = characterHofIdHistoryRepository,
+        characterIdentityQueryRepository = characterIdentityQueryRepository,
         statsRepository = statsRepository,
         statusLineRepository = statusLineRepository,
         patternSlotRepository = patternSlotRepository,
@@ -59,6 +69,15 @@ class CharacterServiceTest {
         skillRepository = skillRepository,
         timeProvider = TimeProvider { now },
     )
+
+    @Test
+    fun `stable record detail cannot be read through another account`() {
+        Mockito.`when`(characterQueryRepository.findByAccountIdAndId(2L, 10L)).thenReturn(null)
+
+        assertFailsWith<ApiException> { service.findDetailById(accountId = 2L, characterId = 10L) }
+
+        Mockito.verify(characterQueryRepository).findByAccountIdAndId(2L, 10L)
+    }
 
     @Test
     fun findAllReturnsStoredPatternSlotLabelsForBattleSelection() {
@@ -90,6 +109,19 @@ class CharacterServiceTest {
         val character = character(patternSlotCount = 1)
         val characterIds = listOf(character.id)
         Mockito.`when`(characterQueryRepository.findByAccountIdAndHofCharacterId(1L, "111")).thenReturn(character)
+        Mockito.`when`(characterIdentityQueryRepository.findHistory(character.id)).thenReturn(
+            listOf(
+                CharacterHofIdHistoryEntity(
+                    character = character,
+                    account = account,
+                    hofCharacterId = "old-111",
+                    validFrom = now.minusSeconds(60),
+                    validTo = now,
+                    linkReason = CharacterHofIdLinkReason.KNOCKBACK,
+                    userConfirmed = false,
+                ),
+            ),
+        )
         Mockito.`when`(characterQueryRepository.findStatusLinesByCharacterIds(characterIds))
             .thenReturn(listOf(CharacterStatusLineEntity(id = 30L, character = character, lineOrder = 0, content = "HP : 5628 + 5033")))
         Mockito.`when`(characterQueryRepository.findPatternSlotsByCharacterIds(characterIds))
@@ -202,6 +234,8 @@ class CharacterServiceTest {
         assertEquals("Soulcollector's Sword Breaker", detail.equipment.single().name)
         assertEquals("Attack / enemy - individual", detail.learnedSkills.single().name)
         assertEquals("1014", detail.learnableSkills.single().value)
+        assertEquals("old-111", detail.hofIdHistory.single().hofCharacterId)
+        assertEquals("KNOCKBACK", detail.hofIdHistory.single().linkReason)
     }
 
     private fun character(patternSlotCount: Int = 2): CharacterEntity =

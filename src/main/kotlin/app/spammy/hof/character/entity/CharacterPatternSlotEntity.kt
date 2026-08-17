@@ -36,4 +36,13 @@ class CharacterPatternSlotEntity(
 
     @Column(name = "can_load", nullable = false)
     var canLoad: Boolean,
+
+    @Column(name = "selected_position", columnDefinition = "text")
+    var selectedPosition: String? = null,
+
+    @Column(name = "guard_value", columnDefinition = "text")
+    var guardValue: String? = null,
+
+    @Column(name = "guard_text", columnDefinition = "text")
+    var guardText: String? = null,
 )
