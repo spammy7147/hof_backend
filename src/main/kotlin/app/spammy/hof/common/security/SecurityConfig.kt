@@ -71,7 +71,7 @@ class SecurityConfig(
         configuration.allowedOrigins = properties.allowedOrigins
         configuration.allowedMethods = listOf("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
         configuration.allowedHeaders = listOf("*")
-        configuration.exposedHeaders = listOf("Content-Type")
+        configuration.exposedHeaders = listOf("Content-Type", "X-HOF-Observed-Status")
         configuration.allowCredentials = true
 
         return UrlBasedCorsConfigurationSource().also { source ->

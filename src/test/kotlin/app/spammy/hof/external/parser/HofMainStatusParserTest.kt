@@ -31,6 +31,33 @@ class HofMainStatusParserTest {
     }
 
     @Test
+    fun parsesMainStatusValuesFromNestedMenuDivs() {
+        val html = """
+            <div id="menu2">
+              <div style="width:100%">
+                <div style="width:33%;float:left">《얼어붙은 손길》공민이</div>
+                <div style="width:67%;float:right">
+                  <div style="width:50%;float:left"><span class="bold">Funds</span> : ${'$'}&nbsp;844,370,206</div>
+                  <div style="width:50%;float:right"><span class="bold">Time</span> : 223/6000</div>
+                  <div style="width:50%;float:left"><span class="bold">Work</span> : Nothing</div>
+                  <div style="width:50%;float:left"><span class="bold">Auction</span> : Nothing</div>
+                </div>
+                <div class="c-both"></div>
+              </div>
+            </div>
+        """.trimIndent()
+
+        val status = parser.parse(html)
+
+        assertEquals("《얼어붙은 손길》공민이", status.playerName)
+        assertEquals(844_370_206L, status.funds)
+        assertEquals(223, status.timeCurrent)
+        assertEquals(6000, status.timeMax)
+        assertEquals("Nothing", status.work)
+        assertEquals("Nothing", status.auction)
+    }
+
+    @Test
     fun readsAccountStatusOnlyFromMenu2AndIgnoresInternalMenuDecoys() {
         val html = """
             <div id="menu">Funds : ${'$'} 999 Time : 999/999 Work : Wrong Auction : Wrong</div>
