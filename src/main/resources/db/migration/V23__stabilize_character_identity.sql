@@ -2,7 +2,7 @@ alter table characters
     drop constraint uk_characters_account_hof_character;
 
 alter table characters
-    alter column hof_character_id rename to current_hof_character_id;
+    rename column hof_character_id to current_hof_character_id;
 
 alter table characters
     add column lifecycle varchar(20) not null default 'ACTIVE';
