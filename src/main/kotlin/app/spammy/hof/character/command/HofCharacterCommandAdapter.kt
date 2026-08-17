@@ -61,6 +61,7 @@ class HofCharacterCommandAdapter(
                     snapshot.messages
                 }
                 is CharacterCommand.Pray -> executeSimple(context, "pray")
+                is CharacterCommand.PrepareItems -> executeSimple(context, "showreset")
                 is CharacterCommand.UseItem ->
                     executeChoice(context, "use_char_item", "item_no", command.itemValue)
                         ?: executeChoice(context, "resetVarious", "itemUse", command.itemValue)

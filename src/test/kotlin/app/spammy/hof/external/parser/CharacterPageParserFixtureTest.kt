@@ -66,7 +66,9 @@ class CharacterPageParserFixtureTest {
         assertEquals(0, parrying.spCost)
         assertTrue(parrying.description.contains("데미지 1회 무효화"))
         val mypod = snapshot.equipmentCandidates.first { it.value == "8801" }
+        assertEquals("characteritem", mypod.typeCode)
         assertEquals(3, mypod.quantity)
+        assertTrue(snapshot.equipmentCandidates.any { it.typeCode == "useitem" && it.name.startsWith("Milk") })
 
         val withStatusPoints = parser.parse(
             "1683198503393759",

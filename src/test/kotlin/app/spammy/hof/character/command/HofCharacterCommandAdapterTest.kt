@@ -124,6 +124,26 @@ class HofCharacterCommandAdapterTest {
     }
 
     @Test
+    fun `preparing item use opens the reset selector before the item snapshot is shown`() {
+        val executor = Mockito.mock(TownAuthenticatedExecutor::class.java)
+        val management = Mockito.mock(CharacterManagementService::class.java)
+        val query = Mockito.mock(CharacterQueryRepository::class.java)
+        arrangeSequence(executor)
+        Mockito.`when`(query.findByAccountIdAndId(1L, 7L)).thenReturn(character)
+        val page = formPage("<form method='post'><input type='submit' name='showreset' value='Use'></form>")
+        Mockito.`when`(executor.load(1L, CHARACTER_URL)).thenReturn(page)
+        val form = page.forms.single()
+        Mockito.`when`(management.execute(1L, "hof-10", TownActionRequest(form.actionId)))
+            .thenReturn(CharacterManagementSnapshotResponse(null, emptyList(), emptyList()))
+        val adapter = HofCharacterCommandAdapter(executor, management, HofRequestFactory(), query)
+
+        val result = adapter.execute(context, CharacterCommand.PrepareItems(7L, revision))
+
+        assertIs<CharacterCommandResult.Completed>(result)
+        Mockito.verify(management).execute(1L, "hof-10", TownActionRequest(form.actionId))
+    }
+
+    @Test
     fun `ambiguous knockback returns safe identity candidates to the typed client`() {
         val executor = Mockito.mock(TownAuthenticatedExecutor::class.java)
         val management = Mockito.mock(CharacterManagementService::class.java)

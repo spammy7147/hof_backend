@@ -10,6 +10,7 @@ import java.time.Instant
     JsonSubTypes.Type(CharacterCommand.Kick::class, name = "KICK"),
     JsonSubTypes.Type(CharacterCommand.Knockback::class, name = "KNOCKBACK"),
     JsonSubTypes.Type(CharacterCommand.Pray::class, name = "PRAY"),
+    JsonSubTypes.Type(CharacterCommand.PrepareItems::class, name = "PREPARE_ITEMS"),
     JsonSubTypes.Type(CharacterCommand.UseItem::class, name = "USE_ITEM"),
     JsonSubTypes.Type(CharacterCommand.LearnSkill::class, name = "LEARN_SKILL"),
     JsonSubTypes.Type(CharacterCommand.AllocateStat::class, name = "ALLOCATE_STAT"),
@@ -29,6 +30,7 @@ sealed interface CharacterCommand {
     data class Kick(override val characterId: Long, override val expectedRevision: Instant, val confirmationName: String) : CharacterCommand
     data class Knockback(override val characterId: Long, override val expectedRevision: Instant, val confirmationName: String) : CharacterCommand
     data class Pray(override val characterId: Long, override val expectedRevision: Instant) : CharacterCommand
+    data class PrepareItems(override val characterId: Long, override val expectedRevision: Instant) : CharacterCommand
     data class UseItem(override val characterId: Long, override val expectedRevision: Instant, val itemValue: String) : CharacterCommand
     data class LearnSkill(override val characterId: Long, override val expectedRevision: Instant, val skillValue: String) : CharacterCommand
     data class AllocateStat(

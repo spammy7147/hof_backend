@@ -50,7 +50,7 @@ object EquipmentCandidateScriptParser {
                         append(node.outerHtml())
                     }
                 }
-                parseFragment(document, fragment, "useitem")?.let(::add)
+                parseFragment(document, fragment, "characteritem")?.let(::add)
             }
         }
         document.select("form:has(input[type=submit][name=resetVarious]) select[name=itemUse] option")
