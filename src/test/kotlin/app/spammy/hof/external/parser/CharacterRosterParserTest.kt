@@ -21,5 +21,6 @@ class CharacterRosterParserTest {
         assertEquals("소셜", characters[0].name)
         assertEquals("카발", characters[1].name)
         assertEquals("", characters[2].name)
+        assertEquals(listOf(0, 1, 2), characters.map { it.rosterOrder })
     }
 }

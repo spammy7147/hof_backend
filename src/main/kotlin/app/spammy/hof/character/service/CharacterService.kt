@@ -75,9 +75,7 @@ class CharacterService(
     private val skillRepository: CharacterSkillCommandRepository,
     private val timeProvider: TimeProvider,
 ) {
-    /**
-     * 계정 캐릭터를 이름과 ID 순서로 읽고 패턴 슬롯을 한 번의 bulk query로 결합한다.
-     */
+    /** 계정 캐릭터를 HOF roster 순서로 읽고 패턴 슬롯을 한 번의 bulk query로 결합한다. */
     @Transactional(readOnly = true)
     fun findAll(accountId: Long, lifecycle: CharacterLifecycle? = null): List<CharacterResponse> {
         val characters = characterQueryRepository.findAllByAccountId(accountId)
@@ -193,6 +191,7 @@ class CharacterService(
         }
         character.updatedAt = now
         character.lastSeenAt = now
+        rosterCharacter.rosterOrder?.let { character.rosterOrder = it }
         if (character.lifecycle == CharacterLifecycle.MISSING) {
             character.lifecycle = CharacterLifecycle.ACTIVE
             character.missingSince = null

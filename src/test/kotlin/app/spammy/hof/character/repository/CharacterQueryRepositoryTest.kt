@@ -77,6 +77,27 @@ class CharacterQueryRepositoryTest {
     private lateinit var syncJobQueryRepository: CharacterSyncJobQueryRepository
 
     @Test
+    fun returnsCharactersInTheHofRosterOrderInsteadOfNameOrder() {
+        val account = accountRepository.save(account("roster-source-order"))
+        listOf(
+            HofCharacter(id = "301", rosterOrder = 2, name = "춘장이"),
+            HofCharacter(id = "101", rosterOrder = 0, name = "소셜"),
+            HofCharacter(id = "201", rosterOrder = 1, name = "사제"),
+        ).forEach { rosterCharacter ->
+            characterService.upsertCharacterSnapshot(
+                account = account,
+                rosterCharacter = rosterCharacter,
+                detail = HofCharacter(id = rosterCharacter.id),
+            )
+        }
+
+        assertEquals(
+            listOf("소셜", "사제", "춘장이"),
+            characterService.findAll(account.id).map { it.name },
+        )
+    }
+
+    @Test
     fun storesParsedSnapshotInNormalizedRowsAndRoundTripsInSourceOrder() {
         val account = accountRepository.save(account("normalized-round-trip"))
         val parsed = parsedSnapshot(CHARACTER_ID)

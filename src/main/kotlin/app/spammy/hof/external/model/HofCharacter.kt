@@ -22,4 +22,6 @@ data class HofCharacter(
     val equipmentCandidates: List<HofEquipmentCandidate> = emptyList(),
     val learnedSkills: List<HofSkill> = emptyList(),
     val learnableSkills: List<HofSkill> = emptyList(),
+    /** HOF 홈 roster에 나타난 0-based 원본 순서. 상세 페이지만 파싱한 경우에는 알 수 없다. */
+    val rosterOrder: Int? = null,
 )

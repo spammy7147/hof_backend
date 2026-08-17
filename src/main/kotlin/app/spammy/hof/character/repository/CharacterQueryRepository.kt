@@ -114,14 +114,12 @@ class CharacterQueryRepository(
             .where(characterEquipmentSavedItemEntity.equipmentSavedSlot.id.eq(savedSlotId))
             .orderBy(characterEquipmentSavedItemEntity.itemOrder.asc(), characterEquipmentSavedItemEntity.id.asc())
             .fetch()
-    /**
-     * 계정의 캐릭터 핵심 행을 이름과 DB ID 오름차순으로 안정적으로 조회한다.
-     */
+    /** 계정의 캐릭터를 HOF roster 원본 순서로 조회하고, 순서를 모르는 과거 기록만 뒤에 둔다. */
     fun findAllByAccountId(accountId: Long): List<CharacterEntity> =
         queryFactory
             .selectFrom(characterEntity)
             .where(characterEntity.account.id.eq(accountId))
-            .orderBy(characterEntity.name.asc(), characterEntity.id.asc())
+            .orderBy(characterEntity.rosterOrder.asc().nullsLast(), characterEntity.id.asc())
             .fetch()
 
     /**

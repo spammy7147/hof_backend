@@ -37,7 +37,9 @@ class CharacterRosterParser {
             byId.putIfAbsent(id, HofCharacter(id = id))
         }
 
-        return byId.values.toList()
+        return byId.values.mapIndexed { index, character ->
+            character.copy(rosterOrder = index)
+        }
     }
 
     /**
