@@ -87,6 +87,28 @@ class BattleMapParserTest {
     }
 
     @Test
+    fun `reads an image-only union link name from its card`() {
+        val html = """
+            <table>
+              <tr>
+                <td>
+                  <div class="carpet_frame">
+                    <div class="land"><a href="?union=0001"><img src="./image/char/GoblinTinkerLord.gif"></a></div>
+                    <div class="bold dmg">고블린 침공군</div>
+                    LvLimit:300
+                  </div>
+                </td>
+              </tr>
+            </table>
+        """.trimIndent()
+
+        val map = parser.parse("union", "union", html).single()
+
+        assertEquals("0001", map.mapCode)
+        assertEquals("고블린 침공군", map.name)
+    }
+
+    @Test
     fun `applies the page level union cooldown to every visible union map`() {
         val html = """
             <div id="mapgroup1">

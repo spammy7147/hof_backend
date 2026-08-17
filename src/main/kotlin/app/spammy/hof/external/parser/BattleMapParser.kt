@@ -63,13 +63,19 @@ class BattleMapParser {
                 val groupOrder = groupElement?.groupOrder() ?: 0
                 val groupMetadata = groupElement?.previousElementSibling()?.text()?.toGroupMetadata()
                 val mapCode = observation.mapCode
-                val directDisplayName = observation.displayName
+                val unionCard = if (categoryId == UNION_CATEGORY) link.unionCard() else null
+                val directDisplayName = observation.displayName.ifBlank {
+                    unionCard?.selectFirst(UNION_CARD_NAME_SELECTOR)?.text()?.normalizedText().orEmpty()
+                }
+                val directContextText = observation.contextText.ifBlank {
+                    unionCard?.text()?.normalizedText().orEmpty()
+                }
                 val preferredText = mapCode?.let(preferredTextByCode::get)
                 val displayName = directDisplayName.ifBlank { preferredText?.displayName.orEmpty() }
                 val contextText = if (directDisplayName.isBlank()) {
                     preferredText?.contextText.orEmpty().ifBlank { displayName }
                 } else {
-                    observation.contextText.ifBlank { displayName }
+                    directContextText.ifBlank { displayName }
                 }
                 if (
                     mapCode == null &&
@@ -462,6 +468,9 @@ class BattleMapParser {
             ?.toIntOrNull()
             ?: 0
 
+    private fun Element.unionCard(): Element? =
+        parents().firstOrNull { parent -> parent.hasClass(UNION_CARD_CLASS) }
+
     /**
      * 그룹 헤더 텍스트에서 그룹명과 권장 레벨을 분리한다.
      */
@@ -490,6 +499,8 @@ class BattleMapParser {
         const val HOF_BASE_URL = "http://sic.zerosic.com/ZeroHOF/index.php"
         const val MAP_GROUP_ID_PREFIX = "mapgroup"
         const val UNION_CATEGORY = "union"
+        const val UNION_CARD_CLASS = "carpet_frame"
+        const val UNION_CARD_NAME_SELECTOR = ".bold.dmg"
         const val SECONDS_PER_MINUTE = 60L
         const val SECONDS_PER_HOUR = 3_600L
         const val MAX_WARNING_SOURCE_LENGTH = 300
