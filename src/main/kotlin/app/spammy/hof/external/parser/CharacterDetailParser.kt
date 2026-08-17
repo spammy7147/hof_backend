@@ -425,8 +425,15 @@ class CharacterDetailParser {
             ?: return emptyList()
         return cell.html().split(Regex("""(?i)<br\s*/?>""")).mapNotNull { fragment ->
             val element = org.jsoup.Jsoup.parseBodyFragment(fragment, baseUri()).body()
-            val value = element.text().normalizeText()
-            if (value.isBlank() || value.contains("믿는 신") || value.contains("신앙심")) return@mapNotNull null
+            val value = element.text()
+                .replace(STATUS_VISUAL_SEPARATOR_REGEX, " ")
+                .normalizeText()
+            if (
+                value.isBlank() ||
+                value.matches(FAITH_BAR_REGEX) ||
+                value.contains("믿는 신") ||
+                value.contains("신앙심")
+            ) return@mapNotNull null
             val set = value.startsWith("[SET:")
             HofStatusEffect(
                 type = if (set) "SET" else "EFFECT",
@@ -548,6 +555,8 @@ class CharacterDetailParser {
         val ACTION_FIELD_REGEX = Regex("""(?:judge|quantity|skill)(\d+)""")
         val BASE_BONUS_VALUE_REGEX = Regex("""([+-]?\d+)(?:\s*\+\s*([+-]?\d+))?""")
         val FAITH_GAUGE_REGEX = Regex("""(\d+)\s*/\s*(\d+)""")
+        val FAITH_BAR_REGEX = Regex("""^[|｜¦]+$""")
+        val STATUS_VISUAL_SEPARATOR_REGEX = Regex("""_{8,}""")
         val STATUS_POINT_REGEX = Regex("""\bPoint\s*:\s*(\d+)""", RegexOption.IGNORE_CASE)
         val SKILL_POINT_REGEX = Regex("""Skill\s+Point\s*:\s*(\d+)""", RegexOption.IGNORE_CASE)
         val PRIMARY_STAT_NAMES = listOf("Exp", "HP", "SP", "STR", "INT", "DEX", "SPD", "LUK")

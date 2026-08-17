@@ -1,5 +1,6 @@
 package app.spammy.hof.external.parser
 
+import app.spammy.hof.external.model.HofFaith
 import java.nio.charset.Charset
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -80,6 +81,34 @@ class CharacterPageParserFixtureTest {
         assertTrue(resetCrystal.name.startsWith("Reset Crystal(Lv 60"))
         assertFalse(resetCrystal.name.contains("x57"))
         assertEquals(57, resetCrystal.quantity)
+    }
+
+    @Test
+    fun `faith gauge and visual separators are not parsed as status effects`() {
+        val html = """
+            <h4>Character Status</h4>
+            <table><tbody><tr>
+              <td><div class="carpet_frame">소셜<br>Lv.60 Social Knight</div></td>
+              <td></td>
+              <td>
+                <font style="letter-spacing:-4pt"><b>________________________________________________</b></font><p>
+                믿는 신: <b><font color="ffffff">Marduk</font></b><br>
+                <b><font size="2" title="380000 / 380000"><font color="00ff00">||||||||</font></font></b><br>
+                현재 신앙심: <b><font color="ffffff">380000</font></b><br>
+                <font style="letter-spacing:-4pt"><b>________________________________________________</b></font></p><p>
+                <font size="2" title="작은 짐승들의 잔치"><font color="#A6A6A6">[SET:작은 짐승들의 잔치]</font></font><br>
+                <font size="2" title="받는 데미지가 감소합니다.">방어숙련 +29%</font><br>
+              </p></td>
+            </tr></tbody></table>
+        """.trimIndent()
+
+        val snapshot = parser.parse("1683198503393759", html)
+
+        assertEquals(
+            listOf("[SET:작은 짐승들의 잔치]", "방어숙련 +29%"),
+            snapshot.statusEffects.map { it.valueText },
+        )
+        assertEquals(HofFaith("Marduk", 380000, 380000), snapshot.faith)
     }
 
     @Test
