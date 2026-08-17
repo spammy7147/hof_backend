@@ -51,6 +51,16 @@ class CharacterManagementService(
         val observed = executor.load(accountId, characterUrl(hofCharacterId)).forms
             .singleOrNull { it.actionId == action.actionId }
             ?: throw ApiException(ErrorCode.INVALID_REQUEST, "현재 페이지에서 실행할 수 없는 작업입니다.")
+        if (observed.submitSource.equals("showreset", ignoreCase = true)) {
+            return executor.executeProjected(
+                accountId = accountId,
+                pageUrl = characterUrl(hofCharacterId),
+                resolveAction = { _, _, _ -> action },
+                projector = { html, _, result, page ->
+                    writeFresh(accountId, hofCharacterId, html, page, result.messages)
+                },
+            )
+        }
         val executed = executor.execute(accountId, characterUrl(hofCharacterId), action)
         if (observed.submitSource.isTerminalIdentityAction()) {
             return reconcileRosterAfterIdentityChange(
@@ -160,15 +170,25 @@ class CharacterManagementService(
         accountQueryRepository.findById(accountId)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
         return executor.loadProjected(accountId, characterUrl(hofCharacterId)) { html, _, page ->
-            val parsed = detailParser.parsePage(hofCharacterId, html)
-            val refreshed = snapshotSynchronizer.writeParsed(accountId, hofCharacterId, parsed)
-            CharacterManagementSnapshotResponse(
-                character = refreshed,
-                actions = page.toActions(parsed.snapshot.patternSlots.associate { it.slot to it.label }),
-                messages = messages,
-                characters = characterService.findAll(accountId),
-            )
+            writeFresh(accountId, hofCharacterId, html, page, messages)
         }
+    }
+
+    private fun writeFresh(
+        accountId: Long,
+        hofCharacterId: String,
+        html: String,
+        page: ParsedTownPage,
+        messages: List<String>,
+    ): CharacterManagementSnapshotResponse {
+        val parsed = detailParser.parsePage(hofCharacterId, html)
+        val refreshed = snapshotSynchronizer.writeParsed(accountId, hofCharacterId, parsed)
+        return CharacterManagementSnapshotResponse(
+            character = refreshed,
+            actions = page.toActions(parsed.snapshot.patternSlots.associate { it.slot to it.label }),
+            messages = messages,
+            characters = characterService.findAll(accountId),
+        )
     }
 
     private fun requireOwnedCharacter(accountId: Long, hofCharacterId: String) {
