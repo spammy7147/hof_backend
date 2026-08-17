@@ -113,6 +113,21 @@ class NewAutomationHandlersTest {
     }
 
     @Test
+    fun `configured union maps temporarily absent from the live page wait for respawn without a configuration warning`() {
+        val settings = listOf(
+            UnionAutomationSetting("union:a", "union", "a", PresetSelectionMode.EXPLICIT, 3, 0, party),
+        )
+
+        val wait = assertIs<HandlerEvaluation.Unavailable>(
+            UnionAutomationHandler().evaluate(UnionAutomationSnapshot(1, settings, emptyList(), null, now)),
+        )
+
+        assertEquals("UNION_MAP_RESPAWN_WAIT", wait.reasonCode)
+        assertEquals("유니온 맵 재생성을 기다립니다.", wait.message)
+        assertEquals(now.plusSeconds(300), wait.nextRunAt)
+    }
+
+    @Test
     fun `raid rewards only a completed active cycle and treats closed as a local abort`() {
         val target = RaidAutomationTarget("r1", "레이드", PresetSelectionMode.EXPLICIT, 3, 0, party)
         val completedRaid = RaidPubRaidResponse(

@@ -36,12 +36,19 @@ class UnionAutomationHandler : AutomationHandler<UnionAutomationSnapshot> {
             ))
         }
         return waits.minOrNull()?.let { HandlerEvaluation.Unavailable(it, "UNION_SHARED_COOLDOWN", "유니온 공유 쿨다운을 기다립니다.") }
-            ?: HandlerEvaluation.ConfigurationWarning("현재 실행 가능한 유니온 맵이 없습니다.", "UNION_MAP_NOT_VISIBLE")
+            ?: HandlerEvaluation.Unavailable(
+                context.now.plusSeconds(RESPAWN_RECHECK_SECONDS),
+                "UNION_MAP_RESPAWN_WAIT",
+                "유니온 맵 재생성을 기다립니다.",
+            )
     }
 
     private fun rotate(values: List<UnionAutomationSetting>, key: String?): List<UnionAutomationSetting> {
         val index = values.indexOfFirst { it.targetKey == key }
         return if (index <= 0) values else values.drop(index) + values.take(index)
     }
-    private companion object { val SEOUL: ZoneId = ZoneId.of("Asia/Seoul") }
+    private companion object {
+        const val RESPAWN_RECHECK_SECONDS = 300L
+        val SEOUL: ZoneId = ZoneId.of("Asia/Seoul")
+    }
 }
