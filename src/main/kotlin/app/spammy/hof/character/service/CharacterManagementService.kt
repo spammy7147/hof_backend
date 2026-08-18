@@ -243,7 +243,7 @@ class CharacterManagementService(
     private fun characterUrl(hofCharacterId: String): String = requestFactory.characterPage(hofCharacterId).url
 
     private fun String.isTerminalIdentityAction(): Boolean =
-        equals("byebye", ignoreCase = true) || equals("knockback", ignoreCase = true)
+        equals("byebye2", ignoreCase = true) || equals("knockback2", ignoreCase = true)
 }
 
 private fun app.spammy.hof.character.dto.CharacterResponse.toIdentityEvidence() =

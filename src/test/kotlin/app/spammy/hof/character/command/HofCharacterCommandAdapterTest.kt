@@ -153,7 +153,22 @@ class HofCharacterCommandAdapterTest {
         val page = formPage("<form method='post'><input type='submit' name='knockback' value='Knockback'></form>")
         Mockito.`when`(executor.load(1L, CHARACTER_URL)).thenReturn(page)
         val form = page.forms.single()
+        val confirmationForm = formPage(
+            "<form method='post'><input type='submit' name='knockback2' value='Yes'></form>",
+        ).forms.single()
         Mockito.`when`(management.execute(1L, "hof-10", TownActionRequest(form.actionId))).thenReturn(
+            CharacterManagementSnapshotResponse(
+                character = null,
+                actions = listOf(
+                    CharacterObservedActionResponse(
+                        actionId = confirmationForm.actionId,
+                        source = confirmationForm.submitSource,
+                        label = confirmationForm.submitLabel,
+                    ),
+                ),
+            ),
+        )
+        Mockito.`when`(management.execute(1L, "hof-10", TownActionRequest(confirmationForm.actionId))).thenReturn(
             CharacterManagementSnapshotResponse(
                 character = null,
                 actions = emptyList(),
@@ -172,6 +187,100 @@ class HofCharacterCommandAdapterTest {
 
         assertEquals("hof-11", result.candidates.single().hofCharacterId)
         assertEquals(setOf("name", "job", "level"), result.candidates.single().matchingFields)
+    }
+
+    @Test
+    fun `knockback submits the confirmation form before resolving the changed identity`() {
+        val executor = Mockito.mock(TownAuthenticatedExecutor::class.java)
+        val management = Mockito.mock(CharacterManagementService::class.java)
+        val query = Mockito.mock(CharacterQueryRepository::class.java)
+        arrangeSequence(executor)
+        Mockito.`when`(query.findByAccountIdAndId(1L, 7L)).thenReturn(character)
+        val initialPage = formPage("<form method='post'><input type='submit' name='knockback' value='Knockback'></form>")
+        Mockito.`when`(executor.load(1L, CHARACTER_URL)).thenReturn(initialPage)
+        val initialForm = initialPage.forms.single()
+        val confirmationForm = formPage(
+            "<form method='post'><input type='submit' name='knockback2' value='Yes'></form>",
+        ).forms.single()
+        Mockito.`when`(management.execute(1L, "hof-10", TownActionRequest(initialForm.actionId))).thenReturn(
+            CharacterManagementSnapshotResponse(
+                character = null,
+                actions = listOf(
+                    CharacterObservedActionResponse(
+                        actionId = confirmationForm.actionId,
+                        source = confirmationForm.submitSource,
+                        label = confirmationForm.submitLabel,
+                    ),
+                ),
+            ),
+        )
+        Mockito.`when`(management.execute(1L, "hof-10", TownActionRequest(confirmationForm.actionId))).thenReturn(
+            CharacterManagementSnapshotResponse(
+                character = null,
+                actions = emptyList(),
+                messages = listOf("새 캐릭터 연결을 선택해 주세요."),
+                identityResolutionRequired = true,
+                identityCandidates = listOf(
+                    CharacterIdentityCandidateResponse("hof-11", "소셜", "Social Knight", 60, setOf("name", "job", "level")),
+                ),
+            ),
+        )
+        val adapter = HofCharacterCommandAdapter(executor, management, HofRequestFactory(), query)
+
+        val result = assertIs<CharacterCommandResult.IdentityResolutionRequired>(
+            adapter.execute(context, CharacterCommand.Knockback(7L, revision, "소셜")),
+        )
+
+        assertEquals("hof-11", result.candidates.single().hofCharacterId)
+        assertEquals("소셜", result.candidates.single().name)
+        assertEquals(60, result.candidates.single().level)
+        assertEquals("Social Knight", result.candidates.single().job)
+        Mockito.verify(management).execute(1L, "hof-10", TownActionRequest(initialForm.actionId))
+        Mockito.verify(management).execute(1L, "hof-10", TownActionRequest(confirmationForm.actionId))
+    }
+
+    @Test
+    fun `kick submits the confirmation form before archiving the target`() {
+        val executor = Mockito.mock(TownAuthenticatedExecutor::class.java)
+        val management = Mockito.mock(CharacterManagementService::class.java)
+        val query = Mockito.mock(CharacterQueryRepository::class.java)
+        arrangeSequence(executor)
+        Mockito.`when`(query.findByAccountIdAndId(1L, 7L)).thenReturn(character)
+        val initialPage = formPage("<form method='post'><input type='submit' name='byebye' value='Kick'></form>")
+        Mockito.`when`(executor.load(1L, CHARACTER_URL)).thenReturn(initialPage)
+        val initialForm = initialPage.forms.single()
+        val confirmationForm = formPage(
+            "<form method='post'><input type='submit' name='byebye2' value='Dismiss'></form>",
+        ).forms.single()
+        Mockito.`when`(management.execute(1L, "hof-10", TownActionRequest(initialForm.actionId))).thenReturn(
+            CharacterManagementSnapshotResponse(
+                character = null,
+                actions = listOf(
+                    CharacterObservedActionResponse(
+                        actionId = confirmationForm.actionId,
+                        source = confirmationForm.submitSource,
+                        label = confirmationForm.submitLabel,
+                    ),
+                ),
+            ),
+        )
+        Mockito.`when`(management.execute(1L, "hof-10", TownActionRequest(confirmationForm.actionId))).thenReturn(
+            CharacterManagementSnapshotResponse(
+                character = null,
+                actions = emptyList(),
+                messages = listOf("캐릭터를 삭제했습니다."),
+                targetRemoved = true,
+            ),
+        )
+        val adapter = HofCharacterCommandAdapter(executor, management, HofRequestFactory(), query)
+
+        val result = assertIs<CharacterCommandResult.Completed>(
+            adapter.execute(context, CharacterCommand.Kick(7L, revision, "소셜")),
+        )
+
+        assertEquals(listOf("캐릭터를 삭제했습니다."), result.messages)
+        Mockito.verify(management).execute(1L, "hof-10", TownActionRequest(initialForm.actionId))
+        Mockito.verify(management).execute(1L, "hof-10", TownActionRequest(confirmationForm.actionId))
     }
 
     @Test

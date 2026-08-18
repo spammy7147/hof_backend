@@ -36,12 +36,13 @@ class HofCharacterCommandAdapter(
             }
             val messages = when (command) {
                 is CharacterCommand.Rename -> executeRename(context, command.newName)
-                is CharacterCommand.Kick -> executeSimple(context, "byebye")
+                is CharacterCommand.Kick -> executeConfirmedSnapshot(context, "byebye", "byebye2")?.messages
                 is CharacterCommand.Knockback -> {
-                    val snapshot = executeSimpleSnapshot(context, "knockback") ?: return@executeAccountSequence rejected(
+                    val snapshot = executeConfirmedSnapshot(context, "knockback", "knockback2")
+                        ?: return@executeAccountSequence rejected(
                         context,
                         "FORM_NOT_OBSERVED",
-                        "현재 HOF 페이지에서 이 기능을 확인하지 못해 실행하지 않았습니다.",
+                        "현재 HOF 페이지에서 Knockback 확인 단계를 찾지 못해 실행하지 않았습니다.",
                     )
                     if (snapshot.identityResolutionRequired) {
                         return@executeAccountSequence CharacterCommandResult.IdentityResolutionRequired(
@@ -140,6 +141,20 @@ class HofCharacterCommandAdapter(
     private fun executeSimpleSnapshot(context: CharacterCommandContext, source: String) =
         findForm(context, source)?.let { form ->
             management.execute(context.accountId, context.hofCharacterId, TownActionRequest(form.actionId))
+        }
+
+    private fun executeConfirmedSnapshot(
+        context: CharacterCommandContext,
+        initialSource: String,
+        confirmationSource: String,
+    ) = executeSimpleSnapshot(context, initialSource)?.actions
+        ?.singleOrNull { it.source.equals(confirmationSource, ignoreCase = true) }
+        ?.let { confirmation ->
+            management.execute(
+                context.accountId,
+                context.hofCharacterId,
+                TownActionRequest(confirmation.actionId),
+            )
         }
 
     private fun executeChoice(

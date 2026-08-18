@@ -23,4 +23,21 @@ class CharacterRosterParserTest {
         assertEquals("", characters[2].name)
         assertEquals(listOf(0, 1, 2), characters.map { it.rosterOrder })
     }
+
+    @Test
+    fun collectsCharacterCardDetailsWhenTheLinkOnlyWrapsTheImage() {
+        val html = """
+            <div class="character-card">
+              <a href="index.php?char=444"><img src="witch.gif"></a><br>
+              마녀<br>
+              Lv.60 Great Witch
+            </div>
+        """.trimIndent()
+
+        val character = parser.parse(html).single()
+
+        assertEquals("마녀", character.name)
+        assertEquals(60, character.level)
+        assertEquals("Great Witch", character.job)
+    }
 }
