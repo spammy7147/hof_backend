@@ -1,5 +1,6 @@
 package app.spammy.hof.external.client
 
+import app.spammy.hof.character.service.CharacterRosterObservationService
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
@@ -15,6 +16,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 class AccountHofGateway(
     private val gateway: HofGateway,
     private val snapshots: HofStatusSnapshotService,
+    private val characterRosters: CharacterRosterObservationService,
     private val timeProvider: TimeProvider,
 ) {
     private val log = LoggerFactory.getLogger(AccountHofGateway::class.java)
@@ -44,6 +46,10 @@ class AccountHofGateway(
         runCatching { snapshots.observe(accountId, response.body, requestStartedAt) }
             .onFailure { error ->
                 log.warn("HOF status observation failed accountId={}", accountId, error)
+            }
+        runCatching { characterRosters.observe(accountId, response, requestStartedAt) }
+            .onFailure { error ->
+                log.warn("HOF character roster observation failed accountId={}", accountId, error)
             }
     }
 }

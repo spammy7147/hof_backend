@@ -77,6 +77,7 @@ class FreshSchemaTest {
                 "26" to "add character points",
                 "27" to "add character operation jobs",
                 "28" to "add character candidate quantity",
+                "29" to "observe character roster",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -109,6 +110,7 @@ class FreshSchemaTest {
                 "V26__add_character_points.sql",
                 "V27__add_character_operation_jobs.sql",
                 "V28__add_character_candidate_quantity.sql",
+                "V29__observe_character_roster.sql",
                 "V2__order_party_presets.sql",
                 "V3__add_automation_work_sessions.sql",
                 "V4__prepare_captcha_on_demand.sql",

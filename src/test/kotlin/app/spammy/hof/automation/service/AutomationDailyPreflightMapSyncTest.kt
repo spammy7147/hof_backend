@@ -148,7 +148,12 @@ class AutomationDailyPreflightMapSyncTest {
             gateway: BlockingAdventureGateway,
             timeProvider: MutableTimeProvider,
         ): AccountHofGateway =
-            AccountHofGateway(gateway, Mockito.mock(HofStatusSnapshotService::class.java), timeProvider)
+            AccountHofGateway(
+                gateway,
+                Mockito.mock(HofStatusSnapshotService::class.java),
+                Mockito.mock(app.spammy.hof.character.service.CharacterRosterObservationService::class.java),
+                timeProvider,
+            )
         @Bean fun loginStateParser(): LoginStateParser = LoginStateParser()
         @Bean fun captchaService(): CaptchaService = Mockito.mock(CaptchaService::class.java)
         @Bean fun hofAccountService(): HofAccountService = Mockito.mock(HofAccountService::class.java)

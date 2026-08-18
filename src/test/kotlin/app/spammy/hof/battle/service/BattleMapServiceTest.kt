@@ -733,7 +733,12 @@ class BattleMapServiceTest {
 
         @Bean
         fun accountHofGateway(gateway: FakeHofGateway, timeProvider: TimeProvider): AccountHofGateway =
-            AccountHofGateway(gateway, Mockito.mock(HofStatusSnapshotService::class.java), timeProvider)
+            AccountHofGateway(
+                gateway,
+                Mockito.mock(HofStatusSnapshotService::class.java),
+                Mockito.mock(app.spammy.hof.character.service.CharacterRosterObservationService::class.java),
+                timeProvider,
+            )
 
         @Bean
         fun loginStateParser(): LoginStateParser = LoginStateParser()

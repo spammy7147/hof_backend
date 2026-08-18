@@ -44,4 +44,7 @@ class HofStatusSnapshotEntity(
 
     @Column(name = "observed_at", nullable = false)
     var observedAt: Instant,
+
+    @Column(name = "character_roster_observed_at")
+    var characterRosterObservedAt: Instant? = null,
 )

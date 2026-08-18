@@ -52,6 +52,7 @@ import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.model.HofCharacter
 import app.spammy.hof.external.model.HofCharacterStats
 import app.spammy.hof.external.model.HofPositionGuard
+import java.time.Instant
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
@@ -140,6 +141,69 @@ class CharacterService(
             sectionStates = characterQueryRepository.findSectionStates(character.id),
             hofIdHistory = characterIdentityQueryRepository.findHistory(character.id),
         )
+    }
+
+    /**
+     * 로그인된 HOF 홈에서 관측한 roster 기본 정보와 수명주기를 한 트랜잭션으로 조정한다.
+     *
+     * 홈 문서에는 상세 설정 전체가 없으므로 정규화된 상세 자식과 상세 동기화 시각은 건드리지 않는다.
+     */
+    @Transactional
+    fun reconcileObservedRoster(
+        account: HofAccountEntity,
+        roster: List<HofCharacter>,
+        observedAt: Instant,
+    ) {
+        require(roster.isNotEmpty()) { "빈 캐릭터 명단으로 로컬 상태를 정리할 수 없습니다." }
+
+        val existingByHofId = characterQueryRepository.findAllByAccountId(account.id)
+            .associateBy { it.hofCharacterId }
+        val observedIds = roster.mapTo(linkedSetOf()) { it.id }
+
+        roster.forEach { observed ->
+            val existing = existingByHofId[observed.id]
+            val character = existing ?: CharacterEntity(
+                account = account,
+                hofCharacterId = observed.id,
+                name = observed.name.ifBlank { "(이름없음)" },
+                job = observed.job,
+                level = observed.level,
+                updatedAt = observedAt,
+            )
+
+            if (observed.name.isNotBlank()) character.name = observed.name
+            if (observed.job.isNotBlank()) character.job = observed.job
+            observed.level?.let { character.level = it }
+            observed.rosterOrder?.let { character.rosterOrder = it }
+            character.lastSeenAt = observedAt
+            character.updatedAt = observedAt
+            if (character.lifecycle == CharacterLifecycle.MISSING) {
+                character.lifecycle = CharacterLifecycle.ACTIVE
+                character.missingSince = null
+            }
+
+            val saved = characterRepository.save(character)
+            if (existing == null) {
+                characterHofIdHistoryRepository.save(
+                    CharacterHofIdHistoryEntity(
+                        character = saved,
+                        account = account,
+                        hofCharacterId = observed.id,
+                        validFrom = observedAt,
+                        linkReason = CharacterHofIdLinkReason.INITIAL_SYNC,
+                        userConfirmed = true,
+                    ),
+                )
+            }
+        }
+
+        existingByHofId.values
+            .filter { it.lifecycle == CharacterLifecycle.ACTIVE && it.hofCharacterId !in observedIds }
+            .forEach { character ->
+                character.lifecycle = CharacterLifecycle.MISSING
+                character.missingSince = observedAt
+                character.updatedAt = observedAt
+            }
     }
 
     /**

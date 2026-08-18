@@ -1,5 +1,6 @@
 package app.spammy.hof.external.client
 
+import app.spammy.hof.character.service.CharacterRosterObservationService
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofHttpResponse
@@ -15,8 +16,9 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 class AccountHofGatewayTest {
     private val snapshots = Mockito.mock(HofStatusSnapshotService::class.java)
+    private val characterRosters = Mockito.mock(CharacterRosterObservationService::class.java)
     private val raw = RecordingGateway()
-    private val gateway = AccountHofGateway(raw, snapshots, TimeProvider { REQUEST_STARTED_AT })
+    private val gateway = AccountHofGateway(raw, snapshots, characterRosters, TimeProvider { REQUEST_STARTED_AT })
 
     @Test
     fun `returns the raw response and records it with request start time`() {
@@ -24,6 +26,7 @@ class AccountHofGatewayTest {
 
         assertSame(RESPONSE, actual)
         Mockito.verify(snapshots).observe(ACCOUNT_ID, RESPONSE.body, REQUEST_STARTED_AT)
+        Mockito.verify(characterRosters).observe(ACCOUNT_ID, RESPONSE, REQUEST_STARTED_AT)
         assertEquals(listOf(ACCOUNT_ID), raw.accountIds)
         kotlin.test.assertEquals(COOKIES, raw.cookies)
     }
@@ -42,11 +45,13 @@ class AccountHofGatewayTest {
         try {
             assertSame(RESPONSE, gateway.execute(ACCOUNT_ID, REQUEST, COOKIES))
             Mockito.verifyNoInteractions(snapshots)
+            Mockito.verifyNoInteractions(characterRosters)
 
             TransactionSynchronizationManager.getSynchronizations().single()
                 .afterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK)
 
             Mockito.verify(snapshots).observe(ACCOUNT_ID, RESPONSE.body, REQUEST_STARTED_AT)
+            Mockito.verify(characterRosters).observe(ACCOUNT_ID, RESPONSE, REQUEST_STARTED_AT)
         } finally {
             TransactionSynchronizationManager.clearSynchronization()
         }

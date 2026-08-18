@@ -12,6 +12,7 @@ data class HofObservedStatusResponse(
     val work: String,
     val auction: String,
     val observedAt: Instant,
+    val characterRosterObservedAt: Instant? = null,
 ) {
     companion object {
         fun from(entity: HofStatusSnapshotEntity): HofObservedStatusResponse = HofObservedStatusResponse(
@@ -22,6 +23,7 @@ data class HofObservedStatusResponse(
             work = entity.work,
             auction = entity.auction,
             observedAt = entity.observedAt,
+            characterRosterObservedAt = entity.characterRosterObservedAt,
         )
     }
 }

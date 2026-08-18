@@ -187,6 +187,7 @@ internal object FreshSchemaContract {
             serialId(), requiredBigint("account_id"), requiredVarchar("player_name"),
             requiredBigint("funds"), requiredInteger("time_current"), requiredInteger("time_max"),
             requiredVarchar("work"), requiredVarchar("auction"), requiredInstant("observed_at"),
+            optionalInstant("character_roster_observed_at"),
         ),
         table(
             "hof_cookies",

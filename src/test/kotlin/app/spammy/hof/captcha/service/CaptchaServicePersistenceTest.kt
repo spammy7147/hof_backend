@@ -686,7 +686,12 @@ class CaptchaServicePersistenceTest {
             gateway: FakeHofGateway,
             timeProvider: TimeProvider,
         ): AccountHofGateway =
-            AccountHofGateway(gateway, org.mockito.Mockito.mock(HofStatusSnapshotService::class.java), timeProvider)
+            AccountHofGateway(
+                gateway,
+                org.mockito.Mockito.mock(HofStatusSnapshotService::class.java),
+                org.mockito.Mockito.mock(app.spammy.hof.character.service.CharacterRosterObservationService::class.java),
+                timeProvider,
+            )
 
         @Bean
         fun binaryGateway(): FakeHofBinaryGateway = FakeHofBinaryGateway()

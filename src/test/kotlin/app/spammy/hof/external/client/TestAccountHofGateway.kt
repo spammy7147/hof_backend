@@ -1,5 +1,6 @@
 package app.spammy.hof.external.client
 
+import app.spammy.hof.character.service.CharacterRosterObservationService
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.status.service.HofStatusSnapshotService
 import org.mockito.Mockito
@@ -11,5 +12,6 @@ fun testAccountHofGateway(
 ): AccountHofGateway = AccountHofGateway(
     gateway = gateway,
     snapshots = Mockito.mock(HofStatusSnapshotService::class.java),
+    characterRosters = Mockito.mock(CharacterRosterObservationService::class.java),
     timeProvider = timeProvider,
 )
