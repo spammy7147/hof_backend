@@ -755,6 +755,63 @@ class TownAuthenticatedExecutor(
     }
 
     /**
+     * 메인 화면의 진입 form과 그 응답에만 존재하는 최종 form을 같은 계정 fence 안에서 연속 검증한다.
+     * 어느 단계든 의미 form이나 후보가 없으면 파괴적 최종 action 없이 null을 반환한다.
+     */
+    fun <T> executeResolvedTwoStepProjected(
+        accountId: Long,
+        pageUrl: String,
+        requiredEntrySubmitField: String,
+        requiredFinalSubmitField: String,
+        entryAction: (ParsedTownPage) -> TownActionRequest?,
+        finalAction: (ParsedTownPage) -> TownActionRequest?,
+        projector: (String, String, app.spammy.hof.town.common.model.ParsedTownResult, ParsedTownPage) -> T,
+    ): T? = withAccountActionFence(accountId) {
+        require(requiredEntrySubmitField.isNotBlank() && requiredFinalSubmitField.isNotBlank())
+        val context = authenticatedContext(accountId)
+        val main = executeAuthenticated(
+            context.account,
+            requestFactory.townPage(pageUrl, HofRequestOrigin.INTERACTIVE),
+            context.cookies,
+        )
+        val mainPage = formParser.parse(main.body, main.finalUrl)
+        val requestedEntry = entryAction(mainPage) ?: return@withAccountActionFence null
+        val guardedEntry = actionGuard.guard(mainPage, requestedEntry)
+        if (guardedEntry.form.submitFields.singleOrNull()?.name != requiredEntrySubmitField) {
+            throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 1단계 작업 양식이 변경되었습니다.")
+        }
+        val entryResponse = executeAuthenticated(
+            context.account,
+            requestFactory.townForm(
+                guardedEntry.form.method,
+                guardedEntry.form.actionUrl,
+                guardedEntry.formEntries,
+                HofRequestOrigin.INTERACTIVE,
+            ),
+            context.cookies + main.setCookies,
+        )
+        val entryPage = formParser.parse(entryResponse.body, entryResponse.finalUrl)
+        val requestedFinal = finalAction(entryPage) ?: return@withAccountActionFence null
+        val guardedFinal = actionGuard.guard(entryPage, requestedFinal)
+        if (guardedFinal.form.submitFields.singleOrNull()?.name != requiredFinalSubmitField) {
+            throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 최종 작업 양식이 변경되었습니다.")
+        }
+        val finalResponse = executeAuthenticated(
+            context.account,
+            requestFactory.townForm(
+                guardedFinal.form.method,
+                guardedFinal.form.actionUrl,
+                guardedFinal.formEntries,
+                HofRequestOrigin.INTERACTIVE,
+            ),
+            context.cookies + main.setCookies + entryResponse.setCookies,
+        )
+        val result = resultParser.parse(finalResponse.body)
+        val page = formParser.parse(finalResponse.body, finalResponse.finalUrl)
+        projector(finalResponse.body, finalResponse.finalUrl, result, page)
+    }
+
+    /**
      * 메인 화면의 진입 form과 그 응답에만 존재하는 최종 form을 하나의 계정 fence 안에서 연속 검증한다.
      * 중간 응답을 클라이언트 토큰으로 신뢰하지 않고 매 실행마다 HOF에서 다시 획득한다.
      */

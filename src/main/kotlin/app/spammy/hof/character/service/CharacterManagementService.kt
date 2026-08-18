@@ -19,6 +19,7 @@ import app.spammy.hof.external.parser.CharacterDetailParser
 import app.spammy.hof.external.parser.CharacterRosterParser
 import app.spammy.hof.town.common.model.ParsedTownPage
 import app.spammy.hof.town.common.model.TownActionRequest
+import app.spammy.hof.town.common.model.TownActionSelection
 import app.spammy.hof.town.common.service.TownAuthenticatedExecutor
 import org.springframework.stereotype.Service
 
@@ -72,6 +73,39 @@ class CharacterManagementService(
             )
         }
         return loadFresh(accountId, hofCharacterId, executed.result.messages)
+    }
+
+    fun executeResetItem(
+        accountId: Long,
+        hofCharacterId: String,
+        itemValue: String,
+    ): CharacterManagementSnapshotResponse? {
+        requireOwnedCharacter(accountId, hofCharacterId)
+        return executor.executeResolvedTwoStepProjected(
+            accountId = accountId,
+            pageUrl = characterUrl(hofCharacterId),
+            requiredEntrySubmitField = "showreset",
+            requiredFinalSubmitField = "resetVarious",
+            entryAction = { page ->
+                page.forms.singleOrNull { it.submitSource.equals("showreset", ignoreCase = true) }
+                    ?.let { TownActionRequest(it.actionId) }
+            },
+            finalAction = { page ->
+                page.forms.singleOrNull { it.submitSource.equals("resetVarious", ignoreCase = true) }
+                    ?.let { form ->
+                        form.candidates.singleOrNull {
+                            it.inputName.equals("itemUse", ignoreCase = true) && it.inputValue == itemValue
+                        }?.let { candidate ->
+                            TownActionRequest(
+                                form.actionId,
+                                selections = listOf(TownActionSelection(candidate.id)),
+                            )
+                        }
+                    }
+            },
+        ) { html, _, result, page ->
+            writeFresh(accountId, hofCharacterId, html, page, result.messages)
+        }
     }
 
     private fun reconcileRosterAfterIdentityChange(

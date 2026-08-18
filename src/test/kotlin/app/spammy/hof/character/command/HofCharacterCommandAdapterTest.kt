@@ -93,34 +93,22 @@ class HofCharacterCommandAdapterTest {
     }
 
     @Test
-    fun `growth item uses the separate reset selector form`() {
+    fun `growth item reopens the transient reset selector through management service`() {
         val executor = Mockito.mock(TownAuthenticatedExecutor::class.java)
         val management = Mockito.mock(CharacterManagementService::class.java)
         val query = Mockito.mock(CharacterQueryRepository::class.java)
         arrangeSequence(executor)
         Mockito.`when`(query.findByAccountIdAndId(1L, 7L)).thenReturn(character)
-        val page = formPage(
-            "<form method='post'><select name='itemUse'><option value='7510'>Reset Crystal x57</option></select>" +
-                "<input type='submit' name='resetVarious' value='Use'></form>",
-        )
+        val page = formPage("<form method='post'><input type='submit' name='showreset' value='Use'></form>")
         Mockito.`when`(executor.load(1L, CHARACTER_URL)).thenReturn(page)
-        val form = page.forms.single()
-        val choice = form.candidates.single { it.inputName == "itemUse" && it.inputValue == "7510" }
-        Mockito.`when`(
-            management.execute(
-                1L,
-                "hof-10",
-                TownActionRequest(
-                    form.actionId,
-                    selections = listOf(app.spammy.hof.town.common.model.TownActionSelection(choice.id)),
-                ),
-            ),
-        ).thenReturn(CharacterManagementSnapshotResponse(null, emptyList(), listOf("성장 아이템 사용 완료")))
+        Mockito.`when`(management.executeResetItem(1L, "hof-10", "7510"))
+            .thenReturn(CharacterManagementSnapshotResponse(null, emptyList(), listOf("성장 아이템 사용 완료")))
         val adapter = HofCharacterCommandAdapter(executor, management, HofRequestFactory(), query)
 
         val result = adapter.execute(context, CharacterCommand.UseItem(7L, revision, "7510"))
 
         assertEquals(listOf("성장 아이템 사용 완료"), assertIs<CharacterCommandResult.Completed>(result).messages)
+        Mockito.verify(management).executeResetItem(1L, "hof-10", "7510")
     }
 
     @Test

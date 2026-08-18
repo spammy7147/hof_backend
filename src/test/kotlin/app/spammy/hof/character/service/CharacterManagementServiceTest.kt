@@ -30,6 +30,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.mockito.ArgumentCaptor
 import org.mockito.Mockito
 
 class CharacterManagementServiceTest {
@@ -110,6 +111,69 @@ class CharacterManagementServiceTest {
                 it.typeCode == "resetitem" && it.value == "7510"
             },
         )
+    }
+
+    @Test
+    fun `reset item use reopens the transient selector and submits it without another page reload`() {
+        Mockito.`when`(accounts.findById(1L)).thenReturn(account)
+        Mockito.`when`(cookies.findValueMapByAccountId(1L)).thenReturn(mapOf("PHPSESSID" to "session"))
+        Mockito.`when`(characters.findByAccountIdAndHofCharacterId(1L, "hof-10")).thenReturn(character)
+        Mockito.`when`(characterService.findAll(1L)).thenReturn(emptyList())
+        Mockito.`when`(
+            synchronizer.writeParsed(
+                Mockito.eq(1L),
+                Mockito.anyString(),
+                anyPage(),
+                Mockito.anySet(),
+            ),
+        ).thenReturn(Mockito.mock(CharacterDetailResponse::class.java))
+        Mockito.`when`(
+            gateway.execute(
+                Mockito.eq(1L),
+                anyRequest(),
+                Mockito.anyMap<String, String>(),
+            ),
+        ).thenReturn(response(BASE_PAGE), response(RESET_SELECTOR_PAGE), response(BASE_PAGE))
+
+        val snapshot = requireNotNull(service.executeResetItem(1L, "hof-10", "7510"))
+
+        assertEquals(emptyList(), snapshot.messages)
+        val requests = ArgumentCaptor.forClass(HofRequest::class.java)
+        Mockito.verify(gateway, Mockito.times(3)).execute(
+            Mockito.eq(1L),
+            capture(requests, HofRequest(HofHttpMethod.GET, CHARACTER_URL)),
+            Mockito.anyMap<String, String>(),
+        )
+        assertEquals(HofHttpMethod.GET, requests.allValues[0].method)
+        assertEquals(mapOf("showreset" to "Use"), requests.allValues[1].formFields)
+        assertEquals(
+            mapOf("itemUse" to "7510", "resetVarious" to "Use"),
+            requests.allValues[2].formFields,
+        )
+    }
+
+    @Test
+    fun `reset item use stops before final submission when the item is no longer offered`() {
+        Mockito.`when`(accounts.findById(1L)).thenReturn(account)
+        Mockito.`when`(cookies.findValueMapByAccountId(1L)).thenReturn(mapOf("PHPSESSID" to "session"))
+        Mockito.`when`(characters.findByAccountIdAndHofCharacterId(1L, "hof-10")).thenReturn(character)
+        Mockito.`when`(
+            gateway.execute(
+                Mockito.eq(1L),
+                anyRequest(),
+                Mockito.anyMap<String, String>(),
+            ),
+        ).thenReturn(response(BASE_PAGE), response(RESET_SELECTOR_PAGE))
+
+        val snapshot = service.executeResetItem(1L, "hof-10", "missing-item")
+
+        assertEquals(null, snapshot)
+        Mockito.verify(gateway, Mockito.times(2)).execute(
+            Mockito.eq(1L),
+            anyRequest(),
+            Mockito.anyMap<String, String>(),
+        )
+        Mockito.verifyNoInteractions(synchronizer)
     }
 
     @Test
@@ -287,6 +351,8 @@ class CharacterManagementServiceTest {
 
     private fun anyIdentityEvidenceList(): List<CharacterIdentityEvidence> =
         Mockito.anyList<CharacterIdentityEvidence>() ?: emptyList()
+
+    private fun <T : Any> capture(captor: ArgumentCaptor<T>, fallback: T): T = captor.capture() ?: fallback
 
     companion object {
         private const val CHARACTER_URL = "http://sic.zerosic.com/ZeroHOF/index.php?char=hof-10"

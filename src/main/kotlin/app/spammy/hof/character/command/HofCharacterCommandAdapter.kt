@@ -65,7 +65,11 @@ class HofCharacterCommandAdapter(
                 is CharacterCommand.PrepareItems -> executeSimple(context, "showreset")
                 is CharacterCommand.UseItem ->
                     executeChoice(context, "use_char_item", "item_no", command.itemValue)
-                        ?: executeChoice(context, "resetVarious", "itemUse", command.itemValue)
+                        ?: management.executeResetItem(
+                            context.accountId,
+                            context.hofCharacterId,
+                            command.itemValue,
+                        )?.messages
                 is CharacterCommand.LearnSkill -> executeChoice(context, "learnskill", "newskill", command.skillValue)
                 is CharacterCommand.ChangeClass -> executeChoice(context, "classchange", "job", command.classValue)
                 is CharacterCommand.AllocateStat -> executeStat(context, command)
