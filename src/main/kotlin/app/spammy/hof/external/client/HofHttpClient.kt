@@ -16,7 +16,6 @@ import java.net.http.HttpHeaders
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.nio.charset.Charset
-import java.nio.charset.StandardCharsets
 import java.time.Duration
 
 @Component
@@ -204,7 +203,7 @@ class HofHttpClient private constructor(
     }
 
     private fun urlEncode(value: String): String =
-        URLEncoder.encode(value, StandardCharsets.UTF_8)
+        URLEncoder.encode(value, EUC_KR)
 
     private fun buildCookieHeader(cookies: Map<String, String>): String =
         cookies.entries.joinToString("; ") { (name, value) -> "$name=$value" }

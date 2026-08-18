@@ -88,7 +88,7 @@ class HofHttpClientTest {
     }
 
     @Test
-    fun `post encoding preserves repeated form names and order`() {
+    fun `post encoding preserves repeated form names and Korean recruitment name using HOF EUC-KR`() {
         val bodies = mutableListOf<String>()
         val server = HttpServer.create(InetSocketAddress(0), 0)
         server.createContext("/submit") { exchange ->
@@ -106,12 +106,12 @@ class HofHttpClientTest {
                     formEntries = listOf(
                         HofFormField("token", "first"),
                         HofFormField("token", "second"),
-                        HofFormField("Create", "교환"),
+                        HofFormField("NewName", "새동료"),
                     ),
                 ),
             )
 
-            assertEquals("token=first&token=second&Create=%EA%B5%90%ED%99%98", bodies.single())
+            assertEquals("token=first&token=second&NewName=%BB%F5%B5%BF%B7%E1", bodies.single())
         } finally {
             server.stop(0)
         }
