@@ -51,6 +51,7 @@ class DefaultRaidCycleModule(
                 "동시에 여러 레이드 참가 상태가 관측되어 자동 행동을 보류합니다.",
                 recheckAt = timeProvider.now().plusSeconds(DEFAULT_RECHECK_SECONDS),
                 entryId = configuration.entryId,
+                raidId = target.raidId,
             )
         }
         joined.singleOrNull()
@@ -219,6 +220,8 @@ class DefaultRaidCycleModule(
                     at = timeProvider.now().plusSeconds(seconds.coerceAtLeast(MINIMUM_WAIT_SECONDS).toLong()),
                     reason = RaidWaitReason.WAITING_TO_START,
                     message = "레이드 출발 가능 시각까지 기다립니다.",
+                    entryId = configuration.entryId,
+                    raidId = cycle.raidId,
                 )
             }
             if (observed.joined && observed.status == RaidObservedStatus.READY && RaidIntentKind.START in observed.actions) {
@@ -275,6 +278,8 @@ class DefaultRaidCycleModule(
                     at = timeProvider.now().plusSeconds(seconds),
                     reason = RaidWaitReason.BATTLE_COOLDOWN,
                     message = "다음 레이드 전투 가능 시각까지 기다립니다.",
+                    entryId = configuration.entryId,
+                    raidId = cycle.raidId,
                 )
             }
             val setting = configuration.targets.singleOrNull { it.raidId == cycle.raidId }
@@ -351,6 +356,8 @@ class DefaultRaidCycleModule(
                 ),
                 reason = RaidWaitReason.REGISTRATION_COOLDOWN,
                 message = "레이드 등록 쿨타임을 기다립니다.",
+                entryId = configuration.entryId,
+                raidId = cycle.raidId,
             )
         }
         if (
@@ -496,7 +503,7 @@ class DefaultRaidCycleModule(
             }
             return RaidRecordResult.Recorded()
         }
-        if (attempt.kind == RaidIntentKind.REFRESH && refreshResultIsProven(page, attempt.raidId)) {
+        if (attempt.kind == RaidIntentKind.REFRESH && postRewardStateIsProven(page, attempt.raidId)) {
             return RaidRecordResult.Recorded(
                 store.finish(
                     accountId = accountId,
@@ -506,6 +513,9 @@ class DefaultRaidCycleModule(
                     advanceRotation = true,
                 ),
             )
+        }
+        if (actionIsProvablyNotApplied(page, attempt)) {
+            return RaidRecordResult.NotApplied("권위 상태에서 이전 레이드 요청이 적용되지 않은 것을 확인했습니다.")
         }
         return needsRecheck("레이드 실행 결과가 아직 적용을 증명하지 못했습니다.")
     }
@@ -529,13 +539,35 @@ class DefaultRaidCycleModule(
             (target != null && !target.joined && target.status in REGISTRATION_STATUSES)
     }
 
-    private fun refreshResultIsProven(page: RaidObservation, raidId: String): Boolean {
+    private fun postRewardStateIsProven(page: RaidObservation, raidId: String): Boolean {
         if (RaidIntentKind.REWARD in page.globalActions) return false
         val target = page.raids.singleOrNull { it.id == raidId }
-        return page.applied ||
-            page.registrationWait ||
+        return page.registrationWait ||
             target?.let(::requiresReset) == true ||
             (target != null && !target.joined && target.status in REGISTRATION_STATUSES)
+    }
+
+    private fun actionIsProvablyNotApplied(page: RaidObservation, attempt: RaidAttempt): Boolean {
+        if (page.applied) return false
+        val target = page.raids.singleOrNull { it.id == attempt.raidId }
+        return when (attempt.kind) {
+            RaidIntentKind.RESET -> target != null &&
+                !target.joined &&
+                requiresReset(target) &&
+                RaidIntentKind.RESET in target.actions
+            RaidIntentKind.REGISTER -> target != null &&
+                !target.joined &&
+                target.status in REGISTRATION_STATUSES &&
+                !page.registrationWait &&
+                RaidIntentKind.REGISTER in target.actions
+            RaidIntentKind.START -> target?.joined == true &&
+                target.status == RaidObservedStatus.READY &&
+                RaidIntentKind.START in target.actions
+            RaidIntentKind.REWARD -> RaidIntentKind.REWARD in page.globalActions
+            RaidIntentKind.REFRESH -> RaidIntentKind.REFRESH in page.globalActions &&
+                !postRewardStateIsProven(page, attempt.raidId)
+            RaidIntentKind.BATTLE -> false
+        }
     }
 
     private fun needsRecheck(message: String) = RaidRecordResult.NeedsRecheck(

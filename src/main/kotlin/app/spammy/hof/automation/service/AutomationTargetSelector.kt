@@ -155,11 +155,25 @@ class AutomationTargetSelector(
                         }
                         is RaidDirective.WaitUntil -> {
                             trace += directive.toTrace(entry.id, trace.size)
+                            lifecycle.waitForRaid(
+                                accountId,
+                                directive.entryId,
+                                directive.raidId,
+                                directive.at,
+                            )
                             if (earliest == null || directive.at < earliest) earliest = directive.at
                         }
                         is RaidDirective.Hold -> {
                             warnings += directive.message
                             trace += directive.toTrace(entry.id, trace.size)
+                            directive.raidId?.let { raidId ->
+                                lifecycle.waitForRaid(
+                                    accountId,
+                                    directive.entryId ?: entry.id,
+                                    raidId,
+                                    directive.recheckAt,
+                                )
+                            }
                             directive.recheckAt?.let { at ->
                                 if (earliest == null || at < earliest) earliest = at
                             }
@@ -259,6 +273,7 @@ class AutomationTargetSelector(
             message,
             at,
             actionKind = "WAIT",
+            targetKey = raidId,
         )
         is RaidDirective.Hold -> AutomationEvaluationTrace(
             sequence,

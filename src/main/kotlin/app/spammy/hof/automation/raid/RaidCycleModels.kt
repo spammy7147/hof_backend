@@ -132,7 +132,13 @@ data class RaidCycleOutcome(
 
 sealed interface RaidDirective {
     data class Execute(val intent: RaidIntent) : RaidDirective
-    data class WaitUntil(val at: Instant, val reason: RaidWaitReason, val message: String) : RaidDirective
+    data class WaitUntil(
+        val at: Instant,
+        val reason: RaidWaitReason,
+        val message: String,
+        val entryId: Long,
+        val raidId: String,
+    ) : RaidDirective
     data class Hold(
         val reason: RaidHoldReason,
         val message: String,
@@ -145,6 +151,7 @@ sealed interface RaidDirective {
 
 sealed interface RaidRecordResult {
     data class Recorded(val completion: RaidCycleOutcome? = null) : RaidRecordResult
+    data class NotApplied(val message: String) : RaidRecordResult
     data class NeedsRecheck(val at: Instant, val message: String) : RaidRecordResult
 }
 

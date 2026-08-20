@@ -151,6 +151,41 @@ class RaidCycleModuleTest {
     }
 
     @Test
+    fun `권위 조회에서 REGISTER가 적용되지 않았음이 명확하면 안전한 재제출을 허용한다`() {
+        val target = target("raid-a", 0)
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(1, 7, target.raidId, target.name, RaidAutomationCycleStatus.PREPARING, null),
+            ),
+        )
+        val module = DefaultRaidCycleModule(store, RaidObservationReader { error("GET should not be used") }, TimeProvider { now })
+        val notRegistered = RaidObservation(
+            raids = listOf(
+                RaidObservedTarget(
+                    id = target.raidId,
+                    name = target.name,
+                    playable = true,
+                    status = RaidObservedStatus.RECRUITING,
+                    joined = false,
+                    actions = setOf(RaidIntentKind.REGISTER),
+                ),
+            ),
+            applied = false,
+            registrationWait = false,
+        )
+
+        val result = module.recordObservedResult(
+            1,
+            RaidAttempt(7, RaidIntentKind.REGISTER, target.raidId),
+            RaidResultObservation.Page(notRegistered),
+        )
+
+        assertIs<RaidRecordResult.NotApplied>(result)
+        assertEquals(RaidAutomationCycleStatus.PREPARING, store.state.openCycle?.status)
+    }
+
+    @Test
     fun `REGISTER 응답이 이미 전투 상태면 추가 GET 없이 IN_BATTLE로 fast forward한다`() {
         val target = target("raid-a", 0)
         val store = InMemoryRaidCycleStore(
@@ -289,6 +324,39 @@ class RaidCycleModuleTest {
         assertEquals("raid001", battle.mapCode)
         assertEquals(3, battle.presetId)
         assertEquals(party, battle.party)
+    }
+
+    @Test
+    fun `전투 프리셋 구성이 사라지면 사이클을 유지하고 설정 복구를 기다린다`() {
+        val target = target("raid-a", 0, party = null)
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(1, 7, target.raidId, target.name, RaidAutomationCycleStatus.IN_BATTLE, null),
+            ),
+        )
+        val observation = RaidObservation(
+            raids = listOf(
+                RaidObservedTarget(
+                    id = target.raidId,
+                    name = target.name,
+                    playable = true,
+                    status = RaidObservedStatus.IN_BATTLE,
+                    joined = true,
+                    actions = emptySet(),
+                    battle = RaidObservedBattle("raid", "raid001"),
+                ),
+            ),
+            applied = false,
+            registrationWait = false,
+        )
+        val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
+
+        val hold = assertIs<RaidDirective.Hold>(module.decideNext(1))
+
+        assertEquals(RaidHoldReason.INVALID_PRESET, hold.reason)
+        assertEquals(null, hold.recheckAt)
+        assertEquals(RaidAutomationCycleStatus.IN_BATTLE, store.state.openCycle?.status)
     }
 
     @Test
@@ -750,7 +818,7 @@ class RaidCycleModuleTest {
     }
 
     @Test
-    fun `REFRESH POST가 최신 상태를 증명하면 같은 응답으로 사이클을 완료한다`() {
+    fun `REFRESH POST의 성공 표시만 있고 재등록 대기가 없으면 사이클을 닫지 않는다`() {
         val target = target("raid-auto", 0)
         val store = InMemoryRaidCycleStore(
             RaidCycleAccountState(
@@ -773,6 +841,34 @@ class RaidCycleModuleTest {
             ),
             applied = true,
             registrationWait = false,
+            globalActions = emptySet(),
+        )
+
+        assertIs<RaidRecordResult.NeedsRecheck>(module.recordObservedResult(
+            1,
+            RaidAttempt(7, RaidIntentKind.REFRESH, target.raidId, null),
+            RaidResultObservation.Page(refreshed),
+        ))
+
+        assertEquals(RaidAutomationCycleStatus.POST_REWARD_CHECK, store.state.openCycle?.status)
+        assertEquals(null, store.lastAdvanceRotation)
+    }
+
+    @Test
+    fun `REFRESH POST가 재등록 대기를 증명하면 같은 응답으로 사이클을 완료한다`() {
+        val target = target("raid-auto", 0)
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(1, 7, target.raidId, target.name, RaidAutomationCycleStatus.POST_REWARD_CHECK, null),
+            ),
+        )
+        val module = DefaultRaidCycleModule(store, RaidObservationReader { error("GET should not be used") }, TimeProvider { now })
+        val refreshed = RaidObservation(
+            raids = listOf(observed(target, resetRequired = false)),
+            applied = true,
+            registrationWait = true,
+            registrationWaitSeconds = 10_000,
             globalActions = emptySet(),
         )
 

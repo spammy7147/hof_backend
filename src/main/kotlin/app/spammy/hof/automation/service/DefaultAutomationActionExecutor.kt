@@ -18,7 +18,6 @@ import app.spammy.hof.quest.service.QuestGatewayService
 import app.spammy.hof.town.fishing.service.FishingService
 import app.spammy.hof.town.home.service.HomeService
 import app.spammy.hof.town.raid.dto.RaidPubActionRequest
-import app.spammy.hof.town.raid.model.RaidAction
 import app.spammy.hof.town.raid.service.RaidPubService
 import java.io.IOException
 import org.springframework.stereotype.Service
@@ -258,19 +257,9 @@ class DefaultAutomationActionExecutor(
             is RaidRecordResult.Recorded -> result.completion?.let {
                 workLifecycle.completeRaidCycle(accountId, attempt.entryId)
             }
+            is RaidRecordResult.NotApplied -> throw AmbiguousAutomationSubmissionException(result.message)
             is RaidRecordResult.NeedsRecheck -> throw AmbiguousAutomationSubmissionException(result.message)
         }
-    }
-
-    private fun RaidAction.toRaidIntentKind(): RaidIntentKind = when (this) {
-        RaidAction.RESET -> RaidIntentKind.RESET
-        RaidAction.REGISTER -> RaidIntentKind.REGISTER
-        RaidAction.START -> RaidIntentKind.START
-        RaidAction.REWARD -> RaidIntentKind.REWARD
-        RaidAction.REFRESH -> RaidIntentKind.REFRESH
-        RaidAction.LEAVE,
-        RaidAction.WAIT_RESET,
-        -> error("Unsupported raid automation action: $this")
     }
 
     private fun StoredTypedActionPayload.battleRequestOrNull(): RunBattleRequest? = when (this) {

@@ -30,6 +30,13 @@ interface AutomationWorkLifecycle {
     fun waitForResource(accountId: Long, sessionId: Long, materialName: String, missingCount: Int?)
     fun waitForUnknownCooldown(accountId: Long, sessionId: Long)
     fun waitForCooldown(accountId: Long, sessionId: Long, nextCheckAt: java.time.Instant)
+    fun waitForRaid(
+        accountId: Long,
+        entryId: Long,
+        raidId: String,
+        nextCheckAt: java.time.Instant?,
+    )
+    fun triggerRaidConfigurationCheck(accountId: Long)
     fun complete(accountId: Long, sessionId: Long)
     fun completeBattleMapAction(accountId: Long, entryId: Long, categoryId: String, mapCode: String)
     fun completeAdventureAction(accountId: Long, entryId: Long, categoryId: String, mapCode: String)
@@ -97,6 +104,7 @@ class AutomationWorkSessionService(
             check(running.matches(entryId, spec)) {
                 "A different automation work session is already running for account $accountId."
             }
+            running.alignRaidTarget(spec, entry.updatedAt.toString())?.let(commands::save)
             return running
         }
         open.firstOrNull { it.matches(entryId, spec) }?.let { parked ->
@@ -106,6 +114,7 @@ class AutomationWorkSessionService(
             parked.status = AutomationWorkStatus.RUNNING
             parked.nextCheckAt = null
             parked.updatedAt = timeProvider.now()
+            parked.alignRaidTarget(spec, entry.updatedAt.toString())
             commands.save(parked)
             return parked
         }
@@ -220,6 +229,65 @@ class AutomationWorkSessionService(
         session.nextCheckAt = nextCheckAt
         session.updatedAt = timeProvider.now()
         commands.save(session)
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    override fun waitForRaid(
+        accountId: Long,
+        entryId: Long,
+        raidId: String,
+        nextCheckAt: java.time.Instant?,
+    ) {
+        requireRunningRuntime(accountId)
+        val entry = typed.findEntry(accountId, entryId)
+            ?: throw AutomationConfigurationException("Automation entry $entryId is missing.")
+        require(entry.type == app.spammy.hof.automation.entity.AutomationType.RAID) {
+            "Only a raid entry may create a raid wait session."
+        }
+        val now = timeProvider.now()
+        val open = queries.lockOpen(accountId)
+        val session = open.singleOrNull {
+            it.entry.id == entryId && it.workType == AutomationWorkType.RAID
+        }
+        if (session != null) {
+            require(session.status in OPEN_SESSION_STATUSES)
+            session.targetKey = raidId
+            session.status = AutomationWorkStatus.WAITING_COOLDOWN
+            session.configVersion = entry.updatedAt.toString()
+            session.nextCheckAt = nextCheckAt
+            session.finishedAt = null
+            session.updatedAt = now
+            commands.save(session)
+            return
+        }
+        commands.save(
+            AutomationWorkSessionEntity(
+                account = entry.account,
+                entry = entry,
+                workType = AutomationWorkType.RAID,
+                targetKey = raidId,
+                status = AutomationWorkStatus.WAITING_COOLDOWN,
+                configVersion = entry.updatedAt.toString(),
+                nextCheckAt = nextCheckAt,
+                createdAt = now,
+                updatedAt = now,
+            ),
+        )
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    override fun triggerRaidConfigurationCheck(accountId: Long) {
+        val now = timeProvider.now()
+        queries.lockOpen(accountId)
+            .filter {
+                it.workType == AutomationWorkType.RAID &&
+                    it.status == AutomationWorkStatus.WAITING_COOLDOWN
+            }
+            .forEach { session ->
+                session.nextCheckAt = now
+                session.updatedAt = now
+                commands.save(session)
+            }
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -389,6 +457,17 @@ class AutomationWorkSessionService(
         entry.id == entryId &&
             workType == spec.type &&
             (targetKey == spec.targetKey || workType in setOf(AutomationWorkType.FISHING, AutomationWorkType.RAID))
+
+    private fun AutomationWorkSessionEntity.alignRaidTarget(
+        spec: WorkSpec,
+        latestConfigVersion: String,
+    ): AutomationWorkSessionEntity? {
+        if (workType != AutomationWorkType.RAID || targetKey == spec.targetKey) return null
+        targetKey = spec.targetKey
+        configVersion = latestConfigVersion
+        updatedAt = timeProvider.now()
+        return this
+    }
 
     private companion object {
         const val FISHING_CYCLE_TARGET = "DAILY_FISHING"

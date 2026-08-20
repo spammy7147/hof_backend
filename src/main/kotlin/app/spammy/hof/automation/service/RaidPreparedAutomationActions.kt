@@ -1,6 +1,7 @@
 package app.spammy.hof.automation.service
 
 import app.spammy.hof.town.raid.model.RaidAction
+import app.spammy.hof.automation.raid.RaidIntentKind
 
 data class RaidTownAutomationAction(
     val accountId: Long,
@@ -23,3 +24,14 @@ data class RaidCycleAbortAutomationAction(
     val raidId: String,
     val reason: RaidCycleAbortReason = RaidCycleAbortReason.CLOSED,
 ) : PreparedAutomationAction
+
+internal fun RaidAction.toRaidIntentKind(): RaidIntentKind = when (this) {
+    RaidAction.RESET -> RaidIntentKind.RESET
+    RaidAction.REGISTER -> RaidIntentKind.REGISTER
+    RaidAction.START -> RaidIntentKind.START
+    RaidAction.REWARD -> RaidIntentKind.REWARD
+    RaidAction.REFRESH -> RaidIntentKind.REFRESH
+    RaidAction.LEAVE,
+    RaidAction.WAIT_RESET,
+    -> error("Unsupported raid automation action: $this")
+}

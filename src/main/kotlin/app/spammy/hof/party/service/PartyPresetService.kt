@@ -40,6 +40,7 @@ class PartyPresetService(
     private val timeProvider: TimeProvider,
     private val responseMapper: PartyPresetResponseMapper,
     private val catalogService: PartyPresetCatalogService,
+    private val changeNotifier: PartyPresetChangeNotifier,
 ) {
     /**
      * 부모 목록과 전체 슬롯 목록을 각각 한 번씩 조회해 최근 수정순 응답을 조립한다.
@@ -147,7 +148,9 @@ class PartyPresetService(
         val replacements = memberRepository.saveAll(validatedMembers.toEntities(preset))
         preset.name = name
         preset.updatedAt = timeProvider.now()
-        return responseMapper.toPresetResponse(preset, replacements)
+        val response = responseMapper.toPresetResponse(preset, replacements)
+        changeNotifier.changed(accountId)
+        return response
     }
 
     /**
@@ -171,7 +174,9 @@ class PartyPresetService(
         selected.markPrimary()
         selected.updatedAt = timeProvider.now()
         val members = presetQueryRepository.findMembersByPresetIds(listOf(selected.id))
-        return responseMapper.toPresetResponse(selected, members)
+        val response = responseMapper.toPresetResponse(selected, members)
+        changeNotifier.changed(accountId)
+        return response
     }
 
     /**
@@ -191,6 +196,7 @@ class PartyPresetService(
         }
         presetRepository.delete(preset)
         presetRepository.flush()
+        changeNotifier.changed(accountId)
     }
 
     /**

@@ -16,7 +16,6 @@ import app.spammy.hof.town.fishing.service.FishingService
 import app.spammy.hof.town.home.model.HomeMode
 import app.spammy.hof.town.home.model.HomeQuestState
 import app.spammy.hof.town.home.service.HomeService
-import app.spammy.hof.town.raid.model.RaidAction
 import org.springframework.stereotype.Service
 
 @Service
@@ -24,6 +23,7 @@ class DefaultAutomationAmbiguousActionReconciler(
     private val questGateway: QuestGatewayService,
     private val battleMapService: BattleMapService,
     private val battleHandler: BattleMapAutomationHandler,
+    private val battleOutcomeReconciler: BattleOutcomeReconciler,
     private val sessionRecovery: HofSessionRecoveryExecutor,
     private val timeProvider: TimeProvider,
     private val workLifecycle: AutomationWorkLifecycle,
@@ -41,12 +41,13 @@ class DefaultAutomationAmbiguousActionReconciler(
         is StoredTypedActionPayload.QuestBattle -> reconcileQuestBattle(accountId, payload)
         is StoredTypedActionPayload.HomeQuest -> reconcileHomeQuest(accountId, payload)
         is StoredTypedActionPayload.AdventureMap -> reconcileAdventure(accountId, action.entryId, payload)
-        is StoredTypedActionPayload.BattleMap -> reconcileBattleMap(
-            accountId,
-            action.entryId,
-            action.executionIdentity,
-            payload,
-        )
+        is StoredTypedActionPayload.BattleMap -> {
+            if (payload.source == BattleAutomationActionSource.RAID_AUTOMATION) {
+                reconcileRaidBattle(accountId, action.entryId, action.executionIdentity, payload)
+            } else {
+                reconcileBattleMap(accountId, action.entryId, action.executionIdentity, payload)
+            }
+        }
         is StoredTypedActionPayload.FishingTown -> reconcileFishing(accountId, payload)
         is StoredTypedActionPayload.RaidTown -> reconcileRaid(accountId, action.entryId, payload)
         is StoredTypedActionPayload.RaidCycleAbort -> reconcileRaidAbort(accountId, action.entryId, payload)
@@ -103,25 +104,59 @@ class DefaultAutomationAmbiguousActionReconciler(
         accountId: Long,
         attempt: RaidAttempt,
         observation: RaidResultObservation,
+        execution: TypedAutomationExecution = TypedAutomationExecution.Completed,
     ): AmbiguousActionResolution {
         return when (val result = raidCycleModule.recordObservedResult(accountId, attempt, observation)) {
             is RaidRecordResult.Recorded -> {
                 result.completion?.let { workLifecycle.completeRaidCycle(accountId, attempt.entryId) }
-                AmbiguousActionResolution.Applied()
+                AmbiguousActionResolution.Applied(execution)
             }
+            is RaidRecordResult.NotApplied -> AmbiguousActionResolution.Resubmit
             is RaidRecordResult.NeedsRecheck -> AmbiguousActionResolution.VerifyLater(result.at, result.message)
         }
     }
 
-    private fun RaidAction.toRaidIntentKind(): RaidIntentKind = when (this) {
-        RaidAction.RESET -> RaidIntentKind.RESET
-        RaidAction.REGISTER -> RaidIntentKind.REGISTER
-        RaidAction.START -> RaidIntentKind.START
-        RaidAction.REWARD -> RaidIntentKind.REWARD
-        RaidAction.REFRESH -> RaidIntentKind.REFRESH
-        RaidAction.LEAVE,
-        RaidAction.WAIT_RESET,
-        -> error("Unsupported raid automation action: $this")
+    private fun reconcileRaidBattle(
+        accountId: Long,
+        entryId: Long,
+        executionIdentity: String,
+        payload: StoredTypedActionPayload.BattleMap,
+    ): AmbiguousActionResolution {
+        val raidId = payload.sourceTargetKey
+            ?: return AmbiguousActionResolution.VerifyLater(retryAt(), "저장된 레이드 전투 대상이 없습니다.")
+        val action = BattleMapAutomationAction(
+            accountId = accountId,
+            progressDate = payload.progressDate,
+            categoryId = payload.categoryId,
+            mapCode = payload.mapCode,
+            presetMode = payload.presetMode,
+            presetId = payload.presetId,
+            battleCount = payload.battleCount,
+            executionIdentity = executionIdentity,
+            source = payload.source,
+            sourceTargetKey = raidId,
+        )
+        return when (val reconciliation = battleOutcomeReconciler.reloadRecentAuthoritativeEvidence(action)) {
+            is BattleOutcomeReconciliation.Proven -> {
+                if (!reconciliation.evidence.binds(action) || !reconciliation.evidence.isCompleteTerminal()) {
+                    AmbiguousActionResolution.VerifyLater(
+                        retryAt(),
+                        "다시 읽은 레이드 전투 결과가 저장 행동과 정확히 일치하지 않습니다.",
+                    )
+                } else {
+                    recordRaid(
+                        accountId,
+                        RaidAttempt(entryId, RaidIntentKind.BATTLE, raidId, null),
+                        RaidResultObservation.BattleCompleted,
+                        TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode),
+                    )
+                }
+            }
+            is BattleOutcomeReconciliation.Unproven -> AmbiguousActionResolution.VerifyLater(
+                retryAt(),
+                reconciliation.message,
+            )
+        }
     }
 
     private fun reconcileQuestAccept(

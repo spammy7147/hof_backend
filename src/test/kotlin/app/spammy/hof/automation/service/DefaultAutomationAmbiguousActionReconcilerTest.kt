@@ -35,6 +35,7 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
     private val questGateway = Mockito.mock(QuestGatewayService::class.java)
     private val battleMapService = Mockito.mock(BattleMapService::class.java)
     private val battleHandler = Mockito.mock(BattleMapAutomationHandler::class.java)
+    private val battleOutcomeReconciler = Mockito.mock(BattleOutcomeReconciler::class.java)
     private val workLifecycle = Mockito.mock(AutomationWorkLifecycle::class.java)
     private val defaultRaidModule = Mockito.mock(RaidCycleModule::class.java)
     private val defaultRaidAdapter = Mockito.mock(HofRaidObservationAdapter::class.java)
@@ -42,6 +43,7 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
         questGateway,
         battleMapService,
         battleHandler,
+        battleOutcomeReconciler,
         HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
         TimeProvider { now },
         workLifecycle,
@@ -74,6 +76,7 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
             questGateway,
             battleMapService,
             battleHandler,
+            battleOutcomeReconciler,
             HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
             TimeProvider { now },
             localWorkLifecycle,
@@ -110,6 +113,7 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
             questGateway,
             battleMapService,
             battleHandler,
+            battleOutcomeReconciler,
             HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
             TimeProvider { now },
             Mockito.mock(AutomationWorkLifecycle::class.java),
@@ -130,6 +134,24 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
         )
 
         assertIs<AmbiguousActionResolution.Applied>(raidReconciler.reconcile(7L, action))
+    }
+
+    @Test
+    fun `authoritative raid observation proving no application safely resubmits`() {
+        val observation = RaidObservation(emptyList(), false, false)
+        Mockito.`when`(defaultRaidAdapter.read(7L)).thenReturn(observation)
+        Mockito.`when`(defaultRaidModule.recordObservedResult(
+            7L,
+            RaidAttempt(13L, RaidIntentKind.REGISTER, "RaidGoblin", "RaidGoblin"),
+            RaidResultObservation.Page(observation),
+        )).thenReturn(RaidRecordResult.NotApplied("등록되지 않았습니다."))
+        val action = StoredTypedAutomationAction(
+            13L,
+            "raid-register-not-applied",
+            StoredTypedActionPayload.RaidTown(RaidAction.REGISTER, "RaidGoblin"),
+        )
+
+        assertIs<AmbiguousActionResolution.Resubmit>(reconciler.reconcile(7L, action))
     }
 
     @Test
@@ -232,6 +254,48 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
         Mockito.verifyNoInteractions(battleMapService)
     }
 
+    @Test
+    fun `ambiguous raid battle without exact terminal evidence remains in reconciliation`() {
+        Mockito.`when`(battleOutcomeReconciler.reloadRecentAuthoritativeEvidence(anyRaidBattleAction()))
+            .thenReturn(BattleOutcomeReconciliation.Unproven("exact result is unavailable"))
+
+        assertIs<AmbiguousActionResolution.VerifyLater>(reconciler.reconcile(7, raidBattleAction()))
+
+        Mockito.verifyNoInteractions(battleHandler)
+        Mockito.verifyNoInteractions(defaultRaidModule)
+        Mockito.verify(workLifecycle, Mockito.never()).completeBattleMapAction(7, 13, "raid", "raid001")
+    }
+
+    @Test
+    fun `ambiguous raid battle with exact terminal evidence records only the raid result`() {
+        val evidence = BattleAuthoritativeOutcomeEvidence(
+            accountId = 7,
+            executionIdentity = "raid-battle-1",
+            categoryId = "raid",
+            mapCode = "raid001",
+            battleCount = 1,
+            resultIdentity = "raid-result-1",
+            outcomes = listOf(BattleAutomationRoundOutcome.VICTORY),
+        )
+        Mockito.`when`(battleOutcomeReconciler.reloadRecentAuthoritativeEvidence(anyRaidBattleAction()))
+            .thenReturn(BattleOutcomeReconciliation.Proven(evidence))
+        Mockito.`when`(defaultRaidModule.recordObservedResult(
+            7,
+            RaidAttempt(13, RaidIntentKind.BATTLE, "RaidGoblin", null),
+            RaidResultObservation.BattleCompleted,
+        )).thenReturn(RaidRecordResult.Recorded())
+
+        assertIs<AmbiguousActionResolution.Applied>(reconciler.reconcile(7, raidBattleAction()))
+
+        Mockito.verify(defaultRaidModule).recordObservedResult(
+            7,
+            RaidAttempt(13, RaidIntentKind.BATTLE, "RaidGoblin", null),
+            RaidResultObservation.BattleCompleted,
+        )
+        Mockito.verifyNoInteractions(battleHandler)
+        Mockito.verify(workLifecycle, Mockito.never()).completeBattleMapAction(7, 13, "raid", "raid001")
+    }
+
     private fun questAccept() = StoredTypedAutomationAction(
         10,
         "accept-1",
@@ -286,6 +350,22 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
         ),
     )
 
+    private fun raidBattleAction() = StoredTypedAutomationAction(
+        13,
+        "raid-battle-1",
+        StoredTypedActionPayload.BattleMap(
+            progressDate = java.time.LocalDate.parse("2026-07-25"),
+            categoryId = "raid",
+            mapCode = "raid001",
+            presetMode = PresetSelectionMode.PRIMARY,
+            presetId = 301,
+            battleCount = 1,
+            battleRequest = battleRequest("raid", "raid001"),
+            source = BattleAutomationActionSource.RAID_AUTOMATION,
+            sourceTargetKey = "RaidGoblin",
+        ),
+    )
+
     private fun mapResponse(
         cooldownSeconds: Long?,
         attemptCount: Int?,
@@ -322,6 +402,20 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
             presetId = 301,
             battleCount = 3,
             executionIdentity = "matcher",
+        )
+
+    private fun anyRaidBattleAction(): BattleMapAutomationAction =
+        Mockito.any(BattleMapAutomationAction::class.java) ?: BattleMapAutomationAction(
+            accountId = 7,
+            progressDate = java.time.LocalDate.parse("2026-07-25"),
+            categoryId = "raid",
+            mapCode = "raid001",
+            presetMode = PresetSelectionMode.PRIMARY,
+            presetId = 301,
+            battleCount = 1,
+            executionIdentity = "matcher",
+            source = BattleAutomationActionSource.RAID_AUTOMATION,
+            sourceTargetKey = "RaidGoblin",
         )
 
     private fun quest(code: String, state: QuestState, actionNo: String?) = QuestSnapshot(

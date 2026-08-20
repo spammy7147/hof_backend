@@ -20,6 +20,7 @@ import app.spammy.hof.town.raid.model.RaidAction
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.mockito.ArgumentCaptor
 import org.mockito.Mockito
 
 class AutomationWorkSessionServiceTest {
@@ -310,6 +311,97 @@ class AutomationWorkSessionServiceTest {
         assertEquals("RaidGoblin", started.targetKey)
         assertEquals(AutomationWorkStatus.RUNNING, started.status)
         Mockito.verify(commands).save(started)
+    }
+
+    @Test
+    fun `raid wait opens a parked session before its first action`() {
+        val raidEntry = AutomationEntryEntity(14, account, AutomationType.RAID, 4, true, now, now)
+        val retryAt = now.plusSeconds(120)
+        Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
+        Mockito.`when`(typed.findEntry(7, raidEntry.id)).thenReturn(raidEntry)
+        Mockito.`when`(queries.lockOpen(7)).thenReturn(emptyList())
+
+        service.waitForRaid(7, raidEntry.id, "RaidGoblin", retryAt)
+
+        val captor = ArgumentCaptor.forClass(AutomationWorkSessionEntity::class.java)
+        Mockito.verify(commands).save(
+            captor.capture() ?: AutomationWorkSessionEntity(
+                account = account,
+                entry = raidEntry,
+                workType = AutomationWorkType.RAID,
+                targetKey = "capture-fallback",
+                status = AutomationWorkStatus.WAITING_COOLDOWN,
+                configVersion = "capture-fallback",
+                createdAt = now,
+                updatedAt = now,
+            ),
+        )
+        assertEquals(AutomationWorkType.RAID, captor.value.workType)
+        assertEquals("RaidGoblin", captor.value.targetKey)
+        assertEquals(AutomationWorkStatus.WAITING_COOLDOWN, captor.value.status)
+        assertEquals(retryAt, captor.value.nextCheckAt)
+    }
+
+    @Test
+    fun `configured raid action retargets a parked manual raid hold session`() {
+        val raidEntry = AutomationEntryEntity(14, account, AutomationType.RAID, 4, true, now, now)
+        val session = AutomationWorkSessionEntity(
+            id = 31,
+            account = account,
+            entry = raidEntry,
+            workType = AutomationWorkType.RAID,
+            targetKey = "ManualRaid",
+            status = AutomationWorkStatus.WAITING_COOLDOWN,
+            configVersion = raidEntry.updatedAt.toString(),
+            nextCheckAt = now,
+            createdAt = now,
+            updatedAt = now,
+        )
+        val action = RaidTownAutomationAction(
+            accountId = 7,
+            action = RaidAction.REGISTER,
+            raidId = "RaidGoblin",
+            targetRaidId = "RaidGoblin",
+        )
+        Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
+        Mockito.`when`(typed.findEntry(7, raidEntry.id)).thenReturn(raidEntry)
+        Mockito.`when`(queries.lockOpen(7)).thenReturn(listOf(session))
+
+        val resumed = service.ensureForAction(7, raidEntry.id, action)
+
+        assertEquals(AutomationWorkStatus.RUNNING, resumed.status)
+        assertEquals("RaidGoblin", resumed.targetKey)
+        assertEquals(null, resumed.nextCheckAt)
+        Mockito.verify(commands).save(resumed)
+    }
+
+    @Test
+    fun `preset change makes every parked raid session due immediately`() {
+        val raidEntry = AutomationEntryEntity(14, account, AutomationType.RAID, 4, true, now, now)
+        val waitingRaid = AutomationWorkSessionEntity(
+            id = 32,
+            account = account,
+            entry = raidEntry,
+            workType = AutomationWorkType.RAID,
+            targetKey = "RaidGoblin",
+            status = AutomationWorkStatus.WAITING_COOLDOWN,
+            configVersion = raidEntry.updatedAt.toString(),
+            nextCheckAt = null,
+            createdAt = now.minusSeconds(60),
+            updatedAt = now.minusSeconds(60),
+        )
+        val waitingBattle = battleSession(AutomationWorkStatus.WAITING_COOLDOWN, confirmedCount = 0).also {
+            it.nextCheckAt = now.plusSeconds(300)
+        }
+        Mockito.`when`(queries.lockOpen(7)).thenReturn(listOf(waitingRaid, waitingBattle))
+
+        service.triggerRaidConfigurationCheck(7)
+
+        assertEquals(now, waitingRaid.nextCheckAt)
+        assertEquals(now, waitingRaid.updatedAt)
+        assertEquals(now.plusSeconds(300), waitingBattle.nextCheckAt)
+        Mockito.verify(commands).save(waitingRaid)
+        Mockito.verify(commands, Mockito.never()).save(waitingBattle)
     }
 
     @Test

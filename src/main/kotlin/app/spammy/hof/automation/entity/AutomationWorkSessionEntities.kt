@@ -46,14 +46,14 @@ class AutomationWorkSessionEntity(
     val workType: AutomationWorkType,
 
     @Column(name = "target_key", nullable = false)
-    val targetKey: String,
+    var targetKey: String,
 
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false)
     var status: AutomationWorkStatus,
 
     @Column(name = "config_version", nullable = false)
-    val configVersion: String,
+    var configVersion: String,
 
     @Column(name = "target_count")
     var targetCount: Int? = null,

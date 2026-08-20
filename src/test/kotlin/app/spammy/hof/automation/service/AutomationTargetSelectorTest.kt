@@ -10,6 +10,7 @@ import app.spammy.hof.automation.raid.RaidCycleModule
 import app.spammy.hof.automation.raid.RaidDirective
 import app.spammy.hof.automation.raid.RaidIntent
 import app.spammy.hof.automation.raid.RaidIntentKind
+import app.spammy.hof.automation.raid.RaidHoldReason
 import app.spammy.hof.automation.raid.RaidWaitReason
 import app.spammy.hof.automation.repository.AutomationWorkSessionQueryRepository
 import app.spammy.hof.automation.repository.AutomationWorkSessionView
@@ -119,7 +120,13 @@ class AutomationTargetSelectorTest {
         )
         Mockito.`when`(work.findRunning(7)).thenReturn(runningRaid)
         Mockito.`when`(raidModule.decideNext(7)).thenReturn(
-            RaidDirective.WaitUntil(retryAt, RaidWaitReason.BATTLE_COOLDOWN, "레이드 전투 쿨다운"),
+            RaidDirective.WaitUntil(
+                at = retryAt,
+                reason = RaidWaitReason.BATTLE_COOLDOWN,
+                message = "레이드 전투 쿨다운",
+                entryId = raidEntry.id,
+                raidId = "RaidGoblin",
+            ),
         )
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(raidEntry, battleEntry))
         Mockito.`when`(work.findWaiting(7)).thenReturn(listOf(
@@ -138,6 +145,76 @@ class AutomationTargetSelectorTest {
         assertEquals(RaidWaitReason.BATTLE_COOLDOWN.name, selected.trace.single().reasonCode)
         Mockito.verify(lifecycle).waitForCooldown(7, 30, retryAt)
         Mockito.verify(loader, Mockito.never()).loadEntry(7, 13, "RaidGoblin")
+    }
+
+    @Test
+    fun `raid wait before its first action is persisted and releases the next automation entry`() {
+        val retryAt = now.plusSeconds(120)
+        val battleSnapshot = AutomationCoordinatorEntry(11, AutomationType.BATTLE_MAP)
+        val battleAction = BattleMapAutomationAction(
+            accountId = 7,
+            progressDate = java.time.LocalDate.parse("2026-07-23"),
+            categoryId = "battle_map",
+            mapCode = "map-1",
+            presetMode = PresetSelectionMode.PRIMARY,
+            presetId = 3,
+            battleCount = 1,
+            executionIdentity = "battle-after-new-raid-wait",
+        )
+        Mockito.`when`(work.findRunning(7)).thenReturn(null)
+        Mockito.`when`(work.findWaiting(7)).thenReturn(emptyList())
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(raidEntry, battleEntry))
+        Mockito.`when`(defaultRaidModule.decideNext(7)).thenReturn(
+            RaidDirective.WaitUntil(
+                at = retryAt,
+                reason = RaidWaitReason.REGISTRATION_COOLDOWN,
+                message = "레이드 등록 쿨타임",
+                entryId = raidEntry.id,
+                raidId = "RaidGoblin",
+            ),
+        )
+        Mockito.`when`(loader.loadEntry(7, 11, null, null)).thenReturn(battleSnapshot)
+        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(battleSnapshot))))
+            .thenReturn(AutomationCoordination.Runnable(11, battleAction, emptyList()))
+
+        val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
+
+        assertEquals(11, selected.entryId)
+        Mockito.verify(lifecycle).waitForRaid(7, raidEntry.id, "RaidGoblin", retryAt)
+    }
+
+    @Test
+    fun `invalid raid preset is parked until configuration changes and releases other automation`() {
+        val battleSnapshot = AutomationCoordinatorEntry(11, AutomationType.BATTLE_MAP)
+        val battleAction = BattleMapAutomationAction(
+            accountId = 7,
+            progressDate = java.time.LocalDate.parse("2026-07-23"),
+            categoryId = "battle_map",
+            mapCode = "map-1",
+            presetMode = PresetSelectionMode.PRIMARY,
+            presetId = 3,
+            battleCount = 1,
+            executionIdentity = "battle-after-raid-preset-hold",
+        )
+        Mockito.`when`(work.findRunning(7)).thenReturn(null)
+        Mockito.`when`(work.findWaiting(7)).thenReturn(emptyList())
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(raidEntry, battleEntry))
+        Mockito.`when`(defaultRaidModule.decideNext(7)).thenReturn(
+            RaidDirective.Hold(
+                reason = RaidHoldReason.INVALID_PRESET,
+                message = "레이드 전투 프리셋 구성을 확인해 주세요.",
+                entryId = raidEntry.id,
+                raidId = "RaidGoblin",
+            ),
+        )
+        Mockito.`when`(loader.loadEntry(7, 11, null, null)).thenReturn(battleSnapshot)
+        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(battleSnapshot))))
+            .thenReturn(AutomationCoordination.Runnable(11, battleAction, emptyList()))
+
+        val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
+
+        assertEquals(11, selected.entryId)
+        Mockito.verify(lifecycle).waitForRaid(7, raidEntry.id, "RaidGoblin", null)
     }
 
     @Test

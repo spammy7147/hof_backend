@@ -42,6 +42,7 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Import
 import org.springframework.test.context.ActiveProfiles
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean
+import org.springframework.test.context.bean.override.mockito.MockitoBean
 import org.mockito.Mockito.clearInvocations
 import org.mockito.Mockito.inOrder
 
@@ -59,6 +60,9 @@ import org.mockito.Mockito.inOrder
     PartyPresetServiceTest.ClockConfig::class,
 )
 class PartyPresetServiceTest {
+    @MockitoBean
+    private lateinit var presetChangeNotifier: PartyPresetChangeNotifier
+
     @Autowired
     private lateinit var accountRepository: HofAccountRepository
 
@@ -220,6 +224,17 @@ class PartyPresetServiceTest {
             verify(folderQueries).findOwnedByAccountIdAndId(account.id, folder.id)
             verify(queryRepository).findAllByAccountIdAndFolderId(account.id, folder.id)
         }
+    }
+
+    @Test
+    fun presetContentUpdateNotifiesAutomationImmediately() {
+        val account = savedAccount("party-automation-notify")
+        val created = service.create(account.id, request("변경 전"))
+        clearInvocations(presetChangeNotifier)
+
+        service.update(account.id, created.id, UpdatePartyPresetRequest("변경 후", members()))
+
+        org.mockito.Mockito.verify(presetChangeNotifier).changed(account.id)
     }
 
     @Test

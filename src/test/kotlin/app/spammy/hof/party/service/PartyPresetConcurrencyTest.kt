@@ -35,6 +35,7 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Import
 import org.springframework.test.context.ActiveProfiles
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean
+import org.springframework.test.context.bean.override.mockito.MockitoBean
 import org.springframework.transaction.PlatformTransactionManager
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
@@ -56,6 +57,9 @@ import org.mockito.Mockito.doAnswer
     PartyPresetConcurrencyTest.ClockConfig::class,
 )
 class PartyPresetConcurrencyTest {
+    @MockitoBean
+    private lateinit var presetChangeNotifier: PartyPresetChangeNotifier
+
     @Autowired
     private lateinit var accountRepository: HofAccountRepository
 
