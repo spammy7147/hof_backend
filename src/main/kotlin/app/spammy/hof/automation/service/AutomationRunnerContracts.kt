@@ -1,5 +1,6 @@
 package app.spammy.hof.automation.service
 
+import app.spammy.hof.automation.raid.RaidCycleOutcome
 import app.spammy.hof.quest.model.QuestSnapshot
 import java.time.Instant
 
@@ -29,6 +30,10 @@ sealed interface TypedAutomationExecution {
         val categoryId: String,
         val mapCode: String,
         val retryAt: Instant,
+    ) : TypedAutomationExecution
+
+    data class RaidCycleFinished(
+        val outcome: RaidCycleOutcome,
     ) : TypedAutomationExecution
 }
 

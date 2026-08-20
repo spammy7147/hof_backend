@@ -74,13 +74,14 @@ class DefaultRaidCycleModule(
         }
         val persistedCycle = state.openCycle?.let { open ->
             if (activeConfigured != null && activeConfigured.first.raidId != open.raidId) {
-                store.finish(
-                    accountId = accountId,
-                    raidId = open.raidId,
-                    outcome = RaidCycleOutcomeKind.SUPERSEDED_BY_OBSERVED_RAID,
-                    now = timeProvider.now(),
+                return RaidDirective.Complete(
+                    store.finish(
+                        accountId = accountId,
+                        raidId = open.raidId,
+                        outcome = RaidCycleOutcomeKind.SUPERSEDED_BY_OBSERVED_RAID,
+                        now = timeProvider.now(),
+                    ),
                 )
-                null
             } else {
                 open
             }

@@ -109,7 +109,9 @@ class DefaultAutomationAmbiguousActionReconciler(
         return when (val result = raidCycleModule.recordObservedResult(accountId, attempt, observation)) {
             is RaidRecordResult.Recorded -> {
                 result.completion?.let { workLifecycle.completeRaidCycle(accountId, attempt.entryId) }
-                AmbiguousActionResolution.Applied(execution)
+                AmbiguousActionResolution.Applied(
+                    result.completion?.let(TypedAutomationExecution::RaidCycleFinished) ?: execution,
+                )
             }
             is RaidRecordResult.NotApplied -> AmbiguousActionResolution.Resubmit
             is RaidRecordResult.NeedsRecheck -> AmbiguousActionResolution.VerifyLater(result.at, result.message)

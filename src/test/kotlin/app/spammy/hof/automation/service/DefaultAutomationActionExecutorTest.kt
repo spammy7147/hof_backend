@@ -200,7 +200,7 @@ class DefaultAutomationActionExecutorTest {
             payload = StoredTypedActionPayload.RaidTown(RaidAction.REWARD, null, "RaidGoblin"),
         )
 
-        assertEquals(TypedAutomationExecution.Completed, raidExecutor.execute(7L, action))
+        assertEquals(TypedAutomationExecution.RaidCycleFinished(completion), raidExecutor.execute(7L, action))
 
         Mockito.verify(workLifecycle).completeRaidCycle(7L, 13L)
     }

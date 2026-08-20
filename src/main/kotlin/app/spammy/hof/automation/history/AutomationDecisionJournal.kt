@@ -1,6 +1,8 @@
 package app.spammy.hof.automation.history
 
 import app.spammy.hof.automation.entity.AutomationType
+import app.spammy.hof.automation.raid.RaidCycleOutcome
+import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
 import app.spammy.hof.automation.service.*
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.party.entity.PartyPresetEntity
@@ -32,10 +34,31 @@ data class AutomationHistoryCycle(
 )
 data class AutomationHistoryPage(val cycles: List<AutomationHistoryCycle>, val nextCursor: Long?)
 
+fun RaidCycleOutcome.toAutomationActionTrace(): AutomationActionTrace = AutomationActionTrace(
+    kind = if (kind == RaidCycleOutcomeKind.COMPLETED) {
+        AutomationHistoryEventKind.CYCLE_COMPLETED
+    } else {
+        AutomationHistoryEventKind.CYCLE_ABORTED
+    },
+    reasonCode = kind.name,
+    message = when (kind) {
+        RaidCycleOutcomeKind.COMPLETED -> "레이드 사이클을 완료했습니다."
+        RaidCycleOutcomeKind.ABORTED_CLOSED -> "닫힌 레이드의 자동화 사이클을 종료했습니다."
+        RaidCycleOutcomeKind.ABORTED_REGISTRATION_LOST -> "등록 상태가 유실된 레이드 사이클을 종료했습니다."
+        RaidCycleOutcomeKind.HANDED_OFF_MANUAL -> "진행 중인 레이드를 수동 제어로 인계했습니다."
+        RaidCycleOutcomeKind.SUPERSEDED_BY_OBSERVED_RAID -> "원본 서버에서 관측된 다른 레이드로 사이클을 교체했습니다."
+    },
+    entryId = entryId,
+    type = AutomationType.RAID,
+    actionKind = "CYCLE",
+    targetKey = raidId,
+)
+
 interface AutomationDecisionJournal {
     fun appendDecision(accountId: Long, decision: AutomationCoordination): Long
     fun appendPreparedActionAttempt(accountId: Long, result: AutomationActionTrace): Long
     fun appendActionResult(cycleId: Long, result: AutomationActionTrace)
+    fun appendRaidCycleOutcome(accountId: Long, outcome: RaidCycleOutcome): Long
     fun page(accountId: Long, query: AutomationHistoryQuery): AutomationHistoryPage
 }
 
@@ -91,6 +114,23 @@ class JpaAutomationDecisionJournal(private val entityManager: EntityManager, pri
             "select coalesce(max(e.sequence), -1) + 1 from AutomationDecisionEventEntity e where e.cycle.id = :cycleId", java.lang.Integer::class.java,
         ).setParameter("cycleId", cycleId).singleResult.toInt()
         entityManager.persist(result.toEntity(cycle, next, cycle.accountId, timeProvider.now()))
+    }
+
+    @Transactional
+    override fun appendRaidCycleOutcome(accountId: Long, outcome: RaidCycleOutcome): Long {
+        val now = timeProvider.now()
+        val trace = outcome.toAutomationActionTrace()
+        val cycle = AutomationDecisionCycleEntity(
+            accountId = accountId,
+            result = AutomationDecisionResult.IDLE,
+            selectedEntryId = outcome.entryId,
+            startedAt = now,
+            finishedAt = now,
+        )
+        entityManager.persist(cycle)
+        entityManager.persist(trace.toEntity(cycle, 0, accountId, now))
+        entityManager.flush()
+        return cycle.id
     }
 
     @Transactional(readOnly = true)

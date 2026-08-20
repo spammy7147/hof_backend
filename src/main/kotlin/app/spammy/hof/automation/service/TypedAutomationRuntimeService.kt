@@ -272,7 +272,6 @@ class TypedAutomationRuntimeService(
         state.waitReason = null
         state.leaseToken = null
         state.leaseUntil = null
-        state.warningText = null
         state.lastError = null
         state.stopActionId = null
         state.updatedAt = now
@@ -285,8 +284,14 @@ class TypedAutomationRuntimeService(
     fun succeed(accountId: Long, token: String, actionId: Long): Boolean = finish(accountId, token, actionId, TypedAutomationActionStatus.SUCCEEDED, null)
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun succeedAndEnqueueWake(accountId: Long, token: String, actionId: Long, reason: String): Boolean {
-        val succeeded = finish(accountId, token, actionId, TypedAutomationActionStatus.SUCCEEDED, null)
+    fun succeedAndEnqueueWake(
+        accountId: Long,
+        token: String,
+        actionId: Long,
+        reason: String,
+        warnings: List<String>? = emptyList(),
+    ): Boolean {
+        val succeeded = finish(accountId, token, actionId, TypedAutomationActionStatus.SUCCEEDED, null, warnings)
         if (succeeded && queryRepository.findRuntimeState(accountId)?.lifecycleStatus == TypedAutomationLifecycle.RUNNING) {
             outbox.enqueue(accountId, reason)
         }
@@ -497,7 +502,14 @@ class TypedAutomationRuntimeService(
         return true
     }
 
-    private fun finish(accountId: Long, token: String, actionId: Long, status: TypedAutomationActionStatus, error: String?): Boolean {
+    private fun finish(
+        accountId: Long,
+        token: String,
+        actionId: Long,
+        status: TypedAutomationActionStatus,
+        error: String?,
+        warnings: List<String>? = emptyList(),
+    ): Boolean {
         val state = fencedState(accountId, token) ?: return false
         val action = queryRepository.lockTypedAction(actionId) ?: return false
         if (action.account.id != accountId || action.leaseToken != token || action.status != TypedAutomationActionStatus.SUBMITTING) return false
@@ -505,7 +517,10 @@ class TypedAutomationRuntimeService(
         action.status = status; action.lastError = error; action.finishedAt = now; action.updatedAt = now
         state.retryAttempt = 0; state.nextAttemptAt = null; state.waitReason = null
         state.leaseToken = null; state.leaseUntil = null; state.updatedAt = now
-        state.warningText = null; state.lastError = null
+        if (warnings != null) {
+            state.warningText = warnings.takeIf { it.isNotEmpty() }?.joinToString("\n") { sanitizeDiagnostic(it) }
+        }
+        state.lastError = null
         state.stopReason = null
         state.stopActionId = null
         completeRequestedLifecycle(state, now)

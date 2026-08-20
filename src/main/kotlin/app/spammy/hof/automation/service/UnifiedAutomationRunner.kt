@@ -88,6 +88,7 @@ class UnifiedAutomationRunner @Autowired constructor(
         if (claim !is TypedRuntimeClaim.Acquired) return
         val token = claim.token
         var decisionCycleId: Long? = null
+        var selectedWarnings: List<String>? = null
         val stored = claim.preparedAction?.let {
             runCatching { typedCodec.verifyPersisted(it, accountId) }.getOrElse { error ->
                 log.warn("Stored typed action integrity failure accountId={} actionId={} errorType={}", accountId, it.id, error.javaClass.name)
@@ -144,6 +145,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             when (decision) {
                 is AutomationCoordination.Runnable -> {
                     try {
+                        selectedWarnings = decision.warnings
                         typedRuntime.recordWarnings(accountId, token, decision.warnings)
                         workTracker.ensureForAction(accountId, decision.entryId, decision.action)
                         toStored(decision.entryId, decision.action)
@@ -249,12 +251,16 @@ class UnifiedAutomationRunner @Autowired constructor(
                         recoveredWakeReason(resolution.execution),
                     )
                     decisionCycleId?.let { cycleId ->
-                        decisionJournal?.appendActionResult(cycleId, actionTrace(
-                            stored,
-                            AutomationHistoryEventKind.ACTION_SUCCEEDED,
-                            "AMBIGUOUS_RESULT_APPLIED",
-                            "상태 재확인 결과 이전 요청이 이미 적용된 것으로 확인했습니다.",
-                        ))
+                        val trace = when (val execution = resolution.execution) {
+                            is TypedAutomationExecution.RaidCycleFinished -> execution.outcome.toAutomationActionTrace()
+                            else -> actionTrace(
+                                stored,
+                                AutomationHistoryEventKind.ACTION_SUCCEEDED,
+                                "AMBIGUOUS_RESULT_APPLIED",
+                                "상태 재확인 결과 이전 요청이 이미 적용된 것으로 확인했습니다.",
+                            )
+                        }
+                        decisionJournal?.appendActionResult(cycleId, trace)
                     }
                 }
                 AmbiguousActionResolution.Resubmit -> {
@@ -320,11 +326,20 @@ class UnifiedAutomationRunner @Autowired constructor(
                     )
                     "TYPED_SHARED_COOLDOWN_SKIPPED"
                 }
+                is TypedAutomationExecution.RaidCycleFinished -> "TYPED_RAID_CYCLE_FINISHED"
             }
-            typedRuntime.succeedAndEnqueueWake(accountId, token, row.id, wakeReason)
+            typedRuntime.succeedAndEnqueueWake(accountId, token, row.id, wakeReason, selectedWarnings)
             decisionCycleId?.let { cycleId ->
-                val kind = if (stored.payload is StoredTypedActionPayload.RaidCycleAbort) AutomationHistoryEventKind.CYCLE_ABORTED else AutomationHistoryEventKind.ACTION_SUCCEEDED
-                decisionJournal?.appendActionResult(cycleId, actionTrace(stored, kind, wakeReason, "자동화 행동을 완료했습니다."))
+                val trace = when (execution) {
+                    is TypedAutomationExecution.RaidCycleFinished -> execution.outcome.toAutomationActionTrace()
+                    else -> actionTrace(
+                        stored,
+                        AutomationHistoryEventKind.ACTION_SUCCEEDED,
+                        wakeReason,
+                        "자동화 행동을 완료했습니다.",
+                    )
+                }
+                decisionJournal?.appendActionResult(cycleId, trace)
             }
         } catch (error: Throwable) {
             error.findHofAutomationDeferral()?.let { deferred ->
@@ -452,6 +467,7 @@ class UnifiedAutomationRunner @Autowired constructor(
     private fun applyRecoveredExecution(accountId: Long, execution: TypedAutomationExecution) {
         when (execution) {
             TypedAutomationExecution.Completed -> Unit
+            is TypedAutomationExecution.RaidCycleFinished -> Unit
             is TypedAutomationExecution.BattleCompleted -> sharedBattleCooldowns.applyAfterSuccessfulBattle(
                 accountId,
                 execution.categoryId,
@@ -467,10 +483,10 @@ class UnifiedAutomationRunner @Autowired constructor(
     }
 
     private fun recoveredWakeReason(execution: TypedAutomationExecution): String =
-        if (execution is TypedAutomationExecution.SharedCooldown) {
-            "TYPED_SHARED_COOLDOWN_SKIPPED"
-        } else {
-            "TYPED_ACTION_COMPLETED"
+        when (execution) {
+            is TypedAutomationExecution.SharedCooldown -> "TYPED_SHARED_COOLDOWN_SKIPPED"
+            is TypedAutomationExecution.RaidCycleFinished -> "TYPED_RAID_CYCLE_FINISHED"
+            else -> "TYPED_ACTION_COMPLETED"
         }
 
     private fun toStored(entryId: Long, action: PreparedAutomationAction): StoredTypedAutomationAction {

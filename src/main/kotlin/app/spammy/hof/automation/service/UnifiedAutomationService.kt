@@ -14,10 +14,12 @@ import app.spammy.hof.automation.entity.QuestAutomationSelectionEntity
 import app.spammy.hof.automation.entity.RaidAutomationTargetEntity
 import app.spammy.hof.automation.entity.TypedAutomationLifecycle
 import app.spammy.hof.automation.entity.UnionAutomationMapEntity
+import app.spammy.hof.automation.history.AutomationDecisionJournal
 import app.spammy.hof.automation.outbox.AutomationOutboxService
 import app.spammy.hof.automation.raid.RaidAttempt
 import app.spammy.hof.automation.raid.RaidCycleModule
 import app.spammy.hof.automation.raid.RaidIntentKind
+import app.spammy.hof.automation.raid.RaidRecordResult
 import app.spammy.hof.automation.raid.RaidResultObservation
 import app.spammy.hof.automation.repository.AdventureAutomationMapCommandRepository
 import app.spammy.hof.automation.repository.AutomationEntryCommandRepository
@@ -66,6 +68,7 @@ class UnifiedAutomationService(
     private val hofStatusSnapshots: HofStatusSnapshotService,
     private val workLifecycle: AutomationWorkLifecycle,
     private val raidCycleModule: RaidCycleModule,
+    private val decisionJournal: AutomationDecisionJournal,
 ) {
     @Transactional(readOnly = true)
     fun getTyped(accountId: Long): TypedAutomationAggregateResponse {
@@ -106,11 +109,7 @@ class UnifiedAutomationService(
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "자동화 항목을 찾지 못했습니다.")
         val openRaidCycle = typedAutomationQueryRepository.findOpenRaidCycle(accountId)
         if (target.type == AutomationType.RAID && openRaidCycle?.entry?.id == target.id) {
-            raidCycleModule.recordObservedResult(
-                accountId,
-                RaidAttempt(target.id, RaidIntentKind.REFRESH, openRaidCycle.raidId, null),
-                RaidResultObservation.ManualHandoff,
-            )
+            recordManualRaidHandoff(accountId, target.id, openRaidCycle.raidId)
         }
         workLifecycle.stopForConfigurationChange(accountId, target.id, emptySet(), wholeEntry = true)
         typedEntryRepository.delete(target)
@@ -542,11 +541,7 @@ class UnifiedAutomationService(
         rejectDuplicates(normalized.map { it.raidId }, "같은 레이드를 두 번 설정할 수 없습니다.")
         val openCycle = typedAutomationQueryRepository.findOpenRaidCycle(accountId)
         if (openCycle?.entry?.id == entry.id && normalized.none { it.raidId == openCycle.raidId }) {
-            raidCycleModule.recordObservedResult(
-                accountId,
-                RaidAttempt(entry.id, RaidIntentKind.REFRESH, openCycle.raidId, null),
-                RaidResultObservation.ManualHandoff,
-            )
+            recordManualRaidHandoff(accountId, entry.id, openCycle.raidId)
         }
         val references = normalized.map { target ->
             TypedMapReference(RAID_CATEGORY, target.raidId, target.presetMode, target.partyPresetId)
@@ -1098,6 +1093,15 @@ class UnifiedAutomationService(
             runtime.updatedAt = timeProvider.now()
         }
         automationOutboxService.enqueue(accountId, "SETTINGS_UPDATED")
+    }
+
+    private fun recordManualRaidHandoff(accountId: Long, entryId: Long, raidId: String) {
+        val recorded = raidCycleModule.recordObservedResult(
+            accountId,
+            RaidAttempt(entryId, RaidIntentKind.REFRESH, raidId, null),
+            RaidResultObservation.ManualHandoff,
+        ) as? RaidRecordResult.Recorded
+        recorded?.completion?.let { decisionJournal.appendRaidCycleOutcome(accountId, it) }
     }
 
     private fun <T> rejectDuplicates(values: List<T>, message: String) {

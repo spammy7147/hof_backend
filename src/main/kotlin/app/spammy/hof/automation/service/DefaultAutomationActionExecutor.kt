@@ -3,6 +3,7 @@ package app.spammy.hof.automation.service
 import app.spammy.hof.automation.raid.HofRaidObservationAdapter
 import app.spammy.hof.automation.raid.RaidAttempt
 import app.spammy.hof.automation.raid.RaidCycleModule
+import app.spammy.hof.automation.raid.RaidCycleOutcome
 import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
 import app.spammy.hof.automation.raid.RaidIntentKind
 import app.spammy.hof.automation.raid.RaidRecordResult
@@ -149,7 +150,7 @@ class DefaultAutomationActionExecutor(
                     val response = raidPubService.action(accountId, RaidPubActionRequest(payload.action, payload.raidId))
                     val targetRaidId = payload.targetRaidId ?: payload.raidId
                         ?: error("Stored raid action has no target raid id.")
-                    recordRaidResult(
+                    val completion = recordRaidResult(
                         accountId,
                         RaidAttempt(
                             entryId = action.entryId,
@@ -161,10 +162,11 @@ class DefaultAutomationActionExecutor(
                             raidObservationAdapter.from(response),
                         ),
                     )
-                    TypedAutomationExecution.Completed
+                    completion?.let(TypedAutomationExecution::RaidCycleFinished)
+                        ?: TypedAutomationExecution.Completed
                 }
                 is StoredTypedActionPayload.RaidCycleAbort -> {
-                    recordRaidResult(
+                    val completion = recordRaidResult(
                         accountId,
                         RaidAttempt(action.entryId, RaidIntentKind.REFRESH, payload.raidId, null),
                         RaidResultObservation.LegacyCycleAbort(
@@ -174,7 +176,8 @@ class DefaultAutomationActionExecutor(
                             },
                         ),
                     )
-                    TypedAutomationExecution.Completed
+                    completion?.let(TypedAutomationExecution::RaidCycleFinished)
+                        ?: TypedAutomationExecution.Completed
                 }
             }
         } catch (cooldown: SharedBattleCooldownRejectedException) {
@@ -252,15 +255,14 @@ class DefaultAutomationActionExecutor(
         accountId: Long,
         attempt: RaidAttempt,
         observation: RaidResultObservation,
-    ) {
+    ): RaidCycleOutcome? =
         when (val result = raidCycleModule.recordObservedResult(accountId, attempt, observation)) {
-            is RaidRecordResult.Recorded -> result.completion?.let {
+            is RaidRecordResult.Recorded -> result.completion?.also {
                 workLifecycle.completeRaidCycle(accountId, attempt.entryId)
             }
             is RaidRecordResult.NotApplied -> throw AmbiguousAutomationSubmissionException(result.message)
             is RaidRecordResult.NeedsRecheck -> throw AmbiguousAutomationSubmissionException(result.message)
         }
-    }
 
     private fun StoredTypedActionPayload.battleRequestOrNull(): RunBattleRequest? = when (this) {
         is StoredTypedActionPayload.QuestBattle -> battleRequest

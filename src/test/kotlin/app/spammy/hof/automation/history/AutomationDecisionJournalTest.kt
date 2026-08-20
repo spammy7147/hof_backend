@@ -4,6 +4,8 @@ import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.repository.HofAccountRepository
 import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.entity.AutomationEntryEntity
+import app.spammy.hof.automation.raid.RaidCycleOutcome
+import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
 import app.spammy.hof.automation.service.*
 import app.spammy.hof.common.time.TimeProvider
 import jakarta.persistence.EntityManager
@@ -85,6 +87,26 @@ class AutomationDecisionJournalTest {
             assertEquals("고블린 전투 마차", targetName)
             assertEquals(now.plusSeconds(10), nextRunAt)
         }
+    }
+
+    @Test
+    fun `stores a manual raid handoff as a stable cycle outcome`() {
+        val account = account("history-raid-handoff")
+        val raid = entry(account, AutomationType.RAID, 0)
+        entityManager.flush()
+        val journal = JpaAutomationDecisionJournal(entityManager, TimeProvider { now })
+
+        journal.appendRaidCycleOutcome(
+            account.id,
+            RaidCycleOutcome(raid.id, "Raid001", RaidCycleOutcomeKind.HANDED_OFF_MANUAL),
+        )
+        entityManager.flush()
+        entityManager.clear()
+
+        val event = journal.page(account.id, AutomationHistoryQuery()).cycles.single().events.single()
+        assertEquals(AutomationHistoryEventKind.CYCLE_ABORTED, event.kind)
+        assertEquals(RaidCycleOutcomeKind.HANDED_OFF_MANUAL.name, event.reasonCode)
+        assertEquals("Raid001", event.targetKey)
     }
 
     private fun account(login: String) = accounts.save(HofAccountEntity(

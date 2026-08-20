@@ -30,8 +30,12 @@ import app.spammy.hof.automation.entity.HomeQuestAutomationSelectionEntity
 import app.spammy.hof.automation.entity.UnionAutomationMapEntity
 import app.spammy.hof.automation.raid.RaidAttempt
 import app.spammy.hof.automation.raid.RaidCycleModule
+import app.spammy.hof.automation.raid.RaidCycleOutcome
+import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
 import app.spammy.hof.automation.raid.RaidIntentKind
+import app.spammy.hof.automation.raid.RaidRecordResult
 import app.spammy.hof.automation.raid.RaidResultObservation
+import app.spammy.hof.automation.history.AutomationDecisionJournal
 import app.spammy.hof.automation.entity.RaidAutomationTargetEntity
 import app.spammy.hof.automation.entity.RaidAutomationCycleEntity
 import app.spammy.hof.automation.entity.RaidAutomationCycleStatus
@@ -100,6 +104,7 @@ class UnifiedAutomationServiceTest {
     private val storedActionCodec = Mockito.mock(StoredTypedAutomationActionCodec::class.java)
     private val statusSnapshots = Mockito.mock(HofStatusSnapshotService::class.java)
     private val raidCycleModule = Mockito.mock(RaidCycleModule::class.java)
+    private val decisionJournal = Mockito.mock(AutomationDecisionJournal::class.java)
     private var currentTime = NOW
     private val service = UnifiedAutomationService(
         accountQueryRepository = accountQueryRepository,
@@ -123,6 +128,7 @@ class UnifiedAutomationServiceTest {
         hofStatusSnapshots = statusSnapshots,
         workLifecycle = workLifecycle,
         raidCycleModule = raidCycleModule,
+        decisionJournal = decisionJournal,
     )
 
     init {
@@ -631,6 +637,12 @@ class UnifiedAutomationServiceTest {
         )
         Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(raidEntry))
         Mockito.`when`(typedQuery.findOpenRaidCycle(ACCOUNT_ID)).thenReturn(active)
+        val outcome = RaidCycleOutcome(raidEntry.id, active.raidId, RaidCycleOutcomeKind.HANDED_OFF_MANUAL)
+        Mockito.`when`(raidCycleModule.recordObservedResult(
+            ACCOUNT_ID,
+            RaidAttempt(96L, RaidIntentKind.REFRESH, "raid-1", null),
+            RaidResultObservation.ManualHandoff,
+        )).thenReturn(RaidRecordResult.Recorded(outcome))
 
         service.updateRaid(
             ACCOUNT_ID,
@@ -642,6 +654,7 @@ class UnifiedAutomationServiceTest {
             RaidAttempt(96L, RaidIntentKind.REFRESH, "raid-1", null),
             RaidResultObservation.ManualHandoff,
         )
+        Mockito.verify(decisionJournal).appendRaidCycleOutcome(ACCOUNT_ID, outcome)
     }
 
     @Test

@@ -652,7 +652,7 @@ class RaidCycleModuleTest {
     }
 
     @Test
-    fun `다른 설정 대상이 실제 진행 중이면 이전 사이클을 교체하고 그 상태로 편입한다`() {
+    fun `다른 설정 대상이 실제 진행 중이면 이전 사이클 교체를 먼저 보고한 뒤 새 상태로 편입한다`() {
         val party = ResolvedAutomationParty(listOf("character-1"), listOf(BattlePatternLoadRequest("character-1", 1)))
         val first = target("raid-a", 0, party)
         val observedActive = target("raid-b", 1, party)
@@ -688,8 +688,10 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
+        val superseded = assertIs<RaidDirective.Complete>(module.decideNext(1))
         val battle = assertIs<RaidIntent.Battle>(assertIs<RaidDirective.Execute>(module.decideNext(1)).intent)
 
+        assertEquals(RaidCycleOutcomeKind.SUPERSEDED_BY_OBSERVED_RAID, superseded.outcome.kind)
         assertEquals("raid-b", battle.raidId)
         assertEquals(listOf(RaidCycleOutcomeKind.SUPERSEDED_BY_OBSERVED_RAID), store.finishedOutcomes)
         assertEquals("raid-b", store.state.openCycle?.raidId)

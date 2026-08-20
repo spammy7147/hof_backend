@@ -7,11 +7,17 @@ import app.spammy.hof.automation.entity.AutomationWaitReason
 import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.automation.entity.TypedAutomationActionRunEntity
 import app.spammy.hof.automation.entity.TypedAutomationActionStatus
+import app.spammy.hof.automation.history.AutomationActionTrace
+import app.spammy.hof.automation.history.AutomationDecisionJournal
+import app.spammy.hof.automation.history.AutomationHistoryEventKind
 import app.spammy.hof.automation.port.AutomationWakeupPort
+import app.spammy.hof.automation.raid.RaidCycleOutcome
+import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
 import app.spammy.hof.battle.dto.BattlePatternLoadRequest
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.client.HofAutomationDeferredException
+import app.spammy.hof.town.raid.model.RaidAction
 import java.time.Instant
 import java.time.LocalDate
 import java.io.IOException
@@ -198,7 +204,40 @@ class UnifiedAutomationRunnerTest {
         assertEquals(StoredActionDisplay(mapName = "거대 보스"), storedCaptor.value.payload.display)
         Mockito.verify(runtime).recordWarnings(7, "token", emptyList())
         Mockito.verify(sharedCooldowns).applyAfterSuccessfulBattle(7, "battle_map", "gb0")
-        Mockito.verify(runtime).succeedAndEnqueueWake(7, "token", 88L, "TYPED_ACTION_COMPLETED")
+        Mockito.verify(runtime).succeedAndEnqueueWake(7, "token", 88L, "TYPED_ACTION_COMPLETED", emptyList())
+    }
+
+    @Test
+    fun `raid completion is recorded with its stable outcome instead of generic action success`() {
+        val decisions = Mockito.mock(AutomationDecisionSource::class.java)
+        val workTracker = Mockito.mock(AutomationWorkTracker::class.java)
+        val journal = Mockito.mock(AutomationDecisionJournal::class.java)
+        val action = RaidTownAutomationAction(7, RaidAction.REWARD, null, "RaidGoblin")
+        val outcome = RaidCycleOutcome(13, "RaidGoblin", RaidCycleOutcomeKind.COMPLETED)
+        val decision = AutomationCoordination.Runnable(13, action, emptyList())
+        val row = Mockito.mock(TypedAutomationActionRunEntity::class.java)
+        Mockito.`when`(row.id).thenReturn(88L)
+        Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
+        Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token"))
+        Mockito.`when`(decisions.select(7)).thenReturn(decision)
+        Mockito.`when`(runtime.prepare(Mockito.eq(7L), eqString("token"), anyStoredAction())).thenReturn(row)
+        Mockito.`when`(runtime.markSubmitting(7, "token", 88L)).thenReturn(true)
+        Mockito.`when`(executor.execute(Mockito.eq(7L), anyStoredAction()))
+            .thenReturn(TypedAutomationExecution.RaidCycleFinished(outcome))
+        Mockito.`when`(journal.appendDecision(7L, decision)).thenReturn(41L)
+        val scopedRunner = UnifiedAutomationRunner(
+            preflight, runtime, decisions, workTracker, executor, codec, wakeup, sharedCooldowns,
+            ambiguousReconciler, journal,
+        )
+
+        scopedRunner.runOne(7)
+
+        val traceCaptor = org.mockito.ArgumentCaptor.forClass(AutomationActionTrace::class.java)
+        Mockito.verify(journal, Mockito.times(2)).appendActionResult(Mockito.eq(41L), captureTrace(traceCaptor))
+        val result = traceCaptor.allValues.last()
+        assertEquals(AutomationHistoryEventKind.CYCLE_COMPLETED, result.kind)
+        assertEquals(RaidCycleOutcomeKind.COMPLETED.name, result.reasonCode)
+        assertEquals("RaidGoblin", result.targetKey)
     }
 
     @Test
@@ -239,7 +278,7 @@ class UnifiedAutomationRunnerTest {
         runner.runOne(7)
 
         Mockito.verify(sharedCooldowns).learnAndApply(7, "raid", "castle", retryAt)
-        Mockito.verify(runtime).succeedAndEnqueueWake(7, "token", 88, "TYPED_SHARED_COOLDOWN_SKIPPED")
+        Mockito.verify(runtime).succeedAndEnqueueWake(7, "token", 88, "TYPED_SHARED_COOLDOWN_SKIPPED", null)
         assertTrue(Mockito.mockingDetails(runtime).invocations.none { it.method.name == "stop" })
         Mockito.verifyNoInteractions(wakeup)
     }
@@ -695,6 +734,13 @@ class UnifiedAutomationRunnerTest {
 
     private fun capture(captor: org.mockito.ArgumentCaptor<StoredTypedAutomationAction>): StoredTypedAutomationAction =
         captor.capture() ?: StoredTypedAutomationAction(1, "capture", StoredTypedActionPayload.QuestClaim("q", "a"))
+
+    private fun captureTrace(captor: org.mockito.ArgumentCaptor<AutomationActionTrace>): AutomationActionTrace =
+        captor.capture() ?: AutomationActionTrace(
+            AutomationHistoryEventKind.ACTION_SUCCEEDED,
+            "capture",
+            "capture",
+        )
 
     private fun eqString(value: String): String = Mockito.eq(value) ?: value
 

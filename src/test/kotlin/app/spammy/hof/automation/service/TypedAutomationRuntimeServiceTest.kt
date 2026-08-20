@@ -250,6 +250,26 @@ class TypedAutomationRuntimeServiceTest {
     }
 
     @Test
+    fun `successful lower-priority action preserves a parked raid warning until fresh evaluation`() {
+        val state = state().apply {
+            leaseToken = "token"
+            leaseUntil = now.plusSeconds(300)
+            warningText = "레이드 전투 프리셋 구성을 확인해 주세요."
+        }
+        val entry = AutomationEntryEntity(9, account, AutomationType.BATTLE_MAP, 0, true, now, now)
+        val action = TypedAutomationActionRunEntity(
+            22, account, entry, "lower-action", "BATTLE_MAP", "{}", "d".repeat(64),
+            TypedAutomationActionStatus.SUBMITTING, leaseToken = "token", createdAt = now, updatedAt = now,
+        )
+        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
+        Mockito.`when`(query.lockTypedAction(action.id)).thenReturn(action)
+
+        assertTrue(service.succeedAndEnqueueWake(7, "token", action.id, "TYPED_ACTION_COMPLETED", warnings = null))
+
+        assertEquals("레이드 전투 프리셋 구성을 확인해 주세요.", state.warningText)
+    }
+
+    @Test
     fun `captcha keeps submitted action for reconciliation while retrying`() {
         val state = state().apply { leaseToken = "token"; leaseUntil = now.plusSeconds(300) }
         val entry = AutomationEntryEntity(9, account, AutomationType.BATTLE_MAP, 0, true, now, now)
