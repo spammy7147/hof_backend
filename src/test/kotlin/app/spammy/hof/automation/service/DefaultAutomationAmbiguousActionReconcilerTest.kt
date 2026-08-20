@@ -3,6 +3,13 @@ package app.spammy.hof.automation.service
 import app.spammy.hof.account.service.HofAccountService
 import app.spammy.hof.account.service.HofSessionRecoveryService
 import app.spammy.hof.automation.entity.PresetSelectionMode
+import app.spammy.hof.automation.raid.HofRaidObservationAdapter
+import app.spammy.hof.automation.raid.RaidAttempt
+import app.spammy.hof.automation.raid.RaidCycleModule
+import app.spammy.hof.automation.raid.RaidIntentKind
+import app.spammy.hof.automation.raid.RaidObservation
+import app.spammy.hof.automation.raid.RaidRecordResult
+import app.spammy.hof.automation.raid.RaidResultObservation
 import app.spammy.hof.battle.dto.BattlePatternLoadRequest
 import app.spammy.hof.battle.dto.RunBattleRequest
 import app.spammy.hof.battle.service.BattleMapService
@@ -17,11 +24,7 @@ import app.spammy.hof.quest.model.QuestProgress
 import app.spammy.hof.quest.model.QuestSnapshot
 import app.spammy.hof.quest.model.QuestState
 import app.spammy.hof.quest.service.QuestGatewayService
-import app.spammy.hof.town.raid.dto.RaidPubRaidResponse
-import app.spammy.hof.town.raid.dto.RaidPubResponse
 import app.spammy.hof.town.raid.model.RaidAction
-import app.spammy.hof.town.raid.model.RaidStatus
-import app.spammy.hof.town.raid.service.RaidPubService
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertIs
@@ -33,6 +36,8 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
     private val battleMapService = Mockito.mock(BattleMapService::class.java)
     private val battleHandler = Mockito.mock(BattleMapAutomationHandler::class.java)
     private val workLifecycle = Mockito.mock(AutomationWorkLifecycle::class.java)
+    private val defaultRaidModule = Mockito.mock(RaidCycleModule::class.java)
+    private val defaultRaidAdapter = Mockito.mock(HofRaidObservationAdapter::class.java)
     private val reconciler = DefaultAutomationAmbiguousActionReconciler(
         questGateway,
         battleMapService,
@@ -40,6 +45,8 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
         HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
         TimeProvider { now },
         workLifecycle,
+        defaultRaidModule,
+        defaultRaidAdapter,
     )
 
     @Test
@@ -59,9 +66,9 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
     }
 
     @Test
-    fun `fixed register button does not prove ambiguous raid reset succeeded`() {
-        val raidPub = Mockito.mock(RaidPubService::class.java)
-        val progress = Mockito.mock(AutomationContentProgressService::class.java)
+    fun `ambiguous raid action reuses the module result rule and never guesses a transition`() {
+        val raidModule = Mockito.mock(RaidCycleModule::class.java)
+        val adapter = Mockito.mock(HofRaidObservationAdapter::class.java)
         val localWorkLifecycle = Mockito.mock(AutomationWorkLifecycle::class.java)
         val raidReconciler = DefaultAutomationAmbiguousActionReconciler(
             questGateway,
@@ -70,31 +77,35 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
             HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
             TimeProvider { now },
             localWorkLifecycle,
-            raidPubService = raidPub,
-            contentProgress = progress,
+            raidModule,
+            adapter,
         )
-        val resettable = RaidPubRaidResponse(
-            "RaidGoblin", "고블린 전투 마차", true, null, null, null,
-            RaidStatus.COMPLETED, "보상 확인 종료(리셋 가능)", null,
-            emptyList(), false, setOf(RaidAction.REGISTER, RaidAction.RESET), null,
-        )
-        Mockito.`when`(raidPub.load(7L))
-            .thenReturn(RaidPubResponse(listOf(resettable), false, false, null, null, emptySet(), null))
+        val observation = RaidObservation(emptyList(), false, false)
+        Mockito.`when`(adapter.read(7L)).thenReturn(observation)
+        Mockito.`when`(raidModule.recordObservedResult(
+            7L,
+            RaidAttempt(13L, RaidIntentKind.RESET, "RaidGoblin"),
+            RaidResultObservation.Page(observation),
+        )).thenReturn(RaidRecordResult.NeedsRecheck(now.plusSeconds(30), "아직 확정할 수 없습니다."))
         val action = StoredTypedAutomationAction(
             13L,
             "raid-reset-ambiguous",
             StoredTypedActionPayload.RaidTown(RaidAction.RESET, "RaidGoblin"),
         )
 
-        assertIs<AmbiguousActionResolution.Resubmit>(raidReconciler.reconcile(7L, action))
-        Mockito.verifyNoInteractions(progress)
+        assertIs<AmbiguousActionResolution.VerifyLater>(raidReconciler.reconcile(7L, action))
+        Mockito.verify(raidModule).recordObservedResult(
+            7L,
+            RaidAttempt(13L, RaidIntentKind.RESET, "RaidGoblin"),
+            RaidResultObservation.Page(observation),
+        )
         Mockito.verifyNoInteractions(localWorkLifecycle)
     }
 
     @Test
-    fun `ambiguous raid status refresh is safely resubmitted`() {
-        val raidPub = Mockito.mock(RaidPubService::class.java)
-        val progress = Mockito.mock(AutomationContentProgressService::class.java)
+    fun `authoritative raid observation confirms an ambiguous action through the module`() {
+        val raidModule = Mockito.mock(RaidCycleModule::class.java)
+        val adapter = Mockito.mock(HofRaidObservationAdapter::class.java)
         val raidReconciler = DefaultAutomationAmbiguousActionReconciler(
             questGateway,
             battleMapService,
@@ -102,19 +113,23 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
             HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
             TimeProvider { now },
             Mockito.mock(AutomationWorkLifecycle::class.java),
-            raidPubService = raidPub,
-            contentProgress = progress,
+            raidModule,
+            adapter,
         )
-        Mockito.`when`(raidPub.load(7L))
-            .thenReturn(RaidPubResponse(emptyList(), false, false, null, null, setOf(RaidAction.REFRESH), null))
+        val observation = RaidObservation(emptyList(), false, false)
+        Mockito.`when`(adapter.read(7L)).thenReturn(observation)
+        Mockito.`when`(raidModule.recordObservedResult(
+            7L,
+            RaidAttempt(13L, RaidIntentKind.REFRESH, "RaidGoblin", null),
+            RaidResultObservation.Page(observation),
+        )).thenReturn(RaidRecordResult.Recorded())
         val action = StoredTypedAutomationAction(
             13L,
             "raid-refresh-ambiguous",
             StoredTypedActionPayload.RaidTown(RaidAction.REFRESH, null, "RaidGoblin"),
         )
 
-        assertIs<AmbiguousActionResolution.Resubmit>(raidReconciler.reconcile(7L, action))
-        Mockito.verifyNoInteractions(progress)
+        assertIs<AmbiguousActionResolution.Applied>(raidReconciler.reconcile(7L, action))
     }
 
     @Test

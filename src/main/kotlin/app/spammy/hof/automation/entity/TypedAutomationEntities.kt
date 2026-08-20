@@ -224,11 +224,16 @@ class AutomationRotationStateEntity(
 )
 
 enum class RaidAutomationCycleStatus {
+    PREPARING,
     REGISTERED_WAITING,
     IN_BATTLE,
     REWARD_PENDING,
+    POST_REWARD_CHECK,
     COMPLETED,
     ABORTED_CLOSED,
+    ABORTED_REGISTRATION_LOST,
+    HANDED_OFF_MANUAL,
+    SUPERSEDED_BY_OBSERVED_RAID,
 }
 
 @Entity

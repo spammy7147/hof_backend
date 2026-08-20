@@ -17,6 +17,9 @@ import app.spammy.hof.automation.entity.TypedAutomationActionStatus
 import app.spammy.hof.automation.entity.TypedAutomationLifecycle
 import app.spammy.hof.automation.entity.TypedAutomationRuntimeStateEntity
 import app.spammy.hof.automation.entity.UnionAutomationMapEntity
+import app.spammy.hof.automation.raid.JpaRaidCycleStore
+import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
+import app.spammy.hof.automation.raid.RaidCycleTarget
 import app.spammy.hof.automation.outbox.AutomationOutboxService
 import app.spammy.hof.automation.service.StoredTypedActionPayload
 import app.spammy.hof.automation.service.StoredTypedAutomationActionCodec
@@ -26,6 +29,7 @@ import app.spammy.hof.automation.service.TypedAutomationRuntimeService
 import app.spammy.hof.automation.service.TypedRuntimeClaim
 import app.spammy.hof.common.persistence.QueryDslConfig
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.party.repository.PartyPresetQueryRepository
 import jakarta.persistence.EntityManager
 import java.time.Instant
 import java.time.LocalDate
@@ -43,7 +47,12 @@ import org.springframework.test.context.ActiveProfiles
 
 @DataJpaTest
 @ActiveProfiles("test")
-@Import(QueryDslConfig::class, TypedAutomationQueryRepository::class)
+@Import(
+    QueryDslConfig::class,
+    TypedAutomationQueryRepository::class,
+    PartyPresetQueryRepository::class,
+    JpaRaidCycleStore::class,
+)
 class TypedAutomationPersistenceTest {
     @Autowired private lateinit var accountRepository: HofAccountRepository
     @Autowired private lateinit var entryRepository: AutomationEntryCommandRepository
@@ -58,6 +67,7 @@ class TypedAutomationPersistenceTest {
     @Autowired private lateinit var runtimeRepository: TypedAutomationRuntimeStateCommandRepository
     @Autowired private lateinit var actionRepository: TypedAutomationActionRunCommandRepository
     @Autowired private lateinit var entityManager: EntityManager
+    @Autowired private lateinit var raidCycleStore: JpaRaidCycleStore
 
     @Test
     fun storesOneEntryPerTypeAndReadsEntriesInPriorityOrder() {
@@ -193,6 +203,61 @@ class TypedAutomationPersistenceTest {
             RaidAutomationCycleStatus.REGISTERED_WAITING,
             queryRepository.findOpenRaidCycle(account.id)?.status,
         )
+    }
+
+    @Test
+    fun completesRaidCycleAndAdvancesRotationInOneStoreOperation() {
+        val now = Instant.parse("2026-08-20T00:00:00Z")
+        val account = newAccount("raid-cycle-complete", now)
+        val entry = entryRepository.save(newEntry(account, AutomationType.RAID, priority = 0, now))
+        val first = raidTargetRepository.save(
+            RaidAutomationTargetEntity(
+                entry = entry,
+                raidId = "raid-a",
+                displayName = "첫 레이드",
+                presetMode = PresetSelectionMode.PRIMARY,
+                executionOrder = 0,
+            ),
+        )
+        raidTargetRepository.save(
+            RaidAutomationTargetEntity(
+                entry = entry,
+                raidId = "raid-b",
+                displayName = "다음 레이드",
+                presetMode = PresetSelectionMode.PRIMARY,
+                executionOrder = 1,
+            ),
+        )
+        rotationStateRepository.save(
+            AutomationRotationStateEntity(entry = entry, currentTargetKey = first.raidId, updatedAt = now),
+        )
+
+        raidCycleStore.open(
+            accountId = account.id,
+            entryId = entry.id,
+            target = RaidCycleTarget(
+                first.raidId,
+                first.displayName,
+                first.presetMode,
+                null,
+                first.executionOrder,
+                null,
+            ),
+            now = now,
+        )
+        val outcome = raidCycleStore.finish(
+            accountId = account.id,
+            raidId = first.raidId,
+            outcome = RaidCycleOutcomeKind.COMPLETED,
+            now = now.plusSeconds(1),
+            advanceRotation = true,
+        )
+        entityManager.flush()
+        entityManager.clear()
+
+        assertEquals(RaidCycleOutcomeKind.COMPLETED, outcome.kind)
+        assertEquals(null, queryRepository.findOpenRaidCycle(account.id))
+        assertEquals("raid-b", queryRepository.findRotationState(entry.id)?.currentTargetKey)
     }
 
     @Test

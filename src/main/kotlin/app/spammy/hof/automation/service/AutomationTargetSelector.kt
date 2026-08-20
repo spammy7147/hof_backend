@@ -1,5 +1,9 @@
 package app.spammy.hof.automation.service
 
+import app.spammy.hof.automation.raid.RaidCycleModule
+import app.spammy.hof.automation.raid.RaidDirective
+import app.spammy.hof.automation.raid.RaidIntent
+import app.spammy.hof.automation.raid.RaidIntentKind
 import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.entity.AutomationWorkStatus
 import app.spammy.hof.automation.entity.AutomationWorkType
@@ -14,6 +18,8 @@ import app.spammy.hof.quest.model.QuestSection
 import app.spammy.hof.quest.model.QuestSnapshot
 import app.spammy.hof.quest.model.QuestState
 import java.time.Instant
+import java.time.ZoneId
+import java.util.UUID
 import org.springframework.stereotype.Service
 
 fun interface AutomationDecisionSource {
@@ -29,6 +35,7 @@ class AutomationTargetSelector(
     private val lifecycle: AutomationWorkLifecycle,
     private val lootSignals: AutomationLootSignalService,
     private val timeProvider: TimeProvider,
+    private val raidModule: RaidCycleModule,
 ) : AutomationDecisionSource {
     override fun select(accountId: Long): AutomationCoordination {
         work.findRunning(accountId)?.let { return selectSession(accountId, it) }
@@ -38,12 +45,14 @@ class AutomationTargetSelector(
     private fun selectSession(
         accountId: Long,
         session: AutomationWorkSessionView,
+        initialWarnings: List<String> = emptyList(),
+        initialTrace: List<AutomationEvaluationTrace> = emptyList(),
     ): AutomationCoordination {
+        if (session.workType == AutomationWorkType.RAID) {
+            return selectRaidSession(accountId, session, initialWarnings, initialTrace)
+        }
         val optimisticQuest = session.optimisticMapClearQuest()
         val entry = loader.loadEntry(accountId, session.entryId, session.targetKey, optimisticQuest)
-            .withRaidRegistrationCooldownChecked(
-                session.workType == AutomationWorkType.RAID && session.status == AutomationWorkStatus.RUNNING,
-            )
         return when (val result = coordinate(entry)) {
                 is AutomationCoordination.Runnable -> {
                     val battle = result.action as? QuestAction.Battle
@@ -60,12 +69,16 @@ class AutomationTargetSelector(
                             battle.missionRequired,
                         )
                     }
-                    result
+                    result.withPrefix(initialWarnings, initialTrace)
                 }
-                is AutomationCoordination.Fatal -> result
+                is AutomationCoordination.Fatal -> result.withPrefix(initialWarnings, initialTrace)
                 is AutomationCoordination.Unavailable -> {
                     lifecycle.waitForCooldown(accountId, session.id, result.nextRunAt)
-                    selectConfigured(accountId, result.warnings)
+                    selectConfigured(
+                        accountId,
+                        initialWarnings + result.warnings,
+                        initialTrace + result.trace.resequenced(initialTrace.size),
+                    )
                 }
                 is AutomationCoordination.Idle -> {
                     val selectedQuest = entry.quest?.quests
@@ -89,13 +102,22 @@ class AutomationTargetSelector(
                     } else {
                         lifecycle.complete(accountId, session.id)
                     }
-                    selectConfigured(accountId, result.warnings)
+                    selectConfigured(
+                        accountId,
+                        initialWarnings + result.warnings,
+                        initialTrace + result.trace.resequenced(initialTrace.size),
+                    )
                 }
             }
     }
 
-    private fun selectConfigured(accountId: Long, initialWarnings: List<String> = emptyList()): AutomationCoordination {
+    private fun selectConfigured(
+        accountId: Long,
+        initialWarnings: List<String> = emptyList(),
+        initialTrace: List<AutomationEvaluationTrace> = emptyList(),
+    ): AutomationCoordination {
         val warnings = initialWarnings.toMutableList()
+        val trace = initialTrace.toMutableList()
         var earliest: Instant? = null
         val now = timeProvider.now()
         val waitsByEntry = work.findWaiting(accountId).groupBy { it.entryId }
@@ -118,27 +140,206 @@ class AutomationTargetSelector(
                         it.nextCheckAt?.isAfter(now) == false
                 }?.let { due ->
                     lifecycle.resumeForCheck(accountId, due.id)
-                    return selectSession(accountId, due)
+                    return selectSession(accountId, due, warnings, trace)
+                }
+                if (entry.type == AutomationType.RAID) {
+                    when (val directive = raidModule.decideNext(accountId)) {
+                        is RaidDirective.Execute -> {
+                            trace += directive.toTrace(entry.id, trace.size)
+                            return AutomationCoordination.Runnable(
+                                entry.id,
+                                directive.intent.toPreparedAction(accountId),
+                                warnings.toList(),
+                                trace.toList(),
+                            )
+                        }
+                        is RaidDirective.WaitUntil -> {
+                            trace += directive.toTrace(entry.id, trace.size)
+                            if (earliest == null || directive.at < earliest) earliest = directive.at
+                        }
+                        is RaidDirective.Hold -> {
+                            warnings += directive.message
+                            trace += directive.toTrace(entry.id, trace.size)
+                            directive.recheckAt?.let { at ->
+                                if (earliest == null || at < earliest) earliest = at
+                            }
+                        }
+                        is RaidDirective.Complete -> trace += directive.toTrace(entry.id, trace.size)
+                    }
+                    return@forEach
                 }
                 val snapshot = loader.loadEntry(accountId, entry.id).excludingWaitingQuests(
                     waiting.map(AutomationWorkSessionView::targetKey).toSet(),
                 )
                 when (val result = coordinate(snapshot)) {
-                    is AutomationCoordination.Runnable -> return result.copy(warnings = warnings + result.warnings)
-                    is AutomationCoordination.Fatal -> return result.copy(warnings = warnings + result.warnings)
+                    is AutomationCoordination.Runnable -> return result.copy(
+                        warnings = warnings + result.warnings,
+                        trace = trace + result.trace.resequenced(trace.size),
+                    )
+                    is AutomationCoordination.Fatal -> return result.copy(
+                        warnings = warnings + result.warnings,
+                        trace = trace + result.trace.resequenced(trace.size),
+                    )
                     is AutomationCoordination.Unavailable -> {
                         warnings += result.warnings
+                        trace += result.trace.resequenced(trace.size)
                         if (earliest == null || result.nextRunAt < earliest) earliest = result.nextRunAt
                     }
-                    is AutomationCoordination.Idle -> warnings += result.warnings
+                    is AutomationCoordination.Idle -> {
+                        warnings += result.warnings
+                        trace += result.trace.resequenced(trace.size)
+                    }
                 }
             }
-        return earliest?.let { AutomationCoordination.Unavailable(it, warnings) }
-            ?: AutomationCoordination.Idle(warnings)
+        return earliest?.let { AutomationCoordination.Unavailable(it, warnings, trace) }
+            ?: AutomationCoordination.Idle(warnings, trace)
     }
 
     private fun coordinate(entry: AutomationCoordinatorEntry): AutomationCoordination =
         coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(entry)))
+
+    private fun selectRaidSession(
+        accountId: Long,
+        session: AutomationWorkSessionView,
+        initialWarnings: List<String>,
+        initialTrace: List<AutomationEvaluationTrace>,
+    ): AutomationCoordination = when (val directive = raidModule.decideNext(accountId)) {
+        is RaidDirective.Execute -> AutomationCoordination.Runnable(
+            session.entryId,
+            directive.intent.toPreparedAction(accountId),
+            initialWarnings,
+            initialTrace + directive.toTrace(session.entryId, initialTrace.size),
+        )
+        is RaidDirective.WaitUntil -> {
+            lifecycle.waitForCooldown(accountId, session.id, directive.at)
+            selectConfigured(
+                accountId,
+                initialWarnings,
+                initialTrace + directive.toTrace(session.entryId, initialTrace.size),
+            )
+        }
+        is RaidDirective.Hold -> {
+            directive.recheckAt?.let { lifecycle.waitForCooldown(accountId, session.id, it) }
+                ?: lifecycle.complete(accountId, session.id)
+            selectConfigured(
+                accountId,
+                initialWarnings + directive.message,
+                initialTrace + directive.toTrace(session.entryId, initialTrace.size),
+            )
+        }
+        is RaidDirective.Complete -> {
+            lifecycle.complete(accountId, session.id)
+            selectConfigured(
+                accountId,
+                initialWarnings,
+                initialTrace + directive.toTrace(session.entryId, initialTrace.size),
+            )
+        }
+    }
+
+    private fun RaidDirective.toTrace(entryId: Long, sequence: Int): AutomationEvaluationTrace = when (this) {
+        is RaidDirective.Execute -> AutomationEvaluationTrace(
+            sequence = sequence,
+            entryId = entryId,
+            type = AutomationType.RAID,
+            outcome = AutomationDecisionOutcome.SELECTED,
+            reasonCode = "RUNNABLE",
+            message = "레이드 ${intent.kind.name} 단계를 실행합니다.",
+            actionKind = intent.kind.name,
+            targetKey = intent.raidId,
+            targetName = intent.raidName,
+            presetId = (intent as? RaidIntent.Battle)?.presetId,
+        )
+        is RaidDirective.WaitUntil -> AutomationEvaluationTrace(
+            sequence,
+            entryId,
+            AutomationType.RAID,
+            AutomationDecisionOutcome.WAITING,
+            reason.name,
+            message,
+            at,
+            actionKind = "WAIT",
+        )
+        is RaidDirective.Hold -> AutomationEvaluationTrace(
+            sequence,
+            entryId,
+            AutomationType.RAID,
+            if (recheckAt == null) AutomationDecisionOutcome.CONFIGURATION_WARNING else AutomationDecisionOutcome.WAITING,
+            reason.name,
+            message,
+            recheckAt,
+            actionKind = "HOLD",
+            targetKey = raidId,
+        )
+        is RaidDirective.Complete -> AutomationEvaluationTrace(
+            sequence,
+            entryId,
+            AutomationType.RAID,
+            AutomationDecisionOutcome.SKIPPED,
+            outcome.kind.name,
+            "레이드 사이클을 ${outcome.kind.name} 상태로 마쳤습니다.",
+            targetKey = outcome.raidId,
+        )
+    }
+
+    private fun List<AutomationEvaluationTrace>.resequenced(offset: Int): List<AutomationEvaluationTrace> =
+        mapIndexed { index, item -> item.copy(sequence = offset + index) }
+
+    private fun AutomationCoordination.withPrefix(
+        warnings: List<String>,
+        trace: List<AutomationEvaluationTrace>,
+    ): AutomationCoordination = when (this) {
+        is AutomationCoordination.Runnable -> copy(
+            warnings = warnings + this.warnings,
+            trace = trace + this.trace.resequenced(trace.size),
+        )
+        is AutomationCoordination.Fatal -> copy(
+            warnings = warnings + this.warnings,
+            trace = trace + this.trace.resequenced(trace.size),
+        )
+        is AutomationCoordination.Unavailable -> copy(
+            warnings = warnings + this.warnings,
+            trace = trace + this.trace.resequenced(trace.size),
+        )
+        is AutomationCoordination.Idle -> copy(
+            warnings = warnings + this.warnings,
+            trace = trace + this.trace.resequenced(trace.size),
+        )
+    }
+
+    private fun RaidIntent.toPreparedAction(accountId: Long): PreparedAutomationAction = when (this) {
+        is RaidIntent.Town -> RaidTownAutomationAction(
+            accountId = accountId,
+            action = kind.toTownAction(),
+            raidId = requestRaidId,
+            targetRaidId = raidId,
+            raidName = raidName,
+            observedStatus = observedStatus,
+        )
+        is RaidIntent.Battle -> BattleMapAutomationAction(
+            accountId = accountId,
+            progressDate = timeProvider.now().atZone(SEOUL).toLocalDate(),
+            categoryId = categoryId,
+            mapCode = mapCode,
+            presetMode = presetMode,
+            presetId = presetId,
+            battleCount = 1,
+            executionIdentity = UUID.randomUUID().toString(),
+            source = BattleAutomationActionSource.RAID_AUTOMATION,
+            resolvedParty = party,
+            mapName = raidName,
+            sourceTargetKey = raidId,
+        )
+    }
+
+    private fun RaidIntentKind.toTownAction() = when (this) {
+        RaidIntentKind.RESET -> app.spammy.hof.town.raid.model.RaidAction.RESET
+        RaidIntentKind.REGISTER -> app.spammy.hof.town.raid.model.RaidAction.REGISTER
+        RaidIntentKind.START -> app.spammy.hof.town.raid.model.RaidAction.START
+        RaidIntentKind.REWARD -> app.spammy.hof.town.raid.model.RaidAction.REWARD
+        RaidIntentKind.REFRESH -> app.spammy.hof.town.raid.model.RaidAction.REFRESH
+        RaidIntentKind.BATTLE -> error("Battle intents use the common battle action.")
+    }
 
     private fun AutomationCoordinatorEntry.excludingWaitingQuests(
         targetKeys: Set<String>,
@@ -150,9 +351,6 @@ class AutomationTargetSelector(
             ),
         )
     }
-
-    private fun AutomationCoordinatorEntry.withRaidRegistrationCooldownChecked(checked: Boolean): AutomationCoordinatorEntry =
-        if (type == AutomationType.RAID && raid != null) copy(raid = raid.copy(registrationCooldownChecked = checked)) else this
 
     private fun AutomationWorkSessionView.optimisticMapClearQuest(): List<QuestSnapshot>? {
         val current = observedCurrent ?: return null
@@ -179,5 +377,9 @@ class AutomationTargetSelector(
                 actionNo = null,
             ),
         )
+    }
+
+    private companion object {
+        val SEOUL: ZoneId = ZoneId.of("Asia/Seoul")
     }
 }

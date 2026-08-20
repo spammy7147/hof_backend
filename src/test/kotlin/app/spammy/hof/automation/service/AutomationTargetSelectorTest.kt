@@ -6,6 +6,11 @@ import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.entity.AutomationWorkStatus
 import app.spammy.hof.automation.entity.AutomationWorkType
 import app.spammy.hof.automation.entity.PresetSelectionMode
+import app.spammy.hof.automation.raid.RaidCycleModule
+import app.spammy.hof.automation.raid.RaidDirective
+import app.spammy.hof.automation.raid.RaidIntent
+import app.spammy.hof.automation.raid.RaidIntentKind
+import app.spammy.hof.automation.raid.RaidWaitReason
 import app.spammy.hof.automation.repository.AutomationWorkSessionQueryRepository
 import app.spammy.hof.automation.repository.AutomationWorkSessionView
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
@@ -16,11 +21,9 @@ import app.spammy.hof.quest.model.QuestProgress
 import app.spammy.hof.quest.model.QuestSection
 import app.spammy.hof.quest.model.QuestSnapshot
 import app.spammy.hof.quest.model.QuestState
-import app.spammy.hof.town.raid.dto.RaidPubResponse
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import org.mockito.Mockito
@@ -37,8 +40,9 @@ class AutomationTargetSelectorTest {
     private val loader = Mockito.mock(TypedAutomationSnapshotLoader::class.java)
     private val coordinator = Mockito.mock(AutomationCoordinator::class.java)
     private val lifecycle = Mockito.mock(AutomationWorkLifecycle::class.java)
+    private val defaultRaidModule = Mockito.mock(RaidCycleModule::class.java)
     private val selector = AutomationTargetSelector(
-        typed, work, loader, coordinator, lifecycle, AutomationLootSignalService(), TimeProvider { now },
+        typed, work, loader, coordinator, lifecycle, AutomationLootSignalService(), TimeProvider { now }, defaultRaidModule,
     )
 
     @Test
@@ -90,8 +94,18 @@ class AutomationTargetSelectorTest {
     @Test
     fun `raid cooldown parks its cycle and releases the next automation entry`() {
         val runningRaid = session(30, raidEntry, AutomationWorkType.RAID, "RaidGoblin", AutomationWorkStatus.RUNNING)
-        val raidSnapshot = AutomationCoordinatorEntry(13, AutomationType.RAID)
         val retryAt = now.plusSeconds(120)
+        val raidModule = Mockito.mock(RaidCycleModule::class.java)
+        val moduleSelector = AutomationTargetSelector(
+            typed,
+            work,
+            loader,
+            coordinator,
+            lifecycle,
+            AutomationLootSignalService(),
+            TimeProvider { now },
+            raidModule,
+        )
         val battleSnapshot = AutomationCoordinatorEntry(11, AutomationType.BATTLE_MAP)
         val battleAction = BattleMapAutomationAction(
             accountId = 7,
@@ -104,9 +118,9 @@ class AutomationTargetSelectorTest {
             executionIdentity = "battle-after-raid-wait",
         )
         Mockito.`when`(work.findRunning(7)).thenReturn(runningRaid)
-        Mockito.`when`(loader.loadEntry(7, 13, "RaidGoblin")).thenReturn(raidSnapshot)
-        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(raidSnapshot))))
-            .thenReturn(AutomationCoordination.Unavailable(retryAt, emptyList()))
+        Mockito.`when`(raidModule.decideNext(7)).thenReturn(
+            RaidDirective.WaitUntil(retryAt, RaidWaitReason.BATTLE_COOLDOWN, "레이드 전투 쿨다운"),
+        )
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(raidEntry, battleEntry))
         Mockito.`when`(work.findWaiting(7)).thenReturn(listOf(
             session(30, raidEntry, AutomationWorkType.RAID, "RaidGoblin", AutomationWorkStatus.WAITING_COOLDOWN, nextCheckAt = retryAt),
@@ -115,62 +129,51 @@ class AutomationTargetSelectorTest {
         Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(battleSnapshot))))
             .thenReturn(AutomationCoordination.Runnable(11, battleAction, emptyList()))
 
-        val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
+        val selected = assertIs<AutomationCoordination.Runnable>(moduleSelector.select(7))
 
         assertEquals(11, selected.entryId)
+        assertEquals(1, selected.trace.size)
+        assertEquals(AutomationType.RAID, selected.trace.single().type)
+        assertEquals(AutomationDecisionOutcome.WAITING, selected.trace.single().outcome)
+        assertEquals(RaidWaitReason.BATTLE_COOLDOWN.name, selected.trace.single().reasonCode)
         Mockito.verify(lifecycle).waitForCooldown(7, 30, retryAt)
+        Mockito.verify(loader, Mockito.never()).loadEntry(7, 13, "RaidGoblin")
     }
 
     @Test
-    fun `running raid refresh session uses the refreshed cooldown snapshot`() {
-        val runningRaid = session(31, raidEntry, AutomationWorkType.RAID, "RaidGoblin", AutomationWorkStatus.RUNNING)
-        val raidSnapshot = AutomationCoordinatorEntry(
-            13,
-            AutomationType.RAID,
-            raid = RaidAutomationSnapshot(7, raidPub(), emptyList(), null, null, now),
-        )
-        val action = RaidTownAutomationAction(7, app.spammy.hof.town.raid.model.RaidAction.REFRESH, targetRaidId = "RaidGoblin")
-        val captured = mutableListOf<AutomationCoordinatorSnapshot>()
-        Mockito.`when`(work.findRunning(7)).thenReturn(runningRaid)
-        Mockito.`when`(loader.loadEntry(7, 13, "RaidGoblin")).thenReturn(raidSnapshot)
-        Mockito.`when`(coordinator.coordinate(anyCoordinatorSnapshot()))
-            .thenAnswer { invocation ->
-                captured += invocation.getArgument<AutomationCoordinatorSnapshot>(0)
-                AutomationCoordination.Runnable(13, action, emptyList())
-            }
-
-        assertIs<AutomationCoordination.Runnable>(selector.select(7))
-
-        assertTrue(requireNotNull(captured.single().entries.single().raid).registrationCooldownChecked)
-    }
-
-    @Test
-    fun `due raid cooldown refreshes status again before the next check`() {
+    fun `due raid cooldown wakes the module for a fresh decision`() {
         val dueRaid = session(
             32, raidEntry, AutomationWorkType.RAID, "RaidGoblin",
             AutomationWorkStatus.WAITING_COOLDOWN, nextCheckAt = now,
         )
-        val raidSnapshot = AutomationCoordinatorEntry(
-            13,
-            AutomationType.RAID,
-            raid = RaidAutomationSnapshot(7, raidPub(), emptyList(), null, null, now),
+        val raidModule = Mockito.mock(RaidCycleModule::class.java)
+        val moduleSelector = AutomationTargetSelector(
+            typed,
+            work,
+            loader,
+            coordinator,
+            lifecycle,
+            AutomationLootSignalService(),
+            TimeProvider { now },
+            raidModule,
         )
-        val action = RaidTownAutomationAction(7, app.spammy.hof.town.raid.model.RaidAction.REFRESH, targetRaidId = "RaidGoblin")
-        val captured = mutableListOf<AutomationCoordinatorSnapshot>()
         Mockito.`when`(work.findRunning(7)).thenReturn(null)
         Mockito.`when`(work.findWaiting(7)).thenReturn(listOf(dueRaid))
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(raidEntry))
-        Mockito.`when`(loader.loadEntry(7, 13, "RaidGoblin")).thenReturn(raidSnapshot)
-        Mockito.`when`(coordinator.coordinate(anyCoordinatorSnapshot()))
-            .thenAnswer { invocation ->
-                captured += invocation.getArgument<AutomationCoordinatorSnapshot>(0)
-                AutomationCoordination.Runnable(13, action, emptyList())
-            }
+        Mockito.`when`(raidModule.decideNext(7)).thenReturn(
+            RaidDirective.Execute(
+                RaidIntent.Town(13, "RaidGoblin", "고블린", RaidIntentKind.REFRESH, requestRaidId = null),
+            ),
+        )
 
-        assertIs<AutomationCoordination.Runnable>(selector.select(7))
+        val selected = assertIs<AutomationCoordination.Runnable>(moduleSelector.select(7))
 
-        assertFalse(requireNotNull(captured.single().entries.single().raid).registrationCooldownChecked)
+        assertEquals(13, selected.entryId)
+        assertEquals(RaidIntentKind.REFRESH.name, selected.trace.single().actionKind)
+        assertEquals("RaidGoblin", selected.trace.single().targetKey)
         Mockito.verify(lifecycle).resumeForCheck(7, 32)
+        Mockito.verify(raidModule).decideNext(7)
+        Mockito.verify(loader, Mockito.never()).loadEntry(7, 13, "RaidGoblin")
     }
 
     @Test
@@ -500,16 +503,4 @@ class AutomationTargetSelectorTest {
         maps = emptyList(),
     )
 
-    private fun raidPub() = RaidPubResponse(
-        raids = emptyList(),
-        applied = false,
-        applyWait = false,
-        applyWaitSeconds = null,
-        myStatus = null,
-        globalActions = setOf(app.spammy.hof.town.raid.model.RaidAction.REFRESH),
-        result = null,
-    )
-
-    private fun anyCoordinatorSnapshot(): AutomationCoordinatorSnapshot =
-        Mockito.any(AutomationCoordinatorSnapshot::class.java) ?: AutomationCoordinatorSnapshot(emptyList())
 }

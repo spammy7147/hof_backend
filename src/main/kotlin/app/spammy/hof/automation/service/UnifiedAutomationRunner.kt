@@ -27,7 +27,6 @@ class UnifiedAutomationRunner @Autowired constructor(
     private val sharedBattleCooldowns: SharedBattleCooldownService,
     private val ambiguousReconciler: AutomationAmbiguousActionReconciler,
     private val decisionJournal: AutomationDecisionJournal? = null,
-    private val contentProgress: AutomationContentProgressService? = null,
 ) {
     constructor(
         dailyPreflight: AutomationDailyPreflight,
@@ -249,9 +248,6 @@ class UnifiedAutomationRunner @Autowired constructor(
                         row.id,
                         recoveredWakeReason(resolution.execution),
                     )
-                    if (stored.payload is StoredTypedActionPayload.RaidTown || stored.payload is StoredTypedActionPayload.RaidCycleAbort) {
-                        contentProgress?.finishDrainIfNoOpenCycle(accountId)
-                    }
                     decisionCycleId?.let { cycleId ->
                         decisionJournal?.appendActionResult(cycleId, actionTrace(
                             stored,
@@ -326,9 +322,6 @@ class UnifiedAutomationRunner @Autowired constructor(
                 }
             }
             typedRuntime.succeedAndEnqueueWake(accountId, token, row.id, wakeReason)
-            if (stored.payload is StoredTypedActionPayload.RaidTown || stored.payload is StoredTypedActionPayload.RaidCycleAbort) {
-                contentProgress?.finishDrainIfNoOpenCycle(accountId)
-            }
             decisionCycleId?.let { cycleId ->
                 val kind = if (stored.payload is StoredTypedActionPayload.RaidCycleAbort) AutomationHistoryEventKind.CYCLE_ABORTED else AutomationHistoryEventKind.ACTION_SUCCEEDED
                 decisionJournal?.appendActionResult(cycleId, actionTrace(stored, kind, wakeReason, "자동화 행동을 완료했습니다."))
@@ -520,6 +513,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                 action.resolvedParty.toRequest(action.categoryId, action.mapCode, action.battleCount),
                 display = StoredActionDisplay(mapName = action.mapName),
                 source = action.source,
+                sourceTargetKey = action.sourceTargetKey,
             )
             is AdventureMapAutomationAction -> StoredTypedActionPayload.AdventureMap(
                 action.categoryId, action.mapCode, action.presetMode, action.presetId,

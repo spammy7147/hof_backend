@@ -81,6 +81,7 @@ sealed interface StoredTypedActionPayload {
         val battleRequest: RunBattleRequest,
         override val display: StoredActionDisplay? = null,
         val source: BattleAutomationActionSource = BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
+        val sourceTargetKey: String? = null,
     ) : StoredTypedActionPayload
     data class FishingTown(
         val action: app.spammy.hof.town.fishing.model.FishingAction,

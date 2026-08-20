@@ -78,6 +78,7 @@ class FreshSchemaTest {
                 "27" to "add character operation jobs",
                 "28" to "add character candidate quantity",
                 "29" to "observe character roster",
+                "30" to "deepen raid cycle module",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -112,6 +113,7 @@ class FreshSchemaTest {
                 "V28__add_character_candidate_quantity.sql",
                 "V29__observe_character_roster.sql",
                 "V2__order_party_presets.sql",
+                "V30__deepen_raid_cycle_module.sql",
                 "V3__add_automation_work_sessions.sql",
                 "V4__prepare_captcha_on_demand.sql",
                 "V5__track_character_detail_sync.sql",

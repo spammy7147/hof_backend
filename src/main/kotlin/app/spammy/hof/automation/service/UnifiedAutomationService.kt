@@ -15,6 +15,10 @@ import app.spammy.hof.automation.entity.RaidAutomationTargetEntity
 import app.spammy.hof.automation.entity.TypedAutomationLifecycle
 import app.spammy.hof.automation.entity.UnionAutomationMapEntity
 import app.spammy.hof.automation.outbox.AutomationOutboxService
+import app.spammy.hof.automation.raid.RaidAttempt
+import app.spammy.hof.automation.raid.RaidCycleModule
+import app.spammy.hof.automation.raid.RaidIntentKind
+import app.spammy.hof.automation.raid.RaidResultObservation
 import app.spammy.hof.automation.repository.AdventureAutomationMapCommandRepository
 import app.spammy.hof.automation.repository.AutomationEntryCommandRepository
 import app.spammy.hof.automation.repository.BattleAutomationMapCommandRepository
@@ -61,6 +65,7 @@ class UnifiedAutomationService(
     private val storedActionCodec: StoredTypedAutomationActionCodec,
     private val hofStatusSnapshots: HofStatusSnapshotService,
     private val workLifecycle: AutomationWorkLifecycle,
+    private val raidCycleModule: RaidCycleModule,
 ) {
     @Transactional(readOnly = true)
     fun getTyped(accountId: Long): TypedAutomationAggregateResponse {
@@ -101,7 +106,11 @@ class UnifiedAutomationService(
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "자동화 항목을 찾지 못했습니다.")
         val openRaidCycle = typedAutomationQueryRepository.findOpenRaidCycle(accountId)
         if (target.type == AutomationType.RAID && openRaidCycle?.entry?.id == target.id) {
-            invalid("진행 중인 레이드 사이클이 끝날 때까지 레이드 자동화 항목을 삭제할 수 없습니다.")
+            raidCycleModule.recordObservedResult(
+                accountId,
+                RaidAttempt(target.id, RaidIntentKind.REFRESH, openRaidCycle.raidId, null),
+                RaidResultObservation.ManualHandoff,
+            )
         }
         workLifecycle.stopForConfigurationChange(accountId, target.id, emptySet(), wholeEntry = true)
         typedEntryRepository.delete(target)
@@ -533,7 +542,11 @@ class UnifiedAutomationService(
         rejectDuplicates(normalized.map { it.raidId }, "같은 레이드를 두 번 설정할 수 없습니다.")
         val openCycle = typedAutomationQueryRepository.findOpenRaidCycle(accountId)
         if (openCycle?.entry?.id == entry.id && normalized.none { it.raidId == openCycle.raidId }) {
-            invalid("진행 중인 레이드 대상은 사이클이 끝날 때까지 제거할 수 없습니다.")
+            raidCycleModule.recordObservedResult(
+                accountId,
+                RaidAttempt(entry.id, RaidIntentKind.REFRESH, openCycle.raidId, null),
+                RaidResultObservation.ManualHandoff,
+            )
         }
         val references = normalized.map { target ->
             TypedMapReference(RAID_CATEGORY, target.raidId, target.presetMode, target.partyPresetId)

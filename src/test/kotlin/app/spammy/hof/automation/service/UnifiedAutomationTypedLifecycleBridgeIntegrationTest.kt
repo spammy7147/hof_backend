@@ -217,6 +217,36 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
     }
 
     @Test
+    fun `resume makes a parked raid check due immediately so HOF state is read fresh`() {
+        val accountId = seed("raid-resume-fresh-check")
+        TransactionTemplate(transactionManager).executeWithoutResult {
+            val account = requireNotNull(entityManager.find(HofAccountEntity::class.java, accountId))
+            val entry = typedQuery.findEntries(accountId).single().also { it.type = AutomationType.RAID }
+            workSessionCommands.save(
+                AutomationWorkSessionEntity(
+                    account = account,
+                    entry = entry,
+                    workType = AutomationWorkType.RAID,
+                    targetKey = "raid-1",
+                    status = AutomationWorkStatus.WAITING_COOLDOWN,
+                    configVersion = "raid-config",
+                    nextCheckAt = NOW.plusSeconds(3_600),
+                    createdAt = NOW,
+                    updatedAt = NOW,
+                ),
+            )
+        }
+
+        TransactionTemplate(transactionManager).executeWithoutResult {
+            bridge.resume(accountId, "USER_RESUME")
+        }
+
+        val due = workSessionQuery.findDue(NOW, 10).single { it.accountId == accountId }
+        assertEquals(AutomationWorkType.RAID, due.workType)
+        assertEquals(NOW, due.nextCheckAt)
+    }
+
+    @Test
     fun `pause waits for a reconciling action before becoming paused`() {
         val accountId = seed("pause-preserves-action")
         val activeActionId = TransactionTemplate(transactionManager).execute {

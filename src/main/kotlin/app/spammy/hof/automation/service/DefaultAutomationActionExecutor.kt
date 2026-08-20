@@ -1,5 +1,12 @@
 package app.spammy.hof.automation.service
 
+import app.spammy.hof.automation.raid.HofRaidObservationAdapter
+import app.spammy.hof.automation.raid.RaidAttempt
+import app.spammy.hof.automation.raid.RaidCycleModule
+import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
+import app.spammy.hof.automation.raid.RaidIntentKind
+import app.spammy.hof.automation.raid.RaidRecordResult
+import app.spammy.hof.automation.raid.RaidResultObservation
 import app.spammy.hof.battle.dto.RunBattleRequest
 import app.spammy.hof.battle.service.BattleRunService
 import app.spammy.hof.battle.service.SharedBattleCooldownRejectedException
@@ -11,9 +18,7 @@ import app.spammy.hof.quest.service.QuestGatewayService
 import app.spammy.hof.town.fishing.service.FishingService
 import app.spammy.hof.town.home.service.HomeService
 import app.spammy.hof.town.raid.dto.RaidPubActionRequest
-import app.spammy.hof.town.raid.dto.RaidPubResponse
 import app.spammy.hof.town.raid.model.RaidAction
-import app.spammy.hof.town.raid.model.isRaidRegistrationAvailable
 import app.spammy.hof.town.raid.service.RaidPubService
 import java.io.IOException
 import org.springframework.stereotype.Service
@@ -28,9 +33,11 @@ class DefaultAutomationActionExecutor(
     private val sessionRecovery: HofSessionRecoveryExecutor,
     private val executionSignals: AutomationExecutionSignals,
     private val workLifecycle: AutomationWorkLifecycle,
+    private val raidPubService: RaidPubService,
+    private val raidCycleModule: RaidCycleModule,
+    private val raidObservationAdapter: HofRaidObservationAdapter,
     private val fishingService: FishingService? = null,
-    private val raidPubService: RaidPubService? = null,
-    private val contentProgress: AutomationContentProgressService? = null,
+    private val unionProgress: UnionAutomationProgressService? = null,
     private val homeService: HomeService? = null,
 ) : TypedAutomationActionExecutor {
     override fun execute(accountId: Long, action: StoredTypedAutomationAction): TypedAutomationExecution =
@@ -100,7 +107,16 @@ class DefaultAutomationActionExecutor(
                     } else {
                         exactTerminalProof(accountId, action.executionIdentity, payload.battleRequest, result, payload.source)
                         if (payload.source == BattleAutomationActionSource.UNION_AUTOMATION) {
-                            contentProgress?.unionBattleCompleted(accountId, action.entryId, payload.categoryId, payload.mapCode)
+                            unionProgress?.battleCompleted(accountId, action.entryId, payload.categoryId, payload.mapCode)
+                        }
+                        if (payload.source == BattleAutomationActionSource.RAID_AUTOMATION) {
+                            payload.sourceTargetKey?.let { raidId ->
+                                recordRaidResult(
+                                    accountId,
+                                    RaidAttempt(action.entryId, RaidIntentKind.BATTLE, raidId, null),
+                                    RaidResultObservation.BattleCompleted,
+                                )
+                            }
                         }
                     }
                     val signalRounds = result.rounds.takeIf(List<*>::isNotEmpty)
@@ -131,44 +147,34 @@ class DefaultAutomationActionExecutor(
                     TypedAutomationExecution.Completed
                 }
                 is StoredTypedActionPayload.RaidTown -> {
-                    val response = (raidPubService ?: error("Raid automation gateway is unavailable."))
-                        .action(accountId, RaidPubActionRequest(payload.action, payload.raidId))
-                    when (payload.action) {
-                        app.spammy.hof.town.raid.model.RaidAction.REGISTER -> {
-                            val id = requireNotNull(payload.raidId)
-                            val raid = response.raids.singleOrNull { it.id == id }
-                                ?: error("Registered raid is missing from the response.")
-                            (contentProgress ?: error("Raid cycle service is unavailable."))
-                                .raidRegistered(accountId, action.entryId, id, raid.name, raid.waitSeconds ?: response.applyWaitSeconds)
-                        }
-                        app.spammy.hof.town.raid.model.RaidAction.START ->
-                            (contentProgress ?: error("Raid cycle service is unavailable.")).raidStarted(accountId, requireNotNull(payload.raidId))
-                        app.spammy.hof.town.raid.model.RaidAction.REWARD ->
-                            (contentProgress ?: error("Raid cycle service is unavailable.")).raidRewarded(accountId)
-                        app.spammy.hof.town.raid.model.RaidAction.REFRESH ->
-                            (contentProgress ?: error("Raid cycle service is unavailable.")).raidStatusRefreshed(accountId)
-                        app.spammy.hof.town.raid.model.RaidAction.RESET -> {
-                            val raidId = requireNotNull(payload.raidId)
-                            if (!response.provesSuccessfulReset(raidId)) {
-                                throw AmbiguousAutomationSubmissionException(
-                                    "Raid reset response did not prove that registration became available.",
-                                )
-                            }
-                            (contentProgress ?: error("Raid cycle service is unavailable."))
-                                .raidReset(accountId, raidId)
-                            workLifecycle.completeRaidCycle(accountId, action.entryId)
-                        }
-                        else -> Unit
-                    }
+                    val response = raidPubService.action(accountId, RaidPubActionRequest(payload.action, payload.raidId))
+                    val targetRaidId = payload.targetRaidId ?: payload.raidId
+                        ?: error("Stored raid action has no target raid id.")
+                    recordRaidResult(
+                        accountId,
+                        RaidAttempt(
+                            entryId = action.entryId,
+                            kind = payload.action.toRaidIntentKind(),
+                            raidId = targetRaidId,
+                            requestRaidId = payload.raidId,
+                        ),
+                        RaidResultObservation.Page(
+                            raidObservationAdapter.from(response),
+                        ),
+                    )
                     TypedAutomationExecution.Completed
                 }
                 is StoredTypedActionPayload.RaidCycleAbort -> {
-                    val progress = contentProgress ?: error("Raid cycle service is unavailable.")
-                    when (payload.reason) {
-                        RaidCycleAbortReason.CLOSED -> progress.raidClosed(accountId, payload.raidId)
-                        RaidCycleAbortReason.REGISTRATION_LOST -> progress.raidRegistrationLost(accountId, payload.raidId)
-                    }
-                    workLifecycle.completeRaidCycle(accountId, action.entryId)
+                    recordRaidResult(
+                        accountId,
+                        RaidAttempt(action.entryId, RaidIntentKind.REFRESH, payload.raidId, null),
+                        RaidResultObservation.LegacyCycleAbort(
+                            when (payload.reason) {
+                                RaidCycleAbortReason.CLOSED -> RaidCycleOutcomeKind.ABORTED_CLOSED
+                                RaidCycleAbortReason.REGISTRATION_LOST -> RaidCycleOutcomeKind.ABORTED_REGISTRATION_LOST
+                            },
+                        ),
+                    )
                     TypedAutomationExecution.Completed
                 }
             }
@@ -243,11 +249,28 @@ class DefaultAutomationActionExecutor(
     private fun Throwable.findApiException(): ApiException? =
         generateSequence(this) { it.cause }.filterIsInstance<ApiException>().firstOrNull()
 
-    private fun RaidPubResponse.provesSuccessfulReset(raidId: String): Boolean {
-        val resultText = result?.messages.orEmpty().joinToString(" ")
-        if (RAID_RESET_SUCCEEDED.containsMatchIn(resultText)) return true
-        val raid = raids.singleOrNull { it.id == raidId } ?: return false
-        return !raid.joined && isRaidRegistrationAvailable(raid.status)
+    private fun recordRaidResult(
+        accountId: Long,
+        attempt: RaidAttempt,
+        observation: RaidResultObservation,
+    ) {
+        when (val result = raidCycleModule.recordObservedResult(accountId, attempt, observation)) {
+            is RaidRecordResult.Recorded -> result.completion?.let {
+                workLifecycle.completeRaidCycle(accountId, attempt.entryId)
+            }
+            is RaidRecordResult.NeedsRecheck -> throw AmbiguousAutomationSubmissionException(result.message)
+        }
+    }
+
+    private fun RaidAction.toRaidIntentKind(): RaidIntentKind = when (this) {
+        RaidAction.RESET -> RaidIntentKind.RESET
+        RaidAction.REGISTER -> RaidIntentKind.REGISTER
+        RaidAction.START -> RaidIntentKind.START
+        RaidAction.REWARD -> RaidIntentKind.REWARD
+        RaidAction.REFRESH -> RaidIntentKind.REFRESH
+        RaidAction.LEAVE,
+        RaidAction.WAIT_RESET,
+        -> error("Unsupported raid automation action: $this")
     }
 
     private fun StoredTypedActionPayload.battleRequestOrNull(): RunBattleRequest? = when (this) {
@@ -288,9 +311,5 @@ class DefaultAutomationActionExecutor(
     }
 
     private data class TerminalProof(val resultIdentity: String, val outcomes: List<BattleAutomationRoundOutcome>)
-
-    private companion object {
-        val RAID_RESET_SUCCEEDED = Regex("전투가\\s*신청\\s*가능\\s*상태로\\s*바뀌었습니다\\.?")
-    }
 
 }

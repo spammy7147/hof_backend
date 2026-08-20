@@ -280,6 +280,7 @@ class AutomationWorkSessionServiceTest {
             battleCount = 1,
             executionIdentity = "raid-battle-1",
             source = BattleAutomationActionSource.RAID_AUTOMATION,
+            sourceTargetKey = "RaidGoblin",
         )
         Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
         Mockito.`when`(typed.findEntry(7, raidEntry.id)).thenReturn(raidEntry)
@@ -312,7 +313,7 @@ class AutomationWorkSessionServiceTest {
     }
 
     @Test
-    fun `raid reset completes the whole raid cycle work session`() {
+    fun `raid cycle completion closes the whole raid work session`() {
         val raidEntry = AutomationEntryEntity(14, account, AutomationType.RAID, 4, true, now, now)
         val session = AutomationWorkSessionEntity(
             id = 30,

@@ -1,5 +1,12 @@
 package app.spammy.hof.automation.service
 
+import app.spammy.hof.automation.raid.HofRaidObservationAdapter
+import app.spammy.hof.automation.raid.RaidAttempt
+import app.spammy.hof.automation.raid.RaidCycleModule
+import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
+import app.spammy.hof.automation.raid.RaidIntentKind
+import app.spammy.hof.automation.raid.RaidRecordResult
+import app.spammy.hof.automation.raid.RaidResultObservation
 import app.spammy.hof.battle.service.BattleMapService
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.model.HofRequestOrigin
@@ -10,10 +17,6 @@ import app.spammy.hof.town.home.model.HomeMode
 import app.spammy.hof.town.home.model.HomeQuestState
 import app.spammy.hof.town.home.service.HomeService
 import app.spammy.hof.town.raid.model.RaidAction
-import app.spammy.hof.town.raid.model.RaidStatus
-import app.spammy.hof.town.raid.model.isRaidRegistrationAvailable
-import app.spammy.hof.town.raid.model.isRaidResetRequiredStatus
-import app.spammy.hof.town.raid.service.RaidPubService
 import org.springframework.stereotype.Service
 
 @Service
@@ -24,9 +27,9 @@ class DefaultAutomationAmbiguousActionReconciler(
     private val sessionRecovery: HofSessionRecoveryExecutor,
     private val timeProvider: TimeProvider,
     private val workLifecycle: AutomationWorkLifecycle,
+    private val raidCycleModule: RaidCycleModule,
+    private val raidObservationAdapter: HofRaidObservationAdapter,
     private val fishingService: FishingService? = null,
-    private val raidPubService: RaidPubService? = null,
-    private val contentProgress: AutomationContentProgressService? = null,
     private val homeService: HomeService? = null,
 ) : AutomationAmbiguousActionReconciler {
     override fun reconcile(
@@ -73,51 +76,11 @@ class DefaultAutomationAmbiguousActionReconciler(
     }
 
     private fun reconcileRaid(accountId: Long, entryId: Long, payload: StoredTypedActionPayload.RaidTown): AmbiguousActionResolution {
-        val latest = raidPubService?.load(accountId)
-            ?: return AmbiguousActionResolution.VerifyLater(retryAt(), "레이드 상태 조회 연결을 기다립니다.")
-        val progress = contentProgress ?: return AmbiguousActionResolution.VerifyLater(retryAt(), "레이드 사이클 저장 연결을 기다립니다.")
-        return when (payload.action) {
-            RaidAction.REGISTER -> {
-                val id = requireNotNull(payload.raidId)
-                val raid = latest.raids.singleOrNull { it.id == id }
-                    ?: return AmbiguousActionResolution.VerifyLater(retryAt(), "등록한 레이드가 아직 관측되지 않습니다.")
-                if (raid.joined || latest.applied) {
-                    progress.raidRegistered(accountId, entryId, id, raid.name, raid.waitSeconds ?: latest.applyWaitSeconds)
-                    AmbiguousActionResolution.Applied()
-                } else if (isRaidRegistrationAvailable(raid.status)) AmbiguousActionResolution.Resubmit
-                else AmbiguousActionResolution.VerifyLater(retryAt(), "레이드 등록 결과를 아직 확정할 수 없습니다.")
-            }
-            RaidAction.START -> {
-                val id = requireNotNull(payload.raidId)
-                val raid = latest.raids.singleOrNull { it.id == id }
-                    ?: return AmbiguousActionResolution.VerifyLater(retryAt(), "시작한 레이드가 아직 관측되지 않습니다.")
-                if (raid.status in setOf(RaidStatus.IN_BATTLE, RaidStatus.COMPLETED)) {
-                    progress.raidStarted(accountId, id); AmbiguousActionResolution.Applied()
-                } else if (raid.joined && raid.status == RaidStatus.READY) AmbiguousActionResolution.Resubmit
-                else AmbiguousActionResolution.VerifyLater(retryAt(), "레이드 시작 결과를 아직 확정할 수 없습니다.")
-            }
-            RaidAction.REWARD -> if (
-                RaidAction.REWARD !in latest.globalActions ||
-                (latest.applyWait && (latest.applyWaitSeconds ?: 0) >= RAID_REWARD_COOLDOWN_PROOF_SECONDS)
-            ) {
-                progress.raidRewarded(accountId); AmbiguousActionResolution.Applied()
-            } else AmbiguousActionResolution.Resubmit
-            RaidAction.REFRESH -> AmbiguousActionResolution.Resubmit
-            RaidAction.RESET -> {
-                val id = requireNotNull(payload.raidId)
-                val raid = latest.raids.singleOrNull { it.id == id }
-                if (raid != null && !raid.joined && isRaidRegistrationAvailable(raid.status)) {
-                    progress.raidReset(accountId, id)
-                    workLifecycle.completeRaidCycle(accountId, entryId)
-                    AmbiguousActionResolution.Applied()
-                } else if (raid != null && isRaidResetRequiredStatus(raid.statusText)) {
-                    AmbiguousActionResolution.Resubmit
-                } else {
-                    AmbiguousActionResolution.VerifyLater(retryAt(), "레이드 리셋 결과를 아직 확정할 수 없습니다.")
-                }
-            }
-            else -> AmbiguousActionResolution.VerifyLater(retryAt(), "허용하지 않는 레이드 자동 행동입니다.")
-        }
+        val targetRaidId = payload.targetRaidId ?: payload.raidId
+            ?: return AmbiguousActionResolution.VerifyLater(retryAt(), "저장된 레이드 대상이 없습니다.")
+        val attempt = RaidAttempt(entryId, payload.action.toRaidIntentKind(), targetRaidId, payload.raidId)
+        val observation = RaidResultObservation.Page(raidObservationAdapter.read(accountId))
+        return recordRaid(accountId, attempt, observation)
     }
 
     private fun reconcileRaidAbort(
@@ -125,18 +88,40 @@ class DefaultAutomationAmbiguousActionReconciler(
         entryId: Long,
         payload: StoredTypedActionPayload.RaidCycleAbort,
     ): AmbiguousActionResolution {
-        val progress = contentProgress
-            ?: return AmbiguousActionResolution.VerifyLater(retryAt(), "레이드 사이클 저장 연결을 기다립니다.")
-        when (payload.reason) {
-            RaidCycleAbortReason.CLOSED -> progress.raidClosed(accountId, payload.raidId)
-            RaidCycleAbortReason.REGISTRATION_LOST -> progress.raidRegistrationLost(accountId, payload.raidId)
+        val outcome = when (payload.reason) {
+            RaidCycleAbortReason.CLOSED -> RaidCycleOutcomeKind.ABORTED_CLOSED
+            RaidCycleAbortReason.REGISTRATION_LOST -> RaidCycleOutcomeKind.ABORTED_REGISTRATION_LOST
         }
-        workLifecycle.completeRaidCycle(accountId, entryId)
-        return AmbiguousActionResolution.Applied()
+        return recordRaid(
+            accountId,
+            RaidAttempt(entryId, RaidIntentKind.REFRESH, payload.raidId, null),
+            RaidResultObservation.LegacyCycleAbort(outcome),
+        )
     }
 
-    private companion object {
-        const val RAID_REWARD_COOLDOWN_PROOF_SECONDS = 2 * 60 * 60
+    private fun recordRaid(
+        accountId: Long,
+        attempt: RaidAttempt,
+        observation: RaidResultObservation,
+    ): AmbiguousActionResolution {
+        return when (val result = raidCycleModule.recordObservedResult(accountId, attempt, observation)) {
+            is RaidRecordResult.Recorded -> {
+                result.completion?.let { workLifecycle.completeRaidCycle(accountId, attempt.entryId) }
+                AmbiguousActionResolution.Applied()
+            }
+            is RaidRecordResult.NeedsRecheck -> AmbiguousActionResolution.VerifyLater(result.at, result.message)
+        }
+    }
+
+    private fun RaidAction.toRaidIntentKind(): RaidIntentKind = when (this) {
+        RaidAction.RESET -> RaidIntentKind.RESET
+        RaidAction.REGISTER -> RaidIntentKind.REGISTER
+        RaidAction.START -> RaidIntentKind.START
+        RaidAction.REWARD -> RaidIntentKind.REWARD
+        RaidAction.REFRESH -> RaidIntentKind.REFRESH
+        RaidAction.LEAVE,
+        RaidAction.WAIT_RESET,
+        -> error("Unsupported raid automation action: $this")
     }
 
     private fun reconcileQuestAccept(

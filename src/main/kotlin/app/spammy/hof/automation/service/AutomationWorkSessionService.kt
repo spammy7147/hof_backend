@@ -360,7 +360,10 @@ class AutomationWorkSessionService(
                 }
                 BattleAutomationActionSource.UNION_AUTOMATION -> WorkSpec(AutomationWorkType.UNION, target)
                 BattleAutomationActionSource.FISHING_AUTOMATION -> WorkSpec(AutomationWorkType.FISHING, FISHING_CYCLE_TARGET)
-                BattleAutomationActionSource.RAID_AUTOMATION -> WorkSpec(AutomationWorkType.RAID, target)
+                BattleAutomationActionSource.RAID_AUTOMATION -> WorkSpec(
+                    AutomationWorkType.RAID,
+                    sourceTargetKey ?: target,
+                )
                 BattleAutomationActionSource.QUEST_AUTOMATION -> WorkSpec(AutomationWorkType.QUEST, target)
                 BattleAutomationActionSource.ADVENTURE_AUTOMATION -> WorkSpec(AutomationWorkType.ADVENTURE_MAP, target)
             }

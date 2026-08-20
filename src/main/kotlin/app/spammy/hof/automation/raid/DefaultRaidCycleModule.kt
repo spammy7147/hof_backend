@@ -1,0 +1,571 @@
+package app.spammy.hof.automation.raid
+
+import app.spammy.hof.automation.entity.RaidAutomationCycleStatus
+import app.spammy.hof.common.time.TimeProvider
+import org.springframework.stereotype.Service
+
+@Service
+class DefaultRaidCycleModule(
+    private val store: RaidCycleStore,
+    private val observations: RaidObservationReader,
+    private val timeProvider: TimeProvider,
+) : RaidCycleModule {
+    override fun decideNext(accountId: Long): RaidDirective {
+        val state = store.load(accountId)
+        val configuration = state.configuration
+            ?: return RaidDirective.Hold(
+                RaidHoldReason.CONFIGURATION_MISSING,
+                "레이드 자동화 설정을 찾을 수 없습니다.",
+            )
+        if (!configuration.enabled) {
+            return RaidDirective.Hold(
+                RaidHoldReason.CONFIGURATION_MISSING,
+                "레이드 자동화가 비활성화되어 있습니다.",
+                entryId = configuration.entryId,
+            )
+        }
+        state.openCycle
+            ?.takeIf { cycle -> configuration.targets.none { target -> target.raidId == cycle.raidId } }
+            ?.let { cycle ->
+                return RaidDirective.Complete(
+                    store.finish(
+                        accountId = accountId,
+                        raidId = cycle.raidId,
+                        outcome = RaidCycleOutcomeKind.HANDED_OFF_MANUAL,
+                        now = timeProvider.now(),
+                    ),
+                )
+            }
+        val ordered = rotate(configuration.targets, configuration.currentTargetKey)
+        val target = ordered.firstOrNull()
+            ?: return RaidDirective.Hold(
+                RaidHoldReason.CONFIGURATION_MISSING,
+                "레이드를 하나 이상 선택해 주세요.",
+                entryId = configuration.entryId,
+            )
+        val observation = observations.read(accountId)
+        val joined = observation.raids.filter(RaidObservedTarget::joined)
+        if (joined.size > 1) {
+            return RaidDirective.Hold(
+                RaidHoldReason.UNKNOWN_OR_CONFLICTING_STATE,
+                "동시에 여러 레이드 참가 상태가 관측되어 자동 행동을 보류합니다.",
+                recheckAt = timeProvider.now().plusSeconds(DEFAULT_RECHECK_SECONDS),
+                entryId = configuration.entryId,
+            )
+        }
+        joined.singleOrNull()
+            ?.takeIf { active -> configuration.targets.none { it.raidId == active.id } }
+            ?.let { manual ->
+                return RaidDirective.Hold(
+                    RaidHoldReason.MANUAL_RAID_ACTIVE,
+                    "수동 레이드가 끝날 때까지 레이드 자동화만 보류합니다.",
+                    recheckAt = timeProvider.now().plusSeconds(
+                        (manual.waitSeconds ?: DEFAULT_RECHECK_SECONDS.toInt())
+                            .coerceAtLeast(MINIMUM_WAIT_SECONDS)
+                            .toLong(),
+                    ),
+                    entryId = configuration.entryId,
+                    raidId = manual.id,
+                )
+            }
+        val activeConfigured = joined.singleOrNull()?.let { active ->
+            configuration.targets.singleOrNull { it.raidId == active.id }?.let { it to active }
+        }
+        val persistedCycle = state.openCycle?.let { open ->
+            if (activeConfigured != null && activeConfigured.first.raidId != open.raidId) {
+                store.finish(
+                    accountId = accountId,
+                    raidId = open.raidId,
+                    outcome = RaidCycleOutcomeKind.SUPERSEDED_BY_OBSERVED_RAID,
+                    now = timeProvider.now(),
+                )
+                null
+            } else {
+                open
+            }
+        }
+        var cycle = persistedCycle ?: activeConfigured?.let { (activeTarget, active) ->
+            store.open(
+                accountId = accountId,
+                entryId = configuration.entryId,
+                target = activeTarget,
+                now = timeProvider.now(),
+                status = active.toCycleStatus(),
+                observedStatus = active.statusText,
+            )
+        } ?: store.open(
+            accountId = accountId,
+            entryId = configuration.entryId,
+            target = target,
+            now = timeProvider.now(),
+        )
+        val observed = observation.raids.singleOrNull { it.id == cycle.raidId }
+            ?: return RaidDirective.Hold(
+                RaidHoldReason.TARGET_TEMPORARILY_MISSING,
+                "차례인 레이드를 현재 화면에서 확인할 수 없습니다.",
+                recheckAt = timeProvider.now().plusSeconds(DEFAULT_RECHECK_SECONDS),
+                entryId = configuration.entryId,
+                raidId = cycle.raidId,
+            )
+        if (observed.status == RaidObservedStatus.CLOSED) {
+            return RaidDirective.Complete(
+                store.finish(
+                    accountId = accountId,
+                    raidId = cycle.raidId,
+                    outcome = RaidCycleOutcomeKind.ABORTED_CLOSED,
+                    now = timeProvider.now(),
+                ),
+            )
+        }
+        if (observed.status in setOf(RaidObservedStatus.TESTING, RaidObservedStatus.UNKNOWN)) {
+            return RaidDirective.Hold(
+                RaidHoldReason.UNKNOWN_OR_CONFLICTING_STATE,
+                "레이드 상태를 안전하게 판단할 수 없어 다시 확인합니다.",
+                recheckAt = timeProvider.now().plusSeconds(DEFAULT_RECHECK_SECONDS),
+                entryId = configuration.entryId,
+                raidId = cycle.raidId,
+            )
+        }
+        if (cycle.status == RaidAutomationCycleStatus.POST_REWARD_CHECK) {
+            if (
+                requiresReset(observed) ||
+                (RaidIntentKind.REWARD !in observation.globalActions && observation.registrationWait) ||
+                (!observed.joined && observed.status in REGISTRATION_STATUSES)
+            ) {
+                return completeCycle(accountId, cycle)
+            }
+            if (
+                RaidIntentKind.REWARD !in observation.globalActions &&
+                RaidIntentKind.REFRESH in observation.globalActions
+            ) {
+                return RaidDirective.Execute(
+                    RaidIntent.Town(
+                        entryId = configuration.entryId,
+                        raidId = cycle.raidId,
+                        raidName = cycle.raidName,
+                        kind = RaidIntentKind.REFRESH,
+                        requestRaidId = null,
+                        observedStatus = observed.statusText,
+                    ),
+                )
+            }
+            return RaidDirective.Hold(
+                RaidHoldReason.ACTION_UNAVAILABLE,
+                "보상 후 레이드 상태와 재등록 대기 정보를 다시 확인합니다.",
+                recheckAt = timeProvider.now().plusSeconds(DEFAULT_RECHECK_SECONDS),
+                entryId = configuration.entryId,
+                raidId = cycle.raidId,
+            )
+        }
+        if (cycle.status == RaidAutomationCycleStatus.REGISTERED_WAITING) {
+            if (!observed.joined && observed.status in REGISTRATION_STATUSES) {
+                return RaidDirective.Complete(
+                    store.finish(
+                        accountId = accountId,
+                        raidId = cycle.raidId,
+                        outcome = RaidCycleOutcomeKind.ABORTED_REGISTRATION_LOST,
+                        now = timeProvider.now(),
+                    ),
+                )
+            }
+        }
+        if (
+            cycle.status in setOf(
+                RaidAutomationCycleStatus.IN_BATTLE,
+                RaidAutomationCycleStatus.REWARD_PENDING,
+            ) &&
+            !observed.joined &&
+            observed.status in REGISTRATION_STATUSES
+        ) {
+            return completeCycle(accountId, cycle)
+        }
+        if (
+            cycle.status != RaidAutomationCycleStatus.PREPARING &&
+            requiresReset(observed)
+        ) {
+            return completeCycle(accountId, cycle)
+        }
+        val observedPhase = when {
+            observed.status == RaidObservedStatus.IN_BATTLE &&
+                cycle.status in setOf(
+                    RaidAutomationCycleStatus.PREPARING,
+                    RaidAutomationCycleStatus.REGISTERED_WAITING,
+                ) -> RaidAutomationCycleStatus.IN_BATTLE
+            observed.status == RaidObservedStatus.COMPLETED &&
+                !requiresReset(observed) &&
+                cycle.status in setOf(
+                    RaidAutomationCycleStatus.PREPARING,
+                    RaidAutomationCycleStatus.REGISTERED_WAITING,
+                    RaidAutomationCycleStatus.IN_BATTLE,
+                ) -> RaidAutomationCycleStatus.REWARD_PENDING
+            observed.joined &&
+                observed.status in REGISTRATION_STATUSES &&
+                cycle.status == RaidAutomationCycleStatus.PREPARING -> RaidAutomationCycleStatus.REGISTERED_WAITING
+            else -> null
+        }
+        if (observedPhase != null && observedPhase != cycle.status) {
+            cycle = store.transition(
+                accountId = accountId,
+                raidId = cycle.raidId,
+                status = observedPhase,
+                observedStatus = observed.statusText,
+                nextCheckAt = null,
+                now = timeProvider.now(),
+            )
+        }
+        if (cycle.status == RaidAutomationCycleStatus.REGISTERED_WAITING) {
+            observed.waitSeconds?.takeIf { it > 0 }?.let { seconds ->
+                return RaidDirective.WaitUntil(
+                    at = timeProvider.now().plusSeconds(seconds.coerceAtLeast(MINIMUM_WAIT_SECONDS).toLong()),
+                    reason = RaidWaitReason.WAITING_TO_START,
+                    message = "레이드 출발 가능 시각까지 기다립니다.",
+                )
+            }
+            if (observed.joined && observed.status == RaidObservedStatus.READY && RaidIntentKind.START in observed.actions) {
+                return RaidDirective.Execute(
+                    RaidIntent.Town(
+                        entryId = configuration.entryId,
+                        raidId = cycle.raidId,
+                        raidName = cycle.raidName,
+                        kind = RaidIntentKind.START,
+                        observedStatus = observed.statusText,
+                    ),
+                )
+            }
+            return RaidDirective.Hold(
+                RaidHoldReason.ACTION_UNAVAILABLE,
+                "등록한 레이드의 출발 가능 상태를 다시 확인합니다.",
+                recheckAt = timeProvider.now().plusSeconds(DEFAULT_RECHECK_SECONDS),
+                entryId = configuration.entryId,
+                raidId = cycle.raidId,
+            )
+        }
+        if (cycle.status == RaidAutomationCycleStatus.REWARD_PENDING) {
+            if (RaidIntentKind.REWARD in observation.globalActions) {
+                return RaidDirective.Execute(
+                    RaidIntent.Town(
+                        entryId = configuration.entryId,
+                        raidId = cycle.raidId,
+                        raidName = cycle.raidName,
+                        kind = RaidIntentKind.REWARD,
+                        requestRaidId = null,
+                        observedStatus = observed.statusText,
+                    ),
+                )
+            }
+            return RaidDirective.Hold(
+                RaidHoldReason.ACTION_UNAVAILABLE,
+                "레이드 보상 동작을 다시 확인합니다.",
+                recheckAt = timeProvider.now().plusSeconds(DEFAULT_RECHECK_SECONDS),
+                entryId = configuration.entryId,
+                raidId = cycle.raidId,
+            )
+        }
+        if (cycle.status == RaidAutomationCycleStatus.IN_BATTLE && observed.status == RaidObservedStatus.IN_BATTLE) {
+            val battle = observed.battle
+                ?: return RaidDirective.Hold(
+                    RaidHoldReason.TARGET_TEMPORARILY_MISSING,
+                    "레이드 전투 대상을 다시 확인합니다.",
+                    recheckAt = timeProvider.now().plusSeconds(DEFAULT_RECHECK_SECONDS),
+                    entryId = configuration.entryId,
+                    raidId = cycle.raidId,
+                )
+            battle.cooldownRemainingSeconds?.takeIf { it > 0 }?.let { seconds ->
+                return RaidDirective.WaitUntil(
+                    at = timeProvider.now().plusSeconds(seconds),
+                    reason = RaidWaitReason.BATTLE_COOLDOWN,
+                    message = "다음 레이드 전투 가능 시각까지 기다립니다.",
+                )
+            }
+            val setting = configuration.targets.singleOrNull { it.raidId == cycle.raidId }
+                ?: return RaidDirective.Complete(
+                    store.finish(
+                        accountId,
+                        cycle.raidId,
+                        RaidCycleOutcomeKind.HANDED_OFF_MANUAL,
+                        timeProvider.now(),
+                    ),
+                )
+            val presetId = setting.presetId
+                ?: return RaidDirective.Hold(
+                    RaidHoldReason.INVALID_PRESET,
+                    "레이드 전투 프리셋을 선택해 주세요.",
+                    entryId = configuration.entryId,
+                    raidId = cycle.raidId,
+                )
+            val party = setting.party
+                ?: return RaidDirective.Hold(
+                    RaidHoldReason.INVALID_PRESET,
+                    "레이드 전투 프리셋 구성을 확인해 주세요.",
+                    entryId = configuration.entryId,
+                    raidId = cycle.raidId,
+                )
+            return RaidDirective.Execute(
+                RaidIntent.Battle(
+                    entryId = configuration.entryId,
+                    raidId = cycle.raidId,
+                    raidName = cycle.raidName,
+                    categoryId = battle.categoryId,
+                    mapCode = battle.mapCode,
+                    presetMode = setting.presetMode,
+                    presetId = presetId,
+                    party = party,
+                ),
+            )
+        }
+        if (cycle.status != RaidAutomationCycleStatus.PREPARING) {
+            return RaidDirective.Hold(
+                RaidHoldReason.ACTION_UNAVAILABLE,
+                "진행 중인 레이드의 다음 단계를 다시 확인합니다.",
+                recheckAt = timeProvider.now().plusSeconds(DEFAULT_RECHECK_SECONDS),
+                entryId = configuration.entryId,
+                raidId = cycle.raidId,
+            )
+        }
+        if (requiresReset(observed)) {
+            if (RaidIntentKind.RESET !in observed.actions) {
+                return RaidDirective.Hold(
+                    RaidHoldReason.ACTION_UNAVAILABLE,
+                    "초기화가 필요한 레이드의 RESET 동작을 확인할 수 없습니다.",
+                    recheckAt = timeProvider.now().plusSeconds(DEFAULT_RECHECK_SECONDS),
+                    entryId = configuration.entryId,
+                    raidId = cycle.raidId,
+                )
+            }
+            return RaidDirective.Execute(
+                RaidIntent.Town(
+                    entryId = configuration.entryId,
+                    raidId = cycle.raidId,
+                    raidName = cycle.raidName,
+                    kind = RaidIntentKind.RESET,
+                    observedStatus = observed.statusText,
+                ),
+            )
+        }
+        if (observation.registrationWait) {
+            return RaidDirective.WaitUntil(
+                at = timeProvider.now().plusSeconds(
+                    (observation.registrationWaitSeconds ?: DEFAULT_RECHECK_SECONDS.toInt())
+                        .coerceAtLeast(MINIMUM_WAIT_SECONDS)
+                        .toLong(),
+                ),
+                reason = RaidWaitReason.REGISTRATION_COOLDOWN,
+                message = "레이드 등록 쿨타임을 기다립니다.",
+            )
+        }
+        if (
+            observed.playable &&
+            !observed.joined &&
+            observed.status in REGISTRATION_STATUSES &&
+            RaidIntentKind.REGISTER in observed.actions
+        ) {
+            return RaidDirective.Execute(
+                RaidIntent.Town(
+                    entryId = configuration.entryId,
+                    raidId = cycle.raidId,
+                    raidName = cycle.raidName,
+                    kind = RaidIntentKind.REGISTER,
+                    observedStatus = observed.statusText,
+                ),
+            )
+        }
+        return RaidDirective.Hold(
+            RaidHoldReason.ACTION_UNAVAILABLE,
+            "현재 레이드에서 실행할 다음 동작을 확인할 수 없습니다.",
+            recheckAt = timeProvider.now().plusSeconds(DEFAULT_RECHECK_SECONDS),
+            entryId = configuration.entryId,
+            raidId = cycle.raidId,
+        )
+    }
+
+    override fun recordObservedResult(
+        accountId: Long,
+        attempt: RaidAttempt,
+        observation: RaidResultObservation,
+    ): RaidRecordResult {
+        if (observation == RaidResultObservation.ManualHandoff) {
+            val cycle = store.load(accountId).openCycle
+                ?: return RaidRecordResult.Recorded()
+            if (cycle.raidId != attempt.raidId) {
+                return needsRecheck("수동으로 인계할 레이드와 열린 사이클의 대상이 일치하지 않습니다.")
+            }
+            return RaidRecordResult.Recorded(
+                store.finish(
+                    accountId = accountId,
+                    raidId = attempt.raidId,
+                    outcome = RaidCycleOutcomeKind.HANDED_OFF_MANUAL,
+                    now = timeProvider.now(),
+                ),
+            )
+        }
+        if (observation is RaidResultObservation.LegacyCycleAbort) {
+            val cycle = store.load(accountId).openCycle
+                ?: return RaidRecordResult.Recorded()
+            if (cycle.raidId != attempt.raidId) {
+                return needsRecheck("정리할 레이드 사이클과 저장 행동의 대상이 일치하지 않습니다.")
+            }
+            return RaidRecordResult.Recorded(
+                store.finish(
+                    accountId = accountId,
+                    raidId = attempt.raidId,
+                    outcome = observation.reason,
+                    now = timeProvider.now(),
+                ),
+            )
+        }
+        if (observation == RaidResultObservation.BattleCompleted) {
+            return RaidRecordResult.Recorded()
+        }
+        val page = (observation as? RaidResultObservation.Page)?.value
+            ?: return needsRecheck("레이드 화면 관측 결과가 필요합니다.")
+        val cycle = store.load(accountId).openCycle
+            ?: return needsRecheck("확정할 열린 레이드 사이클이 없습니다.")
+        if (cycle.raidId != attempt.raidId) {
+            return needsRecheck("실행 대상과 열린 레이드 사이클이 일치하지 않습니다.")
+        }
+        if (attempt.kind == RaidIntentKind.RESET) {
+            val target = page.raids.singleOrNull { it.id == attempt.raidId }
+            if (
+                target != null &&
+                !target.joined &&
+                target.status in REGISTRATION_STATUSES &&
+                !requiresReset(target)
+            ) {
+                store.transition(
+                    accountId = accountId,
+                    raidId = attempt.raidId,
+                    status = RaidAutomationCycleStatus.PREPARING,
+                    observedStatus = target.statusText,
+                    nextCheckAt = null,
+                    now = timeProvider.now(),
+                )
+                return RaidRecordResult.Recorded()
+            }
+        }
+        if (attempt.kind == RaidIntentKind.REGISTER) {
+            val target = page.raids.singleOrNull { it.id == attempt.raidId }
+            if (target?.joined == true) {
+                val nextCheckAt = target.waitSeconds
+                    ?.takeIf { it > 0 }
+                    ?.let { timeProvider.now().plusSeconds(it.coerceAtLeast(MINIMUM_WAIT_SECONDS).toLong()) }
+                store.transition(
+                    accountId = accountId,
+                    raidId = attempt.raidId,
+                    status = target.toCycleStatus(),
+                    observedStatus = target.statusText,
+                    nextCheckAt = nextCheckAt.takeIf {
+                        target.status in REGISTRATION_STATUSES
+                    },
+                    now = timeProvider.now(),
+                )
+                return RaidRecordResult.Recorded()
+            }
+        }
+        if (attempt.kind == RaidIntentKind.START) {
+            val target = page.raids.singleOrNull { it.id == attempt.raidId }
+            if (target?.status in setOf(RaidObservedStatus.IN_BATTLE, RaidObservedStatus.COMPLETED)) {
+                store.transition(
+                    accountId = accountId,
+                    raidId = attempt.raidId,
+                    status = requireNotNull(target).toCycleStatus(),
+                    observedStatus = target.statusText,
+                    nextCheckAt = null,
+                    now = timeProvider.now(),
+                )
+                return RaidRecordResult.Recorded()
+            }
+        }
+        if (attempt.kind == RaidIntentKind.REWARD && rewardResultIsProven(page, attempt.raidId)) {
+            store.transition(
+                accountId = accountId,
+                raidId = attempt.raidId,
+                status = RaidAutomationCycleStatus.POST_REWARD_CHECK,
+                observedStatus = page.raids.singleOrNull { it.id == attempt.raidId }?.statusText,
+                nextCheckAt = null,
+                now = timeProvider.now(),
+            )
+            if (page.registrationWait) {
+                val completion = store.finish(
+                    accountId = accountId,
+                    raidId = attempt.raidId,
+                    outcome = RaidCycleOutcomeKind.COMPLETED,
+                    now = timeProvider.now(),
+                    advanceRotation = true,
+                )
+                return RaidRecordResult.Recorded(completion)
+            }
+            return RaidRecordResult.Recorded()
+        }
+        if (attempt.kind == RaidIntentKind.REFRESH && refreshResultIsProven(page, attempt.raidId)) {
+            return RaidRecordResult.Recorded(
+                store.finish(
+                    accountId = accountId,
+                    raidId = attempt.raidId,
+                    outcome = RaidCycleOutcomeKind.COMPLETED,
+                    now = timeProvider.now(),
+                    advanceRotation = true,
+                ),
+            )
+        }
+        return needsRecheck("레이드 실행 결과가 아직 적용을 증명하지 못했습니다.")
+    }
+
+    private fun completeCycle(accountId: Long, cycle: RaidCycleSnapshot) = RaidDirective.Complete(
+        store.finish(
+            accountId = accountId,
+            raidId = cycle.raidId,
+            outcome = RaidCycleOutcomeKind.COMPLETED,
+            now = timeProvider.now(),
+            advanceRotation = true,
+        ),
+    )
+
+    private fun rewardResultIsProven(page: RaidObservation, raidId: String): Boolean {
+        if (RaidIntentKind.REWARD in page.globalActions) return false
+        val target = page.raids.singleOrNull { it.id == raidId }
+        return page.applied ||
+            page.registrationWait ||
+            target?.let(::requiresReset) == true ||
+            (target != null && !target.joined && target.status in REGISTRATION_STATUSES)
+    }
+
+    private fun refreshResultIsProven(page: RaidObservation, raidId: String): Boolean {
+        if (RaidIntentKind.REWARD in page.globalActions) return false
+        val target = page.raids.singleOrNull { it.id == raidId }
+        return page.applied ||
+            page.registrationWait ||
+            target?.let(::requiresReset) == true ||
+            (target != null && !target.joined && target.status in REGISTRATION_STATUSES)
+    }
+
+    private fun needsRecheck(message: String) = RaidRecordResult.NeedsRecheck(
+        timeProvider.now().plusSeconds(DEFAULT_RECHECK_SECONDS),
+        message,
+    )
+
+    private fun rotate(targets: List<RaidCycleTarget>, currentTargetKey: String?): List<RaidCycleTarget> {
+        val ordered = targets.sortedWith(compareBy(RaidCycleTarget::executionOrder, RaidCycleTarget::raidId))
+        val index = ordered.indexOfFirst { it.raidId == currentTargetKey }
+        return if (index <= 0) ordered else ordered.drop(index) + ordered.take(index)
+    }
+
+    private fun requiresReset(target: RaidObservedTarget): Boolean =
+        target.statusText?.let(RESET_REQUIRED_STATUS::containsMatchIn) == true
+
+    private fun RaidObservedTarget.toCycleStatus(): RaidAutomationCycleStatus = when (status) {
+        RaidObservedStatus.IN_BATTLE -> RaidAutomationCycleStatus.IN_BATTLE
+        RaidObservedStatus.COMPLETED -> RaidAutomationCycleStatus.REWARD_PENDING
+        else -> RaidAutomationCycleStatus.REGISTERED_WAITING
+    }
+
+    private companion object {
+        const val DEFAULT_RECHECK_SECONDS = 30L
+        const val MINIMUM_WAIT_SECONDS = 5
+        val RESET_REQUIRED_STATUS = Regex("보상\\s*확인\\s*종료\\s*\\(\\s*리셋\\s*가능\\s*\\)")
+        val REGISTRATION_STATUSES = setOf(
+            RaidObservedStatus.RECRUITING,
+            RaidObservedStatus.WAITING,
+            RaidObservedStatus.READY,
+        )
+    }
+}

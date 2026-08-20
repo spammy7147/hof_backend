@@ -90,6 +90,7 @@ data class BattleMapAutomationAction(
     val source: BattleAutomationActionSource = BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
     val resolvedParty: ResolvedAutomationParty? = null,
     val mapName: String? = null,
+    val sourceTargetKey: String? = null,
 ) : PreparedAutomationAction
 
 enum class BattleAutomationRoundOutcome { VICTORY, DEFEAT, DRAW, NETWORK_FAILURE, UNKNOWN }

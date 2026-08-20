@@ -1383,8 +1383,8 @@ internal object FreshSchemaContract {
         check("fishing_automation_settings", "ck_fishing_automation_settings_preset_mode", "case preset_mode when 'PRIMARY' then true when 'EXPLICIT' then true else false end"),
         check("fishing_automation_maps", "ck_fishing_automation_maps_preset_mode", "case preset_mode when 'PRIMARY' then true when 'EXPLICIT' then true else false end"),
         check("fishing_automation_maps", "ck_fishing_automation_maps_order", "execution_order >= 0"),
-        check("raid_automation_cycles", "ck_raid_automation_cycles_status", "locate(',' || status || ',', ',REGISTERED_WAITING,IN_BATTLE,REWARD_PENDING,COMPLETED,ABORTED_CLOSED,') > 0"),
-        check("raid_automation_cycles", "ck_raid_automation_cycles_open", "(open_marker is null and finished_at is not null and locate(',' || status || ',', ',COMPLETED,ABORTED_CLOSED,') > 0) or (open_marker = 1 and finished_at is null and locate(',' || status || ',', ',REGISTERED_WAITING,IN_BATTLE,REWARD_PENDING,') > 0)"),
+        check("raid_automation_cycles", "ck_raid_automation_cycles_status", "locate(',' || status || ',', ',PREPARING,REGISTERED_WAITING,IN_BATTLE,REWARD_PENDING,POST_REWARD_CHECK,COMPLETED,ABORTED_CLOSED,ABORTED_REGISTRATION_LOST,HANDED_OFF_MANUAL,SUPERSEDED_BY_OBSERVED_RAID,') > 0"),
+        check("raid_automation_cycles", "ck_raid_automation_cycles_open", "(open_marker is null and finished_at is not null and locate(',' || status || ',', ',COMPLETED,ABORTED_CLOSED,ABORTED_REGISTRATION_LOST,HANDED_OFF_MANUAL,SUPERSEDED_BY_OBSERVED_RAID,') > 0) or (open_marker = 1 and finished_at is null and locate(',' || status || ',', ',PREPARING,REGISTERED_WAITING,IN_BATTLE,REWARD_PENDING,POST_REWARD_CHECK,') > 0)"),
         check("automation_decision_cycles", "ck_automation_decision_cycles_result", "locate(',' || result || ',', ',ACTION_SELECTED,WAITING,IDLE,FATAL,') > 0"),
         check(
             "adventure_daily_preflight_states", "ck_adventure_daily_preflight_states_attempts",

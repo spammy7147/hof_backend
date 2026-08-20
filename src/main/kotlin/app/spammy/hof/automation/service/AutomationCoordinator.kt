@@ -10,7 +10,6 @@ data class AutomationCoordinatorEntry(
     val quest: QuestAutomationSnapshot? = null,
     val battle: BattleMapAutomationSnapshot? = null,
     val adventure: AdventureMapAutomationSnapshot? = null,
-    val raid: RaidAutomationSnapshot? = null,
     val union: UnionAutomationSnapshot? = null,
     val fishing: FishingAutomationSnapshot? = null,
     val homeQuest: HomeQuestAutomationSnapshot? = null,
@@ -75,7 +74,6 @@ class AutomationCoordinator(
     private val quest: AutomationHandler<QuestAutomationSnapshot>,
     private val battle: AutomationHandler<BattleMapAutomationSnapshot>,
     private val adventure: AutomationHandler<AdventureMapAutomationSnapshot>,
-    private val raid: AutomationHandler<RaidAutomationSnapshot>? = null,
     private val union: AutomationHandler<UnionAutomationSnapshot>? = null,
     private val fishing: AutomationHandler<FishingAutomationSnapshot>? = null,
     private val homeQuest: AutomationHandler<HomeQuestAutomationSnapshot>? = null,
@@ -90,7 +88,7 @@ class AutomationCoordinator(
                 AutomationType.HOME_QUEST -> entry.homeQuest?.let { homeQuest?.evaluate(it) }
                 AutomationType.BATTLE_MAP -> entry.battle?.let(battle::evaluate)
                 AutomationType.ADVENTURE_MAP -> entry.adventure?.let(adventure::evaluate)
-                AutomationType.RAID -> entry.raid?.let { raid?.evaluate(it) }
+                AutomationType.RAID -> HandlerEvaluation.Skipped
                 AutomationType.UNION -> entry.union?.let { union?.evaluate(it) }
                 AutomationType.FISHING -> entry.fishing?.let { fishing?.evaluate(it) }
             } ?: HandlerEvaluation.ConfigurationWarning("${entry.type} automation snapshot is missing.")
@@ -154,33 +152,7 @@ private fun AutomationCoordinatorEntry.waitingTrace(evaluation: HandlerEvaluatio
             presetId = target?.presetId,
         )
     }
-    val snapshot = raid ?: return null
-    val cycle = snapshot.openCycle
-    val targetId = cycle?.raidId ?: snapshot.currentTargetKey
-    val raid = snapshot.pub.raids.singleOrNull { it.id == targetId }
-    val configured = snapshot.targets.singleOrNull { it.raidId == targetId }
-    val phase = when (evaluation.reasonCode) {
-        "RAID_WAITING_TO_START" -> "출발 대기"
-        "RAID_BATTLE_COOLDOWN" -> "반복 전투 쿨다운"
-        "RAID_BATTLE_TARGET_MISSING" -> "전투 맵 확인"
-        "RAID_RESET_PENDING" -> "리셋 가능 상태 확인"
-        "RAID_REWARD_CONFIRMATION_WAIT" -> "보상 확인 종료 대기"
-        "RAID_NEXT_CHECK" -> if (cycle?.status == app.spammy.hof.automation.entity.RaidAutomationCycleStatus.REWARD_PENDING) "보상 후 상태 갱신 대기" else "다음 상태 확인 대기"
-        "RAID_SHARED_COOLDOWN" -> "공유 쿨다운"
-        else -> "레이드 상태 확인"
-    }
-    val observations = listOfNotNull(
-        raid?.status?.name?.let { "상태 $it" },
-        raid?.statusText?.let { "HOF 표시 '$it'" },
-        raid?.waitSeconds?.let { "남은 대기 ${it}초" },
-    ).joinToString(" · ")
-    return SelectedActionTrace(
-        actionKind = "WAIT",
-        message = "$phase 단계 · ${evaluation.message}${if (observations.isBlank()) "" else " · $observations"}",
-        targetKey = targetId,
-        targetName = raid?.name ?: configured?.name,
-        presetId = configured?.presetId,
-    )
+    return null
 }
 
 private data class SelectedActionTrace(

@@ -51,6 +51,7 @@ class TypedAutomationLifecycleBridge(
             clearRuntime(state, now)
         }
         clearPreflight(accountId, now)
+        makeParkedRaidCheckDue(accountId, now)
         outbox.enqueue(accountId, wakeReason)
         return true
     }
@@ -99,6 +100,7 @@ class TypedAutomationLifecycleBridge(
                 clearRuntime(state, now)
             }
             clearPreflight(accountId, now)
+            makeParkedRaidCheckDue(accountId, now)
         }
         outbox.enqueue(accountId, wakeReason)
     }
@@ -116,6 +118,7 @@ class TypedAutomationLifecycleBridge(
         state.lifecycleStatus = TypedAutomationLifecycle.RUNNING
         clearRuntime(state, now)
         clearPreflight(accountId, now)
+        makeParkedRaidCheckDue(accountId, now)
         outbox.enqueue(accountId, wakeReason)
         return true
     }
@@ -217,5 +220,21 @@ class TypedAutomationLifecycleBridge(
             session.updatedAt = now
             workSessionCommands.save(session)
         }
+    }
+
+    private fun makeParkedRaidCheckDue(accountId: Long, now: java.time.Instant) {
+        workSessions.lockOpen(accountId)
+            .filter { session ->
+                session.workType == app.spammy.hof.automation.entity.AutomationWorkType.RAID &&
+                    session.status in setOf(
+                        AutomationWorkStatus.WAITING_COOLDOWN,
+                        AutomationWorkStatus.WAITING_RESOURCE,
+                    )
+            }
+            .forEach { session ->
+                session.nextCheckAt = now
+                session.updatedAt = now
+                workSessionCommands.save(session)
+            }
     }
 }

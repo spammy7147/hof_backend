@@ -28,6 +28,10 @@ import app.spammy.hof.automation.entity.FishingAutomationSettingEntity
 import app.spammy.hof.automation.entity.FishingAutomationMapEntity
 import app.spammy.hof.automation.entity.HomeQuestAutomationSelectionEntity
 import app.spammy.hof.automation.entity.UnionAutomationMapEntity
+import app.spammy.hof.automation.raid.RaidAttempt
+import app.spammy.hof.automation.raid.RaidCycleModule
+import app.spammy.hof.automation.raid.RaidIntentKind
+import app.spammy.hof.automation.raid.RaidResultObservation
 import app.spammy.hof.automation.entity.RaidAutomationTargetEntity
 import app.spammy.hof.automation.entity.RaidAutomationCycleEntity
 import app.spammy.hof.automation.entity.RaidAutomationCycleStatus
@@ -95,6 +99,7 @@ class UnifiedAutomationServiceTest {
     private val automationOutbox = Mockito.mock(AutomationOutboxService::class.java)
     private val storedActionCodec = Mockito.mock(StoredTypedAutomationActionCodec::class.java)
     private val statusSnapshots = Mockito.mock(HofStatusSnapshotService::class.java)
+    private val raidCycleModule = Mockito.mock(RaidCycleModule::class.java)
     private var currentTime = NOW
     private val service = UnifiedAutomationService(
         accountQueryRepository = accountQueryRepository,
@@ -117,6 +122,7 @@ class UnifiedAutomationServiceTest {
         storedActionCodec = storedActionCodec,
         hofStatusSnapshots = statusSnapshots,
         workLifecycle = workLifecycle,
+        raidCycleModule = raidCycleModule,
     )
 
     init {
@@ -611,7 +617,7 @@ class UnifiedAutomationServiceTest {
     }
 
     @Test
-    fun `active raid target cannot be removed before its cycle finishes`() {
+    fun `removing an active raid target hands the cycle to manual control`() {
         val raidEntry = entry(96L, AutomationType.RAID, enabled = true)
         val active = RaidAutomationCycleEntity(
             id = 904L,
@@ -626,20 +632,20 @@ class UnifiedAutomationServiceTest {
         Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(raidEntry))
         Mockito.`when`(typedQuery.findOpenRaidCycle(ACCOUNT_ID)).thenReturn(active)
 
-        val error = assertFailsWith<ApiException> {
-            service.updateRaid(
-                ACCOUNT_ID,
-                UpdateRaidAutomationRequest(enabled = false, targets = emptyList()),
-            )
-        }
+        service.updateRaid(
+            ACCOUNT_ID,
+            UpdateRaidAutomationRequest(enabled = false, targets = emptyList()),
+        )
 
-        assertEquals(ErrorCode.INVALID_REQUEST, error.errorCode)
-        assertTrue(error.message.orEmpty().contains("진행 중인 레이드"))
-        Mockito.verifyNoInteractions(raidTargetRepository)
+        Mockito.verify(raidCycleModule).recordObservedResult(
+            ACCOUNT_ID,
+            RaidAttempt(96L, RaidIntentKind.REFRESH, "raid-1", null),
+            RaidResultObservation.ManualHandoff,
+        )
     }
 
     @Test
-    fun `raid entry cannot be deleted while its cycle is open`() {
+    fun `deleting a raid entry hands its open cycle to manual control`() {
         val raidEntry = entry(96L, AutomationType.RAID, enabled = false)
         val active = RaidAutomationCycleEntity(
             id = 905L,
@@ -654,11 +660,14 @@ class UnifiedAutomationServiceTest {
         Mockito.`when`(typedQuery.findEntry(ACCOUNT_ID, raidEntry.id)).thenReturn(raidEntry)
         Mockito.`when`(typedQuery.findOpenRaidCycle(ACCOUNT_ID)).thenReturn(active)
 
-        val error = assertFailsWith<ApiException> { service.deleteEntry(ACCOUNT_ID, raidEntry.id) }
+        service.deleteEntry(ACCOUNT_ID, raidEntry.id)
 
-        assertEquals(ErrorCode.INVALID_REQUEST, error.errorCode)
-        assertTrue(error.message.orEmpty().contains("진행 중인 레이드"))
-        Mockito.verify(entryRepository, Mockito.never()).delete(raidEntry)
+        Mockito.verify(raidCycleModule).recordObservedResult(
+            ACCOUNT_ID,
+            RaidAttempt(96L, RaidIntentKind.REFRESH, "raid-1", null),
+            RaidResultObservation.ManualHandoff,
+        )
+        Mockito.verify(entryRepository).delete(raidEntry)
     }
 
     @Test
