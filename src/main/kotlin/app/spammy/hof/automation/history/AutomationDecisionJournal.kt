@@ -63,7 +63,12 @@ interface AutomationDecisionJournal {
 }
 
 @Service
-class JpaAutomationDecisionJournal(private val entityManager: EntityManager, private val timeProvider: TimeProvider) : AutomationDecisionJournal {
+class JpaAutomationDecisionJournal(
+    private val entityManager: EntityManager,
+    private val timeProvider: TimeProvider,
+    private val cycleCommands: AutomationDecisionCycleCommandRepository,
+    private val eventCommands: AutomationDecisionEventCommandRepository,
+) : AutomationDecisionJournal {
     @Transactional
     override fun appendDecision(accountId: Long, decision: AutomationCoordination): Long {
         val now = timeProvider.now()
@@ -73,20 +78,22 @@ class JpaAutomationDecisionJournal(private val entityManager: EntityManager, pri
             is AutomationCoordination.Idle -> AutomationDecisionResult.IDLE
             is AutomationCoordination.Fatal -> AutomationDecisionResult.FATAL
         }, selectedEntryId = (decision as? AutomationCoordination.Runnable)?.entryId, startedAt = now, finishedAt = now)
-        entityManager.persist(cycle)
-        decision.trace.forEach { item -> entityManager.persist(AutomationDecisionEventEntity(
+        cycleCommands.save(cycle)
+        eventCommands.saveAll(decision.trace.map { item -> AutomationDecisionEventEntity(
             cycle = cycle, sequence = item.sequence, entryId = item.entryId, type = item.type,
             kind = when (item.outcome) {
                 AutomationDecisionOutcome.SELECTED -> AutomationHistoryEventKind.SELECTED
                 AutomationDecisionOutcome.SKIPPED -> AutomationHistoryEventKind.SKIPPED
                 AutomationDecisionOutcome.WAITING -> AutomationHistoryEventKind.WAITING
                 AutomationDecisionOutcome.CONFIGURATION_WARNING -> AutomationHistoryEventKind.CONFIGURATION_WARNING
+                AutomationDecisionOutcome.CYCLE_COMPLETED -> AutomationHistoryEventKind.CYCLE_COMPLETED
+                AutomationDecisionOutcome.CYCLE_ABORTED -> AutomationHistoryEventKind.CYCLE_ABORTED
                 AutomationDecisionOutcome.FATAL -> AutomationHistoryEventKind.ACTION_FAILED
             }, reasonCode = item.reasonCode, message = item.message, nextRunAt = item.nextRunAt,
             actionKind = item.actionKind, targetKey = item.targetKey, targetName = item.targetName,
             presetId = item.presetId, presetName = presetName(accountId, item.presetId), occurredAt = now,
-        )) }
-        entityManager.flush()
+        ) })
+        eventCommands.flush()
         return cycle.id
     }
 
@@ -100,9 +107,9 @@ class JpaAutomationDecisionJournal(private val entityManager: EntityManager, pri
             startedAt = now,
             finishedAt = now,
         )
-        entityManager.persist(cycle)
-        entityManager.persist(result.toEntity(cycle, 0, accountId, now))
-        entityManager.flush()
+        cycleCommands.save(cycle)
+        eventCommands.save(result.toEntity(cycle, 0, accountId, now))
+        eventCommands.flush()
         return cycle.id
     }
 
@@ -113,7 +120,7 @@ class JpaAutomationDecisionJournal(private val entityManager: EntityManager, pri
         val next = entityManager.createQuery(
             "select coalesce(max(e.sequence), -1) + 1 from AutomationDecisionEventEntity e where e.cycle.id = :cycleId", java.lang.Integer::class.java,
         ).setParameter("cycleId", cycleId).singleResult.toInt()
-        entityManager.persist(result.toEntity(cycle, next, cycle.accountId, timeProvider.now()))
+        eventCommands.save(result.toEntity(cycle, next, cycle.accountId, timeProvider.now()))
     }
 
     @Transactional
@@ -127,9 +134,9 @@ class JpaAutomationDecisionJournal(private val entityManager: EntityManager, pri
             startedAt = now,
             finishedAt = now,
         )
-        entityManager.persist(cycle)
-        entityManager.persist(trace.toEntity(cycle, 0, accountId, now))
-        entityManager.flush()
+        cycleCommands.save(cycle)
+        eventCommands.save(trace.toEntity(cycle, 0, accountId, now))
+        eventCommands.flush()
         return cycle.id
     }
 

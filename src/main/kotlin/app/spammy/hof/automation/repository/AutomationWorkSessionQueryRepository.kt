@@ -26,6 +26,7 @@ data class AutomationWorkSessionView(
     val observedRequired: Int?,
     val materialName: String?,
     val nextCheckAt: Instant?,
+    val holdMessage: String? = null,
 )
 
 @Repository
@@ -107,6 +108,7 @@ class AutomationWorkSessionQueryRepository(
         automationWorkSessionEntity.observedRequired,
         automationWorkSessionEntity.materialName,
         automationWorkSessionEntity.nextCheckAt,
+        automationWorkSessionEntity.holdMessage,
     ).from(automationWorkSessionEntity)
         .join(automationWorkSessionEntity.entry, automationEntryEntity)
 
@@ -124,6 +126,7 @@ class AutomationWorkSessionQueryRepository(
         observedRequired = get(automationWorkSessionEntity.observedRequired),
         materialName = get(automationWorkSessionEntity.materialName),
         nextCheckAt = get(automationWorkSessionEntity.nextCheckAt),
+        holdMessage = get(automationWorkSessionEntity.holdMessage),
     )
 
     private companion object {

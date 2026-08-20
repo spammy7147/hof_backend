@@ -35,6 +35,7 @@ interface AutomationWorkLifecycle {
         entryId: Long,
         raidId: String,
         nextCheckAt: java.time.Instant?,
+        holdMessage: String? = null,
     )
     fun triggerRaidConfigurationCheck(accountId: Long)
     fun complete(accountId: Long, sessionId: Long)
@@ -70,6 +71,7 @@ class AutomationWorkSessionService(
         ) { "Only a parked work session may be resumed." }
         session.status = AutomationWorkStatus.RUNNING
         session.nextCheckAt = null
+        session.holdMessage = null
         session.finishedAt = null
         session.updatedAt = timeProvider.now()
         commands.save(session)
@@ -113,6 +115,7 @@ class AutomationWorkSessionService(
             }
             parked.status = AutomationWorkStatus.RUNNING
             parked.nextCheckAt = null
+            parked.holdMessage = null
             parked.updatedAt = timeProvider.now()
             parked.alignRaidTarget(spec, entry.updatedAt.toString())
             commands.save(parked)
@@ -237,6 +240,7 @@ class AutomationWorkSessionService(
         entryId: Long,
         raidId: String,
         nextCheckAt: java.time.Instant?,
+        holdMessage: String?,
     ) {
         requireRunningRuntime(accountId)
         val entry = typed.findEntry(accountId, entryId)
@@ -255,6 +259,7 @@ class AutomationWorkSessionService(
             session.status = AutomationWorkStatus.WAITING_COOLDOWN
             session.configVersion = entry.updatedAt.toString()
             session.nextCheckAt = nextCheckAt
+            session.holdMessage = holdMessage?.take(MAX_HOLD_MESSAGE_LENGTH)
             session.finishedAt = null
             session.updatedAt = now
             commands.save(session)
@@ -269,6 +274,7 @@ class AutomationWorkSessionService(
                 status = AutomationWorkStatus.WAITING_COOLDOWN,
                 configVersion = entry.updatedAt.toString(),
                 nextCheckAt = nextCheckAt,
+                holdMessage = holdMessage?.take(MAX_HOLD_MESSAGE_LENGTH),
                 createdAt = now,
                 updatedAt = now,
             ),
@@ -299,6 +305,7 @@ class AutomationWorkSessionService(
         val now = timeProvider.now()
         session.status = AutomationWorkStatus.COMPLETED
         session.nextCheckAt = null
+        session.holdMessage = null
         session.finishedAt = now
         session.updatedAt = now
         commands.save(session)
@@ -322,6 +329,7 @@ class AutomationWorkSessionService(
         val now = timeProvider.now()
         session.status = AutomationWorkStatus.COMPLETED
         session.nextCheckAt = null
+        session.holdMessage = null
         session.finishedAt = now
         session.updatedAt = now
         commands.save(session)
@@ -345,6 +353,7 @@ class AutomationWorkSessionService(
         val now = timeProvider.now()
         session.status = AutomationWorkStatus.COMPLETED
         session.nextCheckAt = null
+        session.holdMessage = null
         session.finishedAt = now
         session.updatedAt = now
         commands.save(session)
@@ -361,6 +370,7 @@ class AutomationWorkSessionService(
         val now = timeProvider.now()
         session.status = AutomationWorkStatus.COMPLETED
         session.nextCheckAt = null
+        session.holdMessage = null
         session.finishedAt = now
         session.updatedAt = now
         commands.save(session)
@@ -379,6 +389,7 @@ class AutomationWorkSessionService(
             .forEach { session ->
                 session.status = AutomationWorkStatus.STOPPED
                 session.nextCheckAt = null
+                session.holdMessage = null
                 session.finishedAt = now
                 session.updatedAt = now
                 commands.save(session)
@@ -470,6 +481,7 @@ class AutomationWorkSessionService(
     }
 
     private companion object {
+        const val MAX_HOLD_MESSAGE_LENGTH = 1000
         const val FISHING_CYCLE_TARGET = "DAILY_FISHING"
         val OPEN_SESSION_STATUSES = setOf(
             AutomationWorkStatus.RUNNING,

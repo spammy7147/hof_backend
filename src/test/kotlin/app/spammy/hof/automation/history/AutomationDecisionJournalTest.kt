@@ -22,6 +22,8 @@ import kotlin.test.assertNull
 class AutomationDecisionJournalTest {
     @Autowired private lateinit var accounts: HofAccountRepository
     @Autowired private lateinit var entityManager: EntityManager
+    @Autowired private lateinit var cycleCommands: AutomationDecisionCycleCommandRepository
+    @Autowired private lateinit var eventCommands: AutomationDecisionEventCommandRepository
     private val now = Instant.parse("2026-08-12T01:00:00Z")
 
     @Test
@@ -31,7 +33,7 @@ class AutomationDecisionJournalTest {
         val quest = entry(first, AutomationType.QUEST, 0)
         val union = entry(first, AutomationType.UNION, 1)
         entityManager.flush()
-        val journal = JpaAutomationDecisionJournal(entityManager, TimeProvider { now })
+        val journal = journal()
         val decision = AutomationCoordination.Idle(emptyList(), listOf(
             AutomationEvaluationTrace(0, quest.id, AutomationType.QUEST, AutomationDecisionOutcome.SKIPPED, "QUEST_DONE", "완료"),
             AutomationEvaluationTrace(
@@ -63,7 +65,7 @@ class AutomationDecisionJournalTest {
         val account = account("history-resume")
         val raid = entry(account, AutomationType.RAID, 0)
         entityManager.flush()
-        val journal = JpaAutomationDecisionJournal(entityManager, TimeProvider { now })
+        val journal = journal()
 
         journal.appendPreparedActionAttempt(account.id, AutomationActionTrace(
             kind = AutomationHistoryEventKind.WAITING,
@@ -94,7 +96,7 @@ class AutomationDecisionJournalTest {
         val account = account("history-raid-handoff")
         val raid = entry(account, AutomationType.RAID, 0)
         entityManager.flush()
-        val journal = JpaAutomationDecisionJournal(entityManager, TimeProvider { now })
+        val journal = journal()
 
         journal.appendRaidCycleOutcome(
             account.id,
@@ -109,9 +111,47 @@ class AutomationDecisionJournalTest {
         assertEquals("Raid001", event.targetKey)
     }
 
+    @Test
+    fun `maps a decision-time raid completion to cycle history instead of skipped`() {
+        val account = account("history-raid-complete")
+        val raid = entry(account, AutomationType.RAID, 0)
+        entityManager.flush()
+        val journal = journal()
+
+        journal.appendDecision(
+            account.id,
+            AutomationCoordination.Idle(
+                warnings = emptyList(),
+                trace = listOf(
+                    AutomationEvaluationTrace(
+                        sequence = 0,
+                        entryId = raid.id,
+                        type = AutomationType.RAID,
+                        outcome = AutomationDecisionOutcome.CYCLE_COMPLETED,
+                        reasonCode = RaidCycleOutcomeKind.COMPLETED.name,
+                        message = "레이드 사이클을 완료했습니다.",
+                        targetKey = "Raid001",
+                    ),
+                ),
+            ),
+        )
+        entityManager.clear()
+
+        val event = journal.page(account.id, AutomationHistoryQuery()).cycles.single().events.single()
+        assertEquals(AutomationHistoryEventKind.CYCLE_COMPLETED, event.kind)
+        assertEquals(RaidCycleOutcomeKind.COMPLETED.name, event.reasonCode)
+    }
+
     private fun account(login: String) = accounts.save(HofAccountEntity(
         loginId = login, encryptedPassword = "encrypted", createdAt = now,
     ))
+
+    private fun journal() = JpaAutomationDecisionJournal(
+        entityManager,
+        TimeProvider { now },
+        cycleCommands,
+        eventCommands,
+    )
 
     private fun entry(account: HofAccountEntity, type: AutomationType, priority: Int): AutomationEntryEntity =
         AutomationEntryEntity(account = account, type = type, priority = priority, enabled = true, createdAt = now, updatedAt = now)

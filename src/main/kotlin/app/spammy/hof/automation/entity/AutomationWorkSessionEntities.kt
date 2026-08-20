@@ -85,6 +85,9 @@ class AutomationWorkSessionEntity(
     @Column(name = "next_check_at")
     var nextCheckAt: Instant? = null,
 
+    @Column(name = "hold_message", length = 1000)
+    var holdMessage: String? = null,
+
     @Column(name = "last_verified_at")
     var lastVerifiedAt: Instant? = null,
 

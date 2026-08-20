@@ -321,7 +321,7 @@ class AutomationWorkSessionServiceTest {
         Mockito.`when`(typed.findEntry(7, raidEntry.id)).thenReturn(raidEntry)
         Mockito.`when`(queries.lockOpen(7)).thenReturn(emptyList())
 
-        service.waitForRaid(7, raidEntry.id, "RaidGoblin", retryAt)
+        service.waitForRaid(7, raidEntry.id, "RaidGoblin", retryAt, "수동 레이드 진행 중")
 
         val captor = ArgumentCaptor.forClass(AutomationWorkSessionEntity::class.java)
         Mockito.verify(commands).save(
@@ -340,6 +340,7 @@ class AutomationWorkSessionServiceTest {
         assertEquals("RaidGoblin", captor.value.targetKey)
         assertEquals(AutomationWorkStatus.WAITING_COOLDOWN, captor.value.status)
         assertEquals(retryAt, captor.value.nextCheckAt)
+        assertEquals("수동 레이드 진행 중", captor.value.holdMessage)
     }
 
     @Test

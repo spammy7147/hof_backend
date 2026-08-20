@@ -430,6 +430,7 @@ internal object FreshSchemaContract {
             optionalVarchar("mission_type", 32), optionalInteger("observed_current"),
             optionalInteger("observed_required"), optionalVarchar("material_name", 255),
             optionalInteger("material_missing"), optionalInstant("next_check_at"),
+            optionalVarchar("hold_message", 1000),
             optionalInstant("last_verified_at"), requiredInstant("created_at"), requiredInstant("updated_at"),
             optionalInstant("finished_at"), requiredBigint("version"),
         ),

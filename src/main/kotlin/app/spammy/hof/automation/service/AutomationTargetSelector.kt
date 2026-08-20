@@ -1,6 +1,7 @@
 package app.spammy.hof.automation.service
 
 import app.spammy.hof.automation.raid.RaidCycleModule
+import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
 import app.spammy.hof.automation.raid.RaidDirective
 import app.spammy.hof.automation.raid.RaidIntent
 import app.spammy.hof.automation.raid.RaidIntentKind
@@ -132,6 +133,9 @@ class AutomationTargetSelector(
                         it.nextCheckAt?.isAfter(now) == false
                 }
                 if (waiting.isNotEmpty() && !hasDueTarget) {
+                    waiting.mapNotNull(AutomationWorkSessionView::holdMessage).forEach { message ->
+                        if (message !in warnings) warnings += message
+                    }
                     if (blockedUntil != null && (earliest == null || blockedUntil < earliest)) earliest = blockedUntil
                     if (entry.type != AutomationType.QUEST) return@forEach
                 }
@@ -172,6 +176,7 @@ class AutomationTargetSelector(
                                     directive.entryId ?: entry.id,
                                     raidId,
                                     directive.recheckAt,
+                                    directive.message,
                                 )
                             }
                             directive.recheckAt?.let { at ->
@@ -233,8 +238,13 @@ class AutomationTargetSelector(
             )
         }
         is RaidDirective.Hold -> {
-            directive.recheckAt?.let { lifecycle.waitForCooldown(accountId, session.id, it) }
-                ?: lifecycle.complete(accountId, session.id)
+            lifecycle.waitForRaid(
+                accountId,
+                directive.entryId ?: session.entryId,
+                directive.raidId ?: session.targetKey,
+                directive.recheckAt,
+                directive.message,
+            )
             selectConfigured(
                 accountId,
                 initialWarnings + directive.message,
@@ -290,7 +300,11 @@ class AutomationTargetSelector(
             sequence,
             entryId,
             AutomationType.RAID,
-            AutomationDecisionOutcome.SKIPPED,
+            if (outcome.kind == RaidCycleOutcomeKind.COMPLETED) {
+                AutomationDecisionOutcome.CYCLE_COMPLETED
+            } else {
+                AutomationDecisionOutcome.CYCLE_ABORTED
+            },
             outcome.kind.name,
             "레이드 사이클을 ${outcome.kind.name} 상태로 마쳤습니다.",
             targetKey = outcome.raidId,

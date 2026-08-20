@@ -22,6 +22,8 @@ enum class AutomationDecisionOutcome {
     SKIPPED,
     WAITING,
     CONFIGURATION_WARNING,
+    CYCLE_COMPLETED,
+    CYCLE_ABORTED,
     FATAL,
 }
 

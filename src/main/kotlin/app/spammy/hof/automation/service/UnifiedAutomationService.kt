@@ -5,6 +5,7 @@ import app.spammy.hof.automation.dto.*
 import app.spammy.hof.automation.entity.AdventureAutomationMapEntity
 import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.AutomationType
+import app.spammy.hof.automation.entity.AutomationWorkType
 import app.spammy.hof.automation.entity.BattleAutomationMapEntity
 import app.spammy.hof.automation.entity.FishingAutomationMapEntity
 import app.spammy.hof.automation.entity.HomeQuestAutomationSelectionEntity
@@ -23,6 +24,7 @@ import app.spammy.hof.automation.raid.RaidRecordResult
 import app.spammy.hof.automation.raid.RaidResultObservation
 import app.spammy.hof.automation.repository.AdventureAutomationMapCommandRepository
 import app.spammy.hof.automation.repository.AutomationEntryCommandRepository
+import app.spammy.hof.automation.repository.AutomationWorkSessionQueryRepository
 import app.spammy.hof.automation.repository.BattleAutomationMapCommandRepository
 import app.spammy.hof.automation.repository.FishingAutomationSettingCommandRepository
 import app.spammy.hof.automation.repository.FishingAutomationMapCommandRepository
@@ -67,6 +69,7 @@ class UnifiedAutomationService(
     private val storedActionCodec: StoredTypedAutomationActionCodec,
     private val hofStatusSnapshots: HofStatusSnapshotService,
     private val workLifecycle: AutomationWorkLifecycle,
+    private val workSessionQueries: AutomationWorkSessionQueryRepository,
     private val raidCycleModule: RaidCycleModule,
     private val decisionJournal: AutomationDecisionJournal,
 ) {
@@ -617,6 +620,11 @@ class UnifiedAutomationService(
 
     private fun buildTypedAggregate(accountId: Long): TypedAutomationAggregateResponse {
         val entries = typedAutomationQueryRepository.findEntries(accountId)
+        val holdWarningsByEntry = workSessionQueries.findWaiting(accountId)
+            .asSequence()
+            .filter { it.workType == AutomationWorkType.RAID }
+            .mapNotNull { session -> session.holdMessage?.let { session.entryId to it } }
+            .groupBy({ it.first }, { it.second })
         val battleMapProgress = if (entries.any { it.type == AutomationType.BATTLE_MAP }) {
             typedAutomationQueryRepository.findBattleProgressRows(
                 accountId,
@@ -693,7 +701,10 @@ class UnifiedAutomationService(
             val fishingCatalog = if (fishingMaps.isEmpty()) emptyMap() else battleMapQueryRepository
                 .findMapsByCategoryIdAndMapCodePairs(fishingMaps.map { it.categoryId to it.mapCode }.toSet())
                 .associateBy { it.categoryId to it.mapCode }
-            val warnings = typedWarnings(entry, quests, homeQuests, questMaps, battle, adventure, fishingMaps, union, raid, primaryPresetId, validPresetIds)
+            val warnings = (
+                typedWarnings(entry, quests, homeQuests, questMaps, battle, adventure, fishingMaps, union, raid, primaryPresetId, validPresetIds) +
+                    holdWarningsByEntry[entry.id].orEmpty()
+                ).distinct()
             TypedAutomationEntryResponse(
                 id = entry.id,
                 type = entry.type,

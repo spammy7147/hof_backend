@@ -7,6 +7,8 @@ import app.spammy.hof.automation.entity.AutomationWorkStatus
 import app.spammy.hof.automation.entity.AutomationWorkType
 import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.automation.raid.RaidCycleModule
+import app.spammy.hof.automation.raid.RaidCycleOutcome
+import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
 import app.spammy.hof.automation.raid.RaidDirective
 import app.spammy.hof.automation.raid.RaidIntent
 import app.spammy.hof.automation.raid.RaidIntentKind
@@ -214,7 +216,67 @@ class AutomationTargetSelectorTest {
         val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
 
         assertEquals(11, selected.entryId)
-        Mockito.verify(lifecycle).waitForRaid(7, raidEntry.id, "RaidGoblin", null)
+        Mockito.verify(lifecycle).waitForRaid(
+            7,
+            raidEntry.id,
+            "RaidGoblin",
+            null,
+            "레이드 전투 프리셋 구성을 확인해 주세요.",
+        )
+    }
+
+    @Test
+    fun `parked raid hold warning survives lower priority actions without an early raid recheck`() {
+        val holdMessage = "사용자가 진행 중인 레이드가 끝날 때까지 레이드 자동화를 보류합니다."
+        val battleSnapshot = AutomationCoordinatorEntry(11, AutomationType.BATTLE_MAP)
+        val battleAction = BattleMapAutomationAction(
+            accountId = 7,
+            progressDate = java.time.LocalDate.parse("2026-07-23"),
+            categoryId = "battle_map",
+            mapCode = "map-1",
+            presetMode = PresetSelectionMode.PRIMARY,
+            presetId = 3,
+            battleCount = 1,
+            executionIdentity = "battle-while-manual-raid-is-active",
+        )
+        Mockito.`when`(work.findRunning(7)).thenReturn(null)
+        Mockito.`when`(work.findWaiting(7)).thenReturn(listOf(
+            session(
+                33,
+                raidEntry,
+                AutomationWorkType.RAID,
+                "RaidManual",
+                AutomationWorkStatus.WAITING_COOLDOWN,
+                nextCheckAt = now.plusSeconds(30),
+                holdMessage = holdMessage,
+            ),
+        ))
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(raidEntry, battleEntry))
+        Mockito.`when`(loader.loadEntry(7, battleEntry.id, null, null)).thenReturn(battleSnapshot)
+        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(battleSnapshot))))
+            .thenReturn(AutomationCoordination.Runnable(battleEntry.id, battleAction, emptyList()))
+
+        val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
+
+        assertEquals(listOf(holdMessage), selected.warnings)
+        Mockito.verifyNoInteractions(defaultRaidModule)
+    }
+
+    @Test
+    fun `raid completion directive is classified as a cycle history outcome`() {
+        Mockito.`when`(work.findRunning(7)).thenReturn(null)
+        Mockito.`when`(work.findWaiting(7)).thenReturn(emptyList())
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(raidEntry))
+        Mockito.`when`(defaultRaidModule.decideNext(7)).thenReturn(
+            RaidDirective.Complete(
+                RaidCycleOutcome(raidEntry.id, "RaidGoblin", RaidCycleOutcomeKind.ABORTED_CLOSED),
+            ),
+        )
+
+        val decision = assertIs<AutomationCoordination.Idle>(selector.select(7))
+
+        assertEquals(AutomationDecisionOutcome.CYCLE_ABORTED, decision.trace.single().outcome)
+        assertEquals(RaidCycleOutcomeKind.ABORTED_CLOSED.name, decision.trace.single().reasonCode)
     }
 
     @Test
@@ -558,6 +620,7 @@ class AutomationTargetSelectorTest {
         observedRequired: Int? = null,
         materialName: String? = null,
         nextCheckAt: Instant? = null,
+        holdMessage: String? = null,
     ) = AutomationWorkSessionView(
         id = id,
         accountId = account.id,
@@ -572,6 +635,7 @@ class AutomationTargetSelectorTest {
         observedRequired = observedRequired,
         materialName = materialName,
         nextCheckAt = nextCheckAt,
+        holdMessage = holdMessage,
     )
 
     private fun selection(questKey: String) = QuestAutomationSelection(

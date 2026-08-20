@@ -21,6 +21,8 @@ import app.spammy.hof.automation.dto.UpdateQuestAutomationRequest
 import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.entity.AutomationWaitReason
+import app.spammy.hof.automation.entity.AutomationWorkStatus
+import app.spammy.hof.automation.entity.AutomationWorkType
 import app.spammy.hof.automation.entity.AdventureAutomationMapEntity
 import app.spammy.hof.automation.entity.BattleAutomationDailyProgressEntity
 import app.spammy.hof.automation.entity.BattleAutomationMapEntity
@@ -49,6 +51,8 @@ import app.spammy.hof.automation.entity.TypedAutomationRuntimeStateEntity
 import app.spammy.hof.automation.outbox.AutomationOutboxService
 import app.spammy.hof.automation.repository.AdventureAutomationMapCommandRepository
 import app.spammy.hof.automation.repository.AutomationEntryCommandRepository
+import app.spammy.hof.automation.repository.AutomationWorkSessionQueryRepository
+import app.spammy.hof.automation.repository.AutomationWorkSessionView
 import app.spammy.hof.automation.repository.BattleAutomationMapCommandRepository
 import app.spammy.hof.automation.repository.FishingAutomationSettingCommandRepository
 import app.spammy.hof.automation.repository.FishingAutomationMapCommandRepository
@@ -90,6 +94,7 @@ class UnifiedAutomationServiceTest {
     private val typedQuery = Mockito.mock(TypedAutomationQueryRepository::class.java)
     private val lifecycle = Mockito.mock(TypedAutomationLifecycleBridge::class.java)
     private val workLifecycle = Mockito.mock(AutomationWorkLifecycle::class.java)
+    private val workSessionQueries = Mockito.mock(AutomationWorkSessionQueryRepository::class.java)
     private val entryRepository = Mockito.mock(AutomationEntryCommandRepository::class.java)
     private val questSelectionRepository = Mockito.mock(QuestAutomationSelectionCommandRepository::class.java)
     private val questMapRepository = Mockito.mock(QuestAutomationMapCommandRepository::class.java)
@@ -127,6 +132,7 @@ class UnifiedAutomationServiceTest {
         storedActionCodec = storedActionCodec,
         hofStatusSnapshots = statusSnapshots,
         workLifecycle = workLifecycle,
+        workSessionQueries = workSessionQueries,
         raidCycleModule = raidCycleModule,
         decisionJournal = decisionJournal,
     )
@@ -967,6 +973,37 @@ class UnifiedAutomationServiceTest {
         assertTrue(response.entries.first().ready)
         assertFalse(response.entries.last().ready)
         assertEquals(listOf("전투 맵 설정이 없습니다."), response.runtime.warnings)
+    }
+
+    @Test
+    fun `parked raid hold warning is attributed to the raid entry`() {
+        val raid = entry(93L, AutomationType.RAID, enabled = true)
+        val holdMessage = "사용자가 진행 중인 레이드가 끝날 때까지 레이드 자동화를 보류합니다."
+        Mockito.`when`(accountQueryRepository.findById(ACCOUNT_ID)).thenReturn(account())
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(raid))
+        Mockito.`when`(workSessionQueries.findWaiting(ACCOUNT_ID)).thenReturn(listOf(
+            AutomationWorkSessionView(
+                id = 31L,
+                accountId = ACCOUNT_ID,
+                entryId = raid.id,
+                entryPriority = raid.priority,
+                workType = AutomationWorkType.RAID,
+                targetKey = "RaidManual",
+                status = AutomationWorkStatus.WAITING_COOLDOWN,
+                missionKey = null,
+                missionType = null,
+                observedCurrent = null,
+                observedRequired = null,
+                materialName = null,
+                nextCheckAt = NOW.plusSeconds(30),
+                holdMessage = holdMessage,
+            ),
+        ))
+
+        val response = service.getTyped(ACCOUNT_ID)
+
+        assertTrue(holdMessage in response.entries.single().warnings)
+        assertTrue(holdMessage in response.runtime.warnings)
     }
 
     @Test
