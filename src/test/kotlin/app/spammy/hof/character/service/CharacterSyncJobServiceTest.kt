@@ -109,6 +109,13 @@ class CharacterSyncJobServiceTest {
             publishedEvents.map { it.character?.imageUrl },
         )
         assertEquals(List(5) { emptyList() }, publishedEvents.map { it.failedCharacterIds })
+        Mockito.verify(snapshotSynchronizer, Mockito.times(2)).synchronize(
+            anyAccount(),
+            Mockito.anyMap(),
+            anyHofCharacter(),
+            Mockito.eq(true),
+            Mockito.anySet(),
+        )
         Mockito.verify(eventService).complete(started.jobId)
     }
 

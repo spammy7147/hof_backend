@@ -250,6 +250,7 @@ class CharacterSyncJobService(
                     account = account,
                     cookies = cookies,
                     rosterCharacter = rosterCharacter,
+                    force = true,
                 )
             }.getOrElse {
                 log.warn(
