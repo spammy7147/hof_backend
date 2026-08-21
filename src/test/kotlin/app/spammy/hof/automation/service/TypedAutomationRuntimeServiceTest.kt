@@ -29,6 +29,62 @@ class TypedAutomationRuntimeServiceTest {
     private val account = HofAccountEntity(7, "login", "encrypted", now)
 
     @Test
+    fun `acquisition exposes a verified checkpoint without leaking lease or persistence row`() {
+        val state = state().apply { leaseToken = "old"; leaseUntil = now.minusSeconds(1) }
+        val entry = AutomationEntryEntity(9, account, AutomationType.QUEST, 0, true, now, now)
+        val stored = StoredTypedAutomationAction(
+            entryId = entry.id,
+            executionIdentity = "quest-claim",
+            payload = StoredTypedActionPayload.QuestClaim("quest-1", "claim-1"),
+        )
+        val encoded = StoredTypedAutomationActionCodec(jacksonObjectMapper()).encode(stored)
+        val action = TypedAutomationActionRunEntity(
+            11, account, entry, stored.executionIdentity, stored.payload.kind(), encoded.json, encoded.fingerprint,
+            TypedAutomationActionStatus.PREPARED, leaseToken = "old", createdAt = now, updatedAt = now,
+        )
+        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
+        Mockito.`when`(query.findActiveTypedAction(7)).thenReturn(action)
+
+        val acquired = assertIs<TypedRuntimeAcquisition.Acquired>(service.acquire(7))
+
+        assertEquals(stored, acquired.execution.checkpoint?.storedAction)
+        assertEquals(TypedRuntimeCheckpointPhase.PREPARED, acquired.execution.checkpoint?.phase)
+        assertTrue(acquired.execution::class.java.declaredFields.none { it.name == "row" })
+    }
+
+    @Test
+    fun `prepare is durable before submission begins`() {
+        val state = state()
+        val entry = AutomationEntryEntity(9, account, AutomationType.QUEST, 0, true, now, now)
+        val stored = StoredTypedAutomationAction(
+            entryId = entry.id,
+            executionIdentity = "quest-claim",
+            payload = StoredTypedActionPayload.QuestClaim("quest-1", "claim-1"),
+        )
+        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
+        Mockito.`when`(query.findActiveTypedAction(7)).thenReturn(null)
+        Mockito.`when`(query.findEntry(7, entry.id)).thenReturn(entry)
+        Mockito.`when`(actionRepository.save(anyActionRow())).thenAnswer { it.arguments[0] }
+
+        val acquired = assertIs<TypedRuntimeAcquisition.Acquired>(service.acquire(7))
+        val prepared = assertIs<TypedRuntimePreparation.Ready>(
+            service.persistPrepared(acquired.execution, stored, listOf("parked warning")),
+        )
+        val row = Mockito.mockingDetails(actionRepository).invocations
+            .single { it.method.name == "save" }.arguments.single() as TypedAutomationActionRunEntity
+
+        assertEquals(TypedAutomationActionStatus.PREPARED, row.status)
+        assertNull(row.submittedAt)
+        assertEquals("parked warning", state.warningText)
+
+        Mockito.`when`(query.lockTypedAction(row.id)).thenReturn(row)
+        val submission = assertIs<TypedRuntimeSubmission.Started>(service.beginSubmission(prepared.execution))
+
+        assertEquals(now, submission.submittedAt)
+        assertEquals(TypedAutomationActionStatus.SUBMITTING, row.status)
+    }
+
+    @Test
     fun `safe failures keep scheduling forever with a capped delay`() {
         val state = state().apply {
             leaseToken = "token"
@@ -416,4 +472,18 @@ class TypedAutomationRuntimeServiceTest {
     }
 
     private fun state() = TypedAutomationRuntimeStateEntity(7, account, TypedAutomationLifecycle.RUNNING, createdAt = now, updatedAt = now)
+
+    private fun anyActionRow(): TypedAutomationActionRunEntity =
+        Mockito.any(TypedAutomationActionRunEntity::class.java) ?: TypedAutomationActionRunEntity(
+            account = account,
+            entry = null,
+            executionIdentity = "matcher",
+            actionKind = "QUEST_CLAIM",
+            payloadJson = "{}",
+            actionFingerprint = "0".repeat(64),
+            status = TypedAutomationActionStatus.PREPARED,
+            leaseToken = "matcher",
+            createdAt = now,
+            updatedAt = now,
+        )
 }

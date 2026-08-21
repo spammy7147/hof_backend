@@ -62,6 +62,125 @@ class TypedAutomationRuntimeService(
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun acquire(accountId: Long): TypedRuntimeAcquisition {
+        val state = queryRepository.lockRuntimeState(accountId) ?: return TypedRuntimeAcquisition.Inactive
+        if (state.lifecycleStatus !in setOf(TypedAutomationLifecycle.RUNNING, TypedAutomationLifecycle.DRAINING)) {
+            return TypedRuntimeAcquisition.Inactive
+        }
+        val now = timeProvider.now()
+        if (state.nextAttemptAt?.isAfter(now) == true || state.leaseUntil?.isAfter(now) == true) {
+            return TypedRuntimeAcquisition.Busy
+        }
+        val active = queryRepository.findActiveTypedAction(accountId)
+        if (active?.status == TypedAutomationActionStatus.SUBMITTING) {
+            active.status = TypedAutomationActionStatus.RECONCILING
+            active.finishedAt = null
+            active.lastError = "A submitted action lost its lease; verify its authoritative state."
+            active.updatedAt = now
+        }
+        state.nextAttemptAt = null
+        state.waitReason = null
+        state.stopReason = null
+        state.stopActionId = null
+        val token = UUID.randomUUID().toString()
+        state.leaseToken = token
+        state.leaseUntil = now.plus(LEASE_DURATION)
+        state.updatedAt = now
+        active?.leaseToken = token
+        active?.updatedAt = now
+
+        val checkpoint = active?.let { row ->
+            val stored = try {
+                codec.verifyPersisted(row, accountId)
+            } catch (_: RuntimeException) {
+                row.status = when (row.status) {
+                    TypedAutomationActionStatus.PREPARED -> TypedAutomationActionStatus.FAILED
+                    else -> TypedAutomationActionStatus.AMBIGUOUS
+                }
+                row.lastError = "Stored typed action integrity check failed."
+                row.finishedAt = now
+                row.updatedAt = now
+                return TypedRuntimeAcquisition.RetryScheduled(
+                    scheduleAutomaticRetry(state, AutomationStopReason.FATAL, row.lastError!!),
+                )
+            }
+            TypedRuntimeCheckpoint(
+                storedAction = stored,
+                phase = when (row.status) {
+                    TypedAutomationActionStatus.PREPARED -> TypedRuntimeCheckpointPhase.PREPARED
+                    TypedAutomationActionStatus.RECONCILING -> TypedRuntimeCheckpointPhase.RECONCILING
+                    else -> error("Active action ${row.id} has unsupported checkpoint status ${row.status}.")
+                },
+                submittedAt = row.submittedAt,
+                diagnostic = row.lastError,
+            )
+        }
+        return TypedRuntimeAcquisition.Acquired(
+            PersistedTypedRuntimeExecutionRight(accountId, token, active?.id, checkpoint),
+        )
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun persistPrepared(
+        execution: TypedRuntimeExecutionRight,
+        action: StoredTypedAutomationAction,
+        warnings: List<String> = emptyList(),
+    ): TypedRuntimePreparation {
+        val right = execution.persistedRight()
+        val state = fencedState(right.accountId, right.leaseToken) ?: return TypedRuntimePreparation.Invalidated
+        if (right.checkpoint != null || right.actionId != null) return TypedRuntimePreparation.Ready(right)
+        val existing = queryRepository.findActiveTypedAction(right.accountId)
+        if (existing != null) return TypedRuntimePreparation.Invalidated
+        val entry = queryRepository.findEntry(right.accountId, action.entryId) ?: return TypedRuntimePreparation.Invalidated
+        val encoded = codec.encode(action)
+        val now = timeProvider.now()
+        state.warningText = warnings.takeIf { it.isNotEmpty() }?.joinToString("\n") { sanitizeDiagnostic(it) }
+        state.updatedAt = now
+        val saved = actionRepository.save(
+            TypedAutomationActionRunEntity(
+                account = entry.account,
+                entry = entry,
+                executionIdentity = action.executionIdentity,
+                actionKind = action.payload.kind(),
+                payloadJson = encoded.json,
+                actionFingerprint = encoded.fingerprint,
+                status = TypedAutomationActionStatus.PREPARED,
+                leaseToken = right.leaseToken,
+                createdAt = now,
+                updatedAt = now,
+            ),
+        )
+        return TypedRuntimePreparation.Ready(
+            PersistedTypedRuntimeExecutionRight(
+                right.accountId,
+                right.leaseToken,
+                saved.id,
+                TypedRuntimeCheckpoint(action, TypedRuntimeCheckpointPhase.PREPARED, null, null),
+            ),
+        )
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun beginSubmission(execution: TypedRuntimeExecutionRight): TypedRuntimeSubmission {
+        val right = execution.persistedRight()
+        fencedState(right.accountId, right.leaseToken) ?: return TypedRuntimeSubmission.Invalidated
+        val actionId = right.actionId ?: return TypedRuntimeSubmission.Invalidated
+        val action = queryRepository.lockTypedAction(actionId) ?: return TypedRuntimeSubmission.Invalidated
+        if (
+            action.account.id != right.accountId ||
+            action.leaseToken != right.leaseToken ||
+            action.status != TypedAutomationActionStatus.PREPARED
+        ) return TypedRuntimeSubmission.Invalidated
+        val now = timeProvider.now()
+        action.status = TypedAutomationActionStatus.SUBMITTING
+        action.nextAttemptAt = null
+        action.lastError = null
+        action.submittedAt = now
+        action.updatedAt = now
+        return TypedRuntimeSubmission.Started(now)
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun claim(accountId: Long): TypedRuntimeClaim {
         val state = queryRepository.lockRuntimeState(accountId) ?: return TypedRuntimeClaim.Inactive
         if (state.lifecycleStatus !in setOf(TypedAutomationLifecycle.RUNNING, TypedAutomationLifecycle.DRAINING)) return TypedRuntimeClaim.Inactive
@@ -608,6 +727,10 @@ class TypedAutomationRuntimeService(
         .replace(Regex("(?i)(password|token|cookie|authorization)\\s*[=:]\\s*[^\\s,;]+"), "$1=[redacted]")
         .replace(Regex("[\\r\\n\\t]+"), " ")
         .take(2000)
+
+    private fun TypedRuntimeExecutionRight.persistedRight(): PersistedTypedRuntimeExecutionRight =
+        this as? PersistedTypedRuntimeExecutionRight
+            ?: throw IllegalArgumentException("Execution right was not issued by this runtime.")
 
     companion object {
         private val LEASE_DURATION = Duration.ofMinutes(5)
