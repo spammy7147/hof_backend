@@ -67,6 +67,7 @@ class CharacterSyncJobServiceTest {
         eventService = eventService,
         taskExecutor = taskExecutor,
         timeProvider = TimeProvider { now },
+        mutationFence = app.spammy.hof.town.common.service.AccountHofMutationFence(),
     )
 
     @Test
@@ -116,6 +117,8 @@ class CharacterSyncJobServiceTest {
             Mockito.eq(true),
             Mockito.anySet(),
         )
+        Mockito.verify(characterService, Mockito.never())
+            .deleteCharactersAbsentFromRoster(Mockito.anyLong(), Mockito.anySet())
         Mockito.verify(eventService).complete(started.jobId)
     }
 

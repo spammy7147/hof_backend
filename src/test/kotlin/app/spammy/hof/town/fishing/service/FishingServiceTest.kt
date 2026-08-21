@@ -39,7 +39,7 @@ class FishingServiceTest {
     private val service = FishingService(
         executor = TownAuthenticatedExecutor(
             accounts, cookies, HofRequestFactory(), gateway, LoginStateParser(), HofFormParser(),
-            HofResultParser(), TownActionGuard(),
+            HofResultParser(), TownActionGuard(), app.spammy.hof.town.common.service.AccountHofMutationFence(),
         ),
         locationResolver = locations,
         parser = FishingPageParser(),

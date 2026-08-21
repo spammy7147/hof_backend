@@ -125,7 +125,7 @@ class PantheonServiceTest {
         Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies())).thenReturn(values.first(), *values.drop(1).toTypedArray())
         val executor = TownAuthenticatedExecutor(
             accounts, cookies, HofRequestFactory(), gateway, LoginStateParser(), forms,
-            HofResultParser(), TownActionGuard(),
+            HofResultParser(), TownActionGuard(), app.spammy.hof.town.common.service.AccountHofMutationFence(),
         )
         return Context(PantheonService(executor, locations, parser), gateway)
     }

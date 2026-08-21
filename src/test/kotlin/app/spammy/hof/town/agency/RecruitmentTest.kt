@@ -157,7 +157,7 @@ class RecruitmentTest {
         private val gateway = Mockito.mock(AccountHofGateway::class.java)
         private val locations = Mockito.mock(TownLocationResolver::class.java)
         val service = RecruitmentService(
-            TownAuthenticatedExecutor(accounts, cookies, HofRequestFactory(), gateway, LoginStateParser(), forms, HofResultParser(), TownActionGuard()),
+            TownAuthenticatedExecutor(accounts, cookies, HofRequestFactory(), gateway, LoginStateParser(), forms, HofResultParser(), TownActionGuard(), app.spammy.hof.town.common.service.AccountHofMutationFence()),
             locations,
             parser,
         )

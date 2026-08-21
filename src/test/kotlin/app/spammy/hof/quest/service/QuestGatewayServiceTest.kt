@@ -36,6 +36,7 @@ class QuestGatewayServiceTest {
             HofFormParser(),
             HofResultParser(),
             TownActionGuard(),
+            app.spammy.hof.town.common.service.AccountHofMutationFence(),
         ),
         QuestPageParser(),
     )

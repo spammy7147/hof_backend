@@ -86,7 +86,7 @@ class ColosseumTest {
             HofHttpResponse(200, url, html.first(), emptyMap()),
             *html.drop(1).map { HofHttpResponse(200, url, it, emptyMap()) }.toTypedArray(),
         )
-        val executor = TownAuthenticatedExecutor(accounts, cookies, HofRequestFactory(), gateway, LoginStateParser(), forms, HofResultParser(), TownActionGuard())
+        val executor = TownAuthenticatedExecutor(accounts, cookies, HofRequestFactory(), gateway, LoginStateParser(), forms, HofResultParser(), TownActionGuard(), app.spammy.hof.town.common.service.AccountHofMutationFence())
         return Context(ColosseumService(executor, locations, parser), gateway)
     }
     private data class Context(val service: ColosseumService, val gateway: AccountHofGateway) {

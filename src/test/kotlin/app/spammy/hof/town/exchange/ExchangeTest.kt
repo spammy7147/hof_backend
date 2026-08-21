@@ -135,7 +135,7 @@ class ExchangeTest {
             HofHttpResponse(200, url, html.first(), emptyMap()),
             *html.drop(1).map { HofHttpResponse(200, url, it, emptyMap()) }.toTypedArray(),
         )
-        val executor = TownAuthenticatedExecutor(accounts, cookies, HofRequestFactory(), gateway, LoginStateParser(), forms, HofResultParser(), TownActionGuard())
+        val executor = TownAuthenticatedExecutor(accounts, cookies, HofRequestFactory(), gateway, LoginStateParser(), forms, HofResultParser(), TownActionGuard(), app.spammy.hof.town.common.service.AccountHofMutationFence())
         return Context(ExchangeService(executor, locations, parser), gateway)
     }
     private data class Context(val service: ExchangeService, val gateway: AccountHofGateway) {

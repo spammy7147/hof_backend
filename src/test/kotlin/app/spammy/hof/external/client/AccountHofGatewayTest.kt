@@ -9,6 +9,7 @@ import app.spammy.hof.status.service.HofStatusSnapshotService
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertSame
 import org.mockito.Mockito
 import org.springframework.transaction.support.TransactionSynchronization
@@ -40,6 +41,30 @@ class AccountHofGatewayTest {
     }
 
     @Test
+    fun `semantic command followup keeps status observation but defers generic roster mutation`() {
+        val actual = gateway.executeWithoutCharacterRosterObservation(ACCOUNT_ID, REQUEST, COOKIES)
+
+        assertSame(RESPONSE, actual.response)
+        assertEquals(REQUEST_STARTED_AT, actual.requestStartedAt)
+        Mockito.verify(snapshots).observe(ACCOUNT_ID, RESPONSE.body, REQUEST_STARTED_AT)
+        Mockito.verifyNoInteractions(characterRosters)
+    }
+
+    @Test
+    fun `deferred roster request failure preserves the request start time for conservative projection`() {
+        raw.failure = IllegalStateException("response lost")
+
+        val error = assertFailsWith<DeferredCharacterRosterRequestException> {
+            gateway.executeWithoutCharacterRosterObservation(ACCOUNT_ID, REQUEST, COOKIES)
+        }
+
+        assertEquals(REQUEST_STARTED_AT, error.requestStartedAt)
+        assertEquals(REQUEST_STARTED_AT, error.failureObservedAt)
+        assertSame(raw.failure, error.cause)
+        Mockito.verifyNoInteractions(snapshots, characterRosters)
+    }
+
+    @Test
     fun `active transaction defers observation until transaction completion`() {
         TransactionSynchronizationManager.initSynchronization()
         try {
@@ -60,6 +85,7 @@ class AccountHofGatewayTest {
     private class RecordingGateway : HofGateway {
         val accountIds = mutableListOf<Long>()
         var cookies: Map<String, String> = emptyMap()
+        var failure: RuntimeException? = null
 
         override fun execute(
             accountId: Long,
@@ -68,6 +94,7 @@ class AccountHofGatewayTest {
         ): HofHttpResponse {
             accountIds += accountId
             this.cookies = cookies
+            failure?.let { throw it }
             return RESPONSE
         }
     }

@@ -8,6 +8,8 @@ import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.client.AccountHofGateway
+import app.spammy.hof.external.client.DeferredCharacterRosterHofResponse
+import app.spammy.hof.external.client.DeferredCharacterRosterRequestException
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequestOrigin
@@ -21,9 +23,7 @@ import app.spammy.hof.town.common.model.TownActionSelection
 import app.spammy.hof.town.common.model.TownSelectionType
 import app.spammy.hof.town.common.parser.HofFormParser
 import app.spammy.hof.town.common.parser.HofResultParser
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.locks.ReentrantLock
-import kotlin.concurrent.withLock
+import java.time.Instant
 import org.springframework.stereotype.Service
 
 sealed interface TownObservedAction {
@@ -47,12 +47,11 @@ class TownAuthenticatedExecutor(
     private val formParser: HofFormParser,
     private val resultParser: HofResultParser,
     private val actionGuard: TownActionGuard,
+    private val mutationFence: AccountHofMutationFence,
 ) {
     /** 여러 GET/POST가 한 의미 명령인 경우 같은 계정의 다른 변경이 중간에 끼어들지 않게 한다. */
     fun <T> executeAccountSequence(accountId: Long, sequence: () -> T): T =
         withAccountActionFence(accountId, sequence)
-
-    private val actionLocks = ConcurrentHashMap<Long, ReentrantLock>()
 
     /** HOF 원격 요청 없이 로그인 사용자의 저장된 HOF 계정과 세션 쿠키 존재 여부만 확인한다. */
     fun requireSession(accountId: Long) {
@@ -78,6 +77,24 @@ class TownAuthenticatedExecutor(
     ): T {
         val context = authenticatedContext(accountId)
         val response = executeAuthenticated(context.account, requestFactory.townPage(pageUrl, origin), context.cookies)
+        val page = formParser.parse(response.body, response.finalUrl)
+        return projector(response.body, response.finalUrl, page)
+    }
+
+    /** 위험 identity 명령 검증용 읽기다. 검증이 끝나기 전에 generic roster projection을 실행하지 않는다. */
+    fun <T> loadProjectedWithoutCharacterRosterObservation(
+        accountId: Long,
+        pageUrl: String,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
+        projector: (html: String, finalUrl: String, page: ParsedTownPage) -> T,
+    ): T {
+        val context = authenticatedContext(accountId)
+        val deferred = executeAuthenticatedWithoutCharacterRosterObservation(
+            context.account,
+            requestFactory.townPage(pageUrl, origin),
+            context.cookies,
+        )
+        val response = deferred.response
         val page = formParser.parse(response.body, response.finalUrl)
         return projector(response.body, response.finalUrl, page)
     }
@@ -821,42 +838,154 @@ class TownAuthenticatedExecutor(
         requiredSubmitFields: List<String>,
         projector: (String, String, app.spammy.hof.town.common.model.ParsedTownResult, ParsedTownPage) -> T,
     ): T? = withAccountActionFence(accountId) {
+        executeResolvedFormSequence(
+            accountId,
+            pageUrl,
+            requiredSubmitFields,
+            followupUrl = null,
+            deferCharacterRosterObservation = false,
+        )?.let { executed ->
+            projector(executed.actionBody, executed.actionUrl, executed.actionResult, executed.actionPage)
+        }
+    }
+
+    /** 마지막 확인 POST의 갱신 쿠키를 유지한 채 후속 권위 화면까지 같은 계정 fence에서 관측한다. */
+    fun <T> executeResolvedFormSequenceWithFollowupProjected(
+        accountId: Long,
+        pageUrl: String,
+        requiredSubmitFields: List<String>,
+        followupUrl: String,
+        onFinalSubmissionUnconfirmed: (observedAt: Instant) -> T,
+        projector: (
+            actionResult: app.spammy.hof.town.common.model.ParsedTownResult,
+            followupHtml: String?,
+            followupFinalUrl: String?,
+            followupPage: ParsedTownPage?,
+            followupRosterObservedAt: Instant,
+            continuation: TownRequestContinuation,
+        ) -> T,
+    ): T? = withAccountActionFence(accountId) {
+        try {
+            executeResolvedFormSequence(
+                accountId,
+                pageUrl,
+                requiredSubmitFields,
+                followupUrl,
+                deferCharacterRosterObservation = true,
+            )?.let { executed ->
+                projector(
+                    executed.actionResult,
+                    executed.followupBody,
+                    executed.followupUrl,
+                    executed.followupPage,
+                    requireNotNull(executed.followupRosterObservedAt ?: executed.actionRosterObservedAt),
+                    TownRequestContinuation(
+                        executed.account,
+                        executed.continuationCookies,
+                    ),
+                )
+            }
+        } catch (unconfirmed: FinalResolvedFormSubmissionUnconfirmed) {
+            onFinalSubmissionUnconfirmed(unconfirmed.observedAt)
+        }
+    }
+
+    /** 직전 의미 명령에서 확인된 cookie chain으로 같은 계정의 후속 화면을 읽는다. */
+    fun <T> continueLoadProjected(
+        continuation: TownRequestContinuation,
+        pageUrl: String,
+        projector: (html: String, finalUrl: String, page: ParsedTownPage) -> T,
+    ): T = withAccountActionFence(continuation.account.id) {
+        val response = executeAuthenticated(
+            continuation.account,
+            requestFactory.townPage(pageUrl, HofRequestOrigin.INTERACTIVE),
+            continuation.cookies,
+        )
+        projector(response.body, response.finalUrl, formParser.parse(response.body, response.finalUrl))
+    }
+
+    private fun executeResolvedFormSequence(
+        accountId: Long,
+        pageUrl: String,
+        requiredSubmitFields: List<String>,
+        followupUrl: String?,
+        deferCharacterRosterObservation: Boolean,
+    ): ResolvedFormSequenceResult? {
         require(requiredSubmitFields.size in 2..8)
         require(requiredSubmitFields.all(String::isNotBlank))
         require(requiredSubmitFields.map(String::lowercase).distinct().size == requiredSubmitFields.size)
 
         val context = authenticatedContext(accountId)
-        var response = executeAuthenticated(
+        var response = executeAuthenticatedForResolvedSequence(
             context.account,
             requestFactory.townPage(pageUrl, HofRequestOrigin.INTERACTIVE),
             context.cookies,
+            deferCharacterRosterObservation,
         )
-        var cookies = context.cookies + response.setCookies
-        var page = formParser.parse(response.body, response.finalUrl)
+        var cookies = context.cookies + response.response.setCookies
+        var page = formParser.parse(response.response.body, response.response.finalUrl)
 
         requiredSubmitFields.forEachIndexed { index, requiredSubmitField ->
             val form = page.forms.singleOrNull {
                 it.submitSource.equals(requiredSubmitField, ignoreCase = true)
-            } ?: return@withAccountActionFence null
+            } ?: return null
             val guarded = actionGuard.guard(page, TownActionRequest(form.actionId))
             if (!guarded.form.submitFields.singleOrNull()?.name.equals(requiredSubmitField, ignoreCase = true)) {
                 throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF ${index + 1}단계 작업 양식이 변경되었습니다.")
             }
-            response = executeAuthenticated(
-                context.account,
-                requestFactory.townForm(
-                    guarded.form.method,
-                    guarded.form.actionUrl,
-                    guarded.formEntries,
-                    HofRequestOrigin.INTERACTIVE,
-                ),
-                cookies,
-            )
-            cookies = cookies + response.setCookies
-            page = formParser.parse(response.body, response.finalUrl)
+            response = try {
+                executeAuthenticatedForResolvedSequence(
+                    context.account,
+                    requestFactory.townForm(
+                        guarded.form.method,
+                        guarded.form.actionUrl,
+                        guarded.formEntries,
+                        HofRequestOrigin.INTERACTIVE,
+                    ),
+                    cookies,
+                    deferCharacterRosterObservation,
+                )
+            } catch (error: DeferredCharacterRosterRequestException) {
+                if (deferCharacterRosterObservation && index == requiredSubmitFields.lastIndex) {
+                    throw FinalResolvedFormSubmissionUnconfirmed(error.failureObservedAt, error)
+                }
+                throw error
+            }
+            cookies = cookies + response.response.setCookies
+            page = formParser.parse(response.response.body, response.response.finalUrl)
         }
 
-        projector(response.body, response.finalUrl, resultParser.parse(response.body), page)
+        var followupFailureObservedAt: Instant? = null
+        val followup = followupUrl?.let { url ->
+            try {
+                executeAuthenticatedForResolvedSequence(
+                    context.account,
+                    requestFactory.townPage(url, HofRequestOrigin.INTERACTIVE),
+                    cookies,
+                    deferCharacterRosterObservation,
+                )
+            } catch (error: DeferredCharacterRosterRequestException) {
+                followupFailureObservedAt = error.failureObservedAt
+                null
+            } catch (_: Exception) {
+                null
+            }
+        }
+        return ResolvedFormSequenceResult(
+            account = context.account,
+            actionBody = response.response.body,
+            actionUrl = response.response.finalUrl,
+            actionResult = resultParser.parse(response.response.body),
+            actionPage = page,
+            followupBody = followup?.response?.body,
+            followupUrl = followup?.response?.finalUrl,
+            followupPage = followup?.let { observed ->
+                runCatching { formParser.parse(observed.response.body, observed.response.finalUrl) }.getOrNull()
+            },
+            followupRosterObservedAt = followup?.deferredRosterObservedAt ?: followupFailureObservedAt,
+            actionRosterObservedAt = response.deferredRosterObservedAt,
+            continuationCookies = cookies + followup?.response?.setCookies.orEmpty(),
+        )
     }
 
     /**
@@ -1026,7 +1155,7 @@ class TownAuthenticatedExecutor(
     }
 
     private fun <T> withAccountActionFence(accountId: Long, action: () -> T): T =
-        actionLocks.computeIfAbsent(accountId) { ReentrantLock(true) }.withLock(action)
+        mutationFence.execute(accountId, action)
 
     private fun authenticatedContext(accountId: Long): AuthenticatedContext {
         val account = accountQueryRepository.findById(accountId)
@@ -1050,8 +1179,63 @@ class TownAuthenticatedExecutor(
         return response
     }
 
+    private fun executeAuthenticatedWithoutCharacterRosterObservation(
+        account: HofAccountEntity,
+        request: app.spammy.hof.external.model.HofRequest,
+        cookies: Map<String, String>,
+    ): DeferredCharacterRosterHofResponse {
+        val deferred = gateway.executeWithoutCharacterRosterObservation(account.id, request, cookies)
+        val login = loginStateParser.parse(deferred.response.body)
+        if (login.hasLoginForm && !login.isLoggedIn) {
+            throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "HOF 로그인 세션이 만료되었습니다.")
+        }
+        return deferred
+    }
+
+    private fun executeAuthenticatedForResolvedSequence(
+        account: HofAccountEntity,
+        request: app.spammy.hof.external.model.HofRequest,
+        cookies: Map<String, String>,
+        deferCharacterRosterObservation: Boolean,
+    ): ResolvedSequenceResponse = if (deferCharacterRosterObservation) {
+        executeAuthenticatedWithoutCharacterRosterObservation(account, request, cookies).let { deferred ->
+            ResolvedSequenceResponse(deferred.response, deferred.responseObservedAt)
+        }
+    } else {
+        ResolvedSequenceResponse(executeAuthenticated(account, request, cookies), null)
+    }
+
     private data class AuthenticatedContext(
         val account: HofAccountEntity,
         val cookies: Map<String, String>,
     )
+
+    private data class ResolvedFormSequenceResult(
+        val account: HofAccountEntity,
+        val actionBody: String,
+        val actionUrl: String,
+        val actionResult: app.spammy.hof.town.common.model.ParsedTownResult,
+        val actionPage: ParsedTownPage,
+        val followupBody: String?,
+        val followupUrl: String?,
+        val followupPage: ParsedTownPage?,
+        val followupRosterObservedAt: Instant?,
+        val actionRosterObservedAt: Instant?,
+        val continuationCookies: Map<String, String>,
+    )
+
+    private data class ResolvedSequenceResponse(
+        val response: HofHttpResponse,
+        val deferredRosterObservedAt: Instant?,
+    )
+
+    private class FinalResolvedFormSubmissionUnconfirmed(
+        val observedAt: Instant,
+        cause: Throwable,
+    ) : RuntimeException(cause)
 }
+
+class TownRequestContinuation internal constructor(
+    internal val account: HofAccountEntity,
+    internal val cookies: Map<String, String>,
+)

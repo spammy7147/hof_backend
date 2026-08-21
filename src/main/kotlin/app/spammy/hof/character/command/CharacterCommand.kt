@@ -89,6 +89,13 @@ data class CharacterCommandIdentityCandidate(
     val matchingFields: Set<String> = emptySet(),
 )
 
+data class CharacterCommandObservedIdentity(
+    val hofCharacterId: String,
+    val name: String,
+    val job: String = "",
+    val level: Int? = null,
+)
+
 data class CharacterCommandContext(
     val accountId: Long,
     val characterId: Long,
@@ -99,17 +106,32 @@ interface CharacterCommandRemote {
     fun <T> withSession(accountId: Long, operation: (CharacterCommandRemoteSession) -> T): T
 }
 
-fun interface CharacterCommandRemoteSession {
+interface CharacterCommandRemoteSession {
+    fun observeRoster(): List<CharacterCommandObservedIdentity>
+
     fun execute(context: CharacterCommandContext, command: CharacterCommand): CharacterCommandObservation
+
+    fun refreshSnapshot(hofCharacterId: String): Boolean
 }
 
 sealed interface CharacterCommandObservation {
     data class Applied(val messages: List<String> = emptyList()) : CharacterCommandObservation
-    data class RefreshRequired(val message: String) : CharacterCommandObservation
-    data class IdentityResolutionRequired(
-        val candidates: List<CharacterCommandIdentityCandidate>,
-        val message: String,
+    data class KickApplied(
+        val rosterAfter: List<CharacterCommandObservedIdentity>,
+        val rosterObservedAt: Instant = Instant.EPOCH,
+        val messages: List<String> = emptyList(),
     ) : CharacterCommandObservation
+    data class KnockbackApplied(
+        val rosterAfter: List<CharacterCommandObservedIdentity>,
+        val rosterObservedAt: Instant = Instant.EPOCH,
+        val messages: List<String> = emptyList(),
+    ) : CharacterCommandObservation
+    data class IdentityAppliedRosterUnconfirmed(
+        val rosterObservedAt: Instant,
+        val messages: List<String> = emptyList(),
+        val message: String = "HOF 작업은 적용됐지만 최신 캐릭터 목록을 확인하지 못했습니다.",
+    ) : CharacterCommandObservation
+    data class RefreshRequired(val message: String) : CharacterCommandObservation
     data class Rejected(val code: String, val message: String) : CharacterCommandObservation
 }
 

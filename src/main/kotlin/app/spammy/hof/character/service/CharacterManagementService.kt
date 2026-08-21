@@ -5,18 +5,11 @@ import app.spammy.hof.character.dto.CharacterActionCandidateResponse
 import app.spammy.hof.character.dto.CharacterActionFieldResponse
 import app.spammy.hof.character.dto.CharacterManagementSnapshotResponse
 import app.spammy.hof.character.dto.CharacterObservedActionResponse
-import app.spammy.hof.character.dto.CharacterIdentityCandidateResponse
-import app.spammy.hof.character.identity.CharacterIdentityEvidence
-import app.spammy.hof.character.identity.CharacterIdentityResolution
-import app.spammy.hof.character.identity.CharacterIdentityResolver
-import app.spammy.hof.character.identity.CharacterLifecycleService
-import app.spammy.hof.character.entity.CharacterHofIdLinkReason
 import app.spammy.hof.character.repository.CharacterQueryRepository
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.parser.CharacterDetailParser
-import app.spammy.hof.external.parser.CharacterRosterParser
 import app.spammy.hof.town.common.model.ParsedTownPage
 import app.spammy.hof.town.common.model.TownActionRequest
 import app.spammy.hof.town.common.model.TownActionSelection
@@ -32,10 +25,7 @@ class CharacterManagementService(
     private val executor: TownAuthenticatedExecutor,
     private val detailParser: CharacterDetailParser,
     private val snapshotSynchronizer: CharacterSnapshotSynchronizer,
-    private val rosterParser: CharacterRosterParser,
     private val characterService: CharacterService,
-    private val identityResolver: CharacterIdentityResolver,
-    private val lifecycleService: CharacterLifecycleService,
 ) {
     fun load(accountId: Long, hofCharacterId: String): CharacterManagementSnapshotResponse {
         requireOwnedCharacter(accountId, hofCharacterId)
@@ -48,27 +38,13 @@ class CharacterManagementService(
         action: TownActionRequest,
     ): CharacterManagementSnapshotResponse {
         requireOwnedCharacter(accountId, hofCharacterId)
-        val before = characterService.findAll(accountId)
         val observed = executor.load(accountId, characterUrl(hofCharacterId)).forms
             .singleOrNull { it.actionId == action.actionId }
             ?: throw ApiException(ErrorCode.INVALID_REQUEST, "현재 페이지에서 실행할 수 없는 작업입니다.")
-        val identityActionSequence = observed.submitSource.identityActionSequence()
-        if (identityActionSequence != null) {
-            return executor.executeResolvedFormSequenceProjected(
-                accountId = accountId,
-                pageUrl = characterUrl(hofCharacterId),
-                requiredSubmitFields = identityActionSequence,
-            ) { _, _, result, _ ->
-                reconcileRosterAfterIdentityChange(
-                    accountId = accountId,
-                    previousHofCharacterId = hofCharacterId,
-                    previousCharacters = before,
-                    actionSource = identityActionSequence.last(),
-                    messages = result.messages,
-                )
-            } ?: throw ApiException(
+        if (observed.submitSource.isIdentityAction()) {
+            throw ApiException(
                 ErrorCode.INVALID_REQUEST,
-                "현재 HOF 페이지에서 캐릭터 작업 확인 단계를 찾지 못해 실행하지 않았습니다.",
+                "Kick과 Knockback은 캐릭터 의미 명령으로만 실행할 수 있습니다.",
             )
         }
         if (observed.submitSource.equals("showreset", ignoreCase = true)) {
@@ -82,15 +58,6 @@ class CharacterManagementService(
             )
         }
         val executed = executor.execute(accountId, characterUrl(hofCharacterId), action)
-        if (observed.submitSource.isTerminalIdentityAction()) {
-            return reconcileRosterAfterIdentityChange(
-                accountId = accountId,
-                previousHofCharacterId = hofCharacterId,
-                previousCharacters = before,
-                actionSource = observed.submitSource.lowercase(),
-                messages = executed.result.messages,
-            )
-        }
         return loadFresh(accountId, hofCharacterId, executed.result.messages)
     }
 
@@ -126,94 +93,6 @@ class CharacterManagementService(
             writeFresh(accountId, hofCharacterId, html, page, result.messages)
         }
     }
-
-    private fun reconcileRosterAfterIdentityChange(
-        accountId: Long,
-        previousHofCharacterId: String,
-        previousCharacters: List<app.spammy.hof.character.dto.CharacterResponse>,
-        actionSource: String,
-        messages: List<String>,
-    ): CharacterManagementSnapshotResponse {
-        val roster = executor.loadProjected(accountId, requestFactory.home().url) { html, _, _ ->
-            rosterParser.parse(html)
-        }
-        if (roster.isEmpty()) {
-            throw ApiException(ErrorCode.HOF_REQUEST_FAILED, "캐릭터 작업 후 HOF 캐릭터 목록을 확인하지 못했습니다.")
-        }
-        characterService.deleteCharactersAbsentFromRoster(accountId, roster.mapTo(linkedSetOf()) { it.id })
-
-        if (actionSource.startsWith("byebye")) {
-            previousCharacters.singleOrNull { it.hofCharacterId == previousHofCharacterId }
-                ?.let { lifecycleService.archive(accountId, it.id) }
-            return CharacterManagementSnapshotResponse(
-                character = null,
-                actions = emptyList(),
-                messages = messages.ifEmpty { listOf("캐릭터를 삭제했습니다.") },
-                characters = characterService.findAll(accountId),
-                targetRemoved = true,
-            )
-        }
-
-        val target = previousCharacters.singleOrNull { it.hofCharacterId == previousHofCharacterId }
-            ?: throw ApiException(ErrorCode.HOF_REQUEST_FAILED, "순서 변경 전 캐릭터를 확인하지 못했습니다.")
-        val resolution = identityResolver.resolveKnockback(
-            targetBefore = target.toIdentityEvidence(),
-            rosterBefore = previousCharacters.map { it.toIdentityEvidence() },
-            rosterAfter = roster.map { CharacterIdentityEvidence(it.id, it.name, it.job, it.level) },
-        )
-        val replacement = when (resolution) {
-            is CharacterIdentityResolution.Confirmed -> resolution.replacement
-            is CharacterIdentityResolution.Candidates -> return identityResolutionResponse(
-                accountId,
-                messages,
-                roster.map { rosterCharacter ->
-                    val candidate = resolution.candidates.singleOrNull {
-                        it.character.hofCharacterId == rosterCharacter.id
-                    }
-                    CharacterIdentityCandidateResponse(
-                        rosterCharacter.id,
-                        rosterCharacter.name,
-                        rosterCharacter.job,
-                        rosterCharacter.level,
-                        candidate?.matchingFields.orEmpty(),
-                    )
-                },
-            )
-            is CharacterIdentityResolution.Unresolved -> return identityResolutionResponse(
-                accountId,
-                messages,
-                resolution.roster.map { candidate ->
-                    CharacterIdentityCandidateResponse(candidate.hofCharacterId, candidate.name, candidate.job, candidate.level)
-                },
-            )
-        }
-        lifecycleService.link(
-            accountId,
-            target.id,
-            replacement.hofCharacterId,
-            CharacterHofIdLinkReason.KNOCKBACK,
-            userConfirmed = false,
-        )
-        val snapshot = loadFresh(
-            accountId = accountId,
-            hofCharacterId = replacement.hofCharacterId,
-            messages = messages.ifEmpty { listOf("캐릭터를 맨 뒤로 이동했습니다.") },
-        )
-        return snapshot.copy(characters = characterService.findAll(accountId))
-    }
-
-    private fun identityResolutionResponse(
-        accountId: Long,
-        messages: List<String>,
-        candidates: List<CharacterIdentityCandidateResponse>,
-    ) = CharacterManagementSnapshotResponse(
-        character = null,
-        actions = emptyList(),
-        messages = messages.ifEmpty { listOf("새 캐릭터 연결을 선택해 주세요.") },
-        characters = characterService.findAll(accountId),
-        identityResolutionRequired = true,
-        identityCandidates = candidates,
-    )
 
     private fun loadFresh(
         accountId: Long,
@@ -295,15 +174,11 @@ class CharacterManagementService(
 
     private fun characterUrl(hofCharacterId: String): String = requestFactory.characterPage(hofCharacterId).url
 
-    private fun String.isTerminalIdentityAction(): Boolean =
-        equals("byebye3", ignoreCase = true) || equals("knockback2", ignoreCase = true)
-
-    private fun String.identityActionSequence(): List<String>? = when {
-        equals("knockback", ignoreCase = true) -> listOf("knockback", "knockback2")
-        equals("byebye", ignoreCase = true) -> listOf("byebye", "byebye2", "byebye3")
-        else -> null
-    }
+    private fun String.isIdentityAction(): Boolean = lowercase() in setOf(
+        "knockback",
+        "knockback2",
+        "byebye",
+        "byebye2",
+        "byebye3",
+    )
 }
-
-private fun app.spammy.hof.character.dto.CharacterResponse.toIdentityEvidence() =
-    CharacterIdentityEvidence(hofCharacterId, name, job, level)

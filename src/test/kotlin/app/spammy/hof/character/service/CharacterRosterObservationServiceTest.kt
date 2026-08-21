@@ -14,7 +14,11 @@ import app.spammy.hof.external.parser.HofMainStatusParser
 import app.spammy.hof.external.parser.LoginStateParser
 import app.spammy.hof.status.repository.HofStatusSnapshotQueryRepository
 import app.spammy.hof.status.service.HofStatusSnapshotService
+import app.spammy.hof.town.common.service.AccountHofMutationFence
 import java.time.Instant
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -45,6 +49,8 @@ import org.springframework.transaction.annotation.Transactional
     CharacterService::class,
     HofStatusSnapshotService::class,
     CharacterRosterObservationService::class,
+    CharacterRosterObservationTransaction::class,
+    AccountHofMutationFence::class,
     CharacterRosterObservationServiceTest.ClockConfig::class,
 )
 class CharacterRosterObservationServiceTest {
@@ -52,6 +58,7 @@ class CharacterRosterObservationServiceTest {
     @Autowired private lateinit var characters: CharacterQueryRepository
     @Autowired private lateinit var statusSnapshots: HofStatusSnapshotService
     @Autowired private lateinit var observer: CharacterRosterObservationService
+    @Autowired private lateinit var mutationFence: AccountHofMutationFence
 
     @Test
     fun `logged-in home response reconciles roster metadata and lifecycle`() {
@@ -130,6 +137,44 @@ class CharacterRosterObservationServiceTest {
         assertEquals("202", actual.hofCharacterId)
         assertEquals("최신", actual.name)
         assertEquals(newer, assertNotNull(statusSnapshots.findLatest(account.id)).characterRosterObservedAt)
+    }
+
+    @Test
+    fun `roster projection waits until the account identity command fence is released`() {
+        val account = account("roster-fenced")
+        createStatusSnapshot(account)
+        val commandStarted = CountDownLatch(1)
+        val releaseCommand = CountDownLatch(1)
+        val observationAttempted = CountDownLatch(1)
+        val pool = Executors.newFixedThreadPool(2)
+
+        try {
+            val command = pool.submit {
+                mutationFence.execute(account.id) {
+                    commandStarted.countDown()
+                    assertTrue(releaseCommand.await(2, TimeUnit.SECONDS))
+                }
+            }
+            assertTrue(commandStarted.await(1, TimeUnit.SECONDS))
+            val observation = pool.submit<Boolean> {
+                observationAttempted.countDown()
+                observer.observe(
+                    account.id,
+                    homeResponse(rosterHtml(card("202", "최신", 20, "Mage"))),
+                    NOW.plusSeconds(1),
+                )
+            }
+
+            assertTrue(observationAttempted.await(1, TimeUnit.SECONDS))
+            assertFalse(observation.isDone)
+            releaseCommand.countDown()
+
+            command.get(1, TimeUnit.SECONDS)
+            assertTrue(observation.get(1, TimeUnit.SECONDS))
+        } finally {
+            releaseCommand.countDown()
+            pool.shutdownNow()
+        }
     }
 
     private fun createStatusSnapshot(account: HofAccountEntity) {

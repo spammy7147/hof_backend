@@ -114,10 +114,7 @@ class CharacterController(
         @CurrentAccountId accountId: Long,
         @PathVariable characterId: Long,
     ): CharacterDetailResponse = sessionRecoveryService.execute(accountId) {
-        characterSnapshotSynchronizer.refresh(
-            accountId,
-            characterService.findCurrentHofCharacterId(accountId, characterId),
-        )
+        characterSnapshotSynchronizer.refresh(accountId, characterId)
     }
 
     @PostMapping("/records/{characterId}/deep-sync-jobs")

@@ -40,7 +40,7 @@ class ShopCatalogRefreshServiceTest {
     private val locations = Mockito.mock(TownLocationResolver::class.java)
     private val persistence = Mockito.mock(ShopCatalogPersistenceService::class.java)
     private val queries = Mockito.mock(ShopQueryRepository::class.java)
-    private val executor = TownAuthenticatedExecutor(accounts, cookies, HofRequestFactory(), gateway, LoginStateParser(), HofFormParser(), HofResultParser(), TownActionGuard())
+    private val executor = TownAuthenticatedExecutor(accounts, cookies, HofRequestFactory(), gateway, LoginStateParser(), HofFormParser(), HofResultParser(), TownActionGuard(), app.spammy.hof.town.common.service.AccountHofMutationFence())
     private val service = ShopCatalogRefreshService(executor, locations, ShopPageParser(), persistence, queries, Clock.fixed(NOW, ZoneOffset.UTC))
 
     @Test

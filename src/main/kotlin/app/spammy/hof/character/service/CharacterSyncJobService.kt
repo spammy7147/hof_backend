@@ -1,6 +1,7 @@
 package app.spammy.hof.character.service
 
 import app.spammy.hof.account.entity.HofCookieEntity
+import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.CookieQueryRepository
 import app.spammy.hof.character.dto.CharacterResponse
@@ -18,6 +19,7 @@ import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.client.AccountHofGateway
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.parser.CharacterRosterParser
+import app.spammy.hof.town.common.service.AccountHofMutationFence
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import org.slf4j.LoggerFactory
@@ -48,6 +50,7 @@ class CharacterSyncJobService(
     @Qualifier("characterSyncTaskExecutor")
     private val taskExecutor: TaskExecutor,
     private val timeProvider: TimeProvider,
+    private val mutationFence: AccountHofMutationFence,
 ) {
     private val log = LoggerFactory.getLogger(CharacterSyncJobService::class.java)
     private val eventIds = AtomicLong(0)
@@ -221,14 +224,26 @@ class CharacterSyncJobService(
             ),
         )
 
+        mutationFence.execute(accountId) {
+            runFencedJob(jobId, job, account, cookies, failures)
+        }
+    }
+
+    private fun runFencedJob(
+        jobId: Long,
+        job: CharacterSyncJobEntity,
+        account: HofAccountEntity,
+        cookies: Map<String, String>,
+        failures: MutableList<CharacterSyncFailureEntity>,
+    ) {
+        val accountId = account.id
+        // AccountHofGateway가 요청 시작 시각 watermark 아래에서 이 roster를 이미 반영한다.
+        // 같은 fence 안에서 roster 채택과 상세 저장을 끝내 identity 명령 결과를 오래된 job이 되돌리지 않게 한다.
         val homeResponse = gateway.execute(account.id, requestFactory.home(), cookies)
         val roster = rosterParser.parse(homeResponse.body)
         val existingCharacters = characterService.findAll(accountId)
         if (roster.isEmpty() && existingCharacters.isNotEmpty()) {
             error("HOF 홈에서 캐릭터 명단을 확인하지 못했습니다.")
-        }
-        if (roster.isNotEmpty()) {
-            characterService.deleteCharactersAbsentFromRoster(accountId, roster.mapTo(linkedSetOf()) { it.id })
         }
         job.rosterCount = roster.size
         syncJobRepository.save(job)

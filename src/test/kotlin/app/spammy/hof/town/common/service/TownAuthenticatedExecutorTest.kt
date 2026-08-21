@@ -6,6 +6,8 @@ import app.spammy.hof.account.repository.CookieQueryRepository
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.client.AccountHofGateway
+import app.spammy.hof.external.client.DeferredCharacterRosterHofResponse
+import app.spammy.hof.town.common.service.TownRequestContinuation
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofHttpResponse
@@ -42,6 +44,7 @@ class TownAuthenticatedExecutorTest {
         formParser = HofFormParser(),
         resultParser = HofResultParser(),
         actionGuard = TownActionGuard(),
+        mutationFence = AccountHofMutationFence(),
     )
 
     @Test
@@ -397,6 +400,126 @@ class TownAuthenticatedExecutorTest {
         assertEquals(mapOf("ItemNo" to "201", "nonce" to "second", "AddMaterial" to "202", "amount" to "2", "Create" to "Create"), requests.allValues[2].formFields)
     }
 
+    @Test
+    fun `resolved confirmation sequence forwards the final rotated cookie to its authoritative followup`() {
+        stubAccount()
+        val first = "<form method='post'><button name='knockback' value='1'>Knockback</button></form>"
+        val second = "<form method='post'><button name='knockback2' value='1'>Confirm</button></form>"
+        val seenRequests = mutableListOf<HofRequest>()
+        val seenCookies = mutableListOf<Map<String, String>>()
+        var continuation: TownRequestContinuation? = null
+        Mockito.`when`(
+            gateway.executeWithoutCharacterRosterObservation(Mockito.eq(7L), anyRequest(), anyCookies()),
+        ).thenAnswer { invocation ->
+            seenRequests += invocation.getArgument<HofRequest>(1)
+            seenCookies += invocation.getArgument<Map<String, String>>(2)
+            when (seenRequests.size) {
+                1 -> HofHttpResponse(200, HOF_URL, first, mapOf("stage" to "first"))
+                2 -> HofHttpResponse(200, HOF_URL, second, mapOf("stage" to "second"))
+                3 -> HofHttpResponse(200, HOF_URL, "<div id='result'>이동 완료</div>", mapOf("PHPSESSID" to "rotated"))
+                else -> HofHttpResponse(200, HOME_URL, "<div>권위 명단</div>", emptyMap())
+            }.let { response ->
+                DeferredCharacterRosterHofResponse(response, Instant.EPOCH.plusSeconds(seenRequests.size.toLong()))
+            }
+        }
+
+        val result = executor.executeResolvedFormSequenceWithFollowupProjected(
+            7L,
+            HOF_URL,
+            listOf("knockback", "knockback2"),
+            HOME_URL,
+            onFinalSubmissionUnconfirmed = { error("final submission must be observed") },
+        ) { actionResult, followupHtml, _, _, _, active ->
+            continuation = active
+            actionResult.messages.single() to followupHtml
+        }
+
+        var continuedCookies: Map<String, String>? = null
+        Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies())).thenAnswer { invocation ->
+            continuedCookies = invocation.getArgument(2)
+            HofHttpResponse(200, DETAIL_URL, "<div>새 상세</div>", emptyMap())
+        }
+        val detail = executor.continueLoadProjected(requireNotNull(continuation), DETAIL_URL) { html, _, _ -> html }
+
+        assertEquals("이동 완료" to "<div>권위 명단</div>", result)
+        assertEquals("<div>새 상세</div>", detail)
+        assertEquals(HOME_URL, seenRequests[3].url)
+        assertEquals("rotated", seenCookies[3]["PHPSESSID"])
+        assertEquals("second", seenCookies[3]["stage"])
+        Mockito.verify(gateway, Mockito.times(4))
+            .executeWithoutCharacterRosterObservation(Mockito.eq(7L), anyRequest(), anyCookies())
+        assertEquals("rotated", continuedCookies?.get("PHPSESSID"))
+    }
+
+    @Test
+    fun `applied confirmation is preserved when authoritative roster followup fails`() {
+        stubAccount()
+        val first = "<form method='post'><button name='knockback' value='1'>Knockback</button></form>"
+        val second = "<form method='post'><button name='knockback2' value='1'>Confirm</button></form>"
+        val calls = AtomicInteger()
+        Mockito.`when`(
+            gateway.executeWithoutCharacterRosterObservation(Mockito.eq(7L), anyRequest(), anyCookies()),
+        ).thenAnswer {
+            when (val call = calls.incrementAndGet()) {
+                1 -> DeferredCharacterRosterHofResponse(response(first), Instant.EPOCH.plusSeconds(1))
+                2 -> DeferredCharacterRosterHofResponse(response(second), Instant.EPOCH.plusSeconds(2))
+                3 -> DeferredCharacterRosterHofResponse(
+                    response("<div id='result'>이동 완료</div>"),
+                    Instant.EPOCH.plusSeconds(3),
+                )
+                else -> throw app.spammy.hof.external.client.DeferredCharacterRosterRequestException(
+                    Instant.EPOCH.plusSeconds(4),
+                    Instant.EPOCH.plusSeconds(5),
+                    IllegalStateException("followup unavailable: $call"),
+                )
+            }
+        }
+
+        val observed = executor.executeResolvedFormSequenceWithFollowupProjected(
+            7L,
+            HOF_URL,
+            listOf("knockback", "knockback2"),
+            HOME_URL,
+            onFinalSubmissionUnconfirmed = { error("final submission must be observed") },
+        ) { result, followupHtml, _, _, observedAt, _ -> Triple(result.messages.single(), followupHtml, observedAt) }
+
+        assertEquals(Triple("이동 완료", null, Instant.EPOCH.plusSeconds(5)), observed)
+    }
+
+    @Test
+    fun `lost final confirmation response is projected as unconfirmed instead of being replayed`() {
+        stubAccount()
+        val first = "<form method='post'><button name='knockback' value='1'>Knockback</button></form>"
+        val second = "<form method='post'><button name='knockback2' value='1'>Confirm</button></form>"
+        val calls = AtomicInteger()
+        val finalFailureObservedAt = Instant.EPOCH.plusSeconds(3)
+        Mockito.`when`(
+            gateway.executeWithoutCharacterRosterObservation(Mockito.eq(7L), anyRequest(), anyCookies()),
+        ).thenAnswer {
+            when (calls.incrementAndGet()) {
+                1 -> DeferredCharacterRosterHofResponse(response(first), Instant.EPOCH.plusSeconds(1))
+                2 -> DeferredCharacterRosterHofResponse(response(second), Instant.EPOCH.plusSeconds(2))
+                else -> throw app.spammy.hof.external.client.DeferredCharacterRosterRequestException(
+                    Instant.EPOCH.plusSeconds(2),
+                    finalFailureObservedAt,
+                    IllegalStateException("response lost"),
+                )
+            }
+        }
+
+        val observed = executor.executeResolvedFormSequenceWithFollowupProjected(
+            7L,
+            HOF_URL,
+            listOf("knockback", "knockback2"),
+            HOME_URL,
+            onFinalSubmissionUnconfirmed = { "unconfirmed" to it },
+        ) { _, _, _, _, _, _ -> error("must not project a confirmed action") }
+
+        assertEquals("unconfirmed" to finalFailureObservedAt, observed)
+        Mockito.verify(gateway, Mockito.times(3))
+            .executeWithoutCharacterRosterObservation(Mockito.eq(7L), anyRequest(), anyCookies())
+    }
+
     private fun stubAccount() {
         Mockito.`when`(accounts.findById(7L)).thenReturn(
             HofAccountEntity(7L, "town-user", "encrypted", Instant.EPOCH),
@@ -417,5 +540,7 @@ class TownAuthenticatedExecutorTest {
         const val HOF_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=buy"
         const val AUCTION_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=auction"
         const val QUEST_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=quest"
+        const val HOME_URL = "http://sic.zerosic.com/ZeroHOF/index.php"
+        const val DETAIL_URL = "http://sic.zerosic.com/ZeroHOF/index.php?char=11"
     }
 }

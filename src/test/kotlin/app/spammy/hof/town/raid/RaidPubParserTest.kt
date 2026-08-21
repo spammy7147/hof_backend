@@ -361,7 +361,7 @@ class RaidPubParserTest {
             HofHttpResponse(200, URL, responses.first(), emptyMap()),
             *responses.drop(1).map { HofHttpResponse(200, URL, it, emptyMap()) }.toTypedArray(),
         )
-        val executor = TownAuthenticatedExecutor(accounts, cookies, HofRequestFactory(), gateway, LoginStateParser(), forms, HofResultParser(), TownActionGuard())
+        val executor = TownAuthenticatedExecutor(accounts, cookies, HofRequestFactory(), gateway, LoginStateParser(), forms, HofResultParser(), TownActionGuard(), app.spammy.hof.town.common.service.AccountHofMutationFence())
         return Context(RaidPubService(executor, locations, parser, maps), gateway, maps)
     }
     private fun observedMap(code: String, name: String = code) = BattleMapResponse("raid", code, name, null, 0, 0, null, null, null, null, null, null, BattleMapKeyMode.UNKNOWN, null, null, false, true, true, null, "?raid_common=$code")

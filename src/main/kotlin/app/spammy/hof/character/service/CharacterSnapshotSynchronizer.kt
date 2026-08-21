@@ -15,6 +15,7 @@ import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.HofCharacter
 import app.spammy.hof.external.parser.CharacterDetailParser
 import app.spammy.hof.external.parser.CharacterPageParseResult
+import app.spammy.hof.town.common.service.AccountHofMutationFence
 import java.time.Duration
 import java.time.Instant
 import org.springframework.stereotype.Service
@@ -31,16 +32,19 @@ class CharacterSnapshotSynchronizer(
     private val gateway: AccountHofGateway,
     private val detailParser: CharacterDetailParser,
     private val timeProvider: TimeProvider,
+    private val mutationFence: AccountHofMutationFence,
 ) {
     fun refresh(
         accountId: Long,
-        hofCharacterId: String,
+        characterId: Long,
         sections: Set<CharacterSection> = NORMAL_SECTIONS,
-    ): CharacterDetailResponse {
+    ): CharacterDetailResponse = mutationFence.execute(accountId) {
         val account = accountQueryRepository.findById(accountId)
             ?: error("HOF 계정을 찾지 못했습니다.")
-        val character = characterQueryRepository.findByAccountIdAndHofCharacterId(accountId, hofCharacterId)
-            ?: error("캐릭터를 찾지 못했습니다: $hofCharacterId")
+        val character = characterQueryRepository.findByAccountIdAndId(accountId, characterId)
+            ?: error("캐릭터를 찾지 못했습니다: $characterId")
+        check(character.lifecycle == CharacterLifecycle.ACTIVE) { "현재 HOF에서 사용 중인 캐릭터가 아닙니다." }
+        val hofCharacterId = character.hofCharacterId
         val cookies = cookieQueryRepository.findValueMapByAccountId(accountId)
         check(cookies.isNotEmpty()) { "저장된 HOF 로그인 쿠키가 없습니다." }
         synchronize(
@@ -55,7 +59,7 @@ class CharacterSnapshotSynchronizer(
             force = true,
             sections = sections,
         )
-        return characterService.findDetail(accountId, hofCharacterId)
+        characterService.findDetailById(accountId, characterId)
     }
 
     fun writeParsed(
@@ -63,11 +67,11 @@ class CharacterSnapshotSynchronizer(
         hofCharacterId: String,
         parsed: CharacterPageParseResult,
         sections: Set<CharacterSection> = NORMAL_SECTIONS,
-    ): CharacterDetailResponse {
+    ): CharacterDetailResponse = mutationFence.execute(accountId) {
         val character = characterQueryRepository.findByAccountIdAndHofCharacterId(accountId, hofCharacterId)
             ?: error("캐릭터를 찾지 못했습니다: $hofCharacterId")
         snapshotWriter.write(character, parsed, timeProvider.now(), sections)
-        return characterService.findDetail(accountId, hofCharacterId)
+        characterService.findDetail(accountId, hofCharacterId)
     }
 
     fun synchronize(
@@ -76,7 +80,7 @@ class CharacterSnapshotSynchronizer(
         rosterCharacter: HofCharacter,
         force: Boolean = false,
         sections: Set<CharacterSection> = NORMAL_SECTIONS,
-    ): CharacterResponse {
+    ): CharacterResponse = mutationFence.execute(account.id) {
         val before = characterQueryRepository.findByAccountIdAndHofCharacterId(account.id, rosterCharacter.id)
         val wasMissing = before?.lifecycle == CharacterLifecycle.MISSING
 
@@ -86,13 +90,13 @@ class CharacterSnapshotSynchronizer(
             ?: error("캐릭터 기본 snapshot을 저장하지 못했습니다: ${rosterCharacter.id}")
 
         if (!force && !wasMissing && isFresh(character.id, sections, timeProvider.now())) {
-            return currentResponse(account.id, rosterCharacter.id)
+            return@execute currentResponse(account.id, rosterCharacter.id)
         }
 
         val response = gateway.execute(account.id, requestFactory.characterPage(rosterCharacter.id), cookies)
         val parsed = detailParser.parsePage(rosterCharacter.id, response.body)
         snapshotWriter.write(character, parsed, timeProvider.now(), sections)
-        return currentResponse(account.id, rosterCharacter.id)
+        currentResponse(account.id, rosterCharacter.id)
     }
 
     fun isFresh(

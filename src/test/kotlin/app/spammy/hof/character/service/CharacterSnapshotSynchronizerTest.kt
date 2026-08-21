@@ -6,6 +6,7 @@ import app.spammy.hof.account.repository.CookieQueryRepository
 import app.spammy.hof.character.entity.CharacterEntity
 import app.spammy.hof.character.entity.CharacterLifecycle
 import app.spammy.hof.character.dto.CharacterResponse
+import app.spammy.hof.character.dto.CharacterDetailResponse
 import app.spammy.hof.character.entity.CharacterSectionSyncStateEntity
 import app.spammy.hof.character.entity.CharacterSectionSyncStatus
 import app.spammy.hof.character.repository.CharacterQueryRepository
@@ -19,7 +20,11 @@ import app.spammy.hof.external.model.HofRequest
 import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.parser.CharacterDetailParser
 import app.spammy.hof.external.parser.CharacterPageParseResult
+import app.spammy.hof.town.common.service.AccountHofMutationFence
 import java.time.Instant
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -68,10 +73,164 @@ class CharacterSnapshotSynchronizerTest {
             gateway,
             CharacterDetailParser(),
             TimeProvider { now },
+            app.spammy.hof.town.common.service.AccountHofMutationFence(),
         )
 
         assertEquals(response, service.synchronize(account, mapOf("PHPSESSID" to "x"), HofCharacter("1", "returned")))
         Mockito.verify(gateway).execute(Mockito.eq(1L), anyHofRequest(), Mockito.anyMap())
+    }
+
+    @Test
+    fun `snapshot write waits until the account identity command fence is released`() {
+        val now = Instant.parse("2026-08-17T00:00:00Z")
+        val account = HofAccountEntity(1L, "account", "encrypted", now)
+        val character = CharacterEntity(
+            id = 7L,
+            account = account,
+            hofCharacterId = "1",
+            name = "character",
+            job = "job",
+            updatedAt = now,
+        )
+        val query = Mockito.mock(CharacterQueryRepository::class.java)
+        val characters = Mockito.mock(CharacterService::class.java)
+        val writer = Mockito.mock(CharacterSnapshotWriter::class.java)
+        val fence = AccountHofMutationFence()
+        val snapshotEntered = CountDownLatch(1)
+        Mockito.`when`(query.findByAccountIdAndHofCharacterId(1L, "1")).thenAnswer {
+            snapshotEntered.countDown()
+            character
+        }
+        Mockito.`when`(characters.findDetail(1L, "1"))
+            .thenReturn(Mockito.mock(CharacterDetailResponse::class.java))
+        val service = CharacterSnapshotSynchronizer(
+            Mockito.mock(AccountQueryRepository::class.java),
+            Mockito.mock(CookieQueryRepository::class.java),
+            query,
+            characters,
+            writer,
+            HofRequestFactory(),
+            Mockito.mock(AccountHofGateway::class.java),
+            CharacterDetailParser(),
+            TimeProvider { now },
+            fence,
+        )
+        val commandStarted = CountDownLatch(1)
+        val releaseCommand = CountDownLatch(1)
+        val snapshotAttempted = CountDownLatch(1)
+        val pool = Executors.newFixedThreadPool(2)
+
+        try {
+            val command = pool.submit {
+                fence.execute(1L) {
+                    commandStarted.countDown()
+                    assertTrue(releaseCommand.await(2, TimeUnit.SECONDS))
+                }
+            }
+            assertTrue(commandStarted.await(1, TimeUnit.SECONDS))
+            val snapshot = pool.submit {
+                snapshotAttempted.countDown()
+                service.writeParsed(1L, "1", page("character"))
+            }
+
+            assertTrue(snapshotAttempted.await(1, TimeUnit.SECONDS))
+            assertFalse(snapshotEntered.await(200, TimeUnit.MILLISECONDS))
+            releaseCommand.countDown()
+
+            command.get(1, TimeUnit.SECONDS)
+            snapshot.get(1, TimeUnit.SECONDS)
+            Mockito.verify(writer).write(
+                character,
+                page("character"),
+                now,
+                CharacterSnapshotSynchronizer.NORMAL_SECTIONS,
+            )
+        } finally {
+            releaseCommand.countDown()
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `refresh resolves the current hof id only after acquiring the account identity fence`() {
+        val now = Instant.parse("2026-08-17T00:00:00Z")
+        val account = HofAccountEntity(1L, "account", "encrypted", now)
+        val character = CharacterEntity(
+            id = 7L,
+            account = account,
+            hofCharacterId = "old-id",
+            name = "character",
+            job = "job",
+            updatedAt = now,
+        )
+        val accountQuery = Mockito.mock(AccountQueryRepository::class.java)
+        val cookieQuery = Mockito.mock(CookieQueryRepository::class.java)
+        val query = Mockito.mock(CharacterQueryRepository::class.java)
+        val characters = Mockito.mock(CharacterService::class.java)
+        val writer = Mockito.mock(CharacterSnapshotWriter::class.java)
+        val gateway = Mockito.mock(AccountHofGateway::class.java)
+        val fence = AccountHofMutationFence()
+        val stableLookupEntered = CountDownLatch(1)
+        Mockito.`when`(accountQuery.findById(1L)).thenReturn(account)
+        Mockito.`when`(cookieQuery.findValueMapByAccountId(1L)).thenReturn(mapOf("PHPSESSID" to "session"))
+        Mockito.`when`(query.findByAccountIdAndId(1L, 7L)).thenAnswer {
+            stableLookupEntered.countDown()
+            character
+        }
+        Mockito.`when`(query.findByAccountIdAndHofCharacterId(1L, "new-id")).thenReturn(character)
+        Mockito.`when`(characters.findAll(1L)).thenReturn(
+            listOf(CharacterResponse(7L, "new-id", "character", "job", 60, 0, null, revision = now)),
+        )
+        Mockito.`when`(characters.findDetailById(1L, 7L))
+            .thenReturn(Mockito.mock(CharacterDetailResponse::class.java))
+        var requestedUrl: String? = null
+        Mockito.`when`(gateway.execute(Mockito.eq(1L), anyHofRequest(), Mockito.anyMap())).thenAnswer { invocation ->
+            val url = invocation.getArgument<HofRequest>(1).url
+            requestedUrl = url
+            HofHttpResponse(200, url, "<div class='carpet_frame'>character Lv.60 job</div>", emptyMap())
+        }
+        val service = CharacterSnapshotSynchronizer(
+            accountQuery,
+            cookieQuery,
+            query,
+            characters,
+            writer,
+            HofRequestFactory(),
+            gateway,
+            CharacterDetailParser(),
+            TimeProvider { now },
+            fence,
+        )
+        val commandStarted = CountDownLatch(1)
+        val releaseCommand = CountDownLatch(1)
+        val refreshAttempted = CountDownLatch(1)
+        val pool = Executors.newFixedThreadPool(2)
+
+        try {
+            val command = pool.submit {
+                fence.execute(1L) {
+                    commandStarted.countDown()
+                    assertTrue(releaseCommand.await(2, TimeUnit.SECONDS))
+                }
+            }
+            assertTrue(commandStarted.await(1, TimeUnit.SECONDS))
+            val refresh = pool.submit {
+                refreshAttempted.countDown()
+                service.refresh(1L, 7L)
+            }
+            assertTrue(refreshAttempted.await(1, TimeUnit.SECONDS))
+            assertFalse(stableLookupEntered.await(200, TimeUnit.MILLISECONDS))
+
+            character.hofCharacterId = "new-id"
+            releaseCommand.countDown()
+
+            command.get(1, TimeUnit.SECONDS)
+            refresh.get(1, TimeUnit.SECONDS)
+            assertTrue(requireNotNull(requestedUrl).endsWith("char=new-id"))
+        } finally {
+            releaseCommand.countDown()
+            pool.shutdownNow()
+        }
     }
 
     @Test
@@ -228,6 +387,7 @@ class CharacterSnapshotSynchronizerTest {
             gateway = Mockito.mock(AccountHofGateway::class.java),
             detailParser = CharacterDetailParser(),
             timeProvider = TimeProvider { now },
+            mutationFence = app.spammy.hof.town.common.service.AccountHofMutationFence(),
         )
 
         fun anyHofRequest(): HofRequest =

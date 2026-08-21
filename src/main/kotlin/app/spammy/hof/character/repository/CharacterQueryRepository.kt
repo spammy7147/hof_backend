@@ -36,6 +36,7 @@ import app.spammy.hof.character.entity.QCharacterSavedPatternRowEntity.character
 import app.spammy.hof.character.entity.QCharacterEquipmentSavedSlotEntity.characterEquipmentSavedSlotEntity
 import app.spammy.hof.character.entity.QCharacterEquipmentSavedItemEntity.characterEquipmentSavedItemEntity
 import com.querydsl.jpa.impl.JPAQueryFactory
+import jakarta.persistence.LockModeType
 import org.springframework.stereotype.Repository
 
 @Repository
@@ -140,6 +141,13 @@ class CharacterQueryRepository(
     fun findByAccountIdAndId(accountId: Long, characterId: Long): CharacterEntity? =
         queryFactory.selectFrom(characterEntity)
             .where(characterEntity.account.id.eq(accountId), characterEntity.id.eq(characterId))
+            .fetchOne()
+
+    /** identity/lifecycle 변경끼리 같은 안정 캐릭터 행을 덮어쓰지 않도록 잠가 조회한다. */
+    fun findByAccountIdAndIdForUpdate(accountId: Long, characterId: Long): CharacterEntity? =
+        queryFactory.selectFrom(characterEntity)
+            .where(characterEntity.account.id.eq(accountId), characterEntity.id.eq(characterId))
+            .setLockMode(LockModeType.PESSIMISTIC_WRITE)
             .fetchOne()
 
     /**

@@ -30,7 +30,7 @@ class CraftingServiceTest {
     private val gateway = Mockito.mock(AccountHofGateway::class.java)
     private val locations = Mockito.mock(TownLocationResolver::class.java)
     private val service = CraftingService(
-        TownAuthenticatedExecutor(accounts, cookies, HofRequestFactory(), gateway, LoginStateParser(), HofFormParser(), HofResultParser(), TownActionGuard()),
+        TownAuthenticatedExecutor(accounts, cookies, HofRequestFactory(), gateway, LoginStateParser(), HofFormParser(), HofResultParser(), TownActionGuard(), app.spammy.hof.town.common.service.AccountHofMutationFence()),
         locations,
         CraftingPageParser(),
     )
