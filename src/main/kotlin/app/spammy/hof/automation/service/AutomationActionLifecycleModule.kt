@@ -50,6 +50,12 @@ interface AutomationActionLifecycleModule {
         row: TypedAutomationActionRunEntity,
         expectedAccountId: Long,
     ): ManagedAutomationAction
+
+    /** Runtime checkpoint가 persistence discriminator를 검증한 뒤 복원하는 경계다. */
+    fun restoreVerified(
+        action: StoredTypedAutomationAction,
+        expectedAccountId: Long,
+    ): ManagedAutomationAction
 }
 
 interface ManagedAutomationAction {
@@ -278,7 +284,26 @@ class UnifiedAutomationActionLifecycleModule(
                 RAID_CYCLE_ABORT_STORAGE_KIND,
             )
         ) { "Stored action kind ${row.actionKind} is not owned by the lifecycle module." }
-        val stored = codec.verifyPersisted(row, expectedAccountId)
+        return restoreVerified(codec.verifyPersisted(row, expectedAccountId), expectedAccountId)
+    }
+
+    override fun restoreVerified(
+        action: StoredTypedAutomationAction,
+        expectedAccountId: Long,
+    ): ManagedAutomationAction {
+        val stored = action
+        require(stored.payload.kind() in setOf(
+                HOME_QUEST_STORAGE_KIND,
+                QUEST_ACCEPT_STORAGE_KIND,
+                QUEST_CLAIM_STORAGE_KIND,
+                QUEST_BATTLE_STORAGE_KIND,
+                BATTLE_MAP_STORAGE_KIND,
+                ADVENTURE_MAP_STORAGE_KIND,
+                FISHING_TOWN_STORAGE_KIND,
+                RAID_TOWN_STORAGE_KIND,
+                RAID_CYCLE_ABORT_STORAGE_KIND,
+            )
+        ) { "Stored action kind ${stored.payload.kind()} is not owned by the lifecycle module." }
         require(
             stored.payload !is StoredTypedActionPayload.BattleMap ||
                 stored.payload.source in MANAGED_BATTLE_MAP_SOURCES,
