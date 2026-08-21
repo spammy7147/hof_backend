@@ -1207,6 +1207,45 @@ class UnifiedAutomationServiceTest {
             Mockito.`when`(storedActionCodec.verifyPersisted(row, ACCOUNT_ID)).thenReturn(
                 StoredTypedAutomationAction(91L, row.executionIdentity, action.second),
             )
+            val descriptor = when (val payload = action.second) {
+                is StoredTypedActionPayload.QuestClaim -> AutomationActionDescriptor(
+                    source = AutomationType.QUEST,
+                    storageKind = "QUEST_CLAIM",
+                    actionKind = "QUEST_CLAIM",
+                    actionLabel = "퀘스트 완료",
+                    context = "퀘스트 보상 수령 · ${payload.display?.questName ?: payload.questKey}",
+                    targetKey = payload.questKey,
+                    targetName = payload.display?.questName,
+                    display = payload.display,
+                )
+                is StoredTypedActionPayload.QuestAccept -> AutomationActionDescriptor(
+                    source = AutomationType.QUEST,
+                    storageKind = "QUEST_ACCEPT",
+                    actionKind = "QUEST_ACCEPT",
+                    actionLabel = "퀘스트 수락",
+                    context = "퀘스트 수락 · ${payload.display?.questName ?: payload.questKey}",
+                    targetKey = payload.questKey,
+                    targetName = payload.display?.questName,
+                    display = payload.display,
+                )
+                is StoredTypedActionPayload.QuestBattle -> AutomationActionDescriptor(
+                    source = AutomationType.QUEST,
+                    storageKind = "QUEST_BATTLE",
+                    actionKind = "QUEST_BATTLE",
+                    actionLabel = "퀘스트 전투",
+                    context = "퀘스트 전투 · ${payload.display?.questName ?: payload.questKey}",
+                    targetKey = "${payload.categoryId}/${payload.mapCode}",
+                    targetName = payload.display?.mapName,
+                    display = payload.display,
+                    battleCount = payload.battleCount,
+                )
+                else -> null
+            }
+            descriptor?.let {
+                val managed = Mockito.mock(ManagedAutomationAction::class.java)
+                Mockito.`when`(managed.descriptor).thenReturn(it)
+                Mockito.`when`(actionLifecycleModule.restore(row, ACCOUNT_ID)).thenReturn(managed)
+            }
         }
     }
 

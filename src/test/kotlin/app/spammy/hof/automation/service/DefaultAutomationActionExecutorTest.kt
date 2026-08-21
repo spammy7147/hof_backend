@@ -19,8 +19,6 @@ import app.spammy.hof.battle.service.SharedBattleCooldownRejectedException
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.model.HofRequestOrigin
-import app.spammy.hof.quest.model.QuestMissionType
-import app.spammy.hof.quest.service.QuestGatewayService
 import app.spammy.hof.town.raid.dto.RaidPubActionRequest
 import app.spammy.hof.town.raid.dto.RaidPubRaidResponse
 import app.spammy.hof.town.raid.dto.RaidPubResponse
@@ -28,7 +26,6 @@ import app.spammy.hof.town.raid.model.RaidAction
 import app.spammy.hof.town.raid.model.RaidStatus
 import app.spammy.hof.town.raid.service.RaidPubService
 import app.spammy.hof.town.fishing.dto.TownActionResultResponse
-import java.io.IOException
 import java.time.Instant
 import java.time.LocalDate
 import kotlin.test.Test
@@ -38,9 +35,7 @@ import org.mockito.Mockito
 
 class DefaultAutomationActionExecutorTest {
     private val accountService = Mockito.mock(HofAccountService::class.java)
-    private val questGateway = Mockito.mock(QuestGatewayService::class.java)
     private val battleRun = Mockito.mock(BattleRunService::class.java)
-    private val questHandler = Mockito.mock(QuestAutomationHandler::class.java)
     private val battleHandler = Mockito.mock(BattleMapAutomationHandler::class.java)
     private val reconciler = Mockito.mock(BattleOutcomeReconciler::class.java)
     private val executionSignals = Mockito.mock(AutomationExecutionSignals::class.java)
@@ -48,40 +43,18 @@ class DefaultAutomationActionExecutorTest {
     private val defaultRaidPub = Mockito.mock(RaidPubService::class.java)
     private val defaultRaidModule = Mockito.mock(RaidCycleModule::class.java)
     private val defaultRaidAdapter = Mockito.mock(HofRaidObservationAdapter::class.java)
+    private val sessionRecovery = HofSessionRecoveryExecutor(HofSessionRecoveryService(accountService))
+    private val battleSubmission = AutomationBattleSubmission(battleRun, sessionRecovery, reconciler)
     private val executor = DefaultAutomationActionExecutor(
-        questGateway,
-        battleRun,
-        questHandler,
+        battleSubmission,
         battleHandler,
         reconciler,
-        HofSessionRecoveryExecutor(HofSessionRecoveryService(accountService)),
         executionSignals,
         workLifecycle,
         defaultRaidPub,
         defaultRaidModule,
         defaultRaidAdapter,
     )
-
-    @Test
-    fun `quest accept posts once and records its exact execution identity`() {
-        val action = StoredTypedAutomationAction(
-            entryId = 11L,
-            executionIdentity = "quest-accept-1",
-            payload = StoredTypedActionPayload.QuestAccept(
-                "Q-1", "accept-no", StoredActionDisplay(questName = "표시용 이름", mapName = "잘못된 실행 맵"),
-            ),
-        )
-
-        val execution = executor.execute(7L, action)
-
-        assertEquals(TypedAutomationExecution.Completed, execution)
-        Mockito.verify(questGateway, Mockito.times(1)).accept(7L, "accept-no", HofRequestOrigin.AUTOMATION)
-        Mockito.verify(questHandler).onAcceptSucceeded(
-            7L,
-            "quest-accept-1",
-            QuestAction.Accept("Q-1", "accept-no"),
-        )
-    }
 
     @Test
     fun `raid executor forwards the POST observation to the raid module instead of changing cycle state itself`() {
@@ -91,12 +64,9 @@ class DefaultAutomationActionExecutorTest {
         val response = RaidPubResponse(emptyList(), false, false, null, null, emptySet(), null)
         val observation = RaidObservation(emptyList(), false, false)
         val raidExecutor = DefaultAutomationActionExecutor(
-            questGateway,
-            battleRun,
-            questHandler,
+            battleSubmission,
             battleHandler,
             reconciler,
-            HofSessionRecoveryExecutor(HofSessionRecoveryService(accountService)),
             executionSignals,
             workLifecycle,
             raidPubService = raidPub,
@@ -135,12 +105,9 @@ class DefaultAutomationActionExecutorTest {
         val response = RaidPubResponse(emptyList(), false, false, null, null, emptySet(), null)
         val observation = RaidObservation(emptyList(), false, false)
         val raidExecutor = DefaultAutomationActionExecutor(
-            questGateway,
-            battleRun,
-            questHandler,
+            battleSubmission,
             battleHandler,
             reconciler,
-            HofSessionRecoveryExecutor(HofSessionRecoveryService(accountService)),
             executionSignals,
             workLifecycle,
             raidPubService = raidPub,
@@ -175,12 +142,9 @@ class DefaultAutomationActionExecutorTest {
         val observation = RaidObservation(emptyList(), true, true, 10_000)
         val completion = RaidCycleOutcome(13L, "RaidGoblin", RaidCycleOutcomeKind.COMPLETED)
         val raidExecutor = DefaultAutomationActionExecutor(
-            questGateway,
-            battleRun,
-            questHandler,
+            battleSubmission,
             battleHandler,
             reconciler,
-            HofSessionRecoveryExecutor(HofSessionRecoveryService(accountService)),
             executionSignals,
             workLifecycle,
             raidPubService = raidPub,
@@ -203,163 +167,6 @@ class DefaultAutomationActionExecutorTest {
         assertEquals(TypedAutomationExecution.RaidCycleFinished(completion), raidExecutor.execute(7L, action))
 
         Mockito.verify(workLifecycle).completeRaidCycle(7L, 13L)
-    }
-
-    @Test
-    fun `expired session reauthenticates then replays the exact action once`() {
-        val action = StoredTypedAutomationAction(
-            entryId = 11L,
-            executionIdentity = "quest-accept-recovery",
-            payload = StoredTypedActionPayload.QuestAccept("Q-1", "accept-no"),
-        )
-        Mockito.`when`(questGateway.accept(7L, "accept-no", HofRequestOrigin.AUTOMATION))
-            .thenThrow(ApiException(ErrorCode.HOF_SESSION_EXPIRED, "expired"))
-            .thenReturn(emptyList())
-
-        executor.execute(7L, action)
-
-        Mockito.verify(accountService).reauthenticate(7L, HofRequestOrigin.AUTOMATION)
-        Mockito.verify(questGateway, Mockito.times(2)).accept(7L, "accept-no", HofRequestOrigin.AUTOMATION)
-        Mockito.verify(questHandler, Mockito.times(1)).onAcceptSucceeded(
-            7L,
-            "quest-accept-recovery",
-            QuestAction.Accept("Q-1", "accept-no"),
-        )
-    }
-
-    @Test
-    fun `invalid stored credentials surface authentication without replay`() {
-        val action = StoredTypedAutomationAction(
-            entryId = 11L,
-            executionIdentity = "quest-accept-auth",
-            payload = StoredTypedActionPayload.QuestAccept("Q-1", "accept-no"),
-        )
-        Mockito.`when`(questGateway.accept(7L, "accept-no", HofRequestOrigin.AUTOMATION))
-            .thenThrow(ApiException(ErrorCode.HOF_SESSION_EXPIRED, "expired"))
-        Mockito.`when`(accountService.reauthenticate(7L, HofRequestOrigin.AUTOMATION))
-            .thenThrow(ApiException(ErrorCode.HOF_LOGIN_FAILED, "rejected"))
-
-        assertFailsWith<AutomationLoginRequiredException> {
-            executor.execute(7L, action)
-        }
-
-        Mockito.verify(questGateway, Mockito.times(1)).accept(7L, "accept-no", HofRequestOrigin.AUTOMATION)
-        Mockito.verifyNoInteractions(questHandler)
-    }
-
-    @Test
-    fun `ambiguous quest accept transport failure is never replayed`() {
-        val action = StoredTypedAutomationAction(
-            entryId = 11L,
-            executionIdentity = "quest-accept-ambiguous",
-            payload = StoredTypedActionPayload.QuestAccept("Q-1", "accept-no"),
-        )
-        Mockito.`when`(questGateway.accept(7L, "accept-no", HofRequestOrigin.AUTOMATION))
-            .thenThrow(RuntimeException("transport wrapper", IOException("connection reset")))
-
-        assertFailsWith<AmbiguousAutomationSubmissionException> {
-            executor.execute(7L, action)
-        }
-
-        Mockito.verify(questGateway, Mockito.times(1)).accept(7L, "accept-no", HofRequestOrigin.AUTOMATION)
-        Mockito.verifyNoInteractions(accountService, questHandler)
-    }
-
-    @Test
-    fun `ambiguous quest claim request failure is never replayed`() {
-        val action = StoredTypedAutomationAction(
-            entryId = 11L,
-            executionIdentity = "quest-claim-ambiguous",
-            payload = StoredTypedActionPayload.QuestClaim("Q-1", "claim-no"),
-        )
-        Mockito.`when`(questGateway.claim(7L, "claim-no", HofRequestOrigin.AUTOMATION))
-            .thenThrow(ApiException(ErrorCode.HOF_REQUEST_FAILED, "upstream result unknown"))
-
-        assertFailsWith<AmbiguousAutomationSubmissionException> {
-            executor.execute(7L, action)
-        }
-
-        Mockito.verify(questGateway, Mockito.times(1)).claim(7L, "claim-no", HofRequestOrigin.AUTOMATION)
-        Mockito.verifyNoInteractions(accountService, questHandler)
-    }
-
-    @Test
-    fun `post success bookkeeping failure never replays the external quest action`() {
-        val action = StoredTypedAutomationAction(
-            entryId = 11L,
-            executionIdentity = "quest-accept-bookkeeping",
-            payload = StoredTypedActionPayload.QuestAccept("Q-1", "accept-no"),
-        )
-        Mockito.doThrow(ApiException(ErrorCode.HOF_SESSION_EXPIRED, "unexpected bookkeeping failure"))
-            .`when`(questHandler).onAcceptSucceeded(
-                7L,
-                "quest-accept-bookkeeping",
-                QuestAction.Accept("Q-1", "accept-no"),
-            )
-
-        assertFailsWith<ApiException> {
-            executor.execute(7L, action)
-        }
-
-        Mockito.verify(questGateway, Mockito.times(1)).accept(7L, "accept-no", HofRequestOrigin.AUTOMATION)
-        Mockito.verifyNoInteractions(accountService)
-    }
-
-    @Test
-    fun `quest battle forwards every terminal round to quest progress`() {
-        val request = battleRequest()
-        val result = Mockito.mock(app.spammy.hof.battle.dto.BattleResultResponse::class.java)
-        val round1 = Mockito.mock(app.spammy.hof.battle.dto.BattleRoundResponse::class.java)
-        val round2 = Mockito.mock(app.spammy.hof.battle.dto.BattleRoundResponse::class.java)
-        val round3 = Mockito.mock(app.spammy.hof.battle.dto.BattleRoundResponse::class.java)
-        Mockito.`when`(round1.outcome).thenReturn("VICTORY")
-        Mockito.`when`(round2.outcome).thenReturn("DEFEAT")
-        Mockito.`when`(round3.outcome).thenReturn("VICTORY")
-        Mockito.`when`(result.rounds).thenReturn(listOf(round1, round2, round3))
-        Mockito.`when`(battleRun.runBattle(7L, request, HofRequestOrigin.AUTOMATION)).thenReturn(result)
-        val action = StoredTypedAutomationAction(
-            entryId = 11L,
-            executionIdentity = "quest-battle-3",
-            payload = StoredTypedActionPayload.QuestBattle(
-                questKey = "Q-1",
-                questCycle = "2",
-                missionKey = "kill",
-                missionType = QuestMissionType.MONSTER_KILL,
-                categoryId = request.categoryId,
-                mapCode = request.mapCode,
-                presetMode = PresetSelectionMode.PRIMARY,
-                presetId = 301L,
-                battleCount = 3,
-                battleRequest = request,
-            ),
-        )
-
-        val execution = executor.execute(7L, action)
-
-        assertEquals(
-            TypedAutomationExecution.BattleCompleted(request.categoryId, request.mapCode),
-            execution,
-        )
-        Mockito.verify(questHandler).onBattleCompleted(
-            7L,
-            "quest-battle-3",
-            QuestAction.Battle(
-                "Q-1",
-                "2",
-                "kill",
-                QuestMissionType.MONSTER_KILL,
-                request.categoryId,
-                request.mapCode,
-                request.mapCode,
-                QuestPresetSelection(PresetSelectionMode.PRIMARY, 301L),
-                3,
-            ),
-            listOf(
-                BattleAutomationRoundOutcome.VICTORY,
-                BattleAutomationRoundOutcome.DEFEAT,
-                BattleAutomationRoundOutcome.VICTORY,
-            ),
-        )
     }
 
     @Test
@@ -452,10 +259,6 @@ class DefaultAutomationActionExecutorTest {
         Mockito.`when`(battleRun.runBattle(7L, request, HofRequestOrigin.AUTOMATION))
             .thenThrow(SharedBattleCooldownRejectedException(retryAt))
         val payloads = listOf<StoredTypedActionPayload>(
-            StoredTypedActionPayload.QuestBattle(
-                "Q-1", "2", "kill", QuestMissionType.MONSTER_KILL,
-                request.categoryId, request.mapCode, PresetSelectionMode.PRIMARY, 301L, 3, request,
-            ),
             StoredTypedActionPayload.BattleMap(
                 LocalDate.parse("2026-07-24"), request.categoryId, request.mapCode,
                 PresetSelectionMode.PRIMARY, 301L, 3, request,
@@ -478,9 +281,9 @@ class DefaultAutomationActionExecutorTest {
             )
         }
 
-        Mockito.verify(battleRun, Mockito.times(3))
+        Mockito.verify(battleRun, Mockito.times(2))
             .runBattle(7L, request, HofRequestOrigin.AUTOMATION)
-        Mockito.verifyNoInteractions(questHandler, battleHandler, reconciler, executionSignals)
+        Mockito.verifyNoInteractions(battleHandler, reconciler, executionSignals)
         Mockito.verify(workLifecycle, Mockito.never()).completeBattleMapAction(
             Mockito.anyLong(),
             Mockito.anyLong(),

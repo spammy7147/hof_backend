@@ -562,27 +562,6 @@ class UnifiedAutomationRunner @Autowired constructor(
             else -> UUID.randomUUID().toString()
         }
         val payload = when (action) {
-            is QuestAction.Claim -> StoredTypedActionPayload.QuestClaim(
-                action.questKey, action.actionNo, StoredActionDisplay(questName = action.questName),
-            )
-            is QuestAction.Accept -> StoredTypedActionPayload.QuestAccept(
-                action.questKey, action.actionNo, StoredActionDisplay(questName = action.questName),
-            )
-            is QuestAction.Battle -> StoredTypedActionPayload.QuestBattle(
-                action.questKey, action.questCycle, action.missionKey, action.missionType,
-                action.categoryId, action.mapCode, action.preset.mode,
-                action.preset.resolvedPresetId ?: action.preset.presetId ?: throw AutomationConfigurationException(), action.battleCount,
-                action.resolvedParty.toRequest(action.categoryId, action.mapCode, action.battleCount),
-                StoredActionDisplay(
-                    action.questName,
-                    action.missionLabel,
-                    action.missionCurrent,
-                    action.missionRequired,
-                    action.mapName,
-                ),
-                observedCurrent = action.missionCurrent,
-                observedRequired = action.missionRequired,
-            )
             is BattleMapAutomationAction -> StoredTypedActionPayload.BattleMap(
                 action.progressDate, action.categoryId, action.mapCode, action.presetMode,
                 action.presetId ?: throw AutomationConfigurationException(), action.battleCount,
@@ -642,7 +621,6 @@ class UnifiedAutomationRunner @Autowired constructor(
         }
         val payload = action.payload
         val type = when (payload) {
-            is StoredTypedActionPayload.QuestClaim, is StoredTypedActionPayload.QuestAccept, is StoredTypedActionPayload.QuestBattle -> AutomationType.QUEST
             is StoredTypedActionPayload.AdventureMap -> AutomationType.ADVENTURE_MAP
             is StoredTypedActionPayload.FishingTown -> AutomationType.FISHING
             is StoredTypedActionPayload.RaidTown, is StoredTypedActionPayload.RaidCycleAbort -> AutomationType.RAID
@@ -663,15 +641,6 @@ class UnifiedAutomationRunner @Autowired constructor(
             else -> payload.kind()
         }
         val actionContext = when (payload) {
-            is StoredTypedActionPayload.QuestClaim -> "퀘스트 보상 수령 · ${payload.display?.questName ?: payload.questKey}"
-            is StoredTypedActionPayload.QuestAccept -> "퀘스트 수락 · ${payload.display?.questName ?: payload.questKey}"
-            is StoredTypedActionPayload.QuestBattle -> listOfNotNull(
-                "퀘스트 전투 · ${payload.display?.questName ?: payload.questKey}",
-                payload.display?.missionLabel,
-                payload.observedCurrent?.let { current -> "실행 전 진행 $current/${payload.observedRequired ?: "?"}" },
-                "맵 ${payload.display?.mapName ?: "${payload.categoryId}/${payload.mapCode}"}",
-                "${payload.battleCount}회 전투",
-            ).joinToString(" · ")
             is StoredTypedActionPayload.BattleMap -> listOf(
                 when (payload.source) {
                     BattleAutomationActionSource.BATTLE_MAP_AUTOMATION -> "일반 전투"
@@ -713,20 +682,17 @@ class UnifiedAutomationRunner @Autowired constructor(
                 RaidCycleAbortReason.CLOSED -> "레이드 사이클 중단 · ${payload.raidId}"
                 RaidCycleAbortReason.REGISTRATION_LOST -> "레이드 등록 상태 유실 복구 · ${payload.raidId}"
             }
+            else -> error("Stored action belongs to the action lifecycle module.")
         }
         val detailedMessage = "$actionContext · $message"
         return AutomationActionTrace(kind, code, detailedMessage, action.entryId, type, actionKind,
             targetKey = when (payload) {
-                is StoredTypedActionPayload.QuestClaim -> payload.questKey
-                is StoredTypedActionPayload.QuestAccept -> payload.questKey
-                is StoredTypedActionPayload.QuestBattle -> "${payload.categoryId}/${payload.mapCode}"
                 is StoredTypedActionPayload.BattleMap -> "${payload.categoryId}/${payload.mapCode}"
                 is StoredTypedActionPayload.AdventureMap -> "${payload.categoryId}/${payload.mapCode}"
                 is StoredTypedActionPayload.RaidTown -> payload.targetRaidId ?: payload.raidId
                 is StoredTypedActionPayload.RaidCycleAbort -> payload.raidId
                 else -> null
             }, targetName = payload.display?.mapName ?: payload.display?.questName, presetId = when (payload) {
-                is StoredTypedActionPayload.QuestBattle -> payload.presetId
                 is StoredTypedActionPayload.BattleMap -> payload.presetId
                 is StoredTypedActionPayload.AdventureMap -> payload.presetId
                 else -> null

@@ -846,10 +846,6 @@ class UnifiedAutomationService(
         }
         val payload = decoded?.payload
         val source = row.entry?.type ?: when (payload) {
-            is StoredTypedActionPayload.QuestClaim,
-            is StoredTypedActionPayload.QuestAccept,
-            is StoredTypedActionPayload.QuestBattle,
-            -> AutomationType.QUEST
             is StoredTypedActionPayload.BattleMap -> when (payload.source) {
                 BattleAutomationActionSource.UNION_AUTOMATION -> AutomationType.UNION
                 else -> AutomationType.BATTLE_MAP
@@ -859,7 +855,6 @@ class UnifiedAutomationService(
             is StoredTypedActionPayload.RaidTown -> AutomationType.RAID
             is StoredTypedActionPayload.RaidCycleAbort -> AutomationType.RAID
             null -> when {
-                row.actionKind.startsWith("QUEST_") -> AutomationType.QUEST
                 row.actionKind == "BATTLE_MAP" -> AutomationType.BATTLE_MAP
                 row.actionKind == "ADVENTURE_MAP" -> AutomationType.ADVENTURE_MAP
                 row.actionKind == "FISHING_TOWN" -> AutomationType.FISHING
@@ -871,7 +866,6 @@ class UnifiedAutomationService(
         } ?: return null
         val display = payload?.display
         val battleCount = when (payload) {
-            is StoredTypedActionPayload.QuestBattle -> payload.battleCount
             is StoredTypedActionPayload.BattleMap -> payload.battleCount
             is StoredTypedActionPayload.AdventureMap -> payload.battleCount
             else -> null
@@ -882,9 +876,6 @@ class UnifiedAutomationService(
             actionLabel = when {
                 source == AutomationType.UNION -> "유니온"
                 payload is StoredTypedActionPayload.BattleMap && display == null -> "전투 진행 중"
-                row.actionKind == "QUEST_CLAIM" -> "퀘스트 완료"
-                row.actionKind == "QUEST_ACCEPT" -> "퀘스트 수락"
-                row.actionKind == "QUEST_BATTLE" -> "퀘스트 전투"
                 row.actionKind == "BATTLE_MAP" -> "전투맵"
                 row.actionKind == "ADVENTURE_MAP" -> "모험맵"
                 row.actionKind == "FISHING_TOWN" -> "낚시"

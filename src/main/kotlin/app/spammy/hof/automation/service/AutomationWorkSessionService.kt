@@ -429,17 +429,6 @@ class AutomationWorkSessionService(
     }
 
     private fun PreparedAutomationAction.toWorkAssignment(entryId: Long): AutomationWorkAssignment = when (this) {
-        is QuestAction.Claim -> AutomationWorkAssignment(AutomationWorkType.QUEST, questKey)
-        is QuestAction.Accept -> AutomationWorkAssignment(AutomationWorkType.QUEST, questKey)
-        is QuestAction.Battle -> AutomationWorkAssignment(
-            type = AutomationWorkType.QUEST,
-            targetKey = questKey,
-            questCycle = questCycle,
-            missionKey = missionKey,
-            missionType = missionType.name,
-            observedCurrent = missionCurrent,
-            observedRequired = missionRequired,
-        )
         is BattleMapAutomationAction -> {
             val target = "$categoryId/$mapCode"
             when (source) {

@@ -17,13 +17,6 @@ import app.spammy.hof.battle.dto.BattleMapResponse
 import app.spammy.hof.battle.model.BattleMapKeyMode
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.model.HofRequestOrigin
-import app.spammy.hof.quest.model.QuestSection
-import app.spammy.hof.quest.model.QuestMission
-import app.spammy.hof.quest.model.QuestMissionType
-import app.spammy.hof.quest.model.QuestProgress
-import app.spammy.hof.quest.model.QuestSnapshot
-import app.spammy.hof.quest.model.QuestState
-import app.spammy.hof.quest.service.QuestGatewayService
 import app.spammy.hof.town.raid.model.RaidAction
 import java.time.Instant
 import kotlin.test.Test
@@ -32,7 +25,6 @@ import org.mockito.Mockito
 
 class DefaultAutomationAmbiguousActionReconcilerTest {
     private val now = Instant.parse("2026-07-25T00:00:00Z")
-    private val questGateway = Mockito.mock(QuestGatewayService::class.java)
     private val battleMapService = Mockito.mock(BattleMapService::class.java)
     private val battleHandler = Mockito.mock(BattleMapAutomationHandler::class.java)
     private val battleOutcomeReconciler = Mockito.mock(BattleOutcomeReconciler::class.java)
@@ -40,7 +32,6 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
     private val defaultRaidModule = Mockito.mock(RaidCycleModule::class.java)
     private val defaultRaidAdapter = Mockito.mock(HofRaidObservationAdapter::class.java)
     private val reconciler = DefaultAutomationAmbiguousActionReconciler(
-        questGateway,
         battleMapService,
         battleHandler,
         battleOutcomeReconciler,
@@ -52,28 +43,11 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
     )
 
     @Test
-    fun `accepted quest state confirms ambiguous accept without replay`() {
-        Mockito.`when`(questGateway.load(7, HofRequestOrigin.AUTOMATION))
-            .thenReturn(listOf(quest("Q-1", QuestState.ACTIVE, null)))
-
-        assertIs<AmbiguousActionResolution.Applied>(reconciler.reconcile(7, questAccept()))
-    }
-
-    @Test
-    fun `still available quest proves ambiguous accept was not applied`() {
-        Mockito.`when`(questGateway.load(7, HofRequestOrigin.AUTOMATION))
-            .thenReturn(listOf(quest("Q-1", QuestState.AVAILABLE, "accept-no")))
-
-        assertIs<AmbiguousActionResolution.Resubmit>(reconciler.reconcile(7, questAccept()))
-    }
-
-    @Test
     fun `ambiguous raid action reuses the module result rule and never guesses a transition`() {
         val raidModule = Mockito.mock(RaidCycleModule::class.java)
         val adapter = Mockito.mock(HofRaidObservationAdapter::class.java)
         val localWorkLifecycle = Mockito.mock(AutomationWorkLifecycle::class.java)
         val raidReconciler = DefaultAutomationAmbiguousActionReconciler(
-            questGateway,
             battleMapService,
             battleHandler,
             battleOutcomeReconciler,
@@ -110,7 +84,6 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
         val raidModule = Mockito.mock(RaidCycleModule::class.java)
         val adapter = Mockito.mock(HofRaidObservationAdapter::class.java)
         val raidReconciler = DefaultAutomationAmbiguousActionReconciler(
-            questGateway,
             battleMapService,
             battleHandler,
             battleOutcomeReconciler,
@@ -152,64 +125,6 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
         )
 
         assertIs<AmbiguousActionResolution.Resubmit>(reconciler.reconcile(7L, action))
-    }
-
-    @Test
-    fun `missing quest confirms ambiguous claim was applied`() {
-        Mockito.`when`(questGateway.load(7, HofRequestOrigin.AUTOMATION)).thenReturn(emptyList())
-
-        assertIs<AmbiguousActionResolution.Applied>(
-            reconciler.reconcile(
-                7,
-                StoredTypedAutomationAction(
-                    10,
-                    "claim-1",
-                    StoredTypedActionPayload.QuestClaim("Q-1", "claim-no"),
-                ),
-            ),
-        )
-    }
-
-    @Test
-    fun `advanced quest mission confirms ambiguous quest battle`() {
-        Mockito.`when`(questGateway.load(7, HofRequestOrigin.AUTOMATION)).thenReturn(
-            listOf(
-                quest("Q-1", QuestState.ACTIVE, null).copy(
-                    missions = listOf(
-                        QuestMission(
-                            key = "kill",
-                            type = QuestMissionType.MONSTER_KILL,
-                            target = "slime",
-                            progress = QuestProgress(3, 5),
-                            completable = false,
-                        ),
-                    ),
-                ),
-            ),
-        )
-
-        assertIs<AmbiguousActionResolution.Applied>(reconciler.reconcile(7, questBattle(2)))
-    }
-
-    @Test
-    fun `unchanged active quest mission resubmits ambiguous quest battle`() {
-        Mockito.`when`(questGateway.load(7, HofRequestOrigin.AUTOMATION)).thenReturn(
-            listOf(
-                quest("Q-1", QuestState.ACTIVE, null).copy(
-                    missions = listOf(
-                        QuestMission(
-                            key = "kill",
-                            type = QuestMissionType.MONSTER_KILL,
-                            target = "slime",
-                            progress = QuestProgress(2, 5),
-                            completable = false,
-                        ),
-                    ),
-                ),
-            ),
-        )
-
-        assertIs<AmbiguousActionResolution.Resubmit>(reconciler.reconcile(7, questBattle(2)))
     }
 
     @Test
@@ -295,31 +210,6 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
         Mockito.verifyNoInteractions(battleHandler)
         Mockito.verify(workLifecycle, Mockito.never()).completeBattleMapAction(7, 13, "raid", "raid001")
     }
-
-    private fun questAccept() = StoredTypedAutomationAction(
-        10,
-        "accept-1",
-        StoredTypedActionPayload.QuestAccept("Q-1", "accept-no"),
-    )
-
-    private fun questBattle(observedCurrent: Int) = StoredTypedAutomationAction(
-        10,
-        "quest-battle-1",
-        StoredTypedActionPayload.QuestBattle(
-            questKey = "Q-1",
-            questCycle = "1",
-            missionKey = "kill",
-            missionType = QuestMissionType.MONSTER_KILL,
-            categoryId = "battle_map",
-            mapCode = "map-1",
-            presetMode = PresetSelectionMode.PRIMARY,
-            presetId = 301,
-            battleCount = 1,
-            battleRequest = battleRequest("battle_map", "map-1"),
-            observedCurrent = observedCurrent,
-            observedRequired = 5,
-        ),
-    )
 
     private fun adventureAction(attemptCount: Int?) = StoredTypedAutomationAction(
         11,
@@ -417,21 +307,6 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
             source = BattleAutomationActionSource.RAID_AUTOMATION,
             sourceTargetKey = "RaidGoblin",
         )
-
-    private fun quest(code: String, state: QuestState, actionNo: String?) = QuestSnapshot(
-        questKey = code,
-        name = code,
-        state = state,
-        section = when (state) {
-            QuestState.AVAILABLE -> QuestSection.AVAILABLE
-            QuestState.COMPLETED -> QuestSection.COMPLETED
-            QuestState.UNAVAILABLE -> QuestSection.WAITING
-            QuestState.ACTIVE, QuestState.CLAIMABLE -> QuestSection.ACTIVE
-        },
-        sourceOrder = 0,
-        missions = emptyList(),
-        actionNo = actionNo,
-    )
 
     private fun battleRequest(categoryId: String, mapCode: String, count: Int = 1) = RunBattleRequest(
         categoryId,
