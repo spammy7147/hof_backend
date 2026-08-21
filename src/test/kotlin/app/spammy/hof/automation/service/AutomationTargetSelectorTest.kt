@@ -52,15 +52,40 @@ class AutomationTargetSelectorTest {
 
     @Test
     fun `first runnable priority stops lower entry probes`() {
-        val questSnapshot = AutomationCoordinatorEntry(10, AutomationType.QUEST)
         val action = QuestAction.Accept("quest-1", "accept-1")
+        val questSnapshot = AutomationCoordinatorEntry(
+            10,
+            AutomationType.QUEST,
+            quest = QuestAutomationSnapshot(
+                accountId = 7,
+                quests = emptyList(),
+                selections = emptyList(),
+                mapStates = emptyList(),
+                currentCycles = emptyMap(),
+                counters = emptyMap(),
+                mapIdentityCandidates = emptyList(),
+                now = now,
+            ),
+        )
+        val directSelector = AutomationTargetSelector(
+            typed = typed,
+            work = work,
+            loader = loader,
+            lifecycle = lifecycle,
+            timeProvider = TimeProvider { now },
+            raidModule = defaultRaidModule,
+            quest = questRules(QuestDirective.Execute(action)),
+            battle = AutomationHandler { HandlerEvaluation.Skipped },
+            adventure = AutomationHandler { HandlerEvaluation.Skipped },
+            union = AutomationHandler { HandlerEvaluation.Skipped },
+            fishing = AutomationHandler { HandlerEvaluation.Skipped },
+            homeQuest = AutomationHandler { HandlerEvaluation.Skipped },
+        )
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(questEntry, battleEntry, adventureEntry))
         Mockito.`when`(work.findRunning(7)).thenReturn(null)
         Mockito.`when`(loader.loadEntry(7, 10, null)).thenReturn(questSnapshot)
-        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(questSnapshot))))
-            .thenReturn(AutomationCoordination.Runnable(10, action, emptyList()))
 
-        val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
+        val selected = assertIs<AutomationCoordination.Runnable>(directSelector.select(7))
 
         assertEquals(10, selected.entryId)
         Mockito.verify(loader, Mockito.never()).loadEntry(7, 11, null)
@@ -906,5 +931,15 @@ class AutomationTargetSelectorTest {
         enabled = true,
         maps = emptyList(),
     )
+
+    private fun questRules(directive: QuestDirective) = object : QuestWorkCycleModule {
+        override fun decideNext(snapshot: QuestAutomationSnapshot): QuestDirective = directive
+
+        override fun recordObservedResult(
+            accountId: Long,
+            attempt: QuestAttempt,
+            observation: QuestResultObservation,
+        ): QuestRecordResult = error("not used")
+    }
 
 }

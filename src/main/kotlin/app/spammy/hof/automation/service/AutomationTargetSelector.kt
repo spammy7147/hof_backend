@@ -15,6 +15,7 @@ import app.spammy.hof.common.time.TimeProvider
 import java.time.Instant
 import java.time.ZoneId
 import java.util.UUID
+import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Service
 
 fun interface AutomationDecisionSource {
@@ -22,15 +23,58 @@ fun interface AutomationDecisionSource {
 }
 
 @Service
-class AutomationTargetSelector(
+class AutomationTargetSelector private constructor(
     private val typed: TypedAutomationQueryRepository,
     private val work: AutomationWorkSessionQueryRepository,
     private val loader: TypedAutomationSnapshotLoader,
-    private val coordinator: AutomationCoordinator,
     private val lifecycle: AutomationWorkLifecycle,
     private val timeProvider: TimeProvider,
     private val raidModule: RaidCycleModule,
+    private val decideEntry: (AutomationCoordinatorEntry) -> AutomationCoordination,
 ) : AutomationDecisionSource {
+    @Autowired
+    constructor(
+        typed: TypedAutomationQueryRepository,
+        work: AutomationWorkSessionQueryRepository,
+        loader: TypedAutomationSnapshotLoader,
+        lifecycle: AutomationWorkLifecycle,
+        timeProvider: TimeProvider,
+        raidModule: RaidCycleModule,
+        quest: QuestWorkCycleModule,
+        battle: AutomationHandler<BattleMapAutomationSnapshot>,
+        adventure: AutomationHandler<AdventureMapAutomationSnapshot>,
+        union: AutomationHandler<UnionAutomationSnapshot>,
+        fishing: AutomationHandler<FishingAutomationSnapshot>,
+        homeQuest: AutomationHandler<HomeQuestAutomationSnapshot>,
+    ) : this(
+        typed,
+        work,
+        loader,
+        lifecycle,
+        timeProvider,
+        raidModule,
+        { entry -> evaluateEntry(entry, quest, battle, adventure, union, fishing, homeQuest) },
+    )
+
+    /** Expand 단계 동안 기존 테스트와 보조 runner 구성을 유지한다. */
+    constructor(
+        typed: TypedAutomationQueryRepository,
+        work: AutomationWorkSessionQueryRepository,
+        loader: TypedAutomationSnapshotLoader,
+        coordinator: AutomationCoordinator,
+        lifecycle: AutomationWorkLifecycle,
+        timeProvider: TimeProvider,
+        raidModule: RaidCycleModule,
+    ) : this(
+        typed,
+        work,
+        loader,
+        lifecycle,
+        timeProvider,
+        raidModule,
+        { entry -> coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(entry))) },
+    )
+
     override fun select(accountId: Long): AutomationCoordination {
         work.findRunning(accountId)?.let { return selectSession(accountId, it) }
         return selectConfigured(accountId)
@@ -185,7 +229,7 @@ class AutomationTargetSelector(
     }
 
     private fun coordinate(entry: AutomationCoordinatorEntry): AutomationCoordination =
-        coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(entry)))
+        decideEntry(entry)
 
     private fun selectRaidSession(
         accountId: Long,
@@ -381,3 +425,192 @@ class AutomationTargetSelector(
         val SEOUL: ZoneId = ZoneId.of("Asia/Seoul")
     }
 }
+
+private fun evaluateEntry(
+    entry: AutomationCoordinatorEntry,
+    quest: QuestWorkCycleModule,
+    battle: AutomationHandler<BattleMapAutomationSnapshot>,
+    adventure: AutomationHandler<AdventureMapAutomationSnapshot>,
+    union: AutomationHandler<UnionAutomationSnapshot>,
+    fishing: AutomationHandler<FishingAutomationSnapshot>,
+    homeQuest: AutomationHandler<HomeQuestAutomationSnapshot>,
+): AutomationCoordination {
+    val evaluation = when (entry.type) {
+        AutomationType.QUEST -> entry.quest?.let { quest.decideNext(it).toEntryEvaluation() }
+        AutomationType.HOME_QUEST -> entry.homeQuest?.let(homeQuest::evaluate)
+        AutomationType.BATTLE_MAP -> entry.battle?.let(battle::evaluate)
+        AutomationType.ADVENTURE_MAP -> entry.adventure?.let(adventure::evaluate)
+        AutomationType.RAID -> HandlerEvaluation.Skipped
+        AutomationType.UNION -> entry.union?.let(union::evaluate)
+        AutomationType.FISHING -> entry.fishing?.let(fishing::evaluate)
+    } ?: HandlerEvaluation.ConfigurationWarning("${entry.type} automation snapshot is missing.")
+    val trace = when (evaluation) {
+        is HandlerEvaluation.Runnable -> AutomationEvaluationTrace(
+            0,
+            entry.id,
+            entry.type,
+            AutomationDecisionOutcome.SELECTED,
+            "RUNNABLE",
+            "자동화 행동을 선택했습니다.",
+        )
+        is HandlerEvaluation.Fatal -> AutomationEvaluationTrace(
+            0,
+            entry.id,
+            entry.type,
+            AutomationDecisionOutcome.FATAL,
+            evaluation.reason.name,
+            evaluation.message,
+        )
+        is HandlerEvaluation.ConfigurationWarning -> AutomationEvaluationTrace(
+            0,
+            entry.id,
+            entry.type,
+            AutomationDecisionOutcome.CONFIGURATION_WARNING,
+            evaluation.reasonCode,
+            evaluation.message,
+        )
+        is HandlerEvaluation.Unavailable -> {
+            val detail = entry.waitingEntryTrace(evaluation)
+            AutomationEvaluationTrace(
+                0,
+                entry.id,
+                entry.type,
+                AutomationDecisionOutcome.WAITING,
+                evaluation.reasonCode,
+                detail?.message ?: evaluation.message,
+                evaluation.nextRunAt,
+                detail?.actionKind,
+                detail?.targetKey,
+                detail?.targetName,
+                detail?.presetId,
+            )
+        }
+        is HandlerEvaluation.WorkTransition -> AutomationEvaluationTrace(
+            sequence = 0,
+            entryId = entry.id,
+            type = entry.type,
+            outcome = when (evaluation.transition) {
+                AutomationWorkTransition.Complete -> AutomationDecisionOutcome.CYCLE_COMPLETED
+                is AutomationWorkTransition.WaitForConfiguration ->
+                    AutomationDecisionOutcome.CONFIGURATION_WARNING
+                is AutomationWorkTransition.WaitForResource,
+                AutomationWorkTransition.WaitForUnknownCooldown,
+                -> AutomationDecisionOutcome.WAITING
+            },
+            reasonCode = evaluation.reasonCode,
+            message = evaluation.message,
+            actionKind = if (evaluation.transition == AutomationWorkTransition.Complete) "COMPLETE" else "WAIT",
+        )
+        HandlerEvaluation.Skipped -> AutomationEvaluationTrace(
+            0,
+            entry.id,
+            entry.type,
+            AutomationDecisionOutcome.SKIPPED,
+            HandlerEvaluation.Skipped.reasonCode,
+            HandlerEvaluation.Skipped.message,
+        )
+    }
+    return when (evaluation) {
+        is HandlerEvaluation.Runnable -> AutomationCoordination.Runnable(
+            entry.id,
+            evaluation.action,
+            emptyList(),
+            listOf(trace),
+        )
+        is HandlerEvaluation.Fatal -> AutomationCoordination.Fatal(
+            evaluation.reason,
+            evaluation.message,
+            emptyList(),
+            listOf(trace),
+        )
+        is HandlerEvaluation.ConfigurationWarning -> AutomationCoordination.Idle(
+            listOf(evaluation.message),
+            listOf(trace),
+        )
+        is HandlerEvaluation.Unavailable -> AutomationCoordination.Unavailable(
+            evaluation.nextRunAt,
+            emptyList(),
+            listOf(trace),
+            evaluation.waitScope,
+        )
+        is HandlerEvaluation.WorkTransition -> AutomationCoordination.Idle(
+            warnings = if (evaluation.transition is AutomationWorkTransition.WaitForConfiguration) {
+                listOf(evaluation.message)
+            } else {
+                emptyList()
+            },
+            trace = listOf(trace),
+            workTransition = evaluation.transition,
+        )
+        HandlerEvaluation.Skipped -> AutomationCoordination.Idle(emptyList(), listOf(trace))
+    }
+}
+
+private fun QuestDirective.toEntryEvaluation(): HandlerEvaluation = when (this) {
+    is QuestDirective.Execute -> HandlerEvaluation.Runnable(action)
+    is QuestDirective.WaitUntil -> HandlerEvaluation.Unavailable(nextRunAt, reasonCode, message)
+    is QuestDirective.Recheck -> HandlerEvaluation.Unavailable(
+        at,
+        reasonCode,
+        message,
+        AutomationWaitScope.HOLD_CURRENT_WORK,
+    )
+    is QuestDirective.WaitForResource -> HandlerEvaluation.WorkTransition(
+        AutomationWorkTransition.WaitForResource(resourceName, missingCount),
+        "QUEST_RESOURCE_WAIT",
+        "퀘스트 완료에 필요한 재료를 기다립니다.",
+    )
+    QuestDirective.WaitForUnknownCooldown -> HandlerEvaluation.WorkTransition(
+        AutomationWorkTransition.WaitForUnknownCooldown,
+        "QUEST_COOLDOWN_UNKNOWN",
+        "반복 퀘스트의 다음 시작 가능 상태를 기다립니다.",
+    )
+    is QuestDirective.WaitForConfiguration -> HandlerEvaluation.WorkTransition(
+        AutomationWorkTransition.WaitForConfiguration(message),
+        reasonCode,
+        message,
+    )
+    QuestDirective.CompleteWork -> HandlerEvaluation.WorkTransition(
+        AutomationWorkTransition.Complete,
+        "QUEST_WORK_COMPLETE",
+        "현재 퀘스트 작업 사이클을 완료했습니다.",
+    )
+    is QuestDirective.Hold -> HandlerEvaluation.ConfigurationWarning(message, reasonCode)
+    is QuestDirective.Fatal -> HandlerEvaluation.Fatal(reason, message)
+    QuestDirective.Skip -> HandlerEvaluation.Skipped
+}
+
+private fun AutomationCoordinatorEntry.waitingEntryTrace(
+    evaluation: HandlerEvaluation.Unavailable,
+): EntryWaitingTrace? {
+    fishing?.let { snapshot ->
+        val observations = listOfNotNull(
+            snapshot.state.primaryAction.name.let { "현재 동작 $it" },
+            snapshot.state.remainingCasts?.let { "남은 낚시 ${it}회" },
+            snapshot.state.escapeSeconds?.let { "도망까지 ${it}초" },
+            snapshot.state.lastOutcome?.name?.let { "직전 결과 $it" },
+        ).joinToString(" · ")
+        return EntryWaitingTrace(
+            actionKind = "WAIT",
+            message = "${evaluation.message}${if (observations.isBlank()) "" else " · $observations"}",
+        )
+    }
+    union?.let { snapshot ->
+        val target = snapshot.settings.sortedBy(UnionAutomationSetting::executionOrder).firstOrNull()
+        return EntryWaitingTrace(
+            actionKind = "WAIT",
+            message = "${evaluation.message} · 설정 맵 ${snapshot.settings.size}개 · 현재 순환 기준 ${snapshot.currentTargetKey ?: "첫 대상"}",
+            targetKey = target?.let { "${it.categoryId}/${it.mapCode}" },
+            presetId = target?.presetId,
+        )
+    }
+    return null
+}
+
+private data class EntryWaitingTrace(
+    val actionKind: String,
+    val message: String,
+    val targetKey: String? = null,
+    val targetName: String? = null,
+    val presetId: Long? = null,
+)
