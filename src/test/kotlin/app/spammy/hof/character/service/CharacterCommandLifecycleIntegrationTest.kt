@@ -8,9 +8,6 @@ import app.spammy.hof.character.command.CharacterCommand
 import app.spammy.hof.character.command.CharacterCommandContext
 import app.spammy.hof.character.command.CharacterCommandObservation
 import app.spammy.hof.character.command.HofCharacterCommandAdapter
-import app.spammy.hof.character.entity.CharacterEntity
-import app.spammy.hof.character.repository.CharacterQueryRepository
-import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.external.client.AccountHofGateway
 import app.spammy.hof.external.client.DeferredCharacterRosterHofResponse
 import app.spammy.hof.external.client.HofRequestFactory
@@ -23,7 +20,6 @@ import app.spammy.hof.external.parser.CharacterRosterParser
 import app.spammy.hof.external.parser.CharacterPageSection
 import app.spammy.hof.external.parser.CharacterSectionParseResult
 import app.spammy.hof.external.parser.LoginStateParser
-import app.spammy.hof.town.common.model.TownActionRequest
 import app.spammy.hof.town.common.parser.HofFormParser
 import app.spammy.hof.town.common.parser.HofResultParser
 import app.spammy.hof.town.common.service.TownActionGuard
@@ -32,22 +28,18 @@ import java.time.Instant
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import org.mockito.ArgumentCaptor
 import org.mockito.Mockito
 
-class CharacterManagementServiceTest {
+class CharacterCommandLifecycleIntegrationTest {
     private val now = Instant.parse("2026-08-18T00:00:00Z")
     private val account = HofAccountEntity(1L, "account", "encrypted", now)
-    private val character = CharacterEntity(7L, account, "hof-10", "소셜", "Social Knight", updatedAt = now)
     private val accounts = Mockito.mock(AccountQueryRepository::class.java)
     private val cookies = Mockito.mock(CookieQueryRepository::class.java)
-    private val characters = Mockito.mock(CharacterQueryRepository::class.java)
     private val gateway = Mockito.mock(AccountHofGateway::class.java)
     private val synchronizer = Mockito.mock(CharacterSnapshotSynchronizer::class.java)
-    private val characterService = Mockito.mock(CharacterService::class.java)
     private val detailParser = CharacterDetailParser()
     private val forms = HofFormParser()
     private val executor = TownAuthenticatedExecutor(
@@ -61,15 +53,6 @@ class CharacterManagementServiceTest {
         TownActionGuard(),
         app.spammy.hof.town.common.service.AccountHofMutationFence(),
     )
-    private val service = CharacterManagementService(
-        accounts,
-        characters,
-        HofRequestFactory(),
-        executor,
-        detailParser,
-        synchronizer,
-        characterService,
-    )
     private val commandAdapter = HofCharacterCommandAdapter(
         executor,
         HofRequestFactory(),
@@ -82,8 +65,6 @@ class CharacterManagementServiceTest {
     fun `semantic item preparation projects reset candidates from the immediate action response`() {
         Mockito.`when`(accounts.findById(1L)).thenReturn(account)
         Mockito.`when`(cookies.findValueMapByAccountId(1L)).thenReturn(mapOf("PHPSESSID" to "session"))
-        Mockito.`when`(characters.findByAccountIdAndHofCharacterId(1L, "hof-10")).thenReturn(character)
-        Mockito.`when`(characterService.findAll(1L)).thenReturn(emptyList())
         val observedCandidates = mutableListOf<HofEquipmentCandidate>()
         var observedTypes = emptySet<String>()
         Mockito.`when`(
@@ -166,8 +147,6 @@ class CharacterManagementServiceTest {
     fun `semantic reset item use reopens the transient selector and returns the common applied result`() {
         Mockito.`when`(accounts.findById(1L)).thenReturn(account)
         Mockito.`when`(cookies.findValueMapByAccountId(1L)).thenReturn(mapOf("PHPSESSID" to "session"))
-        Mockito.`when`(characters.findByAccountIdAndHofCharacterId(1L, "hof-10")).thenReturn(character)
-        Mockito.`when`(characterService.findAll(1L)).thenReturn(emptyList())
         Mockito.`when`(
             synchronizer.writeParsed(
                 Mockito.eq(1L),
@@ -207,7 +186,6 @@ class CharacterManagementServiceTest {
     fun `semantic reset item use stops before final submission when the item is no longer offered`() {
         Mockito.`when`(accounts.findById(1L)).thenReturn(account)
         Mockito.`when`(cookies.findValueMapByAccountId(1L)).thenReturn(mapOf("PHPSESSID" to "session"))
-        Mockito.`when`(characters.findByAccountIdAndHofCharacterId(1L, "hof-10")).thenReturn(character)
         Mockito.`when`(
             gateway.execute(
                 Mockito.eq(1L),
@@ -450,29 +428,6 @@ class CharacterManagementServiceTest {
 
         assertEquals("FORM_NOT_OBSERVED", observed.code)
         Mockito.verify(gateway, Mockito.times(3)).executeWithoutCharacterRosterObservation(
-            Mockito.eq(1L),
-            anyRequest(),
-            Mockito.anyMap<String, String>(),
-        )
-    }
-
-    @Test
-    fun `generic management execution rejects identity forms before submitting them`() {
-        Mockito.`when`(accounts.findById(1L)).thenReturn(account)
-        Mockito.`when`(cookies.findValueMapByAccountId(1L)).thenReturn(mapOf("PHPSESSID" to "session"))
-        Mockito.`when`(characters.findByAccountIdAndHofCharacterId(1L, "hof-10")).thenReturn(character)
-        Mockito.`when`(
-            gateway.execute(
-                Mockito.eq(1L),
-                anyRequest(),
-                Mockito.anyMap<String, String>(),
-            ),
-        ).thenReturn(response(KICK_PAGE))
-        val actionId = forms.parse(KICK_PAGE, CHARACTER_URL).forms.single().actionId
-
-        assertFailsWith<ApiException> { service.execute(1L, "hof-10", TownActionRequest(actionId)) }
-
-        Mockito.verify(gateway, Mockito.times(1)).execute(
             Mockito.eq(1L),
             anyRequest(),
             Mockito.anyMap<String, String>(),

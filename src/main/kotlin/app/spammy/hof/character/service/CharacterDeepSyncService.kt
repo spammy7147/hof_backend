@@ -1,6 +1,13 @@
 package app.spammy.hof.character.service
 
 import app.spammy.hof.character.command.CharacterAutomationGate
+import app.spammy.hof.character.command.CharacterCommand
+import app.spammy.hof.character.command.CharacterCommandContext
+import app.spammy.hof.character.command.CharacterCommandObservation
+import app.spammy.hof.character.command.CharacterCommandRemote
+import app.spammy.hof.character.command.CharacterCommandRemoteSession
+import app.spammy.hof.character.command.CharacterInternalFormExecutor
+import app.spammy.hof.character.command.CharacterEquipmentCommandRules
 import app.spammy.hof.character.repository.CharacterQueryRepository
 import app.spammy.hof.character.entity.CharacterHofIdLinkReason
 import app.spammy.hof.character.identity.CharacterLifecycleService
@@ -28,9 +35,10 @@ data class CharacterDeepSyncResponse(
 class CharacterDeepSyncService(
     private val query: CharacterQueryRepository,
     private val executor: TownAuthenticatedExecutor,
+    private val commandRemote: CharacterCommandRemote,
+    private val internalForms: CharacterInternalFormExecutor,
     private val requestFactory: HofRequestFactory,
     private val parser: CharacterDetailParser,
-    private val management: CharacterManagementService,
     private val archive: CharacterSnapshotArchiveWriter,
     private val timeProvider: TimeProvider,
     private val automationGate: CharacterAutomationGate,
@@ -68,11 +76,11 @@ class CharacterDeepSyncService(
         accountId,
         unavailable = { error("자동화 일시정지를 기다리고 있습니다.") },
     ) {
-        executor.executeAccountSequence(accountId) {
+        commandRemote.withSession(accountId) { commandSession ->
             val character = query.findByAccountIdAndId(accountId, characterId)
                 ?: error("캐릭터를 찾지 못했습니다.")
             val progress = mutableListOf<CharacterDeepSyncProgress>()
-            val remote = Remote(accountId, character.hofCharacterId)
+            val remote = Remote(accountId, character.id, character.hofCharacterId, commandSession)
             val store = object : CharacterDeepSyncStore {
                 override fun saveCurrent(snapshot: CharacterPageParseResult) =
                     archive.saveCurrent(character, snapshot, timeProvider.now())
@@ -93,23 +101,29 @@ class CharacterDeepSyncService(
 
     private inner class Remote(
         private val accountId: Long,
+        private val characterId: Long,
         private val hofCharacterId: String,
+        private val commandSession: CharacterCommandRemoteSession,
     ) : CharacterDeepSyncRemote {
         override fun captureCurrent(): CharacterPageParseResult = observe()
 
         override fun loadSavedPattern(slotCode: String): CharacterPageParseResult {
-            val form = page().forms.singleOrNull { form ->
-                form.submitSource.equals("loadpattern", true) &&
-                    form.hiddenFields.singleOrNull { it.name.equals("patternno", true) }?.value == slotCode
-            } ?: error("저장 패턴 슬롯을 찾지 못했습니다: $slotCode")
-            execute(form)
+            execute { page ->
+                val form = page.forms.singleOrNull { form ->
+                    form.submitSource.equals("loadpattern", true) &&
+                        form.hiddenFields.singleOrNull { it.name.equals("patternno", true) }?.value == slotCode
+                } ?: error("저장 패턴 슬롯을 찾지 못했습니다: $slotCode")
+                TownActionRequest(form.actionId)
+            }
             return observe()
         }
 
         override fun loadEquipmentPreset(slotNumber: Int): CharacterPageParseResult {
-            val form = page().forms.singleOrNull { it.submitSource.equals("Equip_L_$slotNumber", true) }
-                ?: error("장비 저장 슬롯 $slotNumber 불러오기를 찾지 못했습니다.")
-            execute(form)
+            execute { page ->
+                val form = page.forms.singleOrNull { it.submitSource.equals("Equip_L_$slotNumber", true) }
+                    ?: error("장비 저장 슬롯 $slotNumber 불러오기를 찾지 못했습니다.")
+                TownActionRequest(form.actionId)
+            }
             return observe()
         }
 
@@ -122,50 +136,62 @@ class CharacterDeepSyncService(
 
         private fun restorePattern(original: CharacterPageParseResult) {
             val rows = original.snapshot.actionPatterns
-            val form = page().forms.singleOrNull { it.submitSource.equals("ChangePattern", true) }
-                ?: error("Action Pattern 저장 form을 찾지 못했습니다.")
-            val selections = rows.flatMap { row ->
-                listOf(form.candidate("judge${row.index}", row.judge), form.candidate("skill${row.index}", row.skill))
-            }.map { TownActionSelection(it.id) }
-            val values = rows.map { row ->
-                val field = form.editableFields.singleOrNull { it.inputName.equals("quantity${row.index}", true) }
-                    ?: error("${row.index + 1}번 패턴 기준값 form을 찾지 못했습니다.")
-                TownFieldValue(field.id, row.quantity)
+            execute { page ->
+                val form = page.forms.singleOrNull { it.submitSource.equals("ChangePattern", true) }
+                    ?: error("Action Pattern 저장 form을 찾지 못했습니다.")
+                val selections = rows.flatMap { row ->
+                    listOf(form.candidate("judge${row.index}", row.judge), form.candidate("skill${row.index}", row.skill))
+                }.map { TownActionSelection(it.id) }
+                val values = rows.map { row ->
+                    val field = form.editableFields.singleOrNull { it.inputName.equals("quantity${row.index}", true) }
+                        ?: error("${row.index + 1}번 패턴 기준값 form을 찾지 못했습니다.")
+                    TownFieldValue(field.id, row.quantity)
+                }
+                TownActionRequest(form.actionId, selections, values)
             }
-            execute(form, selections, values)
         }
 
         private fun restorePositionGuard(original: CharacterPageParseResult) {
-            val form = page().forms.singleOrNull { candidateForm ->
-                val names = candidateForm.candidates.map { it.inputName.lowercase() }.toSet()
-                "position" in names && "guard" in names
-            } ?: error("위치·호위 form을 찾지 못했습니다.")
-            execute(
-                form,
-                listOf(
+            execute { page ->
+                val form = page.forms.singleOrNull { candidateForm ->
+                    val names = candidateForm.candidates.map { it.inputName.lowercase() }.toSet()
+                    "position" in names && "guard" in names
+                } ?: error("위치·호위 form을 찾지 못했습니다.")
+                TownActionRequest(form.actionId, listOf(
                     TownActionSelection(form.candidate("position", original.snapshot.positionGuard.selectedPosition).id),
                     TownActionSelection(form.candidate("guard", original.snapshot.positionGuard.guardValue).id),
-                ),
-            )
+                ))
+            }
         }
 
         private fun restoreEquipment(original: CharacterPageParseResult) {
-            page().forms.singleOrNull { it.submitSource.equals("remove_all", true) }?.let { execute(it) }
+            val context = CharacterCommandContext(accountId, characterId, hofCharacterId)
+            when (val removed = commandSession.execute(
+                context,
+                CharacterCommand.RemoveAllEquipment(characterId, timeProvider.now()),
+            )) {
+                is CharacterCommandObservation.Applied -> Unit
+                is CharacterCommandObservation.Rejected -> if (removed.code != "FORM_NOT_OBSERVED") {
+                    error("원래 장비를 해제하지 못했습니다: ${removed.message}")
+                }
+                else -> error("원래 장비 해제 결과를 확인하지 못했습니다.")
+            }
             original.snapshot.equipment.filter { it.name.isNotBlank() }.forEach { item ->
                 // 장착 중인 아이템은 원래 Stock 후보에서 빠질 수 있으므로 전체 해제 뒤의 최신 후보를 사용한다.
                 val current = observe().snapshot
-                val matching = current.equipmentCandidates.filter {
-                    it.name == item.name &&
-                        it.typeCode.equals(item.slot, true)
+                val candidate = CharacterEquipmentCommandRules.requireRestoreCandidate(
+                    item.name,
+                    item.iconUrl,
+                    item.description,
+                    current.equipmentCandidates,
+                )
+                val equipped = commandSession.execute(
+                    context,
+                    CharacterCommand.EquipItem(characterId, timeProvider.now(), candidate.value),
+                )
+                if (equipped !is CharacterCommandObservation.Applied) {
+                    error("원래 장비를 다시 장착하지 못했습니다: ${item.part} / ${item.name}")
                 }
-                val candidate = matching.singleOrNull()
-                    ?: matching.singleOrNull {
-                        item.description.isNotBlank() && it.description.contains(item.description)
-                    }
-                    ?: error("원래 장비를 고유하게 다시 찾지 못했습니다: ${item.part} / ${item.name}")
-                val form = page().forms.singleOrNull { it.submitSource.equals("equip_item", true) }
-                    ?: error("장비 장착 form을 찾지 못했습니다.")
-                execute(form, listOf(TownActionSelection(form.candidate("item_no", candidate.value).id)))
             }
         }
 
@@ -173,19 +199,16 @@ class CharacterDeepSyncService(
             parser.parsePage(hofCharacterId, html)
         }
 
-        private fun page(): ParsedTownPage = executor.load(accountId, characterUrl())
         private fun characterUrl(): String = requestFactory.characterPage(hofCharacterId).url
 
-        private fun execute(
-            form: ParsedTownForm,
-            selections: List<TownActionSelection> = emptyList(),
-            values: List<TownFieldValue> = emptyList(),
-        ) {
-            management.execute(accountId, hofCharacterId, TownActionRequest(form.actionId, selections, values))
+        /** 깊은 동기화 내부 form은 제출 직전 GET에서 다시 resolve해 stale action ID를 거부한다. */
+        private fun execute(resolve: (ParsedTownPage) -> TownActionRequest) {
+            internalForms.execute(accountId, hofCharacterId, resolve)
         }
 
         private fun ParsedTownForm.candidate(name: String, value: String) =
             candidates.singleOrNull { it.inputName.equals(name, true) && it.inputValue == value }
                 ?: error("현재 선택할 수 없는 값입니다: $name=$value")
     }
+
 }

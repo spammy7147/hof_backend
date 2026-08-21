@@ -1,7 +1,7 @@
 package app.spammy.hof.character.pattern
 
+import app.spammy.hof.character.command.CharacterInternalFormExecutor
 import app.spammy.hof.character.repository.CharacterQueryRepository
-import app.spammy.hof.character.service.CharacterManagementService
 import app.spammy.hof.character.service.CharacterSnapshotSynchronizer
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.parser.CharacterDetailParser
@@ -22,7 +22,7 @@ interface CharacterPatternRemoteFactory {
 class HofCharacterPatternRemoteFactory(
     private val characters: CharacterQueryRepository,
     private val executor: TownAuthenticatedExecutor,
-    private val management: CharacterManagementService,
+    private val internalForms: CharacterInternalFormExecutor,
     private val requestFactory: HofRequestFactory,
     private val detailParser: CharacterDetailParser,
     private val snapshots: CharacterSnapshotSynchronizer,
@@ -65,8 +65,8 @@ class HofCharacterPatternRemoteFactory(
             )
         }
 
-        override fun changeAllRows(rows: List<CharacterPatternRowValue>): CharacterPatternMutationReceipt = mutate {
-            val form = latestPage().forms.singleOrNull { it.submitSource.equals("ChangePattern", true) }
+        override fun changeAllRows(rows: List<CharacterPatternRowValue>): CharacterPatternMutationReceipt = mutate { page ->
+            val form = page.forms.singleOrNull { it.submitSource.equals("ChangePattern", true) }
                 ?: error("Action Pattern 저장 form을 찾지 못했습니다.")
             val selections = rows.flatMapIndexed { index, row ->
                 listOf(
@@ -79,50 +79,42 @@ class HofCharacterPatternRemoteFactory(
                     ?: error("${index + 1}번 패턴 기준값 form을 찾지 못했습니다.")
                 TownFieldValue(field.id, row.quantity)
             }
-            management.execute(accountId, hofCharacterId, TownActionRequest(form.actionId, selections, values))
+            TownActionRequest(form.actionId, selections, values)
         }
 
-        override fun changePositionGuard(position: String, guard: String): CharacterPatternMutationReceipt = mutate {
-            val form = latestPage().forms.singleOrNull { candidateForm ->
+        override fun changePositionGuard(position: String, guard: String): CharacterPatternMutationReceipt = mutate { page ->
+            val form = page.forms.singleOrNull { candidateForm ->
                 val names = candidateForm.candidates.map { it.inputName.lowercase() }.toSet()
                 "position" in names && "guard" in names
             } ?: error("위치·호위 form을 찾지 못했습니다.")
-            management.execute(
-                accountId,
-                hofCharacterId,
-                TownActionRequest(
-                    form.actionId,
-                    listOf(
-                        TownActionSelection(form.candidate("position", position).id),
-                        TownActionSelection(form.candidate("guard", guard).id),
-                    ),
+            TownActionRequest(
+                form.actionId,
+                listOf(
+                    TownActionSelection(form.candidate("position", position).id),
+                    TownActionSelection(form.candidate("guard", guard).id),
                 ),
             )
         }
 
-        override fun saveSlot(slotCode: String, name: String): CharacterPatternMutationReceipt = mutate {
-            val form = slotForm("savepattern", slotCode)
+        override fun saveSlot(slotCode: String, name: String): CharacterPatternMutationReceipt = mutate { page ->
+            val form = slotForm(page, "savepattern", slotCode)
             val field = form.editableFields.singleOrNull { it.inputName.equals("patternname", true) }
                 ?: error("저장 패턴 이름 form을 찾지 못했습니다.")
-            management.execute(
-                accountId,
-                hofCharacterId,
-                TownActionRequest(form.actionId, values = listOf(TownFieldValue(field.id, name))),
-            )
+            TownActionRequest(form.actionId, values = listOf(TownFieldValue(field.id, name)))
         }
 
-        override fun deleteSlot(slotCode: String): CharacterPatternMutationReceipt = mutate {
-            val form = slotForm("delpattern", slotCode)
-            management.execute(accountId, hofCharacterId, TownActionRequest(form.actionId))
+        override fun deleteSlot(slotCode: String): CharacterPatternMutationReceipt = mutate { page ->
+            val form = slotForm(page, "delpattern", slotCode)
+            TownActionRequest(form.actionId)
         }
 
-        override fun loadSlot(slotCode: String): CharacterPatternMutationReceipt = mutate {
-            val form = slotForm("loadpattern", slotCode)
-            management.execute(accountId, hofCharacterId, TownActionRequest(form.actionId))
+        override fun loadSlot(slotCode: String): CharacterPatternMutationReceipt = mutate { page ->
+            val form = slotForm(page, "loadpattern", slotCode)
+            TownActionRequest(form.actionId)
         }
 
-        private fun slotForm(source: String, slotCode: String): ParsedTownForm =
-            latestPage().forms.singleOrNull { form ->
+        private fun slotForm(page: ParsedTownPage, source: String, slotCode: String): ParsedTownForm =
+            page.forms.singleOrNull { form ->
                 form.submitSource.equals(source, true) &&
                     form.hiddenFields.singleOrNull { it.name.equals("patternno", true) }?.value == slotCode
             } ?: error("저장 패턴 슬롯 form을 찾지 못했습니다: $slotCode")
@@ -131,16 +123,16 @@ class HofCharacterPatternRemoteFactory(
             candidates.singleOrNull { it.inputName.equals(inputName, true) && it.inputValue == inputValue }
                 ?: error("현재 선택할 수 없는 패턴 값입니다: $inputName=$inputValue")
 
-        private fun latestPage(): ParsedTownPage = executor.load(accountId, characterUrl())
-
         private fun characterUrl(): String = requestFactory.characterPage(hofCharacterId).url
 
-        private fun mutate(action: () -> Unit): CharacterPatternMutationReceipt = try {
-            action()
+        /** 패턴 내부 명령도 저장한 opaque ID를 재사용하지 않고 제출 직전 GET에서 다시 resolve한다. */
+        private fun mutate(resolve: (ParsedTownPage) -> TownActionRequest): CharacterPatternMutationReceipt = try {
+            internalForms.execute(accountId, hofCharacterId, resolve)
             CharacterPatternMutationReceipt.RESPONSE_RECEIVED
         } catch (_: RuntimeException) {
             // POST가 반영된 뒤 응답만 유실됐을 수 있으므로 자동 재전송하지 않고 orchestrator가 fresh GET으로 판정한다.
             CharacterPatternMutationReceipt.RESPONSE_LOST
         }
+
     }
 }
