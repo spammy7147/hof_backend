@@ -69,6 +69,79 @@ class AutomationWorkSessionServiceTest {
     }
 
     @Test
+    fun `generic work lifecycle projects a module resource wait transition`() {
+        val session = AutomationWorkSessionEntity(
+            id = 24,
+            account = account,
+            entry = AutomationEntryEntity(10, account, AutomationType.QUEST, 0, true, now, now),
+            workType = AutomationWorkType.QUEST,
+            targetKey = "quest-1",
+            status = AutomationWorkStatus.RUNNING,
+            configVersion = "config-v1",
+            createdAt = now,
+            updatedAt = now,
+        )
+        Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
+        Mockito.`when`(queries.lockById(7, 24)).thenReturn(session)
+
+        service.applyTransition(
+            7,
+            24,
+            AutomationWorkTransition.WaitForResource("steel ingot", 2),
+        )
+
+        assertEquals(AutomationWorkStatus.WAITING_RESOURCE, session.status)
+        assertEquals("steel ingot", session.materialName)
+        assertEquals(2, session.materialMissing)
+        Mockito.verify(commands).save(session)
+    }
+
+    @Test
+    fun `configuration wait releases the running slot before another work is prepared`() {
+        val questEntry = AutomationEntryEntity(10, account, AutomationType.QUEST, 0, true, now, now)
+        val questSession = AutomationWorkSessionEntity(
+            id = 25,
+            account = account,
+            entry = questEntry,
+            workType = AutomationWorkType.QUEST,
+            targetKey = "quest-1",
+            status = AutomationWorkStatus.RUNNING,
+            configVersion = "config-v1",
+            createdAt = now,
+            updatedAt = now,
+        )
+        Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
+        Mockito.`when`(queries.lockById(7, 25)).thenReturn(questSession)
+
+        service.applyTransition(
+            7,
+            25,
+            AutomationWorkTransition.WaitForConfiguration("bad preset"),
+        )
+
+        assertEquals(AutomationWorkStatus.WAITING_COOLDOWN, questSession.status)
+        assertEquals("bad preset", questSession.holdMessage)
+        Mockito.`when`(typed.findEntry(7, entry.id)).thenReturn(entry)
+        Mockito.`when`(queries.lockOpen(7)).thenReturn(listOf(questSession))
+
+        service.ensure(
+            7,
+            entry.id,
+            AutomationWorkAssignment(
+                AutomationWorkType.BATTLE_MAP,
+                "battle_map/map-1",
+                targetCount = 1,
+            ),
+        )
+
+        val saves = Mockito.mockingDetails(commands).invocations.filter { it.method.name == "save" }
+        assertEquals(2, saves.size)
+        val started = saves.last().arguments.single() as AutomationWorkSessionEntity
+        assertEquals(AutomationWorkStatus.RUNNING, started.status)
+        assertEquals(AutomationWorkType.BATTLE_MAP, started.workType)
+    }
+
+    @Test
     fun `matching adventure action completes its one battle work unit`() {
         val adventureEntry = AutomationEntryEntity(12, account, AutomationType.ADVENTURE_MAP, 2, true, now, now)
         val session = AutomationWorkSessionEntity(
@@ -188,7 +261,7 @@ class AutomationWorkSessionServiceTest {
     }
 
     @Test
-    fun `quest battle assignment aligns the session opened before cycle identity was known`() {
+    fun `generic work ownership does not interpret quest cycle progress`() {
         val questEntry = AutomationEntryEntity(12, account, AutomationType.QUEST, 2, true, now, now)
         val session = AutomationWorkSessionEntity(
             id = 24,
@@ -210,24 +283,12 @@ class AutomationWorkSessionServiceTest {
         service.ensure(
             7,
             questEntry.id,
-            AutomationWorkAssignment(
-                type = AutomationWorkType.QUEST,
-                targetKey = "repeat-q",
-                questCycle = "2",
-                missionKey = "clear",
-                missionType = "MAP_CLEAR",
-                observedCurrent = 1,
-                observedRequired = 5,
-            ),
+            AutomationWorkAssignment(AutomationWorkType.QUEST, "repeat-q"),
         )
 
-        assertEquals("2", session.questCycle)
-        assertEquals("clear", session.missionKey)
-        assertEquals("MAP_CLEAR", session.missionType)
-        assertEquals(1, session.observedCurrent)
-        assertEquals(5, session.observedRequired)
-        assertEquals(0, session.confirmedCount)
-        Mockito.verify(commands).save(session)
+        assertEquals(null, session.questCycle)
+        assertEquals(4, session.confirmedCount)
+        Mockito.verifyNoInteractions(commands)
     }
 
     @Test

@@ -1,5 +1,6 @@
 package app.spammy.hof.automation.service
 
+import app.spammy.hof.automation.entity.AutomationWorkSessionEntity
 import app.spammy.hof.automation.entity.AutomationWorkStatus
 import app.spammy.hof.automation.entity.AutomationWorkType
 import app.spammy.hof.automation.entity.PresetSelectionMode
@@ -20,6 +21,7 @@ import app.spammy.hof.battle.model.hasUsableKey
 import app.spammy.hof.battle.model.BattleMapKeyMode
 import app.spammy.hof.quest.model.QuestMission
 import app.spammy.hof.quest.model.QuestMissionType
+import app.spammy.hof.quest.model.QuestSection
 import app.spammy.hof.quest.model.QuestSnapshot
 import app.spammy.hof.quest.model.QuestState
 import java.io.ByteArrayOutputStream
@@ -102,7 +104,19 @@ data class QuestWorkProgressSnapshot(
     val missionKey: String,
     val current: Int,
     val required: Int,
-    val authoritative: Boolean,
+)
+
+data class QuestRunningWorkSnapshot(
+    val sessionId: Long,
+    val questKey: String,
+    val mapClearProgress: QuestWorkProgressSnapshot?,
+    val questCycle: String? = mapClearProgress?.questCycle,
+    val missionKey: String? = mapClearProgress?.missionKey,
+    val missionType: String? = mapClearProgress?.let { QuestMissionType.MAP_CLEAR.name },
+    val observedCurrent: Int? = mapClearProgress?.current,
+    val observedRequired: Int? = mapClearProgress?.required,
+    val confirmedCount: Int = 0,
+    val revision: Long = 0,
 )
 
 data class QuestAutomationSnapshot(
@@ -117,7 +131,8 @@ data class QuestAutomationSnapshot(
     val primaryPresetId: Long? = null,
     val primaryParty: ResolvedAutomationParty? = null,
     val timeSnapshot: AutomationTimeSnapshot? = null,
-    val workProgress: QuestWorkProgressSnapshot? = null,
+    val workSessionId: Long? = null,
+    val workSessionRevision: Long? = null,
 )
 
 internal fun QuestMission.displayLabel(): String {
@@ -135,6 +150,12 @@ interface QuestAutomationProgressStore {
     fun startNewCycle(accountId: Long, resultId: String, questKey: String): String
     fun findRecordedBattleVictoryCount(accountId: Long, resultId: String, action: QuestAction.Battle): Int?
     fun recordBattleResult(accountId: Long, resultId: String, action: QuestAction.Battle, victoryCount: Int)
+    fun findRunningWork(accountId: Long, sessionId: Long): QuestRunningWorkSnapshot?
+    fun claimMapClearMission(
+        accountId: Long,
+        work: QuestRunningWorkSnapshot,
+        action: QuestAction.Battle,
+    ): QuestProgressReconciliation
     fun reconcileMapClearProgress(
         accountId: Long,
         work: QuestWorkProgressSnapshot,
@@ -158,6 +179,84 @@ class JpaQuestAutomationProgressStore(
     private val workQueries: AutomationWorkSessionQueryRepository,
     private val workCommands: AutomationWorkSessionCommandRepository,
 ) : QuestAutomationProgressStore {
+    @Transactional
+    override fun findRunningWork(accountId: Long, sessionId: Long): QuestRunningWorkSnapshot? {
+        val session = workQueries.lockById(accountId, sessionId) ?: return null
+        if (
+            session.workType != AutomationWorkType.QUEST ||
+            session.status != AutomationWorkStatus.RUNNING
+        ) return null
+        val mapClearProgress = if (session.missionType == QuestMissionType.MAP_CLEAR.name) {
+            val questCycle = session.questCycle
+            val missionKey = session.missionKey
+            val current = session.observedCurrent
+            val required = session.observedRequired
+            if (questCycle != null && missionKey != null && current != null && required != null) {
+                QuestWorkProgressSnapshot(
+                    sessionId = session.id,
+                    questKey = session.targetKey,
+                    questCycle = questCycle,
+                    missionKey = missionKey,
+                    current = current,
+                    required = required,
+                )
+            } else {
+                null
+            }
+        } else {
+            null
+        }
+        return QuestRunningWorkSnapshot(
+            sessionId = session.id,
+            questKey = session.targetKey,
+            mapClearProgress = mapClearProgress,
+            questCycle = session.questCycle,
+            missionKey = session.missionKey,
+            missionType = session.missionType,
+            observedCurrent = session.observedCurrent,
+            observedRequired = session.observedRequired,
+            confirmedCount = session.confirmedCount,
+            revision = requireNotNull(session.version),
+        )
+    }
+
+    @Transactional
+    override fun claimMapClearMission(
+        accountId: Long,
+        work: QuestRunningWorkSnapshot,
+        action: QuestAction.Battle,
+    ): QuestProgressReconciliation {
+        require(action.missionType == QuestMissionType.MAP_CLEAR)
+        queryRepository.lockAccount(accountId)
+        val persistedCycle = queryRepository.findQuestCycle(accountId, action.questKey)
+            ?.currentCycle
+            ?.toString()
+            ?: "0"
+        if (persistedCycle != action.questCycle || work.questKey != action.questKey) {
+            return QuestProgressReconciliation.Stale
+        }
+        val session = workQueries.lockById(accountId, work.sessionId)
+            ?: return QuestProgressReconciliation.Stale
+        if (!(
+            session.workType == AutomationWorkType.QUEST &&
+                session.status == AutomationWorkStatus.RUNNING &&
+                session.targetKey == work.questKey
+        )) return QuestProgressReconciliation.Stale
+        if (!session.matches(work)) return QuestProgressReconciliation.Stale
+        if (session.matches(action)) return QuestProgressReconciliation.Applied
+        val now = Instant.now()
+        session.questCycle = action.questCycle
+        session.missionKey = action.missionKey
+        session.missionType = QuestMissionType.MAP_CLEAR.name
+        session.observedCurrent = action.missionCurrent
+        session.observedRequired = action.missionRequired
+        session.confirmedCount = 0
+        session.lastVerifiedAt = now
+        session.updatedAt = now
+        workCommands.save(session)
+        return QuestProgressReconciliation.Applied
+    }
+
     @Transactional
     override fun startNewCycle(accountId: Long, resultId: String, questKey: String): String {
         validateResultIdentity(resultId)
@@ -232,29 +331,30 @@ class JpaQuestAutomationProgressStore(
                 processedAt = now,
             ),
         )
-        if (victoryCount == 0) return
-        val counter = queryRepository.findQuestCounter(
-            accountId,
-            action.questKey,
-            action.questCycle,
-            action.missionKey,
-            action.categoryId,
-            action.mapCode,
-        )
-        if (counter == null) {
-            counterRepository.save(
-                QuestMapExecutionCounterEntity(
-                    account = account,
-                    questKey = action.questKey,
-                    questCycle = action.questCycle,
-                    missionKey = action.missionKey,
-                    categoryId = action.categoryId,
-                    mapCode = action.mapCode,
-                    successfulRuns = victoryCount,
-                ),
+        if (victoryCount > 0) {
+            val counter = queryRepository.findQuestCounter(
+                accountId,
+                action.questKey,
+                action.questCycle,
+                action.missionKey,
+                action.categoryId,
+                action.mapCode,
             )
-        } else {
-            counter.successfulRuns += victoryCount
+            if (counter == null) {
+                counterRepository.save(
+                    QuestMapExecutionCounterEntity(
+                        account = account,
+                        questKey = action.questKey,
+                        questCycle = action.questCycle,
+                        missionKey = action.missionKey,
+                        categoryId = action.categoryId,
+                        mapCode = action.mapCode,
+                        successfulRuns = victoryCount,
+                    ),
+                )
+            } else {
+                counter.successfulRuns += victoryCount
+            }
         }
         projectMapClearWorkProgress(accountId, action, victoryCount, now)
     }
@@ -287,6 +387,11 @@ class JpaQuestAutomationProgressStore(
                 session.observedRequired == work.required
         )) return QuestProgressReconciliation.Stale
         val now = Instant.now()
+        if (
+            session.questCycle == observedQuestCycle &&
+            session.observedCurrent == current &&
+            session.observedRequired == required
+        ) return QuestProgressReconciliation.Applied
         if (session.questCycle != observedQuestCycle) session.confirmedCount = 0
         session.questCycle = observedQuestCycle
         session.observedCurrent = current
@@ -304,8 +409,23 @@ class JpaQuestAutomationProgressStore(
         now: Instant,
     ) {
         if (action.missionType != QuestMissionType.MAP_CLEAR) return
-        val session = findMatchingMapClearSession(accountId, action) ?: return
-        val current = session.observedCurrent ?: return
+        val persistedCycle = queryRepository.findQuestCycle(accountId, action.questKey)
+            ?.currentCycle
+            ?.toString()
+            ?: "0"
+        if (persistedCycle != action.questCycle) return
+        val session = findQuestWorkSession(accountId, action.questKey) ?: return
+        val identityChanged = !session.matches(action)
+        if (identityChanged) {
+            if (!session.canInitializeFrom(action)) return
+            session.questCycle = action.questCycle
+            session.missionKey = action.missionKey
+            session.missionType = QuestMissionType.MAP_CLEAR.name
+            session.observedCurrent = action.missionCurrent
+            session.observedRequired = action.missionRequired
+            session.confirmedCount = 0
+        }
+        val current = session.observedCurrent ?: action.missionCurrent ?: return
         session.confirmedCount += victoryCount
         session.observedCurrent = session.observedRequired
             ?.let { required -> (current + victoryCount).coerceAtMost(required) }
@@ -334,7 +454,7 @@ class JpaQuestAutomationProgressStore(
     ) {
         if (action.missionType != QuestMissionType.MAP_CLEAR || victoryCount == 0) return
         val baseline = action.missionCurrent ?: return
-        val session = findMatchingMapClearSession(accountId, action) ?: return
+        val session = findQuestWorkSession(accountId, action.questKey)?.takeIf { it.matches(action) } ?: return
         val current = session.observedCurrent ?: return
         val projected = session.observedRequired
             ?.let { required -> (baseline + victoryCount).coerceAtMost(required) }
@@ -346,17 +466,39 @@ class JpaQuestAutomationProgressStore(
         workCommands.save(session)
     }
 
-    private fun findMatchingMapClearSession(
+    private fun findQuestWorkSession(
         accountId: Long,
-        action: QuestAction.Battle,
+        questKey: String,
     ) = workQueries.lockOpen(accountId).singleOrNull {
         it.workType == AutomationWorkType.QUEST &&
             it.status == AutomationWorkStatus.RUNNING &&
-            it.targetKey == action.questKey &&
-            it.questCycle == action.questCycle &&
-            it.missionKey == action.missionKey &&
-            it.missionType == QuestMissionType.MAP_CLEAR.name
+            it.targetKey == questKey
     }
+
+    private fun AutomationWorkSessionEntity.matches(
+        action: QuestAction.Battle,
+    ): Boolean =
+        questCycle == action.questCycle &&
+            missionKey == action.missionKey &&
+            missionType == QuestMissionType.MAP_CLEAR.name
+
+    private fun AutomationWorkSessionEntity.matches(
+        work: QuestRunningWorkSnapshot,
+    ): Boolean =
+        questCycle == work.questCycle &&
+            missionKey == work.missionKey &&
+            missionType == work.missionType &&
+        observedCurrent == work.observedCurrent &&
+            observedRequired == work.observedRequired &&
+            confirmedCount == work.confirmedCount &&
+            version == work.revision
+
+    private fun AutomationWorkSessionEntity.canInitializeFrom(
+        action: QuestAction.Battle,
+    ): Boolean =
+        questCycle in setOf(null, action.questCycle) &&
+            missionKey in setOf(null, action.missionKey) &&
+            missionType in setOf(null, QuestMissionType.MAP_CLEAR.name)
 
     private fun validateResultIdentity(resultId: String) {
         require(resultId.isNotBlank()) { "Quest result identity must not be blank." }
@@ -445,14 +587,62 @@ class JpaQuestAutomationProgressStore(
 class DefaultQuestWorkCycleModule(
     private val progressStore: QuestAutomationProgressStore,
     private val timePolicy: BattleTimePolicy = BattleTimePolicy(),
+    private val lootSignals: AutomationLootSignalService = AutomationLootSignalService(),
 ) : QuestWorkCycleModule {
     override fun decideNext(snapshot: QuestAutomationSnapshot): QuestDirective {
-        reconcileAuthoritativeMapClearProgress(snapshot)?.let { return it }
-        return evaluateRules(snapshot)
+        val work = snapshot.workSessionId?.let { progressStore.findRunningWork(snapshot.accountId, it) }
+        if (
+            snapshot.workSessionId != null &&
+            (snapshot.workSessionRevision == null || work?.revision != snapshot.workSessionRevision)
+        ) {
+            return staleProgressRecheck(snapshot)
+        }
+        reconcileAuthoritativeMapClearProgress(snapshot, work?.mapClearProgress)?.let { return it }
+        val next = evaluateRules(snapshot)
+        if (next is QuestDirective.Hold && work != null) {
+            return QuestDirective.WaitForConfiguration(next.message, next.reasonCode)
+        }
+        if (
+            next is QuestDirective.Execute &&
+            next.action is QuestAction.Battle &&
+            next.action.missionType == QuestMissionType.MAP_CLEAR &&
+            work != null
+        ) {
+            return when (progressStore.claimMapClearMission(snapshot.accountId, work, next.action)) {
+                QuestProgressReconciliation.Applied -> next
+                QuestProgressReconciliation.Stale -> staleProgressRecheck(snapshot)
+            }
+        }
+        if (next !is QuestDirective.Skip) return next
+        return work?.let { evaluateWorkTransition(snapshot, it.questKey) } ?: QuestDirective.Skip
     }
 
-    private fun reconcileAuthoritativeMapClearProgress(snapshot: QuestAutomationSnapshot): QuestDirective.Recheck? {
-        val work = snapshot.workProgress?.takeIf { it.authoritative } ?: return null
+    private fun evaluateWorkTransition(
+        snapshot: QuestAutomationSnapshot,
+        questKey: String,
+    ): QuestDirective {
+        val quest = snapshot.quests.singleOrNull { it.questKey == questKey }
+            ?: return QuestDirective.CompleteWork
+        if (quest.state == QuestState.UNAVAILABLE || quest.section == QuestSection.WAITING) {
+            return QuestDirective.WaitForUnknownCooldown
+        }
+        val material = quest.missions.firstOrNull {
+            it.type == QuestMissionType.ITEM_TURN_IN && !it.completable
+        }
+        val resourceName = material?.target?.takeIf(String::isNotBlank)
+            ?: return QuestDirective.CompleteWork
+        val missingCount = material.progress?.let { (it.required - it.current).coerceAtLeast(0) }
+        return QuestDirective.WaitForResource(
+            resourceName = lootSignals.normalize(resourceName),
+            missingCount = missingCount,
+        )
+    }
+
+    private fun reconcileAuthoritativeMapClearProgress(
+        snapshot: QuestAutomationSnapshot,
+        work: QuestWorkProgressSnapshot?,
+    ): QuestDirective.Recheck? {
+        work ?: return null
         val observedQuestCycle = snapshot.currentCycles[work.questKey] ?: INITIAL_CYCLE
         val quest = snapshot.quests.singleOrNull { it.questKey == work.questKey } ?: return null
         val progress = quest.missions.singleOrNull {

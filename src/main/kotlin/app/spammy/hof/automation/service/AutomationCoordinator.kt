@@ -69,6 +69,7 @@ sealed interface AutomationCoordination {
     data class Idle(
         override val warnings: List<String>,
         override val trace: List<AutomationEvaluationTrace> = emptyList(),
+        val workTransition: AutomationWorkTransition? = null,
     ) : AutomationCoordination
 }
 
@@ -132,6 +133,36 @@ class AutomationCoordinator(
                         detail?.actionKind, detail?.targetKey, detail?.targetName, detail?.presetId,
                     )
                 }
+                is HandlerEvaluation.WorkTransition -> {
+                    val outcome = when (evaluation.transition) {
+                        AutomationWorkTransition.Complete -> AutomationDecisionOutcome.CYCLE_COMPLETED
+                        is AutomationWorkTransition.WaitForConfiguration ->
+                            AutomationDecisionOutcome.CONFIGURATION_WARNING
+                        is AutomationWorkTransition.WaitForResource,
+                        AutomationWorkTransition.WaitForUnknownCooldown,
+                        -> AutomationDecisionOutcome.WAITING
+                    }
+                    if (evaluation.transition is AutomationWorkTransition.WaitForConfiguration) {
+                        warnings += evaluation.message
+                    }
+                    trace += AutomationEvaluationTrace(
+                        sequence,
+                        entry.id,
+                        entry.type,
+                        outcome,
+                        evaluation.reasonCode,
+                        evaluation.message,
+                        actionKind = when (evaluation.transition) {
+                            AutomationWorkTransition.Complete -> "COMPLETE"
+                            else -> "WAIT"
+                        },
+                    )
+                    return AutomationCoordination.Idle(
+                        warnings.toList(),
+                        trace.toList(),
+                        evaluation.transition,
+                    )
+                }
                 HandlerEvaluation.Skipped -> {
                     trace += AutomationEvaluationTrace(sequence, entry.id, entry.type, AutomationDecisionOutcome.SKIPPED, HandlerEvaluation.Skipped.reasonCode, HandlerEvaluation.Skipped.message)
                 }
@@ -150,6 +181,26 @@ private fun QuestDirective.toHandlerEvaluation(): HandlerEvaluation = when (this
         reasonCode,
         message,
         AutomationWaitScope.HOLD_CURRENT_WORK,
+    )
+    is QuestDirective.WaitForResource -> HandlerEvaluation.WorkTransition(
+        AutomationWorkTransition.WaitForResource(resourceName, missingCount),
+        "QUEST_RESOURCE_WAIT",
+        "퀘스트 완료에 필요한 재료를 기다립니다.",
+    )
+    QuestDirective.WaitForUnknownCooldown -> HandlerEvaluation.WorkTransition(
+        AutomationWorkTransition.WaitForUnknownCooldown,
+        "QUEST_COOLDOWN_UNKNOWN",
+        "반복 퀘스트의 다음 시작 가능 상태를 기다립니다.",
+    )
+    is QuestDirective.WaitForConfiguration -> HandlerEvaluation.WorkTransition(
+        AutomationWorkTransition.WaitForConfiguration(message),
+        reasonCode,
+        message,
+    )
+    QuestDirective.CompleteWork -> HandlerEvaluation.WorkTransition(
+        AutomationWorkTransition.Complete,
+        "QUEST_WORK_COMPLETE",
+        "현재 퀘스트 작업 사이클을 완료했습니다.",
     )
     is QuestDirective.Hold -> HandlerEvaluation.ConfigurationWarning(message, reasonCode)
     is QuestDirective.Fatal -> HandlerEvaluation.Fatal(reason, message)

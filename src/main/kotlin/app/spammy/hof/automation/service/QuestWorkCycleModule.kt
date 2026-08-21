@@ -30,6 +30,16 @@ sealed interface QuestDirective {
         val reasonCode: String,
         val message: String,
     ) : QuestDirective
+    data class WaitForResource(
+        val resourceName: String,
+        val missingCount: Int?,
+    ) : QuestDirective
+    data object WaitForUnknownCooldown : QuestDirective
+    data class WaitForConfiguration(
+        val message: String,
+        val reasonCode: String,
+    ) : QuestDirective
+    data object CompleteWork : QuestDirective
     data class Hold(val message: String, val reasonCode: String) : QuestDirective
     data class Fatal(val reason: AutomationStopReason, val message: String) : QuestDirective
     data object Skip : QuestDirective

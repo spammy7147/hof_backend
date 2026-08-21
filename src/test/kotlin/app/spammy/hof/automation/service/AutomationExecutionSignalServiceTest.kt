@@ -76,9 +76,6 @@ class AutomationExecutionSignalServiceTest {
     fun `quest battle progress is owned by quest work cycle`() {
         val running = session(
             23, questEntry, AutomationWorkType.QUEST, "quest-1", AutomationWorkStatus.RUNNING,
-            missionType = app.spammy.hof.quest.model.QuestMissionType.MAP_CLEAR.name,
-            observedCurrent = 3,
-            observedRequired = 5,
         )
         Mockito.`when`(queries.findRunning(7)).thenReturn(running)
 
@@ -101,9 +98,6 @@ class AutomationExecutionSignalServiceTest {
         type: AutomationWorkType,
         targetKey: String,
         status: AutomationWorkStatus,
-        missionType: String? = null,
-        observedCurrent: Int? = null,
-        observedRequired: Int? = null,
         materialName: String? = null,
     ) = AutomationWorkSessionView(
         id = id,
@@ -113,10 +107,6 @@ class AutomationExecutionSignalServiceTest {
         workType = type,
         targetKey = targetKey,
         status = status,
-        missionKey = null,
-        missionType = missionType,
-        observedCurrent = observedCurrent,
-        observedRequired = observedRequired,
         materialName = materialName,
         nextCheckAt = null,
     )

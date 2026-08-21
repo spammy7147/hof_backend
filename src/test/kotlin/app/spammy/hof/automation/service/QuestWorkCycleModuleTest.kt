@@ -151,6 +151,63 @@ class QuestWorkCycleModuleTest {
     }
 
     @Test
+    fun `running item quest returns a normalized resource wait directive`() {
+        val sessionId = 41L
+        progress.runningWorkTargets[sessionId] = "q"
+
+        val result = handler.decideNext(snapshot(
+            quests = listOf(
+                quest(
+                    "q",
+                    QuestState.ACTIVE,
+                    0,
+                    QuestMission(
+                        "item",
+                        QuestMissionType.ITEM_TURN_IN,
+                        "  Steel   Ingot ",
+                        QuestProgress(3, 5),
+                        false,
+                    ),
+                ),
+            ),
+            selections = listOf(selection("q")),
+            workSessionId = sessionId,
+        ))
+
+        assertEquals(QuestDirective.WaitForResource("steel ingot", 2), result)
+    }
+
+    @Test
+    fun `running repeat quest returns an unknown cooldown wait directive`() {
+        val sessionId = 42L
+        progress.runningWorkTargets[sessionId] = "q"
+        val waiting = quest("q", QuestState.UNAVAILABLE, 0)
+            .copy(section = QuestSection.WAITING, actionNo = null)
+
+        val result = handler.decideNext(snapshot(
+            quests = listOf(waiting),
+            selections = listOf(selection("q")),
+            workSessionId = sessionId,
+        ))
+
+        assertIs<QuestDirective.WaitForUnknownCooldown>(result)
+    }
+
+    @Test
+    fun `running quest with no remaining action completes its work`() {
+        val sessionId = 43L
+        progress.runningWorkTargets[sessionId] = "q"
+
+        val result = handler.decideNext(snapshot(
+            quests = listOf(quest("q", QuestState.ACTIVE, 0, immediate())),
+            selections = listOf(selection("q")),
+            workSessionId = sessionId,
+        ))
+
+        assertIs<QuestDirective.CompleteWork>(result)
+    }
+
+    @Test
     fun `TIME reward is not claimed without a current TIME snapshot`() {
         val result = handler.decideNext(snapshot(
             quests = listOf(
@@ -601,6 +658,84 @@ class QuestWorkCycleModuleTest {
     }
 
     @Test
+    fun `running quest with invalid preset returns a configuration wait directive`() {
+        val sessionId = 44L
+        progress.runningWorkTargets[sessionId] = "q"
+
+        val result = handler.decideNext(snapshot(
+            quests = listOf(quest("q", QuestState.ACTIVE, 0, monster("kill"))),
+            selections = listOf(selection(
+                "q",
+                maps = listOf(map("kill", "map", 0, presetMode = PresetSelectionMode.EXPLICIT)),
+            )),
+            states = listOf(state("map")),
+            workSessionId = sessionId,
+        ))
+
+        val wait = assertIs<QuestDirective.WaitForConfiguration>(result)
+        assertEquals("QUEST_PRESET_INVALID", wait.reasonCode)
+    }
+
+    @Test
+    fun `next map clear mission is claimed before its first battle is returned`() {
+        val previous = QuestWorkProgressSnapshot(45, "q", "1", "old-clear", 5, 5)
+
+        val result = handler.decideNext(snapshot(
+            quests = listOf(quest(
+                "q",
+                QuestState.ACTIVE,
+                0,
+                QuestMission("new-clear", QuestMissionType.MAP_CLEAR, "target", QuestProgress(0, 5), false),
+            )),
+            selections = listOf(selection(
+                "q",
+                maps = listOf(map("new-clear", "target", 0, manual = true)),
+            )),
+            states = listOf(state("target")),
+            cycles = mapOf("q" to "1"),
+            workProgress = previous,
+        ))
+
+        val action = battle(result)
+        assertEquals("new-clear", action.missionKey)
+        assertEquals(previous, progress.claimedMissions.single().first.mapClearProgress)
+        assertEquals(action, progress.claimedMissions.single().second)
+    }
+
+    @Test
+    fun `work changed during live load rejects the stale mission decision`() {
+        val sessionId = 46L
+        val changedRevision = 1L
+        progress.runningWorks[sessionId] = QuestRunningWorkSnapshot(
+            sessionId = sessionId,
+            questKey = "q",
+            mapClearProgress = QuestWorkProgressSnapshot(sessionId, "q", "1", "new-clear", 1, 5),
+            revision = changedRevision,
+        )
+
+        val result = handler.decideNext(snapshot(
+            quests = listOf(quest(
+                "q",
+                QuestState.ACTIVE,
+                0,
+                QuestMission("old-clear", QuestMissionType.MAP_CLEAR, "old", QuestProgress(0, 5), false),
+            )),
+            selections = listOf(selection(
+                "q",
+                maps = listOf(map("old-clear", "old", 0, manual = true)),
+            )),
+            states = listOf(state("old")),
+            cycles = mapOf("q" to "1"),
+            workSessionId = sessionId,
+            workSessionRevision = 0,
+        ))
+
+        assertIs<QuestDirective.Recheck>(result)
+        assertEquals(emptyList(), progress.claimedMissions)
+        assertEquals("new-clear", progress.runningWorks.getValue(sessionId).missionKey)
+    }
+
+    @Test
     fun `몬스터 처치 맵 쿨타임은 정확한 다음 판단 시각을 반환한다`() {
         val retryAt = NOW.plusSeconds(73)
         val result = handler.decideNext(snapshot(
@@ -648,7 +783,7 @@ class QuestWorkCycleModuleTest {
 
     @Test
     fun `권위 mission 진행도는 퀘스트 모듈 안에서 optimistic work progress를 보정한다`() {
-        val work = QuestWorkProgressSnapshot(25, "q", "1", "clear", 5, 5, authoritative = true)
+        val work = QuestWorkProgressSnapshot(25, "q", "1", "clear", 5, 5)
         handler.decideNext(snapshot(
             quests = listOf(quest(
                 "q",
@@ -666,27 +801,8 @@ class QuestWorkCycleModuleTest {
     }
 
     @Test
-    fun `optimistic mission snapshot은 권위 진행도로 저장하지 않는다`() {
-        val work = QuestWorkProgressSnapshot(25, "q", "1", "clear", 3, 5, authoritative = false)
-        handler.decideNext(snapshot(
-            quests = listOf(quest(
-                "q",
-                QuestState.ACTIVE,
-                0,
-                QuestMission("clear", QuestMissionType.MAP_CLEAR, "target", QuestProgress(3, 5), false),
-            )),
-            selections = listOf(selection("q", maps = listOf(map("clear", "target", 0, manual = true)))),
-            states = listOf(state("target")),
-            cycles = mapOf("q" to "1"),
-            workProgress = work,
-        ))
-
-        assertEquals(emptyList(), progress.reconciliations)
-    }
-
-    @Test
     fun `새 quest cycle의 권위 진행도는 같은 작업을 새 cycle로 전환한다`() {
-        val work = QuestWorkProgressSnapshot(25, "q", "1", "clear", 5, 5, authoritative = true)
+        val work = QuestWorkProgressSnapshot(25, "q", "1", "clear", 5, 5)
         val result = handler.decideNext(snapshot(
             quests = listOf(quest(
                 "q",
@@ -707,7 +823,7 @@ class QuestWorkCycleModuleTest {
 
     @Test
     fun `저장 중 work baseline이 바뀌면 오래된 권위 관측을 적용하지 않고 다시 확인한다`() {
-        val work = QuestWorkProgressSnapshot(25, "q", "1", "clear", 5, 5, authoritative = true)
+        val work = QuestWorkProgressSnapshot(25, "q", "1", "clear", 5, 5)
         progress.reconciliationResult = QuestProgressReconciliation.Stale
 
         val result = handler.decideNext(snapshot(
@@ -945,7 +1061,11 @@ class QuestWorkCycleModuleTest {
             listOf(BattlePatternLoadRequest("1", 1)),
         ),
         workProgress: QuestWorkProgressSnapshot? = null,
-    ) = QuestAutomationSnapshot(
+        workSessionId: Long? = workProgress?.sessionId,
+        workSessionRevision: Long? = workSessionId?.let { 0 },
+    ): QuestAutomationSnapshot {
+        workProgress?.let { progress.workBySession[it.sessionId] = it }
+        return QuestAutomationSnapshot(
         ACCOUNT_ID,
         quests,
         selections,
@@ -956,9 +1076,11 @@ class QuestWorkCycleModuleTest {
         NOW,
         primaryPresetId = primaryPresetId,
         primaryParty = primaryParty,
-        timeSnapshot = timeCurrent?.let { AutomationTimeSnapshot(it, 6000, NOW) },
-        workProgress = workProgress,
-    )
+            timeSnapshot = timeCurrent?.let { AutomationTimeSnapshot(it, 6000, NOW) },
+            workSessionId = workSessionId,
+            workSessionRevision = workSessionRevision,
+        )
+    }
 
     private fun quest(code: String, state: QuestState, order: Int, vararg missions: QuestMission) =
         QuestSnapshot(code, code, state, if (state == QuestState.AVAILABLE) QuestSection.AVAILABLE else QuestSection.ACTIVE, order, missions.toList(), "$code-action")
@@ -1011,7 +1133,12 @@ class QuestWorkCycleModuleTest {
         val results = mutableListOf<Pair<QuestAction.Battle, Int>>()
         val reconciliations = mutableListOf<Triple<QuestWorkProgressSnapshot, Int, Int>>()
         val reconciledCycles = mutableListOf<String>()
+        val claimedMissions = mutableListOf<Pair<QuestRunningWorkSnapshot, QuestAction.Battle>>()
+        val workBySession = mutableMapOf<Long, QuestWorkProgressSnapshot>()
+        val runningWorkTargets = mutableMapOf<Long, String>()
+        val runningWorks = mutableMapOf<Long, QuestRunningWorkSnapshot>()
         var reconciliationResult: QuestProgressReconciliation = QuestProgressReconciliation.Applied
+        var claimResult: QuestProgressReconciliation = QuestProgressReconciliation.Applied
         override fun startNewCycle(accountId: Long, resultId: String, questKey: String): String {
             val key = accountId to questKey
             return ((cycles[key]?.toLongOrNull() ?: 0) + 1).toString().also { cycles[key] = it }
@@ -1023,6 +1150,18 @@ class QuestWorkCycleModuleTest {
         ): Int? = null
         override fun recordBattleResult(accountId: Long, resultId: String, action: QuestAction.Battle, victoryCount: Int) {
             results += action to victoryCount
+        }
+        override fun findRunningWork(accountId: Long, sessionId: Long): QuestRunningWorkSnapshot? =
+            runningWorks[sessionId]
+                ?: workBySession[sessionId]?.let { QuestRunningWorkSnapshot(sessionId, it.questKey, it) }
+                ?: runningWorkTargets[sessionId]?.let { QuestRunningWorkSnapshot(sessionId, it, null) }
+        override fun claimMapClearMission(
+            accountId: Long,
+            work: QuestRunningWorkSnapshot,
+            action: QuestAction.Battle,
+        ): QuestProgressReconciliation {
+            claimedMissions += work to action
+            return claimResult
         }
         override fun reconcileMapClearProgress(
             accountId: Long,
@@ -1128,7 +1267,8 @@ class QuestAutomationProgressStorePersistenceTest {
             missionCurrent = 2,
             missionRequired = 8,
         )
-        workSessionRepository.save(
+        assertEquals("1", progressStore.startNewCycle(account.id, "reconcile-cycle", action.questKey))
+        val session = workSessionRepository.save(
             AutomationWorkSessionEntity(
                 account = account,
                 entry = entry,
@@ -1199,7 +1339,143 @@ class QuestAutomationProgressStorePersistenceTest {
                 action.mapCode,
             ),
         )
-        assertEquals(4, workQueries.findRunning(account.id)?.observedCurrent)
+        val work = requireNotNull(workQueries.findRunning(account.id))
+        assertEquals(4, progressStore.findRunningWork(account.id, work.id)?.mapClearProgress?.current)
+    }
+
+    @Test
+    fun `late result from an older cycle never rolls current work back`() {
+        val account = accountRepository.save(
+            HofAccountEntity(loginId = "quest-late-cycle-${System.nanoTime()}", encryptedPassword = "encrypted", createdAt = NOW),
+        )
+        assertEquals("1", progressStore.startNewCycle(account.id, "late-cycle-1", "q"))
+        assertEquals("2", progressStore.startNewCycle(account.id, "late-cycle-2", "q"))
+        val entry = entryRepository.save(
+            AutomationEntryEntity(account = account, type = AutomationType.QUEST, priority = 0, enabled = true, createdAt = NOW, updatedAt = NOW),
+        )
+        val session = workSessionRepository.save(
+            AutomationWorkSessionEntity(
+                account = account,
+                entry = entry,
+                workType = AutomationWorkType.QUEST,
+                targetKey = "q",
+                status = AutomationWorkStatus.RUNNING,
+                configVersion = entry.updatedAt.toString(),
+                questCycle = "2",
+                missionKey = "new-clear",
+                missionType = QuestMissionType.MAP_CLEAR.name,
+                observedCurrent = 1,
+                observedRequired = 5,
+                confirmedCount = 1,
+                createdAt = NOW,
+                updatedAt = NOW,
+            ),
+        )
+        val oldAction = battleAction(cycle = "1", mapCode = "old", battleCount = 1).copy(
+            missionType = QuestMissionType.MAP_CLEAR,
+            missionCurrent = 2,
+            missionRequired = 5,
+        )
+
+        progressStore.recordBattleResult(account.id, "late-old-cycle-result", oldAction, 1)
+
+        val current = requireNotNull(progressStore.findRunningWork(account.id, session.id)?.mapClearProgress)
+        assertEquals("2", current.questCycle)
+        assertEquals("new-clear", current.missionKey)
+        assertEquals(1, current.current)
+    }
+
+    @Test
+    fun `claiming the next map clear mission moves work before its first result`() {
+        val account = accountRepository.save(
+            HofAccountEntity(loginId = "quest-next-mission-${System.nanoTime()}", encryptedPassword = "encrypted", createdAt = NOW),
+        )
+        assertEquals("1", progressStore.startNewCycle(account.id, "next-mission-cycle", "q"))
+        val entry = entryRepository.save(
+            AutomationEntryEntity(account = account, type = AutomationType.QUEST, priority = 0, enabled = true, createdAt = NOW, updatedAt = NOW),
+        )
+        val session = workSessionRepository.save(
+            AutomationWorkSessionEntity(
+                account = account,
+                entry = entry,
+                workType = AutomationWorkType.QUEST,
+                targetKey = "q",
+                status = AutomationWorkStatus.RUNNING,
+                configVersion = entry.updatedAt.toString(),
+                questCycle = "1",
+                missionKey = "old-clear",
+                missionType = QuestMissionType.MAP_CLEAR.name,
+                observedCurrent = 5,
+                observedRequired = 5,
+                confirmedCount = 2,
+                createdAt = NOW,
+                updatedAt = NOW,
+            ),
+        )
+        val before = requireNotNull(progressStore.findRunningWork(account.id, session.id))
+        val nextAction = battleAction(cycle = "1", mapCode = "next", battleCount = 1).copy(
+            missionKey = "new-clear",
+            missionType = QuestMissionType.MAP_CLEAR,
+            missionCurrent = 0,
+            missionRequired = 5,
+        )
+
+        assertIs<QuestProgressReconciliation.Applied>(
+            progressStore.claimMapClearMission(account.id, before, nextAction),
+        )
+        progressStore.recordBattleResult(account.id, "next-mission-first-result", nextAction, 0)
+
+        val current = requireNotNull(progressStore.findRunningWork(account.id, session.id)?.mapClearProgress)
+        assertEquals("new-clear", current.missionKey)
+        assertEquals(0, current.current)
+    }
+
+    @Test
+    fun `mission claim rejects a same mission baseline changed after live observation`() {
+        val account = accountRepository.save(
+            HofAccountEntity(loginId = "quest-claim-race-${System.nanoTime()}", encryptedPassword = "encrypted", createdAt = NOW),
+        )
+        assertEquals("1", progressStore.startNewCycle(account.id, "claim-race-cycle", "q"))
+        val entry = entryRepository.save(
+            AutomationEntryEntity(account = account, type = AutomationType.QUEST, priority = 0, enabled = true, createdAt = NOW, updatedAt = NOW),
+        )
+        val session = workSessionRepository.save(
+            AutomationWorkSessionEntity(
+                account = account,
+                entry = entry,
+                workType = AutomationWorkType.QUEST,
+                targetKey = "q",
+                status = AutomationWorkStatus.RUNNING,
+                configVersion = entry.updatedAt.toString(),
+                questCycle = "1",
+                missionKey = "clear",
+                missionType = QuestMissionType.MAP_CLEAR.name,
+                observedCurrent = 0,
+                observedRequired = 5,
+                createdAt = NOW,
+                updatedAt = NOW,
+            ),
+        )
+        val observed = requireNotNull(progressStore.findRunningWork(account.id, session.id))
+        session.observedCurrent = 1
+        session.updatedAt = NOW.plusSeconds(1)
+        workSessionRepository.save(session)
+        workSessionRepository.flush()
+        val staleAction = battleAction(cycle = "1", mapCode = "same", battleCount = 1).copy(
+            missionKey = "clear",
+            missionType = QuestMissionType.MAP_CLEAR,
+            missionCurrent = 0,
+            missionRequired = 5,
+        )
+
+        assertIs<QuestProgressReconciliation.Stale>(
+            progressStore.claimMapClearMission(account.id, observed, staleAction),
+        )
+
+        assertEquals(
+            1,
+            progressStore.findRunningWork(account.id, session.id)?.mapClearProgress?.current,
+        )
     }
 
     @Test
@@ -1228,7 +1504,7 @@ class QuestAutomationProgressStorePersistenceTest {
                 updatedAt = NOW,
             ),
         )
-        val work = QuestWorkProgressSnapshot(session.id, "q", "1", "clear", 5, 5, authoritative = true)
+        val work = requireNotNull(progressStore.findRunningWork(account.id, session.id))
 
         questWorkCycle.decideNext(
             QuestAutomationSnapshot(
@@ -1258,12 +1534,14 @@ class QuestAutomationProgressStorePersistenceTest {
                 counters = emptyMap(),
                 mapIdentityCandidates = emptyList(),
                 now = NOW,
-                workProgress = work,
+                workSessionId = work.sessionId,
+                workSessionRevision = work.revision,
             ),
         )
 
-        assertEquals(4, workQueries.findRunning(account.id)?.observedCurrent)
-        assertEquals(5, workQueries.findRunning(account.id)?.observedRequired)
+        val updated = requireNotNull(progressStore.findRunningWork(account.id, session.id)?.mapClearProgress)
+        assertEquals(4, updated.current)
+        assertEquals(5, updated.required)
     }
 
     @Test
@@ -1292,43 +1570,20 @@ class QuestAutomationProgressStorePersistenceTest {
                 updatedAt = NOW,
             ),
         )
-        val staleWork = QuestWorkProgressSnapshot(session.id, "q", "1", "clear", 5, 5, authoritative = true)
+        val staleWork = QuestWorkProgressSnapshot(session.id, "q", "1", "clear", 5, 5)
 
-        val result = questWorkCycle.decideNext(
-            QuestAutomationSnapshot(
-                accountId = account.id,
-                quests = listOf(
-                    QuestSnapshot(
-                        questKey = "q",
-                        name = "q",
-                        state = QuestState.ACTIVE,
-                        section = QuestSection.ACTIVE,
-                        sourceOrder = 0,
-                        missions = listOf(
-                            QuestMission(
-                                key = "clear",
-                                type = QuestMissionType.MAP_CLEAR,
-                                target = "target",
-                                progress = QuestProgress(3, 5),
-                                completable = false,
-                            ),
-                        ),
-                        actionNo = null,
-                    ),
-                ),
-                selections = listOf(QuestAutomationSelection("q", enabled = false, maps = emptyList())),
-                mapStates = emptyList(),
-                currentCycles = mapOf("q" to "1"),
-                counters = emptyMap(),
-                mapIdentityCandidates = emptyList(),
-                now = NOW,
-                workProgress = staleWork,
-            ),
+        val result = progressStore.reconcileMapClearProgress(
+            account.id,
+            staleWork,
+            observedQuestCycle = "1",
+            current = 3,
+            required = 5,
         )
 
-        assertEquals("QUEST_PROGRESS_STALE", assertIs<QuestDirective.Recheck>(result).reasonCode)
-        assertEquals(4, workQueries.findRunning(account.id)?.observedCurrent)
-        assertEquals(5, workQueries.findRunning(account.id)?.observedRequired)
+        assertIs<QuestProgressReconciliation.Stale>(result)
+        val updated = requireNotNull(progressStore.findRunningWork(account.id, session.id)?.mapClearProgress)
+        assertEquals(4, updated.current)
+        assertEquals(5, updated.required)
     }
 
     @Test
@@ -1359,7 +1614,7 @@ class QuestAutomationProgressStorePersistenceTest {
                 updatedAt = NOW,
             ),
         )
-        val oldWork = QuestWorkProgressSnapshot(session.id, "q", "1", "clear", 5, 5, authoritative = true)
+        val oldWork = requireNotNull(progressStore.findRunningWork(account.id, session.id))
 
         questWorkCycle.decideNext(
             QuestAutomationSnapshot(
@@ -1389,14 +1644,15 @@ class QuestAutomationProgressStorePersistenceTest {
                 counters = emptyMap(),
                 mapIdentityCandidates = emptyList(),
                 now = NOW,
-                workProgress = oldWork,
+                workSessionId = oldWork.sessionId,
+                workSessionRevision = oldWork.revision,
             ),
         )
 
-        val updated = requireNotNull(workQueries.findRunning(account.id))
+        val updated = requireNotNull(progressStore.findRunningWork(account.id, session.id)?.mapClearProgress)
         assertEquals("2", updated.questCycle)
-        assertEquals(1, updated.observedCurrent)
-        assertEquals(5, updated.observedRequired)
+        assertEquals(1, updated.current)
+        assertEquals(5, updated.required)
     }
 
     @Test
@@ -1412,7 +1668,7 @@ class QuestAutomationProgressStorePersistenceTest {
             missionCurrent = 2,
             missionRequired = 8,
         )
-        workSessionRepository.save(
+        val session = workSessionRepository.save(
             AutomationWorkSessionEntity(
                 account = account,
                 entry = entry,
@@ -1458,7 +1714,8 @@ class QuestAutomationProgressStorePersistenceTest {
         }
 
         assertEquals(2, queryRepository.findQuestMapWins(account.id, "q", "1", "kill", "battle_map", "chosen"))
-        assertEquals(4, workQueries.findRunning(account.id)?.observedCurrent)
+        val updated = requireNotNull(progressStore.findRunningWork(account.id, session.id)?.mapClearProgress)
+        assertEquals(4, updated.current)
         assertFailsWith<QuestAutomationResultConflictException> {
             progressStore.recordBattleResult(
                 account.id,

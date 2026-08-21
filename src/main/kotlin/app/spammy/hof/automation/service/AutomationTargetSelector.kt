@@ -12,9 +12,6 @@ import app.spammy.hof.automation.repository.AutomationWorkSessionQueryRepository
 import app.spammy.hof.automation.repository.AutomationWorkSessionView
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import app.spammy.hof.common.time.TimeProvider
-import app.spammy.hof.quest.model.QuestMissionType
-import app.spammy.hof.quest.model.QuestSection
-import app.spammy.hof.quest.model.QuestState
 import java.time.Instant
 import java.time.ZoneId
 import java.util.UUID
@@ -31,7 +28,6 @@ class AutomationTargetSelector(
     private val loader: TypedAutomationSnapshotLoader,
     private val coordinator: AutomationCoordinator,
     private val lifecycle: AutomationWorkLifecycle,
-    private val lootSignals: AutomationLootSignalService,
     private val timeProvider: TimeProvider,
     private val raidModule: RaidCycleModule,
 ) : AutomationDecisionSource {
@@ -50,7 +46,7 @@ class AutomationTargetSelector(
             return selectRaidSession(accountId, session, initialWarnings, initialTrace)
         }
         val entry = loader.loadEntry(accountId, session.entryId, session.targetKey)
-            .withQuestWorkProgress(session)
+            .withQuestWorkSession(session)
         return when (val result = coordinate(entry)) {
                 is AutomationCoordination.Runnable -> {
                     result.withPrefix(initialWarnings, initialTrace)
@@ -70,27 +66,11 @@ class AutomationTargetSelector(
                     }
                 }
                 is AutomationCoordination.Idle -> {
-                    val selectedQuest = entry.quest?.quests
-                        ?.singleOrNull { it.questKey == session.targetKey }
-                    val material = selectedQuest
-                        ?.missions
-                        ?.firstOrNull { it.type == QuestMissionType.ITEM_TURN_IN && !it.completable }
-                    if (
-                        selectedQuest?.state == QuestState.UNAVAILABLE ||
-                        selectedQuest?.section == QuestSection.WAITING
-                    ) {
-                        lifecycle.waitForUnknownCooldown(accountId, session.id)
-                    } else if (material?.target?.isNotBlank() == true) {
-                        val missing = material.progress?.let { (it.required - it.current).coerceAtLeast(0) }
-                        lifecycle.waitForResource(
-                            accountId,
-                            session.id,
-                            lootSignals.normalize(requireNotNull(material.target)),
-                            missing,
-                        )
-                    } else {
-                        lifecycle.complete(accountId, session.id)
-                    }
+                    result.workTransition?.let {
+                        lifecycle.applyTransition(accountId, session.id, it)
+                    } ?: if (session.workType != AutomationWorkType.QUEST) {
+                        lifecycle.applyTransition(accountId, session.id, AutomationWorkTransition.Complete)
+                    } else Unit
                     selectConfigured(
                         accountId,
                         initialWarnings + result.warnings,
@@ -240,7 +220,7 @@ class AutomationTargetSelector(
             )
         }
         is RaidDirective.Complete -> {
-            lifecycle.complete(accountId, session.id)
+            lifecycle.applyTransition(accountId, session.id, AutomationWorkTransition.Complete)
             selectConfigured(
                 accountId,
                 initialWarnings,
@@ -369,25 +349,14 @@ class AutomationTargetSelector(
         )
     }
 
-    private fun AutomationCoordinatorEntry.withQuestWorkProgress(
+    private fun AutomationCoordinatorEntry.withQuestWorkSession(
         session: AutomationWorkSessionView,
     ): AutomationCoordinatorEntry {
-        val current = session.observedCurrent ?: return this
-        val required = session.observedRequired ?: return this
-        val cycle = session.questCycle ?: return this
-        val mission = session.missionKey ?: return this
-        if (session.workType != AutomationWorkType.QUEST || session.missionType != QuestMissionType.MAP_CLEAR.name) return this
+        if (session.workType != AutomationWorkType.QUEST) return this
         return copy(
             quest = quest?.copy(
-                workProgress = QuestWorkProgressSnapshot(
-                    sessionId = session.id,
-                    questKey = session.targetKey,
-                    questCycle = cycle,
-                    missionKey = mission,
-                    current = current,
-                    required = required,
-                    authoritative = true,
-                ),
+                workSessionId = session.id,
+                workSessionRevision = session.revision,
             ),
         )
     }

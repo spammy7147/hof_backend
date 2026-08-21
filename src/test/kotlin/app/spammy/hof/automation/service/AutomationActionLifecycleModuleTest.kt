@@ -409,15 +409,7 @@ class AutomationActionLifecycleModuleTest {
         Mockito.verify(workOwnership).ensure(
             7L,
             12L,
-            AutomationWorkAssignment(
-                type = AutomationWorkType.QUEST,
-                targetKey = "quest-1",
-                questCycle = "2",
-                missionKey = "kill-slime",
-                missionType = QuestMissionType.MONSTER_KILL.name,
-                observedCurrent = 2,
-                observedRequired = 5,
-            ),
+            AutomationWorkAssignment(AutomationWorkType.QUEST, "quest-1"),
         )
         Mockito.verify(questWorkCycle).recordObservedResult(
             7L,

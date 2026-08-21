@@ -28,7 +28,23 @@ sealed interface HandlerEvaluation {
         val message: String,
         val reasonCode: String = "CONFIGURATION_WARNING",
     ) : HandlerEvaluation
+    data class WorkTransition(
+        val transition: AutomationWorkTransition,
+        val reasonCode: String,
+        val message: String,
+    ) : HandlerEvaluation
     data class Fatal(val reason: AutomationStopReason, val message: String) : HandlerEvaluation
+}
+
+sealed interface AutomationWorkTransition {
+    data class WaitForResource(
+        val resourceName: String,
+        val missingCount: Int?,
+    ) : AutomationWorkTransition
+
+    data object WaitForUnknownCooldown : AutomationWorkTransition
+    data class WaitForConfiguration(val message: String) : AutomationWorkTransition
+    data object Complete : AutomationWorkTransition
 }
 
 enum class AutomationWaitScope {

@@ -20,14 +20,10 @@ data class AutomationWorkSessionView(
     val workType: AutomationWorkType,
     val targetKey: String,
     val status: AutomationWorkStatus,
-    val missionKey: String?,
-    val missionType: String?,
-    val observedCurrent: Int?,
-    val observedRequired: Int?,
     val materialName: String?,
     val nextCheckAt: Instant?,
     val holdMessage: String? = null,
-    val questCycle: String? = null,
+    val revision: Long = 0,
 )
 
 @Repository
@@ -103,14 +99,10 @@ class AutomationWorkSessionQueryRepository(
         automationWorkSessionEntity.workType,
         automationWorkSessionEntity.targetKey,
         automationWorkSessionEntity.status,
-        automationWorkSessionEntity.missionKey,
-        automationWorkSessionEntity.missionType,
-        automationWorkSessionEntity.observedCurrent,
-        automationWorkSessionEntity.observedRequired,
         automationWorkSessionEntity.materialName,
         automationWorkSessionEntity.nextCheckAt,
         automationWorkSessionEntity.holdMessage,
-        automationWorkSessionEntity.questCycle,
+        automationWorkSessionEntity.version,
     ).from(automationWorkSessionEntity)
         .join(automationWorkSessionEntity.entry, automationEntryEntity)
 
@@ -122,14 +114,10 @@ class AutomationWorkSessionQueryRepository(
         workType = requireNotNull(get(automationWorkSessionEntity.workType)),
         targetKey = requireNotNull(get(automationWorkSessionEntity.targetKey)),
         status = requireNotNull(get(automationWorkSessionEntity.status)),
-        missionKey = get(automationWorkSessionEntity.missionKey),
-        missionType = get(automationWorkSessionEntity.missionType),
-        observedCurrent = get(automationWorkSessionEntity.observedCurrent),
-        observedRequired = get(automationWorkSessionEntity.observedRequired),
         materialName = get(automationWorkSessionEntity.materialName),
         nextCheckAt = get(automationWorkSessionEntity.nextCheckAt),
         holdMessage = get(automationWorkSessionEntity.holdMessage),
-        questCycle = get(automationWorkSessionEntity.questCycle),
+        revision = requireNotNull(get(automationWorkSessionEntity.version)),
     )
 
     private companion object {

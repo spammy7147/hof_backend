@@ -81,6 +81,27 @@ class AutomationCoordinatorTest {
     }
 
     @Test
+    fun `quest resource wait is translated to an opaque work transition`() {
+        val coordinator = AutomationCoordinator(
+            quest = questModule(QuestDirective.WaitForResource("steel ingot", 2)),
+            battle = AutomationHandler<BattleMapAutomationSnapshot> { HandlerEvaluation.Skipped },
+            adventure = AutomationHandler<AdventureMapAutomationSnapshot> { HandlerEvaluation.Skipped },
+        )
+
+        val result = assertIs<AutomationCoordination.Idle>(coordinator.coordinate(
+            AutomationCoordinatorSnapshot(
+                listOf(AutomationCoordinatorEntry(1, AutomationType.QUEST, quest = questSnapshot())),
+            ),
+        ))
+
+        assertEquals(
+            AutomationWorkTransition.WaitForResource("steel ingot", 2),
+            result.workTransition,
+        )
+        assertEquals(AutomationDecisionOutcome.WAITING, result.trace.single().outcome)
+    }
+
+    @Test
     fun `fatal stops immediately by priority`() {
         val coordinator = AutomationCoordinator(
             quest = questModule(QuestDirective.Fatal(AutomationStopReason.NETWORK, "fatal")),

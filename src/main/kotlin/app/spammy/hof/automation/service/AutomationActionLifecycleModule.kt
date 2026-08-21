@@ -76,11 +76,6 @@ data class AutomationWorkAssignment(
     val type: AutomationWorkType,
     val targetKey: String,
     val targetCount: Int? = null,
-    val questCycle: String? = null,
-    val missionKey: String? = null,
-    val missionType: String? = null,
-    val observedCurrent: Int? = null,
-    val observedRequired: Int? = null,
 )
 
 fun interface AutomationWorkOwnership {
@@ -183,15 +178,7 @@ class UnifiedAutomationActionLifecycleModule(
             workOwnership.ensure(
                 accountId,
                 entryId,
-                AutomationWorkAssignment(
-                    type = AutomationWorkType.QUEST,
-                    targetKey = action.questKey,
-                    questCycle = action.questCycle,
-                    missionKey = action.missionKey,
-                    missionType = action.missionType.name,
-                    observedCurrent = action.missionCurrent,
-                    observedRequired = action.missionRequired,
-                ),
+                AutomationWorkAssignment(AutomationWorkType.QUEST, action.questKey),
             )
             val presetId = action.preset.resolvedPresetId ?: action.preset.presetId
                 ?: throw AutomationConfigurationException()

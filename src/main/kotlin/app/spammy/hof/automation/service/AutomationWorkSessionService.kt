@@ -19,8 +19,7 @@ interface AutomationWorkLifecycle {
     fun resumeForCheck(accountId: Long, sessionId: Long)
     fun triggerCheck(accountId: Long, sessionId: Long)
     fun yieldForPriority(accountId: Long, sessionId: Long): Boolean
-    fun waitForResource(accountId: Long, sessionId: Long, materialName: String, missingCount: Int?)
-    fun waitForUnknownCooldown(accountId: Long, sessionId: Long)
+    fun applyTransition(accountId: Long, sessionId: Long, transition: AutomationWorkTransition)
     fun waitForCooldown(accountId: Long, sessionId: Long, nextCheckAt: java.time.Instant)
     fun waitForRaid(
         accountId: Long,
@@ -30,7 +29,6 @@ interface AutomationWorkLifecycle {
         holdMessage: String? = null,
     )
     fun triggerRaidConfigurationCheck(accountId: Long)
-    fun complete(accountId: Long, sessionId: Long)
     fun completeBattleMapAction(accountId: Long, entryId: Long, categoryId: String, mapCode: String)
     fun completeAdventureAction(accountId: Long, entryId: Long, categoryId: String, mapCode: String)
     fun completeRaidCycle(accountId: Long, entryId: Long)
@@ -114,7 +112,7 @@ class AutomationWorkSessionService(
             check(running.matches(entryId, spec)) {
                 "A different automation work session is already running for account $accountId."
             }
-            running.alignAssignment(spec, entry.updatedAt.toString())?.let(commands::save)
+            running.alignRaidTarget(spec, entry.updatedAt.toString())?.let(commands::save)
             return running
         }
         open.firstOrNull { it.matches(entryId, spec) }?.let { parked ->
@@ -125,7 +123,7 @@ class AutomationWorkSessionService(
             parked.nextCheckAt = null
             parked.holdMessage = null
             parked.updatedAt = timeProvider.now()
-            parked.alignAssignment(spec, entry.updatedAt.toString())
+            parked.alignRaidTarget(spec, entry.updatedAt.toString())
             commands.save(parked)
             return parked
         }
@@ -138,11 +136,6 @@ class AutomationWorkSessionService(
             status = AutomationWorkStatus.RUNNING,
             configVersion = entry.updatedAt.toString(),
             targetCount = spec.targetCount,
-            questCycle = spec.questCycle,
-            missionKey = spec.missionKey,
-            missionType = spec.missionType,
-            observedCurrent = spec.observedCurrent,
-            observedRequired = spec.observedRequired,
             createdAt = now,
             updatedAt = now,
         )
@@ -166,29 +159,41 @@ class AutomationWorkSessionService(
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    override fun waitForResource(accountId: Long, sessionId: Long, materialName: String, missingCount: Int?) {
+    override fun applyTransition(
+        accountId: Long,
+        sessionId: Long,
+        transition: AutomationWorkTransition,
+    ) {
         requireRunningRuntime(accountId)
         val session = requireSession(accountId, sessionId)
-        require(session.workType == AutomationWorkType.QUEST && session.status == AutomationWorkStatus.RUNNING)
+        require(session.status == AutomationWorkStatus.RUNNING)
         val now = timeProvider.now()
-        session.status = AutomationWorkStatus.WAITING_RESOURCE
-        session.materialName = materialName
-        session.materialMissing = missingCount
-        session.nextCheckAt = reconciliationAt(accountId, now)
-        session.lastVerifiedAt = now
-        session.updatedAt = now
-        commands.save(session)
-    }
-
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    override fun waitForUnknownCooldown(accountId: Long, sessionId: Long) {
-        requireRunningRuntime(accountId)
-        val session = requireSession(accountId, sessionId)
-        require(session.workType == AutomationWorkType.QUEST && session.status == AutomationWorkStatus.RUNNING)
-        val now = timeProvider.now()
-        session.status = AutomationWorkStatus.WAITING_COOLDOWN
-        session.nextCheckAt = reconciliationAt(accountId, now)
-        session.lastVerifiedAt = now
+        when (transition) {
+            is AutomationWorkTransition.WaitForResource -> {
+                session.status = AutomationWorkStatus.WAITING_RESOURCE
+                session.materialName = transition.resourceName
+                session.materialMissing = transition.missingCount
+                session.nextCheckAt = reconciliationAt(accountId, now)
+                session.lastVerifiedAt = now
+            }
+            AutomationWorkTransition.WaitForUnknownCooldown -> {
+                session.status = AutomationWorkStatus.WAITING_COOLDOWN
+                session.nextCheckAt = reconciliationAt(accountId, now)
+                session.lastVerifiedAt = now
+            }
+            is AutomationWorkTransition.WaitForConfiguration -> {
+                session.status = AutomationWorkStatus.WAITING_COOLDOWN
+                session.nextCheckAt = reconciliationAt(accountId, now)
+                session.holdMessage = transition.message.take(MAX_HOLD_MESSAGE_LENGTH)
+                session.lastVerifiedAt = now
+            }
+            AutomationWorkTransition.Complete -> {
+                session.status = AutomationWorkStatus.COMPLETED
+                session.nextCheckAt = null
+                session.holdMessage = null
+                session.finishedAt = now
+            }
+        }
         session.updatedAt = now
         commands.save(session)
     }
@@ -264,21 +269,6 @@ class AutomationWorkSessionService(
                 session.updatedAt = now
                 commands.save(session)
             }
-    }
-
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    override fun complete(accountId: Long, sessionId: Long) {
-        requireRunningRuntime(accountId)
-        val session = requireSession(accountId, sessionId)
-        if (session.status == AutomationWorkStatus.COMPLETED) return
-        require(session.status in OPEN_SESSION_STATUSES)
-        val now = timeProvider.now()
-        session.status = AutomationWorkStatus.COMPLETED
-        session.nextCheckAt = null
-        session.holdMessage = null
-        session.finishedAt = now
-        session.updatedAt = now
-        commands.save(session)
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -389,29 +379,12 @@ class AutomationWorkSessionService(
             workType == spec.type &&
             (targetKey == spec.targetKey || workType in setOf(AutomationWorkType.FISHING, AutomationWorkType.RAID))
 
-    private fun AutomationWorkSessionEntity.alignAssignment(
+    private fun AutomationWorkSessionEntity.alignRaidTarget(
         spec: AutomationWorkAssignment,
         latestConfigVersion: String,
     ): AutomationWorkSessionEntity? {
-        if (workType == AutomationWorkType.RAID && targetKey != spec.targetKey) {
-            targetKey = spec.targetKey
-            configVersion = latestConfigVersion
-            updatedAt = timeProvider.now()
-            return this
-        }
-        if (workType != AutomationWorkType.QUEST || spec.questCycle == null) return null
-        val identityChanged = questCycle != spec.questCycle ||
-            missionKey != spec.missionKey ||
-            missionType != spec.missionType
-        val progressChanged = observedCurrent != spec.observedCurrent ||
-            observedRequired != spec.observedRequired
-        if (!identityChanged && !progressChanged) return null
-        questCycle = spec.questCycle
-        missionKey = spec.missionKey
-        missionType = spec.missionType
-        observedCurrent = spec.observedCurrent
-        observedRequired = spec.observedRequired
-        if (identityChanged) confirmedCount = 0
+        if (workType != AutomationWorkType.RAID || targetKey == spec.targetKey) return null
+        targetKey = spec.targetKey
         configVersion = latestConfigVersion
         updatedAt = timeProvider.now()
         return this
