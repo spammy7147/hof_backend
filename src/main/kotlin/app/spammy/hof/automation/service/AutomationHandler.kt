@@ -22,12 +22,18 @@ sealed interface HandlerEvaluation {
         val nextRunAt: Instant,
         val reasonCode: String = "COOLDOWN",
         val message: String = "다음 실행 가능 시각까지 대기합니다.",
+        val waitScope: AutomationWaitScope = AutomationWaitScope.RELEASE_OTHER_AUTOMATIONS,
     ) : HandlerEvaluation
     data class ConfigurationWarning(
         val message: String,
         val reasonCode: String = "CONFIGURATION_WARNING",
     ) : HandlerEvaluation
     data class Fatal(val reason: AutomationStopReason, val message: String) : HandlerEvaluation
+}
+
+enum class AutomationWaitScope {
+    RELEASE_OTHER_AUTOMATIONS,
+    HOLD_CURRENT_WORK,
 }
 
 sealed interface PreparedAutomationAction

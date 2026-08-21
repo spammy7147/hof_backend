@@ -13,6 +13,8 @@ import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 
+internal const val FISHING_CYCLE_TARGET = "DAILY_FISHING"
+
 fun interface AutomationWorkTracker {
     fun ensureForAction(
         accountId: Long,
@@ -444,21 +446,11 @@ class AutomationWorkSessionService(
     private fun PreparedAutomationAction.toWorkAssignment(): AutomationWorkAssignment = when (this) {
         is BattleMapAutomationAction -> {
             val target = "$categoryId/$mapCode"
-            when (source) {
-                BattleAutomationActionSource.BATTLE_MAP_AUTOMATION ->
-                    AutomationWorkAssignment(AutomationWorkType.BATTLE_MAP, target)
-                BattleAutomationActionSource.UNION_AUTOMATION -> AutomationWorkAssignment(AutomationWorkType.UNION, target)
-                BattleAutomationActionSource.FISHING_AUTOMATION -> AutomationWorkAssignment(AutomationWorkType.FISHING, FISHING_CYCLE_TARGET)
-                BattleAutomationActionSource.RAID_AUTOMATION -> AutomationWorkAssignment(
-                    AutomationWorkType.RAID,
-                    sourceTargetKey ?: target,
-                )
-                BattleAutomationActionSource.QUEST_AUTOMATION -> AutomationWorkAssignment(AutomationWorkType.QUEST, target)
-                BattleAutomationActionSource.ADVENTURE_AUTOMATION -> AutomationWorkAssignment(AutomationWorkType.ADVENTURE_MAP, target)
+            require(source == BattleAutomationActionSource.RAID_AUTOMATION) {
+                "Prepared battle source $source belongs to the action lifecycle module."
             }
+            AutomationWorkAssignment(AutomationWorkType.RAID, sourceTargetKey ?: target)
         }
-        is AdventureMapAutomationAction -> AutomationWorkAssignment(AutomationWorkType.ADVENTURE_MAP, "$categoryId/$mapCode")
-        is FishingTownAutomationAction -> AutomationWorkAssignment(AutomationWorkType.FISHING, FISHING_CYCLE_TARGET)
         is RaidTownAutomationAction -> AutomationWorkAssignment(AutomationWorkType.RAID, targetRaidId ?: raidId ?: action.name)
         is RaidCycleAbortAutomationAction -> AutomationWorkAssignment(AutomationWorkType.RAID, raidId)
         else -> error("Prepared action belongs to the action lifecycle module.")
@@ -482,7 +474,6 @@ class AutomationWorkSessionService(
 
     private companion object {
         const val MAX_HOLD_MESSAGE_LENGTH = 1000
-        const val FISHING_CYCLE_TARGET = "DAILY_FISHING"
         val OPEN_SESSION_STATUSES = setOf(
             AutomationWorkStatus.RUNNING,
             AutomationWorkStatus.WAITING_COOLDOWN,

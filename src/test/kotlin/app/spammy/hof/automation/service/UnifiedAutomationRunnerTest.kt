@@ -339,11 +339,13 @@ class UnifiedAutomationRunnerTest {
             301,
             1,
             "execution-1",
+            source = BattleAutomationActionSource.RAID_AUTOMATION,
             mapName = "거대 보스",
             resolvedParty = ResolvedAutomationParty(
                 listOf("character-1"),
                 listOf(BattlePatternLoadRequest("character-1", 1)),
             ),
+            sourceTargetKey = "RaidGoblin",
         )
         val row = Mockito.mock(TypedAutomationActionRunEntity::class.java)
         Mockito.`when`(row.id).thenReturn(88L)
@@ -440,51 +442,6 @@ class UnifiedAutomationRunnerTest {
         Mockito.verify(runtime).succeedAndEnqueueWake(7, "token", 88, "TYPED_SHARED_COOLDOWN_SKIPPED", null)
         assertTrue(Mockito.mockingDetails(runtime).invocations.none { it.method.name == "stop" })
         Mockito.verifyNoInteractions(wakeup)
-    }
-
-    @Test
-    fun `runner snapshots adventure map name`() {
-        val snapshot = AutomationCoordinatorSnapshot(emptyList())
-        val party = ResolvedAutomationParty(
-            listOf("character-1"), listOf(BattlePatternLoadRequest("character-1", 1)),
-        )
-        val actions = listOf<PreparedAutomationAction>(
-            AdventureMapAutomationAction(
-                7, "adventure", "a1", PresetSelectionMode.EXPLICIT, 301, 1, 99, "adventure-execution",
-                resolvedParty = party, mapName = "모험의 숲",
-            ),
-        )
-        val row = Mockito.mock(TypedAutomationActionRunEntity::class.java)
-        Mockito.`when`(row.id).thenReturn(88L)
-        Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
-        Mockito.`when`(runtime.claim(7)).thenReturn(
-            TypedRuntimeClaim.Acquired("adventure-token"),
-        )
-        Mockito.`when`(loader.loadTyped(7)).thenReturn(snapshot)
-        Mockito.`when`(coordinator.coordinate(snapshot)).thenReturn(
-            AutomationCoordination.Runnable(12, actions[0], emptyList()),
-        )
-        actions.indices.forEach { index ->
-            Mockito.`when`(
-                runtime.prepare(
-                    Mockito.eq(7L),
-                    eqString("adventure-token"),
-                    anyStoredAction(),
-                ),
-            ).thenReturn(row)
-        }
-        Mockito.`when`(runtime.markSubmitting(Mockito.eq(7L), Mockito.anyString() ?: "", Mockito.eq(88L))).thenReturn(true)
-
-        repeat(actions.size) { runner.runOne(7) }
-
-        val storedCaptor = org.mockito.ArgumentCaptor.forClass(StoredTypedAutomationAction::class.java)
-        Mockito.verify(executor).execute(Mockito.eq(7L), capture(storedCaptor))
-        assertEquals(
-            listOf(
-                StoredActionDisplay(mapName = "모험의 숲"),
-            ),
-            storedCaptor.allValues.map { it.payload.display },
-        )
     }
 
     @Test
@@ -854,10 +811,12 @@ class UnifiedAutomationRunnerTest {
         presetId = 301L,
         battleCount = 1,
         executionIdentity = "legacy-battle",
+        source = BattleAutomationActionSource.RAID_AUTOMATION,
         resolvedParty = ResolvedAutomationParty(
             listOf("character-1"),
             listOf(BattlePatternLoadRequest("character-1", 1)),
         ),
+        sourceTargetKey = "RaidGoblin",
     )
 
     private fun anyCoordination(): AutomationCoordination =

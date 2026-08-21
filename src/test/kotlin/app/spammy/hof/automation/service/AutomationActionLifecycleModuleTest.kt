@@ -31,6 +31,10 @@ import app.spammy.hof.town.home.dto.HomeResponse
 import app.spammy.hof.town.home.model.HomeMode
 import app.spammy.hof.town.home.model.HomeQuestState
 import app.spammy.hof.town.home.service.HomeService
+import app.spammy.hof.town.fishing.dto.FishingResponse
+import app.spammy.hof.town.fishing.model.FishingAction
+import app.spammy.hof.town.fishing.model.FishingPrimaryAction
+import app.spammy.hof.town.fishing.service.FishingService
 import java.io.IOException
 import java.time.Instant
 import kotlin.test.Test
@@ -48,6 +52,7 @@ class AutomationActionLifecycleModuleTest {
     private val home = Mockito.mock(HomeService::class.java)
     private val questGateway = Mockito.mock(QuestGatewayService::class.java)
     private val questHandler = Mockito.mock(QuestAutomationHandler::class.java)
+    private val fishingService = Mockito.mock(FishingService::class.java)
     private val battleRun = Mockito.mock(BattleRunService::class.java)
     private val battleOutcome = Mockito.mock(BattleOutcomeReconciler::class.java)
     private val battleHandler = Mockito.mock(BattleMapAutomationHandler::class.java)
@@ -70,6 +75,7 @@ class AutomationActionLifecycleModuleTest {
         battleMapService = battleMapService,
         workLifecycle = workLifecycle,
         unionProgress = unionProgress,
+        fishingService = fishingService,
         executionSignals = executionSignals,
         sessionRecovery = sessionRecovery,
         timeProvider = TimeProvider { now },
@@ -470,7 +476,9 @@ class AutomationActionLifecycleModuleTest {
         val managed = assertNotNull(module.prepare(7L, 12L, action))
 
         assertEquals("battle-execution-1", managed.storedAction.executionIdentity)
-        assertEquals(request, assertIs<StoredTypedActionPayload.BattleMap>(managed.storedAction.payload).battleRequest)
+        val payload = assertIs<StoredTypedActionPayload.BattleMap>(managed.storedAction.payload)
+        assertEquals(request, payload.battleRequest)
+        assertEquals(StoredActionDisplay(mapName = "슬라임 동굴"), payload.display)
         assertEquals(AutomationType.BATTLE_MAP, managed.descriptor.source)
         assertEquals("BATTLE_MAP", managed.descriptor.actionKind)
         assertEquals("일반 전투 · 맵 슬라임 동굴 · 3회 · 파티 1명", managed.descriptor.context)
@@ -604,7 +612,7 @@ class AutomationActionLifecycleModuleTest {
     }
 
     @Test
-    fun `저장된 일반 전투 유니온 모험 행동은 identity와 fingerprint를 검증해 복원한다`() {
+    fun `저장된 전투 모험 낚시 행동은 identity와 fingerprint를 검증해 복원한다`() {
         val codec = StoredTypedAutomationActionCodec(jacksonObjectMapper())
         val payloads = listOf<StoredTypedActionPayload>(
             StoredTypedActionPayload.BattleMap(
@@ -636,6 +644,11 @@ class AutomationActionLifecycleModuleTest {
                 battleRequest = battleRequest(),
                 observedAttemptRemaining = 3,
             ),
+            StoredTypedActionPayload.FishingTown(
+                FishingAction.CATCH,
+                FishingPrimaryAction.CATCH,
+                9,
+            ),
         )
 
         payloads.forEachIndexed { index, payload ->
@@ -653,7 +666,95 @@ class AutomationActionLifecycleModuleTest {
                 source = BattleAutomationActionSource.FISHING_AUTOMATION,
             ),
         )
-        assertNull(module.restore(actionRow(codec, fishingBattle, 110L), 7L))
+        assertNotNull(module.restore(actionRow(codec, fishingBattle, 110L), 7L))
+    }
+
+    @Test
+    fun `낚시 START와 CATCH는 같은 일일 작업으로 저장하고 실행한다`() {
+        listOf(FishingAction.START, FishingAction.CATCH).forEachIndexed { index, action ->
+            val prepared = FishingTownAutomationAction(
+                accountId = 7L,
+                action = action,
+                observedPrimaryAction = if (action == FishingAction.START) {
+                    FishingPrimaryAction.START
+                } else {
+                    FishingPrimaryAction.CATCH
+                },
+                observedRemainingCasts = 10 - index,
+            )
+
+            val managed = assertNotNull(module.prepare(7L, 15L, prepared))
+
+            assertEquals(AutomationType.FISHING, managed.descriptor.source)
+            assertEquals(action.name, managed.descriptor.actionKind)
+            assertEquals(action.name, assertIs<StoredTypedActionPayload.FishingTown>(managed.storedAction.payload).action.name)
+            assertEquals(managed.descriptor, module.describe(prepared))
+            assertEquals(TypedAutomationExecution.Completed, managed.execute())
+            Mockito.verify(fishingService).act(7L, action)
+        }
+        Mockito.verify(workOwnership, Mockito.times(2)).ensure(
+            7L,
+            15L,
+            AutomationWorkAssignment(AutomationWorkType.FISHING, "DAILY_FISHING"),
+        )
+    }
+
+    @Test
+    fun `불명확한 낚시는 권위 상태 변화만 적용하고 관측 기준이 없으면 재확인한다`() {
+        val changed = assertNotNull(
+            module.prepare(
+                7L,
+                15L,
+                FishingTownAutomationAction(7L, FishingAction.CATCH, FishingPrimaryAction.CATCH, 10),
+            ),
+        )
+        val noBaseline = assertNotNull(
+            module.prepare(
+                7L,
+                15L,
+                FishingTownAutomationAction(7L, FishingAction.CATCH, FishingPrimaryAction.CATCH, null),
+            ),
+        )
+        val unchanged = assertNotNull(
+            module.prepare(
+                7L,
+                15L,
+                FishingTownAutomationAction(7L, FishingAction.CATCH, FishingPrimaryAction.CATCH, 10),
+            ),
+        )
+        val changedResponse = fishingResponse(FishingPrimaryAction.START, 9)
+        val unknownResponse = fishingResponse(FishingPrimaryAction.CATCH, null)
+        val unchangedResponse = fishingResponse(FishingPrimaryAction.CATCH, 10)
+        Mockito.`when`(fishingService.load(7L)).thenReturn(changedResponse, unknownResponse, unchangedResponse)
+
+        assertIs<AmbiguousActionResolution.Applied>(changed.reconcile())
+        assertIs<AmbiguousActionResolution.VerifyLater>(noBaseline.reconcile())
+        assertIs<AmbiguousActionResolution.VerifyLater>(unchanged.reconcile())
+    }
+
+    @Test
+    fun `낚시 방해 전투는 단말 결과만 확인하고 같은 낚시 작업을 유지한다`() {
+        val action = battleMapAction().copy(
+            source = BattleAutomationActionSource.FISHING_AUTOMATION,
+            executionIdentity = "fishing-battle-1",
+            mapName = "낚시터 괴물",
+        )
+        val result = terminalBattleResult("VICTORY")
+        Mockito.`when`(battleRun.runBattle(7L, battleRequest(), HofRequestOrigin.AUTOMATION)).thenReturn(result)
+
+        val managed = assertNotNull(module.prepare(7L, 15L, action))
+
+        assertEquals(AutomationType.FISHING, managed.descriptor.source)
+        assertEquals(
+            TypedAutomationExecution.BattleCompleted("battle_map", "map-1"),
+            managed.execute(),
+        )
+        Mockito.verify(workOwnership).ensure(
+            7L,
+            15L,
+            AutomationWorkAssignment(AutomationWorkType.FISHING, "DAILY_FISHING"),
+        )
+        Mockito.verifyNoInteractions(battleHandler, workLifecycle, unionProgress)
     }
 
     @Test
@@ -667,7 +768,7 @@ class AutomationActionLifecycleModuleTest {
             presetId = 1L,
             battleCount = 1,
             executionIdentity = "battle-1",
-            source = BattleAutomationActionSource.FISHING_AUTOMATION,
+            source = BattleAutomationActionSource.RAID_AUTOMATION,
         )
 
         assertNull(module.prepare(7L, 12L, action))
@@ -857,6 +958,12 @@ class AutomationActionLifecycleModuleTest {
         iconUrl = null,
         rawHref = "?map=map-1",
     )
+
+    private fun fishingResponse(primaryAction: FishingPrimaryAction, remainingCasts: Int?) =
+        Mockito.mock(FishingResponse::class.java).also { response ->
+            Mockito.`when`(response.primaryAction).thenReturn(primaryAction)
+            Mockito.`when`(response.remainingCasts).thenReturn(remainingCasts)
+        }
 
     private fun anyBattleAction(): BattleMapAutomationAction =
         Mockito.any(BattleMapAutomationAction::class.java) ?: BattleMapAutomationAction(

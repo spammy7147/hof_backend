@@ -8,7 +8,6 @@ import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
 import app.spammy.hof.automation.raid.RaidIntentKind
 import app.spammy.hof.automation.raid.RaidRecordResult
 import app.spammy.hof.automation.raid.RaidResultObservation
-import app.spammy.hof.town.fishing.service.FishingService
 import app.spammy.hof.town.raid.dto.RaidPubActionRequest
 import app.spammy.hof.town.raid.service.RaidPubService
 import org.springframework.stereotype.Service
@@ -21,15 +20,13 @@ class DefaultAutomationActionExecutor(
     private val raidPubService: RaidPubService,
     private val raidCycleModule: RaidCycleModule,
     private val raidObservationAdapter: HofRaidObservationAdapter,
-    private val fishingService: FishingService? = null,
 ) : TypedAutomationActionExecutor {
     override fun execute(accountId: Long, action: StoredTypedAutomationAction): TypedAutomationExecution =
         when (val payload = action.payload) {
                 is StoredTypedActionPayload.BattleMap -> {
-                    require(payload.source in setOf(
-                        BattleAutomationActionSource.FISHING_AUTOMATION,
-                        BattleAutomationActionSource.RAID_AUTOMATION,
-                    )) { "Stored battle source ${payload.source} belongs to the action lifecycle module." }
+                    require(payload.source == BattleAutomationActionSource.RAID_AUTOMATION) {
+                        "Stored battle source ${payload.source} belongs to the action lifecycle module."
+                    }
                     when (val submission = battleSubmission.submit(
                         accountId,
                         action.executionIdentity,
@@ -64,10 +61,6 @@ class DefaultAutomationActionExecutor(
                             TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode)
                         }
                     }
-                }
-                is StoredTypedActionPayload.FishingTown -> {
-                    (fishingService ?: error("Fishing automation gateway is unavailable.")).act(accountId, payload.action)
-                    TypedAutomationExecution.Completed
                 }
                 is StoredTypedActionPayload.RaidTown -> {
                     val response = raidPubService.action(accountId, RaidPubActionRequest(payload.action, payload.raidId))

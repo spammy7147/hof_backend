@@ -63,6 +63,7 @@ sealed interface AutomationCoordination {
         val nextRunAt: Instant,
         override val warnings: List<String>,
         override val trace: List<AutomationEvaluationTrace> = emptyList(),
+        val waitScope: AutomationWaitScope = AutomationWaitScope.RELEASE_OTHER_AUTOMATIONS,
     ) : AutomationCoordination
 
     data class Idle(
@@ -84,6 +85,7 @@ class AutomationCoordinator(
         val warnings = mutableListOf<String>()
         val trace = mutableListOf<AutomationEvaluationTrace>()
         var earliest: Instant? = null
+        var earliestWaitScope = AutomationWaitScope.RELEASE_OTHER_AUTOMATIONS
         snapshot.entries.forEach { entry ->
             val evaluation = when (entry.type) {
                 AutomationType.QUEST -> entry.quest?.let(quest::evaluate)
@@ -114,7 +116,15 @@ class AutomationCoordinator(
                     trace += AutomationEvaluationTrace(sequence, entry.id, entry.type, AutomationDecisionOutcome.CONFIGURATION_WARNING, evaluation.reasonCode, evaluation.message)
                 }
                 is HandlerEvaluation.Unavailable -> {
-                    if (earliest == null || evaluation.nextRunAt < earliest) earliest = evaluation.nextRunAt
+                    if (earliest == null || evaluation.nextRunAt < earliest) {
+                        earliest = evaluation.nextRunAt
+                        earliestWaitScope = evaluation.waitScope
+                    } else if (
+                        evaluation.nextRunAt == earliest &&
+                        evaluation.waitScope == AutomationWaitScope.HOLD_CURRENT_WORK
+                    ) {
+                        earliestWaitScope = evaluation.waitScope
+                    }
                     val detail = entry.waitingTrace(evaluation)
                     trace += AutomationEvaluationTrace(
                         sequence, entry.id, entry.type, AutomationDecisionOutcome.WAITING,
@@ -127,7 +137,7 @@ class AutomationCoordinator(
                 }
             }
         }
-        return earliest?.let { AutomationCoordination.Unavailable(it, warnings, trace.toList()) }
+        return earliest?.let { AutomationCoordination.Unavailable(it, warnings, trace.toList(), earliestWaitScope) }
             ?: AutomationCoordination.Idle(warnings, trace.toList())
     }
 }

@@ -38,6 +38,7 @@ class AutomationTargetSelectorTest {
     private val battleEntry = AutomationEntryEntity(11, account, AutomationType.BATTLE_MAP, 1, true, now, now)
     private val adventureEntry = AutomationEntryEntity(12, account, AutomationType.ADVENTURE_MAP, 2, true, now, now)
     private val raidEntry = AutomationEntryEntity(13, account, AutomationType.RAID, 0, true, now, now)
+    private val fishingEntry = AutomationEntryEntity(14, account, AutomationType.FISHING, 2, true, now, now)
     private val typed = Mockito.mock(TypedAutomationQueryRepository::class.java)
     private val work = Mockito.mock(AutomationWorkSessionQueryRepository::class.java)
     private val loader = Mockito.mock(TypedAutomationSnapshotLoader::class.java)
@@ -92,6 +93,46 @@ class AutomationTargetSelectorTest {
         val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
 
         assertEquals(12, selected.entryId)
+    }
+
+    @Test
+    fun `fishing catch transition reserves the short deadline instead of starting another automation`() {
+        val runningFishing = session(
+            31,
+            fishingEntry,
+            AutomationWorkType.FISHING,
+            FISHING_CYCLE_TARGET,
+            AutomationWorkStatus.RUNNING,
+        )
+        val fishingSnapshot = AutomationCoordinatorEntry(14, AutomationType.FISHING)
+        val retryAt = now.plusSeconds(5)
+        val trace = listOf(
+            AutomationEvaluationTrace(
+                sequence = 0,
+                entryId = 14,
+                type = AutomationType.FISHING,
+                outcome = AutomationDecisionOutcome.WAITING,
+                reasonCode = "FISHING_CATCH_TRANSITION_PENDING",
+                message = "잡기 전환을 기다립니다.",
+            ),
+        )
+        Mockito.`when`(work.findRunning(7)).thenReturn(runningFishing)
+        Mockito.`when`(loader.loadEntry(7, 14, FISHING_CYCLE_TARGET, null)).thenReturn(fishingSnapshot)
+        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(fishingSnapshot))))
+            .thenReturn(
+                AutomationCoordination.Unavailable(
+                    retryAt,
+                    emptyList(),
+                    trace,
+                    AutomationWaitScope.HOLD_CURRENT_WORK,
+                ),
+            )
+
+        val selected = assertIs<AutomationCoordination.Unavailable>(selector.select(7))
+
+        assertEquals(retryAt, selected.nextRunAt)
+        Mockito.verify(lifecycle, Mockito.never()).waitForCooldown(7, 31, retryAt)
+        Mockito.verify(typed, Mockito.never()).findEntries(7)
     }
 
     @Test

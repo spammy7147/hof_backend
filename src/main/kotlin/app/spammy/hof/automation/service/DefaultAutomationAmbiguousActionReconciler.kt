@@ -8,18 +8,15 @@ import app.spammy.hof.automation.raid.RaidIntentKind
 import app.spammy.hof.automation.raid.RaidRecordResult
 import app.spammy.hof.automation.raid.RaidResultObservation
 import app.spammy.hof.common.time.TimeProvider
-import app.spammy.hof.town.fishing.service.FishingService
 import org.springframework.stereotype.Service
 
 @Service
 class DefaultAutomationAmbiguousActionReconciler(
-    private val battleHandler: BattleMapAutomationHandler,
     private val battleOutcomeReconciler: BattleOutcomeReconciler,
     private val timeProvider: TimeProvider,
     private val workLifecycle: AutomationWorkLifecycle,
     private val raidCycleModule: RaidCycleModule,
     private val raidObservationAdapter: HofRaidObservationAdapter,
-    private val fishingService: FishingService? = null,
 ) : AutomationAmbiguousActionReconciler {
     override fun reconcile(
         accountId: Long,
@@ -28,25 +25,13 @@ class DefaultAutomationAmbiguousActionReconciler(
         is StoredTypedActionPayload.BattleMap -> {
             if (payload.source == BattleAutomationActionSource.RAID_AUTOMATION) {
                 reconcileRaidBattle(accountId, action.entryId, action.executionIdentity, payload)
-            } else if (payload.source == BattleAutomationActionSource.FISHING_AUTOMATION) {
-                reconcileBattleMap(accountId, action.entryId, action.executionIdentity, payload)
             } else {
                 error("Stored battle source ${payload.source} belongs to the action lifecycle module.")
             }
         }
-        is StoredTypedActionPayload.FishingTown -> reconcileFishing(accountId, payload)
         is StoredTypedActionPayload.RaidTown -> reconcileRaid(accountId, action.entryId, payload)
         is StoredTypedActionPayload.RaidCycleAbort -> reconcileRaidAbort(accountId, action.entryId, payload)
         else -> error("Stored action ${payload.kind()} belongs to the action lifecycle module.")
-    }
-
-    private fun reconcileFishing(accountId: Long, payload: StoredTypedActionPayload.FishingTown): AmbiguousActionResolution {
-        val latest = fishingService?.load(accountId)
-            ?: return AmbiguousActionResolution.VerifyLater(retryAt(), "낚시 상태 조회 연결을 기다립니다.")
-        val changed = latest.primaryAction != payload.observedPrimaryAction ||
-            (latest.remainingCasts != null && payload.observedRemainingCasts != null && latest.remainingCasts < payload.observedRemainingCasts)
-        return if (changed) AmbiguousActionResolution.Applied()
-        else AmbiguousActionResolution.Resubmit
     }
 
     private fun reconcileRaid(accountId: Long, entryId: Long, payload: StoredTypedActionPayload.RaidTown): AmbiguousActionResolution {
@@ -132,34 +117,6 @@ class DefaultAutomationAmbiguousActionReconciler(
                 reconciliation.message,
             )
         }
-    }
-
-    private fun reconcileBattleMap(
-        accountId: Long,
-        entryId: Long,
-        executionIdentity: String,
-        payload: StoredTypedActionPayload.BattleMap,
-    ): AmbiguousActionResolution {
-        val action = BattleMapAutomationAction(
-            accountId = accountId,
-            progressDate = payload.progressDate,
-            categoryId = payload.categoryId,
-            mapCode = payload.mapCode,
-            presetMode = payload.presetMode,
-            presetId = payload.presetId,
-            battleCount = payload.battleCount,
-            executionIdentity = executionIdentity,
-        )
-        battleHandler.confirmAmbiguousSuccess(action)
-        workLifecycle.completeBattleMapAction(
-            accountId,
-            entryId,
-            payload.categoryId,
-            payload.mapCode,
-        )
-        return AmbiguousActionResolution.Applied(
-            TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode),
-        )
     }
 
     private fun retryAt() = timeProvider.now().plusSeconds(10)

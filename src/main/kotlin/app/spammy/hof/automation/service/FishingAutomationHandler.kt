@@ -57,6 +57,7 @@ class FishingAutomationHandler : AutomationHandler<FishingAutomationSnapshot> {
                 context.now.plusSeconds(5),
                 "FISHING_CATCH_TRANSITION_PENDING",
                 "낚시 시작은 처리됐지만 잡기 동작이 아직 표시되지 않아 상태 전환을 다시 확인합니다.",
+                AutomationWaitScope.HOLD_CURRENT_WORK,
             )
         }
         if (context.state.remainingCasts == 0 && context.state.primaryAction != FishingPrimaryAction.CATCH) {

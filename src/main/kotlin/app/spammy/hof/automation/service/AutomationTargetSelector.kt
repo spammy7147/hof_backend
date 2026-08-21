@@ -74,12 +74,17 @@ class AutomationTargetSelector(
                 }
                 is AutomationCoordination.Fatal -> result.withPrefix(initialWarnings, initialTrace)
                 is AutomationCoordination.Unavailable -> {
-                    lifecycle.waitForCooldown(accountId, session.id, result.nextRunAt)
-                    selectConfigured(
-                        accountId,
-                        initialWarnings + result.warnings,
-                        initialTrace + result.trace.resequenced(initialTrace.size),
-                    )
+                    val prefixed = result.withPrefix(initialWarnings, initialTrace)
+                    if (result.waitScope == AutomationWaitScope.HOLD_CURRENT_WORK) {
+                        prefixed
+                    } else {
+                        lifecycle.waitForCooldown(accountId, session.id, result.nextRunAt)
+                        selectConfigured(
+                            accountId,
+                            initialWarnings + result.warnings,
+                            initialTrace + result.trace.resequenced(initialTrace.size),
+                        )
+                    }
                 }
                 is AutomationCoordination.Idle -> {
                     val selectedQuest = entry.quest?.quests

@@ -188,7 +188,7 @@ class AutomationWorkSessionServiceTest {
     }
 
     @Test
-    fun `legacy fishing start session continues with catch action`() {
+    fun `fishing work assignment keeps the daily session across catch`() {
         val fishingEntry = AutomationEntryEntity(13, account, AutomationType.FISHING, 3, true, now, now)
         val session = AutomationWorkSessionEntity(
             id = 27,
@@ -201,19 +201,17 @@ class AutomationWorkSessionServiceTest {
             createdAt = now,
             updatedAt = now,
         )
-        val action = FishingTownAutomationAction(
-            accountId = 7,
-            action = FishingAction.CATCH,
-            observedPrimaryAction = FishingPrimaryAction.CATCH,
-            observedRemainingCasts = 9,
-        )
         Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
         Mockito.`when`(typed.findEntry(7, fishingEntry.id)).thenReturn(fishingEntry)
         Mockito.`when`(queries.lockOpen(7)).thenReturn(listOf(session))
 
-        val resumed = service.ensureForAction(7, fishingEntry.id, action)
+        service.ensure(
+            7,
+            fishingEntry.id,
+            AutomationWorkAssignment(AutomationWorkType.FISHING, FISHING_CYCLE_TARGET),
+        )
 
-        assertEquals(session, resumed)
+        assertEquals(AutomationWorkStatus.RUNNING, session.status)
         Mockito.verifyNoInteractions(commands)
     }
 
@@ -231,24 +229,17 @@ class AutomationWorkSessionServiceTest {
             createdAt = now,
             updatedAt = now,
         )
-        val action = BattleMapAutomationAction(
-            accountId = 7,
-            progressDate = java.time.LocalDate.parse("2026-07-23"),
-            categoryId = "fishing",
-            mapCode = "monster-1",
-            presetMode = PresetSelectionMode.PRIMARY,
-            presetId = 3,
-            battleCount = 1,
-            executionIdentity = "fishing-battle-1",
-            source = BattleAutomationActionSource.FISHING_AUTOMATION,
-        )
         Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
         Mockito.`when`(typed.findEntry(7, fishingEntry.id)).thenReturn(fishingEntry)
         Mockito.`when`(queries.lockOpen(7)).thenReturn(listOf(session))
 
-        val resumed = service.ensureForAction(7, fishingEntry.id, action)
+        service.ensure(
+            7,
+            fishingEntry.id,
+            AutomationWorkAssignment(AutomationWorkType.FISHING, FISHING_CYCLE_TARGET),
+        )
 
-        assertEquals(session, resumed)
+        assertEquals(AutomationWorkStatus.RUNNING, session.status)
         Mockito.verifyNoInteractions(commands)
     }
 

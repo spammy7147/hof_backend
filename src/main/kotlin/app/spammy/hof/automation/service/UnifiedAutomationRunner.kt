@@ -562,25 +562,19 @@ class UnifiedAutomationRunner @Autowired constructor(
             else -> UUID.randomUUID().toString()
         }
         val payload = when (action) {
-            is BattleMapAutomationAction -> StoredTypedActionPayload.BattleMap(
-                action.progressDate, action.categoryId, action.mapCode, action.presetMode,
-                action.presetId ?: throw AutomationConfigurationException(), action.battleCount,
-                action.resolvedParty.toRequest(action.categoryId, action.mapCode, action.battleCount),
-                display = StoredActionDisplay(mapName = action.mapName),
-                source = action.source,
-                sourceTargetKey = action.sourceTargetKey,
-            )
-            is AdventureMapAutomationAction -> StoredTypedActionPayload.AdventureMap(
-                action.categoryId, action.mapCode, action.presetMode, action.presetId,
-                action.battleCount, action.settingIdentity,
-                action.resolvedParty.toRequest(action.categoryId, action.mapCode, action.battleCount),
-                StoredActionDisplay(mapName = action.mapName),
-                observedCooldownUntil = action.observedCooldownUntil,
-                observedAttemptRemaining = action.observedAttemptRemaining,
-                observedWinRemaining = action.observedWinRemaining,
-                observedAvailableCount = action.observedAvailableCount,
-            )
-            is FishingTownAutomationAction -> StoredTypedActionPayload.FishingTown(action.action, action.observedPrimaryAction, action.observedRemainingCasts)
+            is BattleMapAutomationAction -> {
+                require(action.source == BattleAutomationActionSource.RAID_AUTOMATION) {
+                    "Prepared battle source ${action.source} belongs to the action lifecycle module."
+                }
+                StoredTypedActionPayload.BattleMap(
+                    action.progressDate, action.categoryId, action.mapCode, action.presetMode,
+                    action.presetId ?: throw AutomationConfigurationException(), action.battleCount,
+                    action.resolvedParty.toRequest(action.categoryId, action.mapCode, action.battleCount),
+                    display = StoredActionDisplay(mapName = action.mapName),
+                    source = action.source,
+                    sourceTargetKey = action.sourceTargetKey,
+                )
+            }
             is RaidTownAutomationAction -> StoredTypedActionPayload.RaidTown(
                 action.action,
                 action.raidId,
@@ -621,52 +615,27 @@ class UnifiedAutomationRunner @Autowired constructor(
         }
         val payload = action.payload
         val type = when (payload) {
-            is StoredTypedActionPayload.AdventureMap -> AutomationType.ADVENTURE_MAP
-            is StoredTypedActionPayload.FishingTown -> AutomationType.FISHING
             is StoredTypedActionPayload.RaidTown, is StoredTypedActionPayload.RaidCycleAbort -> AutomationType.RAID
-            is StoredTypedActionPayload.BattleMap -> when (payload.source) {
-                BattleAutomationActionSource.UNION_AUTOMATION -> AutomationType.UNION
-                BattleAutomationActionSource.FISHING_AUTOMATION -> AutomationType.FISHING
-                BattleAutomationActionSource.RAID_AUTOMATION -> AutomationType.RAID
-                BattleAutomationActionSource.ADVENTURE_AUTOMATION -> AutomationType.ADVENTURE_MAP
-                BattleAutomationActionSource.QUEST_AUTOMATION -> AutomationType.QUEST
-                BattleAutomationActionSource.BATTLE_MAP_AUTOMATION -> AutomationType.BATTLE_MAP
-            }
+            is StoredTypedActionPayload.BattleMap -> payload.source
+                .takeIf { it == BattleAutomationActionSource.RAID_AUTOMATION }
+                ?.let { AutomationType.RAID }
+                ?: error("Stored battle source ${payload.source} belongs to the action lifecycle module.")
             else -> error("Stored action belongs to the action lifecycle module.")
         }
         val actionKind = when (payload) {
             is StoredTypedActionPayload.RaidTown -> payload.action.name
             is StoredTypedActionPayload.RaidCycleAbort -> "CYCLE_ABORT"
-            is StoredTypedActionPayload.FishingTown -> payload.action.name
             else -> payload.kind()
         }
         val actionContext = when (payload) {
             is StoredTypedActionPayload.BattleMap -> listOf(
-                when (payload.source) {
-                    BattleAutomationActionSource.BATTLE_MAP_AUTOMATION -> "일반 전투"
-                    BattleAutomationActionSource.UNION_AUTOMATION -> "유니온 전투"
-                    BattleAutomationActionSource.FISHING_AUTOMATION -> "낚시 방해 전투"
-                    BattleAutomationActionSource.RAID_AUTOMATION -> "레이드 누적 전투"
-                    BattleAutomationActionSource.ADVENTURE_AUTOMATION -> "모험 전투"
-                    BattleAutomationActionSource.QUEST_AUTOMATION -> "퀘스트 전투"
-                },
+                payload.source.takeIf { it == BattleAutomationActionSource.RAID_AUTOMATION }
+                    ?.let { "레이드 누적 전투" }
+                    ?: error("Stored battle source ${payload.source} belongs to the action lifecycle module."),
                 "맵 ${payload.display?.mapName ?: "${payload.categoryId}/${payload.mapCode}"}",
                 "${payload.battleCount}회",
                 "파티 ${payload.battleRequest.characterIds.size}명",
             ).joinToString(" · ")
-            is StoredTypedActionPayload.AdventureMap -> listOfNotNull(
-                "모험 맵 전투 · ${payload.display?.mapName ?: "${payload.categoryId}/${payload.mapCode}"}",
-                "${payload.battleCount}회",
-                payload.observedAttemptRemaining?.let { "실행 전 남은 도전 ${it}회" },
-                payload.observedWinRemaining?.let { "실행 전 남은 승리 ${it}회" },
-                payload.observedAvailableCount?.let { "실행 가능 ${it}회" },
-                payload.observedCooldownUntil?.let { "관측 쿨다운 $it" },
-            ).joinToString(" · ")
-            is StoredTypedActionPayload.FishingTown -> when (payload.action) {
-                app.spammy.hof.town.fishing.model.FishingAction.START -> "낚시 사이클 시작 · 다음 필수 단계 잡기(CATCH)${payload.observedRemainingCasts?.let { " · 실행 전 남은 ${it}회" } ?: ""}"
-                app.spammy.hof.town.fishing.model.FishingAction.CATCH -> "낚시 사이클 잡기 · 이후 물고기 획득/전투 발생 결과와 남은 횟수 재확인${payload.observedRemainingCasts?.let { " · 실행 전 남은 ${it}회" } ?: ""}"
-                else -> "낚시 ${payload.action.name}"
-            }
             is StoredTypedActionPayload.RaidTown -> {
                 val phase = when (payload.action) {
                 app.spammy.hof.town.raid.model.RaidAction.REGISTER -> "파티 등록"
@@ -682,7 +651,6 @@ class UnifiedAutomationRunner @Autowired constructor(
                 RaidCycleAbortReason.CLOSED -> "레이드 사이클 중단 · ${payload.raidId}"
                 RaidCycleAbortReason.REGISTRATION_LOST -> "레이드 등록 상태 유실 복구 · ${payload.raidId}"
             }
-            else -> error("Stored action belongs to the action lifecycle module.")
         }
         val detailedMessage = "$actionContext · $message"
         return AutomationActionTrace(kind, code, detailedMessage, action.entryId, type, actionKind,
@@ -691,7 +659,6 @@ class UnifiedAutomationRunner @Autowired constructor(
                 is StoredTypedActionPayload.AdventureMap -> "${payload.categoryId}/${payload.mapCode}"
                 is StoredTypedActionPayload.RaidTown -> payload.targetRaidId ?: payload.raidId
                 is StoredTypedActionPayload.RaidCycleAbort -> payload.raidId
-                else -> null
             }, targetName = payload.display?.mapName ?: payload.display?.questName, presetId = when (payload) {
                 is StoredTypedActionPayload.BattleMap -> payload.presetId
                 is StoredTypedActionPayload.AdventureMap -> payload.presetId

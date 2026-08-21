@@ -25,7 +25,6 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
     private val defaultRaidModule = Mockito.mock(RaidCycleModule::class.java)
     private val defaultRaidAdapter = Mockito.mock(HofRaidObservationAdapter::class.java)
     private val reconciler = DefaultAutomationAmbiguousActionReconciler(
-        battleHandler,
         battleOutcomeReconciler,
         TimeProvider { now },
         workLifecycle,
@@ -39,7 +38,6 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
         val adapter = Mockito.mock(HofRaidObservationAdapter::class.java)
         val localWorkLifecycle = Mockito.mock(AutomationWorkLifecycle::class.java)
         val raidReconciler = DefaultAutomationAmbiguousActionReconciler(
-            battleHandler,
             battleOutcomeReconciler,
             TimeProvider { now },
             localWorkLifecycle,
@@ -73,7 +71,6 @@ class DefaultAutomationAmbiguousActionReconcilerTest {
         val raidModule = Mockito.mock(RaidCycleModule::class.java)
         val adapter = Mockito.mock(HofRaidObservationAdapter::class.java)
         val raidReconciler = DefaultAutomationAmbiguousActionReconciler(
-            battleHandler,
             battleOutcomeReconciler,
             TimeProvider { now },
             Mockito.mock(AutomationWorkLifecycle::class.java),

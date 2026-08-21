@@ -50,6 +50,7 @@ class NewAutomationHandlersTest {
 
         assertEquals("FISHING_CATCH_TRANSITION_PENDING", result.reasonCode)
         assertEquals(now.plusSeconds(5), result.nextRunAt)
+        assertEquals(AutomationWaitScope.HOLD_CURRENT_WORK, result.waitScope)
     }
 
     @Test

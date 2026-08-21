@@ -14,6 +14,8 @@ import app.spammy.hof.quest.service.QuestGatewayService
 import app.spammy.hof.town.home.model.HomeMode
 import app.spammy.hof.town.home.model.HomeQuestState
 import app.spammy.hof.town.home.service.HomeService
+import app.spammy.hof.town.fishing.model.FishingAction
+import app.spammy.hof.town.fishing.service.FishingService
 import java.io.IOException
 import java.util.UUID
 import org.springframework.stereotype.Service
@@ -87,6 +89,7 @@ class UnifiedAutomationActionLifecycleModule(
     private val battleMapService: BattleMapService,
     private val workLifecycle: AutomationWorkLifecycle,
     private val unionProgress: UnionAutomationProgressService,
+    private val fishingService: FishingService,
     private val executionSignals: AutomationExecutionSignals,
     private val sessionRecovery: HofSessionRecoveryExecutor,
     private val timeProvider: TimeProvider,
@@ -110,6 +113,7 @@ class UnifiedAutomationActionLifecycleModule(
             .takeIf { it.source in MANAGED_BATTLE_MAP_SOURCES }
             ?.let(::battleMapDescriptor)
         is AdventureMapAutomationAction -> adventureDescriptor(action)
+        is FishingTownAutomationAction -> fishingDescriptor(action)
         else -> null
     }
 
@@ -211,6 +215,7 @@ class UnifiedAutomationActionLifecycleModule(
         }
         is BattleMapAutomationAction -> prepareBattleMap(accountId, entryId, action)
         is AdventureMapAutomationAction -> prepareAdventure(accountId, entryId, action)
+        is FishingTownAutomationAction -> prepareFishing(accountId, entryId, action)
         else -> null
     }
 
@@ -251,6 +256,7 @@ class UnifiedAutomationActionLifecycleModule(
                 QUEST_BATTLE_STORAGE_KIND,
                 BATTLE_MAP_STORAGE_KIND,
                 ADVENTURE_MAP_STORAGE_KIND,
+                FISHING_TOWN_STORAGE_KIND,
             )
         ) return null
         val stored = codec.verifyPersisted(row, expectedAccountId)
@@ -263,7 +269,8 @@ class UnifiedAutomationActionLifecycleModule(
                 stored.payload is StoredTypedActionPayload.QuestClaim ||
                 stored.payload is StoredTypedActionPayload.QuestBattle ||
                 stored.payload is StoredTypedActionPayload.BattleMap ||
-                stored.payload is StoredTypedActionPayload.AdventureMap,
+                stored.payload is StoredTypedActionPayload.AdventureMap ||
+                stored.payload is StoredTypedActionPayload.FishingTown,
         ) {
             "Stored action payload does not match the action lifecycle family."
         }
@@ -346,6 +353,19 @@ class UnifiedAutomationActionLifecycleModule(
 
                 override fun reconcile(): AmbiguousActionResolution = reconcileAdventure(accountId, stored, payload)
             }
+            is StoredTypedActionPayload.FishingTown -> object : ManagedAutomationAction {
+                override val storedAction = stored
+                override val descriptor = payload.fishingDescriptor()
+
+                override fun execute(): TypedAutomationExecution {
+                    runMutation(accountId, "Fishing") {
+                        fishingService.act(accountId, payload.action)
+                    }
+                    return TypedAutomationExecution.Completed
+                }
+
+                override fun reconcile(): AmbiguousActionResolution = reconcileFishing(accountId, payload)
+            }
             else -> error("Stored action ${payload.kind()} is not owned by the action lifecycle module.")
         }
     }
@@ -362,12 +382,16 @@ class UnifiedAutomationActionLifecycleModule(
         val workType = when (action.source) {
             BattleAutomationActionSource.BATTLE_MAP_AUTOMATION -> AutomationWorkType.BATTLE_MAP
             BattleAutomationActionSource.UNION_AUTOMATION -> AutomationWorkType.UNION
+            BattleAutomationActionSource.FISHING_AUTOMATION -> AutomationWorkType.FISHING
             else -> error("Unsupported managed battle-map source ${action.source}.")
         }
         workOwnership.ensure(
             accountId,
             entryId,
-            AutomationWorkAssignment(workType, "${action.categoryId}/${action.mapCode}"),
+            AutomationWorkAssignment(
+                workType,
+                if (workType == AutomationWorkType.FISHING) FISHING_CYCLE_TARGET else "${action.categoryId}/${action.mapCode}",
+            ),
         )
         return manage(
             accountId,
@@ -432,6 +456,31 @@ class UnifiedAutomationActionLifecycleModule(
                     observedAttemptRemaining = action.observedAttemptRemaining,
                     observedWinRemaining = action.observedWinRemaining,
                     observedAvailableCount = action.observedAvailableCount,
+                ),
+            ),
+        )
+    }
+
+    private fun prepareFishing(
+        accountId: Long,
+        entryId: Long,
+        action: FishingTownAutomationAction,
+    ): ManagedAutomationAction {
+        require(action.accountId == accountId) { "Prepared fishing account mismatch." }
+        workOwnership.ensure(
+            accountId,
+            entryId,
+            AutomationWorkAssignment(AutomationWorkType.FISHING, FISHING_CYCLE_TARGET),
+        )
+        return manage(
+            accountId,
+            StoredTypedAutomationAction(
+                entryId = entryId,
+                executionIdentity = UUID.randomUUID().toString(),
+                payload = StoredTypedActionPayload.FishingTown(
+                    action = action.action,
+                    observedPrimaryAction = action.observedPrimaryAction,
+                    observedRemainingCasts = action.observedRemainingCasts,
                 ),
             ),
         )
@@ -628,6 +677,7 @@ class UnifiedAutomationActionLifecycleModule(
                 payload.categoryId,
                 payload.mapCode,
             )
+            BattleAutomationActionSource.FISHING_AUTOMATION -> Unit
             else -> error("Unsupported managed battle-map source ${payload.source}.")
         }
     }
@@ -651,16 +701,24 @@ class UnifiedAutomationActionLifecycleModule(
     )
 
     private fun battleMapDescriptor(action: BattleMapAutomationAction) = AutomationActionDescriptor(
-        source = if (action.source == BattleAutomationActionSource.UNION_AUTOMATION) {
-            AutomationType.UNION
-        } else {
-            AutomationType.BATTLE_MAP
+        source = when (action.source) {
+            BattleAutomationActionSource.UNION_AUTOMATION -> AutomationType.UNION
+            BattleAutomationActionSource.FISHING_AUTOMATION -> AutomationType.FISHING
+            else -> AutomationType.BATTLE_MAP
         },
         storageKind = BATTLE_MAP_STORAGE_KIND,
         actionKind = BATTLE_MAP_STORAGE_KIND,
-        actionLabel = if (action.source == BattleAutomationActionSource.UNION_AUTOMATION) "유니온" else "전투맵",
+        actionLabel = when (action.source) {
+            BattleAutomationActionSource.UNION_AUTOMATION -> "유니온"
+            BattleAutomationActionSource.FISHING_AUTOMATION -> "낚시"
+            else -> "전투맵"
+        },
         context = listOf(
-            if (action.source == BattleAutomationActionSource.UNION_AUTOMATION) "유니온 전투" else "일반 전투",
+            when (action.source) {
+                BattleAutomationActionSource.UNION_AUTOMATION -> "유니온 전투"
+                BattleAutomationActionSource.FISHING_AUTOMATION -> "낚시 방해 전투"
+                else -> "일반 전투"
+            },
             "맵 ${action.mapName ?: "${action.categoryId}/${action.mapCode}"}",
             "${action.battleCount}회",
             "파티 ${action.resolvedParty?.characterIds?.size ?: 0}명",
@@ -810,6 +868,44 @@ class UnifiedAutomationActionLifecycleModule(
         executionIdentity = executionIdentity,
         source = BattleAutomationActionSource.ADVENTURE_AUTOMATION,
     )
+
+    private fun reconcileFishing(
+        accountId: Long,
+        payload: StoredTypedActionPayload.FishingTown,
+    ): AmbiguousActionResolution {
+        val latest = sessionRecovery.execute(accountId) { fishingService.load(accountId) }
+        val remainingDecreased = payload.observedRemainingCasts != null &&
+            latest.remainingCasts != null &&
+            latest.remainingCasts < payload.observedRemainingCasts
+        if (latest.primaryAction != payload.observedPrimaryAction || remainingDecreased) {
+            return AmbiguousActionResolution.Applied()
+        }
+        return verifyLater("낚시 실행 결과를 아직 확정할 수 없어 같은 동작을 다시 보내지 않습니다.")
+    }
+
+    private fun fishingDescriptor(action: FishingTownAutomationAction) = AutomationActionDescriptor(
+        source = AutomationType.FISHING,
+        storageKind = FISHING_TOWN_STORAGE_KIND,
+        actionKind = action.action.name,
+        actionLabel = "낚시",
+        context = fishingContext(action.action, action.observedRemainingCasts),
+    )
+
+    private fun StoredTypedActionPayload.FishingTown.fishingDescriptor() = AutomationActionDescriptor(
+        source = AutomationType.FISHING,
+        storageKind = FISHING_TOWN_STORAGE_KIND,
+        actionKind = action.name,
+        actionLabel = "낚시",
+        context = fishingContext(action, observedRemainingCasts),
+    )
+
+    private fun fishingContext(action: FishingAction, observedRemainingCasts: Int?): String = when (action) {
+        FishingAction.START -> "낚시 사이클 시작 · 다음 필수 단계 잡기(CATCH)" +
+            (observedRemainingCasts?.let { " · 실행 전 남은 ${it}회" } ?: "")
+        FishingAction.CATCH -> "낚시 사이클 잡기 · 이후 물고기 획득/전투 발생 결과와 남은 횟수 재확인" +
+            (observedRemainingCasts?.let { " · 실행 전 남은 ${it}회" } ?: "")
+        else -> "낚시 ${action.name}"
+    }
 
     private fun StoredTypedActionPayload.QuestAccept.questDescriptor() =
         questDescriptor(questKey, display?.questName, QUEST_ACCEPT_STORAGE_KIND)
@@ -1000,9 +1096,11 @@ class UnifiedAutomationActionLifecycleModule(
         const val QUEST_BATTLE_STORAGE_KIND = "QUEST_BATTLE"
         const val BATTLE_MAP_STORAGE_KIND = "BATTLE_MAP"
         const val ADVENTURE_MAP_STORAGE_KIND = "ADVENTURE_MAP"
+        const val FISHING_TOWN_STORAGE_KIND = "FISHING_TOWN"
         val MANAGED_BATTLE_MAP_SOURCES = setOf(
             BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
             BattleAutomationActionSource.UNION_AUTOMATION,
+            BattleAutomationActionSource.FISHING_AUTOMATION,
         )
     }
 }
