@@ -26,24 +26,7 @@ class ThreadSleepCharacterCommandPauseWaiter : CharacterCommandPauseWaiter {
 class TypedAutomationCharacterCommandBridge(
     private val automation: UnifiedAutomationService,
     private val waiter: CharacterCommandPauseWaiter,
-) : CharacterAutomationCommandBridge, CharacterAutomationGate {
-    override fun execute(
-        accountId: Long,
-        characterId: Long,
-        command: () -> CharacterCommandResult,
-    ): CharacterCommandResult {
-        return execute(
-            accountId,
-            unavailable = {
-                CharacterCommandResult.RefreshRequired(
-                    characterId,
-                    "현재 자동화 작업이 끝나기를 기다리고 있습니다. 잠시 후 다시 시도해 주세요.",
-                )
-            },
-            operation = command,
-        )
-    }
-
+) : CharacterAutomationGate {
     override fun <T> execute(accountId: Long, unavailable: () -> T, operation: () -> T): T {
         val initial = automation.getTyped(accountId).runtime.lifecycle
         if (initial !in setOf(TypedAutomationLifecycle.RUNNING, TypedAutomationLifecycle.DRAINING)) return operation()

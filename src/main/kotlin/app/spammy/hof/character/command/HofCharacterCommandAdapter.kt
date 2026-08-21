@@ -1,7 +1,5 @@
 package app.spammy.hof.character.command
 
-import app.spammy.hof.character.entity.CharacterLifecycle
-import app.spammy.hof.character.repository.CharacterQueryRepository
 import app.spammy.hof.character.service.CharacterManagementService
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.town.common.model.ParsedTownForm
@@ -17,36 +15,24 @@ class HofCharacterCommandAdapter(
     private val executor: TownAuthenticatedExecutor,
     private val management: CharacterManagementService,
     private val requestFactory: HofRequestFactory,
-    private val characters: CharacterQueryRepository,
-) : CharacterCommandAdapter {
-    override fun execute(context: CharacterCommandContext, command: CharacterCommand): CharacterCommandResult =
-        executor.executeAccountSequence(context.accountId) {
-            val current = characters.findByAccountIdAndId(context.accountId, context.characterId)
-                ?: return@executeAccountSequence rejected(context, "CHARACTER_NOT_FOUND", "캐릭터를 찾지 못했습니다.")
-            if (current.lifecycle != CharacterLifecycle.ACTIVE || current.hofCharacterId != context.hofCharacterId) {
-                return@executeAccountSequence CharacterCommandResult.RefreshRequired(
-                    context.characterId,
-                    "캐릭터 연결 정보가 변경되었습니다. 새로고침 후 다시 시도해 주세요.",
-                )
-            }
-            if (command is CharacterCommand.Kick && command.confirmationName != current.name ||
-                command is CharacterCommand.Knockback && command.confirmationName != current.name
-            ) {
-                return@executeAccountSequence rejected(context, "CONFIRMATION_MISMATCH", "캐릭터 이름 확인이 일치하지 않습니다.")
-            }
-            val messages = when (command) {
+) : CharacterCommandRemote {
+    override fun <T> withSession(accountId: Long, operation: (CharacterCommandRemoteSession) -> T): T =
+        executor.executeAccountSequence(accountId) {
+            operation(CharacterCommandRemoteSession(::execute))
+        }
+
+    private fun execute(context: CharacterCommandContext, command: CharacterCommand): CharacterCommandObservation {
+        val messages = when (command) {
                 is CharacterCommand.Rename -> executeRename(context, command.newName)
                 is CharacterCommand.Kick -> executeSimpleSnapshot(context, "byebye")?.messages
                 is CharacterCommand.Knockback -> {
                     val snapshot = executeSimpleSnapshot(context, "knockback")
-                        ?: return@executeAccountSequence rejected(
-                        context,
-                        "FORM_NOT_OBSERVED",
-                        "현재 HOF 페이지에서 Knockback 확인 단계를 찾지 못해 실행하지 않았습니다.",
-                    )
+                        ?: return rejected(
+                            "FORM_NOT_OBSERVED",
+                            "현재 HOF 페이지에서 Knockback 확인 단계를 찾지 못해 실행하지 않았습니다.",
+                        )
                     if (snapshot.identityResolutionRequired) {
-                        return@executeAccountSequence CharacterCommandResult.IdentityResolutionRequired(
-                            context.characterId,
+                        return CharacterCommandObservation.IdentityResolutionRequired(
                             snapshot.identityCandidates.map {
                                 CharacterCommandIdentityCandidate(
                                     it.hofCharacterId,
@@ -85,18 +71,12 @@ class HofCharacterCommandAdapter(
                     CharacterEquipmentCommandRules.requirePresetSlot(command.slotNumber)
                     executeSimple(context, "Equip_L_${command.slotNumber}")
                 }
-            } ?: return@executeAccountSequence rejected(
-                context,
-                "FORM_NOT_OBSERVED",
-                "현재 HOF 페이지에서 이 기능을 확인하지 못해 실행하지 않았습니다.",
-            )
-            val refreshed = characters.findByAccountIdAndId(context.accountId, context.characterId)
-                ?: return@executeAccountSequence CharacterCommandResult.RefreshRequired(
-                    context.characterId,
-                    "명령은 전송되었지만 캐릭터 상태를 다시 확인해야 합니다.",
-                )
-            CharacterCommandResult.Completed(context.characterId, refreshed.updatedAt, messages)
-        }
+        } ?: return rejected(
+            "FORM_NOT_OBSERVED",
+            "현재 HOF 페이지에서 이 기능을 확인하지 못해 실행하지 않았습니다.",
+        )
+        return CharacterCommandObservation.Applied(messages)
+    }
 
     private fun executeRename(context: CharacterCommandContext, newName: String): List<String>? {
         if (newName.isBlank() || newName.length > 16) return null
@@ -168,6 +148,6 @@ class HofCharacterCommandAdapter(
         executor.load(context.accountId, requestFactory.characterPage(context.hofCharacterId).url)
             .forms.singleOrNull { it.submitSource.equals(source, true) }
 
-    private fun rejected(context: CharacterCommandContext, code: String, message: String) =
-        CharacterCommandResult.Rejected(context.characterId, code, message)
+    private fun rejected(code: String, message: String) =
+        CharacterCommandObservation.Rejected(code, message)
 }

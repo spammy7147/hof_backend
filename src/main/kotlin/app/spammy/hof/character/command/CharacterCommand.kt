@@ -95,12 +95,22 @@ data class CharacterCommandContext(
     val hofCharacterId: String,
 )
 
-fun interface CharacterCommandAdapter {
-    fun execute(context: CharacterCommandContext, command: CharacterCommand): CharacterCommandResult
+interface CharacterCommandRemote {
+    fun <T> withSession(accountId: Long, operation: (CharacterCommandRemoteSession) -> T): T
 }
 
-fun interface CharacterAutomationCommandBridge {
-    fun execute(accountId: Long, characterId: Long, command: () -> CharacterCommandResult): CharacterCommandResult
+fun interface CharacterCommandRemoteSession {
+    fun execute(context: CharacterCommandContext, command: CharacterCommand): CharacterCommandObservation
+}
+
+sealed interface CharacterCommandObservation {
+    data class Applied(val messages: List<String> = emptyList()) : CharacterCommandObservation
+    data class RefreshRequired(val message: String) : CharacterCommandObservation
+    data class IdentityResolutionRequired(
+        val candidates: List<CharacterCommandIdentityCandidate>,
+        val message: String,
+    ) : CharacterCommandObservation
+    data class Rejected(val code: String, val message: String) : CharacterCommandObservation
 }
 
 interface CharacterAutomationGate {

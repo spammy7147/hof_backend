@@ -1,13 +1,10 @@
 package app.spammy.hof.character.command
 
-import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.character.dto.CharacterManagementSnapshotResponse
 import app.spammy.hof.character.dto.CharacterObservedActionResponse
 import app.spammy.hof.character.dto.CharacterActionCandidateResponse
 import app.spammy.hof.character.dto.CharacterActionFieldResponse
 import app.spammy.hof.character.dto.CharacterIdentityCandidateResponse
-import app.spammy.hof.character.entity.CharacterEntity
-import app.spammy.hof.character.repository.CharacterQueryRepository
 import app.spammy.hof.character.service.CharacterManagementService
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.town.common.model.ParsedTownPage
@@ -25,44 +22,38 @@ import org.mockito.Mockito
 
 class HofCharacterCommandAdapterTest {
     private val revision = Instant.parse("2026-08-17T00:00:00Z")
-    private val account = HofAccountEntity(1L, "account", "encrypted", revision)
-    private val character = CharacterEntity(7L, account, "hof-10", "소셜", "Social Knight", updatedAt = revision)
     private val context = CharacterCommandContext(1L, 7L, "hof-10")
 
     @Test
     fun `pray resolves the latest observed semantic form and submits it`() {
         val executor = Mockito.mock(TownAuthenticatedExecutor::class.java)
         val management = Mockito.mock(CharacterManagementService::class.java)
-        val query = Mockito.mock(CharacterQueryRepository::class.java)
         arrangeSequence(executor)
-        Mockito.`when`(query.findByAccountIdAndId(1L, 7L)).thenReturn(character)
         val page = formPage("<form method='post'><input type='submit' name='Pray' value='기도한다'></form>")
         Mockito.`when`(executor.load(1L, CHARACTER_URL)).thenReturn(page)
         val form = page.forms.single()
         Mockito.`when`(management.execute(1L, "hof-10", app.spammy.hof.town.common.model.TownActionRequest(form.actionId)))
             .thenReturn(CharacterManagementSnapshotResponse(null, emptyList(), listOf("기도 완료")))
-        val adapter = HofCharacterCommandAdapter(executor, management, HofRequestFactory(), query)
+        val adapter = HofCharacterCommandAdapter(executor, management, HofRequestFactory())
 
-        val result = adapter.execute(context, CharacterCommand.Pray(7L, revision))
+        val result = execute(adapter, CharacterCommand.Pray(7L, revision))
 
-        assertEquals(listOf("기도 완료"), assertIs<CharacterCommandResult.Completed>(result).messages)
+        assertEquals(listOf("기도 완료"), assertIs<CharacterCommandObservation.Applied>(result).messages)
     }
 
     @Test
     fun `unknown form is reported but never submitted`() {
         val executor = Mockito.mock(TownAuthenticatedExecutor::class.java)
         val management = Mockito.mock(CharacterManagementService::class.java)
-        val query = Mockito.mock(CharacterQueryRepository::class.java)
         arrangeSequence(executor)
-        Mockito.`when`(query.findByAccountIdAndId(1L, 7L)).thenReturn(character)
         Mockito.`when`(executor.load(1L, CHARACTER_URL)).thenReturn(
             formPage("<form method='post'><input type='submit' name='BrandNewFeature' value='새 기능'></form>"),
         )
-        val adapter = HofCharacterCommandAdapter(executor, management, HofRequestFactory(), query)
+        val adapter = HofCharacterCommandAdapter(executor, management, HofRequestFactory())
 
-        val result = adapter.execute(context, CharacterCommand.Pray(7L, revision))
+        val result = execute(adapter, CharacterCommand.Pray(7L, revision))
 
-        assertEquals("FORM_NOT_OBSERVED", assertIs<CharacterCommandResult.Rejected>(result).code)
+        assertEquals("FORM_NOT_OBSERVED", assertIs<CharacterCommandObservation.Rejected>(result).code)
         Mockito.verifyNoInteractions(management)
     }
 
@@ -70,9 +61,7 @@ class HofCharacterCommandAdapterTest {
     fun `class change uses the job radio observed in the real character form`() {
         val executor = Mockito.mock(TownAuthenticatedExecutor::class.java)
         val management = Mockito.mock(CharacterManagementService::class.java)
-        val query = Mockito.mock(CharacterQueryRepository::class.java)
         arrangeSequence(executor)
-        Mockito.`when`(query.findByAccountIdAndId(1L, 7L)).thenReturn(character)
         val page = formPage("<form method='post'><input type='radio' name='job' value='523'>Mathematician<input type='submit' name='classchange' value='ClassChange'></form>")
         Mockito.`when`(executor.load(1L, CHARACTER_URL)).thenReturn(page)
         val form = page.forms.single()
@@ -85,29 +74,27 @@ class HofCharacterCommandAdapterTest {
             ),
         )
             .thenReturn(CharacterManagementSnapshotResponse(null, emptyList(), listOf("전직 완료")))
-        val adapter = HofCharacterCommandAdapter(executor, management, HofRequestFactory(), query)
+        val adapter = HofCharacterCommandAdapter(executor, management, HofRequestFactory())
 
-        val result = adapter.execute(context, CharacterCommand.ChangeClass(7L, revision, "523"))
+        val result = execute(adapter, CharacterCommand.ChangeClass(7L, revision, "523"))
 
-        assertEquals(listOf("전직 완료"), assertIs<CharacterCommandResult.Completed>(result).messages)
+        assertEquals(listOf("전직 완료"), assertIs<CharacterCommandObservation.Applied>(result).messages)
     }
 
     @Test
     fun `growth item reopens the transient reset selector through management service`() {
         val executor = Mockito.mock(TownAuthenticatedExecutor::class.java)
         val management = Mockito.mock(CharacterManagementService::class.java)
-        val query = Mockito.mock(CharacterQueryRepository::class.java)
         arrangeSequence(executor)
-        Mockito.`when`(query.findByAccountIdAndId(1L, 7L)).thenReturn(character)
         val page = formPage("<form method='post'><input type='submit' name='showreset' value='Use'></form>")
         Mockito.`when`(executor.load(1L, CHARACTER_URL)).thenReturn(page)
         Mockito.`when`(management.executeResetItem(1L, "hof-10", "7510"))
             .thenReturn(CharacterManagementSnapshotResponse(null, emptyList(), listOf("성장 아이템 사용 완료")))
-        val adapter = HofCharacterCommandAdapter(executor, management, HofRequestFactory(), query)
+        val adapter = HofCharacterCommandAdapter(executor, management, HofRequestFactory())
 
-        val result = adapter.execute(context, CharacterCommand.UseItem(7L, revision, "7510"))
+        val result = execute(adapter, CharacterCommand.UseItem(7L, revision, "7510"))
 
-        assertEquals(listOf("성장 아이템 사용 완료"), assertIs<CharacterCommandResult.Completed>(result).messages)
+        assertEquals(listOf("성장 아이템 사용 완료"), assertIs<CharacterCommandObservation.Applied>(result).messages)
         Mockito.verify(management).executeResetItem(1L, "hof-10", "7510")
     }
 
@@ -115,19 +102,17 @@ class HofCharacterCommandAdapterTest {
     fun `preparing item use opens the reset selector before the item snapshot is shown`() {
         val executor = Mockito.mock(TownAuthenticatedExecutor::class.java)
         val management = Mockito.mock(CharacterManagementService::class.java)
-        val query = Mockito.mock(CharacterQueryRepository::class.java)
         arrangeSequence(executor)
-        Mockito.`when`(query.findByAccountIdAndId(1L, 7L)).thenReturn(character)
         val page = formPage("<form method='post'><input type='submit' name='showreset' value='Use'></form>")
         Mockito.`when`(executor.load(1L, CHARACTER_URL)).thenReturn(page)
         val form = page.forms.single()
         Mockito.`when`(management.execute(1L, "hof-10", TownActionRequest(form.actionId)))
             .thenReturn(CharacterManagementSnapshotResponse(null, emptyList(), emptyList()))
-        val adapter = HofCharacterCommandAdapter(executor, management, HofRequestFactory(), query)
+        val adapter = HofCharacterCommandAdapter(executor, management, HofRequestFactory())
 
-        val result = adapter.execute(context, CharacterCommand.PrepareItems(7L, revision))
+        val result = execute(adapter, CharacterCommand.PrepareItems(7L, revision))
 
-        assertIs<CharacterCommandResult.Completed>(result)
+        assertIs<CharacterCommandObservation.Applied>(result)
         Mockito.verify(management).execute(1L, "hof-10", TownActionRequest(form.actionId))
     }
 
@@ -135,9 +120,7 @@ class HofCharacterCommandAdapterTest {
     fun `ambiguous knockback returns safe identity candidates to the typed client`() {
         val executor = Mockito.mock(TownAuthenticatedExecutor::class.java)
         val management = Mockito.mock(CharacterManagementService::class.java)
-        val query = Mockito.mock(CharacterQueryRepository::class.java)
         arrangeSequence(executor)
-        Mockito.`when`(query.findByAccountIdAndId(1L, 7L)).thenReturn(character)
         val page = formPage("<form method='post'><input type='submit' name='knockback' value='Knockback'></form>")
         Mockito.`when`(executor.load(1L, CHARACTER_URL)).thenReturn(page)
         val form = page.forms.single()
@@ -152,10 +135,10 @@ class HofCharacterCommandAdapterTest {
                 ),
             ),
         )
-        val adapter = HofCharacterCommandAdapter(executor, management, HofRequestFactory(), query)
+        val adapter = HofCharacterCommandAdapter(executor, management, HofRequestFactory())
 
-        val result = assertIs<CharacterCommandResult.IdentityResolutionRequired>(
-            adapter.execute(context, CharacterCommand.Knockback(7L, revision, "소셜")),
+        val result = assertIs<CharacterCommandObservation.IdentityResolutionRequired>(
+            execute(adapter, CharacterCommand.Knockback(7L, revision, "소셜")),
         )
 
         assertEquals("hof-11", result.candidates.single().hofCharacterId)
@@ -166,9 +149,7 @@ class HofCharacterCommandAdapterTest {
     fun `knockback delegates its complete confirmation sequence to management`() {
         val executor = Mockito.mock(TownAuthenticatedExecutor::class.java)
         val management = Mockito.mock(CharacterManagementService::class.java)
-        val query = Mockito.mock(CharacterQueryRepository::class.java)
         arrangeSequence(executor)
-        Mockito.`when`(query.findByAccountIdAndId(1L, 7L)).thenReturn(character)
         val initialPage = formPage("<form method='post'><input type='submit' name='knockback' value='Knockback'></form>")
         Mockito.`when`(executor.load(1L, CHARACTER_URL)).thenReturn(initialPage)
         val initialForm = initialPage.forms.single()
@@ -183,10 +164,10 @@ class HofCharacterCommandAdapterTest {
                 ),
             ),
         )
-        val adapter = HofCharacterCommandAdapter(executor, management, HofRequestFactory(), query)
+        val adapter = HofCharacterCommandAdapter(executor, management, HofRequestFactory())
 
-        val result = assertIs<CharacterCommandResult.IdentityResolutionRequired>(
-            adapter.execute(context, CharacterCommand.Knockback(7L, revision, "소셜")),
+        val result = assertIs<CharacterCommandObservation.IdentityResolutionRequired>(
+            execute(adapter, CharacterCommand.Knockback(7L, revision, "소셜")),
         )
 
         assertEquals("hof-11", result.candidates.single().hofCharacterId)
@@ -200,9 +181,7 @@ class HofCharacterCommandAdapterTest {
     fun `kick delegates all three confirmation forms to management`() {
         val executor = Mockito.mock(TownAuthenticatedExecutor::class.java)
         val management = Mockito.mock(CharacterManagementService::class.java)
-        val query = Mockito.mock(CharacterQueryRepository::class.java)
         arrangeSequence(executor)
-        Mockito.`when`(query.findByAccountIdAndId(1L, 7L)).thenReturn(character)
         val initialPage = formPage("<form method='post'><input type='submit' name='byebye' value='Kick'></form>")
         Mockito.`when`(executor.load(1L, CHARACTER_URL)).thenReturn(initialPage)
         val initialForm = initialPage.forms.single()
@@ -214,31 +193,14 @@ class HofCharacterCommandAdapterTest {
                 targetRemoved = true,
             ),
         )
-        val adapter = HofCharacterCommandAdapter(executor, management, HofRequestFactory(), query)
+        val adapter = HofCharacterCommandAdapter(executor, management, HofRequestFactory())
 
-        val result = assertIs<CharacterCommandResult.Completed>(
-            adapter.execute(context, CharacterCommand.Kick(7L, revision, "소셜")),
+        val result = assertIs<CharacterCommandObservation.Applied>(
+            execute(adapter, CharacterCommand.Kick(7L, revision, "소셜")),
         )
 
         assertEquals(listOf("캐릭터를 삭제했습니다."), result.messages)
         Mockito.verify(management).execute(1L, "hof-10", TownActionRequest(initialForm.actionId))
-    }
-
-    @Test
-    fun `kick rejects a confirmation name that no longer matches the current character`() {
-        val executor = Mockito.mock(TownAuthenticatedExecutor::class.java)
-        val management = Mockito.mock(CharacterManagementService::class.java)
-        val query = Mockito.mock(CharacterQueryRepository::class.java)
-        arrangeSequence(executor)
-        Mockito.`when`(query.findByAccountIdAndId(1L, 7L)).thenReturn(
-            CharacterEntity(7L, account, "hof-10", "바뀐이름", "Social Knight", updatedAt = revision),
-        )
-        val adapter = HofCharacterCommandAdapter(executor, management, HofRequestFactory(), query)
-
-        val result = adapter.execute(context, CharacterCommand.Kick(7L, revision, "소셜"))
-
-        assertEquals("CONFIRMATION_MISMATCH", assertIs<CharacterCommandResult.Rejected>(result).code)
-        Mockito.verifyNoInteractions(management)
     }
 
     @Test
@@ -273,12 +235,17 @@ class HofCharacterCommandAdapterTest {
     private fun arrangeSequence(executor: TownAuthenticatedExecutor) {
         Mockito.doAnswer { invocation ->
             @Suppress("UNCHECKED_CAST")
-            (invocation.arguments[1] as () -> CharacterCommandResult).invoke()
+            (invocation.arguments[1] as () -> CharacterCommandObservation).invoke()
         }.`when`(executor).executeAccountSequence(Mockito.eq(1L), anySequence())
     }
 
-    private fun anySequence(): () -> CharacterCommandResult =
-        Mockito.any<() -> CharacterCommandResult>() ?: { error("matcher") }
+    private fun anySequence(): () -> CharacterCommandObservation =
+        Mockito.any<() -> CharacterCommandObservation>() ?: { error("matcher") }
+
+    private fun execute(
+        adapter: HofCharacterCommandAdapter,
+        command: CharacterCommand,
+    ): CharacterCommandObservation = adapter.withSession(context.accountId) { it.execute(context, command) }
 
     private fun formPage(html: String): ParsedTownPage = HofFormParser().parse(html, CHARACTER_URL)
 
