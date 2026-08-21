@@ -85,6 +85,88 @@ class TypedAutomationRuntimeServiceTest {
     }
 
     @Test
+    fun `domain success atomically completes the submitted checkpoint and queues its wake`() {
+        val state = state()
+        val entry = AutomationEntryEntity(9, account, AutomationType.QUEST, 0, true, now, now)
+        val stored = StoredTypedAutomationAction(
+            entryId = entry.id,
+            executionIdentity = "quest-claim",
+            payload = StoredTypedActionPayload.QuestClaim("quest-1", "claim-1"),
+        )
+        val encoded = StoredTypedAutomationActionCodec(jacksonObjectMapper()).encode(stored)
+        val action = TypedAutomationActionRunEntity(
+            25, account, entry, stored.executionIdentity, stored.payload.kind(), encoded.json, encoded.fingerprint,
+            TypedAutomationActionStatus.PREPARED, leaseToken = "old", createdAt = now, updatedAt = now,
+        )
+        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
+        Mockito.`when`(query.findRuntimeState(7)).thenReturn(state)
+        Mockito.`when`(query.findActiveTypedAction(7)).thenReturn(action)
+        Mockito.`when`(query.lockTypedAction(action.id)).thenReturn(action)
+        val execution = assertIs<TypedRuntimeAcquisition.Acquired>(service.acquire(7)).execution
+        assertIs<TypedRuntimeSubmission.Started>(service.beginSubmission(execution))
+
+        val projection = service.complete(
+            execution,
+            TypedRuntimeOutcome.ActionSucceeded("TYPED_ACTION_COMPLETED", warnings = emptyList()),
+        )
+
+        assertTrue(projection.applied)
+        assertEquals(TypedAutomationActionStatus.SUCCEEDED, action.status)
+        assertNull(state.leaseToken)
+        Mockito.verify(outbox).enqueue(7, "TYPED_ACTION_COMPLETED")
+    }
+
+    @Test
+    fun `ambiguous submission outcome moves the checkpoint to reconciliation`() {
+        val state = state()
+        val entry = AutomationEntryEntity(9, account, AutomationType.QUEST, 0, true, now, now)
+        val stored = StoredTypedAutomationAction(
+            entryId = entry.id,
+            executionIdentity = "quest-accept",
+            payload = StoredTypedActionPayload.QuestAccept("quest-1", "accept-1"),
+        )
+        val encoded = StoredTypedAutomationActionCodec(jacksonObjectMapper()).encode(stored)
+        val action = TypedAutomationActionRunEntity(
+            26, account, entry, stored.executionIdentity, stored.payload.kind(), encoded.json, encoded.fingerprint,
+            TypedAutomationActionStatus.PREPARED, leaseToken = "old", createdAt = now, updatedAt = now,
+        )
+        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
+        Mockito.`when`(query.findActiveTypedAction(7)).thenReturn(action)
+        Mockito.`when`(query.lockTypedAction(action.id)).thenReturn(action)
+        val execution = assertIs<TypedRuntimeAcquisition.Acquired>(service.acquire(7)).execution
+        assertIs<TypedRuntimeSubmission.Started>(service.beginSubmission(execution))
+
+        val projection = service.complete(
+            execution,
+            TypedRuntimeOutcome.SubmissionAmbiguous("unknown outcome"),
+        )
+
+        assertTrue(projection.applied)
+        assertEquals(TypedAutomationActionStatus.RECONCILING, action.status)
+        assertNull(state.leaseToken)
+        Mockito.verify(outbox).enqueue(7, "TYPED_AMBIGUOUS_RECONCILE")
+    }
+
+    @Test
+    fun `configuration outcome releases the execution right and preserves warnings for recheck`() {
+        val state = state()
+        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
+        Mockito.`when`(query.findActiveTypedAction(7)).thenReturn(null)
+        val execution = assertIs<TypedRuntimeAcquisition.Acquired>(service.acquire(7)).execution
+
+        val projection = service.complete(
+            execution,
+            TypedRuntimeOutcome.ConfigurationWait(listOf("missing primary", "later warning")),
+        )
+
+        assertTrue(projection.applied)
+        assertEquals(now.plusSeconds(300), projection.nextAttemptAt)
+        assertEquals(AutomationWaitReason.SCHEDULED, state.waitReason)
+        assertTrue(requireNotNull(state.warningText).contains("missing primary"))
+        assertNull(state.leaseToken)
+    }
+
+    @Test
     fun `safe failures keep scheduling forever with a capped delay`() {
         val state = state().apply {
             leaseToken = "token"

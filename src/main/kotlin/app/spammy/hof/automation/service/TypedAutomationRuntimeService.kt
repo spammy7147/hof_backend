@@ -181,6 +181,122 @@ class TypedAutomationRuntimeService(
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun complete(
+        execution: TypedRuntimeExecutionRight,
+        outcome: TypedRuntimeOutcome,
+    ): TypedRuntimeProjection {
+        val right = execution.persistedRight()
+        return when (outcome) {
+            TypedRuntimeOutcome.Idle -> releaseCore(
+                right.accountId,
+                right.leaseToken,
+                null,
+                null,
+                emptyList(),
+            ).projection()
+            is TypedRuntimeOutcome.SelectionChanged -> releaseAndEnqueueWake(
+                right.accountId,
+                right.leaseToken,
+                outcome.wakeReason,
+            ).projection()
+            is TypedRuntimeOutcome.ScheduledWait -> releaseCore(
+                right.accountId,
+                right.leaseToken,
+                outcome.nextRunAt,
+                outcome.waitReason,
+                outcome.warnings,
+            ).projection(outcome.nextRunAt)
+            is TypedRuntimeOutcome.ConfigurationWait -> {
+                val next = timeProvider.now().plus(CONFIG_RECHECK)
+                releaseCore(
+                    right.accountId,
+                    right.leaseToken,
+                    next,
+                    AutomationWaitReason.SCHEDULED,
+                    outcome.warnings,
+                ).projection(next)
+            }
+            is TypedRuntimeOutcome.SafeRetry -> {
+                val retryAt = scheduleSafeRetry(right.accountId, right.leaseToken, outcome.message)
+                TypedRuntimeProjection(retryAt != null, retryAt)
+            }
+            is TypedRuntimeOutcome.RetryableFailure -> {
+                outcome.warnings?.let { recordWarnings(right.accountId, right.leaseToken, it) }
+                val retryAt = scheduleAutomaticRetry(
+                    right.accountId,
+                    right.leaseToken,
+                    right.actionId,
+                    outcome.reason,
+                    outcome.message,
+                )
+                TypedRuntimeProjection(retryAt != null, retryAt)
+            }
+            is TypedRuntimeOutcome.ActionSucceeded -> succeedAndEnqueueWake(
+                right.accountId,
+                right.leaseToken,
+                right.requireActionId(),
+                outcome.wakeReason,
+                outcome.warnings,
+            ).projection()
+            is TypedRuntimeOutcome.SharedCooldownHandled -> succeedAndEnqueueWake(
+                right.accountId,
+                right.leaseToken,
+                right.requireActionId(),
+                outcome.wakeReason,
+                outcome.warnings,
+            ).projection()
+            is TypedRuntimeOutcome.SubmissionDeferred -> deferSubmittedAction(
+                right.accountId,
+                right.leaseToken,
+                right.requireActionId(),
+                outcome.retryAt,
+                outcome.message,
+            ).projection(outcome.retryAt)
+            is TypedRuntimeOutcome.SubmissionAmbiguous -> markReconcilingAndEnqueueWake(
+                right.accountId,
+                right.leaseToken,
+                right.requireActionId(),
+                outcome.message,
+            ).projection()
+            is TypedRuntimeOutcome.ReconciliationApplied -> succeedReconciliation(
+                right.accountId,
+                right.leaseToken,
+                right.requireActionId(),
+                outcome.wakeReason,
+            ).projection()
+            is TypedRuntimeOutcome.ReconciliationResubmit -> retryReconciledSubmission(
+                right.accountId,
+                right.leaseToken,
+                right.requireActionId(),
+                outcome.wakeReason,
+            ).projection()
+            is TypedRuntimeOutcome.ReconciliationDeferred -> deferReconciliation(
+                right.accountId,
+                right.leaseToken,
+                right.requireActionId(),
+                outcome.retryAt,
+                outcome.reason,
+            ).projection(outcome.retryAt)
+            is TypedRuntimeOutcome.AmbiguousHandoff -> handoffAmbiguousAction(
+                right.accountId,
+                right.leaseToken,
+                right.requireActionId(),
+                outcome.warning,
+                outcome.wakeReason,
+            ).projection()
+            is TypedRuntimeOutcome.IntegrityFailure -> {
+                val retryAt = isolateIntegrityFailureForRetry(
+                    right.accountId,
+                    right.leaseToken,
+                    right.requireActionId(),
+                    outcome.message,
+                )
+                TypedRuntimeProjection(retryAt != null, retryAt)
+            }
+        }
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun claim(accountId: Long): TypedRuntimeClaim {
         val state = queryRepository.lockRuntimeState(accountId) ?: return TypedRuntimeClaim.Inactive
         if (state.lifecycleStatus !in setOf(TypedAutomationLifecycle.RUNNING, TypedAutomationLifecycle.DRAINING)) return TypedRuntimeClaim.Inactive
@@ -731,6 +847,12 @@ class TypedAutomationRuntimeService(
     private fun TypedRuntimeExecutionRight.persistedRight(): PersistedTypedRuntimeExecutionRight =
         this as? PersistedTypedRuntimeExecutionRight
             ?: throw IllegalArgumentException("Execution right was not issued by this runtime.")
+
+    private fun PersistedTypedRuntimeExecutionRight.requireActionId(): Long =
+        actionId ?: throw IllegalStateException("This runtime outcome requires a durable action checkpoint.")
+
+    private fun Boolean.projection(nextAttemptAt: Instant? = null): TypedRuntimeProjection =
+        TypedRuntimeProjection(this, nextAttemptAt.takeIf { this })
 
     companion object {
         private val LEASE_DURATION = Duration.ofMinutes(5)
