@@ -1,5 +1,7 @@
 package app.spammy.hof.automation.service
 
+import app.spammy.hof.automation.entity.AutomationWorkStatus
+import app.spammy.hof.automation.entity.AutomationWorkType
 import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.automation.entity.QuestAutomationCycleEntity
 import app.spammy.hof.automation.entity.QuestAutomationProcessedResultEntity
@@ -9,6 +11,8 @@ import app.spammy.hof.automation.repository.QuestAutomationCycleCommandRepositor
 import app.spammy.hof.automation.repository.QuestAutomationProcessedResultCommandRepository
 import app.spammy.hof.automation.repository.QuestMapExecutionCounterCommandRepository
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
+import app.spammy.hof.automation.repository.AutomationWorkSessionCommandRepository
+import app.spammy.hof.automation.repository.AutomationWorkSessionQueryRepository
 import app.spammy.hof.battle.service.BattleMapAliasResolution
 import app.spammy.hof.battle.service.BattleMapIdentityCandidate
 import app.spammy.hof.battle.service.resolveBattleMapAlias
@@ -126,13 +130,15 @@ class QuestAutomationResultConflictException(resultId: String) : IllegalStateExc
     "Quest result identity '$resultId' is already bound to a different action.",
 )
 
-/** Writes only quest cycle/counter tables; the account lock makes read-modify-write increments atomic. */
+/** Projects one observed quest result atomically; the account lock makes replay and increments deterministic. */
 @Service
 class JpaQuestAutomationProgressStore(
     private val queryRepository: TypedAutomationQueryRepository,
     private val cycleRepository: QuestAutomationCycleCommandRepository,
     private val processedResultRepository: QuestAutomationProcessedResultCommandRepository,
     private val counterRepository: QuestMapExecutionCounterCommandRepository,
+    private val workQueries: AutomationWorkSessionQueryRepository,
+    private val workCommands: AutomationWorkSessionCommandRepository,
 ) : QuestAutomationProgressStore {
     @Transactional
     override fun startNewCycle(accountId: Long, resultId: String, questKey: String): String {
@@ -165,20 +171,18 @@ class JpaQuestAutomationProgressStore(
         return resultValue
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     override fun findRecordedBattleVictoryCount(
         accountId: Long,
         resultId: String,
         action: QuestAction.Battle,
     ): Int? {
         validateResultIdentity(resultId)
+        queryRepository.lockAccount(accountId)
         val recorded = queryRepository.findQuestProcessedResult(accountId, resultId) ?: return null
-        if (recorded.resultKind != QuestAutomationResultKind.BATTLE_VICTORY) {
-            throw QuestAutomationResultConflictException(resultId)
-        }
-        return (0..action.battleCount).singleOrNull { victoryCount ->
-            recorded.actionFingerprint == battleFingerprint(action, victoryCount)
-        } ?: throw QuestAutomationResultConflictException(resultId)
+        val replay = recorded.resolveBattleReplay(resultId, action)
+        if (replay.legacy) upgradeLegacyBattleReplay(accountId, recorded, action, replay.victoryCount)
+        return replay.victoryCount
     }
 
     @Transactional
@@ -195,16 +199,19 @@ class JpaQuestAutomationProgressStore(
         val fingerprint = battleFingerprint(action, victoryCount)
         val account = queryRepository.lockAccount(accountId)
         queryRepository.findQuestProcessedResult(accountId, resultId)?.let {
-            it.requireReplayMatches(resultId, QuestAutomationResultKind.BATTLE_VICTORY, fingerprint)
+            val replay = it.resolveBattleReplay(resultId, action)
+            if (replay.victoryCount != victoryCount) throw QuestAutomationResultConflictException(resultId)
+            if (replay.legacy) upgradeLegacyBattleReplay(accountId, it, action, victoryCount)
             return
         }
+        val now = Instant.now()
         processedResultRepository.save(
             QuestAutomationProcessedResultEntity(
                 account = account,
                 resultKind = QuestAutomationResultKind.BATTLE_VICTORY,
                 resultIdentity = resultId,
                 actionFingerprint = fingerprint,
-                processedAt = Instant.now(),
+                processedAt = now,
             ),
         )
         if (victoryCount == 0) return
@@ -231,6 +238,68 @@ class JpaQuestAutomationProgressStore(
         } else {
             counter.successfulRuns += victoryCount
         }
+        projectMapClearWorkProgress(accountId, action, victoryCount, now)
+    }
+
+    private fun projectMapClearWorkProgress(
+        accountId: Long,
+        action: QuestAction.Battle,
+        victoryCount: Int,
+        now: Instant,
+    ) {
+        if (action.missionType != QuestMissionType.MAP_CLEAR) return
+        val session = findMatchingMapClearSession(accountId, action) ?: return
+        val current = session.observedCurrent ?: return
+        session.confirmedCount += victoryCount
+        session.observedCurrent = session.observedRequired
+            ?.let { required -> (current + victoryCount).coerceAtMost(required) }
+            ?: current + victoryCount
+        session.updatedAt = now
+        workCommands.save(session)
+    }
+
+    private fun upgradeLegacyBattleReplay(
+        accountId: Long,
+        recorded: QuestAutomationProcessedResultEntity,
+        action: QuestAction.Battle,
+        victoryCount: Int,
+    ) {
+        val now = Instant.now()
+        recorded.actionFingerprint = battleFingerprint(action, victoryCount)
+        processedResultRepository.save(recorded)
+        projectLegacyMapClearWorkProgress(accountId, action, victoryCount, now)
+    }
+
+    private fun projectLegacyMapClearWorkProgress(
+        accountId: Long,
+        action: QuestAction.Battle,
+        victoryCount: Int,
+        now: Instant,
+    ) {
+        if (action.missionType != QuestMissionType.MAP_CLEAR || victoryCount == 0) return
+        val baseline = action.missionCurrent ?: return
+        val session = findMatchingMapClearSession(accountId, action) ?: return
+        val current = session.observedCurrent ?: return
+        val projected = session.observedRequired
+            ?.let { required -> (baseline + victoryCount).coerceAtMost(required) }
+            ?: baseline + victoryCount
+        if (current >= projected) return
+        session.confirmedCount += victoryCount
+        session.observedCurrent = projected
+        session.updatedAt = now
+        workCommands.save(session)
+    }
+
+    private fun findMatchingMapClearSession(
+        accountId: Long,
+        action: QuestAction.Battle,
+    ) = workQueries.lockOpen(accountId).singleOrNull {
+        it.workType == AutomationWorkType.QUEST &&
+            it.status == AutomationWorkStatus.RUNNING &&
+            it.targetKey == action.questKey &&
+            it.questCycle == action.questCycle &&
+            it.missionKey == action.missionKey &&
+            it.missionType == QuestMissionType.MAP_CLEAR.name
     }
 
     private fun validateResultIdentity(resultId: String) {
@@ -272,12 +341,44 @@ class JpaQuestAutomationProgressStore(
             action.questKey,
             action.questCycle,
             action.missionKey,
+            action.missionType.name,
             action.categoryId,
             action.mapCode,
             action.battleCount.toString(),
             victoryCount.toString(),
         ),
     )
+
+    private fun legacyBattleFingerprint(action: QuestAction.Battle, victoryCount: Int) = actionFingerprint(
+        QuestAutomationResultKind.BATTLE_VICTORY,
+        listOf(
+            action.questKey,
+            action.questCycle,
+            action.missionKey,
+            action.categoryId,
+            action.mapCode,
+            action.battleCount.toString(),
+            victoryCount.toString(),
+        ),
+    )
+
+    private fun QuestAutomationProcessedResultEntity.resolveBattleReplay(
+        resultId: String,
+        action: QuestAction.Battle,
+    ): BattleReplay {
+        if (resultKind != QuestAutomationResultKind.BATTLE_VICTORY) {
+            throw QuestAutomationResultConflictException(resultId)
+        }
+        (0..action.battleCount).singleOrNull { victoryCount ->
+            actionFingerprint == battleFingerprint(action, victoryCount)
+        }?.let { return BattleReplay(it, legacy = false) }
+        (0..action.battleCount).singleOrNull { victoryCount ->
+            actionFingerprint == legacyBattleFingerprint(action, victoryCount)
+        }?.let { return BattleReplay(it, legacy = true) }
+        throw QuestAutomationResultConflictException(resultId)
+    }
+
+    private data class BattleReplay(val victoryCount: Int, val legacy: Boolean)
 }
 
 /**
@@ -289,7 +390,9 @@ class DefaultQuestWorkCycleModule(
     private val progressStore: QuestAutomationProgressStore,
     private val timePolicy: BattleTimePolicy = BattleTimePolicy(),
 ) : QuestWorkCycleModule {
-    override fun evaluate(context: QuestAutomationSnapshot): HandlerEvaluation {
+    override fun decideNext(snapshot: QuestAutomationSnapshot): QuestDirective = evaluateRules(snapshot)
+
+    private fun evaluateRules(context: QuestAutomationSnapshot): QuestDirective {
         val selections = context.selections
             .asSequence()
             .filter(QuestAutomationSelection::enabled)
@@ -299,20 +402,26 @@ class DefaultQuestWorkCycleModule(
             .sortedBy(QuestSnapshot::sourceOrder)
 
         candidates.firstOrNull { it.state == QuestState.AVAILABLE }?.let { quest ->
-            return quest.actionNo?.let { HandlerEvaluation.Runnable(QuestAction.Accept(quest.questKey, it, quest.name)) }
-                ?: HandlerEvaluation.ConfigurationWarning("Quest ${quest.questKey} has no accept action.")
+            return quest.actionNo?.let { QuestDirective.Execute(QuestAction.Accept(quest.questKey, it, quest.name)) }
+                ?: QuestDirective.Hold(
+                    "Quest ${quest.questKey} has no accept action.",
+                    "QUEST_ACCEPT_ACTION_MISSING",
+                )
         }
 
         candidates.firstOrNull {
             it.state == QuestState.CLAIMABLE && it.canClaimWithoutWastingTime(context.timeSnapshot, context.now)
         }?.let { quest ->
-            return quest.actionNo?.let { HandlerEvaluation.Runnable(QuestAction.Claim(quest.questKey, it, quest.name)) }
-                ?: HandlerEvaluation.ConfigurationWarning("Quest ${quest.questKey} has no claim action.")
+            return quest.actionNo?.let { QuestDirective.Execute(QuestAction.Claim(quest.questKey, it, quest.name)) }
+                ?: QuestDirective.Hold(
+                    "Quest ${quest.questKey} has no claim action.",
+                    "QUEST_CLAIM_ACTION_MISSING",
+                )
         }
 
         evaluateCombat(candidates, selections, context, QuestMissionType.MONSTER_KILL)?.let { return it }
         evaluateCombat(candidates, selections, context, QuestMissionType.MAP_CLEAR)?.let { return it }
-        return HandlerEvaluation.Skipped
+        return QuestDirective.Skip
     }
 
     override fun recordObservedResult(
@@ -442,8 +551,8 @@ class DefaultQuestWorkCycleModule(
         selections: Map<String, QuestAutomationSelection>,
         context: QuestAutomationSnapshot,
         missionType: QuestMissionType,
-    ): HandlerEvaluation? {
-        val evaluations = mutableListOf<HandlerEvaluation>()
+    ): QuestDirective? {
+        val evaluations = mutableListOf<QuestDirective>()
         quests.filter { it.state == QuestState.ACTIVE }.forEach { quest ->
             quest.missions.filter { it.type == missionType && !it.completable }.forEach { mission ->
                 val selection = selections.getValue(quest.questKey)
@@ -452,14 +561,14 @@ class DefaultQuestWorkCycleModule(
                     QuestMissionType.MAP_CLEAR -> mapClearAction(quest, mission, selection, context)
                     else -> null
                 }
-                if (result is HandlerEvaluation.Runnable) return result
+                if (result is QuestDirective.Execute) return result
                 if (result != null) evaluations += result
             }
         }
         if (evaluations.isEmpty()) return null
-        return evaluations.filterIsInstance<HandlerEvaluation.ConfigurationWarning>().firstOrNull()
-            ?: evaluations.filterIsInstance<HandlerEvaluation.Unavailable>().minByOrNull { it.nextRunAt }
-            ?: HandlerEvaluation.Skipped
+        return evaluations.filterIsInstance<QuestDirective.Hold>().firstOrNull()
+            ?: evaluations.filterIsInstance<QuestDirective.WaitUntil>().minByOrNull { it.nextRunAt }
+            ?: QuestDirective.Skip
     }
 
     private fun monsterAction(
@@ -467,10 +576,13 @@ class DefaultQuestWorkCycleModule(
         mission: QuestMission,
         selection: QuestAutomationSelection,
         context: QuestAutomationSnapshot,
-    ): HandlerEvaluation {
+    ): QuestDirective {
         val configured = selection.maps.filter { it.missionKey == mission.key }
         if (configured.isEmpty()) {
-            return HandlerEvaluation.ConfigurationWarning(missingBattleMapWarning(quest, mission))
+            return QuestDirective.Hold(
+                missingBattleMapWarning(quest, mission),
+                "QUEST_BATTLE_MAP_MISSING",
+            )
         }
         val invalidPresetExists = configured.any { !it.hasValidPreset() }
         val validConfigured = configured.filter { it.hasValidPreset() }
@@ -480,14 +592,22 @@ class DefaultQuestWorkCycleModule(
         }
         if (ready.isEmpty()) {
             if (invalidPresetExists) {
-                return HandlerEvaluation.ConfigurationWarning(
+                return QuestDirective.Hold(
                     "Quest ${quest.questKey} mission ${mission.key} has an invalid preset selection.",
+                    "QUEST_PRESET_INVALID",
                 )
             }
-            val next = validConfigured.mapNotNull { stateByMap[it.categoryId to it.mapCode]?.cooldownUntil }
-                .filter { it.isAfter(context.now) }
+            val next = validConfigured.mapNotNull { stateByMap[it.categoryId to it.mapCode] }
+                .filter { it.isBlockedOnlyByCooldown(context.now) }
+                .mapNotNull(AutomationMapState::cooldownUntil)
                 .minOrNull()
-            return next?.let(HandlerEvaluation::Unavailable) ?: HandlerEvaluation.Skipped
+            return next?.let {
+                QuestDirective.WaitUntil(
+                    it,
+                    "QUEST_BATTLE_COOLDOWN",
+                    "퀘스트 전투 맵의 정확한 다음 실행 가능 시각까지 기다립니다.",
+                )
+            } ?: QuestDirective.Skip
         }
         val cycle = context.currentCycles[quest.questKey] ?: INITIAL_CYCLE
         val selected = ready.minWithOrNull(
@@ -511,7 +631,7 @@ class DefaultQuestWorkCycleModule(
         mission: QuestMission,
         selection: QuestAutomationSelection,
         context: QuestAutomationSnapshot,
-    ): HandlerEvaluation {
+    ): QuestDirective {
         val configured = selection.maps.filter { it.missionKey == mission.key }
         val manual = configured.filter(QuestAutomationMapSelection::manuallyOverridden)
             .sortedBy(QuestAutomationMapSelection::executionOrder)
@@ -522,18 +642,29 @@ class DefaultQuestWorkCycleModule(
                     states[candidate.categoryId to candidate.mapCode]?.isRunnable(context.now) == true
             } ?: run {
                 if (manual.any { !it.hasValidPreset() }) {
-                    return HandlerEvaluation.ConfigurationWarning(
+                    return QuestDirective.Hold(
                         "Quest ${quest.questKey} mission ${mission.key} has an invalid preset selection.",
+                        "QUEST_PRESET_INVALID",
                     )
                 }
-                val next = manual.mapNotNull { states[it.categoryId to it.mapCode]?.cooldownUntil }
-                    .filter { it.isAfter(context.now) }
+                val next = manual.mapNotNull { states[it.categoryId to it.mapCode] }
+                    .filter { it.isBlockedOnlyByCooldown(context.now) }
+                    .mapNotNull(AutomationMapState::cooldownUntil)
                     .minOrNull()
-                return next?.let(HandlerEvaluation::Unavailable) ?: HandlerEvaluation.Skipped
+                return next?.let {
+                    QuestDirective.WaitUntil(
+                        it,
+                        "QUEST_BATTLE_COOLDOWN",
+                        "퀘스트 전투 맵의 정확한 다음 실행 가능 시각까지 기다립니다.",
+                    )
+                } ?: QuestDirective.Skip
             }
         } else {
             val target = mission.target?.takeIf(String::isNotBlank)
-                ?: return HandlerEvaluation.ConfigurationWarning(missingBattleMapWarning(quest, mission))
+                ?: return QuestDirective.Hold(
+                    missingBattleMapWarning(quest, mission),
+                    "QUEST_BATTLE_MAP_MISSING",
+                )
             val categoryId = configured.firstOrNull()?.categoryId ?: DEFAULT_BATTLE_CATEGORY
             val identityCandidates = context.mapIdentityCandidates.filter { it.categoryId == categoryId }
             when (val resolved = resolveBattleMapAlias(target, identityCandidates)) {
@@ -558,8 +689,9 @@ class DefaultQuestWorkCycleModule(
                 )
                 BattleMapAliasResolution.Missing,
                 BattleMapAliasResolution.Ambiguous,
-                -> return HandlerEvaluation.ConfigurationWarning(
+                -> return QuestDirective.Hold(
                     missingBattleMapWarning(quest, mission),
+                    "QUEST_BATTLE_MAP_MISSING",
                 )
             }
         }
@@ -567,9 +699,15 @@ class DefaultQuestWorkCycleModule(
             it.categoryId == selected.categoryId && it.mapCode == selected.mapCode
         }
         if (state?.isRunnable(context.now) != true) {
-            return state?.cooldownUntil?.takeIf { it.isAfter(context.now) }
-                ?.let(HandlerEvaluation::Unavailable)
-                ?: HandlerEvaluation.Skipped
+            return state?.takeIf { it.isBlockedOnlyByCooldown(context.now) }?.cooldownUntil
+                ?.let {
+                    QuestDirective.WaitUntil(
+                        it,
+                        "QUEST_BATTLE_COOLDOWN",
+                        "퀘스트 전투 맵의 정확한 다음 실행 가능 시각까지 기다립니다.",
+                    )
+                }
+                ?: QuestDirective.Skip
         }
         return selected.toBattleEvaluation(
             quest,
@@ -593,10 +731,11 @@ class DefaultQuestWorkCycleModule(
         liveMapState: AutomationMapState,
         timeSnapshot: AutomationTimeSnapshot?,
         now: Instant,
-    ): HandlerEvaluation {
+    ): QuestDirective {
         if (!hasValidPreset()) {
-            return HandlerEvaluation.ConfigurationWarning(
+            return QuestDirective.Hold(
                 "Quest ${quest.questKey} mission ${mission.key} has an invalid preset selection.",
+                "QUEST_PRESET_INVALID",
             )
         }
         val remaining = mission.progress?.let {
@@ -614,10 +753,14 @@ class DefaultQuestWorkCycleModule(
             )
         }
         if (decision is BattleTimeDecision.Wait) {
-            return HandlerEvaluation.Unavailable(decision.nextRunAt)
+            return QuestDirective.WaitUntil(
+                decision.nextRunAt,
+                "QUEST_TIME_WAIT",
+                "퀘스트 전투에 필요한 Time이 회복될 때까지 기다립니다.",
+            )
         }
         val run = decision as BattleTimeDecision.Run
-        return HandlerEvaluation.Runnable(
+        return QuestDirective.Execute(
             QuestAction.Battle(
                 quest.questKey,
                 cycle,
@@ -639,6 +782,13 @@ class DefaultQuestWorkCycleModule(
     private fun AutomationMapState.isRunnable(now: Instant): Boolean =
         visible && enabled && keyMode.hasUsableKey(keyCount) &&
             (cooldownUntil == null || !cooldownUntil.isAfter(now)) &&
+            (winRemaining == null || winRemaining > 0) &&
+            (attemptRemaining == null || attemptRemaining > 0) &&
+            (availableCount == null || availableCount > 0)
+
+    private fun AutomationMapState.isBlockedOnlyByCooldown(now: Instant): Boolean =
+        visible && enabled && keyMode.hasUsableKey(keyCount) &&
+            cooldownUntil?.isAfter(now) == true &&
             (winRemaining == null || winRemaining > 0) &&
             (attemptRemaining == null || attemptRemaining > 0) &&
             (availableCount == null || availableCount > 0)

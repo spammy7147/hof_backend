@@ -440,32 +440,6 @@ class AutomationWorkSessionServiceTest {
     }
 
     @Test
-    fun `map clear victories advance optimistic quest progress`() {
-        val session = AutomationWorkSessionEntity(
-            id = 24,
-            account = account,
-            entry = AutomationEntryEntity(10, account, AutomationType.QUEST, 0, true, now, now),
-            workType = AutomationWorkType.QUEST,
-            targetKey = "quest-1",
-            status = AutomationWorkStatus.RUNNING,
-            configVersion = "config-v1",
-            missionType = app.spammy.hof.quest.model.QuestMissionType.MAP_CLEAR.name,
-            observedCurrent = 3,
-            observedRequired = 5,
-            createdAt = now,
-            updatedAt = now,
-        )
-        Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
-        Mockito.`when`(queries.lockById(7, 24)).thenReturn(session)
-
-        service.recordQuestVictories(7, 24, 1)
-
-        assertEquals(4, session.observedCurrent)
-        assertEquals(1, session.confirmedCount)
-        Mockito.verify(commands).save(session)
-    }
-
-    @Test
     fun `authoritative quest progress corrects an optimistic mismatch`() {
         val session = AutomationWorkSessionEntity(
             id = 25,

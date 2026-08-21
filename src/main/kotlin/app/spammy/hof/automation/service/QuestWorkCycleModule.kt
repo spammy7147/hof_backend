@@ -8,12 +8,34 @@ import app.spammy.hof.quest.model.QuestSnapshot
  * 외부 HOF 호출은 공통 행동 수명주기가 수행하고, 이 module은 호출 전 의도와
  * 호출 후 권위 관측을 같은 규칙으로 연결한다.
  */
-interface QuestWorkCycleModule : AutomationHandler<QuestAutomationSnapshot> {
+interface QuestWorkCycleModule {
+    fun decideNext(snapshot: QuestAutomationSnapshot): QuestDirective
+
     fun recordObservedResult(
         accountId: Long,
         attempt: QuestAttempt,
         observation: QuestResultObservation,
     ): QuestRecordResult
+}
+
+sealed interface QuestDirective {
+    data class Execute(val action: QuestAction) : QuestDirective
+    data class WaitUntil(
+        val nextRunAt: java.time.Instant,
+        val reasonCode: String,
+        val message: String,
+    ) : QuestDirective
+    data class Hold(val message: String, val reasonCode: String) : QuestDirective
+    data class Fatal(val reason: AutomationStopReason, val message: String) : QuestDirective
+    data object Skip : QuestDirective
+}
+
+internal fun QuestDirective.toHandlerEvaluation(): HandlerEvaluation = when (this) {
+    is QuestDirective.Execute -> HandlerEvaluation.Runnable(action)
+    is QuestDirective.WaitUntil -> HandlerEvaluation.Unavailable(nextRunAt, reasonCode, message)
+    is QuestDirective.Hold -> HandlerEvaluation.ConfigurationWarning(message, reasonCode)
+    is QuestDirective.Fatal -> HandlerEvaluation.Fatal(reason, message)
+    QuestDirective.Skip -> HandlerEvaluation.Skipped
 }
 
 sealed interface QuestAttempt {

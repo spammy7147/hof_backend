@@ -2,9 +2,22 @@ package app.spammy.hof.automation.service
 
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.repository.HofAccountRepository
+import app.spammy.hof.automation.entity.AutomationEntryEntity
+import app.spammy.hof.automation.entity.AutomationType
+import app.spammy.hof.automation.entity.AutomationWorkSessionEntity
+import app.spammy.hof.automation.entity.AutomationWorkStatus
+import app.spammy.hof.automation.entity.AutomationWorkType
 import app.spammy.hof.automation.entity.BattleAutomationDailyProgressEntity
 import app.spammy.hof.automation.entity.PresetSelectionMode
+import app.spammy.hof.automation.entity.QuestAutomationProcessedResultEntity
+import app.spammy.hof.automation.entity.QuestAutomationResultKind
+import app.spammy.hof.automation.entity.QuestMapExecutionCounterEntity
+import app.spammy.hof.automation.repository.AutomationEntryCommandRepository
+import app.spammy.hof.automation.repository.AutomationWorkSessionCommandRepository
+import app.spammy.hof.automation.repository.AutomationWorkSessionQueryRepository
 import app.spammy.hof.automation.repository.BattleAutomationDailyProgressCommandRepository
+import app.spammy.hof.automation.repository.QuestAutomationProcessedResultCommandRepository
+import app.spammy.hof.automation.repository.QuestMapExecutionCounterCommandRepository
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import app.spammy.hof.battle.service.BattleMapIdentityCandidate
 import app.spammy.hof.battle.model.BattleMapKeyMode
@@ -14,8 +27,13 @@ import app.spammy.hof.quest.model.QuestProgress
 import app.spammy.hof.quest.model.QuestSection
 import app.spammy.hof.quest.model.QuestSnapshot
 import app.spammy.hof.quest.model.QuestState
+import java.io.ByteArrayOutputStream
+import java.io.DataOutputStream
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import java.time.Instant
 import java.time.LocalDate
+import java.util.HexFormat
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
@@ -33,7 +51,7 @@ class QuestWorkCycleModuleTest {
 
     @Test
     fun `quest battle map follows shared 100 and 300 TIME rules`() {
-        fun actionAt(timeCurrent: Int) = battle(handler.evaluate(snapshot(
+        fun actionAt(timeCurrent: Int) = battle(handler.decideNext(snapshot(
             quests = listOf(quest(
                 "q",
                 QuestState.ACTIVE,
@@ -51,15 +69,15 @@ class QuestWorkCycleModuleTest {
 
     @Test
     fun `quest adventure map uses map cost and null fallback`() {
-        val waiting = handler.evaluate(snapshot(
+        val waiting = handler.decideNext(snapshot(
             quests = listOf(quest("q", QuestState.ACTIVE, 0, monster("kill"))),
             selections = listOf(selection("q", maps = listOf(map("kill", "adventure", 0, category = "adventure_map")))),
             states = listOf(state("adventure", category = "adventure_map", requiredTime = 50)),
             timeCurrent = 49,
         ))
-        assertEquals(NOW.plusMillis(1_600), assertIs<HandlerEvaluation.Unavailable>(waiting).nextRunAt)
+        assertEquals(NOW.plusMillis(1_600), assertIs<QuestDirective.WaitUntil>(waiting).nextRunAt)
 
-        val fallback = battle(handler.evaluate(snapshot(
+        val fallback = battle(handler.decideNext(snapshot(
             quests = listOf(quest("q", QuestState.ACTIVE, 0, monster("kill"))),
             selections = listOf(selection("q", maps = listOf(map("kill", "adventure", 0, category = "adventure_map")))),
             states = listOf(state("adventure", category = "adventure_map", requiredTime = null)),
@@ -70,7 +88,7 @@ class QuestWorkCycleModuleTest {
 
     @Test
     fun availableQuestIsAcceptedBeforeClaimableQuest() {
-        val result = handler.evaluate(snapshot(
+        val result = handler.decideNext(snapshot(
             quests = listOf(
                 quest("available", QuestState.AVAILABLE, 1, immediate()),
                 quest("claimable", QuestState.CLAIMABLE, 0, immediate()),
@@ -78,12 +96,12 @@ class QuestWorkCycleModuleTest {
             selections = listOf(selection("available"), selection("claimable")),
         ))
 
-        assertEquals("available", assertIs<QuestAction.Accept>(assertIs<HandlerEvaluation.Runnable>(result).action).questKey)
+        assertEquals("available", assertIs<QuestAction.Accept>(assertIs<QuestDirective.Execute>(result).action).questKey)
     }
 
     @Test
     fun `claimable quest with TIME reward runs when reward reaches but does not exceed max`() {
-        val result = handler.evaluate(snapshot(
+        val result = handler.decideNext(snapshot(
             quests = listOf(
                 quest("claimable", QuestState.CLAIMABLE, 0, immediate())
                     .copy(rewards = listOf("Time +2,000")),
@@ -94,13 +112,13 @@ class QuestWorkCycleModuleTest {
 
         assertEquals(
             "claimable",
-            assertIs<QuestAction.Claim>(assertIs<HandlerEvaluation.Runnable>(result).action).questKey,
+            assertIs<QuestAction.Claim>(assertIs<QuestDirective.Execute>(result).action).questKey,
         )
     }
 
     @Test
     fun `claimable quest is skipped when TIME reward would exceed max`() {
-        val result = handler.evaluate(snapshot(
+        val result = handler.decideNext(snapshot(
             quests = listOf(
                 quest("claimable", QuestState.CLAIMABLE, 0, immediate())
                     .copy(rewards = listOf("Time +2000")),
@@ -109,12 +127,12 @@ class QuestWorkCycleModuleTest {
             timeCurrent = 4_001,
         ))
 
-        assertIs<HandlerEvaluation.Skipped>(result)
+        assertIs<QuestDirective.Skip>(result)
     }
 
     @Test
     fun `unsafe TIME reward does not hide a later safe claimable quest`() {
-        val result = handler.evaluate(snapshot(
+        val result = handler.decideNext(snapshot(
             quests = listOf(
                 quest("unsafe", QuestState.CLAIMABLE, 0, immediate())
                     .copy(rewards = listOf("Time +2000")),
@@ -127,13 +145,13 @@ class QuestWorkCycleModuleTest {
 
         assertEquals(
             "safe",
-            assertIs<QuestAction.Claim>(assertIs<HandlerEvaluation.Runnable>(result).action).questKey,
+            assertIs<QuestAction.Claim>(assertIs<QuestDirective.Execute>(result).action).questKey,
         )
     }
 
     @Test
     fun `TIME reward is not claimed without a current TIME snapshot`() {
-        val result = handler.evaluate(snapshot(
+        val result = handler.decideNext(snapshot(
             quests = listOf(
                 quest("claimable", QuestState.CLAIMABLE, 0, immediate())
                     .copy(rewards = listOf("Time +2000")),
@@ -142,7 +160,7 @@ class QuestWorkCycleModuleTest {
             timeCurrent = null,
         ))
 
-        assertIs<HandlerEvaluation.Skipped>(result)
+        assertIs<QuestDirective.Skip>(result)
     }
 
     @Test
@@ -159,17 +177,17 @@ class QuestWorkCycleModuleTest {
             displayCode = "0351",
         )
 
-        val result = handler.evaluate(snapshot(
+        val result = handler.decideNext(snapshot(
             quests = listOf(waiting),
             selections = listOf(selection(questKey)),
         ))
 
-        assertIs<HandlerEvaluation.Skipped>(result)
+        assertIs<QuestDirective.Skip>(result)
     }
 
     @Test
     fun immediatelyCompletableAcceptBeatsCombat() {
-        val result = handler.evaluate(snapshot(
+        val result = handler.decideNext(snapshot(
             quests = listOf(
                 quest("combat", QuestState.ACTIVE, 0, monster("kill")),
                 quest("turn-in", QuestState.AVAILABLE, 1, item(completable = true)),
@@ -181,7 +199,7 @@ class QuestWorkCycleModuleTest {
             states = listOf(state("combat-map")),
         ))
 
-        assertEquals("turn-in", assertIs<QuestAction.Accept>(assertIs<HandlerEvaluation.Runnable>(result).action).questKey)
+        assertEquals("turn-in", assertIs<QuestAction.Accept>(assertIs<QuestDirective.Execute>(result).action).questKey)
     }
 
     @Test
@@ -193,17 +211,17 @@ class QuestWorkCycleModuleTest {
             cycles = mapOf("q" to "7"),
             counters = mapOf(counterKey("q", "7", "kill", "map-a") to 4, counterKey("q", "7", "kill", "map-b") to 3),
         )
-        val lowerCount = battle(handler.evaluate(base))
+        val lowerCount = battle(handler.decideNext(base))
         assertEquals("map-b", lowerCount.mapCode)
         assertEquals(1, lowerCount.battleCount)
 
-        val equal = battle(handler.evaluate(base.copy(counters = base.counters.mapValues { 4 })))
+        val equal = battle(handler.decideNext(base.copy(counters = base.counters.mapValues { 4 })))
         assertEquals("map-a", equal.mapCode)
     }
 
     @Test
     fun monsterUsesThreeBattlesOnlyWhenAtLeastThreeRemainAndMapSupportsIt() {
-        fun count(current: Int, required: Int, supportsThreeBattles: Boolean) = battle(handler.evaluate(snapshot(
+        fun count(current: Int, required: Int, supportsThreeBattles: Boolean) = battle(handler.decideNext(snapshot(
             quests = listOf(quest(
                 "q",
                 QuestState.ACTIVE,
@@ -227,7 +245,7 @@ class QuestWorkCycleModuleTest {
 
     @Test
     fun mapClearUsesThreeBattlesWhenAtLeastThreeRemainAndMapSupportsIt() {
-        val result = handler.evaluate(snapshot(
+        val result = handler.decideNext(snapshot(
             quests = listOf(quest(
                 "q",
                 QuestState.ACTIVE,
@@ -252,7 +270,7 @@ class QuestWorkCycleModuleTest {
         val mission = QuestMission(
             "kill", QuestMissionType.MONSTER_KILL, "  슬라임  ", QuestProgress(2, 5), false,
         )
-        val result = handler.evaluate(snapshot(
+        val result = handler.decideNext(snapshot(
             quests = listOf(quest("q", QuestState.ACTIVE, 0, mission)),
             selections = listOf(selection("q", maps = listOf(map("kill", "map-a", 0)))),
             states = listOf(state("map-a", mapName = "Map A")),
@@ -268,7 +286,7 @@ class QuestWorkCycleModuleTest {
 
     @Test
     fun `configured monster map display uses matched live name instead of raw code`() {
-        val result = handler.evaluate(snapshot(
+        val result = handler.decideNext(snapshot(
             quests = listOf(quest("q", QuestState.ACTIVE, 0, monster("kill"))),
             selections = listOf(selection("q", maps = listOf(map("kill", "qmap", 0)))),
             states = listOf(state("qmap", mapName = "Live map")),
@@ -279,12 +297,12 @@ class QuestWorkCycleModuleTest {
 
     @Test
     fun `manual map clear display uses matched live name and never falls back to raw code`() {
-        val named = handler.evaluate(snapshot(
+        val named = handler.decideNext(snapshot(
             quests = listOf(quest("q", QuestState.ACTIVE, 0, mapClear("clear", "target"))),
             selections = listOf(selection("q", maps = listOf(map("clear", "qmap", 0, manual = true)))),
             states = listOf(state("qmap", mapName = "Live map")),
         ))
-        val blank = handler.evaluate(snapshot(
+        val blank = handler.decideNext(snapshot(
             quests = listOf(quest("q", QuestState.ACTIVE, 0, mapClear("clear", "target"))),
             selections = listOf(selection("q", maps = listOf(map("clear", "qmap", 0, manual = true)))),
             states = listOf(state("qmap", mapName = "   ")),
@@ -313,7 +331,7 @@ class QuestWorkCycleModuleTest {
 
     @Test
     fun manualOverrideWinsInsteadOfAutomaticAlias() {
-        val result = handler.evaluate(snapshot(
+        val result = handler.decideNext(snapshot(
             quests = listOf(quest("q", QuestState.ACTIVE, 0, mapClear("clear", "manual target"))),
             selections = listOf(selection("q", maps = listOf(map("clear", "manual-map", 0, manual = true)))),
             states = listOf(state("manual-map"), state("auto-map")),
@@ -324,40 +342,40 @@ class QuestWorkCycleModuleTest {
 
     @Test
     fun incompleteItemOnlyQuestIsAcceptedWhenSelected() {
-        val result = handler.evaluate(snapshot(
+        val result = handler.decideNext(snapshot(
             quests = listOf(quest("q", QuestState.AVAILABLE, 0, item(completable = false))),
             selections = listOf(selection("q")),
         ))
 
-        assertEquals("q", assertIs<QuestAction.Accept>(assertIs<HandlerEvaluation.Runnable>(result).action).questKey)
+        assertEquals("q", assertIs<QuestAction.Accept>(assertIs<QuestDirective.Execute>(result).action).questKey)
     }
 
     @Test
     fun activeIncompleteItemTurnInWithoutConfiguredMapsIsSkipped() {
-        val result = handler.evaluate(snapshot(
+        val result = handler.decideNext(snapshot(
             quests = listOf(quest("q", QuestState.ACTIVE, 0, item(completable = false))),
             selections = listOf(selection("q")),
         ))
 
-        assertIs<HandlerEvaluation.Skipped>(result)
+        assertIs<QuestDirective.Skip>(result)
     }
 
     @Test
     fun activeMonsterKillWithoutConfiguredMapsReturnsConfigurationWarning() {
-        val result = handler.evaluate(snapshot(
+        val result = handler.decideNext(snapshot(
             quests = listOf(quest("q", QuestState.ACTIVE, 0, monster("kill"))),
             selections = listOf(selection("q")),
         ))
 
         assertEquals(
             "q · monster 전투 맵 설정이 없습니다.",
-            assertIs<HandlerEvaluation.ConfigurationWarning>(result).message,
+            assertIs<QuestDirective.Hold>(result).message,
         )
     }
 
     @Test
     fun unsupportedMissionIsAcceptedWhenSelected() {
-        val result = handler.evaluate(snapshot(
+        val result = handler.decideNext(snapshot(
             quests = listOf(
                 quest("unsupported", QuestState.AVAILABLE, 0,
                     QuestMission("other", QuestMissionType.OTHER, null, null, completable = true)),
@@ -367,13 +385,13 @@ class QuestWorkCycleModuleTest {
 
         assertEquals(
             "unsupported",
-            assertIs<QuestAction.Accept>(assertIs<HandlerEvaluation.Runnable>(result).action).questKey,
+            assertIs<QuestAction.Accept>(assertIs<QuestDirective.Execute>(result).action).questKey,
         )
     }
 
     @Test
     fun availableMapClearQuestIsAcceptedBeforeActiveCombat() {
-        val result = handler.evaluate(snapshot(
+        val result = handler.decideNext(snapshot(
             quests = listOf(
                 quest("available-clear", QuestState.AVAILABLE, 0, mapClear("clear", "target")),
                 quest("active-combat", QuestState.ACTIVE, 1, monster("kill")),
@@ -387,13 +405,13 @@ class QuestWorkCycleModuleTest {
 
         assertEquals(
             "available-clear",
-            assertIs<QuestAction.Accept>(assertIs<HandlerEvaluation.Runnable>(result).action).questKey,
+            assertIs<QuestAction.Accept>(assertIs<QuestDirective.Execute>(result).action).questKey,
         )
     }
 
     @Test
     fun monsterPrecedesMapClearEvenWhenMapClearAppearsFirst() {
-        val result = handler.evaluate(snapshot(
+        val result = handler.decideNext(snapshot(
             quests = listOf(
                 quest("clear", QuestState.ACTIVE, 0, mapClear("clear-mission", "clear target")),
                 quest("monster", QuestState.ACTIVE, 1, monster("kill")),
@@ -410,7 +428,7 @@ class QuestWorkCycleModuleTest {
 
     @Test
     fun unrunnableLowestCountMapIsFiltered() {
-        val result = handler.evaluate(snapshot(
+        val result = handler.decideNext(snapshot(
             quests = listOf(quest("q", QuestState.ACTIVE, 0, monster("kill"))),
             selections = listOf(selection("q", maps = listOf(map("kill", "blocked", 0), map("kill", "ready", 1)))),
             states = listOf(state("blocked", keyCount = 0), state("ready")),
@@ -423,24 +441,24 @@ class QuestWorkCycleModuleTest {
 
     @Test
     fun visibleUnlimitedMapWithoutACountRunsWhileHiddenLimitedMapWithKeysIsSkipped() {
-        val unlimited = handler.evaluate(snapshot(
+        val unlimited = handler.decideNext(snapshot(
             quests = listOf(quest("q", QuestState.ACTIVE, 0, monster("kill"))),
             selections = listOf(selection("q", maps = listOf(map("kill", "unlimited", 0)))),
             states = listOf(state("unlimited", keyMode = BattleMapKeyMode.UNLIMITED)),
         ))
         assertEquals("unlimited", battle(unlimited).mapCode)
 
-        val hidden = handler.evaluate(snapshot(
+        val hidden = handler.decideNext(snapshot(
             quests = listOf(quest("q", QuestState.ACTIVE, 0, monster("kill"))),
             selections = listOf(selection("q", maps = listOf(map("kill", "hidden", 0)))),
             states = listOf(state("hidden", visible = false, keyMode = BattleMapKeyMode.LIMITED, keyCount = 10)),
         ))
-        assertIs<HandlerEvaluation.Skipped>(hidden)
+        assertIs<QuestDirective.Skip>(hidden)
     }
 
     @Test
     fun laterRunnableMonsterMissionIsNotStarvedByEarlierWarningOrUnavailable() {
-        val result = handler.evaluate(snapshot(
+        val result = handler.decideNext(snapshot(
             quests = listOf(quest(
                 "q", QuestState.ACTIVE, 0,
                 monster("missing-config"),
@@ -462,18 +480,18 @@ class QuestWorkCycleModuleTest {
 
     @Test
     fun configurationWarningWinsOnlyAfterAllMonsterMissionsHaveNoRunnableAction() {
-        val result = handler.evaluate(snapshot(
+        val result = handler.decideNext(snapshot(
             quests = listOf(quest("q", QuestState.ACTIVE, 0, monster("cooldown"), monster("missing"))),
             selections = listOf(selection("q", maps = listOf(map("cooldown", "later", 0)))),
             states = listOf(state("later", cooldownUntil = NOW.plusSeconds(120))),
         ))
 
-        assertIs<HandlerEvaluation.ConfigurationWarning>(result)
+        assertIs<QuestDirective.Hold>(result)
     }
 
     @Test
     fun invalidLowerCountMonsterPresetDoesNotHideValidRunnableAlternative() {
-        val result = handler.evaluate(snapshot(
+        val result = handler.decideNext(snapshot(
             quests = listOf(quest("q", QuestState.ACTIVE, 0, monster("kill"))),
             selections = listOf(selection("q", maps = listOf(
                 map("kill", "invalid", 0, presetMode = PresetSelectionMode.EXPLICIT),
@@ -492,7 +510,7 @@ class QuestWorkCycleModuleTest {
 
     @Test
     fun laterRunnableManualMapWinsWhenEarlierManualRowsAreInvalidOrBlocked() {
-        val result = handler.evaluate(snapshot(
+        val result = handler.decideNext(snapshot(
             quests = listOf(quest("q", QuestState.ACTIVE, 0, mapClear("clear", "automatic"))),
             selections = listOf(selection("q", maps = listOf(
                 map("clear", "invalid", 0, manual = true, presetMode = PresetSelectionMode.EXPLICIT),
@@ -508,7 +526,7 @@ class QuestWorkCycleModuleTest {
 
     @Test
     fun laterRunnableMapClearMissionIsNotStarvedByEarlierConfigurationWarning() {
-        val result = handler.evaluate(snapshot(
+        val result = handler.decideNext(snapshot(
             quests = listOf(quest(
                 "q", QuestState.ACTIVE, 0,
                 mapClear("missing", "missing target"),
@@ -525,7 +543,7 @@ class QuestWorkCycleModuleTest {
     @Test
     fun missingOrAmbiguousAutomaticMapReturnsWarning() {
         listOf("missing", "ambiguous").forEach { target ->
-            val result = handler.evaluate(snapshot(
+            val result = handler.decideNext(snapshot(
                 quests = listOf(quest("q", QuestState.ACTIVE, 0, mapClear("clear", target))),
                 selections = listOf(selection("q")),
                 identities = if (target == "ambiguous") listOf(
@@ -535,7 +553,7 @@ class QuestWorkCycleModuleTest {
             ))
             assertEquals(
                 "q · $target 전투 맵 설정이 없습니다.",
-                assertIs<HandlerEvaluation.ConfigurationWarning>(result).message,
+                assertIs<QuestDirective.Hold>(result).message,
             )
         }
     }
@@ -550,8 +568,8 @@ class QuestWorkCycleModuleTest {
         )
         val original = context.copy()
 
-        val first = handler.evaluate(context)
-        val second = handler.evaluate(context)
+        val first = handler.decideNext(context)
+        val second = handler.decideNext(context)
 
         assertEquals(first, second)
         assertEquals("frost", battle(first).mapCode)
@@ -560,18 +578,64 @@ class QuestWorkCycleModuleTest {
 
     @Test
     fun presetModeIsPreservedWithoutResolvingPrimary() {
-        val primary = battle(handler.evaluate(combatSnapshot(map("kill", "map", 0, presetMode = PresetSelectionMode.PRIMARY))))
+        val primary = battle(handler.decideNext(combatSnapshot(map("kill", "map", 0, presetMode = PresetSelectionMode.PRIMARY))))
         assertEquals(PresetSelectionMode.PRIMARY, primary.preset.mode)
         assertEquals(null, primary.preset.presetId)
 
-        val explicit = battle(handler.evaluate(combatSnapshot(map("kill", "map", 0, presetMode = PresetSelectionMode.EXPLICIT, presetId = 41))))
+        val explicit = battle(handler.decideNext(combatSnapshot(map("kill", "map", 0, presetMode = PresetSelectionMode.EXPLICIT, presetId = 41))))
         assertEquals(QuestPresetSelection(PresetSelectionMode.EXPLICIT, 41), explicit.preset)
     }
 
     @Test
     fun invalidExplicitPresetReturnsWarningWithoutFallback() {
-        val result = handler.evaluate(combatSnapshot(map("kill", "map", 0, presetMode = PresetSelectionMode.EXPLICIT)))
-        assertIs<HandlerEvaluation.ConfigurationWarning>(result)
+        val result = handler.decideNext(combatSnapshot(map("kill", "map", 0, presetMode = PresetSelectionMode.EXPLICIT)))
+        assertEquals("QUEST_PRESET_INVALID", assertIs<QuestDirective.Hold>(result).reasonCode)
+    }
+
+    @Test
+    fun `몬스터 처치 맵 쿨타임은 정확한 다음 판단 시각을 반환한다`() {
+        val retryAt = NOW.plusSeconds(73)
+        val result = handler.decideNext(snapshot(
+            quests = listOf(quest("q", QuestState.ACTIVE, 0, monster("kill"))),
+            selections = listOf(selection("q", maps = listOf(map("kill", "map", 0)))),
+            states = listOf(state("map", cooldownUntil = retryAt)),
+        ))
+
+        val wait = assertIs<QuestDirective.WaitUntil>(result)
+        assertEquals(retryAt, wait.nextRunAt)
+        assertEquals("QUEST_BATTLE_COOLDOWN", wait.reasonCode)
+    }
+
+    @Test
+    fun `다른 이유로 실행 불가능한 맵은 다음 쿨타임 판단에서 제외한다`() {
+        val retryAt = NOW.plusSeconds(73)
+        val result = handler.decideNext(snapshot(
+            quests = listOf(quest("q", QuestState.ACTIVE, 0, monster("kill"))),
+            selections = listOf(selection("q", maps = listOf(
+                map("kill", "hidden", 0),
+                map("kill", "exhausted", 1),
+                map("kill", "cooling", 2),
+            ))),
+            states = listOf(
+                state("hidden", visible = false, cooldownUntil = NOW.plusSeconds(10)),
+                state("exhausted", cooldownUntil = NOW.plusSeconds(20), winRemaining = 0),
+                state("cooling", cooldownUntil = retryAt),
+            ),
+        ))
+
+        assertEquals(retryAt, assertIs<QuestDirective.WaitUntil>(result).nextRunAt)
+    }
+
+    @Test
+    fun `자동 맵이 쿨타임 외 조건으로 막히면 불필요한 재확인을 예약하지 않는다`() {
+        val result = handler.decideNext(snapshot(
+            quests = listOf(quest("q", QuestState.ACTIVE, 0, mapClear("clear", "target"))),
+            selections = listOf(selection("q")),
+            states = listOf(state("target", cooldownUntil = NOW.plusSeconds(20), attemptRemaining = 0)),
+            identities = listOf(identity("target", "target")),
+        ))
+
+        assertIs<QuestDirective.Skip>(result)
     }
 
     @Test
@@ -742,7 +806,7 @@ class QuestWorkCycleModuleTest {
             cycles = mapOf("q" to "8"),
             counters = mapOf(counterKey("q", "8", "kill", "first") to 9, counterKey("q", "8", "kill", "second") to 2),
         )
-        assertEquals("second", battle(handler.evaluate(old)).mapCode)
+        assertEquals("second", battle(handler.decideNext(old)).mapCode)
 
         val newCycle = assertIs<QuestRecordResult.Recorded>(
             handler.recordObservedResult(
@@ -752,7 +816,7 @@ class QuestWorkCycleModuleTest {
             ),
         ).questCycle
         assertEquals("9", newCycle)
-        assertEquals("first", battle(handler.evaluate(old.copy(currentCycles = mapOf("q" to requireNotNull(newCycle)), counters = emptyMap()))).mapCode)
+        assertEquals("first", battle(handler.decideNext(old.copy(currentCycles = mapOf("q" to requireNotNull(newCycle)), counters = emptyMap()))).mapCode)
     }
 
     private fun combatSnapshot(map: QuestAutomationMapSelection) = snapshot(
@@ -761,8 +825,8 @@ class QuestWorkCycleModuleTest {
         states = listOf(state(map.mapCode)),
     )
 
-    private fun battle(result: HandlerEvaluation) =
-        assertIs<QuestAction.Battle>(assertIs<HandlerEvaluation.Runnable>(result).action)
+    private fun battle(result: QuestDirective) =
+        assertIs<QuestAction.Battle>(assertIs<QuestDirective.Execute>(result).action)
 
     private fun snapshot(
         quests: List<QuestSnapshot>,
@@ -815,8 +879,12 @@ class QuestWorkCycleModuleTest {
         supportsThreeBattles: Boolean = false,
         category: String = "battle_map",
         requiredTime: Int? = null,
+        enabled: Boolean = true,
+        winRemaining: Int? = null,
+        attemptRemaining: Int? = null,
+        availableCount: Int? = null,
     ) = AutomationMapState(
-        category, code, mapName, visible, true, cooldownUntil, null, null, null, keyMode, keyCount,
+        category, code, mapName, visible, enabled, cooldownUntil, winRemaining, attemptRemaining, availableCount, keyMode, keyCount,
         supportsThreeBattles, requiredTime,
     )
 
@@ -853,6 +921,11 @@ class QuestWorkCycleModuleTest {
 @ActiveProfiles("test")
 class QuestAutomationProgressStorePersistenceTest {
     @Autowired private lateinit var accountRepository: HofAccountRepository
+    @Autowired private lateinit var entryRepository: AutomationEntryCommandRepository
+    @Autowired private lateinit var workSessionRepository: AutomationWorkSessionCommandRepository
+    @Autowired private lateinit var workQueries: AutomationWorkSessionQueryRepository
+    @Autowired private lateinit var processedResultRepository: QuestAutomationProcessedResultCommandRepository
+    @Autowired private lateinit var counterRepository: QuestMapExecutionCounterCommandRepository
     @Autowired private lateinit var progressStore: JpaQuestAutomationProgressStore
     @Autowired private lateinit var queryRepository: TypedAutomationQueryRepository
     @Autowired private lateinit var dailyRepository: BattleAutomationDailyProgressCommandRepository
@@ -910,13 +983,41 @@ class QuestAutomationProgressStorePersistenceTest {
     }
 
     @Test
-    fun `정상 전투 기록 뒤 같은 stored action을 재조정해도 counter는 한 번만 반영된다`() {
+    fun `정상 전투 기록 뒤 같은 stored action을 재조정해도 counter와 work progress는 한 번만 반영된다`() {
         val account = accountRepository.save(
             HofAccountEntity(loginId = "quest-reconcile-${System.nanoTime()}", encryptedPassword = "encrypted", createdAt = NOW),
         )
+        val entry = entryRepository.save(
+            AutomationEntryEntity(
+                account = account,
+                type = AutomationType.QUEST,
+                priority = 0,
+                enabled = true,
+                createdAt = NOW,
+                updatedAt = NOW,
+            ),
+        )
         val action = battleAction(cycle = "1", mapCode = "chosen", battleCount = 3).copy(
+            missionType = QuestMissionType.MAP_CLEAR,
             missionCurrent = 2,
             missionRequired = 8,
+        )
+        workSessionRepository.save(
+            AutomationWorkSessionEntity(
+                account = account,
+                entry = entry,
+                workType = AutomationWorkType.QUEST,
+                targetKey = action.questKey,
+                status = AutomationWorkStatus.RUNNING,
+                configVersion = entry.updatedAt.toString(),
+                questCycle = action.questCycle,
+                missionKey = action.missionKey,
+                missionType = action.missionType.name,
+                observedCurrent = action.missionCurrent,
+                observedRequired = action.missionRequired,
+                createdAt = NOW,
+                updatedAt = NOW,
+            ),
         )
         val attempt = QuestAttempt.Battle("stable-execution-identity", action)
 
@@ -972,6 +1073,77 @@ class QuestAutomationProgressStorePersistenceTest {
                 action.mapCode,
             ),
         )
+        assertEquals(4, workQueries.findRunning(account.id)?.observedCurrent)
+    }
+
+    @Test
+    fun `구형 map clear 결과는 진행도를 보수적으로 보완하고 새 fingerprint로 승격한다`() {
+        val account = accountRepository.save(
+            HofAccountEntity(loginId = "quest-legacy-${System.nanoTime()}", encryptedPassword = "encrypted", createdAt = NOW),
+        )
+        val entry = entryRepository.save(
+            AutomationEntryEntity(account = account, type = AutomationType.QUEST, priority = 0, enabled = true, createdAt = NOW, updatedAt = NOW),
+        )
+        val action = battleAction(cycle = "1", mapCode = "chosen", battleCount = 3).copy(
+            missionType = QuestMissionType.MAP_CLEAR,
+            missionCurrent = 2,
+            missionRequired = 8,
+        )
+        workSessionRepository.save(
+            AutomationWorkSessionEntity(
+                account = account,
+                entry = entry,
+                workType = AutomationWorkType.QUEST,
+                targetKey = action.questKey,
+                status = AutomationWorkStatus.RUNNING,
+                configVersion = entry.updatedAt.toString(),
+                questCycle = action.questCycle,
+                missionKey = action.missionKey,
+                missionType = action.missionType.name,
+                observedCurrent = action.missionCurrent,
+                observedRequired = action.missionRequired,
+                createdAt = NOW,
+                updatedAt = NOW,
+            ),
+        )
+        processedResultRepository.save(
+            QuestAutomationProcessedResultEntity(
+                account = account,
+                resultKind = QuestAutomationResultKind.BATTLE_VICTORY,
+                resultIdentity = "legacy-result",
+                actionFingerprint = legacyBattleFingerprint(action, 2),
+                processedAt = NOW,
+            ),
+        )
+        counterRepository.save(
+            QuestMapExecutionCounterEntity(
+                account = account,
+                questKey = action.questKey,
+                questCycle = action.questCycle,
+                missionKey = action.missionKey,
+                categoryId = action.categoryId,
+                mapCode = action.mapCode,
+                successfulRuns = 2,
+            ),
+        )
+        val attempt = QuestAttempt.Battle("legacy-result", action)
+
+        repeat(2) {
+            assertIs<QuestRecordResult.Recorded>(
+                questWorkCycle.recordObservedResult(account.id, attempt, QuestResultObservation.Page(emptyList())),
+            )
+        }
+
+        assertEquals(2, queryRepository.findQuestMapWins(account.id, "q", "1", "kill", "battle_map", "chosen"))
+        assertEquals(4, workQueries.findRunning(account.id)?.observedCurrent)
+        assertFailsWith<QuestAutomationResultConflictException> {
+            progressStore.recordBattleResult(
+                account.id,
+                "legacy-result",
+                action.copy(missionType = QuestMissionType.MONSTER_KILL),
+                2,
+            )
+        }
     }
 
     @Test
@@ -1020,6 +1192,14 @@ class QuestAutomationProgressStorePersistenceTest {
             progressStore.recordBattleResult(account.id, "battle-result", battleAction(cycle = "1", mapCode = "second-map"), 1)
         }
         assertFailsWith<QuestAutomationResultConflictException> {
+            progressStore.recordBattleResult(
+                account.id,
+                "battle-result",
+                first.copy(missionType = QuestMissionType.MAP_CLEAR),
+                2,
+            )
+        }
+        assertFailsWith<QuestAutomationResultConflictException> {
             progressStore.startNewCycle(account.id, "battle-result", "q")
         }
 
@@ -1055,6 +1235,31 @@ class QuestAutomationProgressStorePersistenceTest {
         "q", cycle, "kill", QuestMissionType.MONSTER_KILL, "battle_map", mapCode, mapCode,
         QuestPresetSelection(PresetSelectionMode.PRIMARY), battleCount,
     )
+
+    private fun legacyBattleFingerprint(action: QuestAction.Battle, victoryCount: Int): String {
+        val fields = listOf(
+            QuestAutomationResultKind.BATTLE_VICTORY.name,
+            action.questKey,
+            action.questCycle,
+            action.missionKey,
+            action.categoryId,
+            action.mapCode,
+            action.battleCount.toString(),
+            victoryCount.toString(),
+        )
+        val canonical = ByteArrayOutputStream().use { bytes ->
+            DataOutputStream(bytes).use { output ->
+                output.writeInt(fields.size)
+                fields.forEach { field ->
+                    val encoded = field.toByteArray(StandardCharsets.UTF_8)
+                    output.writeInt(encoded.size)
+                    output.write(encoded)
+                }
+            }
+            bytes.toByteArray()
+        }
+        return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(canonical))
+    }
 
     private companion object {
         val NOW: Instant = Instant.parse("2026-07-15T00:00:00Z")

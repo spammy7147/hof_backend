@@ -19,7 +19,6 @@ interface AutomationWorkLifecycle {
     fun resumeForCheck(accountId: Long, sessionId: Long)
     fun triggerCheck(accountId: Long, sessionId: Long)
     fun yieldForPriority(accountId: Long, sessionId: Long): Boolean
-    fun recordQuestVictories(accountId: Long, sessionId: Long, victories: Int)
     fun reconcileQuestProgress(accountId: Long, sessionId: Long, current: Int, required: Int)
     fun waitForResource(accountId: Long, sessionId: Long, materialName: String, missingCount: Int?)
     fun waitForUnknownCooldown(accountId: Long, sessionId: Long)
@@ -165,26 +164,6 @@ class AutomationWorkSessionService(
         session.updatedAt = timeProvider.now()
         commands.save(session)
         return true
-    }
-
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    override fun recordQuestVictories(accountId: Long, sessionId: Long, victories: Int) {
-        require(victories >= 0)
-        if (victories == 0) return
-        requireRunningRuntime(accountId)
-        val session = requireSession(accountId, sessionId)
-        require(
-            session.workType == AutomationWorkType.QUEST &&
-                session.status == AutomationWorkStatus.RUNNING &&
-                session.missionType == app.spammy.hof.quest.model.QuestMissionType.MAP_CLEAR.name,
-        )
-        val current = requireNotNull(session.observedCurrent) { "Map-clear session has no observed progress." }
-        session.confirmedCount += victories
-        session.observedCurrent = session.observedRequired
-            ?.let { required -> (current + victories).coerceAtMost(required) }
-            ?: current + victories
-        session.updatedAt = timeProvider.now()
-        commands.save(session)
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)

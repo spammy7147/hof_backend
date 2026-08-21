@@ -74,7 +74,7 @@ sealed interface AutomationCoordination {
 
 @Service
 class AutomationCoordinator(
-    private val quest: AutomationHandler<QuestAutomationSnapshot>,
+    private val quest: QuestWorkCycleModule,
     private val battle: AutomationHandler<BattleMapAutomationSnapshot>,
     private val adventure: AutomationHandler<AdventureMapAutomationSnapshot>,
     private val union: AutomationHandler<UnionAutomationSnapshot>? = null,
@@ -88,7 +88,7 @@ class AutomationCoordinator(
         var earliestWaitScope = AutomationWaitScope.RELEASE_OTHER_AUTOMATIONS
         snapshot.entries.forEach { entry ->
             val evaluation = when (entry.type) {
-                AutomationType.QUEST -> entry.quest?.let(quest::evaluate)
+                AutomationType.QUEST -> entry.quest?.let { quest.decideNext(it).toHandlerEvaluation() }
                 AutomationType.HOME_QUEST -> entry.homeQuest?.let { homeQuest?.evaluate(it) }
                 AutomationType.BATTLE_MAP -> entry.battle?.let(battle::evaluate)
                 AutomationType.ADVENTURE_MAP -> entry.adventure?.let(adventure::evaluate)

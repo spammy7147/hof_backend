@@ -30,22 +30,10 @@ class AutomationExecutionSignalService(
         lootNames: List<String>,
         questTexts: List<String>,
     ): Boolean {
+        if (source == BattleAutomationActionSource.QUEST_AUTOMATION) return false
         val running = queries.findRunning(accountId)
             ?.takeIf { it.status == AutomationWorkStatus.RUNNING }
             ?: return false
-        if (source == BattleAutomationActionSource.QUEST_AUTOMATION) {
-            if (
-                running.workType == AutomationWorkType.QUEST &&
-                running.missionType == app.spammy.hof.quest.model.QuestMissionType.MAP_CLEAR.name
-            ) {
-                lifecycle.recordQuestVictories(
-                    accountId,
-                    running.id,
-                    outcomes.count { it == BattleAutomationRoundOutcome.VICTORY },
-                )
-            }
-            return false
-        }
         if (source != BattleAutomationActionSource.BATTLE_MAP_AUTOMATION || running.workType != AutomationWorkType.BATTLE_MAP) {
             return false
         }

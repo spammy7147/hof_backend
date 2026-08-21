@@ -73,7 +73,7 @@ class AutomationExecutionSignalServiceTest {
     }
 
     @Test
-    fun `quest map clear records only terminal victories without yielding`() {
+    fun `quest battle progress is owned by quest work cycle`() {
         val running = session(
             23, questEntry, AutomationWorkType.QUEST, "quest-1", AutomationWorkStatus.RUNNING,
             missionType = app.spammy.hof.quest.model.QuestMissionType.MAP_CLEAR.name,
@@ -92,8 +92,7 @@ class AutomationExecutionSignalServiceTest {
             ),
         )
 
-        Mockito.verify(lifecycle).recordQuestVictories(7, 23, 1)
-        Mockito.verify(lifecycle, Mockito.never()).yieldForPriority(7, 23)
+        Mockito.verifyNoInteractions(lifecycle)
     }
 
     private fun session(

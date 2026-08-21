@@ -13,7 +13,7 @@ class AutomationCoordinatorTest {
     @Test
     fun `warnings do not block lower priority runnable and are retained`() {
         val coordinator = AutomationCoordinator(
-            quest = AutomationHandler<QuestAutomationSnapshot> { HandlerEvaluation.ConfigurationWarning("broken quest") },
+            quest = questModule(QuestDirective.Hold("broken quest", "CONFIGURATION_WARNING")),
             battle = AutomationHandler<BattleMapAutomationSnapshot> { HandlerEvaluation.Runnable(action) },
             adventure = AutomationHandler<AdventureMapAutomationSnapshot> { HandlerEvaluation.Skipped },
         )
@@ -44,7 +44,7 @@ class AutomationCoordinatorTest {
         val later = Instant.parse("2026-07-16T02:00:00Z")
         val earlier = Instant.parse("2026-07-16T01:00:00Z")
         val coordinator = AutomationCoordinator(
-            quest = AutomationHandler<QuestAutomationSnapshot> { HandlerEvaluation.Unavailable(later) },
+            quest = questModule(QuestDirective.WaitUntil(later, "COOLDOWN", "wait")),
             battle = AutomationHandler<BattleMapAutomationSnapshot> { HandlerEvaluation.Unavailable(earlier) },
             adventure = AutomationHandler<AdventureMapAutomationSnapshot> { HandlerEvaluation.Skipped },
         )
@@ -64,9 +64,7 @@ class AutomationCoordinatorTest {
     @Test
     fun `fatal stops immediately by priority`() {
         val coordinator = AutomationCoordinator(
-            quest = AutomationHandler<QuestAutomationSnapshot> {
-                HandlerEvaluation.Fatal(AutomationStopReason.NETWORK, "fatal")
-            },
+            quest = questModule(QuestDirective.Fatal(AutomationStopReason.NETWORK, "fatal")),
             battle = AutomationHandler<BattleMapAutomationSnapshot> { HandlerEvaluation.Runnable(action) },
             adventure = AutomationHandler<AdventureMapAutomationSnapshot> { HandlerEvaluation.Skipped },
         )
@@ -97,7 +95,7 @@ class AutomationCoordinatorTest {
             observedAvailableCount = 2,
         )
         val coordinator = AutomationCoordinator(
-            quest = AutomationHandler<QuestAutomationSnapshot> { HandlerEvaluation.Skipped },
+            quest = questModule(QuestDirective.Skip),
             battle = AutomationHandler<BattleMapAutomationSnapshot> { HandlerEvaluation.Skipped },
             adventure = AutomationHandler<AdventureMapAutomationSnapshot> { HandlerEvaluation.Runnable(selected) },
         )
@@ -121,4 +119,14 @@ class AutomationCoordinatorTest {
 
     private fun questSnapshot() = QuestAutomationSnapshot(7, emptyList(), emptyList(), emptyList(), emptyMap(), emptyMap(), emptyList(), Instant.EPOCH)
     private fun battleSnapshot() = BattleMapAutomationSnapshot(7, emptyList(), emptyList(), emptyMap(), null, emptySet(), "id", Instant.EPOCH)
+
+    private fun questModule(directive: QuestDirective) = object : QuestWorkCycleModule {
+        override fun decideNext(snapshot: QuestAutomationSnapshot): QuestDirective = directive
+
+        override fun recordObservedResult(
+            accountId: Long,
+            attempt: QuestAttempt,
+            observation: QuestResultObservation,
+        ): QuestRecordResult = error("not used")
+    }
 }
