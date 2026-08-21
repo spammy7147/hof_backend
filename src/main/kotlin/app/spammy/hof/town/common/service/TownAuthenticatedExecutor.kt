@@ -812,6 +812,54 @@ class TownAuthenticatedExecutor(
     }
 
     /**
+     * 각 POST 응답에만 존재하는 다음 확인 form을 재조회 없이 연속 제출한다.
+     * 단계 이름은 서버 기능 코드가 고정하며, 어느 단계든 정확히 하나의 form으로 관측되지 않으면 중단한다.
+     */
+    fun <T> executeResolvedFormSequenceProjected(
+        accountId: Long,
+        pageUrl: String,
+        requiredSubmitFields: List<String>,
+        projector: (String, String, app.spammy.hof.town.common.model.ParsedTownResult, ParsedTownPage) -> T,
+    ): T? = withAccountActionFence(accountId) {
+        require(requiredSubmitFields.size in 2..8)
+        require(requiredSubmitFields.all(String::isNotBlank))
+        require(requiredSubmitFields.map(String::lowercase).distinct().size == requiredSubmitFields.size)
+
+        val context = authenticatedContext(accountId)
+        var response = executeAuthenticated(
+            context.account,
+            requestFactory.townPage(pageUrl, HofRequestOrigin.INTERACTIVE),
+            context.cookies,
+        )
+        var cookies = context.cookies + response.setCookies
+        var page = formParser.parse(response.body, response.finalUrl)
+
+        requiredSubmitFields.forEachIndexed { index, requiredSubmitField ->
+            val form = page.forms.singleOrNull {
+                it.submitSource.equals(requiredSubmitField, ignoreCase = true)
+            } ?: return@withAccountActionFence null
+            val guarded = actionGuard.guard(page, TownActionRequest(form.actionId))
+            if (!guarded.form.submitFields.singleOrNull()?.name.equals(requiredSubmitField, ignoreCase = true)) {
+                throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF ${index + 1}단계 작업 양식이 변경되었습니다.")
+            }
+            response = executeAuthenticated(
+                context.account,
+                requestFactory.townForm(
+                    guarded.form.method,
+                    guarded.form.actionUrl,
+                    guarded.formEntries,
+                    HofRequestOrigin.INTERACTIVE,
+                ),
+                cookies,
+            )
+            cookies = cookies + response.setCookies
+            page = formParser.parse(response.body, response.finalUrl)
+        }
+
+        projector(response.body, response.finalUrl, resultParser.parse(response.body), page)
+    }
+
+    /**
      * 메인 화면의 진입 form과 그 응답에만 존재하는 최종 form을 하나의 계정 fence 안에서 연속 검증한다.
      * 중간 응답을 클라이언트 토큰으로 신뢰하지 않고 매 실행마다 HOF에서 다시 획득한다.
      */

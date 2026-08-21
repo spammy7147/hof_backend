@@ -65,6 +65,28 @@ class CharacterCommandExecutorTest {
     }
 
     @Test
+    fun `stale revision after background sync still lets a confirmed kick reach adapter`() {
+        val query = Mockito.mock(CharacterQueryRepository::class.java)
+        Mockito.`when`(query.findByAccountIdAndId(1L, 7L)).thenReturn(character())
+        var received: CharacterCommand? = null
+        val expected = CharacterCommandResult.Completed(7L, revision, listOf("캐릭터를 삭제했습니다."))
+        val service = CharacterCommandExecutor(
+            query,
+            CharacterAutomationCommandBridge { _, _, command -> command() },
+            CharacterCommandAdapter { _, command ->
+                received = command
+                expected
+            },
+        )
+        val command = CharacterCommand.Kick(7L, revision.minusSeconds(1), "소셜")
+
+        val result = service.execute(1L, command)
+
+        assertEquals(expected, result)
+        assertEquals(command, received)
+    }
+
+    @Test
     fun `missing and archived characters are rejected before remote observation`() {
         val query = Mockito.mock(CharacterQueryRepository::class.java)
         Mockito.`when`(query.findByAccountIdAndId(1L, 7L)).thenReturn(character(CharacterLifecycle.ARCHIVED))

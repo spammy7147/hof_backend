@@ -141,22 +141,7 @@ class HofCharacterCommandAdapterTest {
         val page = formPage("<form method='post'><input type='submit' name='knockback' value='Knockback'></form>")
         Mockito.`when`(executor.load(1L, CHARACTER_URL)).thenReturn(page)
         val form = page.forms.single()
-        val confirmationForm = formPage(
-            "<form method='post'><input type='submit' name='knockback2' value='Yes'></form>",
-        ).forms.single()
         Mockito.`when`(management.execute(1L, "hof-10", TownActionRequest(form.actionId))).thenReturn(
-            CharacterManagementSnapshotResponse(
-                character = null,
-                actions = listOf(
-                    CharacterObservedActionResponse(
-                        actionId = confirmationForm.actionId,
-                        source = confirmationForm.submitSource,
-                        label = confirmationForm.submitLabel,
-                    ),
-                ),
-            ),
-        )
-        Mockito.`when`(management.execute(1L, "hof-10", TownActionRequest(confirmationForm.actionId))).thenReturn(
             CharacterManagementSnapshotResponse(
                 character = null,
                 actions = emptyList(),
@@ -178,7 +163,7 @@ class HofCharacterCommandAdapterTest {
     }
 
     @Test
-    fun `knockback submits the confirmation form before resolving the changed identity`() {
+    fun `knockback delegates its complete confirmation sequence to management`() {
         val executor = Mockito.mock(TownAuthenticatedExecutor::class.java)
         val management = Mockito.mock(CharacterManagementService::class.java)
         val query = Mockito.mock(CharacterQueryRepository::class.java)
@@ -187,22 +172,7 @@ class HofCharacterCommandAdapterTest {
         val initialPage = formPage("<form method='post'><input type='submit' name='knockback' value='Knockback'></form>")
         Mockito.`when`(executor.load(1L, CHARACTER_URL)).thenReturn(initialPage)
         val initialForm = initialPage.forms.single()
-        val confirmationForm = formPage(
-            "<form method='post'><input type='submit' name='knockback2' value='Yes'></form>",
-        ).forms.single()
         Mockito.`when`(management.execute(1L, "hof-10", TownActionRequest(initialForm.actionId))).thenReturn(
-            CharacterManagementSnapshotResponse(
-                character = null,
-                actions = listOf(
-                    CharacterObservedActionResponse(
-                        actionId = confirmationForm.actionId,
-                        source = confirmationForm.submitSource,
-                        label = confirmationForm.submitLabel,
-                    ),
-                ),
-            ),
-        )
-        Mockito.`when`(management.execute(1L, "hof-10", TownActionRequest(confirmationForm.actionId))).thenReturn(
             CharacterManagementSnapshotResponse(
                 character = null,
                 actions = emptyList(),
@@ -224,11 +194,10 @@ class HofCharacterCommandAdapterTest {
         assertEquals(60, result.candidates.single().level)
         assertEquals("Social Knight", result.candidates.single().job)
         Mockito.verify(management).execute(1L, "hof-10", TownActionRequest(initialForm.actionId))
-        Mockito.verify(management).execute(1L, "hof-10", TownActionRequest(confirmationForm.actionId))
     }
 
     @Test
-    fun `kick submits the confirmation form before archiving the target`() {
+    fun `kick delegates all three confirmation forms to management`() {
         val executor = Mockito.mock(TownAuthenticatedExecutor::class.java)
         val management = Mockito.mock(CharacterManagementService::class.java)
         val query = Mockito.mock(CharacterQueryRepository::class.java)
@@ -237,22 +206,7 @@ class HofCharacterCommandAdapterTest {
         val initialPage = formPage("<form method='post'><input type='submit' name='byebye' value='Kick'></form>")
         Mockito.`when`(executor.load(1L, CHARACTER_URL)).thenReturn(initialPage)
         val initialForm = initialPage.forms.single()
-        val confirmationForm = formPage(
-            "<form method='post'><input type='submit' name='byebye2' value='Dismiss'></form>",
-        ).forms.single()
         Mockito.`when`(management.execute(1L, "hof-10", TownActionRequest(initialForm.actionId))).thenReturn(
-            CharacterManagementSnapshotResponse(
-                character = null,
-                actions = listOf(
-                    CharacterObservedActionResponse(
-                        actionId = confirmationForm.actionId,
-                        source = confirmationForm.submitSource,
-                        label = confirmationForm.submitLabel,
-                    ),
-                ),
-            ),
-        )
-        Mockito.`when`(management.execute(1L, "hof-10", TownActionRequest(confirmationForm.actionId))).thenReturn(
             CharacterManagementSnapshotResponse(
                 character = null,
                 actions = emptyList(),
@@ -268,7 +222,23 @@ class HofCharacterCommandAdapterTest {
 
         assertEquals(listOf("캐릭터를 삭제했습니다."), result.messages)
         Mockito.verify(management).execute(1L, "hof-10", TownActionRequest(initialForm.actionId))
-        Mockito.verify(management).execute(1L, "hof-10", TownActionRequest(confirmationForm.actionId))
+    }
+
+    @Test
+    fun `kick rejects a confirmation name that no longer matches the current character`() {
+        val executor = Mockito.mock(TownAuthenticatedExecutor::class.java)
+        val management = Mockito.mock(CharacterManagementService::class.java)
+        val query = Mockito.mock(CharacterQueryRepository::class.java)
+        arrangeSequence(executor)
+        Mockito.`when`(query.findByAccountIdAndId(1L, 7L)).thenReturn(
+            CharacterEntity(7L, account, "hof-10", "바뀐이름", "Social Knight", updatedAt = revision),
+        )
+        val adapter = HofCharacterCommandAdapter(executor, management, HofRequestFactory(), query)
+
+        val result = adapter.execute(context, CharacterCommand.Kick(7L, revision, "소셜"))
+
+        assertEquals("CONFIRMATION_MISMATCH", assertIs<CharacterCommandResult.Rejected>(result).code)
+        Mockito.verifyNoInteractions(management)
     }
 
     @Test

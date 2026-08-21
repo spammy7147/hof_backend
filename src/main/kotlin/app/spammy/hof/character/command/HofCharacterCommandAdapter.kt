@@ -36,9 +36,9 @@ class HofCharacterCommandAdapter(
             }
             val messages = when (command) {
                 is CharacterCommand.Rename -> executeRename(context, command.newName)
-                is CharacterCommand.Kick -> executeConfirmedSnapshot(context, "byebye", "byebye2")?.messages
+                is CharacterCommand.Kick -> executeSimpleSnapshot(context, "byebye")?.messages
                 is CharacterCommand.Knockback -> {
-                    val snapshot = executeConfirmedSnapshot(context, "knockback", "knockback2")
+                    val snapshot = executeSimpleSnapshot(context, "knockback")
                         ?: return@executeAccountSequence rejected(
                         context,
                         "FORM_NOT_OBSERVED",
@@ -145,20 +145,6 @@ class HofCharacterCommandAdapter(
     private fun executeSimpleSnapshot(context: CharacterCommandContext, source: String) =
         findForm(context, source)?.let { form ->
             management.execute(context.accountId, context.hofCharacterId, TownActionRequest(form.actionId))
-        }
-
-    private fun executeConfirmedSnapshot(
-        context: CharacterCommandContext,
-        initialSource: String,
-        confirmationSource: String,
-    ) = executeSimpleSnapshot(context, initialSource)?.actions
-        ?.singleOrNull { it.source.equals(confirmationSource, ignoreCase = true) }
-        ?.let { confirmation ->
-            management.execute(
-                context.accountId,
-                context.hofCharacterId,
-                TownActionRequest(confirmation.actionId),
-            )
         }
 
     private fun executeChoice(

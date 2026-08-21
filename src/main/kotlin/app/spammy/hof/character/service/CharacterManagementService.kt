@@ -52,6 +52,25 @@ class CharacterManagementService(
         val observed = executor.load(accountId, characterUrl(hofCharacterId)).forms
             .singleOrNull { it.actionId == action.actionId }
             ?: throw ApiException(ErrorCode.INVALID_REQUEST, "현재 페이지에서 실행할 수 없는 작업입니다.")
+        val identityActionSequence = observed.submitSource.identityActionSequence()
+        if (identityActionSequence != null) {
+            return executor.executeResolvedFormSequenceProjected(
+                accountId = accountId,
+                pageUrl = characterUrl(hofCharacterId),
+                requiredSubmitFields = identityActionSequence,
+            ) { _, _, result, _ ->
+                reconcileRosterAfterIdentityChange(
+                    accountId = accountId,
+                    previousHofCharacterId = hofCharacterId,
+                    previousCharacters = before,
+                    actionSource = identityActionSequence.last(),
+                    messages = result.messages,
+                )
+            } ?: throw ApiException(
+                ErrorCode.INVALID_REQUEST,
+                "현재 HOF 페이지에서 캐릭터 작업 확인 단계를 찾지 못해 실행하지 않았습니다.",
+            )
+        }
         if (observed.submitSource.equals("showreset", ignoreCase = true)) {
             return executor.executeProjected(
                 accountId = accountId,
@@ -277,7 +296,13 @@ class CharacterManagementService(
     private fun characterUrl(hofCharacterId: String): String = requestFactory.characterPage(hofCharacterId).url
 
     private fun String.isTerminalIdentityAction(): Boolean =
-        equals("byebye2", ignoreCase = true) || equals("knockback2", ignoreCase = true)
+        equals("byebye3", ignoreCase = true) || equals("knockback2", ignoreCase = true)
+
+    private fun String.identityActionSequence(): List<String>? = when {
+        equals("knockback", ignoreCase = true) -> listOf("knockback", "knockback2")
+        equals("byebye", ignoreCase = true) -> listOf("byebye", "byebye2", "byebye3")
+        else -> null
+    }
 }
 
 private fun app.spammy.hof.character.dto.CharacterResponse.toIdentityEvidence() =
