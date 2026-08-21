@@ -57,7 +57,7 @@ class AutomationWorkSessionService(
     private val commands: AutomationWorkSessionCommandRepository,
     private val timeProvider: TimeProvider,
     private val properties: AutomationSessionProperties = AutomationSessionProperties(),
-) : AutomationWorkTracker, AutomationWorkLifecycle {
+) : AutomationWorkTracker, AutomationWorkOwnership, AutomationWorkLifecycle {
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     override fun resumeForCheck(accountId: Long, sessionId: Long) {
         requireRunningRuntime(accountId)
@@ -96,11 +96,25 @@ class AutomationWorkSessionService(
         accountId: Long,
         entryId: Long,
         action: PreparedAutomationAction,
+    ): AutomationWorkSessionEntity = ensureAssignment(accountId, entryId, action.toWorkAssignment(entryId))
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    override fun ensure(
+        accountId: Long,
+        entryId: Long,
+        assignment: AutomationWorkAssignment,
+    ) {
+        ensureAssignment(accountId, entryId, assignment)
+    }
+
+    private fun ensureAssignment(
+        accountId: Long,
+        entryId: Long,
+        spec: AutomationWorkAssignment,
     ): AutomationWorkSessionEntity {
         requireRunningRuntime(accountId)
         val entry = typed.findEntry(accountId, entryId)
             ?: throw AutomationConfigurationException("Automation entry $entryId is missing.")
-        val spec = action.toWorkSpec(entryId)
         val open = queries.lockOpen(accountId)
         open.firstOrNull { it.status == AutomationWorkStatus.RUNNING }?.let { running ->
             check(running.matches(entryId, spec)) {
@@ -414,11 +428,10 @@ class AutomationWorkSessionService(
         return now.plus(properties.reconciliationInterval).plusSeconds(jitterSeconds)
     }
 
-    private fun PreparedAutomationAction.toWorkSpec(entryId: Long): WorkSpec = when (this) {
-        is QuestAction.Claim -> WorkSpec(AutomationWorkType.QUEST, questKey)
-        is QuestAction.Accept -> WorkSpec(AutomationWorkType.QUEST, questKey)
-        is HomeQuestAutomationAction -> WorkSpec(AutomationWorkType.HOME_QUEST, questId)
-        is QuestAction.Battle -> WorkSpec(
+    private fun PreparedAutomationAction.toWorkAssignment(entryId: Long): AutomationWorkAssignment = when (this) {
+        is QuestAction.Claim -> AutomationWorkAssignment(AutomationWorkType.QUEST, questKey)
+        is QuestAction.Accept -> AutomationWorkAssignment(AutomationWorkType.QUEST, questKey)
+        is QuestAction.Battle -> AutomationWorkAssignment(
             type = AutomationWorkType.QUEST,
             targetKey = questKey,
             questCycle = questCycle,
@@ -435,42 +448,32 @@ class AutomationWorkSessionService(
                         .singleOrNull { "${it.categoryId}/${it.mapCode}" == target }
                         ?.dailyTargetCount
                         ?: throw AutomationConfigurationException("Battle-map target $target is missing or duplicated.")
-                    WorkSpec(AutomationWorkType.BATTLE_MAP, target, targetCount = configuredTarget)
+                    AutomationWorkAssignment(AutomationWorkType.BATTLE_MAP, target, targetCount = configuredTarget)
                 }
-                BattleAutomationActionSource.UNION_AUTOMATION -> WorkSpec(AutomationWorkType.UNION, target)
-                BattleAutomationActionSource.FISHING_AUTOMATION -> WorkSpec(AutomationWorkType.FISHING, FISHING_CYCLE_TARGET)
-                BattleAutomationActionSource.RAID_AUTOMATION -> WorkSpec(
+                BattleAutomationActionSource.UNION_AUTOMATION -> AutomationWorkAssignment(AutomationWorkType.UNION, target)
+                BattleAutomationActionSource.FISHING_AUTOMATION -> AutomationWorkAssignment(AutomationWorkType.FISHING, FISHING_CYCLE_TARGET)
+                BattleAutomationActionSource.RAID_AUTOMATION -> AutomationWorkAssignment(
                     AutomationWorkType.RAID,
                     sourceTargetKey ?: target,
                 )
-                BattleAutomationActionSource.QUEST_AUTOMATION -> WorkSpec(AutomationWorkType.QUEST, target)
-                BattleAutomationActionSource.ADVENTURE_AUTOMATION -> WorkSpec(AutomationWorkType.ADVENTURE_MAP, target)
+                BattleAutomationActionSource.QUEST_AUTOMATION -> AutomationWorkAssignment(AutomationWorkType.QUEST, target)
+                BattleAutomationActionSource.ADVENTURE_AUTOMATION -> AutomationWorkAssignment(AutomationWorkType.ADVENTURE_MAP, target)
             }
         }
-        is AdventureMapAutomationAction -> WorkSpec(AutomationWorkType.ADVENTURE_MAP, "$categoryId/$mapCode")
-        is FishingTownAutomationAction -> WorkSpec(AutomationWorkType.FISHING, FISHING_CYCLE_TARGET)
-        is RaidTownAutomationAction -> WorkSpec(AutomationWorkType.RAID, targetRaidId ?: raidId ?: action.name)
-        is RaidCycleAbortAutomationAction -> WorkSpec(AutomationWorkType.RAID, raidId)
+        is AdventureMapAutomationAction -> AutomationWorkAssignment(AutomationWorkType.ADVENTURE_MAP, "$categoryId/$mapCode")
+        is FishingTownAutomationAction -> AutomationWorkAssignment(AutomationWorkType.FISHING, FISHING_CYCLE_TARGET)
+        is RaidTownAutomationAction -> AutomationWorkAssignment(AutomationWorkType.RAID, targetRaidId ?: raidId ?: action.name)
+        is RaidCycleAbortAutomationAction -> AutomationWorkAssignment(AutomationWorkType.RAID, raidId)
+        else -> error("Prepared action belongs to the action lifecycle module.")
     }
 
-    private data class WorkSpec(
-        val type: AutomationWorkType,
-        val targetKey: String,
-        val targetCount: Int? = null,
-        val questCycle: String? = null,
-        val missionKey: String? = null,
-        val missionType: String? = null,
-        val observedCurrent: Int? = null,
-        val observedRequired: Int? = null,
-    )
-
-    private fun AutomationWorkSessionEntity.matches(entryId: Long, spec: WorkSpec): Boolean =
+    private fun AutomationWorkSessionEntity.matches(entryId: Long, spec: AutomationWorkAssignment): Boolean =
         entry.id == entryId &&
             workType == spec.type &&
             (targetKey == spec.targetKey || workType in setOf(AutomationWorkType.FISHING, AutomationWorkType.RAID))
 
     private fun AutomationWorkSessionEntity.alignRaidTarget(
-        spec: WorkSpec,
+        spec: AutomationWorkAssignment,
         latestConfigVersion: String,
     ): AutomationWorkSessionEntity? {
         if (workType != AutomationWorkType.RAID || targetKey == spec.targetKey) return null

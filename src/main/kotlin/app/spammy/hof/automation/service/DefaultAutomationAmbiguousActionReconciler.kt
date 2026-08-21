@@ -13,9 +13,6 @@ import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.quest.model.QuestState
 import app.spammy.hof.quest.service.QuestGatewayService
 import app.spammy.hof.town.fishing.service.FishingService
-import app.spammy.hof.town.home.model.HomeMode
-import app.spammy.hof.town.home.model.HomeQuestState
-import app.spammy.hof.town.home.service.HomeService
 import org.springframework.stereotype.Service
 
 @Service
@@ -30,7 +27,6 @@ class DefaultAutomationAmbiguousActionReconciler(
     private val raidCycleModule: RaidCycleModule,
     private val raidObservationAdapter: HofRaidObservationAdapter,
     private val fishingService: FishingService? = null,
-    private val homeService: HomeService? = null,
 ) : AutomationAmbiguousActionReconciler {
     override fun reconcile(
         accountId: Long,
@@ -39,7 +35,6 @@ class DefaultAutomationAmbiguousActionReconciler(
         is StoredTypedActionPayload.QuestAccept -> reconcileQuestAccept(accountId, payload)
         is StoredTypedActionPayload.QuestClaim -> reconcileQuestClaim(accountId, payload)
         is StoredTypedActionPayload.QuestBattle -> reconcileQuestBattle(accountId, payload)
-        is StoredTypedActionPayload.HomeQuest -> reconcileHomeQuest(accountId, payload)
         is StoredTypedActionPayload.AdventureMap -> reconcileAdventure(accountId, action.entryId, payload)
         is StoredTypedActionPayload.BattleMap -> {
             if (payload.source == BattleAutomationActionSource.RAID_AUTOMATION) {
@@ -51,20 +46,7 @@ class DefaultAutomationAmbiguousActionReconciler(
         is StoredTypedActionPayload.FishingTown -> reconcileFishing(accountId, payload)
         is StoredTypedActionPayload.RaidTown -> reconcileRaid(accountId, action.entryId, payload)
         is StoredTypedActionPayload.RaidCycleAbort -> reconcileRaidAbort(accountId, action.entryId, payload)
-    }
-
-    private fun reconcileHomeQuest(accountId: Long, payload: StoredTypedActionPayload.HomeQuest): AmbiguousActionResolution {
-        val latest = homeService?.load(accountId, HomeMode.HOME)
-            ?: return AmbiguousActionResolution.VerifyLater(retryAt(), "자택 퀘스트 상태 조회 연결을 기다립니다.")
-        val quest = latest.quests.singleOrNull { it.id == payload.questId }
-        if (quest == null) {
-            return if (payload.action == HomeQuestAutomationActionType.CLAIM) AmbiguousActionResolution.Applied()
-            else AmbiguousActionResolution.VerifyLater(retryAt(), "수락한 자택 퀘스트가 아직 관측되지 않습니다.")
-        }
-        val originalState = if (payload.action == HomeQuestAutomationActionType.ACCEPT) HomeQuestState.AVAILABLE else HomeQuestState.CLAIMABLE
-        return if (quest.state != originalState) AmbiguousActionResolution.Applied()
-        else if (quest.actionId == payload.actionId) AmbiguousActionResolution.Resubmit
-        else AmbiguousActionResolution.VerifyLater(retryAt(), "자택 퀘스트 실행 결과를 아직 확정할 수 없습니다.")
+        else -> error("Stored action ${payload.kind()} belongs to the action lifecycle module.")
     }
 
     private fun reconcileFishing(accountId: Long, payload: StoredTypedActionPayload.FishingTown): AmbiguousActionResolution {

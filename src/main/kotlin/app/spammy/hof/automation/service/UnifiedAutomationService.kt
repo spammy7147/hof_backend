@@ -72,6 +72,7 @@ class UnifiedAutomationService(
     private val workSessionQueries: AutomationWorkSessionQueryRepository,
     private val raidCycleModule: RaidCycleModule,
     private val decisionJournal: AutomationDecisionJournal,
+    private val actionLifecycleModule: AutomationActionLifecycleModule,
 ) {
     @Transactional(readOnly = true)
     fun getTyped(accountId: Long): TypedAutomationAggregateResponse {
@@ -819,6 +820,25 @@ class UnifiedAutomationService(
     private fun typedCurrentAction(
         row: app.spammy.hof.automation.entity.TypedAutomationActionRunEntity,
     ): TypedAutomationCurrentActionResponse? {
+        val managedDescriptor = try {
+            actionLifecycleModule.restore(row, row.account.id)?.descriptor
+        } catch (_: RuntimeException) {
+            null
+        }
+        if (managedDescriptor != null) {
+            val display = managedDescriptor.display
+            return TypedAutomationCurrentActionResponse(
+                source = managedDescriptor.source,
+                kind = managedDescriptor.storageKind,
+                actionLabel = managedDescriptor.actionLabel,
+                questName = display?.questName,
+                missionLabel = display?.missionLabel,
+                missionCurrent = display?.missionCurrent,
+                missionRequired = display?.missionRequired,
+                mapName = display?.mapName,
+                battleCount = managedDescriptor.battleCount,
+            )
+        }
         val decoded = try {
             storedActionCodec.verifyPersisted(row, row.account.id)
         } catch (_: RuntimeException) {
@@ -830,7 +850,6 @@ class UnifiedAutomationService(
             is StoredTypedActionPayload.QuestAccept,
             is StoredTypedActionPayload.QuestBattle,
             -> AutomationType.QUEST
-            is StoredTypedActionPayload.HomeQuest -> AutomationType.HOME_QUEST
             is StoredTypedActionPayload.BattleMap -> when (payload.source) {
                 BattleAutomationActionSource.UNION_AUTOMATION -> AutomationType.UNION
                 else -> AutomationType.BATTLE_MAP
@@ -841,7 +860,6 @@ class UnifiedAutomationService(
             is StoredTypedActionPayload.RaidCycleAbort -> AutomationType.RAID
             null -> when {
                 row.actionKind.startsWith("QUEST_") -> AutomationType.QUEST
-                row.actionKind == "HOME_QUEST" -> AutomationType.HOME_QUEST
                 row.actionKind == "BATTLE_MAP" -> AutomationType.BATTLE_MAP
                 row.actionKind == "ADVENTURE_MAP" -> AutomationType.ADVENTURE_MAP
                 row.actionKind == "FISHING_TOWN" -> AutomationType.FISHING
@@ -849,6 +867,7 @@ class UnifiedAutomationService(
                 row.actionKind == "RAID_CYCLE_ABORT" -> AutomationType.RAID
                 else -> null
             }
+            else -> null
         } ?: return null
         val display = payload?.display
         val battleCount = when (payload) {
@@ -866,7 +885,6 @@ class UnifiedAutomationService(
                 row.actionKind == "QUEST_CLAIM" -> "퀘스트 완료"
                 row.actionKind == "QUEST_ACCEPT" -> "퀘스트 수락"
                 row.actionKind == "QUEST_BATTLE" -> "퀘스트 전투"
-                row.actionKind == "HOME_QUEST" -> "자택 퀘스트"
                 row.actionKind == "BATTLE_MAP" -> "전투맵"
                 row.actionKind == "ADVENTURE_MAP" -> "모험맵"
                 row.actionKind == "FISHING_TOWN" -> "낚시"

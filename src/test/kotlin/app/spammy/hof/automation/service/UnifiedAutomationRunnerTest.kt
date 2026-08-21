@@ -23,6 +23,7 @@ import java.time.LocalDate
 import java.io.IOException
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import org.mockito.Mockito
 import tools.jackson.module.kotlin.jacksonObjectMapper
@@ -36,15 +37,169 @@ class UnifiedAutomationRunnerTest {
     private val wakeup = Mockito.mock(AutomationWakeupPort::class.java)
     private val sharedCooldowns = Mockito.mock(SharedBattleCooldownService::class.java)
     private val ambiguousReconciler = Mockito.mock(AutomationAmbiguousActionReconciler::class.java)
+    private val actionLifecycleModule = Mockito.mock(AutomationActionLifecycleModule::class.java)
     private val codec = StoredTypedAutomationActionCodec(jacksonObjectMapper())
     private val runner = UnifiedAutomationRunner(
-        preflight, runtime, loader, coordinator, executor, codec, wakeup, sharedCooldowns, ambiguousReconciler,
+        preflight, runtime, loader, coordinator, executor, codec, wakeup, sharedCooldowns,
+        ambiguousReconciler, actionLifecycleModule,
     )
 
     init {
         Mockito.`when`(runtime.isRunning(7)).thenReturn(true)
         Mockito.`when`(executor.execute(Mockito.eq(7L), anyStoredAction()))
             .thenReturn(TypedAutomationExecution.Completed)
+    }
+
+    @Test
+    fun `자택 퀘스트는 새 행동 수명주기 module로 준비하고 한 번 실행한다`() {
+        val decisions = Mockito.mock(AutomationDecisionSource::class.java)
+        val workTracker = Mockito.mock(AutomationWorkTracker::class.java)
+        val lifecycleModule = Mockito.mock(AutomationActionLifecycleModule::class.java)
+        val managed = Mockito.mock(ManagedAutomationAction::class.java)
+        val journal = Mockito.mock(AutomationDecisionJournal::class.java)
+        val action = HomeQuestAutomationAction(
+            7L,
+            "home-1",
+            "빗자루 제작",
+            "accept-action",
+            HomeQuestAutomationActionType.ACCEPT,
+        )
+        val stored = StoredTypedAutomationAction(
+            10L,
+            "home-execution-1",
+            StoredTypedActionPayload.HomeQuest(
+                "home-1",
+                "accept-action",
+                HomeQuestAutomationActionType.ACCEPT,
+                StoredActionDisplay(questName = "빗자루 제작"),
+            ),
+        )
+        val decision = AutomationCoordination.Runnable(
+            10L,
+            action,
+            emptyList(),
+            listOf(
+                AutomationEvaluationTrace(
+                    sequence = 0,
+                    entryId = 10L,
+                    type = AutomationType.HOME_QUEST,
+                    outcome = AutomationDecisionOutcome.SELECTED,
+                    reasonCode = "RUNNABLE",
+                    message = "기존 선택 설명",
+                    actionKind = "HOME_QUEST",
+                    targetKey = "home-1",
+                    targetName = "빗자루 제작",
+                ),
+            ),
+        )
+        val row = Mockito.mock(TypedAutomationActionRunEntity::class.java)
+        Mockito.`when`(row.id).thenReturn(88L)
+        Mockito.`when`(preflight.ensureReady(7L)).thenReturn(AutomationDailyPreflight.Result.Ready)
+        Mockito.`when`(runtime.claim(7L)).thenReturn(TypedRuntimeClaim.Acquired("token"))
+        Mockito.`when`(decisions.select(7L)).thenReturn(decision)
+        Mockito.`when`(lifecycleModule.prepare(7L, 10L, action)).thenReturn(managed)
+        Mockito.`when`(managed.storedAction).thenReturn(stored)
+        val descriptor = AutomationActionDescriptor(
+            AutomationType.HOME_QUEST,
+            "HOME_QUEST",
+            "HOME_ACCEPT",
+            "자택 퀘스트",
+            "수명주기 descriptor · 빗자루 제작",
+            "home-1",
+            "빗자루 제작",
+            stored.payload.display,
+        )
+        Mockito.`when`(managed.descriptor).thenReturn(descriptor)
+        Mockito.`when`(lifecycleModule.describe(action)).thenReturn(descriptor)
+        Mockito.`when`(runtime.prepare(7L, "token", stored)).thenReturn(row)
+        Mockito.`when`(lifecycleModule.restore(row, 7L)).thenReturn(managed)
+        Mockito.`when`(runtime.markSubmitting(7L, "token", 88L)).thenReturn(true)
+        Mockito.`when`(managed.execute()).thenReturn(TypedAutomationExecution.Completed)
+        Mockito.`when`(journal.appendDecision(Mockito.eq(7L), anyCoordination()))
+            .thenReturn(41L)
+        val scopedRunner = UnifiedAutomationRunner(
+            dailyPreflight = preflight,
+            typedRuntime = runtime,
+            decisionSource = decisions,
+            workTracker = workTracker,
+            typedActionExecutor = executor,
+            typedCodec = codec,
+            wakeupPort = wakeup,
+            sharedBattleCooldowns = sharedCooldowns,
+            ambiguousReconciler = ambiguousReconciler,
+            decisionJournal = journal,
+            actionLifecycleModule = lifecycleModule,
+        )
+
+        scopedRunner.runOne(7L)
+
+        Mockito.verify(lifecycleModule).prepare(7L, 10L, action)
+        Mockito.verify(lifecycleModule).restore(row, 7L)
+        Mockito.verify(managed, Mockito.times(1)).execute()
+        Mockito.verify(runtime).succeedAndEnqueueWake(7L, "token", 88L, "TYPED_ACTION_COMPLETED", emptyList())
+        Mockito.verifyNoInteractions(workTracker, executor)
+        val traceCaptor = org.mockito.ArgumentCaptor.forClass(AutomationActionTrace::class.java)
+        Mockito.verify(journal, Mockito.times(2)).appendActionResult(Mockito.eq(41L), captureTrace(traceCaptor))
+        assertTrue(traceCaptor.allValues.all { it.actionKind == "HOME_ACCEPT" })
+        assertTrue(traceCaptor.allValues.all { it.message.startsWith("수명주기 descriptor · 빗자루 제작") })
+        val decisionCaptor = org.mockito.ArgumentCaptor.forClass(AutomationCoordination::class.java)
+        Mockito.verify(journal).appendDecision(Mockito.eq(7L), captureCoordination(decisionCaptor))
+        val selectedTrace = assertIs<AutomationCoordination.Runnable>(decisionCaptor.value).trace.single()
+        assertEquals("HOME_ACCEPT", selectedTrace.actionKind)
+        assertEquals("수명주기 descriptor · 빗자루 제작", selectedTrace.message)
+    }
+
+    @Test
+    fun `저장된 자택 퀘스트의 불명확 결과는 module로 복원해 blind replay 없이 조정한다`() {
+        val lifecycleModule = Mockito.mock(AutomationActionLifecycleModule::class.java)
+        val managed = Mockito.mock(ManagedAutomationAction::class.java)
+        val row = Mockito.mock(TypedAutomationActionRunEntity::class.java)
+        val stored = StoredTypedAutomationAction(
+            10L,
+            "home-execution-1",
+            StoredTypedActionPayload.HomeQuest(
+                "home-1",
+                "accept-action",
+                HomeQuestAutomationActionType.ACCEPT,
+                StoredActionDisplay(questName = "빗자루 제작"),
+            ),
+        )
+        Mockito.`when`(row.id).thenReturn(88L)
+        Mockito.`when`(row.status).thenReturn(TypedAutomationActionStatus.RECONCILING)
+        Mockito.`when`(preflight.ensureReady(7L)).thenReturn(AutomationDailyPreflight.Result.Ready)
+        Mockito.`when`(runtime.claim(7L)).thenReturn(TypedRuntimeClaim.Acquired("token", row))
+        Mockito.`when`(lifecycleModule.restore(row, 7L)).thenReturn(managed)
+        Mockito.`when`(managed.storedAction).thenReturn(stored)
+        Mockito.`when`(managed.descriptor).thenReturn(
+            AutomationActionDescriptor(
+                AutomationType.HOME_QUEST,
+                "HOME_QUEST",
+                "HOME_ACCEPT",
+                "자택 퀘스트",
+                "자택 퀘스트 수락 · 빗자루 제작",
+            ),
+        )
+        Mockito.`when`(managed.reconcile()).thenReturn(AmbiguousActionResolution.Resubmit)
+        val scopedRunner = UnifiedAutomationRunner(
+            dailyPreflight = preflight,
+            typedRuntime = runtime,
+            decisionSource = Mockito.mock(AutomationDecisionSource::class.java),
+            workTracker = Mockito.mock(AutomationWorkTracker::class.java),
+            typedActionExecutor = executor,
+            typedCodec = codec,
+            wakeupPort = wakeup,
+            sharedBattleCooldowns = sharedCooldowns,
+            ambiguousReconciler = ambiguousReconciler,
+            actionLifecycleModule = lifecycleModule,
+        )
+
+        scopedRunner.runOne(7L)
+
+        Mockito.verify(lifecycleModule).restore(row, 7L)
+        Mockito.verify(managed).reconcile()
+        Mockito.verify(runtime).retryReconciledSubmission(7L, "token", 88L, "TYPED_RECONCILED_RESUBMIT")
+        Mockito.verify(managed, Mockito.never()).execute()
+        Mockito.verifyNoInteractions(executor, ambiguousReconciler)
     }
 
     @Test
@@ -60,7 +215,8 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(runtime.prepare(Mockito.eq(7L), eqString("token"), anyStoredAction())).thenReturn(row)
         Mockito.`when`(runtime.markSubmitting(7, "token", 88L)).thenReturn(true)
         val scopedRunner = UnifiedAutomationRunner(
-            preflight, runtime, decisions, workTracker, executor, codec, wakeup, sharedCooldowns, ambiguousReconciler,
+            preflight, runtime, decisions, workTracker, executor, codec, wakeup, sharedCooldowns,
+            ambiguousReconciler, actionLifecycleModule,
         )
 
         scopedRunner.runOne(7)
@@ -84,7 +240,8 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(runtime.scheduleAutomaticRetry(7, "token", null, AutomationStopReason.FATAL, "invalid stored action"))
             .thenReturn(retryAt)
         val scopedRunner = UnifiedAutomationRunner(
-            preflight, runtime, decisions, workTracker, executor, codec, wakeup, sharedCooldowns, ambiguousReconciler,
+            preflight, runtime, decisions, workTracker, executor, codec, wakeup, sharedCooldowns,
+            ambiguousReconciler, actionLifecycleModule,
         )
 
         scopedRunner.runOne(7)
@@ -114,7 +271,8 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(runtime.scheduleAutomaticRetry(7, "token", null, AutomationStopReason.FATAL, "failed to track work"))
             .thenReturn(retryAt)
         val scopedRunner = UnifiedAutomationRunner(
-            preflight, runtime, decisions, workTracker, executor, codec, wakeup, sharedCooldowns, ambiguousReconciler,
+            preflight, runtime, decisions, workTracker, executor, codec, wakeup, sharedCooldowns,
+            ambiguousReconciler, actionLifecycleModule,
         )
 
         scopedRunner.runOne(7)
@@ -147,7 +305,8 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(runtime.scheduleAutomaticRetry(7, "token", null, AutomationStopReason.FATAL, "interrupted preparation"))
             .thenReturn(retryAt)
         val scopedRunner = UnifiedAutomationRunner(
-            preflight, runtime, decisions, workTracker, executor, codec, wakeup, sharedCooldowns, ambiguousReconciler,
+            preflight, runtime, decisions, workTracker, executor, codec, wakeup, sharedCooldowns,
+            ambiguousReconciler, actionLifecycleModule,
         )
 
         try {
@@ -227,7 +386,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(journal.appendDecision(7L, decision)).thenReturn(41L)
         val scopedRunner = UnifiedAutomationRunner(
             preflight, runtime, decisions, workTracker, executor, codec, wakeup, sharedCooldowns,
-            ambiguousReconciler, journal,
+            ambiguousReconciler, actionLifecycleModule, journal,
         )
 
         scopedRunner.runOne(7)
@@ -703,6 +862,7 @@ class UnifiedAutomationRunnerTest {
                 wakeup,
                 sharedCooldowns,
                 ambiguousReconciler,
+                actionLifecycleModule,
             )
             Mockito.`when`(casePreflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
             Mockito.`when`(caseRuntime.isRunning(7)).thenReturn(true)
@@ -732,6 +892,10 @@ class UnifiedAutomationRunnerTest {
         Mockito.any(StoredTypedAutomationAction::class.java)
             ?: StoredTypedAutomationAction(1, "any", StoredTypedActionPayload.QuestClaim("q", "a"))
 
+    private fun anyCoordination(): AutomationCoordination =
+        Mockito.any(AutomationCoordination::class.java)
+            ?: AutomationCoordination.Idle(emptyList())
+
     private fun capture(captor: org.mockito.ArgumentCaptor<StoredTypedAutomationAction>): StoredTypedAutomationAction =
         captor.capture() ?: StoredTypedAutomationAction(1, "capture", StoredTypedActionPayload.QuestClaim("q", "a"))
 
@@ -741,6 +905,10 @@ class UnifiedAutomationRunnerTest {
             "capture",
             "capture",
         )
+
+    private fun captureCoordination(
+        captor: org.mockito.ArgumentCaptor<AutomationCoordination>,
+    ): AutomationCoordination = captor.capture() ?: AutomationCoordination.Idle(emptyList())
 
     private fun eqString(value: String): String = Mockito.eq(value) ?: value
 

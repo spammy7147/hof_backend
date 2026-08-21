@@ -26,6 +26,7 @@ class UnifiedAutomationRunner @Autowired constructor(
     private val wakeupPort: AutomationWakeupPort,
     private val sharedBattleCooldowns: SharedBattleCooldownService,
     private val ambiguousReconciler: AutomationAmbiguousActionReconciler,
+    private val actionLifecycleModule: AutomationActionLifecycleModule,
     private val decisionJournal: AutomationDecisionJournal? = null,
 ) {
     constructor(
@@ -38,6 +39,7 @@ class UnifiedAutomationRunner @Autowired constructor(
         wakeupPort: AutomationWakeupPort,
         sharedBattleCooldowns: SharedBattleCooldownService,
         ambiguousReconciler: AutomationAmbiguousActionReconciler,
+        actionLifecycleModule: AutomationActionLifecycleModule,
     ) : this(
         dailyPreflight,
         typedRuntime,
@@ -48,6 +50,7 @@ class UnifiedAutomationRunner @Autowired constructor(
         wakeupPort,
         sharedBattleCooldowns,
         ambiguousReconciler,
+        actionLifecycleModule,
     )
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -89,14 +92,15 @@ class UnifiedAutomationRunner @Autowired constructor(
         val token = claim.token
         var decisionCycleId: Long? = null
         var selectedWarnings: List<String>? = null
-        val stored = claim.preparedAction?.let {
-            runCatching { typedCodec.verifyPersisted(it, accountId) }.getOrElse { error ->
-                log.warn("Stored typed action integrity failure accountId={} actionId={} errorType={}", accountId, it.id, error.javaClass.name)
-                typedRuntime.isolateIntegrityFailureForRetry(
-                    accountId, token, it.id, "Stored typed action integrity check failed.",
-                )?.let { retryAt ->
-                    wakeupPort.schedule(accountId, retryAt, AUTOMATIC_RETRY_WAKE_REASON)
-                }
+        var managedAction: ManagedAutomationAction? = null
+        var stored = claim.preparedAction?.let {
+            runCatching {
+                actionLifecycleModule.restore(it, accountId)?.let { restored ->
+                    managedAction = restored
+                    restored.storedAction
+                } ?: typedCodec.verifyPersisted(it, accountId)
+            }.getOrElse { error ->
+                isolateStoredActionIntegrityFailure(accountId, token, it, error)
                 return
             }
         } ?: run {
@@ -136,8 +140,13 @@ class UnifiedAutomationRunner @Autowired constructor(
                 scheduleAutomaticRetry(accountId, token, null, AutomationStopReason.FATAL, error.message ?: "Fatal live snapshot failure")
                 return
             }
+            val decisionDescriptor = (decision as? AutomationCoordination.Runnable)
+                ?.let { actionLifecycleModule.describe(it.action) }
             try {
-                decisionCycleId = decisionJournal?.appendDecision(accountId, decision)
+                decisionCycleId = decisionJournal?.appendDecision(
+                    accountId,
+                    decision.withDescriptor(decisionDescriptor),
+                )
             } catch (error: Exception) {
                 stopPreparationFailure(accountId, token, (decision as? AutomationCoordination.Runnable)?.entryId ?: 0, "JOURNAL", error)
                 return
@@ -147,8 +156,13 @@ class UnifiedAutomationRunner @Autowired constructor(
                     try {
                         selectedWarnings = decision.warnings
                         typedRuntime.recordWarnings(accountId, token, decision.warnings)
-                        workTracker.ensureForAction(accountId, decision.entryId, decision.action)
-                        toStored(decision.entryId, decision.action)
+                        actionLifecycleModule.prepare(accountId, decision.entryId, decision.action)?.let { prepared ->
+                            managedAction = prepared
+                            prepared.storedAction
+                        } ?: run {
+                            workTracker.ensureForAction(accountId, decision.entryId, decision.action)
+                            toStored(decision.entryId, decision.action)
+                        }
                     } catch (error: Exception) {
                         stopPreparationFailure(accountId, token, decision.entryId, "BUILD", error)
                         return
@@ -188,13 +202,31 @@ class UnifiedAutomationRunner @Autowired constructor(
                 return
             }
         }
+        if (claim.preparedAction == null && managedAction != null) {
+            val restored = runCatching {
+                requireNotNull(actionLifecycleModule.restore(row, accountId)) {
+                    "Persisted managed action is not owned by the action lifecycle module."
+                }
+            }.getOrElse { error ->
+                isolateStoredActionIntegrityFailure(accountId, token, row, error)
+                return
+            }
+            managedAction = restored
+            stored = restored.storedAction
+        }
+        val actionDescriptor = managedAction?.descriptor
+        fun trace(
+            kind: AutomationHistoryEventKind,
+            code: String,
+            message: String,
+            nextRunAt: Instant? = null,
+        ) = actionTrace(stored, kind, code, message, nextRunAt, actionDescriptor)
         if (decisionCycleId == null) {
             decisionCycleId = try {
                 val reconciling = row.status == app.spammy.hof.automation.entity.TypedAutomationActionStatus.RECONCILING
                 decisionJournal?.appendPreparedActionAttempt(
                     accountId,
-                    actionTrace(
-                        stored,
+                    trace(
                         if (reconciling) AutomationHistoryEventKind.WAITING else AutomationHistoryEventKind.SELECTED,
                         if (reconciling) "AMBIGUOUS_RESULT_VERIFY" else "PREPARED_ACTION_RETRY",
                         if (reconciling) {
@@ -211,13 +243,12 @@ class UnifiedAutomationRunner @Autowired constructor(
         }
         if (row.status == app.spammy.hof.automation.entity.TypedAutomationActionStatus.RECONCILING) {
             val resolution = try {
-                ambiguousReconciler.reconcile(accountId, stored)
+                managedAction?.reconcile() ?: ambiguousReconciler.reconcile(accountId, stored)
             } catch (error: Throwable) {
                 error.findHofAutomationDeferral()?.let { deferred ->
                     val message = deferred.message ?: "HOF server returned 503 while verifying an ambiguous action."
                     decisionCycleId?.let { cycleId -> runCatching {
-                        decisionJournal?.appendActionResult(cycleId, actionTrace(
-                            stored,
+                        decisionJournal?.appendActionResult(cycleId, trace(
                             AutomationHistoryEventKind.WAITING,
                             "RECONCILIATION_HOF_DEFERRED",
                             "적용 여부를 확인하는 중 HOF 응답이 지연되어 다시 확인합니다. 사유: $message",
@@ -253,8 +284,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                     decisionCycleId?.let { cycleId ->
                         val trace = when (val execution = resolution.execution) {
                             is TypedAutomationExecution.RaidCycleFinished -> execution.outcome.toAutomationActionTrace()
-                            else -> actionTrace(
-                                stored,
+                            else -> trace(
                                 AutomationHistoryEventKind.ACTION_SUCCEEDED,
                                 "AMBIGUOUS_RESULT_APPLIED",
                                 "상태 재확인 결과 이전 요청이 이미 적용된 것으로 확인했습니다.",
@@ -265,8 +295,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                 }
                 AmbiguousActionResolution.Resubmit -> {
                     decisionCycleId?.let { cycleId ->
-                        decisionJournal?.appendActionResult(cycleId, actionTrace(
-                            stored,
+                        decisionJournal?.appendActionResult(cycleId, trace(
                             AutomationHistoryEventKind.WAITING,
                             "AMBIGUOUS_RESULT_RESUBMIT",
                             "상태 재확인 결과 적용되지 않아 같은 단계를 다시 제출합니다.",
@@ -276,8 +305,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                 }
                 is AmbiguousActionResolution.VerifyLater -> {
                     decisionCycleId?.let { cycleId ->
-                        decisionJournal?.appendActionResult(cycleId, actionTrace(
-                            stored,
+                        decisionJournal?.appendActionResult(cycleId, trace(
                             AutomationHistoryEventKind.WAITING,
                             "AMBIGUOUS_RESULT_VERIFY_LATER",
                             "아직 적용 여부를 확정할 수 없어 다음 확인 시각까지 기다립니다. 사유: ${resolution.reason}",
@@ -303,10 +331,10 @@ class UnifiedAutomationRunner @Autowired constructor(
             return
         }
         decisionCycleId?.let { cycleId ->
-            decisionJournal?.appendActionResult(cycleId, actionTrace(stored, AutomationHistoryEventKind.ACTION_STARTED, "ACTION_STARTED", "자동화 행동을 시작했습니다."))
+            decisionJournal?.appendActionResult(cycleId, trace(AutomationHistoryEventKind.ACTION_STARTED, "ACTION_STARTED", "자동화 행동을 시작했습니다."))
         }
         try {
-            val execution = typedActionExecutor.execute(accountId, stored)
+            val execution = managedAction?.execute() ?: typedActionExecutor.execute(accountId, stored)
             val wakeReason = when (execution) {
                 TypedAutomationExecution.Completed -> "TYPED_ACTION_COMPLETED"
                 is TypedAutomationExecution.BattleCompleted -> {
@@ -332,8 +360,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             decisionCycleId?.let { cycleId ->
                 val trace = when (execution) {
                     is TypedAutomationExecution.RaidCycleFinished -> execution.outcome.toAutomationActionTrace()
-                    else -> actionTrace(
-                        stored,
+                    else -> trace(
                         AutomationHistoryEventKind.ACTION_SUCCEEDED,
                         wakeReason,
                         "자동화 행동을 완료했습니다.",
@@ -344,8 +371,7 @@ class UnifiedAutomationRunner @Autowired constructor(
         } catch (error: Throwable) {
             error.findHofAutomationDeferral()?.let { deferred ->
                 decisionCycleId?.let { cycleId -> runCatching {
-                    decisionJournal?.appendActionResult(cycleId, actionTrace(
-                        stored,
+                    decisionJournal?.appendActionResult(cycleId, trace(
                         AutomationHistoryEventKind.WAITING,
                         "ACTION_HOF_DEFERRED",
                         "HOF 서버가 잠시 요청을 받지 않아 현재 단계를 보존하고 재시도합니다. 사유: ${deferred.message ?: "일시적 응답 지연"}",
@@ -366,8 +392,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             }
             error.findAmbiguousSubmission()?.let { ambiguous ->
                 decisionCycleId?.let { cycleId -> runCatching {
-                    decisionJournal?.appendActionResult(cycleId, actionTrace(
-                        stored,
+                    decisionJournal?.appendActionResult(cycleId, trace(
                         AutomationHistoryEventKind.WAITING,
                         "ACTION_RESULT_AMBIGUOUS",
                         "요청 전송 후 결과가 불확실합니다. 같은 동작을 즉시 다시 보내지 않고 HOF 상태를 재확인합니다. 사유: ${ambiguous.message ?: "응답 확인 실패"}",
@@ -383,7 +408,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             }
             log.warn("Typed automation action stopped accountId={} actionId={} errorType={}", accountId, row.id, error.javaClass.name)
             decisionCycleId?.let { cycleId -> runCatching {
-                decisionJournal?.appendActionResult(cycleId, actionTrace(stored, AutomationHistoryEventKind.ACTION_FAILED, "ACTION_FAILED", error.message ?: error.javaClass.simpleName))
+                decisionJournal?.appendActionResult(cycleId, trace(AutomationHistoryEventKind.ACTION_FAILED, "ACTION_FAILED", error.message ?: error.javaClass.simpleName))
             } }
             scheduleAutomaticRetry(
                 accountId, token, row.id, classifyActionStop(error),
@@ -433,6 +458,28 @@ class UnifiedAutomationRunner @Autowired constructor(
             )
         } finally {
             if (interrupted) Thread.currentThread().interrupt()
+        }
+    }
+
+    private fun isolateStoredActionIntegrityFailure(
+        accountId: Long,
+        token: String,
+        row: app.spammy.hof.automation.entity.TypedAutomationActionRunEntity,
+        error: Throwable,
+    ) {
+        log.warn(
+            "Stored typed action integrity failure accountId={} actionId={} errorType={}",
+            accountId,
+            row.id,
+            error.javaClass.name,
+        )
+        typedRuntime.isolateIntegrityFailureForRetry(
+            accountId,
+            token,
+            row.id,
+            "Stored typed action integrity check failed.",
+        )?.let { retryAt ->
+            wakeupPort.schedule(accountId, retryAt, AUTOMATIC_RETRY_WAKE_REASON)
         }
     }
 
@@ -489,6 +536,25 @@ class UnifiedAutomationRunner @Autowired constructor(
             else -> "TYPED_ACTION_COMPLETED"
         }
 
+    private fun AutomationCoordination.withDescriptor(
+        descriptor: AutomationActionDescriptor?,
+    ): AutomationCoordination {
+        if (this !is AutomationCoordination.Runnable || descriptor == null) return this
+        return copy(trace = trace.map { item ->
+            if (item.entryId == entryId && item.outcome == AutomationDecisionOutcome.SELECTED) {
+                item.copy(
+                    type = descriptor.source,
+                    message = descriptor.context,
+                    actionKind = descriptor.actionKind,
+                    targetKey = descriptor.targetKey,
+                    targetName = descriptor.targetName,
+                )
+            } else {
+                item
+            }
+        })
+    }
+
     private fun toStored(entryId: Long, action: PreparedAutomationAction): StoredTypedAutomationAction {
         val executionId = when (action) {
             is BattleMapAutomationAction -> action.executionIdentity
@@ -517,12 +583,6 @@ class UnifiedAutomationRunner @Autowired constructor(
                 observedCurrent = action.missionCurrent,
                 observedRequired = action.missionRequired,
             )
-            is HomeQuestAutomationAction -> StoredTypedActionPayload.HomeQuest(
-                action.questId,
-                action.actionId,
-                action.action,
-                StoredActionDisplay(questName = action.questName),
-            )
             is BattleMapAutomationAction -> StoredTypedActionPayload.BattleMap(
                 action.progressDate, action.categoryId, action.mapCode, action.presetMode,
                 action.presetId ?: throw AutomationConfigurationException(), action.battleCount,
@@ -549,6 +609,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                 StoredActionDisplay(mapName = action.raidName, missionLabel = action.observedStatus),
             )
             is RaidCycleAbortAutomationAction -> StoredTypedActionPayload.RaidCycleAbort(action.raidId, action.reason)
+            else -> error("Prepared action belongs to the action lifecycle module.")
         }
         return StoredTypedAutomationAction(entryId, executionId, payload)
     }
@@ -563,11 +624,25 @@ class UnifiedAutomationRunner @Autowired constructor(
         code: String,
         message: String,
         nextRunAt: Instant? = null,
+        descriptor: AutomationActionDescriptor? = null,
     ): AutomationActionTrace {
+        if (descriptor != null) {
+            return AutomationActionTrace(
+                kind = kind,
+                reasonCode = code,
+                message = "${descriptor.context} · $message",
+                entryId = action.entryId,
+                type = descriptor.source,
+                actionKind = descriptor.actionKind,
+                targetKey = descriptor.targetKey,
+                targetName = descriptor.targetName,
+                presetId = null,
+                nextRunAt = nextRunAt,
+            )
+        }
         val payload = action.payload
         val type = when (payload) {
             is StoredTypedActionPayload.QuestClaim, is StoredTypedActionPayload.QuestAccept, is StoredTypedActionPayload.QuestBattle -> AutomationType.QUEST
-            is StoredTypedActionPayload.HomeQuest -> AutomationType.HOME_QUEST
             is StoredTypedActionPayload.AdventureMap -> AutomationType.ADVENTURE_MAP
             is StoredTypedActionPayload.FishingTown -> AutomationType.FISHING
             is StoredTypedActionPayload.RaidTown, is StoredTypedActionPayload.RaidCycleAbort -> AutomationType.RAID
@@ -579,18 +654,17 @@ class UnifiedAutomationRunner @Autowired constructor(
                 BattleAutomationActionSource.QUEST_AUTOMATION -> AutomationType.QUEST
                 BattleAutomationActionSource.BATTLE_MAP_AUTOMATION -> AutomationType.BATTLE_MAP
             }
+            else -> error("Stored action belongs to the action lifecycle module.")
         }
         val actionKind = when (payload) {
             is StoredTypedActionPayload.RaidTown -> payload.action.name
             is StoredTypedActionPayload.RaidCycleAbort -> "CYCLE_ABORT"
             is StoredTypedActionPayload.FishingTown -> payload.action.name
-            is StoredTypedActionPayload.HomeQuest -> "HOME_${payload.action.name}"
             else -> payload.kind()
         }
         val actionContext = when (payload) {
             is StoredTypedActionPayload.QuestClaim -> "퀘스트 보상 수령 · ${payload.display?.questName ?: payload.questKey}"
             is StoredTypedActionPayload.QuestAccept -> "퀘스트 수락 · ${payload.display?.questName ?: payload.questKey}"
-            is StoredTypedActionPayload.HomeQuest -> "자택 퀘스트 ${if (payload.action == HomeQuestAutomationActionType.ACCEPT) "수락" else "완료"} · ${payload.display?.questName ?: payload.questId}"
             is StoredTypedActionPayload.QuestBattle -> listOfNotNull(
                 "퀘스트 전투 · ${payload.display?.questName ?: payload.questKey}",
                 payload.display?.missionLabel,
@@ -646,7 +720,6 @@ class UnifiedAutomationRunner @Autowired constructor(
                 is StoredTypedActionPayload.QuestClaim -> payload.questKey
                 is StoredTypedActionPayload.QuestAccept -> payload.questKey
                 is StoredTypedActionPayload.QuestBattle -> "${payload.categoryId}/${payload.mapCode}"
-                is StoredTypedActionPayload.HomeQuest -> payload.questId
                 is StoredTypedActionPayload.BattleMap -> "${payload.categoryId}/${payload.mapCode}"
                 is StoredTypedActionPayload.AdventureMap -> "${payload.categoryId}/${payload.mapCode}"
                 is StoredTypedActionPayload.RaidTown -> payload.targetRaidId ?: payload.raidId

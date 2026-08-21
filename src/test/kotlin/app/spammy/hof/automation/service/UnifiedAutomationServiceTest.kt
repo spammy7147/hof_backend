@@ -110,6 +110,7 @@ class UnifiedAutomationServiceTest {
     private val statusSnapshots = Mockito.mock(HofStatusSnapshotService::class.java)
     private val raidCycleModule = Mockito.mock(RaidCycleModule::class.java)
     private val decisionJournal = Mockito.mock(AutomationDecisionJournal::class.java)
+    private val actionLifecycleModule = Mockito.mock(AutomationActionLifecycleModule::class.java)
     private var currentTime = NOW
     private val service = UnifiedAutomationService(
         accountQueryRepository = accountQueryRepository,
@@ -135,6 +136,7 @@ class UnifiedAutomationServiceTest {
         workSessionQueries = workSessionQueries,
         raidCycleModule = raidCycleModule,
         decisionJournal = decisionJournal,
+        actionLifecycleModule = actionLifecycleModule,
     )
 
     init {
@@ -851,6 +853,42 @@ class UnifiedAutomationServiceTest {
         assertEquals(25, action?.missionRequired)
         assertEquals("동관 응접실", action?.mapName)
         assertEquals(1, action?.battleCount)
+    }
+
+    @Test
+    fun `현재 자택 퀘스트 행동은 수명주기 module descriptor를 표시한다`() {
+        val runtime = TypedAutomationRuntimeStateEntity(
+            accountId = ACCOUNT_ID,
+            account = account(),
+            lifecycleStatus = TypedAutomationLifecycle.RUNNING,
+            createdAt = NOW,
+            updatedAt = NOW,
+        )
+        val row = actionRow("HOME_QUEST", "home-execution")
+        val managed = Mockito.mock(ManagedAutomationAction::class.java)
+        Mockito.`when`(accountQueryRepository.findById(ACCOUNT_ID)).thenReturn(account())
+        Mockito.`when`(typedQuery.findRuntimeState(ACCOUNT_ID)).thenReturn(runtime)
+        Mockito.`when`(typedQuery.findActiveTypedAction(ACCOUNT_ID)).thenReturn(row)
+        Mockito.`when`(actionLifecycleModule.restore(row, ACCOUNT_ID)).thenReturn(managed)
+        Mockito.`when`(managed.descriptor).thenReturn(
+            AutomationActionDescriptor(
+                source = AutomationType.HOME_QUEST,
+                storageKind = "HOME_QUEST",
+                actionKind = "HOME_ACCEPT",
+                actionLabel = "자택 퀘스트 수락",
+                context = "자택 퀘스트 수락 · 빗자루 제작",
+                targetKey = "home-1",
+                targetName = "빗자루 제작",
+                display = StoredActionDisplay(questName = "빗자루 제작"),
+            ),
+        )
+
+        val action = service.getTyped(ACCOUNT_ID).runtime.currentAction
+
+        assertEquals(AutomationType.HOME_QUEST, action?.source)
+        assertEquals("HOME_QUEST", action?.kind)
+        assertEquals("자택 퀘스트 수락", action?.actionLabel)
+        assertEquals("빗자루 제작", action?.questName)
     }
 
     @Test

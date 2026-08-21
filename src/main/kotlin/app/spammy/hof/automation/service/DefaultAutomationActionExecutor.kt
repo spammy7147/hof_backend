@@ -17,7 +17,6 @@ import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.external.client.HofAutomationDeferredException
 import app.spammy.hof.quest.service.QuestGatewayService
 import app.spammy.hof.town.fishing.service.FishingService
-import app.spammy.hof.town.home.service.HomeService
 import app.spammy.hof.town.raid.dto.RaidPubActionRequest
 import app.spammy.hof.town.raid.service.RaidPubService
 import java.io.IOException
@@ -38,7 +37,6 @@ class DefaultAutomationActionExecutor(
     private val raidObservationAdapter: HofRaidObservationAdapter,
     private val fishingService: FishingService? = null,
     private val unionProgress: UnionAutomationProgressService? = null,
-    private val homeService: HomeService? = null,
 ) : TypedAutomationActionExecutor {
     override fun execute(accountId: Long, action: StoredTypedAutomationAction): TypedAutomationExecution =
         try {
@@ -54,13 +52,6 @@ class DefaultAutomationActionExecutor(
                         questGatewayService.accept(accountId, payload.actionNo, HofRequestOrigin.AUTOMATION)
                     }
                     questHandler.onAcceptSucceeded(accountId, action.executionIdentity, QuestAction.Accept(payload.questKey, payload.actionNo))
-                    TypedAutomationExecution.Completed
-                }
-                is StoredTypedActionPayload.HomeQuest -> {
-                    runQuestMutation(accountId) {
-                        (homeService ?: error("Home quest automation gateway is unavailable."))
-                            .runHomeQuest(accountId, payload.actionId)
-                    }
                     TypedAutomationExecution.Completed
                 }
                 is StoredTypedActionPayload.QuestBattle -> {
@@ -179,6 +170,7 @@ class DefaultAutomationActionExecutor(
                     completion?.let(TypedAutomationExecution::RaidCycleFinished)
                         ?: TypedAutomationExecution.Completed
                 }
+                else -> error("Stored action ${payload.kind()} belongs to the action lifecycle module.")
             }
         } catch (cooldown: SharedBattleCooldownRejectedException) {
             val request = action.payload.battleRequestOrNull()
@@ -270,11 +262,11 @@ class DefaultAutomationActionExecutor(
         is StoredTypedActionPayload.AdventureMap -> battleRequest
         is StoredTypedActionPayload.QuestClaim,
         is StoredTypedActionPayload.QuestAccept,
-        is StoredTypedActionPayload.HomeQuest,
         is StoredTypedActionPayload.FishingTown,
         is StoredTypedActionPayload.RaidTown,
         is StoredTypedActionPayload.RaidCycleAbort,
         -> null
+        else -> null
     }
 
     private fun exactTerminalProof(
