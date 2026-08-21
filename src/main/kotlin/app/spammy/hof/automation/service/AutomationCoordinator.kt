@@ -142,6 +142,20 @@ class AutomationCoordinator(
     }
 }
 
+private fun QuestDirective.toHandlerEvaluation(): HandlerEvaluation = when (this) {
+    is QuestDirective.Execute -> HandlerEvaluation.Runnable(action)
+    is QuestDirective.WaitUntil -> HandlerEvaluation.Unavailable(nextRunAt, reasonCode, message)
+    is QuestDirective.Recheck -> HandlerEvaluation.Unavailable(
+        at,
+        reasonCode,
+        message,
+        AutomationWaitScope.HOLD_CURRENT_WORK,
+    )
+    is QuestDirective.Hold -> HandlerEvaluation.ConfigurationWarning(message, reasonCode)
+    is QuestDirective.Fatal -> HandlerEvaluation.Fatal(reason, message)
+    QuestDirective.Skip -> HandlerEvaluation.Skipped
+}
+
 private fun AutomationCoordinatorEntry.waitingTrace(evaluation: HandlerEvaluation.Unavailable): SelectedActionTrace? {
     fishing?.let { snapshot ->
         val observations = listOfNotNull(

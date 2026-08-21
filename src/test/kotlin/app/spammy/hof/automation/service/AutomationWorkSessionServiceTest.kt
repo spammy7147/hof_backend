@@ -188,6 +188,49 @@ class AutomationWorkSessionServiceTest {
     }
 
     @Test
+    fun `quest battle assignment aligns the session opened before cycle identity was known`() {
+        val questEntry = AutomationEntryEntity(12, account, AutomationType.QUEST, 2, true, now, now)
+        val session = AutomationWorkSessionEntity(
+            id = 24,
+            account = account,
+            entry = questEntry,
+            workType = AutomationWorkType.QUEST,
+            targetKey = "repeat-q",
+            status = AutomationWorkStatus.RUNNING,
+            configVersion = questEntry.updatedAt.toString(),
+            questCycle = null,
+            confirmedCount = 4,
+            createdAt = now,
+            updatedAt = now,
+        )
+        Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
+        Mockito.`when`(typed.findEntry(7, questEntry.id)).thenReturn(questEntry)
+        Mockito.`when`(queries.lockOpen(7)).thenReturn(listOf(session))
+
+        service.ensure(
+            7,
+            questEntry.id,
+            AutomationWorkAssignment(
+                type = AutomationWorkType.QUEST,
+                targetKey = "repeat-q",
+                questCycle = "2",
+                missionKey = "clear",
+                missionType = "MAP_CLEAR",
+                observedCurrent = 1,
+                observedRequired = 5,
+            ),
+        )
+
+        assertEquals("2", session.questCycle)
+        assertEquals("clear", session.missionKey)
+        assertEquals("MAP_CLEAR", session.missionType)
+        assertEquals(1, session.observedCurrent)
+        assertEquals(5, session.observedRequired)
+        assertEquals(0, session.confirmedCount)
+        Mockito.verify(commands).save(session)
+    }
+
+    @Test
     fun `fishing work assignment keeps the daily session across catch`() {
         val fishingEntry = AutomationEntryEntity(13, account, AutomationType.FISHING, 3, true, now, now)
         val session = AutomationWorkSessionEntity(
@@ -436,33 +479,6 @@ class AutomationWorkSessionServiceTest {
 
         assertEquals(AutomationWorkStatus.COMPLETED, session.status)
         assertEquals(now, session.finishedAt)
-        Mockito.verify(commands).save(session)
-    }
-
-    @Test
-    fun `authoritative quest progress corrects an optimistic mismatch`() {
-        val session = AutomationWorkSessionEntity(
-            id = 25,
-            account = account,
-            entry = AutomationEntryEntity(10, account, AutomationType.QUEST, 0, true, now, now),
-            workType = AutomationWorkType.QUEST,
-            targetKey = "quest-1",
-            status = AutomationWorkStatus.RUNNING,
-            configVersion = "config-v1",
-            missionType = app.spammy.hof.quest.model.QuestMissionType.MAP_CLEAR.name,
-            observedCurrent = 5,
-            observedRequired = 5,
-            createdAt = now,
-            updatedAt = now,
-        )
-        Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
-        Mockito.`when`(queries.lockById(7, 25)).thenReturn(session)
-
-        service.reconcileQuestProgress(7, 25, 4, 5)
-
-        assertEquals(4, session.observedCurrent)
-        assertEquals(5, session.observedRequired)
-        assertEquals(now, session.lastVerifiedAt)
         Mockito.verify(commands).save(session)
     }
 

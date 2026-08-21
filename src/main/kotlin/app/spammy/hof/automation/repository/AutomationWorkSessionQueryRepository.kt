@@ -27,6 +27,7 @@ data class AutomationWorkSessionView(
     val materialName: String?,
     val nextCheckAt: Instant?,
     val holdMessage: String? = null,
+    val questCycle: String? = null,
 )
 
 @Repository
@@ -109,6 +110,7 @@ class AutomationWorkSessionQueryRepository(
         automationWorkSessionEntity.materialName,
         automationWorkSessionEntity.nextCheckAt,
         automationWorkSessionEntity.holdMessage,
+        automationWorkSessionEntity.questCycle,
     ).from(automationWorkSessionEntity)
         .join(automationWorkSessionEntity.entry, automationEntryEntity)
 
@@ -127,6 +129,7 @@ class AutomationWorkSessionQueryRepository(
         materialName = get(automationWorkSessionEntity.materialName),
         nextCheckAt = get(automationWorkSessionEntity.nextCheckAt),
         holdMessage = get(automationWorkSessionEntity.holdMessage),
+        questCycle = get(automationWorkSessionEntity.questCycle),
     )
 
     private companion object {

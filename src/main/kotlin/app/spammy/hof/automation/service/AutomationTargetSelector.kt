@@ -12,11 +12,8 @@ import app.spammy.hof.automation.repository.AutomationWorkSessionQueryRepository
 import app.spammy.hof.automation.repository.AutomationWorkSessionView
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import app.spammy.hof.common.time.TimeProvider
-import app.spammy.hof.quest.model.QuestMission
 import app.spammy.hof.quest.model.QuestMissionType
-import app.spammy.hof.quest.model.QuestProgress
 import app.spammy.hof.quest.model.QuestSection
-import app.spammy.hof.quest.model.QuestSnapshot
 import app.spammy.hof.quest.model.QuestState
 import java.time.Instant
 import java.time.ZoneId
@@ -52,24 +49,10 @@ class AutomationTargetSelector(
         if (session.workType == AutomationWorkType.RAID) {
             return selectRaidSession(accountId, session, initialWarnings, initialTrace)
         }
-        val optimisticQuest = session.optimisticMapClearQuest()
-        val entry = loader.loadEntry(accountId, session.entryId, session.targetKey, optimisticQuest)
+        val entry = loader.loadEntry(accountId, session.entryId, session.targetKey)
+            .withQuestWorkProgress(session)
         return when (val result = coordinate(entry)) {
                 is AutomationCoordination.Runnable -> {
-                    val battle = result.action as? QuestAction.Battle
-                    if (
-                        optimisticQuest == null &&
-                        session.missionType == QuestMissionType.MAP_CLEAR.name &&
-                        battle?.missionType == QuestMissionType.MAP_CLEAR &&
-                        battle.missionCurrent != null && battle.missionRequired != null
-                    ) {
-                        lifecycle.reconcileQuestProgress(
-                            accountId,
-                            session.id,
-                            battle.missionCurrent,
-                            battle.missionRequired,
-                        )
-                    }
                     result.withPrefix(initialWarnings, initialTrace)
                 }
                 is AutomationCoordination.Fatal -> result.withPrefix(initialWarnings, initialTrace)
@@ -386,29 +369,25 @@ class AutomationTargetSelector(
         )
     }
 
-    private fun AutomationWorkSessionView.optimisticMapClearQuest(): List<QuestSnapshot>? {
-        val current = observedCurrent ?: return null
-        val required = observedRequired ?: return null
-        val mapMissionKey = missionKey ?: return null
-        if (missionType != QuestMissionType.MAP_CLEAR.name || current >= required) return null
-        return listOf(
-            QuestSnapshot(
-                questKey = targetKey,
-                displayCode = targetKey,
-                name = targetKey,
-                state = QuestState.ACTIVE,
-                section = QuestSection.ACTIVE,
-                sourceOrder = 0,
-                missions = listOf(
-                    QuestMission(
-                        key = mapMissionKey,
-                        type = QuestMissionType.MAP_CLEAR,
-                        target = null,
-                        progress = QuestProgress(current, required),
-                        completable = false,
-                    ),
+    private fun AutomationCoordinatorEntry.withQuestWorkProgress(
+        session: AutomationWorkSessionView,
+    ): AutomationCoordinatorEntry {
+        val current = session.observedCurrent ?: return this
+        val required = session.observedRequired ?: return this
+        val cycle = session.questCycle ?: return this
+        val mission = session.missionKey ?: return this
+        if (session.workType != AutomationWorkType.QUEST || session.missionType != QuestMissionType.MAP_CLEAR.name) return this
+        return copy(
+            quest = quest?.copy(
+                workProgress = QuestWorkProgressSnapshot(
+                    sessionId = session.id,
+                    questKey = session.targetKey,
+                    questCycle = cycle,
+                    missionKey = mission,
+                    current = current,
+                    required = required,
+                    authoritative = true,
                 ),
-                actionNo = null,
             ),
         )
     }

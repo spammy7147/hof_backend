@@ -95,6 +95,16 @@ data class QuestCounterKey(
     val mapCode: String,
 )
 
+data class QuestWorkProgressSnapshot(
+    val sessionId: Long,
+    val questKey: String,
+    val questCycle: String,
+    val missionKey: String,
+    val current: Int,
+    val required: Int,
+    val authoritative: Boolean,
+)
+
 data class QuestAutomationSnapshot(
     val accountId: Long,
     val quests: List<QuestSnapshot>,
@@ -107,6 +117,7 @@ data class QuestAutomationSnapshot(
     val primaryPresetId: Long? = null,
     val primaryParty: ResolvedAutomationParty? = null,
     val timeSnapshot: AutomationTimeSnapshot? = null,
+    val workProgress: QuestWorkProgressSnapshot? = null,
 )
 
 internal fun QuestMission.displayLabel(): String {
@@ -124,6 +135,13 @@ interface QuestAutomationProgressStore {
     fun startNewCycle(accountId: Long, resultId: String, questKey: String): String
     fun findRecordedBattleVictoryCount(accountId: Long, resultId: String, action: QuestAction.Battle): Int?
     fun recordBattleResult(accountId: Long, resultId: String, action: QuestAction.Battle, victoryCount: Int)
+    fun reconcileMapClearProgress(
+        accountId: Long,
+        work: QuestWorkProgressSnapshot,
+        observedQuestCycle: String,
+        current: Int,
+        required: Int,
+    ): QuestProgressReconciliation
 }
 
 class QuestAutomationResultConflictException(resultId: String) : IllegalStateException(
@@ -239,6 +257,44 @@ class JpaQuestAutomationProgressStore(
             counter.successfulRuns += victoryCount
         }
         projectMapClearWorkProgress(accountId, action, victoryCount, now)
+    }
+
+    @Transactional
+    override fun reconcileMapClearProgress(
+        accountId: Long,
+        work: QuestWorkProgressSnapshot,
+        observedQuestCycle: String,
+        current: Int,
+        required: Int,
+    ): QuestProgressReconciliation {
+        require(current >= 0 && required >= 0 && current <= required)
+        queryRepository.lockAccount(accountId)
+        val persistedCycle = queryRepository.findQuestCycle(accountId, work.questKey)
+            ?.currentCycle
+            ?.toString()
+            ?: "0"
+        if (persistedCycle != observedQuestCycle) return QuestProgressReconciliation.Stale
+        val session = workQueries.lockById(accountId, work.sessionId)
+            ?: return QuestProgressReconciliation.Stale
+        if (!(
+            session.workType == AutomationWorkType.QUEST &&
+                session.status == AutomationWorkStatus.RUNNING &&
+                session.targetKey == work.questKey &&
+                session.questCycle == work.questCycle &&
+                session.missionKey == work.missionKey &&
+                session.missionType == QuestMissionType.MAP_CLEAR.name &&
+                session.observedCurrent == work.current &&
+                session.observedRequired == work.required
+        )) return QuestProgressReconciliation.Stale
+        val now = Instant.now()
+        if (session.questCycle != observedQuestCycle) session.confirmedCount = 0
+        session.questCycle = observedQuestCycle
+        session.observedCurrent = current
+        session.observedRequired = required
+        session.lastVerifiedAt = now
+        session.updatedAt = now
+        workCommands.save(session)
+        return QuestProgressReconciliation.Applied
     }
 
     private fun projectMapClearWorkProgress(
@@ -383,14 +439,42 @@ class JpaQuestAutomationProgressStore(
 
 /**
  * 일반 퀘스트의 우선순위 판단과 권위 결과 반영을 한 경계에서 처리한다.
- * 외부 요청은 수행하지 않으며 [evaluate]는 저장 상태를 변경하지 않는다.
+ * 외부 요청은 수행하지 않으며 [decideNext]는 최신 권위 진행도를 먼저 수렴한 뒤 다음 지시를 반환한다.
  */
 @Service
 class DefaultQuestWorkCycleModule(
     private val progressStore: QuestAutomationProgressStore,
     private val timePolicy: BattleTimePolicy = BattleTimePolicy(),
 ) : QuestWorkCycleModule {
-    override fun decideNext(snapshot: QuestAutomationSnapshot): QuestDirective = evaluateRules(snapshot)
+    override fun decideNext(snapshot: QuestAutomationSnapshot): QuestDirective {
+        reconcileAuthoritativeMapClearProgress(snapshot)?.let { return it }
+        return evaluateRules(snapshot)
+    }
+
+    private fun reconcileAuthoritativeMapClearProgress(snapshot: QuestAutomationSnapshot): QuestDirective.Recheck? {
+        val work = snapshot.workProgress?.takeIf { it.authoritative } ?: return null
+        val observedQuestCycle = snapshot.currentCycles[work.questKey] ?: INITIAL_CYCLE
+        val quest = snapshot.quests.singleOrNull { it.questKey == work.questKey } ?: return null
+        val progress = quest.missions.singleOrNull {
+            it.key == work.missionKey && it.type == QuestMissionType.MAP_CLEAR
+        }?.progress ?: return null
+        return when (progressStore.reconcileMapClearProgress(
+            snapshot.accountId,
+            work,
+            observedQuestCycle,
+            progress.current,
+            progress.required,
+        )) {
+            QuestProgressReconciliation.Applied -> null
+            QuestProgressReconciliation.Stale -> staleProgressRecheck(snapshot)
+        }
+    }
+
+    private fun staleProgressRecheck(snapshot: QuestAutomationSnapshot) = QuestDirective.Recheck(
+        at = snapshot.now,
+        reasonCode = "QUEST_PROGRESS_STALE",
+        message = "퀘스트 진행 상태가 판단 중 변경되어 최신 상태를 즉시 다시 확인합니다.",
+    )
 
     private fun evaluateRules(context: QuestAutomationSnapshot): QuestDirective {
         val selections = context.selections
@@ -674,29 +758,33 @@ class DefaultQuestWorkCycleModule(
                     mission.key,
                     resolved.categoryId,
                     resolved.mapCode,
-                    if (context.primaryPresetId == null && context.primaryParty == null) {
-                        QuestPresetSelection(PresetSelectionMode.PRIMARY)
-                    } else {
-                        QuestPresetSelection(
-                            PresetSelectionMode.PRIMARY,
-                            resolvedPresetId = context.primaryPresetId,
-                            resolutionChecked = true,
-                            resolvedParty = context.primaryParty,
-                        )
-                    },
+                    QuestPresetSelection(
+                        PresetSelectionMode.PRIMARY,
+                        resolvedPresetId = context.primaryPresetId,
+                        resolutionChecked = true,
+                        resolvedParty = context.primaryParty,
+                    ),
                     0,
                     false,
                 )
-                BattleMapAliasResolution.Missing,
-                BattleMapAliasResolution.Ambiguous,
-                -> return QuestDirective.Hold(
+                BattleMapAliasResolution.Missing -> return QuestDirective.Hold(
                     missingBattleMapWarning(quest, mission),
                     "QUEST_BATTLE_MAP_MISSING",
+                )
+                BattleMapAliasResolution.Ambiguous -> return QuestDirective.Hold(
+                    "${quest.name} · $target 맵 후보가 여러 개라 자동으로 고를 수 없습니다. 이 임무에 사용할 맵을 직접 지정해 주세요.",
+                    "QUEST_BATTLE_MAP_AMBIGUOUS",
                 )
             }
         }
         val state = context.mapStates.firstOrNull {
             it.categoryId == selected.categoryId && it.mapCode == selected.mapCode
+        }
+        if (!selected.hasValidPreset()) {
+            return QuestDirective.Hold(
+                "Quest ${quest.questKey} mission ${mission.key} has an invalid preset selection.",
+                "QUEST_PRESET_INVALID",
+            )
         }
         if (state?.isRunnable(context.now) != true) {
             return state?.takeIf { it.isBlockedOnlyByCooldown(context.now) }?.cooldownUntil

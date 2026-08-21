@@ -425,7 +425,7 @@ class AutomationTargetSelectorTest {
     }
 
     @Test
-    fun `map clear below optimistic target reuses session progress instead of refreshing quests`() {
+    fun `map clear below optimistic target still reloads authoritative quest progress`() {
         val session = session(
             id = 25,
             entry = questEntry,
@@ -434,11 +434,11 @@ class AutomationTargetSelectorTest {
             status = AutomationWorkStatus.RUNNING,
             missionKey = "clear-map",
             missionType = QuestMissionType.MAP_CLEAR.name,
+            questCycle = "1",
             observedCurrent = 3,
             observedRequired = 5,
         )
-        val entrySnapshot = AutomationCoordinatorEntry(10, AutomationType.QUEST)
-        val optimisticQuest = QuestSnapshot(
+        val liveQuest = QuestSnapshot(
             questKey = "quest-1",
             name = "quest-1",
             state = QuestState.ACTIVE,
@@ -455,6 +455,22 @@ class AutomationTargetSelectorTest {
             ),
             actionNo = null,
         )
+        val questContext = QuestAutomationSnapshot(
+            accountId = 7,
+            quests = listOf(liveQuest),
+            selections = emptyList(),
+            mapStates = emptyList(),
+            currentCycles = emptyMap(),
+            counters = emptyMap(),
+            mapIdentityCandidates = emptyList(),
+            now = now,
+        )
+        val entrySnapshot = AutomationCoordinatorEntry(10, AutomationType.QUEST, quest = questContext)
+        val enrichedEntry = entrySnapshot.copy(
+            quest = questContext.copy(
+                workProgress = QuestWorkProgressSnapshot(25, "quest-1", "1", "clear-map", 3, 5, authoritative = true),
+            ),
+        )
         val action = QuestAction.Battle(
             questKey = "quest-1",
             questCycle = "1",
@@ -466,13 +482,13 @@ class AutomationTargetSelectorTest {
             preset = QuestPresetSelection(app.spammy.hof.automation.entity.PresetSelectionMode.PRIMARY),
         )
         Mockito.`when`(work.findRunning(7)).thenReturn(session)
-        Mockito.`when`(loader.loadEntry(7, 10, "quest-1", listOf(optimisticQuest))).thenReturn(entrySnapshot)
-        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(entrySnapshot))))
+        Mockito.`when`(loader.loadEntry(7, 10, "quest-1")).thenReturn(entrySnapshot)
+        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(enrichedEntry))))
             .thenReturn(AutomationCoordination.Runnable(10, action, emptyList()))
 
         assertIs<AutomationCoordination.Runnable>(selector.select(7))
 
-        Mockito.verify(loader).loadEntry(7, 10, "quest-1", listOf(optimisticQuest))
+        Mockito.verify(loader).loadEntry(7, 10, "quest-1")
     }
 
     @Test
@@ -485,10 +501,43 @@ class AutomationTargetSelectorTest {
             status = AutomationWorkStatus.RUNNING,
             missionKey = "clear-map",
             missionType = QuestMissionType.MAP_CLEAR.name,
+            questCycle = "1",
             observedCurrent = 5,
             observedRequired = 5,
         )
-        val entrySnapshot = AutomationCoordinatorEntry(10, AutomationType.QUEST)
+        val liveQuest = QuestSnapshot(
+            questKey = "quest-1",
+            name = "quest-1",
+            state = QuestState.ACTIVE,
+            section = QuestSection.ACTIVE,
+            sourceOrder = 0,
+            missions = listOf(
+                QuestMission(
+                    key = "clear-map",
+                    type = QuestMissionType.MAP_CLEAR,
+                    target = null,
+                    progress = QuestProgress(4, 5),
+                    completable = false,
+                ),
+            ),
+            actionNo = null,
+        )
+        val questContext = QuestAutomationSnapshot(
+            accountId = 7,
+            quests = listOf(liveQuest),
+            selections = emptyList(),
+            mapStates = emptyList(),
+            currentCycles = emptyMap(),
+            counters = emptyMap(),
+            mapIdentityCandidates = emptyList(),
+            now = now,
+        )
+        val entrySnapshot = AutomationCoordinatorEntry(10, AutomationType.QUEST, quest = questContext)
+        val enrichedEntry = entrySnapshot.copy(
+            quest = questContext.copy(
+                workProgress = QuestWorkProgressSnapshot(26, "quest-1", "1", "clear-map", 5, 5, authoritative = true),
+            ),
+        )
         val action = QuestAction.Battle(
             questKey = "quest-1",
             questCycle = "1",
@@ -503,12 +552,12 @@ class AutomationTargetSelectorTest {
         )
         Mockito.`when`(work.findRunning(7)).thenReturn(session)
         Mockito.`when`(loader.loadEntry(7, 10, "quest-1", null)).thenReturn(entrySnapshot)
-        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(entrySnapshot))))
+        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(enrichedEntry))))
             .thenReturn(AutomationCoordination.Runnable(10, action, emptyList()))
 
         assertIs<AutomationCoordination.Runnable>(selector.select(7))
 
-        Mockito.verify(lifecycle).reconcileQuestProgress(7, 26, 4, 5)
+        Mockito.verify(coordinator).coordinate(AutomationCoordinatorSnapshot(listOf(enrichedEntry)))
     }
 
     @Test
@@ -657,6 +706,7 @@ class AutomationTargetSelectorTest {
         status: AutomationWorkStatus,
         missionKey: String? = null,
         missionType: String? = null,
+        questCycle: String? = null,
         observedCurrent: Int? = null,
         observedRequired: Int? = null,
         materialName: String? = null,
@@ -677,6 +727,7 @@ class AutomationTargetSelectorTest {
         materialName = materialName,
         nextCheckAt = nextCheckAt,
         holdMessage = holdMessage,
+        questCycle = questCycle,
     )
 
     private fun selection(questKey: String) = QuestAutomationSelection(

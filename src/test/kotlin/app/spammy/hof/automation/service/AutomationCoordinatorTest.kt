@@ -62,6 +62,25 @@ class AutomationCoordinatorTest {
     }
 
     @Test
+    fun `stale quest progress keeps current work and requests an immediate recheck`() {
+        val now = Instant.parse("2026-07-16T01:00:00Z")
+        val coordinator = AutomationCoordinator(
+            quest = questModule(QuestDirective.Recheck(now, "QUEST_PROGRESS_STALE", "recheck")),
+            battle = AutomationHandler<BattleMapAutomationSnapshot> { HandlerEvaluation.Skipped },
+            adventure = AutomationHandler<AdventureMapAutomationSnapshot> { HandlerEvaluation.Skipped },
+        )
+
+        val result = assertIs<AutomationCoordination.Unavailable>(coordinator.coordinate(
+            AutomationCoordinatorSnapshot(
+                listOf(AutomationCoordinatorEntry(1, AutomationType.QUEST, quest = questSnapshot())),
+            ),
+        ))
+
+        assertEquals(now, result.nextRunAt)
+        assertEquals(AutomationWaitScope.HOLD_CURRENT_WORK, result.waitScope)
+    }
+
+    @Test
     fun `fatal stops immediately by priority`() {
         val coordinator = AutomationCoordinator(
             quest = questModule(QuestDirective.Fatal(AutomationStopReason.NETWORK, "fatal")),

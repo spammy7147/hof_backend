@@ -25,17 +25,14 @@ sealed interface QuestDirective {
         val reasonCode: String,
         val message: String,
     ) : QuestDirective
+    data class Recheck(
+        val at: java.time.Instant,
+        val reasonCode: String,
+        val message: String,
+    ) : QuestDirective
     data class Hold(val message: String, val reasonCode: String) : QuestDirective
     data class Fatal(val reason: AutomationStopReason, val message: String) : QuestDirective
     data object Skip : QuestDirective
-}
-
-internal fun QuestDirective.toHandlerEvaluation(): HandlerEvaluation = when (this) {
-    is QuestDirective.Execute -> HandlerEvaluation.Runnable(action)
-    is QuestDirective.WaitUntil -> HandlerEvaluation.Unavailable(nextRunAt, reasonCode, message)
-    is QuestDirective.Hold -> HandlerEvaluation.ConfigurationWarning(message, reasonCode)
-    is QuestDirective.Fatal -> HandlerEvaluation.Fatal(reason, message)
-    QuestDirective.Skip -> HandlerEvaluation.Skipped
 }
 
 sealed interface QuestAttempt {
@@ -71,4 +68,9 @@ sealed interface QuestRecordResult {
     data class Recorded(val questCycle: String? = null) : QuestRecordResult
     data class NotApplied(val message: String) : QuestRecordResult
     data class NeedsRecheck(val message: String) : QuestRecordResult
+}
+
+sealed interface QuestProgressReconciliation {
+    data object Applied : QuestProgressReconciliation
+    data object Stale : QuestProgressReconciliation
 }

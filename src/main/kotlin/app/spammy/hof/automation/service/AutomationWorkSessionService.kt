@@ -19,7 +19,6 @@ interface AutomationWorkLifecycle {
     fun resumeForCheck(accountId: Long, sessionId: Long)
     fun triggerCheck(accountId: Long, sessionId: Long)
     fun yieldForPriority(accountId: Long, sessionId: Long): Boolean
-    fun reconcileQuestProgress(accountId: Long, sessionId: Long, current: Int, required: Int)
     fun waitForResource(accountId: Long, sessionId: Long, materialName: String, missingCount: Int?)
     fun waitForUnknownCooldown(accountId: Long, sessionId: Long)
     fun waitForCooldown(accountId: Long, sessionId: Long, nextCheckAt: java.time.Instant)
@@ -115,7 +114,7 @@ class AutomationWorkSessionService(
             check(running.matches(entryId, spec)) {
                 "A different automation work session is already running for account $accountId."
             }
-            running.alignRaidTarget(spec, entry.updatedAt.toString())?.let(commands::save)
+            running.alignAssignment(spec, entry.updatedAt.toString())?.let(commands::save)
             return running
         }
         open.firstOrNull { it.matches(entryId, spec) }?.let { parked ->
@@ -126,7 +125,7 @@ class AutomationWorkSessionService(
             parked.nextCheckAt = null
             parked.holdMessage = null
             parked.updatedAt = timeProvider.now()
-            parked.alignRaidTarget(spec, entry.updatedAt.toString())
+            parked.alignAssignment(spec, entry.updatedAt.toString())
             commands.save(parked)
             return parked
         }
@@ -164,24 +163,6 @@ class AutomationWorkSessionService(
         session.updatedAt = timeProvider.now()
         commands.save(session)
         return true
-    }
-
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    override fun reconcileQuestProgress(accountId: Long, sessionId: Long, current: Int, required: Int) {
-        require(current >= 0 && required >= 0 && current <= required)
-        requireRunningRuntime(accountId)
-        val session = requireSession(accountId, sessionId)
-        require(
-            session.workType == AutomationWorkType.QUEST &&
-                session.status == AutomationWorkStatus.RUNNING &&
-                session.missionType == app.spammy.hof.quest.model.QuestMissionType.MAP_CLEAR.name,
-        )
-        val now = timeProvider.now()
-        session.observedCurrent = current
-        session.observedRequired = required
-        session.lastVerifiedAt = now
-        session.updatedAt = now
-        commands.save(session)
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -408,12 +389,29 @@ class AutomationWorkSessionService(
             workType == spec.type &&
             (targetKey == spec.targetKey || workType in setOf(AutomationWorkType.FISHING, AutomationWorkType.RAID))
 
-    private fun AutomationWorkSessionEntity.alignRaidTarget(
+    private fun AutomationWorkSessionEntity.alignAssignment(
         spec: AutomationWorkAssignment,
         latestConfigVersion: String,
     ): AutomationWorkSessionEntity? {
-        if (workType != AutomationWorkType.RAID || targetKey == spec.targetKey) return null
-        targetKey = spec.targetKey
+        if (workType == AutomationWorkType.RAID && targetKey != spec.targetKey) {
+            targetKey = spec.targetKey
+            configVersion = latestConfigVersion
+            updatedAt = timeProvider.now()
+            return this
+        }
+        if (workType != AutomationWorkType.QUEST || spec.questCycle == null) return null
+        val identityChanged = questCycle != spec.questCycle ||
+            missionKey != spec.missionKey ||
+            missionType != spec.missionType
+        val progressChanged = observedCurrent != spec.observedCurrent ||
+            observedRequired != spec.observedRequired
+        if (!identityChanged && !progressChanged) return null
+        questCycle = spec.questCycle
+        missionKey = spec.missionKey
+        missionType = spec.missionType
+        observedCurrent = spec.observedCurrent
+        observedRequired = spec.observedRequired
+        if (identityChanged) confirmedCount = 0
         configVersion = latestConfigVersion
         updatedAt = timeProvider.now()
         return this
