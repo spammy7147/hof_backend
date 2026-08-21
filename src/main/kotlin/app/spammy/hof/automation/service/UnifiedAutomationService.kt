@@ -66,7 +66,6 @@ class UnifiedAutomationService(
     private val typedUnionMapRepository: UnionAutomationMapCommandRepository,
     private val typedRaidTargetRepository: RaidAutomationTargetCommandRepository,
     private val automationOutboxService: AutomationOutboxService,
-    private val storedActionCodec: StoredTypedAutomationActionCodec,
     private val hofStatusSnapshots: HofStatusSnapshotService,
     private val workLifecycle: AutomationWorkLifecycle,
     private val workSessionQueries: AutomationWorkSessionQueryRepository,
@@ -820,76 +819,22 @@ class UnifiedAutomationService(
     private fun typedCurrentAction(
         row: app.spammy.hof.automation.entity.TypedAutomationActionRunEntity,
     ): TypedAutomationCurrentActionResponse? {
-        val managedDescriptor = try {
-            actionLifecycleModule.restore(row, row.account.id)?.descriptor
+        val descriptor = try {
+            actionLifecycleModule.restore(row, row.account.id).descriptor
         } catch (_: RuntimeException) {
-            null
+            return null
         }
-        if (managedDescriptor != null) {
-            val display = managedDescriptor.display
-            return TypedAutomationCurrentActionResponse(
-                source = managedDescriptor.source,
-                kind = managedDescriptor.storageKind,
-                actionLabel = managedDescriptor.actionLabel,
-                questName = display?.questName,
-                missionLabel = display?.missionLabel,
-                missionCurrent = display?.missionCurrent,
-                missionRequired = display?.missionRequired,
-                mapName = display?.mapName,
-                battleCount = managedDescriptor.battleCount,
-            )
-        }
-        val decoded = try {
-            storedActionCodec.verifyPersisted(row, row.account.id)
-        } catch (_: RuntimeException) {
-            null
-        }
-        val payload = decoded?.payload
-        val source = row.entry?.type ?: when (payload) {
-            is StoredTypedActionPayload.BattleMap -> when (payload.source) {
-                BattleAutomationActionSource.UNION_AUTOMATION -> AutomationType.UNION
-                else -> AutomationType.BATTLE_MAP
-            }
-            is StoredTypedActionPayload.AdventureMap -> AutomationType.ADVENTURE_MAP
-            is StoredTypedActionPayload.FishingTown -> AutomationType.FISHING
-            is StoredTypedActionPayload.RaidTown -> AutomationType.RAID
-            is StoredTypedActionPayload.RaidCycleAbort -> AutomationType.RAID
-            null -> when {
-                row.actionKind == "BATTLE_MAP" -> AutomationType.BATTLE_MAP
-                row.actionKind == "ADVENTURE_MAP" -> AutomationType.ADVENTURE_MAP
-                row.actionKind == "FISHING_TOWN" -> AutomationType.FISHING
-                row.actionKind == "RAID_TOWN" -> AutomationType.RAID
-                row.actionKind == "RAID_CYCLE_ABORT" -> AutomationType.RAID
-                else -> null
-            }
-            else -> null
-        } ?: return null
-        val display = payload?.display
-        val battleCount = when (payload) {
-            is StoredTypedActionPayload.BattleMap -> payload.battleCount
-            is StoredTypedActionPayload.AdventureMap -> payload.battleCount
-            else -> null
-        }
+        val display = descriptor.display
         return TypedAutomationCurrentActionResponse(
-            source = source,
-            kind = row.actionKind,
-            actionLabel = when {
-                source == AutomationType.UNION -> "유니온"
-                payload is StoredTypedActionPayload.BattleMap && display == null -> "전투 진행 중"
-                row.actionKind == "BATTLE_MAP" -> "전투맵"
-                row.actionKind == "ADVENTURE_MAP" -> "모험맵"
-                row.actionKind == "FISHING_TOWN" -> "낚시"
-                row.actionKind == "RAID_TOWN" -> "레이드"
-                row.actionKind == "RAID_CYCLE_ABORT" -> "레이드 중단 처리"
-                display != null -> "자동화 실행 중"
-                else -> "전투 진행 중"
-            },
+            source = descriptor.source,
+            kind = descriptor.storageKind,
+            actionLabel = descriptor.actionLabel,
             questName = display?.questName,
             missionLabel = display?.missionLabel,
             missionCurrent = display?.missionCurrent,
             missionRequired = display?.missionRequired,
             mapName = display?.mapName,
-            battleCount = battleCount,
+            battleCount = descriptor.battleCount,
         )
     }
 

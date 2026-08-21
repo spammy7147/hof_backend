@@ -33,27 +33,31 @@ class UnifiedAutomationRunnerTest {
     private val runtime = Mockito.mock(TypedAutomationRuntimeService::class.java)
     private val loader = Mockito.mock(TypedAutomationSnapshotLoader::class.java)
     private val coordinator = Mockito.mock(AutomationCoordinator::class.java)
-    private val executor = Mockito.mock(TypedAutomationActionExecutor::class.java)
     private val wakeup = Mockito.mock(AutomationWakeupPort::class.java)
     private val sharedCooldowns = Mockito.mock(SharedBattleCooldownService::class.java)
-    private val ambiguousReconciler = Mockito.mock(AutomationAmbiguousActionReconciler::class.java)
     private val actionLifecycleModule = Mockito.mock(AutomationActionLifecycleModule::class.java)
+    private val managedAction = Mockito.mock(ManagedAutomationAction::class.java)
+    private val matcherActionRow = Mockito.mock(TypedAutomationActionRunEntity::class.java)
     private val codec = StoredTypedAutomationActionCodec(jacksonObjectMapper())
     private val runner = UnifiedAutomationRunner(
-        preflight, runtime, loader, coordinator, executor, codec, wakeup, sharedCooldowns,
-        ambiguousReconciler, actionLifecycleModule,
+        preflight, runtime, loader, coordinator, wakeup, sharedCooldowns, actionLifecycleModule,
     )
 
     init {
         Mockito.`when`(runtime.isRunning(7)).thenReturn(true)
-        Mockito.`when`(executor.execute(Mockito.eq(7L), anyStoredAction()))
-            .thenReturn(TypedAutomationExecution.Completed)
+        Mockito.`when`(managedAction.storedAction).thenReturn(defaultStoredAction())
+        Mockito.`when`(managedAction.descriptor).thenReturn(defaultDescriptor())
+        Mockito.`when`(managedAction.execute()).thenReturn(TypedAutomationExecution.Completed)
+        Mockito.`when`(actionLifecycleModule.describe(anyPreparedAction())).thenReturn(defaultDescriptor())
+        Mockito.`when`(
+            actionLifecycleModule.prepare(Mockito.eq(7L), Mockito.anyLong(), anyPreparedAction()),
+        ).thenReturn(managedAction)
+        Mockito.`when`(actionLifecycleModule.restore(anyActionRow(), Mockito.eq(7L))).thenReturn(managedAction)
     }
 
     @Test
     fun `자택 퀘스트는 새 행동 수명주기 module로 준비하고 한 번 실행한다`() {
         val decisions = Mockito.mock(AutomationDecisionSource::class.java)
-        val workTracker = Mockito.mock(AutomationWorkTracker::class.java)
         val lifecycleModule = Mockito.mock(AutomationActionLifecycleModule::class.java)
         val managed = Mockito.mock(ManagedAutomationAction::class.java)
         val journal = Mockito.mock(AutomationDecisionJournal::class.java)
@@ -121,12 +125,8 @@ class UnifiedAutomationRunnerTest {
             dailyPreflight = preflight,
             typedRuntime = runtime,
             decisionSource = decisions,
-            workTracker = workTracker,
-            typedActionExecutor = executor,
-            typedCodec = codec,
             wakeupPort = wakeup,
             sharedBattleCooldowns = sharedCooldowns,
-            ambiguousReconciler = ambiguousReconciler,
             decisionJournal = journal,
             actionLifecycleModule = lifecycleModule,
         )
@@ -137,7 +137,6 @@ class UnifiedAutomationRunnerTest {
         Mockito.verify(lifecycleModule).restore(row, 7L)
         Mockito.verify(managed, Mockito.times(1)).execute()
         Mockito.verify(runtime).succeedAndEnqueueWake(7L, "token", 88L, "TYPED_ACTION_COMPLETED", emptyList())
-        Mockito.verifyNoInteractions(workTracker, executor)
         val traceCaptor = org.mockito.ArgumentCaptor.forClass(AutomationActionTrace::class.java)
         Mockito.verify(journal, Mockito.times(2)).appendActionResult(Mockito.eq(41L), captureTrace(traceCaptor))
         assertTrue(traceCaptor.allValues.all { it.actionKind == "HOME_ACCEPT" })
@@ -184,12 +183,8 @@ class UnifiedAutomationRunnerTest {
             dailyPreflight = preflight,
             typedRuntime = runtime,
             decisionSource = Mockito.mock(AutomationDecisionSource::class.java),
-            workTracker = Mockito.mock(AutomationWorkTracker::class.java),
-            typedActionExecutor = executor,
-            typedCodec = codec,
             wakeupPort = wakeup,
             sharedBattleCooldowns = sharedCooldowns,
-            ambiguousReconciler = ambiguousReconciler,
             actionLifecycleModule = lifecycleModule,
         )
 
@@ -199,13 +194,11 @@ class UnifiedAutomationRunnerTest {
         Mockito.verify(managed).reconcile()
         Mockito.verify(runtime).retryReconciledSubmission(7L, "token", 88L, "TYPED_RECONCILED_RESUBMIT")
         Mockito.verify(managed, Mockito.never()).execute()
-        Mockito.verifyNoInteractions(executor, ambiguousReconciler)
     }
 
     @Test
     fun `production decision source replaces the global snapshot coordinator`() {
         val decisions = Mockito.mock(AutomationDecisionSource::class.java)
-        val workTracker = Mockito.mock(AutomationWorkTracker::class.java)
         val action = legacyBattleAction()
         val row = Mockito.mock(TypedAutomationActionRunEntity::class.java)
         Mockito.`when`(row.id).thenReturn(88L)
@@ -215,21 +208,19 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(runtime.prepare(Mockito.eq(7L), eqString("token"), anyStoredAction())).thenReturn(row)
         Mockito.`when`(runtime.markSubmitting(7, "token", 88L)).thenReturn(true)
         val scopedRunner = UnifiedAutomationRunner(
-            preflight, runtime, decisions, workTracker, executor, codec, wakeup, sharedCooldowns,
-            ambiguousReconciler, actionLifecycleModule,
+            preflight, runtime, decisions, wakeup, sharedCooldowns, actionLifecycleModule,
         )
 
         scopedRunner.runOne(7)
 
         Mockito.verify(decisions).select(7)
-        Mockito.verify(workTracker).ensureForAction(7, 10, action)
+        Mockito.verify(actionLifecycleModule).prepare(7, 10, action)
         Mockito.verify(loader, Mockito.never()).loadTyped(7)
     }
 
     @Test
     fun `prepare failure schedules retry before external execution`() {
         val decisions = Mockito.mock(AutomationDecisionSource::class.java)
-        val workTracker = Mockito.mock(AutomationWorkTracker::class.java)
         val action = legacyBattleAction()
         Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
         Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token"))
@@ -240,8 +231,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(runtime.scheduleAutomaticRetry(7, "token", null, AutomationStopReason.FATAL, "invalid stored action"))
             .thenReturn(retryAt)
         val scopedRunner = UnifiedAutomationRunner(
-            preflight, runtime, decisions, workTracker, executor, codec, wakeup, sharedCooldowns,
-            ambiguousReconciler, actionLifecycleModule,
+            preflight, runtime, decisions, wakeup, sharedCooldowns, actionLifecycleModule,
         )
 
         scopedRunner.runOne(7)
@@ -254,25 +244,54 @@ class UnifiedAutomationRunnerTest {
             eqString("invalid stored action"),
         )
         Mockito.verify(wakeup).schedule(7, retryAt, "TYPED_AUTOMATIC_RETRY")
-        Mockito.verifyNoInteractions(executor)
+        Mockito.verify(managedAction, Mockito.never()).execute()
     }
 
     @Test
-    fun `work tracking failure schedules retry before persistence or external execution`() {
+    fun `descriptor failure schedules retry before persistence or external execution`() {
         val decisions = Mockito.mock(AutomationDecisionSource::class.java)
-        val workTracker = Mockito.mock(AutomationWorkTracker::class.java)
+        val action = legacyBattleAction()
+        Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
+        Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token"))
+        Mockito.`when`(decisions.select(7)).thenReturn(AutomationCoordination.Runnable(10, action, emptyList()))
+        Mockito.`when`(actionLifecycleModule.describe(action))
+            .thenThrow(IllegalArgumentException("unsupported lifecycle action"))
+        val retryAt = Instant.parse("2026-07-25T00:05:00Z")
+        Mockito.`when`(
+            runtime.scheduleAutomaticRetry(
+                7,
+                "token",
+                null,
+                AutomationStopReason.FATAL,
+                "unsupported lifecycle action",
+            ),
+        ).thenReturn(retryAt)
+        val scopedRunner = UnifiedAutomationRunner(
+            preflight, runtime, decisions, wakeup, sharedCooldowns, actionLifecycleModule,
+        )
+
+        scopedRunner.runOne(7)
+
+        Mockito.verify(wakeup).schedule(7, retryAt, "TYPED_AUTOMATIC_RETRY")
+        Mockito.verify(runtime, Mockito.never())
+            .prepare(Mockito.eq(7L), eqString("token"), anyStoredAction())
+        Mockito.verify(managedAction, Mockito.never()).execute()
+    }
+
+    @Test
+    fun `lifecycle preparation failure schedules retry before persistence or external execution`() {
+        val decisions = Mockito.mock(AutomationDecisionSource::class.java)
         val action = legacyBattleAction()
         Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
         Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token"))
         Mockito.`when`(decisions.select(7)).thenReturn(AutomationCoordination.Runnable(10, action, emptyList()))
         Mockito.doThrow(IllegalStateException("failed to track work"))
-            .`when`(workTracker).ensureForAction(7, 10, action)
+            .`when`(actionLifecycleModule).prepare(7, 10, action)
         val retryAt = Instant.parse("2026-07-25T00:05:00Z")
         Mockito.`when`(runtime.scheduleAutomaticRetry(7, "token", null, AutomationStopReason.FATAL, "failed to track work"))
             .thenReturn(retryAt)
         val scopedRunner = UnifiedAutomationRunner(
-            preflight, runtime, decisions, workTracker, executor, codec, wakeup, sharedCooldowns,
-            ambiguousReconciler, actionLifecycleModule,
+            preflight, runtime, decisions, wakeup, sharedCooldowns, actionLifecycleModule,
         )
 
         scopedRunner.runOne(7)
@@ -287,13 +306,12 @@ class UnifiedAutomationRunnerTest {
         Mockito.verify(wakeup).schedule(7, retryAt, "TYPED_AUTOMATIC_RETRY")
         Mockito.verify(runtime, Mockito.never())
             .prepare(Mockito.eq(7L), eqString("token"), anyStoredAction())
-        Mockito.verifyNoInteractions(executor)
+        Mockito.verify(managedAction, Mockito.never()).execute()
     }
 
     @Test
     fun `interrupted preparation restores the thread interrupt flag before returning`() {
         val decisions = Mockito.mock(AutomationDecisionSource::class.java)
-        val workTracker = Mockito.mock(AutomationWorkTracker::class.java)
         val action = legacyBattleAction()
         Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
         Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token"))
@@ -305,8 +323,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(runtime.scheduleAutomaticRetry(7, "token", null, AutomationStopReason.FATAL, "interrupted preparation"))
             .thenReturn(retryAt)
         val scopedRunner = UnifiedAutomationRunner(
-            preflight, runtime, decisions, workTracker, executor, codec, wakeup, sharedCooldowns,
-            ambiguousReconciler, actionLifecycleModule,
+            preflight, runtime, decisions, wakeup, sharedCooldowns, actionLifecycleModule,
         )
 
         try {
@@ -321,7 +338,7 @@ class UnifiedAutomationRunnerTest {
                 eqString("interrupted preparation"),
             )
             Mockito.verify(wakeup).schedule(7, retryAt, "TYPED_AUTOMATIC_RETRY")
-            Mockito.verifyNoInteractions(executor)
+            Mockito.verify(managedAction, Mockito.never()).execute()
         } finally {
             Thread.interrupted()
         }
@@ -355,14 +372,38 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(coordinator.coordinate(snapshot)).thenReturn(AutomationCoordination.Runnable(12, action, emptyList()))
         Mockito.`when`(runtime.prepare(Mockito.eq(7L), eqString("token"), anyStoredAction())).thenReturn(row)
         Mockito.`when`(runtime.markSubmitting(7, "token", 88L)).thenReturn(true)
-        Mockito.`when`(executor.execute(Mockito.eq(7L), anyStoredAction()))
+        val stored = StoredTypedAutomationAction(
+            entryId = 12L,
+            executionIdentity = action.executionIdentity,
+            payload = StoredTypedActionPayload.BattleMap(
+                action.progressDate,
+                action.categoryId,
+                action.mapCode,
+                action.presetMode,
+                requireNotNull(action.presetId),
+                action.battleCount,
+                app.spammy.hof.battle.dto.RunBattleRequest(
+                    action.categoryId,
+                    action.mapCode,
+                    requireNotNull(action.resolvedParty).characterIds,
+                    requireNotNull(action.resolvedParty).patternLoads,
+                    action.battleCount,
+                ),
+                display = StoredActionDisplay(mapName = action.mapName),
+                source = action.source,
+                sourceTargetKey = action.sourceTargetKey,
+            ),
+        )
+        Mockito.`when`(managedAction.storedAction).thenReturn(stored)
+        Mockito.`when`(managedAction.execute())
             .thenReturn(TypedAutomationExecution.BattleCompleted("battle_map", "gb0"))
 
         runner.runOne(7)
 
         val storedCaptor = org.mockito.ArgumentCaptor.forClass(StoredTypedAutomationAction::class.java)
-        Mockito.verify(executor).execute(Mockito.eq(7L), capture(storedCaptor))
+        Mockito.verify(runtime).prepare(Mockito.eq(7L), eqString("token"), capture(storedCaptor))
         assertEquals(StoredActionDisplay(mapName = "거대 보스"), storedCaptor.value.payload.display)
+        Mockito.verify(managedAction).execute()
         Mockito.verify(runtime).recordWarnings(7, "token", emptyList())
         Mockito.verify(sharedCooldowns).applyAfterSuccessfulBattle(7, "battle_map", "gb0")
         Mockito.verify(runtime).succeedAndEnqueueWake(7, "token", 88L, "TYPED_ACTION_COMPLETED", emptyList())
@@ -371,7 +412,6 @@ class UnifiedAutomationRunnerTest {
     @Test
     fun `raid completion is recorded with its stable outcome instead of generic action success`() {
         val decisions = Mockito.mock(AutomationDecisionSource::class.java)
-        val workTracker = Mockito.mock(AutomationWorkTracker::class.java)
         val journal = Mockito.mock(AutomationDecisionJournal::class.java)
         val action = RaidTownAutomationAction(7, RaidAction.REWARD, null, "RaidGoblin")
         val outcome = RaidCycleOutcome(13, "RaidGoblin", RaidCycleOutcomeKind.COMPLETED)
@@ -383,12 +423,11 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(decisions.select(7)).thenReturn(decision)
         Mockito.`when`(runtime.prepare(Mockito.eq(7L), eqString("token"), anyStoredAction())).thenReturn(row)
         Mockito.`when`(runtime.markSubmitting(7, "token", 88L)).thenReturn(true)
-        Mockito.`when`(executor.execute(Mockito.eq(7L), anyStoredAction()))
+        Mockito.`when`(managedAction.execute())
             .thenReturn(TypedAutomationExecution.RaidCycleFinished(outcome))
         Mockito.`when`(journal.appendDecision(7L, decision)).thenReturn(41L)
         val scopedRunner = UnifiedAutomationRunner(
-            preflight, runtime, decisions, workTracker, executor, codec, wakeup, sharedCooldowns,
-            ambiguousReconciler, actionLifecycleModule, journal,
+            preflight, runtime, decisions, wakeup, sharedCooldowns, actionLifecycleModule, journal,
         )
 
         scopedRunner.runOne(7)
@@ -432,7 +471,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
         Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token", row))
         Mockito.`when`(runtime.markSubmitting(7, "token", 88)).thenReturn(true)
-        Mockito.`when`(executor.execute(Mockito.eq(7L), anyStoredAction())).thenReturn(
+        Mockito.`when`(managedAction.execute()).thenReturn(
             TypedAutomationExecution.SharedCooldown("raid", "castle", retryAt),
         )
 
@@ -466,7 +505,7 @@ class UnifiedAutomationRunnerTest {
 
         Mockito.verify(runtime).releaseAndEnqueueWake(7, "prepare-token", "TYPED_CONFIG_RELOAD")
         Mockito.verify(runtime).releaseAndEnqueueWake(7, "submit-token", "TYPED_CONFIG_RELOAD")
-        Mockito.verifyNoInteractions(executor)
+        Mockito.verify(managedAction, Mockito.never()).execute()
     }
 
     @Test
@@ -478,7 +517,8 @@ class UnifiedAutomationRunnerTest {
         runner.runOne(7)
 
         Mockito.verify(runtime).releaseAndEnqueueWake(7, "token", "TYPED_CONFIG_RELOAD")
-        Mockito.verifyNoInteractions(wakeup, executor)
+        Mockito.verifyNoInteractions(wakeup)
+        Mockito.verify(managedAction, Mockito.never()).execute()
     }
 
     @Test
@@ -488,7 +528,8 @@ class UnifiedAutomationRunnerTest {
         runner.runOne(7)
 
         Mockito.verify(runtime).isRunning(7)
-        Mockito.verifyNoInteractions(preflight, loader, coordinator, executor, wakeup)
+        Mockito.verifyNoInteractions(preflight, loader, coordinator, wakeup)
+        Mockito.verify(managedAction, Mockito.never()).execute()
         Mockito.verify(runtime, Mockito.never()).claim(7)
     }
 
@@ -508,7 +549,8 @@ class UnifiedAutomationRunnerTest {
         Mockito.verify(runtime).scheduleAutomaticRetry(7, AutomationStopReason.NETWORK, "Daily preflight failed: NETWORK")
         Mockito.verify(wakeup).schedule(7, retryAt, "TYPED_AUTOMATIC_RETRY")
         Mockito.verify(runtime, Mockito.never()).claim(7)
-        Mockito.verifyNoInteractions(loader, coordinator, executor)
+        Mockito.verifyNoInteractions(loader, coordinator)
+        Mockito.verify(managedAction, Mockito.never()).execute()
     }
 
     @Test
@@ -584,41 +626,41 @@ class UnifiedAutomationRunnerTest {
 
     @Test
     fun `reconciling applied action succeeds without external resubmission`() {
-        val (stored, row) = reconcilingQuestAction()
+        val (_, row) = reconcilingQuestAction()
         Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
         Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token", row))
-        Mockito.`when`(ambiguousReconciler.reconcile(7, stored))
+        Mockito.`when`(managedAction.reconcile())
             .thenReturn(AmbiguousActionResolution.Applied())
 
         runner.runOne(7)
 
-        Mockito.verify(ambiguousReconciler).reconcile(7, stored)
+        Mockito.verify(managedAction).reconcile()
         Mockito.verify(runtime).succeedReconciliation(7, "token", 88, "TYPED_ACTION_COMPLETED")
-        Mockito.verifyNoInteractions(executor)
+        Mockito.verify(managedAction, Mockito.never()).execute()
     }
 
     @Test
     fun `pause drain resumes only the current stored action without starting daily preflight`() {
-        val (stored, row) = reconcilingQuestAction()
+        val (_, row) = reconcilingQuestAction()
         Mockito.`when`(runtime.isCompletingCurrentAction(7)).thenReturn(true)
         Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token", row))
-        Mockito.`when`(ambiguousReconciler.reconcile(7, stored))
+        Mockito.`when`(managedAction.reconcile())
             .thenReturn(AmbiguousActionResolution.Applied())
 
         runner.runOne(7)
 
         Mockito.verify(preflight, Mockito.never()).ensureReady(7)
-        Mockito.verify(ambiguousReconciler).reconcile(7, stored)
+        Mockito.verify(managedAction).reconcile()
         Mockito.verify(runtime).succeedReconciliation(7, "token", 88, "TYPED_ACTION_COMPLETED")
     }
 
     @Test
     fun `503 while reconciling preserves action and schedules authoritative recheck`() {
         val retryAt = Instant.parse("2026-07-25T00:00:30Z")
-        val (stored, row) = reconcilingQuestAction()
+        val (_, row) = reconcilingQuestAction()
         Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
         Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token", row))
-        Mockito.`when`(ambiguousReconciler.reconcile(7, stored))
+        Mockito.`when`(managedAction.reconcile())
             .thenThrow(HofAutomationDeferredException(retryAt, 1))
         Mockito.`when`(
             runtime.deferReconciliation(7, "token", 88, retryAt, "HOF automation requests are deferred until $retryAt"),
@@ -639,10 +681,10 @@ class UnifiedAutomationRunnerTest {
 
     @Test
     fun `captcha while reconciling preserves action and schedules another verification`() {
-        val (stored, row) = reconcilingQuestAction()
+        val (_, row) = reconcilingQuestAction()
         Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
         Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token", row))
-        Mockito.`when`(ambiguousReconciler.reconcile(7, stored))
+        Mockito.`when`(managedAction.reconcile())
             .thenThrow(ApiException(ErrorCode.CAPTCHA_REQUIRED, "captcha"))
         val retryAt = Instant.parse("2026-07-25T00:05:00Z")
         Mockito.`when`(runtime.scheduleAutomaticRetry(7, "token", 88, AutomationStopReason.CAPTCHA, "captcha"))
@@ -652,7 +694,7 @@ class UnifiedAutomationRunnerTest {
 
         Mockito.verify(runtime).scheduleAutomaticRetry(7, "token", 88, AutomationStopReason.CAPTCHA, "captcha")
         Mockito.verify(wakeup).schedule(7, retryAt, "TYPED_AUTOMATIC_RETRY")
-        Mockito.verifyNoInteractions(executor)
+        Mockito.verify(managedAction, Mockito.never()).execute()
     }
 
     @Test
@@ -691,7 +733,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token", row))
         Mockito.`when`(runtime.markSubmitting(7, "token", 88)).thenReturn(true)
         Mockito.doThrow(HofAutomationDeferredException(retryAt, 3))
-            .`when`(executor).execute(Mockito.eq(7L), anyStoredAction())
+            .`when`(managedAction).execute()
         val message = "HOF automation requests are deferred until $retryAt"
         Mockito.`when`(runtime.deferSubmittedAction(7, "token", 88, retryAt, message)).thenReturn(true)
 
@@ -738,7 +780,7 @@ class UnifiedAutomationRunnerTest {
         cases.forEach { corruption ->
             val casePreflight = Mockito.mock(AutomationDailyPreflight::class.java)
             val caseRuntime = Mockito.mock(TypedAutomationRuntimeService::class.java)
-            val caseExecutor = Mockito.mock(TypedAutomationActionExecutor::class.java)
+            val caseLifecycle = Mockito.mock(AutomationActionLifecycleModule::class.java)
             val owner = HofAccountEntity(corruption.accountId, "login-${corruption.name}", "encrypted", Instant.EPOCH)
             val entry = AutomationEntryEntity(
                 corruption.entryId,
@@ -767,16 +809,17 @@ class UnifiedAutomationRunnerTest {
                 caseRuntime,
                 Mockito.mock(TypedAutomationSnapshotLoader::class.java),
                 Mockito.mock(AutomationCoordinator::class.java),
-                caseExecutor,
-                codec,
                 wakeup,
                 sharedCooldowns,
-                ambiguousReconciler,
-                actionLifecycleModule,
+                caseLifecycle,
             )
             Mockito.`when`(casePreflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
             Mockito.`when`(caseRuntime.isRunning(7)).thenReturn(true)
             Mockito.`when`(caseRuntime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token", row))
+            Mockito.`when`(caseLifecycle.restore(row, 7)).thenAnswer {
+                codec.verifyPersisted(row, 7)
+                managedAction
+            }
             val retryAt = Instant.parse("2026-07-25T00:05:00Z")
             Mockito.`when`(
                 caseRuntime.isolateIntegrityFailureForRetry(
@@ -794,13 +837,35 @@ class UnifiedAutomationRunnerTest {
             )
             Mockito.verify(wakeup).schedule(7, retryAt, "TYPED_AUTOMATIC_RETRY")
             Mockito.clearInvocations(wakeup)
-            Mockito.verifyNoInteractions(caseExecutor)
+            Mockito.verify(managedAction, Mockito.never()).execute()
         }
     }
 
     private fun anyStoredAction(): StoredTypedAutomationAction =
         Mockito.any(StoredTypedAutomationAction::class.java)
             ?: StoredTypedAutomationAction(1, "any", StoredTypedActionPayload.QuestClaim("q", "a"))
+
+    private fun anyPreparedAction(): PreparedAutomationAction =
+        Mockito.any(PreparedAutomationAction::class.java) ?: legacyBattleAction()
+
+    private fun anyActionRow(): TypedAutomationActionRunEntity =
+        Mockito.any(TypedAutomationActionRunEntity::class.java)
+            ?: matcherActionRow
+
+    private fun defaultStoredAction() = StoredTypedAutomationAction(
+        12L,
+        "default-execution",
+        StoredTypedActionPayload.QuestClaim("quest", "claim"),
+    )
+
+    private fun defaultDescriptor() = AutomationActionDescriptor(
+        source = AutomationType.QUEST,
+        storageKind = "QUEST_CLAIM",
+        actionKind = "QUEST_CLAIM",
+        actionLabel = "퀘스트 완료",
+        context = "퀘스트 보상 수령 · quest",
+        targetKey = "quest",
+    )
 
     private fun legacyBattleAction() = BattleMapAutomationAction(
         accountId = 7L,
@@ -881,7 +946,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
         Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token", row))
         Mockito.`when`(runtime.markSubmitting(7, "token", 88)).thenReturn(true)
-        Mockito.doThrow(error).`when`(executor).execute(Mockito.eq(7L), anyStoredAction())
+        Mockito.doThrow(error).`when`(managedAction).execute()
         val retryAt = Instant.parse("2026-07-25T00:05:00Z")
         Mockito.`when`(runtime.scheduleAutomaticRetry(Mockito.eq(7L), eqString("token"), Mockito.eq(88L), eqValue(expectedReason), anyStringValue()))
             .thenReturn(retryAt)
@@ -916,7 +981,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
         Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token", row))
         Mockito.`when`(runtime.markSubmitting(7, "token", row.id)).thenReturn(true)
-        Mockito.doThrow(error).`when`(executor).execute(7, stored)
+        Mockito.doThrow(error).`when`(managedAction).execute()
 
         runner.runOne(7)
 
@@ -950,6 +1015,7 @@ class UnifiedAutomationRunnerTest {
             anyStringValue(),
         )
         Mockito.verify(wakeup).schedule(7, retryAt, "TYPED_AUTOMATIC_RETRY")
-        Mockito.verifyNoInteractions(coordinator, executor)
+        Mockito.verifyNoInteractions(coordinator)
+        Mockito.verify(managedAction, Mockito.never()).execute()
     }
 }

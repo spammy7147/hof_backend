@@ -15,14 +15,6 @@ import org.springframework.transaction.annotation.Transactional
 
 internal const val FISHING_CYCLE_TARGET = "DAILY_FISHING"
 
-fun interface AutomationWorkTracker {
-    fun ensureForAction(
-        accountId: Long,
-        entryId: Long,
-        action: PreparedAutomationAction,
-    ): AutomationWorkSessionEntity?
-}
-
 interface AutomationWorkLifecycle {
     fun resumeForCheck(accountId: Long, sessionId: Long)
     fun triggerCheck(accountId: Long, sessionId: Long)
@@ -59,7 +51,7 @@ class AutomationWorkSessionService(
     private val commands: AutomationWorkSessionCommandRepository,
     private val timeProvider: TimeProvider,
     private val properties: AutomationSessionProperties = AutomationSessionProperties(),
-) : AutomationWorkTracker, AutomationWorkOwnership, AutomationWorkLifecycle {
+) : AutomationWorkOwnership, AutomationWorkLifecycle {
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     override fun resumeForCheck(accountId: Long, sessionId: Long) {
         requireRunningRuntime(accountId)
@@ -92,17 +84,6 @@ class AutomationWorkSessionService(
         session.updatedAt = now
         commands.save(session)
     }
-
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    override fun ensureForAction(
-        accountId: Long,
-        entryId: Long,
-        action: PreparedAutomationAction,
-    ): AutomationWorkSessionEntity = ensureAssignment(
-        accountId,
-        entryId,
-        action.toWorkAssignment().resolveConfiguredTarget(entryId),
-    )
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     override fun ensure(
@@ -441,19 +422,6 @@ class AutomationWorkSessionService(
         val jitterBound = properties.reconciliationJitter.seconds.coerceAtLeast(0)
         val jitterSeconds = if (jitterBound == 0L) 0L else Math.floorMod(accountId, jitterBound + 1)
         return now.plus(properties.reconciliationInterval).plusSeconds(jitterSeconds)
-    }
-
-    private fun PreparedAutomationAction.toWorkAssignment(): AutomationWorkAssignment = when (this) {
-        is BattleMapAutomationAction -> {
-            val target = "$categoryId/$mapCode"
-            require(source == BattleAutomationActionSource.RAID_AUTOMATION) {
-                "Prepared battle source $source belongs to the action lifecycle module."
-            }
-            AutomationWorkAssignment(AutomationWorkType.RAID, sourceTargetKey ?: target)
-        }
-        is RaidTownAutomationAction -> AutomationWorkAssignment(AutomationWorkType.RAID, targetRaidId ?: raidId ?: action.name)
-        is RaidCycleAbortAutomationAction -> AutomationWorkAssignment(AutomationWorkType.RAID, raidId)
-        else -> error("Prepared action belongs to the action lifecycle module.")
     }
 
     private fun AutomationWorkSessionEntity.matches(entryId: Long, spec: AutomationWorkAssignment): Boolean =

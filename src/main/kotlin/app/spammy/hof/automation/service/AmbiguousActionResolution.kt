@@ -14,7 +14,3 @@ sealed interface AmbiguousActionResolution {
         val reason: String,
     ) : AmbiguousActionResolution
 }
-
-fun interface AutomationAmbiguousActionReconciler {
-    fun reconcile(accountId: Long, action: StoredTypedAutomationAction): AmbiguousActionResolution
-}

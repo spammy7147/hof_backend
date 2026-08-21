@@ -38,18 +38,18 @@ import org.springframework.stereotype.Service
  * 불명확 결과 조정, 작업 귀속과 사용자 설명이 서로 갈라지지 않게 한다.
  */
 interface AutomationActionLifecycleModule {
-    fun describe(action: PreparedAutomationAction): AutomationActionDescriptor?
+    fun describe(action: PreparedAutomationAction): AutomationActionDescriptor
 
     fun prepare(
         accountId: Long,
         entryId: Long,
         action: PreparedAutomationAction,
-    ): ManagedAutomationAction?
+    ): ManagedAutomationAction
 
     fun restore(
         row: TypedAutomationActionRunEntity,
         expectedAccountId: Long,
-    ): ManagedAutomationAction?
+    ): ManagedAutomationAction
 }
 
 interface ManagedAutomationAction {
@@ -108,7 +108,7 @@ class UnifiedAutomationActionLifecycleModule(
     private val sessionRecovery: HofSessionRecoveryExecutor,
     private val timeProvider: TimeProvider,
 ) : AutomationActionLifecycleModule {
-    override fun describe(action: PreparedAutomationAction): AutomationActionDescriptor? = when (action) {
+    override fun describe(action: PreparedAutomationAction): AutomationActionDescriptor = when (action) {
         is HomeQuestAutomationAction -> descriptor(action.questId, action.questName, action.action)
         is QuestAction.Accept -> questDescriptor(action.questKey, action.questName, QUEST_ACCEPT_STORAGE_KIND)
         is QuestAction.Claim -> questDescriptor(action.questKey, action.questName, QUEST_CLAIM_STORAGE_KIND)
@@ -123,21 +123,23 @@ class UnifiedAutomationActionLifecycleModule(
             action.mapName,
             action.battleCount,
         )
-        is BattleMapAutomationAction -> action
-            .takeIf { it.source in MANAGED_BATTLE_MAP_SOURCES }
-            ?.let(::battleMapDescriptor)
+        is BattleMapAutomationAction -> {
+            require(action.source in MANAGED_BATTLE_MAP_SOURCES) {
+                "Prepared battle source ${action.source} is not owned by the lifecycle module."
+            }
+            battleMapDescriptor(action)
+        }
         is AdventureMapAutomationAction -> adventureDescriptor(action)
         is FishingTownAutomationAction -> fishingDescriptor(action)
         is RaidTownAutomationAction -> raidTownDescriptor(action)
         is RaidCycleAbortAutomationAction -> raidAbortDescriptor(action)
-        else -> null
     }
 
     override fun prepare(
         accountId: Long,
         entryId: Long,
         action: PreparedAutomationAction,
-    ): ManagedAutomationAction? = when (action) {
+    ): ManagedAutomationAction = when (action) {
         is HomeQuestAutomationAction -> prepareHomeQuest(accountId, entryId, action)
         is QuestAction.Accept -> {
             workOwnership.ensure(
@@ -234,7 +236,6 @@ class UnifiedAutomationActionLifecycleModule(
         is FishingTownAutomationAction -> prepareFishing(accountId, entryId, action)
         is RaidTownAutomationAction -> prepareRaidTown(accountId, entryId, action)
         is RaidCycleAbortAutomationAction -> prepareRaidAbort(accountId, entryId, action)
-        else -> null
     }
 
     private fun prepareHomeQuest(
@@ -266,8 +267,8 @@ class UnifiedAutomationActionLifecycleModule(
     override fun restore(
         row: TypedAutomationActionRunEntity,
         expectedAccountId: Long,
-    ): ManagedAutomationAction? {
-        if (row.actionKind !in setOf(
+    ): ManagedAutomationAction {
+        require(row.actionKind in setOf(
                 HOME_QUEST_STORAGE_KIND,
                 QUEST_ACCEPT_STORAGE_KIND,
                 QUEST_CLAIM_STORAGE_KIND,
@@ -278,11 +279,12 @@ class UnifiedAutomationActionLifecycleModule(
                 RAID_TOWN_STORAGE_KIND,
                 RAID_CYCLE_ABORT_STORAGE_KIND,
             )
-        ) return null
+        ) { "Stored action kind ${row.actionKind} is not owned by the lifecycle module." }
         val stored = codec.verifyPersisted(row, expectedAccountId)
-        if (stored.payload is StoredTypedActionPayload.BattleMap &&
-            stored.payload.source !in MANAGED_BATTLE_MAP_SOURCES
-        ) return null
+        require(
+            stored.payload !is StoredTypedActionPayload.BattleMap ||
+                stored.payload.source in MANAGED_BATTLE_MAP_SOURCES,
+        ) { "Stored battle source belongs to an unsupported lifecycle family." }
         require(
             stored.payload is StoredTypedActionPayload.HomeQuest ||
                 stored.payload is StoredTypedActionPayload.QuestAccept ||
@@ -404,7 +406,6 @@ class UnifiedAutomationActionLifecycleModule(
 
                 override fun reconcile(): AmbiguousActionResolution = reconcileRaidAbort(accountId, stored, payload)
             }
-            else -> error("Stored action ${payload.kind()} is not owned by the action lifecycle module.")
         }
     }
 
@@ -412,8 +413,10 @@ class UnifiedAutomationActionLifecycleModule(
         accountId: Long,
         entryId: Long,
         action: BattleMapAutomationAction,
-    ): ManagedAutomationAction? {
-        if (action.source !in MANAGED_BATTLE_MAP_SOURCES) return null
+    ): ManagedAutomationAction {
+        require(action.source in MANAGED_BATTLE_MAP_SOURCES) {
+            "Prepared battle source ${action.source} is not owned by the lifecycle module."
+        }
         require(action.accountId == accountId) { "Prepared battle-map account mismatch." }
         val presetId = action.presetId ?: throw AutomationConfigurationException()
         val party = action.resolvedParty ?: throw AutomationConfigurationException("The prepared party is missing.")

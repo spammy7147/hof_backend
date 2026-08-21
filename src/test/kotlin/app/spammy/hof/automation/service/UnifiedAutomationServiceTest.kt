@@ -106,7 +106,6 @@ class UnifiedAutomationServiceTest {
     private val unionSettingRepository = Mockito.mock(UnionAutomationMapCommandRepository::class.java)
     private val raidTargetRepository = Mockito.mock(RaidAutomationTargetCommandRepository::class.java)
     private val automationOutbox = Mockito.mock(AutomationOutboxService::class.java)
-    private val storedActionCodec = Mockito.mock(StoredTypedAutomationActionCodec::class.java)
     private val statusSnapshots = Mockito.mock(HofStatusSnapshotService::class.java)
     private val raidCycleModule = Mockito.mock(RaidCycleModule::class.java)
     private val decisionJournal = Mockito.mock(AutomationDecisionJournal::class.java)
@@ -130,7 +129,6 @@ class UnifiedAutomationServiceTest {
         typedUnionMapRepository = unionSettingRepository,
         typedRaidTargetRepository = raidTargetRepository,
         automationOutboxService = automationOutbox,
-        storedActionCodec = storedActionCodec,
         hofStatusSnapshots = statusSnapshots,
         workLifecycle = workLifecycle,
         workSessionQueries = workSessionQueries,
@@ -808,7 +806,21 @@ class UnifiedAutomationServiceTest {
         Mockito.`when`(accountQueryRepository.findById(ACCOUNT_ID)).thenReturn(account)
         Mockito.`when`(typedQuery.findRuntimeState(ACCOUNT_ID)).thenReturn(runtime)
         Mockito.`when`(typedQuery.findStoppedTypedAction(ACCOUNT_ID, action.id)).thenReturn(action)
-        Mockito.`when`(storedActionCodec.verifyPersisted(action, ACCOUNT_ID)).thenReturn(stored)
+        val managed = Mockito.mock(ManagedAutomationAction::class.java)
+        Mockito.`when`(actionLifecycleModule.restore(action, ACCOUNT_ID)).thenReturn(managed)
+        Mockito.`when`(managed.descriptor).thenReturn(
+            AutomationActionDescriptor(
+                source = AutomationType.ADVENTURE_MAP,
+                storageKind = "ADVENTURE_MAP",
+                actionKind = "ADVENTURE_MAP",
+                actionLabel = "모험맵",
+                context = "모험 맵 전투 · 모험의 숲",
+                targetKey = "adventure_map/sp_hunt_1",
+                targetName = "모험의 숲",
+                display = stored.payload.display,
+                battleCount = 1,
+            ),
+        )
 
         val response = service.getTyped(ACCOUNT_ID)
 
@@ -909,7 +921,7 @@ class UnifiedAutomationServiceTest {
 
         assertEquals(AutomationType.BATTLE_MAP, action?.source)
         assertEquals("BATTLE_MAP", action?.kind)
-        assertEquals("전투 진행 중", action?.actionLabel)
+        assertEquals("전투맵", action?.actionLabel)
         assertNull(action?.questName)
         assertNull(action?.missionLabel)
         assertNull(action?.missionCurrent)
@@ -943,7 +955,7 @@ class UnifiedAutomationServiceTest {
     }
 
     @Test
-    fun `claim accept and unknown action kinds use safe labels without raw identifiers`() {
+    fun `claim accept labels come from the lifecycle descriptor and unknown actions are omitted`() {
         val claim = StoredTypedActionPayload.QuestClaim(
             "claim-raw-code", "claim-raw-action", StoredActionDisplay(questName = "완료할 퀘스트"),
         )
@@ -969,34 +981,12 @@ class UnifiedAutomationServiceTest {
 
         val unknownRow = actionRow("FUTURE_ACTION", "future-execution", entry(91L, AutomationType.QUEST))
         Mockito.`when`(typedQuery.findActiveTypedAction(ACCOUNT_ID)).thenReturn(unknownRow)
-        Mockito.`when`(storedActionCodec.verifyPersisted(unknownRow, ACCOUNT_ID))
+        Mockito.`when`(actionLifecycleModule.restore(unknownRow, ACCOUNT_ID))
             .thenThrow(IllegalArgumentException("unsupported payload"))
 
         val unknownAction = service.getTyped(ACCOUNT_ID).runtime.currentAction
 
-        assertEquals("FUTURE_ACTION", unknownAction?.kind)
-        assertEquals("전투 진행 중", unknownAction?.actionLabel)
-        assertNull(unknownAction?.questName)
-        assertNull(unknownAction?.mapName)
-
-        val displayedUnknownRow = actionRow("FUTURE_ACTION", "displayed-future", entry(91L, AutomationType.QUEST))
-        Mockito.`when`(typedQuery.findActiveTypedAction(ACCOUNT_ID)).thenReturn(displayedUnknownRow)
-        Mockito.`when`(storedActionCodec.verifyPersisted(displayedUnknownRow, ACCOUNT_ID)).thenReturn(
-            StoredTypedAutomationAction(
-                91L,
-                displayedUnknownRow.executionIdentity,
-                StoredTypedActionPayload.QuestClaim(
-                    "raw-code",
-                    "raw-action",
-                    StoredActionDisplay(questName = "표시 이름"),
-                ),
-            ),
-        )
-
-        val displayedUnknownAction = service.getTyped(ACCOUNT_ID).runtime.currentAction
-
-        assertEquals("자동화 실행 중", displayedUnknownAction?.actionLabel)
-        assertEquals("표시 이름", displayedUnknownAction?.questName)
+        assertNull(unknownAction)
     }
 
     @Test
@@ -1204,9 +1194,6 @@ class UnifiedAutomationServiceTest {
             *rows.drop(1).toTypedArray(),
         )
         rows.zip(actions).forEach { (row, action) ->
-            Mockito.`when`(storedActionCodec.verifyPersisted(row, ACCOUNT_ID)).thenReturn(
-                StoredTypedAutomationAction(91L, row.executionIdentity, action.second),
-            )
             val descriptor = when (val payload = action.second) {
                 is StoredTypedActionPayload.QuestClaim -> AutomationActionDescriptor(
                     source = AutomationType.QUEST,
@@ -1239,13 +1226,32 @@ class UnifiedAutomationServiceTest {
                     display = payload.display,
                     battleCount = payload.battleCount,
                 )
-                else -> null
+                is StoredTypedActionPayload.BattleMap -> AutomationActionDescriptor(
+                    source = when (payload.source) {
+                        BattleAutomationActionSource.UNION_AUTOMATION -> AutomationType.UNION
+                        BattleAutomationActionSource.FISHING_AUTOMATION -> AutomationType.FISHING
+                        BattleAutomationActionSource.RAID_AUTOMATION -> AutomationType.RAID
+                        else -> AutomationType.BATTLE_MAP
+                    },
+                    storageKind = "BATTLE_MAP",
+                    actionKind = "BATTLE_MAP",
+                    actionLabel = when (payload.source) {
+                        BattleAutomationActionSource.UNION_AUTOMATION -> "유니온"
+                        BattleAutomationActionSource.FISHING_AUTOMATION -> "낚시"
+                        BattleAutomationActionSource.RAID_AUTOMATION -> "레이드"
+                        else -> "전투맵"
+                    },
+                    context = "전투 · ${payload.display?.mapName ?: "${payload.categoryId}/${payload.mapCode}"}",
+                    targetKey = payload.sourceTargetKey ?: "${payload.categoryId}/${payload.mapCode}",
+                    targetName = payload.display?.mapName,
+                    display = payload.display,
+                    battleCount = payload.battleCount,
+                )
+                else -> error("Test fixture descriptor is missing for ${payload.kind()}.")
             }
-            descriptor?.let {
-                val managed = Mockito.mock(ManagedAutomationAction::class.java)
-                Mockito.`when`(managed.descriptor).thenReturn(it)
-                Mockito.`when`(actionLifecycleModule.restore(row, ACCOUNT_ID)).thenReturn(managed)
-            }
+            val managed = Mockito.mock(ManagedAutomationAction::class.java)
+            Mockito.`when`(managed.descriptor).thenReturn(descriptor)
+            Mockito.`when`(actionLifecycleModule.restore(row, ACCOUNT_ID)).thenReturn(managed)
         }
     }
 

@@ -1,7 +1,6 @@
 package app.spammy.hof.automation.service
 
 import app.spammy.hof.automation.entity.AutomationWaitReason
-import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.history.*
 import app.spammy.hof.automation.port.AutomationWakeupPort
 import app.spammy.hof.common.error.ApiException
@@ -12,7 +11,6 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Service
 import org.springframework.transaction.support.TransactionSynchronizationManager
 import java.time.Instant
-import java.util.UUID
 
 /** 최신 타입별 스냅샷 결정 또는 저장된 prepared payload 중 action 하나만 실행하는 자동화 루프다. */
 @Service
@@ -20,12 +18,8 @@ class UnifiedAutomationRunner @Autowired constructor(
     private val dailyPreflight: AutomationDailyPreflight,
     private val typedRuntime: TypedAutomationRuntimeService,
     private val decisionSource: AutomationDecisionSource,
-    private val workTracker: AutomationWorkTracker,
-    private val typedActionExecutor: TypedAutomationActionExecutor,
-    private val typedCodec: StoredTypedAutomationActionCodec,
     private val wakeupPort: AutomationWakeupPort,
     private val sharedBattleCooldowns: SharedBattleCooldownService,
-    private val ambiguousReconciler: AutomationAmbiguousActionReconciler,
     private val actionLifecycleModule: AutomationActionLifecycleModule,
     private val decisionJournal: AutomationDecisionJournal? = null,
 ) {
@@ -34,22 +28,15 @@ class UnifiedAutomationRunner @Autowired constructor(
         typedRuntime: TypedAutomationRuntimeService,
         typedSnapshotLoader: TypedAutomationSnapshotLoader,
         coordinator: AutomationCoordinator,
-        typedActionExecutor: TypedAutomationActionExecutor,
-        typedCodec: StoredTypedAutomationActionCodec,
         wakeupPort: AutomationWakeupPort,
         sharedBattleCooldowns: SharedBattleCooldownService,
-        ambiguousReconciler: AutomationAmbiguousActionReconciler,
         actionLifecycleModule: AutomationActionLifecycleModule,
     ) : this(
         dailyPreflight,
         typedRuntime,
         AutomationDecisionSource { accountId -> coordinator.coordinate(typedSnapshotLoader.loadTyped(accountId)) },
-        AutomationWorkTracker { _, _, _ -> null },
-        typedActionExecutor,
-        typedCodec,
         wakeupPort,
         sharedBattleCooldowns,
-        ambiguousReconciler,
         actionLifecycleModule,
     )
 
@@ -92,13 +79,13 @@ class UnifiedAutomationRunner @Autowired constructor(
         val token = claim.token
         var decisionCycleId: Long? = null
         var selectedWarnings: List<String>? = null
-        var managedAction: ManagedAutomationAction? = null
+        lateinit var managedAction: ManagedAutomationAction
         var stored = claim.preparedAction?.let {
             runCatching {
-                actionLifecycleModule.restore(it, accountId)?.let { restored ->
+                actionLifecycleModule.restore(it, accountId).let { restored ->
                     managedAction = restored
                     restored.storedAction
-                } ?: typedCodec.verifyPersisted(it, accountId)
+                }
             }.getOrElse { error ->
                 isolateStoredActionIntegrityFailure(accountId, token, it, error)
                 return
@@ -140,8 +127,19 @@ class UnifiedAutomationRunner @Autowired constructor(
                 scheduleAutomaticRetry(accountId, token, null, AutomationStopReason.FATAL, error.message ?: "Fatal live snapshot failure")
                 return
             }
-            val decisionDescriptor = (decision as? AutomationCoordination.Runnable)
-                ?.let { actionLifecycleModule.describe(it.action) }
+            val decisionDescriptor = try {
+                (decision as? AutomationCoordination.Runnable)
+                    ?.let { actionLifecycleModule.describe(it.action) }
+            } catch (error: Exception) {
+                stopPreparationFailure(
+                    accountId,
+                    token,
+                    (decision as? AutomationCoordination.Runnable)?.entryId ?: 0,
+                    "DESCRIBE",
+                    error,
+                )
+                return
+            }
             try {
                 decisionCycleId = decisionJournal?.appendDecision(
                     accountId,
@@ -156,12 +154,9 @@ class UnifiedAutomationRunner @Autowired constructor(
                     try {
                         selectedWarnings = decision.warnings
                         typedRuntime.recordWarnings(accountId, token, decision.warnings)
-                        actionLifecycleModule.prepare(accountId, decision.entryId, decision.action)?.let { prepared ->
+                        actionLifecycleModule.prepare(accountId, decision.entryId, decision.action).let { prepared ->
                             managedAction = prepared
                             prepared.storedAction
-                        } ?: run {
-                            workTracker.ensureForAction(accountId, decision.entryId, decision.action)
-                            toStored(decision.entryId, decision.action)
                         }
                     } catch (error: Exception) {
                         stopPreparationFailure(accountId, token, decision.entryId, "BUILD", error)
@@ -202,11 +197,9 @@ class UnifiedAutomationRunner @Autowired constructor(
                 return
             }
         }
-        if (claim.preparedAction == null && managedAction != null) {
+        if (claim.preparedAction == null) {
             val restored = runCatching {
-                requireNotNull(actionLifecycleModule.restore(row, accountId)) {
-                    "Persisted managed action is not owned by the action lifecycle module."
-                }
+                actionLifecycleModule.restore(row, accountId)
             }.getOrElse { error ->
                 isolateStoredActionIntegrityFailure(accountId, token, row, error)
                 return
@@ -214,7 +207,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             managedAction = restored
             stored = restored.storedAction
         }
-        val actionDescriptor = managedAction?.descriptor
+        val actionDescriptor = managedAction.descriptor
         fun trace(
             kind: AutomationHistoryEventKind,
             code: String,
@@ -243,7 +236,7 @@ class UnifiedAutomationRunner @Autowired constructor(
         }
         if (row.status == app.spammy.hof.automation.entity.TypedAutomationActionStatus.RECONCILING) {
             val resolution = try {
-                managedAction?.reconcile() ?: ambiguousReconciler.reconcile(accountId, stored)
+                managedAction.reconcile()
             } catch (error: Throwable) {
                 error.findHofAutomationDeferral()?.let { deferred ->
                     val message = deferred.message ?: "HOF server returned 503 while verifying an ambiguous action."
@@ -334,7 +327,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             decisionJournal?.appendActionResult(cycleId, trace(AutomationHistoryEventKind.ACTION_STARTED, "ACTION_STARTED", "자동화 행동을 시작했습니다."))
         }
         try {
-            val execution = managedAction?.execute() ?: typedActionExecutor.execute(accountId, stored)
+            val execution = managedAction.execute()
             val wakeReason = when (execution) {
                 TypedAutomationExecution.Completed -> "TYPED_ACTION_COMPLETED"
                 is TypedAutomationExecution.BattleCompleted -> {
@@ -555,116 +548,25 @@ class UnifiedAutomationRunner @Autowired constructor(
         })
     }
 
-    private fun toStored(entryId: Long, action: PreparedAutomationAction): StoredTypedAutomationAction {
-        val executionId = when (action) {
-            is BattleMapAutomationAction -> action.executionIdentity
-            is AdventureMapAutomationAction -> action.executionIdentity
-            else -> UUID.randomUUID().toString()
-        }
-        val payload = when (action) {
-            is BattleMapAutomationAction -> {
-                require(action.source == BattleAutomationActionSource.RAID_AUTOMATION) {
-                    "Prepared battle source ${action.source} belongs to the action lifecycle module."
-                }
-                StoredTypedActionPayload.BattleMap(
-                    action.progressDate, action.categoryId, action.mapCode, action.presetMode,
-                    action.presetId ?: throw AutomationConfigurationException(), action.battleCount,
-                    action.resolvedParty.toRequest(action.categoryId, action.mapCode, action.battleCount),
-                    display = StoredActionDisplay(mapName = action.mapName),
-                    source = action.source,
-                    sourceTargetKey = action.sourceTargetKey,
-                )
-            }
-            is RaidTownAutomationAction -> StoredTypedActionPayload.RaidTown(
-                action.action,
-                action.raidId,
-                action.targetRaidId,
-                StoredActionDisplay(mapName = action.raidName, missionLabel = action.observedStatus),
-            )
-            is RaidCycleAbortAutomationAction -> StoredTypedActionPayload.RaidCycleAbort(action.raidId, action.reason)
-            else -> error("Prepared action belongs to the action lifecycle module.")
-        }
-        return StoredTypedAutomationAction(entryId, executionId, payload)
-    }
-
-    private fun ResolvedAutomationParty?.toRequest(categoryId: String, mapCode: String, battleCount: Int) =
-        this?.let { app.spammy.hof.battle.dto.RunBattleRequest(categoryId, mapCode, it.characterIds, it.patternLoads, battleCount) }
-            ?: throw AutomationConfigurationException("The prepared party is missing.")
-
     private fun actionTrace(
         action: StoredTypedAutomationAction,
         kind: AutomationHistoryEventKind,
         code: String,
         message: String,
         nextRunAt: Instant? = null,
-        descriptor: AutomationActionDescriptor? = null,
-    ): AutomationActionTrace {
-        if (descriptor != null) {
-            return AutomationActionTrace(
-                kind = kind,
-                reasonCode = code,
-                message = "${descriptor.context} · $message",
-                entryId = action.entryId,
-                type = descriptor.source,
-                actionKind = descriptor.actionKind,
-                targetKey = descriptor.targetKey,
-                targetName = descriptor.targetName,
-                presetId = null,
-                nextRunAt = nextRunAt,
-            )
-        }
-        val payload = action.payload
-        val type = when (payload) {
-            is StoredTypedActionPayload.RaidTown, is StoredTypedActionPayload.RaidCycleAbort -> AutomationType.RAID
-            is StoredTypedActionPayload.BattleMap -> payload.source
-                .takeIf { it == BattleAutomationActionSource.RAID_AUTOMATION }
-                ?.let { AutomationType.RAID }
-                ?: error("Stored battle source ${payload.source} belongs to the action lifecycle module.")
-            else -> error("Stored action belongs to the action lifecycle module.")
-        }
-        val actionKind = when (payload) {
-            is StoredTypedActionPayload.RaidTown -> payload.action.name
-            is StoredTypedActionPayload.RaidCycleAbort -> "CYCLE_ABORT"
-            else -> payload.kind()
-        }
-        val actionContext = when (payload) {
-            is StoredTypedActionPayload.BattleMap -> listOf(
-                payload.source.takeIf { it == BattleAutomationActionSource.RAID_AUTOMATION }
-                    ?.let { "레이드 누적 전투" }
-                    ?: error("Stored battle source ${payload.source} belongs to the action lifecycle module."),
-                "맵 ${payload.display?.mapName ?: "${payload.categoryId}/${payload.mapCode}"}",
-                "${payload.battleCount}회",
-                "파티 ${payload.battleRequest.characterIds.size}명",
-            ).joinToString(" · ")
-            is StoredTypedActionPayload.RaidTown -> {
-                val phase = when (payload.action) {
-                app.spammy.hof.town.raid.model.RaidAction.REGISTER -> "파티 등록"
-                app.spammy.hof.town.raid.model.RaidAction.START -> "전투 시작"
-                app.spammy.hof.town.raid.model.RaidAction.REWARD -> "보상 수령"
-                app.spammy.hof.town.raid.model.RaidAction.REFRESH -> "상태 갱신"
-                app.spammy.hof.town.raid.model.RaidAction.RESET -> "레이드 리셋"
-                else -> payload.action.name
-                }
-                "$phase 단계${payload.display?.missionLabel?.let { " · 관측 상태: $it" } ?: ""}"
-            }
-            is StoredTypedActionPayload.RaidCycleAbort -> when (payload.reason) {
-                RaidCycleAbortReason.CLOSED -> "레이드 사이클 중단 · ${payload.raidId}"
-                RaidCycleAbortReason.REGISTRATION_LOST -> "레이드 등록 상태 유실 복구 · ${payload.raidId}"
-            }
-        }
-        val detailedMessage = "$actionContext · $message"
-        return AutomationActionTrace(kind, code, detailedMessage, action.entryId, type, actionKind,
-            targetKey = when (payload) {
-                is StoredTypedActionPayload.BattleMap -> "${payload.categoryId}/${payload.mapCode}"
-                is StoredTypedActionPayload.AdventureMap -> "${payload.categoryId}/${payload.mapCode}"
-                is StoredTypedActionPayload.RaidTown -> payload.targetRaidId ?: payload.raidId
-                is StoredTypedActionPayload.RaidCycleAbort -> payload.raidId
-            }, targetName = payload.display?.mapName ?: payload.display?.questName, presetId = when (payload) {
-                is StoredTypedActionPayload.BattleMap -> payload.presetId
-                is StoredTypedActionPayload.AdventureMap -> payload.presetId
-                else -> null
-            }, nextRunAt = nextRunAt)
-    }
+        descriptor: AutomationActionDescriptor,
+    ) = AutomationActionTrace(
+        kind = kind,
+        reasonCode = code,
+        message = "${descriptor.context} · $message",
+        entryId = action.entryId,
+        type = descriptor.source,
+        actionKind = descriptor.actionKind,
+        targetKey = descriptor.targetKey,
+        targetName = descriptor.targetName,
+        presetId = null,
+        nextRunAt = nextRunAt,
+    )
 
     private companion object {
         const val HOF_COOLDOWN_WAKE_REASON = "HOF_503_COOLDOWN"

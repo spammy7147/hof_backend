@@ -273,9 +273,13 @@ class AutomationWorkSessionServiceTest {
         Mockito.`when`(typed.findEntry(7, raidEntry.id)).thenReturn(raidEntry)
         Mockito.`when`(queries.lockOpen(7)).thenReturn(listOf(session))
 
-        val resumed = service.ensureForAction(7, raidEntry.id, action)
+        service.ensure(
+            7,
+            raidEntry.id,
+            AutomationWorkAssignment(AutomationWorkType.RAID, requireNotNull(action.sourceTargetKey)),
+        )
 
-        assertEquals(session, resumed)
+        assertEquals(AutomationWorkStatus.RUNNING, session.status)
         Mockito.verifyNoInteractions(commands)
     }
 
@@ -291,12 +295,28 @@ class AutomationWorkSessionServiceTest {
         Mockito.`when`(typed.findEntry(7, raidEntry.id)).thenReturn(raidEntry)
         Mockito.`when`(queries.lockOpen(7)).thenReturn(emptyList())
 
-        val started = service.ensureForAction(7, raidEntry.id, action)
+        service.ensure(
+            7,
+            raidEntry.id,
+            AutomationWorkAssignment(AutomationWorkType.RAID, requireNotNull(action.targetRaidId)),
+        )
 
-        assertEquals(AutomationWorkType.RAID, started.workType)
-        assertEquals("RaidGoblin", started.targetKey)
-        assertEquals(AutomationWorkStatus.RUNNING, started.status)
-        Mockito.verify(commands).save(started)
+        val captor = ArgumentCaptor.forClass(AutomationWorkSessionEntity::class.java)
+        Mockito.verify(commands).save(
+            captor.capture() ?: AutomationWorkSessionEntity(
+                account = account,
+                entry = raidEntry,
+                workType = AutomationWorkType.RAID,
+                targetKey = "capture-fallback",
+                status = AutomationWorkStatus.RUNNING,
+                configVersion = "capture-fallback",
+                createdAt = now,
+                updatedAt = now,
+            ),
+        )
+        assertEquals(AutomationWorkType.RAID, captor.value.workType)
+        assertEquals("RaidGoblin", captor.value.targetKey)
+        assertEquals(AutomationWorkStatus.RUNNING, captor.value.status)
     }
 
     @Test
@@ -354,12 +374,16 @@ class AutomationWorkSessionServiceTest {
         Mockito.`when`(typed.findEntry(7, raidEntry.id)).thenReturn(raidEntry)
         Mockito.`when`(queries.lockOpen(7)).thenReturn(listOf(session))
 
-        val resumed = service.ensureForAction(7, raidEntry.id, action)
+        service.ensure(
+            7,
+            raidEntry.id,
+            AutomationWorkAssignment(AutomationWorkType.RAID, requireNotNull(action.targetRaidId)),
+        )
 
-        assertEquals(AutomationWorkStatus.RUNNING, resumed.status)
-        assertEquals("RaidGoblin", resumed.targetKey)
-        assertEquals(null, resumed.nextCheckAt)
-        Mockito.verify(commands).save(resumed)
+        assertEquals(AutomationWorkStatus.RUNNING, session.status)
+        assertEquals("RaidGoblin", session.targetKey)
+        assertEquals(null, session.nextCheckAt)
+        Mockito.verify(commands).save(session)
     }
 
     @Test
