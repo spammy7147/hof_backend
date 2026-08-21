@@ -717,6 +717,7 @@ class AutomationActionLifecycleModuleTest {
         assertEquals(3, payload.observedAttemptRemaining)
         assertEquals(AutomationType.ADVENTURE_MAP, managed.descriptor.source)
         assertEquals("ADVENTURE_MAP", managed.descriptor.actionKind)
+        assertEquals(301L, managed.descriptor.presetId)
         Mockito.verify(workOwnership).ensure(
             7L,
             14L,

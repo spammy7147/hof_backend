@@ -79,6 +79,7 @@ data class AutomationActionDescriptor(
     val targetName: String? = null,
     val display: StoredActionDisplay? = null,
     val battleCount: Int? = null,
+    val presetId: Long? = null,
 )
 
 data class AutomationWorkAssignment(
@@ -126,6 +127,7 @@ class UnifiedAutomationActionLifecycleModule(
             action.mapCode,
             action.mapName,
             action.battleCount,
+            action.preset.resolvedPresetId ?: action.preset.presetId,
         )
         is BattleMapAutomationAction -> {
             require(action.source in MANAGED_BATTLE_MAP_SOURCES) {
@@ -902,6 +904,7 @@ class UnifiedAutomationActionLifecycleModule(
         targetName = action.mapName,
         display = StoredActionDisplay(mapName = action.mapName),
         battleCount = action.battleCount,
+        presetId = action.presetId,
     )
 
     private fun StoredTypedActionPayload.BattleMap.battleMapDescriptor() =
@@ -1007,6 +1010,7 @@ class UnifiedAutomationActionLifecycleModule(
         targetName = action.mapName,
         display = StoredActionDisplay(mapName = action.mapName),
         battleCount = action.battleCount,
+        presetId = action.presetId,
     )
 
     private fun StoredTypedActionPayload.AdventureMap.adventureDescriptor() =
@@ -1264,6 +1268,7 @@ class UnifiedAutomationActionLifecycleModule(
         mapCode,
         display?.mapName,
         battleCount,
+        presetId,
     )
 
     private fun questBattleDescriptor(
@@ -1276,6 +1281,7 @@ class UnifiedAutomationActionLifecycleModule(
         mapCode: String,
         mapName: String?,
         battleCount: Int,
+        presetId: Long?,
     ) = AutomationActionDescriptor(
         source = AutomationType.QUEST,
         storageKind = QUEST_BATTLE_STORAGE_KIND,
@@ -1298,6 +1304,7 @@ class UnifiedAutomationActionLifecycleModule(
             mapName = mapName,
         ),
         battleCount = battleCount,
+        presetId = presetId,
     )
 
     private fun executeQuestBattle(

@@ -105,14 +105,15 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(lifecycleModule.prepare(7L, 10L, action)).thenReturn(managed)
         Mockito.`when`(managed.storedAction).thenReturn(stored)
         val descriptor = AutomationActionDescriptor(
-            AutomationType.HOME_QUEST,
-            "HOME_QUEST",
-            "HOME_ACCEPT",
-            "자택 퀘스트",
-            "수명주기 descriptor · 빗자루 제작",
-            "home-1",
-            "빗자루 제작",
-            stored.payload.display,
+            source = AutomationType.HOME_QUEST,
+            storageKind = "HOME_QUEST",
+            actionKind = "HOME_ACCEPT",
+            actionLabel = "자택 퀘스트",
+            context = "수명주기 descriptor · 빗자루 제작",
+            targetKey = "home-1",
+            targetName = "빗자루 제작",
+            display = stored.payload.display,
+            presetId = 301L,
         )
         Mockito.`when`(managed.descriptor).thenReturn(descriptor)
         Mockito.`when`(lifecycleModule.describe(action)).thenReturn(descriptor)
@@ -142,11 +143,13 @@ class UnifiedAutomationRunnerTest {
         Mockito.verify(journal, Mockito.times(2)).appendActionResult(Mockito.eq(41L), captureTrace(traceCaptor))
         assertTrue(traceCaptor.allValues.all { it.actionKind == "HOME_ACCEPT" })
         assertTrue(traceCaptor.allValues.all { it.message.startsWith("수명주기 descriptor · 빗자루 제작") })
+        assertTrue(traceCaptor.allValues.all { it.presetId == 301L })
         val decisionCaptor = org.mockito.ArgumentCaptor.forClass(AutomationCoordination::class.java)
         Mockito.verify(journal).appendDecision(Mockito.eq(7L), captureCoordination(decisionCaptor))
         val selectedTrace = assertIs<AutomationCoordination.Runnable>(decisionCaptor.value).trace.single()
         assertEquals("HOME_ACCEPT", selectedTrace.actionKind)
         assertEquals("수명주기 descriptor · 빗자루 제작", selectedTrace.message)
+        assertEquals(301L, selectedTrace.presetId)
     }
 
     @Test

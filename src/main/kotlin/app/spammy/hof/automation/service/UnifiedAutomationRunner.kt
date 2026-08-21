@@ -616,6 +616,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                     actionKind = descriptor.actionKind,
                     targetKey = descriptor.targetKey,
                     targetName = descriptor.targetName,
+                    presetId = descriptor.presetId,
                 )
             } else {
                 item
@@ -639,7 +640,7 @@ class UnifiedAutomationRunner @Autowired constructor(
         actionKind = descriptor.actionKind,
         targetKey = descriptor.targetKey,
         targetName = descriptor.targetName,
-        presetId = null,
+        presetId = descriptor.presetId,
         nextRunAt = nextRunAt,
     )
 
