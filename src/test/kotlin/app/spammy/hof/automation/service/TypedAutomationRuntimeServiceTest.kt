@@ -1,8 +1,16 @@
 package app.spammy.hof.automation.service
 
 import app.spammy.hof.account.entity.HofAccountEntity
-import app.spammy.hof.automation.entity.*
-import app.spammy.hof.automation.repository.*
+import app.spammy.hof.automation.entity.AutomationEntryEntity
+import app.spammy.hof.automation.entity.AutomationType
+import app.spammy.hof.automation.entity.AutomationWaitReason
+import app.spammy.hof.automation.entity.TypedAutomationActionRunEntity
+import app.spammy.hof.automation.entity.TypedAutomationActionStatus
+import app.spammy.hof.automation.entity.TypedAutomationLifecycle
+import app.spammy.hof.automation.entity.TypedAutomationRuntimeStateEntity
+import app.spammy.hof.automation.outbox.AutomationOutboxService
+import app.spammy.hof.automation.repository.TypedAutomationActionRunCommandRepository
+import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import app.spammy.hof.common.time.TimeProvider
 import java.time.Instant
 import kotlin.test.Test
@@ -16,38 +24,29 @@ import tools.jackson.module.kotlin.jacksonObjectMapper
 class TypedAutomationRuntimeServiceTest {
     private var now = Instant.parse("2026-07-16T00:00:00Z")
     private val query = Mockito.mock(TypedAutomationQueryRepository::class.java)
-    private val actionRepository = Mockito.mock(TypedAutomationActionRunCommandRepository::class.java)
+    private val actions = Mockito.mock(TypedAutomationActionRunCommandRepository::class.java)
     private val lifecycleBridge = Mockito.mock(TypedAutomationLifecycleBridge::class.java)
-    private val outbox = Mockito.mock(app.spammy.hof.automation.outbox.AutomationOutboxService::class.java)
+    private val outbox = Mockito.mock(AutomationOutboxService::class.java)
+    private val codec = StoredTypedAutomationActionCodec(jacksonObjectMapper())
     private val service = TypedAutomationRuntimeService(
         query,
-        actionRepository,
-        StoredTypedAutomationActionCodec(jacksonObjectMapper()), TimeProvider { now },
+        actions,
+        codec,
+        TimeProvider { now },
         lifecycleBridge,
         outbox,
     )
     private val account = HofAccountEntity(7, "login", "encrypted", now)
 
     @Test
-    fun `acquisition exposes a verified checkpoint without leaking lease or persistence row`() {
+    fun `acquisition exposes a verified checkpoint without lease or persistence row`() {
         val state = state().apply { leaseToken = "old"; leaseUntil = now.minusSeconds(1) }
-        val entry = AutomationEntryEntity(9, account, AutomationType.QUEST, 0, true, now, now)
-        val stored = StoredTypedAutomationAction(
-            entryId = entry.id,
-            executionIdentity = "quest-claim",
-            payload = StoredTypedActionPayload.QuestClaim("quest-1", "claim-1"),
-        )
-        val encoded = StoredTypedAutomationActionCodec(jacksonObjectMapper()).encode(stored)
-        val action = TypedAutomationActionRunEntity(
-            11, account, entry, stored.executionIdentity, stored.payload.kind(), encoded.json, encoded.fingerprint,
-            TypedAutomationActionStatus.PREPARED, leaseToken = "old", createdAt = now, updatedAt = now,
-        )
-        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
-        Mockito.`when`(query.findActiveTypedAction(7)).thenReturn(action)
+        val fixture = action(TypedAutomationActionStatus.PREPARED)
+        stubActive(state, fixture.row)
 
         val acquired = assertIs<TypedRuntimeAcquisition.Acquired>(service.acquire(7))
 
-        assertEquals(stored, acquired.execution.checkpoint?.storedAction)
+        assertEquals(fixture.stored, acquired.execution.checkpoint?.storedAction)
         assertEquals(TypedRuntimeCheckpointPhase.PREPARED, acquired.execution.checkpoint?.phase)
         assertTrue(acquired.execution::class.java.declaredFields.none { it.name == "row" })
     }
@@ -55,22 +54,17 @@ class TypedAutomationRuntimeServiceTest {
     @Test
     fun `prepare is durable before submission begins`() {
         val state = state()
-        val entry = AutomationEntryEntity(9, account, AutomationType.QUEST, 0, true, now, now)
-        val stored = StoredTypedAutomationAction(
-            entryId = entry.id,
-            executionIdentity = "quest-claim",
-            payload = StoredTypedActionPayload.QuestClaim("quest-1", "claim-1"),
-        )
+        val fixture = action(TypedAutomationActionStatus.PREPARED)
         Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
         Mockito.`when`(query.findActiveTypedAction(7)).thenReturn(null)
-        Mockito.`when`(query.findEntry(7, entry.id)).thenReturn(entry)
-        Mockito.`when`(actionRepository.save(anyActionRow())).thenAnswer { it.arguments[0] }
+        Mockito.`when`(query.findEntry(7, fixture.entry.id)).thenReturn(fixture.entry)
+        Mockito.`when`(actions.save(anyActionRow())).thenAnswer { it.arguments[0] }
 
         val acquired = assertIs<TypedRuntimeAcquisition.Acquired>(service.acquire(7))
         val prepared = assertIs<TypedRuntimePreparation.Ready>(
-            service.persistPrepared(acquired.execution, stored, listOf("parked warning")),
+            service.persistPrepared(acquired.execution, fixture.stored, listOf("parked warning")),
         )
-        val row = Mockito.mockingDetails(actionRepository).invocations
+        val row = Mockito.mockingDetails(actions).invocations
             .single { it.method.name == "save" }.arguments.single() as TypedAutomationActionRunEntity
 
         assertEquals(TypedAutomationActionStatus.PREPARED, row.status)
@@ -85,55 +79,29 @@ class TypedAutomationRuntimeServiceTest {
     }
 
     @Test
-    fun `domain success atomically completes the submitted checkpoint and queues its wake`() {
+    fun `domain success completes submitted checkpoint and queues wake atomically`() {
         val state = state()
-        val entry = AutomationEntryEntity(9, account, AutomationType.QUEST, 0, true, now, now)
-        val stored = StoredTypedAutomationAction(
-            entryId = entry.id,
-            executionIdentity = "quest-claim",
-            payload = StoredTypedActionPayload.QuestClaim("quest-1", "claim-1"),
-        )
-        val encoded = StoredTypedAutomationActionCodec(jacksonObjectMapper()).encode(stored)
-        val action = TypedAutomationActionRunEntity(
-            25, account, entry, stored.executionIdentity, stored.payload.kind(), encoded.json, encoded.fingerprint,
-            TypedAutomationActionStatus.PREPARED, leaseToken = "old", createdAt = now, updatedAt = now,
-        )
-        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
+        val fixture = action(TypedAutomationActionStatus.PREPARED)
+        val execution = acquire(state, fixture.row)
         Mockito.`when`(query.findRuntimeState(7)).thenReturn(state)
-        Mockito.`when`(query.findActiveTypedAction(7)).thenReturn(action)
-        Mockito.`when`(query.lockTypedAction(action.id)).thenReturn(action)
-        val execution = assertIs<TypedRuntimeAcquisition.Acquired>(service.acquire(7)).execution
         assertIs<TypedRuntimeSubmission.Started>(service.beginSubmission(execution))
 
         val projection = service.complete(
             execution,
-            TypedRuntimeOutcome.ActionSucceeded("TYPED_ACTION_COMPLETED", warnings = emptyList()),
+            TypedRuntimeOutcome.ActionSucceeded("TYPED_ACTION_COMPLETED"),
         )
 
         assertTrue(projection.applied)
-        assertEquals(TypedAutomationActionStatus.SUCCEEDED, action.status)
+        assertEquals(TypedAutomationActionStatus.SUCCEEDED, fixture.row.status)
         assertNull(state.leaseToken)
         Mockito.verify(outbox).enqueue(7, "TYPED_ACTION_COMPLETED")
     }
 
     @Test
-    fun `ambiguous submission outcome moves the checkpoint to reconciliation`() {
+    fun `ambiguous submission moves checkpoint to reconciliation`() {
         val state = state()
-        val entry = AutomationEntryEntity(9, account, AutomationType.QUEST, 0, true, now, now)
-        val stored = StoredTypedAutomationAction(
-            entryId = entry.id,
-            executionIdentity = "quest-accept",
-            payload = StoredTypedActionPayload.QuestAccept("quest-1", "accept-1"),
-        )
-        val encoded = StoredTypedAutomationActionCodec(jacksonObjectMapper()).encode(stored)
-        val action = TypedAutomationActionRunEntity(
-            26, account, entry, stored.executionIdentity, stored.payload.kind(), encoded.json, encoded.fingerprint,
-            TypedAutomationActionStatus.PREPARED, leaseToken = "old", createdAt = now, updatedAt = now,
-        )
-        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
-        Mockito.`when`(query.findActiveTypedAction(7)).thenReturn(action)
-        Mockito.`when`(query.lockTypedAction(action.id)).thenReturn(action)
-        val execution = assertIs<TypedRuntimeAcquisition.Acquired>(service.acquire(7)).execution
+        val fixture = action(TypedAutomationActionStatus.PREPARED)
+        val execution = acquire(state, fixture.row)
         assertIs<TypedRuntimeSubmission.Started>(service.beginSubmission(execution))
 
         val projection = service.complete(
@@ -142,17 +110,117 @@ class TypedAutomationRuntimeServiceTest {
         )
 
         assertTrue(projection.applied)
-        assertEquals(TypedAutomationActionStatus.RECONCILING, action.status)
+        assertEquals(TypedAutomationActionStatus.RECONCILING, fixture.row.status)
         assertNull(state.leaseToken)
         Mockito.verify(outbox).enqueue(7, "TYPED_AMBIGUOUS_RECONCILE")
     }
 
     @Test
-    fun `configuration outcome releases the execution right and preserves warnings for recheck`() {
+    fun `submitted HOF deferral returns checkpoint to prepared and sanitizes diagnostics`() {
+        val retryAt = now.plusSeconds(30)
         val state = state()
-        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
-        Mockito.`when`(query.findActiveTypedAction(7)).thenReturn(null)
-        val execution = assertIs<TypedRuntimeAcquisition.Acquired>(service.acquire(7)).execution
+        val fixture = action(TypedAutomationActionStatus.PREPARED)
+        val execution = acquire(state, fixture.row)
+        assertIs<TypedRuntimeSubmission.Started>(service.beginSubmission(execution))
+
+        val projection = service.complete(
+            execution,
+            TypedRuntimeOutcome.SubmissionDeferred(retryAt, "password=secret\n503"),
+        )
+
+        assertEquals(retryAt, projection.nextAttemptAt)
+        assertEquals(TypedAutomationActionStatus.PREPARED, fixture.row.status)
+        assertEquals(1, fixture.row.retryAttempt)
+        assertNull(fixture.row.submittedAt)
+        assertEquals("password=[redacted] 503", state.lastError)
+        assertEquals(AutomationWaitReason.HOF_CONNECTION, state.waitReason)
+    }
+
+    @Test
+    fun `retryable submitted failure preserves action for authoritative reconciliation`() {
+        val state = state()
+        val fixture = action(TypedAutomationActionStatus.PREPARED)
+        val execution = acquire(state, fixture.row)
+        assertIs<TypedRuntimeSubmission.Started>(service.beginSubmission(execution))
+
+        val projection = service.complete(
+            execution,
+            TypedRuntimeOutcome.RetryableFailure(
+                AutomationStopReason.CAPTCHA,
+                "captcha",
+            ),
+        )
+
+        assertEquals(now.plusSeconds(10), projection.nextAttemptAt)
+        assertEquals(TypedAutomationActionStatus.RECONCILING, fixture.row.status)
+        assertEquals(AutomationStopReason.CAPTCHA.name, state.stopReason)
+        assertEquals(TypedAutomationLifecycle.RUNNING, state.lifecycleStatus)
+    }
+
+    @Test
+    fun `reconciliation can defer resubmit and succeed through domain outcomes`() {
+        val state = state()
+        val fixture = action(TypedAutomationActionStatus.RECONCILING)
+        var execution = acquire(state, fixture.row)
+        val retryAt = now.plusSeconds(10)
+
+        assertTrue(
+            service.complete(
+                execution,
+                TypedRuntimeOutcome.ReconciliationDeferred(retryAt, "verify later"),
+            ).applied,
+        )
+        assertEquals(TypedAutomationActionStatus.RECONCILING, fixture.row.status)
+        assertEquals(retryAt, state.nextAttemptAt)
+
+        now = retryAt
+        execution = acquire(state, fixture.row)
+        assertTrue(
+            service.complete(
+                execution,
+                TypedRuntimeOutcome.ReconciliationResubmit("TYPED_RECONCILED_RESUBMIT"),
+            ).applied,
+        )
+        assertEquals(TypedAutomationActionStatus.PREPARED, fixture.row.status)
+        Mockito.verify(outbox).enqueue(7, "TYPED_RECONCILED_RESUBMIT")
+
+        fixture.row.status = TypedAutomationActionStatus.RECONCILING
+        execution = acquire(state, fixture.row)
+        assertTrue(
+            service.complete(
+                execution,
+                TypedRuntimeOutcome.ReconciliationApplied("TYPED_ACTION_COMPLETED"),
+            ).applied,
+        )
+        assertEquals(TypedAutomationActionStatus.SUCCEEDED, fixture.row.status)
+        Mockito.verify(outbox).enqueue(7, "TYPED_ACTION_COMPLETED")
+    }
+
+    @Test
+    fun `ambiguous handoff terminates shared checkpoint and preserves warning`() {
+        val state = state()
+        val fixture = action(TypedAutomationActionStatus.RECONCILING)
+        val execution = acquire(state, fixture.row)
+
+        assertTrue(
+            service.complete(
+                execution,
+                TypedRuntimeOutcome.AmbiguousHandoff(
+                    "레이드 전투 결과 미확정",
+                    "RAID_BATTLE_RECOVERY_STARTED",
+                ),
+            ).applied,
+        )
+
+        assertEquals(TypedAutomationActionStatus.AMBIGUOUS, fixture.row.status)
+        assertEquals("레이드 전투 결과 미확정", state.warningText)
+        Mockito.verify(outbox).enqueue(7, "RAID_BATTLE_RECOVERY_STARTED")
+    }
+
+    @Test
+    fun `configuration outcome releases right and preserves warnings for bounded recheck`() {
+        val state = state()
+        val execution = acquire(state, null)
 
         val projection = service.complete(
             execution,
@@ -167,405 +235,198 @@ class TypedAutomationRuntimeServiceTest {
     }
 
     @Test
-    fun `safe failures keep scheduling forever with a capped delay`() {
-        val state = state().apply {
-            leaseToken = "token"
-            leaseUntil = now.plusSeconds(300)
-            stopActionId = 99L
-        }
-        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
+    fun `safe retries remain running with capped delay`() {
+        val state = state()
+        val expected = listOf(10L, 30L, 60L, 300L)
 
-        assertEquals(now.plusSeconds(10), service.scheduleSafeRetry(7, "token", "one"))
-        state.leaseToken = "token"
-        assertEquals(now.plusSeconds(30), service.scheduleSafeRetry(7, "token", "two"))
-        state.leaseToken = "token"
-        assertEquals(now.plusSeconds(60), service.scheduleSafeRetry(7, "token", "three"))
-        state.leaseToken = "token"
-        assertEquals(now.plusSeconds(300), service.scheduleSafeRetry(7, "token", "four"))
+        expected.forEachIndexed { index, seconds ->
+            val execution = acquire(state, null)
+            val projection = service.complete(
+                execution,
+                TypedRuntimeOutcome.SafeRetry("failure-${index + 1}"),
+            )
+            assertEquals(now.plusSeconds(seconds), projection.nextAttemptAt)
+            now = requireNotNull(projection.nextAttemptAt)
+        }
+
         assertEquals(TypedAutomationLifecycle.RUNNING, state.lifecycleStatus)
         assertEquals(AutomationStopReason.NETWORK.name, state.stopReason)
-        assertNull(state.stopActionId)
+        assertEquals(4, state.retryAttempt)
     }
 
     @Test
-    fun `automatic authentication failure remains recoverable and preserves submitted action for verification`() {
-        val state = state().apply { leaseToken = "token"; leaseUntil = now.plusSeconds(300) }
-        val entry = AutomationEntryEntity(9, account, AutomationType.QUEST, 0, true, now, now)
-        val action = TypedAutomationActionRunEntity(
-            20, account, entry, "login-retry", "QUEST_CLAIM", "{}", "c".repeat(64),
-            TypedAutomationActionStatus.SUBMITTING, leaseToken = "token", createdAt = now, updatedAt = now,
-        )
-        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
-        Mockito.`when`(query.lockTypedAction(action.id)).thenReturn(action)
-
-        val retryAt = service.scheduleAutomaticRetry(
-            7, "token", action.id, AutomationStopReason.AUTHENTICATION, "login failed",
-        )
-
-        assertEquals(now.plusSeconds(10), retryAt)
-        assertEquals(TypedAutomationLifecycle.RUNNING, state.lifecycleStatus)
-        assertEquals(AutomationStopReason.AUTHENTICATION.name, state.stopReason)
-        assertEquals(AutomationWaitReason.HOF_CONNECTION, state.waitReason)
-        assertNull(state.leaseToken)
-        assertEquals(TypedAutomationActionStatus.RECONCILING, action.status)
-        assertNull(action.finishedAt)
-    }
-
-    @Test
-    fun `stale submitting action is claimed for authoritative reconciliation`() {
+    fun `stale submitting action is acquired as reconciliation checkpoint`() {
         val state = state().apply { leaseToken = "old"; leaseUntil = now.minusSeconds(1) }
-        val entry = AutomationEntryEntity(9, account, AutomationType.BATTLE_MAP, 0, true, now, now)
-        val action = TypedAutomationActionRunEntity(
-            11, account, entry, "execution", "BATTLE_MAP", "{}", "a".repeat(64),
-            TypedAutomationActionStatus.SUBMITTING, leaseToken = "old", createdAt = now, updatedAt = now,
-        )
-        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
-        Mockito.`when`(query.findActiveTypedAction(7)).thenReturn(action)
-
-        val claim = assertIs<TypedRuntimeClaim.Acquired>(service.claim(7))
-        assertEquals(action.id, claim.preparedAction?.id)
-        assertEquals(TypedAutomationActionStatus.RECONCILING, action.status)
-        assertEquals(TypedAutomationLifecycle.RUNNING, state.lifecycleStatus)
-        assertNull(state.stopActionId)
-    }
-
-    @Test
-    fun `action stop binds the exact owned action to the stopped runtime`() {
-        val state = state().apply { leaseToken = "token"; leaseUntil = now.plusSeconds(300) }
-        val entry = AutomationEntryEntity(9, account, AutomationType.BATTLE_MAP, 0, true, now, now)
-        val action = TypedAutomationActionRunEntity(
-            11, account, entry, "execution", "BATTLE_MAP", "{}", "a".repeat(64),
-            TypedAutomationActionStatus.SUBMITTING, leaseToken = "token", createdAt = now, updatedAt = now,
-        )
-        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
-        Mockito.`when`(query.lockTypedAction(action.id)).thenReturn(action)
-
-        assertTrue(service.stop(7, "token", action.id, AutomationStopReason.MANUAL_STOP, "user stop"))
-
-        assertEquals(action.id, state.stopActionId)
-        assertEquals(TypedAutomationActionStatus.FAILED, action.status)
-    }
-
-    @Test
-    fun `integrity failure isolates a prepared action and keeps runtime retryable`() {
-        val state = state().apply { leaseToken = "token"; leaseUntil = now.plusSeconds(300) }
-        val entry = AutomationEntryEntity(9, account, AutomationType.BATTLE_MAP, 0, true, now, now)
-        val action = TypedAutomationActionRunEntity(
-            18, account, entry, "prepared-integrity", "BATTLE_MAP", "{}", "a".repeat(64),
-            TypedAutomationActionStatus.PREPARED, leaseToken = "token", createdAt = now, updatedAt = now,
-        )
-        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
-        Mockito.`when`(query.lockTypedAction(action.id)).thenReturn(action)
-
-        assertEquals(now.plusSeconds(10), service.isolateIntegrityFailureForRetry(7, "token", action.id, "integrity"))
-
-        assertEquals(TypedAutomationActionStatus.FAILED, action.status)
-        assertEquals(TypedAutomationLifecycle.RUNNING, state.lifecycleStatus)
-        assertEquals(AutomationStopReason.FATAL.name, state.stopReason)
-        assertNull(state.stopActionId)
-    }
-
-    @Test
-    fun `integrity failure isolates a reconciling action as ambiguous and retries runtime`() {
-        val state = state().apply { leaseToken = "token"; leaseUntil = now.plusSeconds(300) }
-        val entry = AutomationEntryEntity(9, account, AutomationType.BATTLE_MAP, 0, true, now, now)
-        val action = TypedAutomationActionRunEntity(
-            19, account, entry, "reconciling-integrity", "BATTLE_MAP", "{}", "b".repeat(64),
-            TypedAutomationActionStatus.RECONCILING, leaseToken = "token", createdAt = now, updatedAt = now,
-        )
-        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
-        Mockito.`when`(query.lockTypedAction(action.id)).thenReturn(action)
-
-        assertEquals(now.plusSeconds(10), service.isolateIntegrityFailureForRetry(7, "token", action.id, "integrity"))
-
-        assertEquals(TypedAutomationActionStatus.AMBIGUOUS, action.status)
-        assertEquals(TypedAutomationLifecycle.RUNNING, state.lifecycleStatus)
-        assertEquals(AutomationStopReason.FATAL.name, state.stopReason)
-        assertNull(state.stopActionId)
-    }
-
-    @Test
-    fun `503 deferral returns submitted action to prepared and keeps runtime running`() {
-        val retryAt = now.plusSeconds(30)
-        val state = state().apply {
-            leaseToken = "token"
-            leaseUntil = now.plusSeconds(300)
+        val fixture = action(TypedAutomationActionStatus.SUBMITTING).also {
+            it.row.leaseToken = "old"
+            it.row.submittedAt = now.minusSeconds(30)
         }
-        val entry = AutomationEntryEntity(9, account, AutomationType.BATTLE_MAP, 0, true, now, now)
-        val action = TypedAutomationActionRunEntity(
-            15, account, entry, "retry-execution", "BATTLE_MAP", "{}", "e".repeat(64),
-            TypedAutomationActionStatus.SUBMITTING, leaseToken = "token", createdAt = now,
-            submittedAt = now, updatedAt = now,
+        stubActive(state, fixture.row)
+
+        val execution = assertIs<TypedRuntimeAcquisition.Acquired>(service.acquire(7)).execution
+
+        assertEquals(TypedRuntimeCheckpointPhase.RECONCILING, execution.checkpoint?.phase)
+        assertEquals(TypedAutomationActionStatus.RECONCILING, fixture.row.status)
+    }
+
+    @Test
+    fun `corrupt checkpoint is isolated before caller receives an execution right`() {
+        val state = state()
+        val fixture = action(TypedAutomationActionStatus.PREPARED)
+        val corrupt = TypedAutomationActionRunEntity(
+            fixture.row.id,
+            account,
+            fixture.entry,
+            fixture.stored.executionIdentity,
+            fixture.stored.payload.kind(),
+            "{}",
+            fixture.row.actionFingerprint,
+            TypedAutomationActionStatus.PREPARED,
+            leaseToken = "old",
+            createdAt = now,
+            updatedAt = now,
         )
-        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
-        Mockito.`when`(query.lockTypedAction(action.id)).thenReturn(action)
+        stubActive(state, corrupt)
 
-        assertTrue(service.deferSubmittedAction(7, "token", action.id, retryAt, "password=secret\n503"))
+        val acquisition = assertIs<TypedRuntimeAcquisition.RetryScheduled>(service.acquire(7))
 
-        assertEquals(TypedAutomationLifecycle.RUNNING, state.lifecycleStatus)
-        assertEquals(retryAt, state.nextAttemptAt)
-        assertEquals(AutomationWaitReason.HOF_CONNECTION, state.waitReason)
+        assertEquals(now.plusSeconds(10), acquisition.retryAt)
+        assertEquals(TypedAutomationActionStatus.FAILED, corrupt.status)
         assertNull(state.leaseToken)
-        assertEquals("password=[redacted] 503", state.lastError)
-        assertEquals(TypedAutomationActionStatus.PREPARED, action.status)
-        assertEquals(1, action.retryAttempt)
-        assertEquals(retryAt, action.nextAttemptAt)
-        assertNull(action.submittedAt)
-        assertNull(action.finishedAt)
-        assertEquals("password=[redacted] 503", action.lastError)
     }
 
     @Test
-    fun `ambiguous failure becomes reconciling and enqueues verification`() {
-        val state = state().apply { leaseToken = "token"; leaseUntil = now.plusSeconds(300) }
-        val entry = AutomationEntryEntity(9, account, AutomationType.QUEST, 0, true, now, now)
-        val action = TypedAutomationActionRunEntity(
-            16, account, entry, "quest-accept", "QUEST_ACCEPT", "{}", "f".repeat(64),
-            TypedAutomationActionStatus.SUBMITTING, leaseToken = "token", createdAt = now, updatedAt = now,
-        )
-        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
-        Mockito.`when`(query.lockTypedAction(action.id)).thenReturn(action)
-
-        assertTrue(service.markReconcilingAndEnqueueWake(7, "token", action.id, "unknown outcome"))
-
-        assertEquals(TypedAutomationActionStatus.RECONCILING, action.status)
-        assertNull(state.leaseToken)
-        Mockito.verify(outbox).enqueue(7, "TYPED_AMBIGUOUS_RECONCILE")
-    }
-
-    @Test
-    fun `레이드 복구 인계는 기존 action을 종료하고 경고를 보존한 채 다른 자동화를 깨운다`() {
-        val state = state().apply {
-            leaseToken = "token"
-            leaseUntil = now.plusSeconds(300)
-        }
-        val entry = AutomationEntryEntity(9, account, AutomationType.RAID, 0, true, now, now)
-        val action = TypedAutomationActionRunEntity(
-            23, account, entry, "raid-battle-1", "BATTLE_MAP", "{}", "e".repeat(64),
-            TypedAutomationActionStatus.RECONCILING, leaseToken = "token", createdAt = now, updatedAt = now,
-        )
-        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
-        Mockito.`when`(query.lockTypedAction(action.id)).thenReturn(action)
-
-        assertTrue(
-            service.handoffAmbiguousAction(
-                7,
-                "token",
-                action.id,
-                "레이드 전투 결과 미확정 · 다음 확인 ${now.plusSeconds(300)}",
-                "RAID_BATTLE_RECOVERY_STARTED",
-            ),
-        )
-
-        assertEquals(TypedAutomationActionStatus.AMBIGUOUS, action.status)
-        assertEquals(now, action.finishedAt)
-        assertEquals(TypedAutomationLifecycle.RUNNING, state.lifecycleStatus)
-        assertNull(state.nextAttemptAt)
-        assertNull(state.leaseToken)
-        assertTrue(requireNotNull(state.warningText).contains("레이드 전투 결과 미확정"))
-        Mockito.verify(outbox).enqueue(7, "RAID_BATTLE_RECOVERY_STARTED")
-    }
-
-    @Test
-    fun `reconciliation can resubmit defer or succeed the same stored action`() {
-        val retryAt = now.plusSeconds(10)
-        val state = state().apply { leaseToken = "token"; leaseUntil = now.plusSeconds(300) }
-        val entry = AutomationEntryEntity(9, account, AutomationType.QUEST, 0, true, now, now)
-        val action = TypedAutomationActionRunEntity(
-            17, account, entry, "quest-accept", "QUEST_ACCEPT", "{}", "a".repeat(64),
-            TypedAutomationActionStatus.RECONCILING, leaseToken = "token", createdAt = now, updatedAt = now,
-        )
-        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
-        Mockito.`when`(query.lockTypedAction(action.id)).thenReturn(action)
-
-        assertTrue(service.deferReconciliation(7, "token", action.id, retryAt, "verify later"))
-        assertEquals(TypedAutomationActionStatus.RECONCILING, action.status)
-        assertEquals(retryAt, state.nextAttemptAt)
-
-        state.leaseToken = "token"
-        action.leaseToken = "token"
-        assertTrue(service.retryReconciledSubmission(7, "token", action.id, "TYPED_RECONCILED_RESUBMIT"))
-        assertEquals(TypedAutomationActionStatus.PREPARED, action.status)
-        Mockito.verify(outbox).enqueue(7, "TYPED_RECONCILED_RESUBMIT")
-
-        action.status = TypedAutomationActionStatus.RECONCILING
-        state.leaseToken = "token"
-        action.leaseToken = "token"
-        assertTrue(service.succeedReconciliation(7, "token", action.id, "TYPED_ACTION_COMPLETED"))
-        assertEquals(TypedAutomationActionStatus.SUCCEEDED, action.status)
-        Mockito.verify(outbox).enqueue(7, "TYPED_ACTION_COMPLETED")
-    }
-
-    @Test
-    fun `finishing the current action completes a requested pause without queuing more work`() {
+    fun `finishing current action completes requested pause without another wake`() {
         val state = state().apply {
             lifecycleStatus = TypedAutomationLifecycle.DRAINING
             requestedLifecycle = TypedAutomationLifecycle.PAUSED
-            leaseToken = "token"
-            leaseUntil = now.plusSeconds(300)
         }
-        val entry = AutomationEntryEntity(9, account, AutomationType.BATTLE_MAP, 0, true, now, now)
-        val action = TypedAutomationActionRunEntity(
-            21, account, entry, "pause-after-current", "BATTLE_MAP", "{}", "d".repeat(64),
-            TypedAutomationActionStatus.SUBMITTING, leaseToken = "token", createdAt = now, updatedAt = now,
+        val fixture = action(TypedAutomationActionStatus.PREPARED)
+        val execution = acquire(state, fixture.row)
+        assertIs<TypedRuntimeSubmission.Started>(service.beginSubmission(execution))
+
+        assertTrue(
+            service.complete(
+                execution,
+                TypedRuntimeOutcome.ActionSucceeded("TYPED_ACTION_COMPLETED"),
+            ).applied,
         )
-        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
-        Mockito.`when`(query.lockTypedAction(action.id)).thenReturn(action)
 
-        assertTrue(service.succeedAndEnqueueWake(7, "token", action.id, "TYPED_ACTION_COMPLETED"))
-
-        assertEquals(TypedAutomationActionStatus.SUCCEEDED, action.status)
         assertEquals(TypedAutomationLifecycle.PAUSED, state.lifecycleStatus)
         assertNull(state.requestedLifecycle)
         Mockito.verifyNoInteractions(outbox)
     }
 
     @Test
-    fun `successful lower-priority action preserves a parked raid warning until fresh evaluation`() {
-        val state = state().apply {
-            leaseToken = "token"
-            leaseUntil = now.plusSeconds(300)
-            warningText = "레이드 전투 프리셋 구성을 확인해 주세요."
-        }
-        val entry = AutomationEntryEntity(9, account, AutomationType.BATTLE_MAP, 0, true, now, now)
-        val action = TypedAutomationActionRunEntity(
-            22, account, entry, "lower-action", "BATTLE_MAP", "{}", "d".repeat(64),
-            TypedAutomationActionStatus.SUBMITTING, leaseToken = "token", createdAt = now, updatedAt = now,
-        )
-        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
-        Mockito.`when`(query.lockTypedAction(action.id)).thenReturn(action)
+    fun `successful action can preserve warning owned by a parked higher priority entry`() {
+        val state = state().apply { warningText = "레이드 전투 프리셋 구성을 확인해 주세요." }
+        val fixture = action(TypedAutomationActionStatus.PREPARED)
+        val execution = acquire(state, fixture.row)
+        Mockito.`when`(query.findRuntimeState(7)).thenReturn(state)
+        assertIs<TypedRuntimeSubmission.Started>(service.beginSubmission(execution))
 
-        assertTrue(service.succeedAndEnqueueWake(7, "token", action.id, "TYPED_ACTION_COMPLETED", warnings = null))
+        service.complete(
+            execution,
+            TypedRuntimeOutcome.ActionSucceeded("TYPED_ACTION_COMPLETED", warnings = null),
+        )
 
         assertEquals("레이드 전투 프리셋 구성을 확인해 주세요.", state.warningText)
     }
 
     @Test
-    fun `captcha keeps submitted action for reconciliation while retrying`() {
-        val state = state().apply { leaseToken = "token"; leaseUntil = now.plusSeconds(300) }
-        val entry = AutomationEntryEntity(9, account, AutomationType.BATTLE_MAP, 0, true, now, now)
-        val action = TypedAutomationActionRunEntity(
-            14, account, entry, "captcha-execution", "BATTLE_MAP", "{}", "d".repeat(64),
-            TypedAutomationActionStatus.SUBMITTING, leaseToken = "token", createdAt = now, updatedAt = now,
-        )
-        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
-        Mockito.`when`(query.lockTypedAction(action.id)).thenReturn(action)
+    fun `stale execution right cannot project an outcome`() {
+        val state = state()
+        val execution = acquire(state, null)
+        state.leaseToken = "new-owner"
 
-        assertEquals(
-            now.plusSeconds(10),
-            service.scheduleAutomaticRetry(7, "token", action.id, AutomationStopReason.CAPTCHA, "captcha"),
-        )
+        val projection = service.complete(execution, TypedRuntimeOutcome.Idle)
 
-        assertNull(state.stopActionId)
-        assertEquals(TypedAutomationActionStatus.RECONCILING, action.status)
-        assertEquals(TypedAutomationLifecycle.RUNNING, state.lifecycleStatus)
-        assertEquals(AutomationStopReason.CAPTCHA.name, state.stopReason)
+        assertEquals(false, projection.applied)
+        assertEquals("new-owner", state.leaseToken)
     }
 
     @Test
-    fun `actionless stop clears an earlier stopped action context`() {
-        val state = state().apply {
-            leaseToken = "token"
-            leaseUntil = now.plusSeconds(300)
-            stopActionId = 11L
-        }
-        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
-
-        assertTrue(service.stop(7, "token", null, AutomationStopReason.MANUAL_STOP, "user stop"))
-
-        assertNull(state.stopActionId)
-    }
-
-    @Test
-    fun `stop does not bind or mutate an action owned by another account`() {
-        val state = state().apply { leaseToken = "token"; leaseUntil = now.plusSeconds(300) }
-        val otherAccount = HofAccountEntity(8, "other", "encrypted", now)
-        val otherEntry = AutomationEntryEntity(10, otherAccount, AutomationType.BATTLE_MAP, 0, true, now, now)
-        val otherAction = TypedAutomationActionRunEntity(
-            12, otherAccount, otherEntry, "other-execution", "BATTLE_MAP", "{}", "b".repeat(64),
-            TypedAutomationActionStatus.SUBMITTING, leaseToken = "token", createdAt = now, updatedAt = now,
-        )
-        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
-        Mockito.`when`(query.lockTypedAction(otherAction.id)).thenReturn(otherAction)
-
-        assertTrue(service.stop(7, "token", otherAction.id, AutomationStopReason.MANUAL_STOP, "user stop"))
-
-        assertNull(state.stopActionId)
-        assertEquals(TypedAutomationActionStatus.SUBMITTING, otherAction.status)
-    }
-
-    @Test
-    fun `stop does not bind or mutate an already completed action`() {
-        val state = state().apply { leaseToken = "token"; leaseUntil = now.plusSeconds(300) }
-        val entry = AutomationEntryEntity(9, account, AutomationType.BATTLE_MAP, 0, true, now, now)
-        val completed = TypedAutomationActionRunEntity(
-            13, account, entry, "completed-execution", "BATTLE_MAP", "{}", "c".repeat(64),
-            TypedAutomationActionStatus.SUCCEEDED, leaseToken = "token", createdAt = now, updatedAt = now,
-        )
-        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
-        Mockito.`when`(query.lockTypedAction(completed.id)).thenReturn(completed)
-
-        assertTrue(service.stop(7, "token", completed.id, AutomationStopReason.MANUAL_STOP, "user stop"))
-
-        assertNull(state.stopActionId)
-        assertEquals(TypedAutomationActionStatus.SUCCEEDED, completed.status)
-    }
-
-    @Test
-    fun `safe retry sanitizes errors and configuration warnings release lease for bounded recheck`() {
-        val state = state().apply { leaseToken = "token"; leaseUntil = now.plusSeconds(300) }
-        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
-
-        service.scheduleSafeRetry(7, "token", "password=secret\nnetwork failed")
-
-        assertEquals("password=[redacted] network failed", state.lastError)
-        assertEquals(AutomationWaitReason.HOF_CONNECTION, state.waitReason)
-        assertNull(state.leaseToken)
-        state.leaseToken = "token"
-        state.leaseUntil = now.plusSeconds(300)
-
-        val next = service.deferForConfiguration(7, "token", listOf("missing primary", "later warning"))
-
-        assertEquals(now.plusSeconds(300), next)
-        assertEquals(next, state.nextAttemptAt)
-        assertEquals(AutomationWaitReason.SCHEDULED, state.waitReason)
-        assertNull(state.leaseToken)
-        assertTrue(requireNotNull(state.warningText).contains("missing primary"))
-    }
-
-    @Test
-    fun `normal schedules are labeled and due claim clears stale wait metadata`() {
-        val state = state().apply {
-            leaseToken = "token"
-            leaseUntil = now.plusSeconds(300)
-        }
-        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
-
+    fun `scheduled wait is labeled and due acquisition clears stale metadata`() {
+        val state = state()
+        val execution = acquire(state, null)
         val scheduledAt = now.plusSeconds(300)
-        assertTrue(service.releaseWithDiagnostics(7, "token", scheduledAt, emptyList()))
+
+        assertTrue(
+            service.complete(
+                execution,
+                TypedRuntimeOutcome.ScheduledWait(
+                    scheduledAt,
+                    AutomationWaitReason.SCHEDULED,
+                ),
+            ).applied,
+        )
         assertEquals(scheduledAt, state.nextAttemptAt)
-        assertEquals(AutomationWaitReason.SCHEDULED, state.waitReason)
 
         now = scheduledAt
-        Mockito.`when`(query.findActiveTypedAction(7)).thenReturn(null)
-        assertIs<TypedRuntimeClaim.Acquired>(service.claim(7))
+        assertIs<TypedRuntimeAcquisition.Acquired>(service.acquire(7))
         assertNull(state.nextAttemptAt)
         assertNull(state.waitReason)
     }
 
-    private fun state() = TypedAutomationRuntimeStateEntity(7, account, TypedAutomationLifecycle.RUNNING, createdAt = now, updatedAt = now)
+    private fun acquire(
+        state: TypedAutomationRuntimeStateEntity,
+        row: TypedAutomationActionRunEntity?,
+    ): TypedRuntimeExecutionRight {
+        stubActive(state, row)
+        val execution = assertIs<TypedRuntimeAcquisition.Acquired>(service.acquire(7)).execution
+        row?.let { Mockito.`when`(query.lockTypedAction(it.id)).thenReturn(it) }
+        return execution
+    }
+
+    private fun stubActive(
+        state: TypedAutomationRuntimeStateEntity,
+        row: TypedAutomationActionRunEntity?,
+    ) {
+        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
+        Mockito.`when`(query.findActiveTypedAction(7)).thenReturn(row)
+    }
+
+    private fun action(status: TypedAutomationActionStatus): ActionFixture {
+        val entry = AutomationEntryEntity(9, account, AutomationType.QUEST, 0, true, now, now)
+        val stored = StoredTypedAutomationAction(
+            entryId = entry.id,
+            executionIdentity = "quest-claim",
+            payload = StoredTypedActionPayload.QuestClaim("quest-1", "claim-1"),
+        )
+        val encoded = codec.encode(stored)
+        return ActionFixture(
+            entry,
+            stored,
+            TypedAutomationActionRunEntity(
+                25,
+                account,
+                entry,
+                stored.executionIdentity,
+                stored.payload.kind(),
+                encoded.json,
+                encoded.fingerprint,
+                status,
+                leaseToken = "old",
+                createdAt = now,
+                updatedAt = now,
+            ),
+        )
+    }
+
+    private fun state() = TypedAutomationRuntimeStateEntity(
+        7,
+        account,
+        TypedAutomationLifecycle.RUNNING,
+        createdAt = now,
+        updatedAt = now,
+    )
 
     private fun anyActionRow(): TypedAutomationActionRunEntity =
-        Mockito.any(TypedAutomationActionRunEntity::class.java) ?: TypedAutomationActionRunEntity(
-            account = account,
-            entry = null,
-            executionIdentity = "matcher",
-            actionKind = "QUEST_CLAIM",
-            payloadJson = "{}",
-            actionFingerprint = "0".repeat(64),
-            status = TypedAutomationActionStatus.PREPARED,
-            leaseToken = "matcher",
-            createdAt = now,
-            updatedAt = now,
-        )
+        Mockito.any(TypedAutomationActionRunEntity::class.java) ?: action(TypedAutomationActionStatus.PREPARED).row
+
+    private data class ActionFixture(
+        val entry: AutomationEntryEntity,
+        val stored: StoredTypedAutomationAction,
+        val row: TypedAutomationActionRunEntity,
+    )
 }

@@ -81,10 +81,3 @@ data class TypedRuntimeProjection(
     val applied: Boolean,
     val nextAttemptAt: Instant? = null,
 )
-
-internal data class PersistedTypedRuntimeExecutionRight(
-    val accountId: Long,
-    val leaseToken: String,
-    val actionId: Long?,
-    override val checkpoint: TypedRuntimeCheckpoint?,
-) : TypedRuntimeExecutionRight

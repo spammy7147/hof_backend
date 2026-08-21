@@ -11,12 +11,12 @@ import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 
-sealed interface TypedRuntimeClaim {
-    data object Inactive : TypedRuntimeClaim
-    data object Busy : TypedRuntimeClaim
-    data class Acquired(val token: String, val preparedAction: TypedAutomationActionRunEntity? = null) : TypedRuntimeClaim
-    data class AmbiguousRecovered(val message: String) : TypedRuntimeClaim
-}
+private data class PersistedTypedRuntimeExecutionRight(
+    val accountId: Long,
+    val leaseToken: String,
+    val actionId: Long?,
+    override val checkpoint: TypedRuntimeCheckpoint?,
+) : TypedRuntimeExecutionRight
 
 @Service
 class TypedAutomationRuntimeService(
@@ -296,67 +296,7 @@ class TypedAutomationRuntimeService(
         }
     }
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun claim(accountId: Long): TypedRuntimeClaim {
-        val state = queryRepository.lockRuntimeState(accountId) ?: return TypedRuntimeClaim.Inactive
-        if (state.lifecycleStatus !in setOf(TypedAutomationLifecycle.RUNNING, TypedAutomationLifecycle.DRAINING)) return TypedRuntimeClaim.Inactive
-        val now = timeProvider.now()
-        if (state.nextAttemptAt?.isAfter(now) == true) return TypedRuntimeClaim.Busy
-        if (state.leaseUntil?.isAfter(now) == true) return TypedRuntimeClaim.Busy
-        val active = queryRepository.findActiveTypedAction(accountId)
-        if (active?.status == TypedAutomationActionStatus.SUBMITTING) {
-            active.status = TypedAutomationActionStatus.RECONCILING
-            active.finishedAt = null
-            active.lastError = "A submitted action lost its lease; verify its authoritative state."
-            active.updatedAt = now
-        }
-        state.nextAttemptAt = null
-        state.waitReason = null
-        state.stopReason = null
-        state.stopActionId = null
-        val token = UUID.randomUUID().toString()
-        state.leaseToken = token
-        state.leaseUntil = now.plus(LEASE_DURATION)
-        state.updatedAt = now
-        active?.leaseToken = token
-        active?.updatedAt = now
-        return TypedRuntimeClaim.Acquired(token, active)
-    }
-
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun prepare(accountId: Long, token: String, action: StoredTypedAutomationAction): TypedAutomationActionRunEntity? {
-        val state = fencedState(accountId, token) ?: return null
-        queryRepository.findActiveTypedAction(accountId)?.let { return it }
-        val entry = queryRepository.findEntry(accountId, action.entryId) ?: return null
-        val encoded = codec.encode(action)
-        val now = timeProvider.now()
-        state.updatedAt = now
-        return actionRepository.save(
-            TypedAutomationActionRunEntity(
-                account = entry.account, entry = entry, executionIdentity = action.executionIdentity,
-                actionKind = action.payload.kind(), payloadJson = encoded.json,
-                actionFingerprint = encoded.fingerprint, status = TypedAutomationActionStatus.PREPARED,
-                leaseToken = token, createdAt = now, updatedAt = now,
-            ),
-        )
-    }
-
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun markSubmitting(accountId: Long, token: String, actionId: Long): Instant? {
-        fencedState(accountId, token) ?: return null
-        val action = queryRepository.lockTypedAction(actionId) ?: return null
-        if (action.account.id != accountId || action.leaseToken != token || action.status != TypedAutomationActionStatus.PREPARED) return null
-        val now = timeProvider.now()
-        action.status = TypedAutomationActionStatus.SUBMITTING
-        action.nextAttemptAt = null
-        action.lastError = null
-        action.submittedAt = now
-        action.updatedAt = now
-        return now
-    }
-
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun deferSubmittedAction(
+    private fun deferSubmittedAction(
         accountId: Long,
         token: String,
         actionId: Long,
@@ -390,8 +330,7 @@ class TypedAutomationRuntimeService(
         return true
     }
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun markReconcilingAndEnqueueWake(
+    private fun markReconcilingAndEnqueueWake(
         accountId: Long,
         token: String,
         actionId: Long,
@@ -421,8 +360,7 @@ class TypedAutomationRuntimeService(
         return true
     }
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun handoffAmbiguousAction(
+    private fun handoffAmbiguousAction(
         accountId: Long,
         token: String,
         actionId: Long,
@@ -463,8 +401,7 @@ class TypedAutomationRuntimeService(
         return true
     }
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun retryReconciledSubmission(
+    private fun retryReconciledSubmission(
         accountId: Long,
         token: String,
         actionId: Long,
@@ -495,8 +432,7 @@ class TypedAutomationRuntimeService(
         return true
     }
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun deferReconciliation(
+    private fun deferReconciliation(
         accountId: Long,
         token: String,
         actionId: Long,
@@ -525,8 +461,7 @@ class TypedAutomationRuntimeService(
         return true
     }
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun succeedReconciliation(
+    private fun succeedReconciliation(
         accountId: Long,
         token: String,
         actionId: Long,
@@ -557,11 +492,7 @@ class TypedAutomationRuntimeService(
         return true
     }
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun succeed(accountId: Long, token: String, actionId: Long): Boolean = finish(accountId, token, actionId, TypedAutomationActionStatus.SUCCEEDED, null)
-
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun succeedAndEnqueueWake(
+    private fun succeedAndEnqueueWake(
         accountId: Long,
         token: String,
         actionId: Long,
@@ -575,40 +506,7 @@ class TypedAutomationRuntimeService(
         return succeeded
     }
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun stop(accountId: Long, token: String, actionId: Long?, reason: AutomationStopReason, message: String): Boolean {
-        require(reason == AutomationStopReason.MANUAL_STOP) {
-            "Only an explicit user request may stop typed automation."
-        }
-        val state = fencedState(accountId, token) ?: return false
-        val now = timeProvider.now()
-        val stoppedAction = actionId?.let { id ->
-            queryRepository.lockTypedAction(id)?.takeIf {
-                it.account.id == accountId &&
-                    it.leaseToken == token &&
-                    it.status in setOf(TypedAutomationActionStatus.PREPARED, TypedAutomationActionStatus.SUBMITTING)
-            }
-        }
-        stoppedAction?.apply {
-            status = if (
-                status == TypedAutomationActionStatus.SUBMITTING &&
-                reason in setOf(AutomationStopReason.NETWORK, AutomationStopReason.CAPTCHA)
-            ) {
-                TypedAutomationActionStatus.RECONCILING
-            } else {
-                TypedAutomationActionStatus.FAILED
-            }
-            lastError = message.take(2000)
-            finishedAt = now.takeUnless { status == TypedAutomationActionStatus.RECONCILING }
-            updatedAt = now
-        }
-        state.lastError = sanitizeDiagnostic(message)
-        stopState(state, reason, now, stoppedAction?.id)
-        return true
-    }
-
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun isolateIntegrityFailureForRetry(accountId: Long, token: String, actionId: Long, message: String): Instant? {
+    private fun isolateIntegrityFailureForRetry(accountId: Long, token: String, actionId: Long, message: String): Instant? {
         val state = fencedState(accountId, token) ?: return null
         val action = queryRepository.lockTypedAction(actionId) ?: return null
         if (action.account.id != accountId || action.leaseToken != token) return null
@@ -625,23 +523,12 @@ class TypedAutomationRuntimeService(
         return scheduleAutomaticRetry(state, AutomationStopReason.FATAL, message)
     }
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun scheduleSafeRetry(accountId: Long, token: String, message: String): Instant? {
+    private fun scheduleSafeRetry(accountId: Long, token: String, message: String): Instant? {
         val state = fencedState(accountId, token) ?: return null
         return scheduleAutomaticRetry(state, AutomationStopReason.NETWORK, message)
     }
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun scheduleAutomaticRetry(accountId: Long, reason: AutomationStopReason, message: String): Instant? {
-        require(reason != AutomationStopReason.MANUAL_STOP) { "Manual stop cannot be scheduled for retry." }
-        val state = queryRepository.lockRuntimeState(accountId)
-            ?.takeIf { it.lifecycleStatus in setOf(TypedAutomationLifecycle.RUNNING, TypedAutomationLifecycle.DRAINING) }
-            ?: return null
-        return scheduleAutomaticRetry(state, reason, message)
-    }
-
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun scheduleAutomaticRetry(
+    private fun scheduleAutomaticRetry(
         accountId: Long,
         token: String,
         actionId: Long?,
@@ -676,44 +563,7 @@ class TypedAutomationRuntimeService(
         return retryAt
     }
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun deferUntil(
-        accountId: Long,
-        retryAt: Instant,
-        reason: AutomationWaitReason,
-    ): Boolean {
-        val state = queryRepository.lockRuntimeState(accountId)
-            ?.takeIf { it.lifecycleStatus in setOf(TypedAutomationLifecycle.RUNNING, TypedAutomationLifecycle.DRAINING) }
-            ?: return false
-        state.nextAttemptAt = retryAt
-        state.waitReason = reason
-        state.updatedAt = timeProvider.now()
-        return true
-    }
-
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun release(
-        accountId: Long,
-        token: String,
-        nextRunAt: Instant? = null,
-        waitReason: AutomationWaitReason? = null,
-    ): Boolean {
-        return releaseCore(accountId, token, nextRunAt, waitReason, emptyList())
-    }
-
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun releaseWithDiagnostics(accountId: Long, token: String, nextRunAt: Instant?, warnings: List<String>): Boolean {
-        return releaseCore(
-            accountId,
-            token,
-            nextRunAt,
-            nextRunAt?.let { AutomationWaitReason.SCHEDULED },
-            warnings,
-        )
-    }
-
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun releaseAndEnqueueWake(accountId: Long, token: String, reason: String): Boolean {
+    private fun releaseAndEnqueueWake(accountId: Long, token: String, reason: String): Boolean {
         val released = releaseCore(accountId, token, null, null, emptyList())
         if (released && queryRepository.findRuntimeState(accountId)?.lifecycleStatus == TypedAutomationLifecycle.RUNNING) {
             outbox.enqueue(accountId, reason)
@@ -760,19 +610,7 @@ class TypedAutomationRuntimeService(
         return true
     }
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun deferForConfiguration(accountId: Long, token: String, warnings: List<String>): Instant? {
-        val state = fencedState(accountId, token) ?: return null
-        val next = timeProvider.now().plus(CONFIG_RECHECK)
-        state.leaseToken = null; state.leaseUntil = null; state.nextAttemptAt = next
-        state.waitReason = AutomationWaitReason.SCHEDULED; state.updatedAt = timeProvider.now()
-        state.warningText = warnings.joinToString("\n") { sanitizeDiagnostic(it) }
-        state.lastError = null
-        return next
-    }
-
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun recordWarnings(accountId: Long, token: String, warnings: List<String>): Boolean {
+    private fun recordWarnings(accountId: Long, token: String, warnings: List<String>): Boolean {
         val state = fencedState(accountId, token) ?: return false
         state.warningText = warnings.takeIf { it.isNotEmpty() }?.joinToString("\n") { sanitizeDiagnostic(it) }
         state.updatedAt = timeProvider.now()
@@ -807,17 +645,6 @@ class TypedAutomationRuntimeService(
     private fun fencedState(accountId: Long, token: String) = queryRepository.lockRuntimeState(accountId)
         ?.takeIf { it.lifecycleStatus in setOf(TypedAutomationLifecycle.RUNNING, TypedAutomationLifecycle.DRAINING) && it.leaseToken == token }
 
-    private fun stopState(
-        state: TypedAutomationRuntimeStateEntity,
-        reason: AutomationStopReason,
-        now: Instant,
-        stopActionId: Long? = null,
-    ) {
-        state.lifecycleStatus = TypedAutomationLifecycle.STOPPED; state.stopReason = reason.name
-        state.stopActionId = stopActionId
-        state.nextAttemptAt = null; state.waitReason = null
-        state.leaseToken = null; state.leaseUntil = null; state.updatedAt = now
-    }
 
     private fun scheduleAutomaticRetry(
         state: TypedAutomationRuntimeStateEntity,

@@ -28,7 +28,7 @@ import app.spammy.hof.automation.service.StoredTypedAutomationActionCodec
 import app.spammy.hof.automation.service.StoredTypedAutomationAction
 import app.spammy.hof.automation.service.TypedAutomationLifecycleBridge
 import app.spammy.hof.automation.service.TypedAutomationRuntimeService
-import app.spammy.hof.automation.service.TypedRuntimeClaim
+import app.spammy.hof.automation.service.TypedRuntimeAcquisition
 import app.spammy.hof.common.persistence.QueryDslConfig
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.party.repository.PartyPresetQueryRepository
@@ -393,12 +393,11 @@ class TypedAutomationPersistenceTest {
             Mockito.mock(TypedAutomationLifecycleBridge::class.java), Mockito.mock(AutomationOutboxService::class.java),
         )
 
-        val claim = assertIs<TypedRuntimeClaim.Acquired>(runtime.claim(account.id))
-        val prepared = requireNotNull(claim.preparedAction)
+        val acquisition = assertIs<TypedRuntimeAcquisition.Acquired>(runtime.acquire(account.id))
         entityManager.flush()
         entityManager.clear()
 
-        assertEquals(stored, codec.verifyPersisted(prepared, account.id))
+        assertEquals(stored, acquisition.execution.checkpoint?.storedAction)
     }
 
     @Test

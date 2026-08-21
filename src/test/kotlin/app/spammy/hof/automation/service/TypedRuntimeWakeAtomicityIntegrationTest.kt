@@ -13,6 +13,7 @@ import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import org.mockito.Mockito
@@ -55,9 +56,17 @@ class TypedRuntimeWakeAtomicityIntegrationTest {
 
     @Test
     fun `success commits action runtime release and wake row in one transaction`() {
-        val fixture = seed("atomic-success", TypedAutomationActionStatus.SUBMITTING)
+        val fixture = seed("atomic-success", TypedAutomationActionStatus.PREPARED)
+        val execution = acquire(fixture.accountId)
+        assertIs<TypedRuntimeSubmission.Started>(runtime.beginSubmission(execution))
 
-        assertEquals(true, runtime.succeedAndEnqueueWake(fixture.accountId, TOKEN, fixture.actionId, "TYPED_ACTION_COMPLETED"))
+        assertEquals(
+            true,
+            runtime.complete(
+                execution,
+                TypedRuntimeOutcome.ActionSucceeded("TYPED_ACTION_COMPLETED"),
+            ).applied,
+        )
 
         assertEquals("SUCCEEDED", actionStatus(fixture.actionId))
         val state = requireNotNull(typed.findRuntimeState(fixture.accountId))
@@ -67,36 +76,106 @@ class TypedRuntimeWakeAtomicityIntegrationTest {
 
     @Test
     fun `outer rollback of transition core rolls back action runtime and wake row together`() {
-        val fixture = seed("atomic-rollback", TypedAutomationActionStatus.SUBMITTING)
+        val fixture = seed("atomic-rollback", TypedAutomationActionStatus.PREPARED)
+        val execution = acquire(fixture.accountId)
+        assertIs<TypedRuntimeSubmission.Started>(runtime.beginSubmission(execution))
+        val leaseToken = requireNotNull(typed.findRuntimeState(fixture.accountId)?.leaseToken)
         val target = AopTestUtils.getTargetObject<TypedAutomationRuntimeService>(runtime)
 
         assertFailsWith<ForcedRollback> {
             TransactionTemplate(transactionManager).executeWithoutResult {
-                target.succeedAndEnqueueWake(fixture.accountId, TOKEN, fixture.actionId, "TYPED_ACTION_COMPLETED")
+                target.complete(
+                    execution,
+                    TypedRuntimeOutcome.ActionSucceeded("TYPED_ACTION_COMPLETED"),
+                )
                 throw ForcedRollback()
             }
         }
 
         assertEquals("SUBMITTING", actionStatus(fixture.actionId))
-        assertEquals(TOKEN, typed.findRuntimeState(fixture.accountId)?.leaseToken)
+        assertEquals(leaseToken, typed.findRuntimeState(fixture.accountId)?.leaseToken)
         assertEquals(0, outbox.findUnpublished(NOW.plusSeconds(1)).count { it.account.id == fixture.accountId })
     }
 
     @Test
     fun `configuration recovery commits lease release and durable wake together`() {
         val fixture = seed("atomic-release", TypedAutomationActionStatus.PREPARED)
+        val execution = acquire(fixture.accountId)
 
-        assertEquals(true, runtime.releaseAndEnqueueWake(fixture.accountId, TOKEN, "TYPED_CONFIG_RELOAD"))
+        assertEquals(
+            true,
+            runtime.complete(
+                execution,
+                TypedRuntimeOutcome.SelectionChanged("TYPED_CONFIG_RELOAD"),
+            ).applied,
+        )
 
         assertNull(typed.findRuntimeState(fixture.accountId)?.leaseToken)
         assertEquals(1, outbox.findUnpublished(NOW.plusSeconds(1)).count { it.account.id == fixture.accountId })
     }
 
     @Test
+    fun `ambiguous submission durably enters reconciliation with verification wake`() {
+        val fixture = seed("atomic-reconciliation", TypedAutomationActionStatus.PREPARED)
+        val execution = acquire(fixture.accountId)
+        assertIs<TypedRuntimeSubmission.Started>(runtime.beginSubmission(execution))
+
+        assertTrue(
+            runtime.complete(
+                execution,
+                TypedRuntimeOutcome.SubmissionAmbiguous("unknown result"),
+            ).applied,
+        )
+
+        assertEquals("RECONCILING", actionStatus(fixture.actionId))
+        assertNull(typed.findRuntimeState(fixture.accountId)?.leaseToken)
+        assertEquals(1, outbox.findUnpublished(NOW.plusSeconds(1)).count { it.account.id == fixture.accountId })
+    }
+
+    @Test
+    fun `reconciliation handoff durably terminates checkpoint as ambiguous`() {
+        val fixture = seed("atomic-handoff", TypedAutomationActionStatus.RECONCILING)
+        val execution = acquire(fixture.accountId)
+
+        assertTrue(
+            runtime.complete(
+                execution,
+                TypedRuntimeOutcome.AmbiguousHandoff(
+                    "레이드 전투 결과 미확정",
+                    "RAID_BATTLE_RECOVERY_STARTED",
+                ),
+            ).applied,
+        )
+
+        assertEquals("AMBIGUOUS", actionStatus(fixture.actionId))
+        assertEquals("레이드 전투 결과 미확정", typed.findRuntimeState(fixture.accountId)?.warningText)
+        assertEquals(1, outbox.findUnpublished(NOW.plusSeconds(1)).count { it.account.id == fixture.accountId })
+    }
+
+    @Test
+    fun `submitted deferral durably returns checkpoint to prepared with retry time`() {
+        val fixture = seed("atomic-deferral", TypedAutomationActionStatus.PREPARED)
+        val execution = acquire(fixture.accountId)
+        assertIs<TypedRuntimeSubmission.Started>(runtime.beginSubmission(execution))
+        val retryAt = NOW.plusSeconds(30)
+
+        val projection = runtime.complete(
+            execution,
+            TypedRuntimeOutcome.SubmissionDeferred(retryAt, "HOF 503"),
+        )
+
+        assertEquals(retryAt, projection.nextAttemptAt)
+        assertEquals("PREPARED", actionStatus(fixture.actionId))
+        assertEquals(retryAt, typed.findRuntimeState(fixture.accountId)?.nextAttemptAt)
+        assertEquals(0, outbox.findUnpublished(NOW.plusSeconds(1)).count { it.account.id == fixture.accountId })
+    }
+
+    @Test
     fun `idle release remains discoverable by periodic recovery after runner clears its next time`() {
         val fixture = seed("idle-periodic-recovery", TypedAutomationActionStatus.PREPARED)
+        val execution = acquire(fixture.accountId)
 
-        assertEquals(true, runtime.releaseWithDiagnostics(fixture.accountId, TOKEN, null, emptyList()))
+        assertEquals(true, runtime.complete(execution, TypedRuntimeOutcome.Idle).applied)
 
         val state = requireNotNull(typed.findRuntimeState(fixture.accountId))
         assertNull(state.nextAttemptAt)
@@ -107,13 +186,13 @@ class TypedRuntimeWakeAtomicityIntegrationTest {
     private fun seed(login: String, status: TypedAutomationActionStatus): Fixture = TransactionTemplate(transactionManager).execute {
         val account = accounts.save(HofAccountEntity(loginId = login, encryptedPassword = "encrypted", createdAt = NOW))
         val entry = entries.save(AutomationEntryEntity(account = account, type = AutomationType.QUEST, priority = 0, enabled = true, createdAt = NOW, updatedAt = NOW))
-        states.save(TypedAutomationRuntimeStateEntity(account.id, account, TypedAutomationLifecycle.RUNNING, leaseToken = TOKEN, leaseUntil = NOW.plusSeconds(300), createdAt = NOW, updatedAt = NOW))
+        states.save(TypedAutomationRuntimeStateEntity(account.id, account, TypedAutomationLifecycle.RUNNING, createdAt = NOW, updatedAt = NOW))
         val stored = StoredTypedAutomationAction(entry.id, "execution-$login", StoredTypedActionPayload.QuestClaim("quest", "claim"))
         val encoded = codec.encode(stored)
         val action = actions.save(TypedAutomationActionRunEntity(
             account = account, entry = entry, executionIdentity = stored.executionIdentity, actionKind = "QUEST_CLAIM",
             payloadJson = encoded.json, actionFingerprint = encoded.fingerprint, status = status,
-            leaseToken = TOKEN, createdAt = NOW, submittedAt = NOW.takeIf { status == TypedAutomationActionStatus.SUBMITTING }, updatedAt = NOW,
+            leaseToken = "old-token", createdAt = NOW, submittedAt = NOW.takeIf { status == TypedAutomationActionStatus.SUBMITTING }, updatedAt = NOW,
         ))
         entityManager.flush()
         Fixture(account.id, action.id)
@@ -123,6 +202,9 @@ class TypedRuntimeWakeAtomicityIntegrationTest {
         entityManager.createNativeQuery("select status from typed_automation_action_runs where id=?1")
             .setParameter(1, actionId).singleResult.toString()
     }
+
+    private fun acquire(accountId: Long): TypedRuntimeExecutionRight =
+        assertIs<TypedRuntimeAcquisition.Acquired>(runtime.acquire(accountId)).execution
 
     data class Fixture(val accountId: Long, val actionId: Long)
     private class ForcedRollback : RuntimeException()
@@ -135,7 +217,6 @@ class TypedRuntimeWakeAtomicityIntegrationTest {
     }
 
     private companion object {
-        const val TOKEN = "atomic-token"
         val NOW: Instant = Instant.parse("2026-07-16T00:00:00Z")
     }
 }
