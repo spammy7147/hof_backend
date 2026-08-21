@@ -3,6 +3,14 @@ package app.spammy.hof.automation.service
 import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.entity.AutomationWorkType
 import app.spammy.hof.automation.entity.TypedAutomationActionRunEntity
+import app.spammy.hof.automation.raid.HofRaidObservationAdapter
+import app.spammy.hof.automation.raid.RaidAttempt
+import app.spammy.hof.automation.raid.RaidCycleModule
+import app.spammy.hof.automation.raid.RaidCycleOutcome
+import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
+import app.spammy.hof.automation.raid.RaidIntentKind
+import app.spammy.hof.automation.raid.RaidRecordResult
+import app.spammy.hof.automation.raid.RaidResultObservation
 import app.spammy.hof.battle.dto.RunBattleRequest
 import app.spammy.hof.battle.service.BattleMapService
 import app.spammy.hof.common.error.ApiException
@@ -16,6 +24,9 @@ import app.spammy.hof.town.home.model.HomeQuestState
 import app.spammy.hof.town.home.service.HomeService
 import app.spammy.hof.town.fishing.model.FishingAction
 import app.spammy.hof.town.fishing.service.FishingService
+import app.spammy.hof.town.raid.dto.RaidPubActionRequest
+import app.spammy.hof.town.raid.model.RaidAction
+import app.spammy.hof.town.raid.service.RaidPubService
 import java.io.IOException
 import java.util.UUID
 import org.springframework.stereotype.Service
@@ -90,6 +101,9 @@ class UnifiedAutomationActionLifecycleModule(
     private val workLifecycle: AutomationWorkLifecycle,
     private val unionProgress: UnionAutomationProgressService,
     private val fishingService: FishingService,
+    private val raidPubService: RaidPubService,
+    private val raidCycleModule: RaidCycleModule,
+    private val raidObservationAdapter: HofRaidObservationAdapter,
     private val executionSignals: AutomationExecutionSignals,
     private val sessionRecovery: HofSessionRecoveryExecutor,
     private val timeProvider: TimeProvider,
@@ -114,6 +128,8 @@ class UnifiedAutomationActionLifecycleModule(
             ?.let(::battleMapDescriptor)
         is AdventureMapAutomationAction -> adventureDescriptor(action)
         is FishingTownAutomationAction -> fishingDescriptor(action)
+        is RaidTownAutomationAction -> raidTownDescriptor(action)
+        is RaidCycleAbortAutomationAction -> raidAbortDescriptor(action)
         else -> null
     }
 
@@ -216,6 +232,8 @@ class UnifiedAutomationActionLifecycleModule(
         is BattleMapAutomationAction -> prepareBattleMap(accountId, entryId, action)
         is AdventureMapAutomationAction -> prepareAdventure(accountId, entryId, action)
         is FishingTownAutomationAction -> prepareFishing(accountId, entryId, action)
+        is RaidTownAutomationAction -> prepareRaidTown(accountId, entryId, action)
+        is RaidCycleAbortAutomationAction -> prepareRaidAbort(accountId, entryId, action)
         else -> null
     }
 
@@ -257,6 +275,8 @@ class UnifiedAutomationActionLifecycleModule(
                 BATTLE_MAP_STORAGE_KIND,
                 ADVENTURE_MAP_STORAGE_KIND,
                 FISHING_TOWN_STORAGE_KIND,
+                RAID_TOWN_STORAGE_KIND,
+                RAID_CYCLE_ABORT_STORAGE_KIND,
             )
         ) return null
         val stored = codec.verifyPersisted(row, expectedAccountId)
@@ -270,7 +290,9 @@ class UnifiedAutomationActionLifecycleModule(
                 stored.payload is StoredTypedActionPayload.QuestBattle ||
                 stored.payload is StoredTypedActionPayload.BattleMap ||
                 stored.payload is StoredTypedActionPayload.AdventureMap ||
-                stored.payload is StoredTypedActionPayload.FishingTown,
+                stored.payload is StoredTypedActionPayload.FishingTown ||
+                stored.payload is StoredTypedActionPayload.RaidTown ||
+                stored.payload is StoredTypedActionPayload.RaidCycleAbort,
         ) {
             "Stored action payload does not match the action lifecycle family."
         }
@@ -366,6 +388,22 @@ class UnifiedAutomationActionLifecycleModule(
 
                 override fun reconcile(): AmbiguousActionResolution = reconcileFishing(accountId, payload)
             }
+            is StoredTypedActionPayload.RaidTown -> object : ManagedAutomationAction {
+                override val storedAction = stored
+                override val descriptor = payload.raidTownDescriptor()
+
+                override fun execute(): TypedAutomationExecution = executeRaidTown(accountId, stored, payload)
+
+                override fun reconcile(): AmbiguousActionResolution = reconcileRaidTown(accountId, stored, payload)
+            }
+            is StoredTypedActionPayload.RaidCycleAbort -> object : ManagedAutomationAction {
+                override val storedAction = stored
+                override val descriptor = payload.raidAbortDescriptor()
+
+                override fun execute(): TypedAutomationExecution = executeRaidAbort(accountId, stored, payload)
+
+                override fun reconcile(): AmbiguousActionResolution = reconcileRaidAbort(accountId, stored, payload)
+            }
             else -> error("Stored action ${payload.kind()} is not owned by the action lifecycle module.")
         }
     }
@@ -383,14 +421,21 @@ class UnifiedAutomationActionLifecycleModule(
             BattleAutomationActionSource.BATTLE_MAP_AUTOMATION -> AutomationWorkType.BATTLE_MAP
             BattleAutomationActionSource.UNION_AUTOMATION -> AutomationWorkType.UNION
             BattleAutomationActionSource.FISHING_AUTOMATION -> AutomationWorkType.FISHING
+            BattleAutomationActionSource.RAID_AUTOMATION -> AutomationWorkType.RAID
             else -> error("Unsupported managed battle-map source ${action.source}.")
+        }
+        val targetKey = when (workType) {
+            AutomationWorkType.FISHING -> FISHING_CYCLE_TARGET
+            AutomationWorkType.RAID -> action.sourceTargetKey
+                ?: throw AutomationConfigurationException("The prepared raid target is missing.")
+            else -> "${action.categoryId}/${action.mapCode}"
         }
         workOwnership.ensure(
             accountId,
             entryId,
             AutomationWorkAssignment(
                 workType,
-                if (workType == AutomationWorkType.FISHING) FISHING_CYCLE_TARGET else "${action.categoryId}/${action.mapCode}",
+                targetKey,
             ),
         )
         return manage(
@@ -482,6 +527,58 @@ class UnifiedAutomationActionLifecycleModule(
                     observedPrimaryAction = action.observedPrimaryAction,
                     observedRemainingCasts = action.observedRemainingCasts,
                 ),
+            ),
+        )
+    }
+
+    private fun prepareRaidTown(
+        accountId: Long,
+        entryId: Long,
+        action: RaidTownAutomationAction,
+    ): ManagedAutomationAction {
+        require(action.accountId == accountId) { "Prepared raid account mismatch." }
+        val targetRaidId = action.targetRaidId ?: action.raidId
+            ?: throw AutomationConfigurationException("The prepared raid target is missing.")
+        workOwnership.ensure(
+            accountId,
+            entryId,
+            AutomationWorkAssignment(AutomationWorkType.RAID, targetRaidId),
+        )
+        return manage(
+            accountId,
+            StoredTypedAutomationAction(
+                entryId = entryId,
+                executionIdentity = UUID.randomUUID().toString(),
+                payload = StoredTypedActionPayload.RaidTown(
+                    action = action.action,
+                    raidId = action.raidId,
+                    targetRaidId = targetRaidId,
+                    display = StoredActionDisplay(
+                        mapName = action.raidName,
+                        missionLabel = action.observedStatus,
+                    ),
+                ),
+            ),
+        )
+    }
+
+    private fun prepareRaidAbort(
+        accountId: Long,
+        entryId: Long,
+        action: RaidCycleAbortAutomationAction,
+    ): ManagedAutomationAction {
+        require(action.accountId == accountId) { "Prepared raid account mismatch." }
+        workOwnership.ensure(
+            accountId,
+            entryId,
+            AutomationWorkAssignment(AutomationWorkType.RAID, action.raidId),
+        )
+        return manage(
+            accountId,
+            StoredTypedAutomationAction(
+                entryId = entryId,
+                executionIdentity = UUID.randomUUID().toString(),
+                payload = StoredTypedActionPayload.RaidCycleAbort(action.raidId, action.reason),
             ),
         )
     }
@@ -605,7 +702,7 @@ class UnifiedAutomationActionLifecycleModule(
             return TypedAutomationExecution.SharedCooldown(payload.categoryId, payload.mapCode, submission.retryAt)
         }
         submission as AutomationBattleSubmissionResult.Completed
-        applyCompletedBattleMap(
+        val raidCompletion = applyCompletedBattleMap(
             accountId,
             stored,
             payload,
@@ -613,7 +710,8 @@ class UnifiedAutomationActionLifecycleModule(
             submission.outcomes,
         )
         emitBattleSignals(accountId, payload.source, submission)
-        return TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode)
+        return raidCompletion?.let(TypedAutomationExecution::RaidCycleFinished)
+            ?: TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode)
     }
 
     private fun reconcileBattleMap(
@@ -628,7 +726,7 @@ class UnifiedAutomationActionLifecycleModule(
                 if (!evidence.binds(action) || !evidence.isCompleteTerminal()) {
                     verifyLater("다시 읽은 전투 결과가 저장 행동과 정확히 일치하지 않습니다.")
                 } else {
-                    applyCompletedBattleMap(
+                    val raidCompletion = applyCompletedBattleMap(
                         accountId,
                         stored,
                         payload,
@@ -636,7 +734,8 @@ class UnifiedAutomationActionLifecycleModule(
                         evidence.outcomes,
                     )
                     AmbiguousActionResolution.Applied(
-                        TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode),
+                        raidCompletion?.let(TypedAutomationExecution::RaidCycleFinished)
+                            ?: TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode),
                     )
                 }
             }
@@ -650,9 +749,9 @@ class UnifiedAutomationActionLifecycleModule(
         payload: StoredTypedActionPayload.BattleMap,
         resultIdentity: String,
         outcomes: List<BattleAutomationRoundOutcome>,
-    ) {
+    ): RaidCycleOutcome? {
         val action = payload.toPrepared(accountId, stored.executionIdentity)
-        when (payload.source) {
+        return when (payload.source) {
             BattleAutomationActionSource.BATTLE_MAP_AUTOMATION -> {
                 val resolution = battleHandler.onBattleCompleted(
                     action,
@@ -670,14 +769,26 @@ class UnifiedAutomationActionLifecycleModule(
                     payload.categoryId,
                     payload.mapCode,
                 )
+                null
             }
-            BattleAutomationActionSource.UNION_AUTOMATION -> unionProgress.battleCompleted(
-                accountId,
-                stored.entryId,
-                payload.categoryId,
-                payload.mapCode,
-            )
-            BattleAutomationActionSource.FISHING_AUTOMATION -> Unit
+            BattleAutomationActionSource.UNION_AUTOMATION -> {
+                unionProgress.battleCompleted(
+                    accountId,
+                    stored.entryId,
+                    payload.categoryId,
+                    payload.mapCode,
+                )
+                null
+            }
+            BattleAutomationActionSource.FISHING_AUTOMATION -> null
+            BattleAutomationActionSource.RAID_AUTOMATION -> {
+                val raidId = payload.sourceTargetKey ?: return null
+                recordRaidResult(
+                    accountId,
+                    RaidAttempt(stored.entryId, RaidIntentKind.BATTLE, raidId, null),
+                    RaidResultObservation.BattleCompleted,
+                )
+            }
             else -> error("Unsupported managed battle-map source ${payload.source}.")
         }
     }
@@ -704,6 +815,7 @@ class UnifiedAutomationActionLifecycleModule(
         source = when (action.source) {
             BattleAutomationActionSource.UNION_AUTOMATION -> AutomationType.UNION
             BattleAutomationActionSource.FISHING_AUTOMATION -> AutomationType.FISHING
+            BattleAutomationActionSource.RAID_AUTOMATION -> AutomationType.RAID
             else -> AutomationType.BATTLE_MAP
         },
         storageKind = BATTLE_MAP_STORAGE_KIND,
@@ -711,19 +823,21 @@ class UnifiedAutomationActionLifecycleModule(
         actionLabel = when (action.source) {
             BattleAutomationActionSource.UNION_AUTOMATION -> "유니온"
             BattleAutomationActionSource.FISHING_AUTOMATION -> "낚시"
+            BattleAutomationActionSource.RAID_AUTOMATION -> "레이드"
             else -> "전투맵"
         },
         context = listOf(
             when (action.source) {
                 BattleAutomationActionSource.UNION_AUTOMATION -> "유니온 전투"
                 BattleAutomationActionSource.FISHING_AUTOMATION -> "낚시 방해 전투"
+                BattleAutomationActionSource.RAID_AUTOMATION -> "레이드 누적 전투"
                 else -> "일반 전투"
             },
             "맵 ${action.mapName ?: "${action.categoryId}/${action.mapCode}"}",
             "${action.battleCount}회",
             "파티 ${action.resolvedParty?.characterIds?.size ?: 0}명",
         ).joinToString(" · "),
-        targetKey = "${action.categoryId}/${action.mapCode}",
+        targetKey = action.sourceTargetKey ?: "${action.categoryId}/${action.mapCode}",
         targetName = action.mapName,
         display = StoredActionDisplay(mapName = action.mapName),
         battleCount = action.battleCount,
@@ -905,6 +1019,169 @@ class UnifiedAutomationActionLifecycleModule(
         FishingAction.CATCH -> "낚시 사이클 잡기 · 이후 물고기 획득/전투 발생 결과와 남은 횟수 재확인" +
             (observedRemainingCasts?.let { " · 실행 전 남은 ${it}회" } ?: "")
         else -> "낚시 ${action.name}"
+    }
+
+    private fun executeRaidTown(
+        accountId: Long,
+        stored: StoredTypedAutomationAction,
+        payload: StoredTypedActionPayload.RaidTown,
+    ): TypedAutomationExecution {
+        val response = runMutation(accountId, "Raid") {
+            raidPubService.action(accountId, RaidPubActionRequest(payload.action, payload.raidId))
+        }
+        val completion = recordRaidResult(
+            accountId,
+            payload.toRaidAttempt(stored.entryId),
+            RaidResultObservation.Page(raidObservationAdapter.from(response)),
+        )
+        return completion?.let(TypedAutomationExecution::RaidCycleFinished)
+            ?: TypedAutomationExecution.Completed
+    }
+
+    private fun reconcileRaidTown(
+        accountId: Long,
+        stored: StoredTypedAutomationAction,
+        payload: StoredTypedActionPayload.RaidTown,
+    ): AmbiguousActionResolution {
+        val attempt = payload.toRaidAttemptOrNull(stored.entryId)
+            ?: return verifyLater("저장된 레이드 대상이 없어 결과를 안전하게 확인할 수 없습니다.")
+        return reconcileRaidResult(
+            accountId,
+            attempt,
+            RaidResultObservation.Page(raidObservationAdapter.read(accountId)),
+        )
+    }
+
+    private fun executeRaidAbort(
+        accountId: Long,
+        stored: StoredTypedAutomationAction,
+        payload: StoredTypedActionPayload.RaidCycleAbort,
+    ): TypedAutomationExecution {
+        val completion = recordRaidResult(
+            accountId,
+            payload.toRaidAttempt(stored.entryId),
+            payload.toObservation(),
+        )
+        return completion?.let(TypedAutomationExecution::RaidCycleFinished)
+            ?: TypedAutomationExecution.Completed
+    }
+
+    private fun reconcileRaidAbort(
+        accountId: Long,
+        stored: StoredTypedAutomationAction,
+        payload: StoredTypedActionPayload.RaidCycleAbort,
+    ): AmbiguousActionResolution = reconcileRaidResult(
+        accountId,
+        payload.toRaidAttempt(stored.entryId),
+        payload.toObservation(),
+    )
+
+    private fun recordRaidResult(
+        accountId: Long,
+        attempt: RaidAttempt,
+        observation: RaidResultObservation,
+    ): RaidCycleOutcome? = when (val result = raidCycleModule.recordObservedResult(accountId, attempt, observation)) {
+        is RaidRecordResult.Recorded -> result.completion?.also {
+            workLifecycle.completeRaidCycle(accountId, attempt.entryId)
+        }
+        is RaidRecordResult.NotApplied -> throw AmbiguousAutomationSubmissionException(result.message)
+        is RaidRecordResult.NeedsRecheck -> throw AmbiguousAutomationSubmissionException(result.message)
+    }
+
+    private fun reconcileRaidResult(
+        accountId: Long,
+        attempt: RaidAttempt,
+        observation: RaidResultObservation,
+        defaultExecution: TypedAutomationExecution = TypedAutomationExecution.Completed,
+    ): AmbiguousActionResolution = when (
+        val result = raidCycleModule.recordObservedResult(accountId, attempt, observation)
+    ) {
+        is RaidRecordResult.Recorded -> {
+            result.completion?.let { workLifecycle.completeRaidCycle(accountId, attempt.entryId) }
+            AmbiguousActionResolution.Applied(
+                result.completion?.let(TypedAutomationExecution::RaidCycleFinished) ?: defaultExecution,
+            )
+        }
+        is RaidRecordResult.NotApplied -> AmbiguousActionResolution.Resubmit
+        is RaidRecordResult.NeedsRecheck -> AmbiguousActionResolution.VerifyLater(result.at, result.message)
+    }
+
+    private fun StoredTypedActionPayload.RaidTown.toRaidAttempt(entryId: Long): RaidAttempt {
+        return toRaidAttemptOrNull(entryId)
+            ?: throw AmbiguousAutomationSubmissionException("Stored raid action has no target raid id.")
+    }
+
+    private fun StoredTypedActionPayload.RaidTown.toRaidAttemptOrNull(entryId: Long): RaidAttempt? =
+        (targetRaidId ?: raidId)?.let { target ->
+            RaidAttempt(entryId, action.toRaidIntentKind(), target, raidId)
+        }
+
+    private fun StoredTypedActionPayload.RaidCycleAbort.toRaidAttempt(entryId: Long) =
+        RaidAttempt(entryId, RaidIntentKind.REFRESH, raidId, null)
+
+    private fun StoredTypedActionPayload.RaidCycleAbort.toObservation() =
+        RaidResultObservation.LegacyCycleAbort(
+            when (reason) {
+                RaidCycleAbortReason.CLOSED -> RaidCycleOutcomeKind.ABORTED_CLOSED
+                RaidCycleAbortReason.REGISTRATION_LOST -> RaidCycleOutcomeKind.ABORTED_REGISTRATION_LOST
+            },
+        )
+
+    private fun raidTownDescriptor(action: RaidTownAutomationAction) = AutomationActionDescriptor(
+        source = AutomationType.RAID,
+        storageKind = RAID_TOWN_STORAGE_KIND,
+        actionKind = action.action.name,
+        actionLabel = "레이드",
+        context = raidTownContext(action.action, action.observedStatus),
+        targetKey = action.targetRaidId ?: action.raidId,
+        targetName = action.raidName,
+        display = StoredActionDisplay(mapName = action.raidName, missionLabel = action.observedStatus),
+    )
+
+    private fun StoredTypedActionPayload.RaidTown.raidTownDescriptor() = AutomationActionDescriptor(
+        source = AutomationType.RAID,
+        storageKind = RAID_TOWN_STORAGE_KIND,
+        actionKind = action.name,
+        actionLabel = "레이드",
+        context = raidTownContext(action, display?.missionLabel),
+        targetKey = targetRaidId ?: raidId,
+        targetName = display?.mapName,
+        display = display,
+    )
+
+    private fun raidTownContext(action: RaidAction, observedStatus: String?): String {
+        val phase = when (action) {
+            RaidAction.REGISTER -> "파티 등록"
+            RaidAction.START -> "전투 시작"
+            RaidAction.REWARD -> "보상 수령"
+            RaidAction.REFRESH -> "상태 갱신"
+            RaidAction.RESET -> "레이드 리셋"
+            else -> action.name
+        }
+        return "$phase 단계${observedStatus?.let { " · 관측 상태: $it" } ?: ""}"
+    }
+
+    private fun raidAbortDescriptor(action: RaidCycleAbortAutomationAction) = AutomationActionDescriptor(
+        source = AutomationType.RAID,
+        storageKind = RAID_CYCLE_ABORT_STORAGE_KIND,
+        actionKind = "CYCLE_ABORT",
+        actionLabel = "레이드",
+        context = raidAbortContext(action.raidId, action.reason),
+        targetKey = action.raidId,
+    )
+
+    private fun StoredTypedActionPayload.RaidCycleAbort.raidAbortDescriptor() = AutomationActionDescriptor(
+        source = AutomationType.RAID,
+        storageKind = RAID_CYCLE_ABORT_STORAGE_KIND,
+        actionKind = "CYCLE_ABORT",
+        actionLabel = "레이드",
+        context = raidAbortContext(raidId, reason),
+        targetKey = raidId,
+    )
+
+    private fun raidAbortContext(raidId: String, reason: RaidCycleAbortReason) = when (reason) {
+        RaidCycleAbortReason.CLOSED -> "레이드 사이클 중단 · $raidId"
+        RaidCycleAbortReason.REGISTRATION_LOST -> "레이드 등록 상태 유실 복구 · $raidId"
     }
 
     private fun StoredTypedActionPayload.QuestAccept.questDescriptor() =
@@ -1097,10 +1374,13 @@ class UnifiedAutomationActionLifecycleModule(
         const val BATTLE_MAP_STORAGE_KIND = "BATTLE_MAP"
         const val ADVENTURE_MAP_STORAGE_KIND = "ADVENTURE_MAP"
         const val FISHING_TOWN_STORAGE_KIND = "FISHING_TOWN"
+        const val RAID_TOWN_STORAGE_KIND = "RAID_TOWN"
+        const val RAID_CYCLE_ABORT_STORAGE_KIND = "RAID_CYCLE_ABORT"
         val MANAGED_BATTLE_MAP_SOURCES = setOf(
             BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
             BattleAutomationActionSource.UNION_AUTOMATION,
             BattleAutomationActionSource.FISHING_AUTOMATION,
+            BattleAutomationActionSource.RAID_AUTOMATION,
         )
     }
 }

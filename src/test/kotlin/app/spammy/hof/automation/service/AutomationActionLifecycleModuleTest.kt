@@ -9,6 +9,15 @@ import app.spammy.hof.automation.entity.AutomationWorkType
 import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.automation.entity.TypedAutomationActionRunEntity
 import app.spammy.hof.automation.entity.TypedAutomationActionStatus
+import app.spammy.hof.automation.raid.HofRaidObservationAdapter
+import app.spammy.hof.automation.raid.RaidAttempt
+import app.spammy.hof.automation.raid.RaidCycleModule
+import app.spammy.hof.automation.raid.RaidCycleOutcome
+import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
+import app.spammy.hof.automation.raid.RaidIntentKind
+import app.spammy.hof.automation.raid.RaidObservation
+import app.spammy.hof.automation.raid.RaidRecordResult
+import app.spammy.hof.automation.raid.RaidResultObservation
 import app.spammy.hof.battle.dto.BattlePatternLoadRequest
 import app.spammy.hof.battle.dto.BattleMapResponse
 import app.spammy.hof.battle.dto.RunBattleRequest
@@ -35,6 +44,10 @@ import app.spammy.hof.town.fishing.dto.FishingResponse
 import app.spammy.hof.town.fishing.model.FishingAction
 import app.spammy.hof.town.fishing.model.FishingPrimaryAction
 import app.spammy.hof.town.fishing.service.FishingService
+import app.spammy.hof.town.raid.dto.RaidPubActionRequest
+import app.spammy.hof.town.raid.dto.RaidPubResponse
+import app.spammy.hof.town.raid.model.RaidAction
+import app.spammy.hof.town.raid.service.RaidPubService
 import java.io.IOException
 import java.time.Instant
 import kotlin.test.Test
@@ -61,6 +74,9 @@ class AutomationActionLifecycleModuleTest {
     private val workOwnership = Mockito.mock(AutomationWorkOwnership::class.java)
     private val workLifecycle = Mockito.mock(AutomationWorkLifecycle::class.java)
     private val unionProgress = Mockito.mock(UnionAutomationProgressService::class.java)
+    private val raidPubService = Mockito.mock(RaidPubService::class.java)
+    private val raidCycleModule = Mockito.mock(RaidCycleModule::class.java)
+    private val raidObservationAdapter = Mockito.mock(HofRaidObservationAdapter::class.java)
     private val sessionRecovery = HofSessionRecoveryExecutor(HofSessionRecoveryService(accountService))
     private val battleSubmission = AutomationBattleSubmission(battleRun, sessionRecovery, battleOutcome)
     private val module: AutomationActionLifecycleModule = UnifiedAutomationActionLifecycleModule(
@@ -76,6 +92,9 @@ class AutomationActionLifecycleModuleTest {
         workLifecycle = workLifecycle,
         unionProgress = unionProgress,
         fishingService = fishingService,
+        raidPubService = raidPubService,
+        raidCycleModule = raidCycleModule,
+        raidObservationAdapter = raidObservationAdapter,
         executionSignals = executionSignals,
         sessionRecovery = sessionRecovery,
         timeProvider = TimeProvider { now },
@@ -612,7 +631,7 @@ class AutomationActionLifecycleModuleTest {
     }
 
     @Test
-    fun `저장된 전투 모험 낚시 행동은 identity와 fingerprint를 검증해 복원한다`() {
+    fun `저장된 전투 모험 낚시 레이드 행동은 identity와 fingerprint를 검증해 복원한다`() {
         val codec = StoredTypedAutomationActionCodec(jacksonObjectMapper())
         val payloads = listOf<StoredTypedActionPayload>(
             StoredTypedActionPayload.BattleMap(
@@ -649,6 +668,27 @@ class AutomationActionLifecycleModuleTest {
                 FishingPrimaryAction.CATCH,
                 9,
             ),
+            StoredTypedActionPayload.BattleMap(
+                progressDate = java.time.LocalDate.parse("2026-08-21"),
+                categoryId = "battle_map",
+                mapCode = "map-1",
+                presetMode = PresetSelectionMode.PRIMARY,
+                presetId = 301L,
+                battleCount = 1,
+                battleRequest = battleRequest(),
+                source = BattleAutomationActionSource.RAID_AUTOMATION,
+                sourceTargetKey = "RaidGoblin",
+            ),
+            StoredTypedActionPayload.RaidTown(
+                RaidAction.START,
+                "RaidGoblin",
+                "RaidGoblin",
+                StoredActionDisplay(mapName = "고블린 레이드"),
+            ),
+            StoredTypedActionPayload.RaidCycleAbort(
+                "RaidGoblin",
+                RaidCycleAbortReason.REGISTRATION_LOST,
+            ),
         )
 
         payloads.forEachIndexed { index, payload ->
@@ -667,6 +707,17 @@ class AutomationActionLifecycleModuleTest {
             ),
         )
         assertNotNull(module.restore(actionRow(codec, fishingBattle, 110L), 7L))
+
+        val legacyTargetlessRaid = StoredTypedAutomationAction(
+            12L,
+            "targetless-raid",
+            StoredTypedActionPayload.RaidTown(RaidAction.REFRESH, null, null),
+        )
+        val restoredTargetlessRaid = assertNotNull(
+            module.restore(actionRow(codec, legacyTargetlessRaid, 111L), 7L),
+        )
+        assertIs<AmbiguousActionResolution.VerifyLater>(restoredTargetlessRaid.reconcile())
+        Mockito.verifyNoInteractions(raidObservationAdapter)
     }
 
     @Test
@@ -758,7 +809,7 @@ class AutomationActionLifecycleModuleTest {
     }
 
     @Test
-    fun `아직 이전하지 않은 전투 source는 기존 경로를 위해 처리하지 않는다`() {
+    fun `레이드 전투 source도 같은 lifecycle 경로에서 처리한다`() {
         val action = BattleMapAutomationAction(
             accountId = 7L,
             progressDate = java.time.LocalDate.parse("2026-08-21"),
@@ -769,9 +820,231 @@ class AutomationActionLifecycleModuleTest {
             battleCount = 1,
             executionIdentity = "battle-1",
             source = BattleAutomationActionSource.RAID_AUTOMATION,
+            sourceTargetKey = "RaidGoblin",
+            resolvedParty = ResolvedAutomationParty(
+                battleRequest().characterIds,
+                battleRequest().patternLoads,
+            ),
         )
 
-        assertNull(module.prepare(7L, 12L, action))
+        assertNotNull(module.prepare(7L, 12L, action))
+    }
+
+    @Test
+    fun `레이드 마을 행동을 저장하고 응답 관측만 레이드 규칙 모듈에 전달한다`() {
+        val response = RaidPubResponse(emptyList(), false, false, null, null, emptySet(), null)
+        val observation = RaidObservation(emptyList(), false, false)
+        Mockito.`when`(raidPubService.action(7L, RaidPubActionRequest(RaidAction.RESET, "RaidGoblin")))
+            .thenReturn(response)
+        Mockito.`when`(raidObservationAdapter.from(response)).thenReturn(observation)
+        Mockito.`when`(
+            raidCycleModule.recordObservedResult(
+                7L,
+                RaidAttempt(13L, RaidIntentKind.RESET, "RaidGoblin", "RaidGoblin"),
+                RaidResultObservation.Page(observation),
+            ),
+        ).thenReturn(RaidRecordResult.Recorded())
+        val prepared = RaidTownAutomationAction(
+            accountId = 7L,
+            action = RaidAction.RESET,
+            raidId = "RaidGoblin",
+            raidName = "고블린 레이드",
+            observedStatus = "보상 확인 종료",
+        )
+
+        val managed = assertNotNull(module.prepare(7L, 13L, prepared))
+        val payload = assertIs<StoredTypedActionPayload.RaidTown>(managed.storedAction.payload)
+
+        assertEquals(RaidAction.RESET, payload.action)
+        assertEquals("RaidGoblin", payload.targetRaidId)
+        assertEquals(AutomationType.RAID, managed.descriptor.source)
+        assertEquals("RESET", managed.descriptor.actionKind)
+        assertEquals("레이드 리셋 단계 · 관측 상태: 보상 확인 종료", managed.descriptor.context)
+        assertEquals(managed.descriptor, module.describe(prepared))
+        Mockito.verify(workOwnership).ensure(
+            7L,
+            13L,
+            AutomationWorkAssignment(AutomationWorkType.RAID, "RaidGoblin"),
+        )
+
+        assertEquals(TypedAutomationExecution.Completed, managed.execute())
+        Mockito.verify(raidCycleModule).recordObservedResult(
+            7L,
+            RaidAttempt(13L, RaidIntentKind.RESET, "RaidGoblin", "RaidGoblin"),
+            RaidResultObservation.Page(observation),
+        )
+    }
+
+    @Test
+    fun `레이드 완료 판단은 규칙 모듈의 결과로만 작업을 닫는다`() {
+        val response = RaidPubResponse(emptyList(), true, true, 10_000, null, emptySet(), null)
+        val observation = RaidObservation(emptyList(), true, true, 10_000)
+        val completion = RaidCycleOutcome(13L, "RaidGoblin", RaidCycleOutcomeKind.COMPLETED)
+        Mockito.`when`(raidPubService.action(7L, RaidPubActionRequest(RaidAction.REWARD, null)))
+            .thenReturn(response)
+        Mockito.`when`(raidObservationAdapter.from(response)).thenReturn(observation)
+        Mockito.`when`(
+            raidCycleModule.recordObservedResult(
+                7L,
+                RaidAttempt(13L, RaidIntentKind.REWARD, "RaidGoblin", null),
+                RaidResultObservation.Page(observation),
+            ),
+        ).thenReturn(RaidRecordResult.Recorded(completion))
+        val managed = assertNotNull(
+            module.prepare(
+                7L,
+                13L,
+                RaidTownAutomationAction(7L, RaidAction.REWARD, null, "RaidGoblin", "고블린 레이드"),
+            ),
+        )
+
+        assertEquals(TypedAutomationExecution.RaidCycleFinished(completion), managed.execute())
+        Mockito.verify(workLifecycle).completeRaidCycle(7L, 13L)
+    }
+
+    @Test
+    fun `불명확한 레이드 행동은 최신 원본 상태를 규칙 모듈에 다시 전달한다`() {
+        val observation = RaidObservation(emptyList(), false, false)
+        Mockito.`when`(raidObservationAdapter.read(7L)).thenReturn(observation)
+        Mockito.`when`(
+            raidCycleModule.recordObservedResult(
+                7L,
+                RaidAttempt(13L, RaidIntentKind.REGISTER, "RaidGoblin", "RaidGoblin"),
+                RaidResultObservation.Page(observation),
+            ),
+        ).thenReturn(RaidRecordResult.NeedsRecheck(now.plusSeconds(30), "아직 확정할 수 없습니다."))
+        val managed = assertNotNull(
+            module.prepare(
+                7L,
+                13L,
+                RaidTownAutomationAction(7L, RaidAction.REGISTER, "RaidGoblin"),
+            ),
+        )
+
+        val resolution = assertIs<AmbiguousActionResolution.VerifyLater>(managed.reconcile())
+
+        assertEquals(now.plusSeconds(30), resolution.retryAt)
+        Mockito.verify(raidObservationAdapter).read(7L)
+        Mockito.verifyNoInteractions(workLifecycle)
+    }
+
+    @Test
+    fun `레이드 전투는 정확한 종료 증명 뒤에만 규칙 모듈에 완료를 기록한다`() {
+        val action = battleMapAction().copy(
+            source = BattleAutomationActionSource.RAID_AUTOMATION,
+            sourceTargetKey = "RaidGoblin",
+        )
+        val managed = assertNotNull(module.prepare(7L, 13L, action))
+        val evidence = BattleAuthoritativeOutcomeEvidence(
+            accountId = 7L,
+            executionIdentity = action.executionIdentity,
+            categoryId = action.categoryId,
+            mapCode = action.mapCode,
+            battleCount = action.battleCount,
+            resultIdentity = "raid-result-1",
+            outcomes = listOf(BattleAutomationRoundOutcome.VICTORY),
+        )
+        Mockito.`when`(battleOutcome.reloadRecentAuthoritativeEvidence(anyBattleAction()))
+            .thenReturn(BattleOutcomeReconciliation.Unproven("아직 결과 없음"))
+            .thenReturn(BattleOutcomeReconciliation.Proven(evidence))
+        Mockito.`when`(
+            raidCycleModule.recordObservedResult(
+                7L,
+                RaidAttempt(13L, RaidIntentKind.BATTLE, "RaidGoblin", null),
+                RaidResultObservation.BattleCompleted,
+            ),
+        ).thenReturn(RaidRecordResult.Recorded())
+
+        assertIs<AmbiguousActionResolution.VerifyLater>(managed.reconcile())
+        Mockito.verifyNoInteractions(raidCycleModule)
+
+        assertIs<AmbiguousActionResolution.Applied>(managed.reconcile())
+        Mockito.verify(raidCycleModule).recordObservedResult(
+            7L,
+            RaidAttempt(13L, RaidIntentKind.BATTLE, "RaidGoblin", null),
+            RaidResultObservation.BattleCompleted,
+        )
+        Mockito.verify(workOwnership).ensure(
+            7L,
+            13L,
+            AutomationWorkAssignment(AutomationWorkType.RAID, "RaidGoblin"),
+        )
+    }
+
+    @Test
+    fun `레이드 전투 응답이 모든 회차의 종료를 증명하면 즉시 규칙 모듈에 기록한다`() {
+        val action = battleMapAction().copy(
+            source = BattleAutomationActionSource.RAID_AUTOMATION,
+            sourceTargetKey = "RaidGoblin",
+        )
+        val result = terminalBattleResult("VICTORY")
+        Mockito.`when`(battleRun.runBattle(7L, battleRequest(), HofRequestOrigin.AUTOMATION))
+            .thenReturn(result)
+        Mockito.`when`(
+            raidCycleModule.recordObservedResult(
+                7L,
+                RaidAttempt(13L, RaidIntentKind.BATTLE, "RaidGoblin", null),
+                RaidResultObservation.BattleCompleted,
+            ),
+        ).thenReturn(RaidRecordResult.Recorded())
+        val managed = assertNotNull(module.prepare(7L, 13L, action))
+
+        assertEquals(
+            TypedAutomationExecution.BattleCompleted("battle_map", "map-1"),
+            managed.execute(),
+        )
+        Mockito.verify(raidCycleModule).recordObservedResult(
+            7L,
+            RaidAttempt(13L, RaidIntentKind.BATTLE, "RaidGoblin", null),
+            RaidResultObservation.BattleCompleted,
+        )
+        Mockito.verifyNoInteractions(battleHandler, unionProgress)
+    }
+
+    @Test
+    fun `대상 식별자가 없는 과거 레이드 전투도 정확한 종료 증명으로 안전하게 완료한다`() {
+        val codec = StoredTypedAutomationActionCodec(jacksonObjectMapper())
+        val stored = StoredTypedAutomationAction(
+            12L,
+            "legacy-targetless-raid-battle",
+            StoredTypedActionPayload.BattleMap(
+                progressDate = java.time.LocalDate.parse("2026-08-21"),
+                categoryId = "battle_map",
+                mapCode = "map-1",
+                presetMode = PresetSelectionMode.PRIMARY,
+                presetId = 301L,
+                battleCount = 1,
+                battleRequest = battleRequest(),
+                source = BattleAutomationActionSource.RAID_AUTOMATION,
+                sourceTargetKey = null,
+            ),
+        )
+        val managed = assertNotNull(module.restore(actionRow(codec, stored, 112L), 7L))
+        val result = terminalBattleResult("VICTORY")
+        Mockito.`when`(battleRun.runBattle(7L, battleRequest(), HofRequestOrigin.AUTOMATION))
+            .thenReturn(result)
+        val evidence = BattleAuthoritativeOutcomeEvidence(
+            accountId = 7L,
+            executionIdentity = stored.executionIdentity,
+            categoryId = "battle_map",
+            mapCode = "map-1",
+            battleCount = 1,
+            resultIdentity = "legacy-result",
+            outcomes = listOf(BattleAutomationRoundOutcome.VICTORY),
+        )
+        Mockito.`when`(battleOutcome.reloadRecentAuthoritativeEvidence(anyBattleAction()))
+            .thenReturn(BattleOutcomeReconciliation.Proven(evidence))
+
+        assertEquals(
+            TypedAutomationExecution.BattleCompleted("battle_map", "map-1"),
+            managed.execute(),
+        )
+        val resolution = assertIs<AmbiguousActionResolution.Applied>(managed.reconcile())
+        assertEquals(
+            TypedAutomationExecution.BattleCompleted("battle_map", "map-1"),
+            resolution.execution,
+        )
+        Mockito.verifyNoInteractions(raidCycleModule)
     }
 
     @Test
