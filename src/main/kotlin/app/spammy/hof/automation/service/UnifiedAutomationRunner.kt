@@ -273,6 +273,15 @@ class UnifiedAutomationRunner @Autowired constructor(
             message: String,
             nextRunAt: Instant? = null,
         ) = actionTrace(stored, kind, code, message, nextRunAt, actionDescriptor)
+        fun raidCycleTrace(outcome: app.spammy.hof.automation.raid.RaidCycleOutcome): AutomationActionTrace =
+            outcome.toAutomationActionTrace().let { result ->
+                trace(
+                    result.kind,
+                    result.reasonCode,
+                    result.message,
+                    result.nextRunAt,
+                )
+            }
         fun finishRaidBattleHandoff(resolution: AmbiguousActionResolution.HandedOff) {
             typedRuntime.complete(
                 execution,
@@ -367,7 +376,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                     )
                     decisionCycleId?.let { cycleId ->
                         val resultTrace = when (val recovered = resolution.execution) {
-                            is TypedAutomationExecution.RaidCycleFinished -> recovered.outcome.toAutomationActionTrace()
+                            is TypedAutomationExecution.RaidCycleFinished -> raidCycleTrace(recovered.outcome)
                             else -> trace(
                                 AutomationHistoryEventKind.ACTION_SUCCEEDED,
                                 "AMBIGUOUS_RESULT_APPLIED",
@@ -474,7 +483,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             typedRuntime.complete(execution, outcome)
             decisionCycleId?.let { cycleId ->
                 val resultTrace = when (domainExecution) {
-                    is TypedAutomationExecution.RaidCycleFinished -> domainExecution.outcome.toAutomationActionTrace()
+                    is TypedAutomationExecution.RaidCycleFinished -> raidCycleTrace(domainExecution.outcome)
                     is TypedAutomationExecution.BattleCompleted if recoveryAppliedByTerminalResult -> trace(
                         AutomationHistoryEventKind.ACTION_SUCCEEDED,
                         RAID_BATTLE_APPLIED_TERMINAL_RESULT,

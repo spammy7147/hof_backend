@@ -248,13 +248,7 @@ class AutomationTargetSelector(
             } else {
                 "RUNNABLE"
             },
-            message = message ?: (intent as? RaidIntent.Battle)?.takeIf { it.recoveryChainId != null }?.let {
-                "레이드 전투를 복구 체인으로 재전송합니다. 재전송 ${it.retransmissionCount}회"
-            } ?: "레이드 ${intent.kind.name} 단계를 실행합니다.",
-            actionKind = intent.kind.name,
-            targetKey = intent.raidId,
-            targetName = intent.raidName,
-            presetId = (intent as? RaidIntent.Battle)?.presetId,
+            message = message ?: "레이드 자동화 단계를 실행합니다.",
         )
         is RaidDirective.WaitUntil -> AutomationEvaluationTrace(
             sequence,

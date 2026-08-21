@@ -7,6 +7,8 @@ import app.spammy.hof.automation.history.AutomationActionTrace
 import app.spammy.hof.automation.history.AutomationDecisionJournal
 import app.spammy.hof.automation.history.AutomationHistoryEventKind
 import app.spammy.hof.automation.port.AutomationWakeupPort
+import app.spammy.hof.automation.raid.RaidCycleOutcome
+import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
 import app.spammy.hof.battle.dto.BattlePatternLoadRequest
 import app.spammy.hof.external.client.HofAutomationDeferredException
 import java.time.Instant
@@ -362,6 +364,61 @@ class UnifiedAutomationRunnerTest {
         val traceCaptor = ArgumentCaptor.forClass(AutomationActionTrace::class.java)
         Mockito.verify(journal, Mockito.times(2)).appendActionResult(Mockito.eq(41L), captureTrace(traceCaptor))
         assertEquals("RAID_BATTLE_APPLIED_TERMINAL_RESULT", traceCaptor.allValues.last().reasonCode)
+    }
+
+    @Test
+    fun `raid cycle result keeps lifecycle descriptor as its semantic source`() {
+        val journal = Mockito.mock(AutomationDecisionJournal::class.java)
+        val action = legacyBattleAction()
+        val stored = raidStoredAction()
+        val prepared = executionRight(
+            TypedRuntimeCheckpoint(stored, TypedRuntimeCheckpointPhase.PREPARED, null, null),
+        )
+        val descriptor = AutomationActionDescriptor(
+            source = AutomationType.RAID,
+            storageKind = "BATTLE_MAP",
+            actionKind = "RAID_BATTLE",
+            actionLabel = "레이드 전투",
+            context = "레이드 전투 · RaidGoblin",
+            targetKey = "RaidGoblin",
+            targetName = "고블린",
+            presetId = 301,
+        )
+        Mockito.`when`(decisions.select(7)).thenReturn(
+            AutomationCoordination.Runnable(12, action, emptyList()),
+        )
+        Mockito.`when`(lifecycle.describe(action)).thenReturn(descriptor)
+        Mockito.`when`(managed.descriptor).thenReturn(descriptor)
+        Mockito.`when`(managed.storedAction).thenReturn(stored)
+        Mockito.`when`(runtime.persistPrepared(anyExecution(), anyStoredAction(), anyWarnings()))
+            .thenReturn(TypedRuntimePreparation.Ready(prepared))
+        Mockito.`when`(runtime.beginSubmission(prepared))
+            .thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
+        Mockito.`when`(managed.execute()).thenReturn(
+            TypedAutomationExecution.RaidCycleFinished(
+                RaidCycleOutcome(12, "RaidGoblin", RaidCycleOutcomeKind.COMPLETED),
+            ),
+        )
+        Mockito.`when`(journal.appendDecision(Mockito.eq(7L), anyCoordination())).thenReturn(41L)
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            journal,
+        )
+
+        scoped.runOne(7)
+
+        val traceCaptor = ArgumentCaptor.forClass(AutomationActionTrace::class.java)
+        Mockito.verify(journal, Mockito.times(2)).appendActionResult(Mockito.eq(41L), captureTrace(traceCaptor))
+        val result = traceCaptor.allValues.last()
+        assertEquals("RAID_BATTLE", result.actionKind)
+        assertEquals("RaidGoblin", result.targetKey)
+        assertEquals("고블린", result.targetName)
+        assertTrue(result.message.startsWith("레이드 전투 · RaidGoblin · "))
     }
 
     private fun capturedOutcome(): TypedRuntimeOutcome {

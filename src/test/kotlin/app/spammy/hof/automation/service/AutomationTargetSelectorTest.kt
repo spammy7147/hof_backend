@@ -31,6 +31,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import org.mockito.Mockito
 
@@ -468,8 +469,9 @@ class AutomationTargetSelectorTest {
         val selected = assertIs<AutomationCoordination.Runnable>(moduleSelector.select(7))
 
         assertEquals(13, selected.entryId)
-        assertEquals(RaidIntentKind.REFRESH.name, selected.trace.single().actionKind)
-        assertEquals("RaidGoblin", selected.trace.single().targetKey)
+        assertNull(selected.trace.single().actionKind)
+        assertNull(selected.trace.single().targetKey)
+        assertEquals("레이드 자동화 단계를 실행합니다.", selected.trace.single().message)
         Mockito.verify(lifecycle).resumeForCheck(7, 32)
         Mockito.verify(raidModule).decideNext(7)
         Mockito.verify(loader, Mockito.never()).loadEntry(7, 13, "RaidGoblin")

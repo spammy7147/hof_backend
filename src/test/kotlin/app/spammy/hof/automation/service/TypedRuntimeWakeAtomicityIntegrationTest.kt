@@ -171,6 +171,76 @@ class TypedRuntimeWakeAtomicityIntegrationTest {
     }
 
     @Test
+    fun `expired submitting lease is durably reclaimed as reconciliation`() {
+        val fixture = seed("expired-submission", TypedAutomationActionStatus.SUBMITTING)
+
+        val execution = acquire(fixture.accountId)
+
+        assertEquals(TypedRuntimeCheckpointPhase.RECONCILING, execution.checkpoint?.phase)
+        assertEquals("RECONCILING", actionStatus(fixture.actionId))
+        assertTrue(requireNotNull(typed.findRuntimeState(fixture.accountId)?.leaseUntil).isAfter(NOW))
+    }
+
+    @Test
+    fun `safe retry durably releases lease and preserves sanitized diagnostic`() {
+        val accountId = seedStateOnly("durable-safe-retry")
+        val execution = acquire(accountId)
+
+        val projection = runtime.complete(
+            execution,
+            TypedRuntimeOutcome.SafeRetry("password=secret\nnetwork failed"),
+        )
+
+        val state = requireNotNull(typed.findRuntimeState(accountId))
+        assertEquals(NOW.plusSeconds(10), projection.nextAttemptAt)
+        assertEquals(NOW.plusSeconds(10), state.nextAttemptAt)
+        assertEquals("password=[redacted] network failed", state.lastError)
+        assertNull(state.leaseToken)
+    }
+
+    @Test
+    fun `action completion durably finishes requested pause without wake`() {
+        val fixture = seed("durable-pause", TypedAutomationActionStatus.PREPARED)
+        TransactionTemplate(transactionManager).executeWithoutResult {
+            requireNotNull(typed.lockRuntimeState(fixture.accountId)).apply {
+                lifecycleStatus = TypedAutomationLifecycle.DRAINING
+                requestedLifecycle = TypedAutomationLifecycle.PAUSED
+            }
+        }
+        val execution = acquire(fixture.accountId)
+        assertIs<TypedRuntimeSubmission.Started>(runtime.beginSubmission(execution))
+
+        assertTrue(
+            runtime.complete(
+                execution,
+                TypedRuntimeOutcome.ActionSucceeded("TYPED_ACTION_COMPLETED"),
+            ).applied,
+        )
+
+        val state = requireNotNull(typed.findRuntimeState(fixture.accountId))
+        assertEquals(TypedAutomationLifecycle.PAUSED, state.lifecycleStatus)
+        assertNull(state.requestedLifecycle)
+        assertEquals(0, outbox.findUnpublished(NOW.plusSeconds(1)).count { it.account.id == fixture.accountId })
+    }
+
+    @Test
+    fun `configuration wait durably preserves warnings and bounded recheck`() {
+        val accountId = seedStateOnly("durable-configuration")
+        val execution = acquire(accountId)
+
+        val projection = runtime.complete(
+            execution,
+            TypedRuntimeOutcome.ConfigurationWait(listOf("missing primary", "later warning")),
+        )
+
+        val state = requireNotNull(typed.findRuntimeState(accountId))
+        assertEquals(NOW.plusSeconds(300), projection.nextAttemptAt)
+        assertEquals(AutomationWaitReason.SCHEDULED, state.waitReason)
+        assertEquals("missing primary\nlater warning", state.warningText)
+        assertNull(state.leaseToken)
+    }
+
+    @Test
     fun `idle release remains discoverable by periodic recovery after runner clears its next time`() {
         val fixture = seed("idle-periodic-recovery", TypedAutomationActionStatus.PREPARED)
         val execution = acquire(fixture.accountId)
@@ -186,7 +256,15 @@ class TypedRuntimeWakeAtomicityIntegrationTest {
     private fun seed(login: String, status: TypedAutomationActionStatus): Fixture = TransactionTemplate(transactionManager).execute {
         val account = accounts.save(HofAccountEntity(loginId = login, encryptedPassword = "encrypted", createdAt = NOW))
         val entry = entries.save(AutomationEntryEntity(account = account, type = AutomationType.QUEST, priority = 0, enabled = true, createdAt = NOW, updatedAt = NOW))
-        states.save(TypedAutomationRuntimeStateEntity(account.id, account, TypedAutomationLifecycle.RUNNING, createdAt = NOW, updatedAt = NOW))
+        states.save(TypedAutomationRuntimeStateEntity(
+            account.id,
+            account,
+            TypedAutomationLifecycle.RUNNING,
+            leaseToken = "old-token".takeIf { status == TypedAutomationActionStatus.SUBMITTING },
+            leaseUntil = NOW.minusSeconds(1).takeIf { status == TypedAutomationActionStatus.SUBMITTING },
+            createdAt = NOW,
+            updatedAt = NOW,
+        ))
         val stored = StoredTypedAutomationAction(entry.id, "execution-$login", StoredTypedActionPayload.QuestClaim("quest", "claim"))
         val encoded = codec.encode(stored)
         val action = actions.save(TypedAutomationActionRunEntity(
@@ -196,6 +274,23 @@ class TypedRuntimeWakeAtomicityIntegrationTest {
         ))
         entityManager.flush()
         Fixture(account.id, action.id)
+    }
+
+    private fun seedStateOnly(login: String): Long = TransactionTemplate(transactionManager).execute {
+        val account = accounts.save(
+            HofAccountEntity(loginId = login, encryptedPassword = "encrypted", createdAt = NOW),
+        )
+        states.save(
+            TypedAutomationRuntimeStateEntity(
+                account.id,
+                account,
+                TypedAutomationLifecycle.RUNNING,
+                createdAt = NOW,
+                updatedAt = NOW,
+            ),
+        )
+        entityManager.flush()
+        account.id
     }
 
     private fun actionStatus(actionId: Long): String = TransactionTemplate(transactionManager).execute {
