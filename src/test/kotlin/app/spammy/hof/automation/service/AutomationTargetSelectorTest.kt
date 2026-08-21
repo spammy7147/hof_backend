@@ -24,6 +24,8 @@ import app.spammy.hof.quest.model.QuestProgress
 import app.spammy.hof.quest.model.QuestSection
 import app.spammy.hof.quest.model.QuestSnapshot
 import app.spammy.hof.quest.model.QuestState
+import app.spammy.hof.town.fishing.dto.FishingResponse
+import app.spammy.hof.town.fishing.model.FishingPrimaryAction
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -43,17 +45,33 @@ class AutomationTargetSelectorTest {
     private val typed = Mockito.mock(TypedAutomationQueryRepository::class.java)
     private val work = Mockito.mock(AutomationWorkSessionQueryRepository::class.java)
     private val loader = Mockito.mock(TypedAutomationSnapshotLoader::class.java)
-    private val coordinator = Mockito.mock(AutomationCoordinator::class.java)
     private val lifecycle = Mockito.mock(AutomationWorkLifecycle::class.java)
     private val defaultRaidModule = Mockito.mock(RaidCycleModule::class.java)
+    private val questRules = ScriptedQuestRules()
+    private val battleRules = ScriptedHandler<BattleMapAutomationSnapshot>()
+    private val adventureRules = ScriptedHandler<AdventureMapAutomationSnapshot>()
+    private val unionRules = ScriptedHandler<UnionAutomationSnapshot>()
+    private val fishingRules = ScriptedHandler<FishingAutomationSnapshot>()
+    private val homeQuestRules = ScriptedHandler<HomeQuestAutomationSnapshot>()
     private val selector = AutomationTargetSelector(
-        typed, work, loader, coordinator, lifecycle, TimeProvider { now }, defaultRaidModule,
+        typed,
+        work,
+        loader,
+        lifecycle,
+        TimeProvider { now },
+        defaultRaidModule,
+        questRules,
+        battleRules,
+        adventureRules,
+        unionRules,
+        fishingRules,
+        homeQuestRules,
     )
 
     @Test
     fun `first runnable priority stops lower entry probes`() {
         val action = QuestAction.Accept("quest-1", "accept-1")
-        val questSnapshot = AutomationCoordinatorEntry(
+        val questSnapshot = AutomationEntrySnapshot(
             10,
             AutomationType.QUEST,
             quest = QuestAutomationSnapshot(
@@ -74,7 +92,7 @@ class AutomationTargetSelectorTest {
             lifecycle = lifecycle,
             timeProvider = TimeProvider { now },
             raidModule = defaultRaidModule,
-            quest = questRules(QuestDirective.Execute(action)),
+            quest = fixedQuestRules(QuestDirective.Execute(action)),
             battle = AutomationHandler { HandlerEvaluation.Skipped },
             adventure = AutomationHandler { HandlerEvaluation.Skipped },
             union = AutomationHandler { HandlerEvaluation.Skipped },
@@ -93,9 +111,109 @@ class AutomationTargetSelectorTest {
     }
 
     @Test
+    fun `configuration warning does not block a lower priority runnable and is retained`() {
+        val questSnapshot = questDecisionEntry()
+        val battleSnapshot = battleDecisionEntry()
+        val action = BattleMapAutomationAction(
+            accountId = 7,
+            progressDate = java.time.LocalDate.parse("2026-07-23"),
+            categoryId = "battle_map",
+            mapCode = "map-1",
+            presetMode = PresetSelectionMode.PRIMARY,
+            presetId = 3,
+            battleCount = 1,
+            executionIdentity = "after-warning",
+        )
+        Mockito.`when`(work.findRunning(7)).thenReturn(null)
+        Mockito.`when`(work.findWaiting(7)).thenReturn(emptyList())
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(questEntry, battleEntry))
+        Mockito.`when`(loader.loadEntry(7, questEntry.id, null, null)).thenReturn(questSnapshot)
+        Mockito.`when`(loader.loadEntry(7, battleEntry.id, null, null)).thenReturn(battleSnapshot)
+        questRules.returns(
+            requireNotNull(questSnapshot.quest),
+            QuestDirective.Hold("broken quest", "CONFIGURATION_WARNING"),
+        )
+        battleRules.returns(requireNotNull(battleSnapshot.battle), HandlerEvaluation.Runnable(action))
+
+        val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
+
+        assertEquals(battleEntry.id, selected.entryId)
+        assertEquals(listOf("broken quest"), selected.warnings)
+        assertEquals(
+            listOf(
+                AutomationDecisionOutcome.CONFIGURATION_WARNING,
+                AutomationDecisionOutcome.SELECTED,
+            ),
+            selected.trace.map(AutomationEvaluationTrace::outcome),
+        )
+    }
+
+    @Test
+    fun `earliest unavailable is returned after every configured entry is evaluated`() {
+        val battleSnapshot = battleDecisionEntry()
+        val adventureSnapshot = adventureDecisionEntry()
+        val later = now.plusSeconds(600)
+        val earlier = now.plusSeconds(300)
+        Mockito.`when`(work.findRunning(7)).thenReturn(null)
+        Mockito.`when`(work.findWaiting(7)).thenReturn(emptyList())
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(battleEntry, adventureEntry))
+        Mockito.`when`(loader.loadEntry(7, battleEntry.id, null, null)).thenReturn(battleSnapshot)
+        Mockito.`when`(loader.loadEntry(7, adventureEntry.id, null, null)).thenReturn(adventureSnapshot)
+        battleRules.returns(requireNotNull(battleSnapshot.battle), HandlerEvaluation.Unavailable(later))
+        adventureRules.returns(requireNotNull(adventureSnapshot.adventure), HandlerEvaluation.Unavailable(earlier))
+
+        val unavailable = assertIs<AutomationCoordination.Unavailable>(selector.select(7))
+
+        assertEquals(earlier, unavailable.nextRunAt)
+        assertEquals(listOf(0, 1), unavailable.trace.map(AutomationEvaluationTrace::sequence))
+    }
+
+    @Test
+    fun `fatal entry stops lower priority probes`() {
+        val questSnapshot = questDecisionEntry()
+        Mockito.`when`(work.findRunning(7)).thenReturn(null)
+        Mockito.`when`(work.findWaiting(7)).thenReturn(emptyList())
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(questEntry, battleEntry))
+        Mockito.`when`(loader.loadEntry(7, questEntry.id, null, null)).thenReturn(questSnapshot)
+        questRules.returns(
+            requireNotNull(questSnapshot.quest),
+            QuestDirective.Fatal(AutomationStopReason.NETWORK, "fatal"),
+        )
+
+        val fatal = assertIs<AutomationCoordination.Fatal>(selector.select(7))
+
+        assertEquals(AutomationStopReason.NETWORK, fatal.reason)
+        Mockito.verify(loader, Mockito.never()).loadEntry(7, battleEntry.id, null, null)
+    }
+
+    @Test
+    fun `stale running quest keeps current work and requests an immediate recheck`() {
+        val running = session(40, questEntry, AutomationWorkType.QUEST, "quest-1", AutomationWorkStatus.RUNNING)
+        val questSnapshot = questDecisionEntry()
+        val runningSnapshot = questSnapshot.copy(
+            quest = requireNotNull(questSnapshot.quest).copy(
+                workSessionId = running.id,
+                workSessionRevision = running.revision,
+            ),
+        )
+        Mockito.`when`(work.findRunning(7)).thenReturn(running)
+        Mockito.`when`(loader.loadEntry(7, questEntry.id, "quest-1", null)).thenReturn(questSnapshot)
+        questRules.returns(
+            requireNotNull(runningSnapshot.quest),
+            QuestDirective.Recheck(now, "QUEST_PROGRESS_STALE", "recheck"),
+        )
+
+        val unavailable = assertIs<AutomationCoordination.Unavailable>(selector.select(7))
+
+        assertEquals(now, unavailable.nextRunAt)
+        assertEquals(AutomationWaitScope.HOLD_CURRENT_WORK, unavailable.waitScope)
+        Mockito.verify(typed, Mockito.never()).findEntries(7)
+    }
+
+    @Test
     fun `unavailable battle map does not block a lower priority adventure entry`() {
-        val battleSnapshot = AutomationCoordinatorEntry(11, AutomationType.BATTLE_MAP)
-        val adventureSnapshot = AutomationCoordinatorEntry(12, AutomationType.ADVENTURE_MAP)
+        val battleSnapshot = battleDecisionEntry()
+        val adventureSnapshot = adventureDecisionEntry()
         val retryAt = now.plusSeconds(501)
         val adventureAction = AdventureMapAutomationAction(
             accountId = 7,
@@ -110,11 +228,15 @@ class AutomationTargetSelectorTest {
         Mockito.`when`(work.findWaiting(7)).thenReturn(emptyList())
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(battleEntry, adventureEntry))
         Mockito.`when`(loader.loadEntry(7, 11, null, null)).thenReturn(battleSnapshot)
-        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(battleSnapshot))))
-            .thenReturn(AutomationCoordination.Unavailable(retryAt, emptyList()))
+        battleRules.returns(
+            requireNotNull(battleSnapshot.battle),
+            HandlerEvaluation.Unavailable(retryAt),
+        )
         Mockito.`when`(loader.loadEntry(7, 12, null, null)).thenReturn(adventureSnapshot)
-        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(adventureSnapshot))))
-            .thenReturn(AutomationCoordination.Runnable(12, adventureAction, emptyList()))
+        adventureRules.returns(
+            requireNotNull(adventureSnapshot.adventure),
+            HandlerEvaluation.Runnable(adventureAction),
+        )
 
         val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
 
@@ -130,29 +252,19 @@ class AutomationTargetSelectorTest {
             FISHING_CYCLE_TARGET,
             AutomationWorkStatus.RUNNING,
         )
-        val fishingSnapshot = AutomationCoordinatorEntry(14, AutomationType.FISHING)
+        val fishingSnapshot = fishingDecisionEntry()
         val retryAt = now.plusSeconds(5)
-        val trace = listOf(
-            AutomationEvaluationTrace(
-                sequence = 0,
-                entryId = 14,
-                type = AutomationType.FISHING,
-                outcome = AutomationDecisionOutcome.WAITING,
-                reasonCode = "FISHING_CATCH_TRANSITION_PENDING",
-                message = "잡기 전환을 기다립니다.",
-            ),
-        )
         Mockito.`when`(work.findRunning(7)).thenReturn(runningFishing)
         Mockito.`when`(loader.loadEntry(7, 14, FISHING_CYCLE_TARGET, null)).thenReturn(fishingSnapshot)
-        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(fishingSnapshot))))
-            .thenReturn(
-                AutomationCoordination.Unavailable(
-                    retryAt,
-                    emptyList(),
-                    trace,
-                    AutomationWaitScope.HOLD_CURRENT_WORK,
-                ),
-            )
+        fishingRules.returns(
+            requireNotNull(fishingSnapshot.fishing),
+            HandlerEvaluation.Unavailable(
+                retryAt,
+                "FISHING_CATCH_TRANSITION_PENDING",
+                "잡기 전환을 기다립니다.",
+                AutomationWaitScope.HOLD_CURRENT_WORK,
+            ),
+        )
 
         val selected = assertIs<AutomationCoordination.Unavailable>(selector.select(7))
 
@@ -166,16 +278,8 @@ class AutomationTargetSelectorTest {
         val runningRaid = session(30, raidEntry, AutomationWorkType.RAID, "RaidGoblin", AutomationWorkStatus.RUNNING)
         val retryAt = now.plusSeconds(120)
         val raidModule = Mockito.mock(RaidCycleModule::class.java)
-        val moduleSelector = AutomationTargetSelector(
-            typed,
-            work,
-            loader,
-            coordinator,
-            lifecycle,
-            TimeProvider { now },
-            raidModule,
-        )
-        val battleSnapshot = AutomationCoordinatorEntry(11, AutomationType.BATTLE_MAP)
+        val moduleSelector = selectorWithRaid(raidModule)
+        val battleSnapshot = battleDecisionEntry()
         val battleAction = BattleMapAutomationAction(
             accountId = 7,
             progressDate = java.time.LocalDate.parse("2026-07-23"),
@@ -201,16 +305,16 @@ class AutomationTargetSelectorTest {
             session(30, raidEntry, AutomationWorkType.RAID, "RaidGoblin", AutomationWorkStatus.WAITING_COOLDOWN, nextCheckAt = retryAt),
         ))
         Mockito.`when`(loader.loadEntry(7, 11, null, null)).thenReturn(battleSnapshot)
-        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(battleSnapshot))))
-            .thenReturn(AutomationCoordination.Runnable(11, battleAction, emptyList()))
+        battleRules.returns(requireNotNull(battleSnapshot.battle), HandlerEvaluation.Runnable(battleAction))
 
         val selected = assertIs<AutomationCoordination.Runnable>(moduleSelector.select(7))
 
         assertEquals(11, selected.entryId)
-        assertEquals(1, selected.trace.size)
-        assertEquals(AutomationType.RAID, selected.trace.single().type)
-        assertEquals(AutomationDecisionOutcome.WAITING, selected.trace.single().outcome)
-        assertEquals(RaidWaitReason.BATTLE_COOLDOWN.name, selected.trace.single().reasonCode)
+        assertEquals(2, selected.trace.size)
+        assertEquals(AutomationType.RAID, selected.trace.first().type)
+        assertEquals(AutomationDecisionOutcome.WAITING, selected.trace.first().outcome)
+        assertEquals(RaidWaitReason.BATTLE_COOLDOWN.name, selected.trace.first().reasonCode)
+        assertEquals(AutomationDecisionOutcome.SELECTED, selected.trace.last().outcome)
         Mockito.verify(lifecycle).waitForCooldown(7, 30, retryAt)
         Mockito.verify(loader, Mockito.never()).loadEntry(7, 13, "RaidGoblin")
     }
@@ -218,7 +322,7 @@ class AutomationTargetSelectorTest {
     @Test
     fun `raid wait before its first action is persisted and releases the next automation entry`() {
         val retryAt = now.plusSeconds(120)
-        val battleSnapshot = AutomationCoordinatorEntry(11, AutomationType.BATTLE_MAP)
+        val battleSnapshot = battleDecisionEntry()
         val battleAction = BattleMapAutomationAction(
             accountId = 7,
             progressDate = java.time.LocalDate.parse("2026-07-23"),
@@ -242,8 +346,7 @@ class AutomationTargetSelectorTest {
             ),
         )
         Mockito.`when`(loader.loadEntry(7, 11, null, null)).thenReturn(battleSnapshot)
-        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(battleSnapshot))))
-            .thenReturn(AutomationCoordination.Runnable(11, battleAction, emptyList()))
+        battleRules.returns(requireNotNull(battleSnapshot.battle), HandlerEvaluation.Runnable(battleAction))
 
         val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
 
@@ -253,7 +356,7 @@ class AutomationTargetSelectorTest {
 
     @Test
     fun `invalid raid preset is parked until configuration changes and releases other automation`() {
-        val battleSnapshot = AutomationCoordinatorEntry(11, AutomationType.BATTLE_MAP)
+        val battleSnapshot = battleDecisionEntry()
         val battleAction = BattleMapAutomationAction(
             accountId = 7,
             progressDate = java.time.LocalDate.parse("2026-07-23"),
@@ -277,8 +380,7 @@ class AutomationTargetSelectorTest {
             ),
         )
         Mockito.`when`(loader.loadEntry(7, 11, null, null)).thenReturn(battleSnapshot)
-        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(battleSnapshot))))
-            .thenReturn(AutomationCoordination.Runnable(11, battleAction, emptyList()))
+        battleRules.returns(requireNotNull(battleSnapshot.battle), HandlerEvaluation.Runnable(battleAction))
 
         val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
 
@@ -296,7 +398,7 @@ class AutomationTargetSelectorTest {
     @Test
     fun `parked raid hold warning survives lower priority actions without an early raid recheck`() {
         val holdMessage = "사용자가 진행 중인 레이드가 끝날 때까지 레이드 자동화를 보류합니다."
-        val battleSnapshot = AutomationCoordinatorEntry(11, AutomationType.BATTLE_MAP)
+        val battleSnapshot = battleDecisionEntry()
         val battleAction = BattleMapAutomationAction(
             accountId = 7,
             progressDate = java.time.LocalDate.parse("2026-07-23"),
@@ -321,8 +423,7 @@ class AutomationTargetSelectorTest {
         ))
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(raidEntry, battleEntry))
         Mockito.`when`(loader.loadEntry(7, battleEntry.id, null, null)).thenReturn(battleSnapshot)
-        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(battleSnapshot))))
-            .thenReturn(AutomationCoordination.Runnable(battleEntry.id, battleAction, emptyList()))
+        battleRules.returns(requireNotNull(battleSnapshot.battle), HandlerEvaluation.Runnable(battleAction))
 
         val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
 
@@ -354,15 +455,7 @@ class AutomationTargetSelectorTest {
             AutomationWorkStatus.WAITING_COOLDOWN, nextCheckAt = now,
         )
         val raidModule = Mockito.mock(RaidCycleModule::class.java)
-        val moduleSelector = AutomationTargetSelector(
-            typed,
-            work,
-            loader,
-            coordinator,
-            lifecycle,
-            TimeProvider { now },
-            raidModule,
-        )
+        val moduleSelector = selectorWithRaid(raidModule)
         Mockito.`when`(work.findRunning(7)).thenReturn(null)
         Mockito.`when`(work.findWaiting(7)).thenReturn(listOf(dueRaid))
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(raidEntry))
@@ -430,7 +523,7 @@ class AutomationTargetSelectorTest {
     @Test
     fun `running quest session stays sticky to its target`() {
         val session = session(21, questEntry, AutomationWorkType.QUEST, "quest-1", AutomationWorkStatus.RUNNING)
-        val questSnapshot = AutomationCoordinatorEntry(10, AutomationType.QUEST)
+        val questSnapshot = questDecisionEntry()
         val action = QuestAction.Battle(
             questKey = "quest-1",
             questCycle = "1",
@@ -441,10 +534,15 @@ class AutomationTargetSelectorTest {
             mapName = "Map",
             preset = QuestPresetSelection(app.spammy.hof.automation.entity.PresetSelectionMode.PRIMARY),
         )
+        val runningSnapshot = questSnapshot.copy(
+            quest = requireNotNull(questSnapshot.quest).copy(
+                workSessionId = session.id,
+                workSessionRevision = session.revision,
+            ),
+        )
         Mockito.`when`(work.findRunning(7)).thenReturn(session)
         Mockito.`when`(loader.loadEntry(7, 10, "quest-1")).thenReturn(questSnapshot)
-        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(questSnapshot))))
-            .thenReturn(AutomationCoordination.Runnable(10, action, emptyList()))
+        questRules.returns(requireNotNull(runningSnapshot.quest), QuestDirective.Execute(action))
 
         val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
 
@@ -483,18 +581,17 @@ class AutomationTargetSelectorTest {
             mapIdentityCandidates = emptyList(),
             now = now,
         )
-        val entrySnapshot = AutomationCoordinatorEntry(10, AutomationType.QUEST, quest = questContext)
+        val entrySnapshot = AutomationEntrySnapshot(10, AutomationType.QUEST, quest = questContext)
         val runningSnapshot = entrySnapshot.copy(quest = questContext.copy(
             workSessionId = session.id,
             workSessionRevision = session.revision,
         ))
         Mockito.`when`(work.findRunning(7)).thenReturn(session)
         Mockito.`when`(loader.loadEntry(7, 10, "quest-1")).thenReturn(entrySnapshot)
-        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(runningSnapshot))))
-            .thenReturn(AutomationCoordination.Idle(
-                emptyList(),
-                workTransition = AutomationWorkTransition.WaitForResource("steel ingot", 2),
-            ))
+        questRules.returns(
+            requireNotNull(runningSnapshot.quest),
+            QuestDirective.WaitForResource("steel ingot", 2),
+        )
         Mockito.`when`(typed.findEntries(7)).thenReturn(emptyList())
 
         assertIs<AutomationCoordination.Idle>(selector.select(7))
@@ -542,7 +639,7 @@ class AutomationTargetSelectorTest {
             mapIdentityCandidates = emptyList(),
             now = now,
         )
-        val entrySnapshot = AutomationCoordinatorEntry(10, AutomationType.QUEST, quest = questContext)
+        val entrySnapshot = AutomationEntrySnapshot(10, AutomationType.QUEST, quest = questContext)
         val enrichedEntry = entrySnapshot.copy(
             quest = questContext.copy(
                 workSessionId = 25,
@@ -561,8 +658,7 @@ class AutomationTargetSelectorTest {
         )
         Mockito.`when`(work.findRunning(7)).thenReturn(session)
         Mockito.`when`(loader.loadEntry(7, 10, "quest-1")).thenReturn(entrySnapshot)
-        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(enrichedEntry))))
-            .thenReturn(AutomationCoordination.Runnable(10, action, emptyList()))
+        questRules.returns(requireNotNull(enrichedEntry.quest), QuestDirective.Execute(action))
 
         assertIs<AutomationCoordination.Runnable>(selector.select(7))
 
@@ -605,7 +701,7 @@ class AutomationTargetSelectorTest {
             mapIdentityCandidates = emptyList(),
             now = now,
         )
-        val entrySnapshot = AutomationCoordinatorEntry(10, AutomationType.QUEST, quest = questContext)
+        val entrySnapshot = AutomationEntrySnapshot(10, AutomationType.QUEST, quest = questContext)
         val enrichedEntry = entrySnapshot.copy(
             quest = questContext.copy(
                 workSessionId = 26,
@@ -626,12 +722,11 @@ class AutomationTargetSelectorTest {
         )
         Mockito.`when`(work.findRunning(7)).thenReturn(session)
         Mockito.`when`(loader.loadEntry(7, 10, "quest-1", null)).thenReturn(entrySnapshot)
-        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(enrichedEntry))))
-            .thenReturn(AutomationCoordination.Runnable(10, action, emptyList()))
+        questRules.returns(requireNotNull(enrichedEntry.quest), QuestDirective.Execute(action))
 
         assertIs<AutomationCoordination.Runnable>(selector.select(7))
 
-        Mockito.verify(coordinator).coordinate(AutomationCoordinatorSnapshot(listOf(enrichedEntry)))
+        assertTrue(requireNotNull(enrichedEntry.quest) in questRules.evaluated)
     }
 
     @Test
@@ -644,7 +739,7 @@ class AutomationTargetSelectorTest {
             status = AutomationWorkStatus.WAITING_RESOURCE,
             nextCheckAt = now.plusSeconds(1800),
         )
-        val questSnapshot = AutomationCoordinatorEntry(
+        val questSnapshot = AutomationEntrySnapshot(
             10,
             AutomationType.QUEST,
             quest = QuestAutomationSnapshot(
@@ -666,14 +761,13 @@ class AutomationTargetSelectorTest {
         Mockito.`when`(work.findWaiting(7)).thenReturn(listOf(waiting))
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(questEntry))
         Mockito.`when`(loader.loadEntry(7, 10, null, null)).thenReturn(questSnapshot)
-        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(runnableSnapshot))))
-            .thenReturn(AutomationCoordination.Runnable(10, questAction, emptyList()))
+        questRules.returns(requireNotNull(runnableSnapshot.quest), QuestDirective.Execute(questAction))
 
         val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
 
         assertEquals("quest-2", assertIs<QuestAction.Accept>(selected.action).questKey)
         Mockito.verify(loader).loadEntry(7, 10, null, null)
-        Mockito.verify(coordinator).coordinate(AutomationCoordinatorSnapshot(listOf(runnableSnapshot)))
+        assertTrue(requireNotNull(runnableSnapshot.quest) in questRules.evaluated)
     }
 
     @Test
@@ -688,7 +782,7 @@ class AutomationTargetSelectorTest {
             AutomationWorkStatus.WAITING_COOLDOWN,
             nextCheckAt = retryAt,
         )
-        val configured = AutomationCoordinatorEntry(
+        val configured = AutomationEntrySnapshot(
             10,
             AutomationType.QUEST,
             quest = QuestAutomationSnapshot(
@@ -717,16 +811,17 @@ class AutomationTargetSelectorTest {
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(questEntry))
         Mockito.`when`(loader.loadEntry(7, 10, "quest-1")).thenReturn(configured)
         Mockito.`when`(loader.loadEntry(7, 10, null, null)).thenReturn(configured)
-        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(active))))
-            .thenReturn(AutomationCoordination.Unavailable(retryAt, emptyList()))
-        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(otherQuest))))
-            .thenReturn(AutomationCoordination.Runnable(10, action, emptyList()))
+        questRules.returns(
+            requireNotNull(active.quest),
+            QuestDirective.WaitUntil(retryAt, "COOLDOWN", "wait"),
+        )
+        questRules.returns(requireNotNull(otherQuest.quest), QuestDirective.Execute(action))
 
         val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
 
         assertEquals("quest-2", assertIs<QuestAction.Accept>(selected.action).questKey)
         Mockito.verify(lifecycle).waitForCooldown(7, running.id, retryAt)
-        Mockito.verify(coordinator).coordinate(AutomationCoordinatorSnapshot(listOf(otherQuest)))
+        assertTrue(requireNotNull(otherQuest.quest) in questRules.evaluated)
     }
 
     @Test
@@ -741,7 +836,7 @@ class AutomationTargetSelectorTest {
             nextCheckAt = now.plusSeconds(1800),
             holdMessage = "bad preset",
         )
-        val questSnapshot = AutomationCoordinatorEntry(
+        val questSnapshot = AutomationEntrySnapshot(
             10,
             AutomationType.QUEST,
             quest = QuestAutomationSnapshot(
@@ -764,7 +859,7 @@ class AutomationTargetSelectorTest {
         val noRunnableQuest = questSnapshot.copy(
             quest = requireNotNull(questSnapshot.quest).copy(selections = emptyList()),
         )
-        val battleSnapshot = AutomationCoordinatorEntry(11, AutomationType.BATTLE_MAP)
+        val battleSnapshot = battleDecisionEntry()
         val battleAction = BattleMapAutomationAction(
             accountId = 7,
             progressDate = java.time.LocalDate.parse("2026-07-23"),
@@ -781,13 +876,13 @@ class AutomationTargetSelectorTest {
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(questEntry, battleEntry))
         Mockito.`when`(loader.loadEntry(7, 10, "quest-1")).thenReturn(questSnapshot)
         Mockito.`when`(loader.loadEntry(7, 10, null, null)).thenReturn(questSnapshot)
-        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(active))))
-            .thenReturn(AutomationCoordination.Idle(listOf("bad preset"), workTransition = transition))
-        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(noRunnableQuest))))
-            .thenReturn(AutomationCoordination.Idle(emptyList()))
+        questRules.returns(
+            requireNotNull(active.quest),
+            QuestDirective.WaitForConfiguration("bad preset", "CONFIGURATION_WARNING"),
+        )
+        questRules.returns(requireNotNull(noRunnableQuest.quest), QuestDirective.Skip)
         Mockito.`when`(loader.loadEntry(7, 11, null, null)).thenReturn(battleSnapshot)
-        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(battleSnapshot))))
-            .thenReturn(AutomationCoordination.Runnable(11, battleAction, emptyList()))
+        battleRules.returns(requireNotNull(battleSnapshot.battle), HandlerEvaluation.Runnable(battleAction))
 
         val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
 
@@ -806,7 +901,7 @@ class AutomationTargetSelectorTest {
             status = AutomationWorkStatus.WAITING_COOLDOWN,
             nextCheckAt = now.plusSeconds(1800),
         )
-        val questSnapshot = AutomationCoordinatorEntry(
+        val questSnapshot = AutomationEntrySnapshot(
             10,
             AutomationType.QUEST,
             quest = QuestAutomationSnapshot(
@@ -823,7 +918,7 @@ class AutomationTargetSelectorTest {
         val idleQuestSnapshot = questSnapshot.copy(
             quest = requireNotNull(questSnapshot.quest).copy(selections = emptyList()),
         )
-        val battleSnapshot = AutomationCoordinatorEntry(11, AutomationType.BATTLE_MAP)
+        val battleSnapshot = battleDecisionEntry()
         val battleAction = BattleMapAutomationAction(
             accountId = 7,
             progressDate = java.time.LocalDate.parse("2026-07-23"),
@@ -838,24 +933,22 @@ class AutomationTargetSelectorTest {
         Mockito.`when`(work.findWaiting(7)).thenReturn(listOf(waiting))
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(questEntry, battleEntry))
         Mockito.`when`(loader.loadEntry(7, 10, null, null)).thenReturn(questSnapshot)
-        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(idleQuestSnapshot))))
-            .thenReturn(AutomationCoordination.Idle(emptyList()))
+        questRules.returns(requireNotNull(idleQuestSnapshot.quest), QuestDirective.Skip)
         Mockito.`when`(loader.loadEntry(7, 11, null, null)).thenReturn(battleSnapshot)
-        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(battleSnapshot))))
-            .thenReturn(AutomationCoordination.Runnable(11, battleAction, emptyList()))
+        battleRules.returns(requireNotNull(battleSnapshot.battle), HandlerEvaluation.Runnable(battleAction))
 
         val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
 
         assertEquals(11, selected.entryId)
         Mockito.verify(lifecycle, Mockito.never()).resumeForCheck(7, 29)
-        Mockito.verify(coordinator).coordinate(AutomationCoordinatorSnapshot(listOf(idleQuestSnapshot)))
+        assertTrue(requireNotNull(idleQuestSnapshot.quest) in questRules.evaluated)
         Mockito.verify(loader).loadEntry(7, 11, null, null)
     }
 
     @Test
     fun `repeat quest waiting after completion is parked instead of completed`() {
         val session = session(28, questEntry, AutomationWorkType.QUEST, "quest-1", AutomationWorkStatus.RUNNING)
-        val entrySnapshot = AutomationCoordinatorEntry(
+        val entrySnapshot = AutomationEntrySnapshot(
             id = 10,
             type = AutomationType.QUEST,
             quest = QuestAutomationSnapshot(
@@ -887,11 +980,10 @@ class AutomationTargetSelectorTest {
         )
         Mockito.`when`(work.findRunning(7)).thenReturn(session)
         Mockito.`when`(loader.loadEntry(7, 10, "quest-1", null)).thenReturn(entrySnapshot)
-        Mockito.`when`(coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(runningSnapshot))))
-            .thenReturn(AutomationCoordination.Idle(
-                emptyList(),
-                workTransition = AutomationWorkTransition.WaitForUnknownCooldown,
-            ))
+        questRules.returns(
+            requireNotNull(runningSnapshot.quest),
+            QuestDirective.WaitForUnknownCooldown,
+        )
         Mockito.`when`(work.findWaiting(7)).thenReturn(emptyList())
         Mockito.`when`(typed.findEntries(7)).thenReturn(emptyList())
 
@@ -932,7 +1024,93 @@ class AutomationTargetSelectorTest {
         maps = emptyList(),
     )
 
-    private fun questRules(directive: QuestDirective) = object : QuestWorkCycleModule {
+    private fun selectorWithRaid(raidModule: RaidCycleModule) = AutomationTargetSelector(
+        typed,
+        work,
+        loader,
+        lifecycle,
+        TimeProvider { now },
+        raidModule,
+        questRules,
+        battleRules,
+        adventureRules,
+        unionRules,
+        fishingRules,
+        homeQuestRules,
+    )
+
+    private fun questDecisionEntry(id: Long = 10) = AutomationEntrySnapshot(
+        id,
+        AutomationType.QUEST,
+        quest = QuestAutomationSnapshot(
+            accountId = 7,
+            quests = emptyList(),
+            selections = emptyList(),
+            mapStates = emptyList(),
+            currentCycles = emptyMap(),
+            counters = emptyMap(),
+            mapIdentityCandidates = emptyList(),
+            now = now,
+        ),
+    )
+
+    private fun battleDecisionEntry(id: Long = 11) = AutomationEntrySnapshot(
+        id,
+        AutomationType.BATTLE_MAP,
+        battle = BattleMapAutomationSnapshot(
+            accountId = 7,
+            settings = emptyList(),
+            mapStates = emptyList(),
+            successfulRuns = emptyMap(),
+            primaryPresetId = null,
+            availablePresetIds = emptySet(),
+            executionIdentity = "test-$id",
+            evaluationInstant = now,
+        ),
+    )
+
+    private fun adventureDecisionEntry(id: Long = 12) = AutomationEntrySnapshot(
+        id,
+        AutomationType.ADVENTURE_MAP,
+        adventure = AdventureMapAutomationSnapshot(
+            accountId = 7,
+            settings = emptyList(),
+            mapStates = emptyList(),
+            presetResolutions = emptyMap(),
+            executionIdentities = emptyMap(),
+            evaluationInstant = now,
+        ),
+    )
+
+    private fun fishingDecisionEntry(id: Long = 14) = AutomationEntrySnapshot(
+        id,
+        AutomationType.FISHING,
+        fishing = FishingAutomationSnapshot(
+            accountId = 7,
+            state = FishingResponse(
+                notice = null,
+                remainingCasts = 9,
+                waterStatus = null,
+                baitCount = null,
+                shiningBaitCount = null,
+                escapeSeconds = null,
+                combo = null,
+                locationName = "낚시터",
+                primaryAction = FishingPrimaryAction.START,
+                availableActions = emptySet(),
+                lastOutcome = null,
+                blockedByBattle = false,
+                battleTarget = null,
+                catches = emptyList(),
+                result = null,
+            ),
+            maps = emptyList(),
+            primaryPreset = null,
+            now = now,
+        ),
+    )
+
+    private fun fixedQuestRules(directive: QuestDirective) = object : QuestWorkCycleModule {
         override fun decideNext(snapshot: QuestAutomationSnapshot): QuestDirective = directive
 
         override fun recordObservedResult(
@@ -940,6 +1118,37 @@ class AutomationTargetSelectorTest {
             attempt: QuestAttempt,
             observation: QuestResultObservation,
         ): QuestRecordResult = error("not used")
+    }
+
+    private class ScriptedQuestRules : QuestWorkCycleModule {
+        private val directives = mutableMapOf<QuestAutomationSnapshot, QuestDirective>()
+        val evaluated = mutableListOf<QuestAutomationSnapshot>()
+
+        fun returns(snapshot: QuestAutomationSnapshot, directive: QuestDirective) {
+            directives[snapshot] = directive
+        }
+
+        override fun decideNext(snapshot: QuestAutomationSnapshot): QuestDirective {
+            evaluated += snapshot
+            return directives[snapshot] ?: error("No quest directive scripted for $snapshot")
+        }
+
+        override fun recordObservedResult(
+            accountId: Long,
+            attempt: QuestAttempt,
+            observation: QuestResultObservation,
+        ): QuestRecordResult = error("not used")
+    }
+
+    private class ScriptedHandler<C> : AutomationHandler<C> {
+        private val evaluations = mutableMapOf<C, HandlerEvaluation>()
+
+        fun returns(context: C, evaluation: HandlerEvaluation) {
+            evaluations[context] = evaluation
+        }
+
+        override fun evaluate(context: C): HandlerEvaluation =
+            evaluations[context] ?: error("No handler evaluation scripted for $context")
     }
 
 }

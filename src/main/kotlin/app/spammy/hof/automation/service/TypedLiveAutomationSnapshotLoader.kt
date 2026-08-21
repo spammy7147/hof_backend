@@ -53,23 +53,12 @@ class TypedLiveAutomationSnapshotLoader(
 ) : TypedAutomationSnapshotLoader {
     private val readTransaction = transactionManager?.let { TransactionTemplate(it).apply { isReadOnly = true } }
 
-    override fun loadTyped(accountId: Long): AutomationCoordinatorSnapshot {
-        val before = inReadTransaction { materializeConfiguration(accountId) }
-        check(!TransactionSynchronizationManager.isActualTransactionActive()) {
-            "Typed automation HTTP refresh must run without a transaction."
-        }
-        val live = refreshLiveState(accountId, before)
-        val after = inReadTransaction { materializeConfiguration(accountId) }
-        if (before.version != after.version) throw TypedAutomationConfigurationChangedException()
-        return inReadTransaction { assembleSnapshot(accountId, before, live) }
-    }
-
     override fun loadEntry(
         accountId: Long,
         entryId: Long,
         targetKey: String?,
         questOverride: List<QuestSnapshot>?,
-    ): AutomationCoordinatorEntry {
+    ): AutomationEntrySnapshot {
         val before = inReadTransaction { materializeConfiguration(accountId) }
         val scopedBefore = before.scoped(entryId, targetKey)
         check(!TransactionSynchronizationManager.isActualTransactionActive()) {
@@ -87,7 +76,7 @@ class TypedLiveAutomationSnapshotLoader(
         val after = inReadTransaction { materializeConfiguration(accountId) }
         if (before.version != after.version) throw TypedAutomationConfigurationChangedException()
         return inReadTransaction {
-            assembleSnapshot(accountId, after.scoped(entryId, targetKey), live).entries.single()
+            assembleEntries(accountId, after.scoped(entryId, targetKey), live).single()
         }
     }
 
@@ -204,7 +193,11 @@ class TypedLiveAutomationSnapshotLoader(
         return DetachedConfiguration(entries, primary, validPresetIds, parties, categories, version)
     }
 
-    private fun assembleSnapshot(accountId: Long, config: DetachedConfiguration, live: LiveAutomationState): AutomationCoordinatorSnapshot {
+    private fun assembleEntries(
+        accountId: Long,
+        config: DetachedConfiguration,
+        live: LiveAutomationState,
+    ): List<AutomationEntrySnapshot> {
         val now = timeProvider.now()
         val states = maps.findAllStatesForExecution(accountId)
         val aliases = states.map { it.battleMap.categoryId }.distinct().flatMap(identities::loadAliasCandidates)
@@ -212,9 +205,9 @@ class TypedLiveAutomationSnapshotLoader(
             AutomationTimeSnapshot(it.timeCurrent, it.timeMax, it.observedAt)
         }
         val runnableEntries = config.entries.filter { it.enabled && it.type != AutomationType.RAID }
-        return AutomationCoordinatorSnapshot(runnableEntries.map { entry -> when (entry.type) {
-            AutomationType.QUEST -> AutomationCoordinatorEntry(entry.id, entry.type, quest = questSnapshot(accountId, entry, live.quests, states, aliases, config, now, timeSnapshot))
-            AutomationType.HOME_QUEST -> AutomationCoordinatorEntry(
+        return runnableEntries.map { entry -> when (entry.type) {
+            AutomationType.QUEST -> AutomationEntrySnapshot(entry.id, entry.type, quest = questSnapshot(accountId, entry, live.quests, states, aliases, config, now, timeSnapshot))
+            AutomationType.HOME_QUEST -> AutomationEntrySnapshot(
                 entry.id,
                 entry.type,
                 homeQuest = live.home?.let { home ->
@@ -225,16 +218,16 @@ class TypedLiveAutomationSnapshotLoader(
                     )
                 },
             )
-            AutomationType.BATTLE_MAP -> AutomationCoordinatorEntry(entry.id, entry.type, battle = battleSnapshot(accountId, entry, states, config, now, timeSnapshot))
-            AutomationType.ADVENTURE_MAP -> AutomationCoordinatorEntry(entry.id, entry.type, adventure = adventureSnapshot(accountId, entry, states, config, now, timeSnapshot))
-            AutomationType.UNION -> AutomationCoordinatorEntry(entry.id, entry.type, union = UnionAutomationSnapshot(
+            AutomationType.BATTLE_MAP -> AutomationEntrySnapshot(entry.id, entry.type, battle = battleSnapshot(accountId, entry, states, config, now, timeSnapshot))
+            AutomationType.ADVENTURE_MAP -> AutomationEntrySnapshot(entry.id, entry.type, adventure = adventureSnapshot(accountId, entry, states, config, now, timeSnapshot))
+            AutomationType.UNION -> AutomationEntrySnapshot(entry.id, entry.type, union = UnionAutomationSnapshot(
                 accountId, entry.union.map { setting ->
                     val resolved = resolvePreset(setting.presetMode, setting.presetId, config)
                     UnionAutomationSetting("${setting.categoryId}:${setting.mapCode}", setting.categoryId, setting.mapCode,
                         setting.presetMode, resolved, setting.executionOrder, resolved?.let(config.parties::get))
                 }, states.map(::battleState), entry.rotationTarget, now,
             ))
-            AutomationType.FISHING -> AutomationCoordinatorEntry(entry.id, entry.type, fishing = live.fishing?.let { state ->
+            AutomationType.FISHING -> AutomationEntrySnapshot(entry.id, entry.type, fishing = live.fishing?.let { state ->
                 val primary = config.primary?.let { presetId ->
                     FishingAutomationPreset(PresetSelectionMode.PRIMARY, presetId, config.parties[presetId])
                 }
@@ -243,8 +236,8 @@ class TypedLiveAutomationSnapshotLoader(
                     FishingAutomationMapSetting(setting.categoryId, setting.mapCode, setting.presetMode, resolved, resolved?.let(config.parties::get))
                 }, primary, now)
             })
-            AutomationType.RAID -> AutomationCoordinatorEntry(entry.id, entry.type)
-        } })
+            AutomationType.RAID -> AutomationEntrySnapshot(entry.id, entry.type)
+        } }
     }
 
     private fun resolvePreset(mode: PresetSelectionMode, presetId: Long?, config: DetachedConfiguration): Long? = when (mode) {

@@ -15,7 +15,6 @@ import app.spammy.hof.common.time.TimeProvider
 import java.time.Instant
 import java.time.ZoneId
 import java.util.UUID
-import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Service
 
 fun interface AutomationDecisionSource {
@@ -23,57 +22,20 @@ fun interface AutomationDecisionSource {
 }
 
 @Service
-class AutomationTargetSelector private constructor(
+class AutomationTargetSelector(
     private val typed: TypedAutomationQueryRepository,
     private val work: AutomationWorkSessionQueryRepository,
     private val loader: TypedAutomationSnapshotLoader,
     private val lifecycle: AutomationWorkLifecycle,
     private val timeProvider: TimeProvider,
     private val raidModule: RaidCycleModule,
-    private val decideEntry: (AutomationCoordinatorEntry) -> AutomationCoordination,
+    private val quest: QuestWorkCycleModule,
+    private val battle: AutomationHandler<BattleMapAutomationSnapshot>,
+    private val adventure: AutomationHandler<AdventureMapAutomationSnapshot>,
+    private val union: AutomationHandler<UnionAutomationSnapshot>,
+    private val fishing: AutomationHandler<FishingAutomationSnapshot>,
+    private val homeQuest: AutomationHandler<HomeQuestAutomationSnapshot>,
 ) : AutomationDecisionSource {
-    @Autowired
-    constructor(
-        typed: TypedAutomationQueryRepository,
-        work: AutomationWorkSessionQueryRepository,
-        loader: TypedAutomationSnapshotLoader,
-        lifecycle: AutomationWorkLifecycle,
-        timeProvider: TimeProvider,
-        raidModule: RaidCycleModule,
-        quest: QuestWorkCycleModule,
-        battle: AutomationHandler<BattleMapAutomationSnapshot>,
-        adventure: AutomationHandler<AdventureMapAutomationSnapshot>,
-        union: AutomationHandler<UnionAutomationSnapshot>,
-        fishing: AutomationHandler<FishingAutomationSnapshot>,
-        homeQuest: AutomationHandler<HomeQuestAutomationSnapshot>,
-    ) : this(
-        typed,
-        work,
-        loader,
-        lifecycle,
-        timeProvider,
-        raidModule,
-        { entry -> evaluateEntry(entry, quest, battle, adventure, union, fishing, homeQuest) },
-    )
-
-    /** Expand 단계 동안 기존 테스트와 보조 runner 구성을 유지한다. */
-    constructor(
-        typed: TypedAutomationQueryRepository,
-        work: AutomationWorkSessionQueryRepository,
-        loader: TypedAutomationSnapshotLoader,
-        coordinator: AutomationCoordinator,
-        lifecycle: AutomationWorkLifecycle,
-        timeProvider: TimeProvider,
-        raidModule: RaidCycleModule,
-    ) : this(
-        typed,
-        work,
-        loader,
-        lifecycle,
-        timeProvider,
-        raidModule,
-        { entry -> coordinator.coordinate(AutomationCoordinatorSnapshot(listOf(entry))) },
-    )
 
     override fun select(accountId: Long): AutomationCoordination {
         work.findRunning(accountId)?.let { return selectSession(accountId, it) }
@@ -92,29 +54,16 @@ class AutomationTargetSelector private constructor(
         val entry = loader.loadEntry(accountId, session.entryId, session.targetKey)
             .withQuestWorkSession(session)
         return when (val result = coordinate(entry)) {
-                is AutomationCoordination.Runnable -> {
-                    result.withPrefix(initialWarnings, initialTrace)
-                }
-                is AutomationCoordination.Fatal -> result.withPrefix(initialWarnings, initialTrace)
-                is AutomationCoordination.Unavailable -> {
-                    val prefixed = result.withPrefix(initialWarnings, initialTrace)
-                    if (result.waitScope == AutomationWaitScope.HOLD_CURRENT_WORK) {
-                        prefixed
-                    } else {
-                        lifecycle.waitForCooldown(accountId, session.id, result.nextRunAt)
-                        selectConfigured(
-                            accountId,
-                            initialWarnings + result.warnings,
-                            initialTrace + result.trace.resequenced(initialTrace.size),
-                        )
-                    }
-                }
-                is AutomationCoordination.Idle -> {
-                    result.workTransition?.let {
-                        lifecycle.applyTransition(accountId, session.id, it)
-                    } ?: if (session.workType != AutomationWorkType.QUEST) {
-                        lifecycle.applyTransition(accountId, session.id, AutomationWorkTransition.Complete)
-                    } else Unit
+            is AutomationCoordination.Runnable -> {
+                result.withPrefix(initialWarnings, initialTrace)
+            }
+            is AutomationCoordination.Fatal -> result.withPrefix(initialWarnings, initialTrace)
+            is AutomationCoordination.Unavailable -> {
+                val prefixed = result.withPrefix(initialWarnings, initialTrace)
+                if (result.waitScope == AutomationWaitScope.HOLD_CURRENT_WORK) {
+                    prefixed
+                } else {
+                    lifecycle.waitForCooldown(accountId, session.id, result.nextRunAt)
                     selectConfigured(
                         accountId,
                         initialWarnings + result.warnings,
@@ -122,6 +71,19 @@ class AutomationTargetSelector private constructor(
                     )
                 }
             }
+            is AutomationCoordination.Idle -> {
+                result.workTransition?.let {
+                    lifecycle.applyTransition(accountId, session.id, it)
+                } ?: if (session.workType != AutomationWorkType.QUEST) {
+                    lifecycle.applyTransition(accountId, session.id, AutomationWorkTransition.Complete)
+                } else Unit
+                selectConfigured(
+                    accountId,
+                    initialWarnings + result.warnings,
+                    initialTrace + result.trace.resequenced(initialTrace.size),
+                )
+            }
+        }
     }
 
     private fun selectConfigured(
@@ -228,8 +190,8 @@ class AutomationTargetSelector private constructor(
             ?: AutomationCoordination.Idle(warnings, trace)
     }
 
-    private fun coordinate(entry: AutomationCoordinatorEntry): AutomationCoordination =
-        decideEntry(entry)
+    private fun coordinate(entry: AutomationEntrySnapshot): AutomationCoordination =
+        evaluateEntry(entry, quest, battle, adventure, union, fishing, homeQuest)
 
     private fun selectRaidSession(
         accountId: Long,
@@ -398,9 +360,9 @@ class AutomationTargetSelector private constructor(
         RaidIntentKind.BATTLE -> error("Battle intents use the common battle action.")
     }
 
-    private fun AutomationCoordinatorEntry.excludingWaitingQuests(
+    private fun AutomationEntrySnapshot.excludingWaitingQuests(
         targetKeys: Set<String>,
-    ): AutomationCoordinatorEntry {
+    ): AutomationEntrySnapshot {
         if (type != AutomationType.QUEST || targetKeys.isEmpty()) return this
         return copy(
             quest = quest?.copy(
@@ -409,9 +371,9 @@ class AutomationTargetSelector private constructor(
         )
     }
 
-    private fun AutomationCoordinatorEntry.withQuestWorkSession(
+    private fun AutomationEntrySnapshot.withQuestWorkSession(
         session: AutomationWorkSessionView,
-    ): AutomationCoordinatorEntry {
+    ): AutomationEntrySnapshot {
         if (session.workType != AutomationWorkType.QUEST) return this
         return copy(
             quest = quest?.copy(
@@ -427,7 +389,7 @@ class AutomationTargetSelector private constructor(
 }
 
 private fun evaluateEntry(
-    entry: AutomationCoordinatorEntry,
+    entry: AutomationEntrySnapshot,
     quest: QuestWorkCycleModule,
     battle: AutomationHandler<BattleMapAutomationSnapshot>,
     adventure: AutomationHandler<AdventureMapAutomationSnapshot>,
@@ -580,7 +542,7 @@ private fun QuestDirective.toEntryEvaluation(): HandlerEvaluation = when (this) 
     QuestDirective.Skip -> HandlerEvaluation.Skipped
 }
 
-private fun AutomationCoordinatorEntry.waitingEntryTrace(
+private fun AutomationEntrySnapshot.waitingEntryTrace(
     evaluation: HandlerEvaluation.Unavailable,
 ): EntryWaitingTrace? {
     fishing?.let { snapshot ->

@@ -23,23 +23,6 @@ class UnifiedAutomationRunner @Autowired constructor(
     private val actionLifecycleModule: AutomationActionLifecycleModule,
     private val decisionJournal: AutomationDecisionJournal? = null,
 ) {
-    constructor(
-        dailyPreflight: AutomationDailyPreflight,
-        typedRuntime: TypedAutomationRuntimeService,
-        typedSnapshotLoader: TypedAutomationSnapshotLoader,
-        coordinator: AutomationCoordinator,
-        wakeupPort: AutomationWakeupPort,
-        sharedBattleCooldowns: SharedBattleCooldownService,
-        actionLifecycleModule: AutomationActionLifecycleModule,
-    ) : this(
-        dailyPreflight,
-        typedRuntime,
-        AutomationDecisionSource { accountId -> coordinator.coordinate(typedSnapshotLoader.loadTyped(accountId)) },
-        wakeupPort,
-        sharedBattleCooldowns,
-        actionLifecycleModule,
-    )
-
     private val log = LoggerFactory.getLogger(javaClass)
 
     /** 한 wakeup에서 최대 action 하나만 실행하고 후속 판단은 새 wakeup과 새 스냅샷에 맡긴다. */

@@ -60,7 +60,7 @@ data class BattleMapAutomationSnapshot(
     val successfulRuns: Map<BattleMapProgressIdentity, Int>,
     val primaryPresetId: Long?,
     val availablePresetIds: Set<Long>,
-    /** Supplied by the coordinator so retries retain identity without making pure evaluation random. */
+    /** Supplied by the snapshot loader so retries retain identity without making pure evaluation random. */
     val executionIdentity: String,
     /** Deterministic action-time input; the handler derives the Korea calendar date itself. */
     val evaluationInstant: Instant,
