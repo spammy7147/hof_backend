@@ -158,7 +158,7 @@ class AutomationWorkSessionServiceTest {
     }
 
     @Test
-    fun `battle action starts one session with configured victory target`() {
+    fun `battle work assignment starts one session with configured victory target`() {
         val setting = BattleAutomationMapEntity(
             id = 31,
             entry = entry,
@@ -168,28 +168,23 @@ class AutomationWorkSessionServiceTest {
             presetMode = PresetSelectionMode.PRIMARY,
             executionOrder = 0,
         )
-        val action = BattleMapAutomationAction(
-            accountId = 7,
-            progressDate = java.time.LocalDate.parse("2026-07-23"),
-            categoryId = "battle_map",
-            mapCode = "map-1",
-            presetMode = PresetSelectionMode.PRIMARY,
-            presetId = 3,
-            battleCount = 3,
-            executionIdentity = "execution-1",
-        )
         Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
         Mockito.`when`(typed.findEntry(7, 11)).thenReturn(entry)
         Mockito.`when`(typed.findBattleSettings(11)).thenReturn(listOf(setting))
         Mockito.`when`(queries.lockOpen(7)).thenReturn(emptyList())
 
-        val started = service.ensureForAction(7, 11, action)
+        service.ensure(
+            7,
+            11,
+            AutomationWorkAssignment(AutomationWorkType.BATTLE_MAP, "battle_map/map-1"),
+        )
+        val started = Mockito.mockingDetails(commands).invocations.single { it.method.name == "save" }
+            .arguments.single() as AutomationWorkSessionEntity
 
         assertEquals(AutomationWorkType.BATTLE_MAP, started.workType)
         assertEquals("battle_map/map-1", started.targetKey)
         assertEquals(20, started.targetCount)
         assertEquals(AutomationWorkStatus.RUNNING, started.status)
-        Mockito.verify(commands).save(started)
     }
 
     @Test

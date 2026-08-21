@@ -7,18 +7,14 @@ import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
 import app.spammy.hof.automation.raid.RaidIntentKind
 import app.spammy.hof.automation.raid.RaidRecordResult
 import app.spammy.hof.automation.raid.RaidResultObservation
-import app.spammy.hof.battle.service.BattleMapService
 import app.spammy.hof.common.time.TimeProvider
-import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.town.fishing.service.FishingService
 import org.springframework.stereotype.Service
 
 @Service
 class DefaultAutomationAmbiguousActionReconciler(
-    private val battleMapService: BattleMapService,
     private val battleHandler: BattleMapAutomationHandler,
     private val battleOutcomeReconciler: BattleOutcomeReconciler,
-    private val sessionRecovery: HofSessionRecoveryExecutor,
     private val timeProvider: TimeProvider,
     private val workLifecycle: AutomationWorkLifecycle,
     private val raidCycleModule: RaidCycleModule,
@@ -29,12 +25,13 @@ class DefaultAutomationAmbiguousActionReconciler(
         accountId: Long,
         action: StoredTypedAutomationAction,
     ): AmbiguousActionResolution = when (val payload = action.payload) {
-        is StoredTypedActionPayload.AdventureMap -> reconcileAdventure(accountId, action.entryId, payload)
         is StoredTypedActionPayload.BattleMap -> {
             if (payload.source == BattleAutomationActionSource.RAID_AUTOMATION) {
                 reconcileRaidBattle(accountId, action.entryId, action.executionIdentity, payload)
-            } else {
+            } else if (payload.source == BattleAutomationActionSource.FISHING_AUTOMATION) {
                 reconcileBattleMap(accountId, action.entryId, action.executionIdentity, payload)
+            } else {
+                error("Stored battle source ${payload.source} belongs to the action lifecycle module.")
             }
         }
         is StoredTypedActionPayload.FishingTown -> reconcileFishing(accountId, payload)
@@ -135,58 +132,6 @@ class DefaultAutomationAmbiguousActionReconciler(
                 reconciliation.message,
             )
         }
-    }
-
-    private fun reconcileAdventure(
-        accountId: Long,
-        entryId: Long,
-        payload: StoredTypedActionPayload.AdventureMap,
-    ): AmbiguousActionResolution {
-        val current = sessionRecovery.execute(accountId) {
-            battleMapService.findMaps(accountId, payload.categoryId, HofRequestOrigin.AUTOMATION)
-        }.singleOrNull { it.mapCode == payload.mapCode }
-            ?: return AmbiguousActionResolution.VerifyLater(
-                retryAt(),
-                "Adventure map ${payload.categoryId}/${payload.mapCode} is absent.",
-            )
-        val decreased = listOf(
-            payload.observedAttemptRemaining to current.attemptCount,
-            payload.observedWinRemaining to current.winCount,
-            payload.observedAvailableCount to current.availableCount,
-        ).any { (before, after) -> before != null && after != null && after < before }
-        val cooldownStarted = current.cooldownRemainingSeconds?.let { it > 0 } == true
-        if (decreased || cooldownStarted) {
-            return completeAdventure(accountId, entryId, payload)
-        }
-        val exhausted = listOf(current.attemptCount, current.winCount, current.availableCount)
-            .any { it != null && it <= 0 }
-        val runnable = current.resolved && current.enabled && !exhausted &&
-            current.keyCount != 0 && (current.cooldownRemainingSeconds ?: 0) <= 0
-        if (runnable) return AmbiguousActionResolution.Resubmit
-        // The action was prepared only while this map was runnable. If an authoritative reload now
-        // resolves the same map as unavailable, do not replay a possibly successful battle.
-        if (current.resolved && !current.enabled) {
-            return completeAdventure(accountId, entryId, payload)
-        }
-        val retryAt = current.cooldownRemainingSeconds
-            ?.takeIf { it > 0 }
-            ?.let { timeProvider.now().plusSeconds(it) }
-            ?: retryAt()
-        return AmbiguousActionResolution.VerifyLater(
-            retryAt,
-            "Adventure map outcome is not yet authoritative.",
-        )
-    }
-
-    private fun completeAdventure(
-        accountId: Long,
-        entryId: Long,
-        payload: StoredTypedActionPayload.AdventureMap,
-    ): AmbiguousActionResolution.Applied {
-        workLifecycle.completeAdventureAction(accountId, entryId, payload.categoryId, payload.mapCode)
-        return AmbiguousActionResolution.Applied(
-            TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode),
-        )
     }
 
     private fun reconcileBattleMap(

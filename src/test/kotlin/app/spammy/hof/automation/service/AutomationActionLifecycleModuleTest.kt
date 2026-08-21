@@ -10,9 +10,12 @@ import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.automation.entity.TypedAutomationActionRunEntity
 import app.spammy.hof.automation.entity.TypedAutomationActionStatus
 import app.spammy.hof.battle.dto.BattlePatternLoadRequest
+import app.spammy.hof.battle.dto.BattleMapResponse
 import app.spammy.hof.battle.dto.RunBattleRequest
+import app.spammy.hof.battle.model.BattleMapKeyMode
 import app.spammy.hof.battle.service.BattleRunService
 import app.spammy.hof.battle.service.SharedBattleCooldownRejectedException
+import app.spammy.hof.battle.service.BattleMapService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
@@ -47,8 +50,12 @@ class AutomationActionLifecycleModuleTest {
     private val questHandler = Mockito.mock(QuestAutomationHandler::class.java)
     private val battleRun = Mockito.mock(BattleRunService::class.java)
     private val battleOutcome = Mockito.mock(BattleOutcomeReconciler::class.java)
+    private val battleHandler = Mockito.mock(BattleMapAutomationHandler::class.java)
+    private val battleMapService = Mockito.mock(BattleMapService::class.java)
     private val executionSignals = Mockito.mock(AutomationExecutionSignals::class.java)
     private val workOwnership = Mockito.mock(AutomationWorkOwnership::class.java)
+    private val workLifecycle = Mockito.mock(AutomationWorkLifecycle::class.java)
+    private val unionProgress = Mockito.mock(UnionAutomationProgressService::class.java)
     private val sessionRecovery = HofSessionRecoveryExecutor(HofSessionRecoveryService(accountService))
     private val battleSubmission = AutomationBattleSubmission(battleRun, sessionRecovery, battleOutcome)
     private val module: AutomationActionLifecycleModule = UnifiedAutomationActionLifecycleModule(
@@ -58,6 +65,11 @@ class AutomationActionLifecycleModuleTest {
         questGateway = questGateway,
         questHandler = questHandler,
         battleSubmission = battleSubmission,
+        battleHandler = battleHandler,
+        battleOutcomeReconciler = battleOutcome,
+        battleMapService = battleMapService,
+        workLifecycle = workLifecycle,
+        unionProgress = unionProgress,
         executionSignals = executionSignals,
         sessionRecovery = sessionRecovery,
         timeProvider = TimeProvider { now },
@@ -431,7 +443,221 @@ class AutomationActionLifecycleModuleTest {
     }
 
     @Test
-    fun `아직 이전하지 않은 행동군은 기존 경로를 위해 처리하지 않는다`() {
+    fun `일반 전투맵은 준비된 identity와 단말 결과로 진행과 작업을 한 번 완료한다`() {
+        val request = battleRequest(3)
+        val action = BattleMapAutomationAction(
+            accountId = 7L,
+            progressDate = java.time.LocalDate.parse("2026-08-21"),
+            categoryId = request.categoryId,
+            mapCode = request.mapCode,
+            presetMode = PresetSelectionMode.PRIMARY,
+            presetId = 301L,
+            battleCount = 3,
+            executionIdentity = "battle-execution-1",
+            resolvedParty = ResolvedAutomationParty(request.characterIds, request.patternLoads),
+            mapName = "슬라임 동굴",
+        )
+        val result = Mockito.mock(app.spammy.hof.battle.dto.BattleResultResponse::class.java)
+        val rounds = listOf("VICTORY", "DEFEAT", "DRAW").map { outcome ->
+            Mockito.mock(app.spammy.hof.battle.dto.BattleRoundResponse::class.java).also { round ->
+                Mockito.`when`(round.outcome).thenReturn(outcome)
+                Mockito.`when`(round.loots).thenReturn(emptyList())
+                Mockito.`when`(round.quest).thenReturn(null)
+            }
+        }
+        Mockito.`when`(result.rounds).thenReturn(rounds)
+        Mockito.`when`(battleRun.runBattle(7L, request, HofRequestOrigin.AUTOMATION)).thenReturn(result)
+        val managed = assertNotNull(module.prepare(7L, 12L, action))
+
+        assertEquals("battle-execution-1", managed.storedAction.executionIdentity)
+        assertEquals(request, assertIs<StoredTypedActionPayload.BattleMap>(managed.storedAction.payload).battleRequest)
+        assertEquals(AutomationType.BATTLE_MAP, managed.descriptor.source)
+        assertEquals("BATTLE_MAP", managed.descriptor.actionKind)
+        assertEquals("일반 전투 · 맵 슬라임 동굴 · 3회 · 파티 1명", managed.descriptor.context)
+        assertEquals(managed.descriptor, module.describe(action))
+        Mockito.verify(workOwnership).ensure(
+            7L,
+            12L,
+            AutomationWorkAssignment(AutomationWorkType.BATTLE_MAP, "battle_map/map-1"),
+        )
+
+        assertEquals(
+            TypedAutomationExecution.BattleCompleted("battle_map", "map-1"),
+            managed.execute(),
+        )
+        Mockito.verify(battleHandler).onBattleCompleted(
+            action,
+            BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
+            "battle-execution-1",
+            listOf(
+                BattleAutomationRoundOutcome.VICTORY,
+                BattleAutomationRoundOutcome.DEFEAT,
+                BattleAutomationRoundOutcome.DRAW,
+            ),
+            battleOutcome,
+        )
+        Mockito.verify(workLifecycle).completeBattleMapAction(7L, 12L, "battle_map", "map-1")
+    }
+
+    @Test
+    fun `일반 전투 shared cooldown은 진행과 작업 완료 없이 다음 시각만 반환한다`() {
+        val action = battleMapAction()
+        val retryAt = now.plusSeconds(45)
+        Mockito.`when`(battleRun.runBattle(7L, battleRequest(), HofRequestOrigin.AUTOMATION))
+            .thenThrow(SharedBattleCooldownRejectedException(retryAt))
+
+        val managed = assertNotNull(module.prepare(7L, 12L, action))
+
+        assertEquals(
+            TypedAutomationExecution.SharedCooldown("battle_map", "map-1", retryAt),
+            managed.execute(),
+        )
+        Mockito.verifyNoInteractions(battleHandler, workLifecycle, unionProgress, executionSignals)
+    }
+
+    @Test
+    fun `불명확한 일반 전투는 일치하는 권위 결과가 없으면 재실행하지 않는다`() {
+        val managed = assertNotNull(module.prepare(7L, 12L, battleMapAction()))
+        Mockito.`when`(battleOutcome.reloadRecentAuthoritativeEvidence(anyBattleAction()))
+            .thenReturn(BattleOutcomeReconciliation.Unproven("아직 결과가 보이지 않습니다."))
+
+        val resolution = assertIs<AmbiguousActionResolution.VerifyLater>(managed.reconcile())
+
+        assertEquals(now.plusSeconds(10), resolution.retryAt)
+        Mockito.verifyNoInteractions(battleHandler, workLifecycle, unionProgress)
+    }
+
+    @Test
+    fun `유니온 전투는 단말 결과 뒤 순환만 이동하고 일반 전투 작업은 완료하지 않는다`() {
+        val action = battleMapAction().copy(
+            source = BattleAutomationActionSource.UNION_AUTOMATION,
+            executionIdentity = "union-execution-1",
+            mapName = "유니온 초원",
+        )
+        val result = terminalBattleResult("VICTORY")
+        Mockito.`when`(battleRun.runBattle(7L, battleRequest(), HofRequestOrigin.AUTOMATION)).thenReturn(result)
+
+        val managed = assertNotNull(module.prepare(7L, 13L, action))
+
+        assertEquals(AutomationType.UNION, managed.descriptor.source)
+        assertEquals(
+            TypedAutomationExecution.BattleCompleted("battle_map", "map-1"),
+            managed.execute(),
+        )
+        Mockito.verify(unionProgress).battleCompleted(7L, 13L, "battle_map", "map-1")
+        Mockito.verifyNoInteractions(battleHandler, workLifecycle)
+    }
+
+    @Test
+    fun `모험맵은 준비된 관측값을 저장하고 단말 결과 뒤 한 작업을 완료한다`() {
+        val action = adventureAction()
+        val result = terminalBattleResult("VICTORY")
+        Mockito.`when`(battleRun.runBattle(7L, battleRequest(), HofRequestOrigin.AUTOMATION))
+            .thenReturn(result)
+
+        val managed = assertNotNull(module.prepare(7L, 14L, action))
+        val payload = assertIs<StoredTypedActionPayload.AdventureMap>(managed.storedAction.payload)
+
+        assertEquals("adventure-execution-1", managed.storedAction.executionIdentity)
+        assertEquals(3, payload.observedAttemptRemaining)
+        assertEquals(AutomationType.ADVENTURE_MAP, managed.descriptor.source)
+        assertEquals("ADVENTURE_MAP", managed.descriptor.actionKind)
+        Mockito.verify(workOwnership).ensure(
+            7L,
+            14L,
+            AutomationWorkAssignment(AutomationWorkType.ADVENTURE_MAP, "battle_map/map-1"),
+        )
+        assertEquals(
+            TypedAutomationExecution.BattleCompleted("battle_map", "map-1"),
+            managed.execute(),
+        )
+        Mockito.verify(workLifecycle).completeAdventureAction(7L, 14L, "battle_map", "map-1")
+    }
+
+    @Test
+    fun `불명확한 모험맵은 권위 횟수 감소만 적용하고 기준이 없으면 재실행하지 않는다`() {
+        val decreased = assertNotNull(module.prepare(7L, 14L, adventureAction()))
+        val noBaseline = assertNotNull(
+            module.prepare(
+                7L,
+                14L,
+                adventureAction().copy(
+                    executionIdentity = "adventure-execution-2",
+                    observedAttemptRemaining = null,
+                    observedWinRemaining = null,
+                    observedAvailableCount = null,
+                ),
+            ),
+        )
+        Mockito.`when`(battleMapService.findMaps(7L, "battle_map", HofRequestOrigin.AUTOMATION))
+            .thenReturn(
+                listOf(mapResponse(attemptCount = 2)),
+                listOf(mapResponse(attemptCount = 3)),
+            )
+        Mockito.`when`(battleOutcome.reloadRecentAuthoritativeEvidence(anyBattleAction()))
+            .thenReturn(BattleOutcomeReconciliation.Unproven("결과 식별자를 찾지 못했습니다."))
+
+        assertIs<AmbiguousActionResolution.Applied>(decreased.reconcile())
+        assertIs<AmbiguousActionResolution.VerifyLater>(noBaseline.reconcile())
+        Mockito.verify(workLifecycle, Mockito.times(1))
+            .completeAdventureAction(7L, 14L, "battle_map", "map-1")
+    }
+
+    @Test
+    fun `저장된 일반 전투 유니온 모험 행동은 identity와 fingerprint를 검증해 복원한다`() {
+        val codec = StoredTypedAutomationActionCodec(jacksonObjectMapper())
+        val payloads = listOf<StoredTypedActionPayload>(
+            StoredTypedActionPayload.BattleMap(
+                progressDate = java.time.LocalDate.parse("2026-08-21"),
+                categoryId = "battle_map",
+                mapCode = "map-1",
+                presetMode = PresetSelectionMode.PRIMARY,
+                presetId = 301L,
+                battleCount = 1,
+                battleRequest = battleRequest(),
+            ),
+            StoredTypedActionPayload.BattleMap(
+                progressDate = java.time.LocalDate.parse("2026-08-21"),
+                categoryId = "battle_map",
+                mapCode = "map-1",
+                presetMode = PresetSelectionMode.PRIMARY,
+                presetId = 301L,
+                battleCount = 1,
+                battleRequest = battleRequest(),
+                source = BattleAutomationActionSource.UNION_AUTOMATION,
+            ),
+            StoredTypedActionPayload.AdventureMap(
+                categoryId = "battle_map",
+                mapCode = "map-1",
+                presetMode = PresetSelectionMode.PRIMARY,
+                presetId = 301L,
+                battleCount = 1,
+                settingIdentity = 99L,
+                battleRequest = battleRequest(),
+                observedAttemptRemaining = 3,
+            ),
+        )
+
+        payloads.forEachIndexed { index, payload ->
+            val stored = StoredTypedAutomationAction(12L, "map-execution-$index", payload)
+            val restored = assertNotNull(module.restore(actionRow(codec, stored, 100L + index), 7L))
+
+            assertEquals(stored, restored.storedAction)
+            assertEquals(payload.kind(), restored.descriptor.storageKind)
+        }
+
+        val fishingBattle = StoredTypedAutomationAction(
+            12L,
+            "fishing-battle",
+            assertIs<StoredTypedActionPayload.BattleMap>(payloads.first()).copy(
+                source = BattleAutomationActionSource.FISHING_AUTOMATION,
+            ),
+        )
+        assertNull(module.restore(actionRow(codec, fishingBattle, 110L), 7L))
+    }
+
+    @Test
+    fun `아직 이전하지 않은 전투 source는 기존 경로를 위해 처리하지 않는다`() {
         val action = BattleMapAutomationAction(
             accountId = 7L,
             progressDate = java.time.LocalDate.parse("2026-08-21"),
@@ -441,6 +667,7 @@ class AutomationActionLifecycleModuleTest {
             presetId = 1L,
             battleCount = 1,
             executionIdentity = "battle-1",
+            source = BattleAutomationActionSource.FISHING_AUTOMATION,
         )
 
         assertNull(module.prepare(7L, 12L, action))
@@ -562,6 +789,73 @@ class AutomationActionLifecycleModuleTest {
         resolvedParty = ResolvedAutomationParty(request.characterIds, request.patternLoads),
         missionCurrent = 2,
         missionRequired = 5,
+    )
+
+    private fun battleMapAction() = BattleMapAutomationAction(
+        accountId = 7L,
+        progressDate = java.time.LocalDate.parse("2026-08-21"),
+        categoryId = "battle_map",
+        mapCode = "map-1",
+        presetMode = PresetSelectionMode.PRIMARY,
+        presetId = 301L,
+        battleCount = 1,
+        executionIdentity = "battle-execution-1",
+        resolvedParty = ResolvedAutomationParty(
+            battleRequest().characterIds,
+            battleRequest().patternLoads,
+        ),
+        mapName = "슬라임 동굴",
+    )
+
+    private fun adventureAction() = AdventureMapAutomationAction(
+        accountId = 7L,
+        categoryId = "battle_map",
+        mapCode = "map-1",
+        presetMode = PresetSelectionMode.PRIMARY,
+        presetId = 301L,
+        settingIdentity = 99L,
+        executionIdentity = "adventure-execution-1",
+        resolvedParty = ResolvedAutomationParty(
+            battleRequest().characterIds,
+            battleRequest().patternLoads,
+        ),
+        mapName = "모험 동굴",
+        observedAttemptRemaining = 3,
+    )
+
+    private fun terminalBattleResult(vararg outcomes: String): app.spammy.hof.battle.dto.BattleResultResponse {
+        val rounds = outcomes.map { outcome ->
+            Mockito.mock(app.spammy.hof.battle.dto.BattleRoundResponse::class.java).also { round ->
+                Mockito.`when`(round.outcome).thenReturn(outcome)
+                Mockito.`when`(round.loots).thenReturn(emptyList())
+                Mockito.`when`(round.quest).thenReturn(null)
+            }
+        }
+        return Mockito.mock(app.spammy.hof.battle.dto.BattleResultResponse::class.java).also { result ->
+            Mockito.`when`(result.rounds).thenReturn(rounds)
+        }
+    }
+
+    private fun mapResponse(attemptCount: Int?) = BattleMapResponse(
+        categoryId = "battle_map",
+        mapCode = "map-1",
+        name = "모험 동굴",
+        groupName = null,
+        groupOrder = 0,
+        mapOrder = 0,
+        recommendedLevel = null,
+        availableCount = null,
+        attemptCount = attemptCount,
+        winCount = null,
+        cooldownRemainingText = null,
+        cooldownRemainingSeconds = null,
+        keyMode = BattleMapKeyMode.UNLIMITED,
+        keyCount = null,
+        requiredTime = 0,
+        enabled = true,
+        resolved = true,
+        iconUrl = null,
+        rawHref = "?map=map-1",
     )
 
     private fun anyBattleAction(): BattleMapAutomationAction =

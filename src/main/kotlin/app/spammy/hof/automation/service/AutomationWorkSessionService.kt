@@ -96,7 +96,11 @@ class AutomationWorkSessionService(
         accountId: Long,
         entryId: Long,
         action: PreparedAutomationAction,
-    ): AutomationWorkSessionEntity = ensureAssignment(accountId, entryId, action.toWorkAssignment(entryId))
+    ): AutomationWorkSessionEntity = ensureAssignment(
+        accountId,
+        entryId,
+        action.toWorkAssignment().resolveConfiguredTarget(entryId),
+    )
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     override fun ensure(
@@ -104,7 +108,16 @@ class AutomationWorkSessionService(
         entryId: Long,
         assignment: AutomationWorkAssignment,
     ) {
-        ensureAssignment(accountId, entryId, assignment)
+        ensureAssignment(accountId, entryId, assignment.resolveConfiguredTarget(entryId))
+    }
+
+    private fun AutomationWorkAssignment.resolveConfiguredTarget(entryId: Long): AutomationWorkAssignment {
+        if (type != AutomationWorkType.BATTLE_MAP || targetCount != null) return this
+        val configuredTarget = typed.findBattleSettings(entryId)
+            .singleOrNull { "${it.categoryId}/${it.mapCode}" == targetKey }
+            ?.dailyTargetCount
+            ?: throw AutomationConfigurationException("Battle-map target $targetKey is missing or duplicated.")
+        return copy(targetCount = configuredTarget)
     }
 
     private fun ensureAssignment(
@@ -428,17 +441,12 @@ class AutomationWorkSessionService(
         return now.plus(properties.reconciliationInterval).plusSeconds(jitterSeconds)
     }
 
-    private fun PreparedAutomationAction.toWorkAssignment(entryId: Long): AutomationWorkAssignment = when (this) {
+    private fun PreparedAutomationAction.toWorkAssignment(): AutomationWorkAssignment = when (this) {
         is BattleMapAutomationAction -> {
             val target = "$categoryId/$mapCode"
             when (source) {
-                BattleAutomationActionSource.BATTLE_MAP_AUTOMATION -> {
-                    val configuredTarget = typed.findBattleSettings(entryId)
-                        .singleOrNull { "${it.categoryId}/${it.mapCode}" == target }
-                        ?.dailyTargetCount
-                        ?: throw AutomationConfigurationException("Battle-map target $target is missing or duplicated.")
-                    AutomationWorkAssignment(AutomationWorkType.BATTLE_MAP, target, targetCount = configuredTarget)
-                }
+                BattleAutomationActionSource.BATTLE_MAP_AUTOMATION ->
+                    AutomationWorkAssignment(AutomationWorkType.BATTLE_MAP, target)
                 BattleAutomationActionSource.UNION_AUTOMATION -> AutomationWorkAssignment(AutomationWorkType.UNION, target)
                 BattleAutomationActionSource.FISHING_AUTOMATION -> AutomationWorkAssignment(AutomationWorkType.FISHING, FISHING_CYCLE_TARGET)
                 BattleAutomationActionSource.RAID_AUTOMATION -> AutomationWorkAssignment(

@@ -16,19 +16,20 @@ import org.springframework.stereotype.Service
 @Service
 class DefaultAutomationActionExecutor(
     private val battleSubmission: AutomationBattleSubmission,
-    private val battleHandler: BattleMapAutomationHandler,
-    private val battleOutcomeReconciler: BattleOutcomeReconciler,
     private val executionSignals: AutomationExecutionSignals,
     private val workLifecycle: AutomationWorkLifecycle,
     private val raidPubService: RaidPubService,
     private val raidCycleModule: RaidCycleModule,
     private val raidObservationAdapter: HofRaidObservationAdapter,
     private val fishingService: FishingService? = null,
-    private val unionProgress: UnionAutomationProgressService? = null,
 ) : TypedAutomationActionExecutor {
     override fun execute(accountId: Long, action: StoredTypedAutomationAction): TypedAutomationExecution =
         when (val payload = action.payload) {
                 is StoredTypedActionPayload.BattleMap -> {
+                    require(payload.source in setOf(
+                        BattleAutomationActionSource.FISHING_AUTOMATION,
+                        BattleAutomationActionSource.RAID_AUTOMATION,
+                    )) { "Stored battle source ${payload.source} belongs to the action lifecycle module." }
                     when (val submission = battleSubmission.submit(
                         accountId,
                         action.executionIdentity,
@@ -41,39 +42,13 @@ class DefaultAutomationActionExecutor(
                             submission.retryAt,
                         )
                         is AutomationBattleSubmissionResult.Completed -> {
-                            val prepared = BattleMapAutomationAction(
-                                accountId, payload.progressDate, payload.categoryId, payload.mapCode, payload.presetMode,
-                                payload.presetId, payload.battleCount, action.executionIdentity, payload.source,
-                            )
-                            if (payload.source == BattleAutomationActionSource.BATTLE_MAP_AUTOMATION) {
-                                val resolution = battleHandler.onBattleCompleted(
-                                    prepared,
-                                    payload.source,
-                                    submission.resultIdentity,
-                                    submission.outcomes,
-                                    battleOutcomeReconciler,
-                                )
-                                if (resolution is BattleOutcomeResolution.Fatal) {
-                                    throw AmbiguousAutomationSubmissionException(resolution.evaluation.message)
-                                }
-                                workLifecycle.completeBattleMapAction(
-                                    accountId,
-                                    action.entryId,
-                                    payload.categoryId,
-                                    payload.mapCode,
-                                )
-                            } else {
-                                if (payload.source == BattleAutomationActionSource.UNION_AUTOMATION) {
-                                    unionProgress?.battleCompleted(accountId, action.entryId, payload.categoryId, payload.mapCode)
-                                }
-                                if (payload.source == BattleAutomationActionSource.RAID_AUTOMATION) {
-                                    payload.sourceTargetKey?.let { raidId ->
-                                        recordRaidResult(
-                                            accountId,
-                                            RaidAttempt(action.entryId, RaidIntentKind.BATTLE, raidId, null),
-                                            RaidResultObservation.BattleCompleted,
-                                        )
-                                    }
+                            if (payload.source == BattleAutomationActionSource.RAID_AUTOMATION) {
+                                payload.sourceTargetKey?.let { raidId ->
+                                    recordRaidResult(
+                                        accountId,
+                                        RaidAttempt(action.entryId, RaidIntentKind.BATTLE, raidId, null),
+                                        RaidResultObservation.BattleCompleted,
+                                    )
                                 }
                             }
                             val rounds = submission.response.rounds.takeIf(List<*>::isNotEmpty)
@@ -85,29 +60,6 @@ class DefaultAutomationActionExecutor(
                                     ?: submission.response.loots.map { it.name },
                                 questTexts = rounds?.mapNotNull { it.quest?.takeIf(String::isNotBlank) }
                                     ?: listOfNotNull(submission.response.quest?.takeIf(String::isNotBlank)),
-                            )
-                            TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode)
-                        }
-                    }
-                }
-                is StoredTypedActionPayload.AdventureMap -> {
-                    when (val submission = battleSubmission.submit(
-                        accountId,
-                        action.executionIdentity,
-                        payload.battleRequest,
-                        BattleAutomationActionSource.ADVENTURE_AUTOMATION,
-                    )) {
-                        is AutomationBattleSubmissionResult.SharedCooldown -> TypedAutomationExecution.SharedCooldown(
-                            payload.categoryId,
-                            payload.mapCode,
-                            submission.retryAt,
-                        )
-                        is AutomationBattleSubmissionResult.Completed -> {
-                            workLifecycle.completeAdventureAction(
-                                accountId,
-                                action.entryId,
-                                payload.categoryId,
-                                payload.mapCode,
                             )
                             TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode)
                         }

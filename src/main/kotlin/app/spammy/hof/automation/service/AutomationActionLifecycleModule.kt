@@ -4,6 +4,7 @@ import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.entity.AutomationWorkType
 import app.spammy.hof.automation.entity.TypedAutomationActionRunEntity
 import app.spammy.hof.battle.dto.RunBattleRequest
+import app.spammy.hof.battle.service.BattleMapService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
@@ -81,6 +82,11 @@ class UnifiedAutomationActionLifecycleModule(
     private val questGateway: QuestGatewayService,
     private val questHandler: QuestAutomationHandler,
     private val battleSubmission: AutomationBattleSubmission,
+    private val battleHandler: BattleMapAutomationHandler,
+    private val battleOutcomeReconciler: BattleOutcomeReconciler,
+    private val battleMapService: BattleMapService,
+    private val workLifecycle: AutomationWorkLifecycle,
+    private val unionProgress: UnionAutomationProgressService,
     private val executionSignals: AutomationExecutionSignals,
     private val sessionRecovery: HofSessionRecoveryExecutor,
     private val timeProvider: TimeProvider,
@@ -100,6 +106,10 @@ class UnifiedAutomationActionLifecycleModule(
             action.mapName,
             action.battleCount,
         )
+        is BattleMapAutomationAction -> action
+            .takeIf { it.source in MANAGED_BATTLE_MAP_SOURCES }
+            ?.let(::battleMapDescriptor)
+        is AdventureMapAutomationAction -> adventureDescriptor(action)
         else -> null
     }
 
@@ -199,6 +209,8 @@ class UnifiedAutomationActionLifecycleModule(
                 ),
             )
         }
+        is BattleMapAutomationAction -> prepareBattleMap(accountId, entryId, action)
+        is AdventureMapAutomationAction -> prepareAdventure(accountId, entryId, action)
         else -> null
     }
 
@@ -237,14 +249,21 @@ class UnifiedAutomationActionLifecycleModule(
                 QUEST_ACCEPT_STORAGE_KIND,
                 QUEST_CLAIM_STORAGE_KIND,
                 QUEST_BATTLE_STORAGE_KIND,
+                BATTLE_MAP_STORAGE_KIND,
+                ADVENTURE_MAP_STORAGE_KIND,
             )
         ) return null
         val stored = codec.verifyPersisted(row, expectedAccountId)
+        if (stored.payload is StoredTypedActionPayload.BattleMap &&
+            stored.payload.source !in MANAGED_BATTLE_MAP_SOURCES
+        ) return null
         require(
             stored.payload is StoredTypedActionPayload.HomeQuest ||
                 stored.payload is StoredTypedActionPayload.QuestAccept ||
                 stored.payload is StoredTypedActionPayload.QuestClaim ||
-                stored.payload is StoredTypedActionPayload.QuestBattle,
+                stored.payload is StoredTypedActionPayload.QuestBattle ||
+                stored.payload is StoredTypedActionPayload.BattleMap ||
+                stored.payload is StoredTypedActionPayload.AdventureMap,
         ) {
             "Stored action payload does not match the action lifecycle family."
         }
@@ -306,8 +325,116 @@ class UnifiedAutomationActionLifecycleModule(
 
                 override fun reconcile(): AmbiguousActionResolution = reconcileQuestBattle(accountId, payload)
             }
+            is StoredTypedActionPayload.BattleMap -> {
+                require(payload.source in MANAGED_BATTLE_MAP_SOURCES) {
+                    "Stored battle-map source ${payload.source} is not owned by this lifecycle family."
+                }
+                object : ManagedAutomationAction {
+                    override val storedAction = stored
+                    override val descriptor = payload.battleMapDescriptor()
+
+                    override fun execute(): TypedAutomationExecution = executeBattleMap(accountId, stored, payload)
+
+                    override fun reconcile(): AmbiguousActionResolution = reconcileBattleMap(accountId, stored, payload)
+                }
+            }
+            is StoredTypedActionPayload.AdventureMap -> object : ManagedAutomationAction {
+                override val storedAction = stored
+                override val descriptor = payload.adventureDescriptor()
+
+                override fun execute(): TypedAutomationExecution = executeAdventure(accountId, stored, payload)
+
+                override fun reconcile(): AmbiguousActionResolution = reconcileAdventure(accountId, stored, payload)
+            }
             else -> error("Stored action ${payload.kind()} is not owned by the action lifecycle module.")
         }
+    }
+
+    private fun prepareBattleMap(
+        accountId: Long,
+        entryId: Long,
+        action: BattleMapAutomationAction,
+    ): ManagedAutomationAction? {
+        if (action.source !in MANAGED_BATTLE_MAP_SOURCES) return null
+        require(action.accountId == accountId) { "Prepared battle-map account mismatch." }
+        val presetId = action.presetId ?: throw AutomationConfigurationException()
+        val party = action.resolvedParty ?: throw AutomationConfigurationException("The prepared party is missing.")
+        val workType = when (action.source) {
+            BattleAutomationActionSource.BATTLE_MAP_AUTOMATION -> AutomationWorkType.BATTLE_MAP
+            BattleAutomationActionSource.UNION_AUTOMATION -> AutomationWorkType.UNION
+            else -> error("Unsupported managed battle-map source ${action.source}.")
+        }
+        workOwnership.ensure(
+            accountId,
+            entryId,
+            AutomationWorkAssignment(workType, "${action.categoryId}/${action.mapCode}"),
+        )
+        return manage(
+            accountId,
+            StoredTypedAutomationAction(
+                entryId = entryId,
+                executionIdentity = action.executionIdentity,
+                payload = StoredTypedActionPayload.BattleMap(
+                    progressDate = action.progressDate,
+                    categoryId = action.categoryId,
+                    mapCode = action.mapCode,
+                    presetMode = action.presetMode,
+                    presetId = presetId,
+                    battleCount = action.battleCount,
+                    battleRequest = RunBattleRequest(
+                        action.categoryId,
+                        action.mapCode,
+                        party.characterIds,
+                        party.patternLoads,
+                        action.battleCount,
+                    ),
+                    display = StoredActionDisplay(mapName = action.mapName),
+                    source = action.source,
+                    sourceTargetKey = action.sourceTargetKey,
+                ),
+            ),
+        )
+    }
+
+    private fun prepareAdventure(
+        accountId: Long,
+        entryId: Long,
+        action: AdventureMapAutomationAction,
+    ): ManagedAutomationAction {
+        require(action.accountId == accountId) { "Prepared adventure-map account mismatch." }
+        val party = action.resolvedParty ?: throw AutomationConfigurationException("The prepared party is missing.")
+        workOwnership.ensure(
+            accountId,
+            entryId,
+            AutomationWorkAssignment(AutomationWorkType.ADVENTURE_MAP, "${action.categoryId}/${action.mapCode}"),
+        )
+        return manage(
+            accountId,
+            StoredTypedAutomationAction(
+                entryId = entryId,
+                executionIdentity = action.executionIdentity,
+                payload = StoredTypedActionPayload.AdventureMap(
+                    categoryId = action.categoryId,
+                    mapCode = action.mapCode,
+                    presetMode = action.presetMode,
+                    presetId = action.presetId,
+                    battleCount = action.battleCount,
+                    settingIdentity = action.settingIdentity,
+                    battleRequest = RunBattleRequest(
+                        action.categoryId,
+                        action.mapCode,
+                        party.characterIds,
+                        party.patternLoads,
+                        action.battleCount,
+                    ),
+                    display = StoredActionDisplay(mapName = action.mapName),
+                    observedCooldownUntil = action.observedCooldownUntil,
+                    observedAttemptRemaining = action.observedAttemptRemaining,
+                    observedWinRemaining = action.observedWinRemaining,
+                    observedAvailableCount = action.observedAvailableCount,
+                ),
+            ),
+        )
     }
 
     private fun reconcileHomeQuest(
@@ -414,6 +541,276 @@ class UnifiedAutomationActionLifecycleModule(
             TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode),
         )
 
+    private fun executeBattleMap(
+        accountId: Long,
+        stored: StoredTypedAutomationAction,
+        payload: StoredTypedActionPayload.BattleMap,
+    ): TypedAutomationExecution {
+        val submission = battleSubmission.submit(
+            accountId,
+            stored.executionIdentity,
+            payload.battleRequest,
+            payload.source,
+        )
+        if (submission is AutomationBattleSubmissionResult.SharedCooldown) {
+            return TypedAutomationExecution.SharedCooldown(payload.categoryId, payload.mapCode, submission.retryAt)
+        }
+        submission as AutomationBattleSubmissionResult.Completed
+        applyCompletedBattleMap(
+            accountId,
+            stored,
+            payload,
+            submission.resultIdentity,
+            submission.outcomes,
+        )
+        emitBattleSignals(accountId, payload.source, submission)
+        return TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode)
+    }
+
+    private fun reconcileBattleMap(
+        accountId: Long,
+        stored: StoredTypedAutomationAction,
+        payload: StoredTypedActionPayload.BattleMap,
+    ): AmbiguousActionResolution {
+        val action = payload.toPrepared(accountId, stored.executionIdentity)
+        return when (val reconciliation = battleOutcomeReconciler.reloadRecentAuthoritativeEvidence(action)) {
+            is BattleOutcomeReconciliation.Proven -> {
+                val evidence = reconciliation.evidence
+                if (!evidence.binds(action) || !evidence.isCompleteTerminal()) {
+                    verifyLater("다시 읽은 전투 결과가 저장 행동과 정확히 일치하지 않습니다.")
+                } else {
+                    applyCompletedBattleMap(
+                        accountId,
+                        stored,
+                        payload,
+                        evidence.resultIdentity,
+                        evidence.outcomes,
+                    )
+                    AmbiguousActionResolution.Applied(
+                        TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode),
+                    )
+                }
+            }
+            is BattleOutcomeReconciliation.Unproven -> verifyLater(reconciliation.message)
+        }
+    }
+
+    private fun applyCompletedBattleMap(
+        accountId: Long,
+        stored: StoredTypedAutomationAction,
+        payload: StoredTypedActionPayload.BattleMap,
+        resultIdentity: String,
+        outcomes: List<BattleAutomationRoundOutcome>,
+    ) {
+        val action = payload.toPrepared(accountId, stored.executionIdentity)
+        when (payload.source) {
+            BattleAutomationActionSource.BATTLE_MAP_AUTOMATION -> {
+                val resolution = battleHandler.onBattleCompleted(
+                    action,
+                    payload.source,
+                    resultIdentity,
+                    outcomes,
+                    battleOutcomeReconciler,
+                )
+                if (resolution is BattleOutcomeResolution.Fatal) {
+                    throw AmbiguousAutomationSubmissionException(resolution.evaluation.message)
+                }
+                workLifecycle.completeBattleMapAction(
+                    accountId,
+                    stored.entryId,
+                    payload.categoryId,
+                    payload.mapCode,
+                )
+            }
+            BattleAutomationActionSource.UNION_AUTOMATION -> unionProgress.battleCompleted(
+                accountId,
+                stored.entryId,
+                payload.categoryId,
+                payload.mapCode,
+            )
+            else -> error("Unsupported managed battle-map source ${payload.source}.")
+        }
+    }
+
+    private fun StoredTypedActionPayload.BattleMap.toPrepared(
+        accountId: Long,
+        executionIdentity: String,
+    ) = BattleMapAutomationAction(
+        accountId = accountId,
+        progressDate = progressDate,
+        categoryId = categoryId,
+        mapCode = mapCode,
+        presetMode = presetMode,
+        presetId = presetId,
+        battleCount = battleCount,
+        executionIdentity = executionIdentity,
+        source = source,
+        resolvedParty = ResolvedAutomationParty(battleRequest.characterIds, battleRequest.patternLoads),
+        mapName = display?.mapName,
+        sourceTargetKey = sourceTargetKey,
+    )
+
+    private fun battleMapDescriptor(action: BattleMapAutomationAction) = AutomationActionDescriptor(
+        source = if (action.source == BattleAutomationActionSource.UNION_AUTOMATION) {
+            AutomationType.UNION
+        } else {
+            AutomationType.BATTLE_MAP
+        },
+        storageKind = BATTLE_MAP_STORAGE_KIND,
+        actionKind = BATTLE_MAP_STORAGE_KIND,
+        actionLabel = if (action.source == BattleAutomationActionSource.UNION_AUTOMATION) "유니온" else "전투맵",
+        context = listOf(
+            if (action.source == BattleAutomationActionSource.UNION_AUTOMATION) "유니온 전투" else "일반 전투",
+            "맵 ${action.mapName ?: "${action.categoryId}/${action.mapCode}"}",
+            "${action.battleCount}회",
+            "파티 ${action.resolvedParty?.characterIds?.size ?: 0}명",
+        ).joinToString(" · "),
+        targetKey = "${action.categoryId}/${action.mapCode}",
+        targetName = action.mapName,
+        display = StoredActionDisplay(mapName = action.mapName),
+        battleCount = action.battleCount,
+    )
+
+    private fun StoredTypedActionPayload.BattleMap.battleMapDescriptor() =
+        battleMapDescriptor(toPrepared(0L, "descriptor"))
+
+    private fun executeAdventure(
+        accountId: Long,
+        stored: StoredTypedAutomationAction,
+        payload: StoredTypedActionPayload.AdventureMap,
+    ): TypedAutomationExecution {
+        return when (val submission = battleSubmission.submit(
+            accountId,
+            stored.executionIdentity,
+            payload.battleRequest,
+            BattleAutomationActionSource.ADVENTURE_AUTOMATION,
+        )) {
+            is AutomationBattleSubmissionResult.SharedCooldown -> TypedAutomationExecution.SharedCooldown(
+                payload.categoryId,
+                payload.mapCode,
+                submission.retryAt,
+            )
+            is AutomationBattleSubmissionResult.Completed -> {
+                workLifecycle.completeAdventureAction(
+                    accountId,
+                    stored.entryId,
+                    payload.categoryId,
+                    payload.mapCode,
+                )
+                TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode)
+            }
+        }
+    }
+
+    private fun reconcileAdventure(
+        accountId: Long,
+        stored: StoredTypedAutomationAction,
+        payload: StoredTypedActionPayload.AdventureMap,
+    ): AmbiguousActionResolution {
+        val action = payload.toPrepared(accountId, stored.executionIdentity)
+        when (val battle = battleOutcomeReconciler.reloadRecentAuthoritativeEvidence(action.asBattleProbe())) {
+            is BattleOutcomeReconciliation.Proven -> {
+                if (battle.evidence.binds(action.asBattleProbe()) && battle.evidence.isCompleteTerminal()) {
+                    return completeAdventure(accountId, stored.entryId, payload)
+                }
+                return verifyLater("다시 읽은 모험맵 전투 결과가 저장 행동과 정확히 일치하지 않습니다.")
+            }
+            is BattleOutcomeReconciliation.Unproven -> Unit
+        }
+        val current = sessionRecovery.execute(accountId) {
+            battleMapService.findMaps(accountId, payload.categoryId, HofRequestOrigin.AUTOMATION)
+        }.singleOrNull { it.mapCode == payload.mapCode }
+            ?: return verifyLater("Adventure map ${payload.categoryId}/${payload.mapCode} is absent.")
+        val comparisons = listOf(
+            payload.observedAttemptRemaining to current.attemptCount,
+            payload.observedWinRemaining to current.winCount,
+            payload.observedAvailableCount to current.availableCount,
+        )
+        val hasBaseline = comparisons.any { (before, after) -> before != null && after != null }
+        val decreased = comparisons.any { (before, after) -> before != null && after != null && after < before }
+        val cooldownStarted = current.cooldownRemainingSeconds?.let { it > 0 } == true
+        if (decreased || cooldownStarted || (current.resolved && !current.enabled)) {
+            return completeAdventure(accountId, stored.entryId, payload)
+        }
+        val exhausted = listOf(current.attemptCount, current.winCount, current.availableCount)
+            .any { it != null && it <= 0 }
+        val runnable = current.resolved && current.enabled && !exhausted &&
+            current.keyCount != 0 && (current.cooldownRemainingSeconds ?: 0) <= 0
+        if (runnable && hasBaseline) return AmbiguousActionResolution.Resubmit
+        val next = current.cooldownRemainingSeconds
+            ?.takeIf { it > 0 }
+            ?.let { timeProvider.now().plusSeconds(it) }
+        return AmbiguousActionResolution.VerifyLater(
+            next ?: timeProvider.now().plusSeconds(10),
+            "Adventure map outcome is not yet authoritative.",
+        )
+    }
+
+    private fun completeAdventure(
+        accountId: Long,
+        entryId: Long,
+        payload: StoredTypedActionPayload.AdventureMap,
+    ): AmbiguousActionResolution.Applied {
+        workLifecycle.completeAdventureAction(accountId, entryId, payload.categoryId, payload.mapCode)
+        return AmbiguousActionResolution.Applied(
+            TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode),
+        )
+    }
+
+    private fun adventureDescriptor(action: AdventureMapAutomationAction) = AutomationActionDescriptor(
+        source = AutomationType.ADVENTURE_MAP,
+        storageKind = ADVENTURE_MAP_STORAGE_KIND,
+        actionKind = ADVENTURE_MAP_STORAGE_KIND,
+        actionLabel = "모험맵",
+        context = listOfNotNull(
+            "모험 맵 전투 · ${action.mapName ?: "${action.categoryId}/${action.mapCode}"}",
+            "${action.battleCount}회",
+            action.observedAttemptRemaining?.let { "실행 전 남은 도전 ${it}회" },
+            action.observedWinRemaining?.let { "실행 전 남은 승리 ${it}회" },
+            action.observedAvailableCount?.let { "실행 가능 ${it}회" },
+            action.observedCooldownUntil?.let { "관측 쿨다운 $it" },
+        ).joinToString(" · "),
+        targetKey = "${action.categoryId}/${action.mapCode}",
+        targetName = action.mapName,
+        display = StoredActionDisplay(mapName = action.mapName),
+        battleCount = action.battleCount,
+    )
+
+    private fun StoredTypedActionPayload.AdventureMap.adventureDescriptor() =
+        adventureDescriptor(toPrepared(0L, "descriptor"))
+
+    private fun StoredTypedActionPayload.AdventureMap.toPrepared(
+        accountId: Long,
+        executionIdentity: String,
+    ) = AdventureMapAutomationAction(
+        accountId = accountId,
+        categoryId = categoryId,
+        mapCode = mapCode,
+        presetMode = presetMode,
+        presetId = presetId,
+        battleCount = battleCount,
+        settingIdentity = settingIdentity,
+        executionIdentity = executionIdentity,
+        resolvedParty = ResolvedAutomationParty(battleRequest.characterIds, battleRequest.patternLoads),
+        mapName = display?.mapName,
+        observedCooldownUntil = observedCooldownUntil,
+        observedAttemptRemaining = observedAttemptRemaining,
+        observedWinRemaining = observedWinRemaining,
+        observedAvailableCount = observedAvailableCount,
+    )
+
+    private fun AdventureMapAutomationAction.asBattleProbe() = BattleMapAutomationAction(
+        accountId = accountId,
+        progressDate = timeProvider.now().atZone(java.time.ZoneId.of("Asia/Seoul")).toLocalDate(),
+        categoryId = categoryId,
+        mapCode = mapCode,
+        presetMode = presetMode,
+        presetId = presetId,
+        battleCount = battleCount,
+        executionIdentity = executionIdentity,
+        source = BattleAutomationActionSource.ADVENTURE_AUTOMATION,
+    )
+
     private fun StoredTypedActionPayload.QuestAccept.questDescriptor() =
         questDescriptor(questKey, display?.questName, QUEST_ACCEPT_STORAGE_KIND)
 
@@ -497,17 +894,25 @@ class UnifiedAutomationActionLifecycleModule(
             ),
             submission.outcomes,
         )
+        emitBattleSignals(accountId, BattleAutomationActionSource.QUEST_AUTOMATION, submission)
+        return TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode)
+    }
+
+    private fun emitBattleSignals(
+        accountId: Long,
+        source: BattleAutomationActionSource,
+        submission: AutomationBattleSubmissionResult.Completed,
+    ) {
         val rounds = submission.response.rounds.takeIf(List<*>::isNotEmpty)
         executionSignals.afterBattle(
             accountId = accountId,
-            source = BattleAutomationActionSource.QUEST_AUTOMATION,
+            source = source,
             outcomes = submission.outcomes,
             lootNames = rounds?.flatMap { it.loots.map { loot -> loot.name } }
                 ?: submission.response.loots.map { it.name },
             questTexts = rounds?.mapNotNull { it.quest?.takeIf(String::isNotBlank) }
                 ?: listOfNotNull(submission.response.quest?.takeIf(String::isNotBlank)),
         )
-        return TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode)
     }
 
     private fun questDescriptor(
@@ -593,5 +998,11 @@ class UnifiedAutomationActionLifecycleModule(
         const val QUEST_ACCEPT_STORAGE_KIND = "QUEST_ACCEPT"
         const val QUEST_CLAIM_STORAGE_KIND = "QUEST_CLAIM"
         const val QUEST_BATTLE_STORAGE_KIND = "QUEST_BATTLE"
+        const val BATTLE_MAP_STORAGE_KIND = "BATTLE_MAP"
+        const val ADVENTURE_MAP_STORAGE_KIND = "ADVENTURE_MAP"
+        val MANAGED_BATTLE_MAP_SOURCES = setOf(
+            BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
+            BattleAutomationActionSource.UNION_AUTOMATION,
+        )
     }
 }
