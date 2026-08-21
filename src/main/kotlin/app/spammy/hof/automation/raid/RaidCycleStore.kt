@@ -25,6 +25,19 @@ interface RaidCycleStore {
         now: Instant,
     ): RaidCycleSnapshot
 
+    fun saveBattleRecovery(
+        accountId: Long,
+        raidId: String,
+        recovery: RaidBattleRecovery,
+        now: Instant,
+    ): RaidCycleSnapshot
+
+    fun clearBattleRecovery(
+        accountId: Long,
+        raidId: String,
+        now: Instant,
+    ): RaidCycleSnapshot
+
     fun finish(
         accountId: Long,
         raidId: String,

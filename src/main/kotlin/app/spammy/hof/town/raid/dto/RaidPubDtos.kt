@@ -32,6 +32,7 @@ data class RaidPubResponse(
     val myStatus: String?,
     val globalActions: Set<RaidAction>,
     val result: TownActionResultResponse?,
+    val battleObservationStatus: RaidBattleObservationStatus = RaidBattleObservationStatus.INCOMPLETE,
 ) {
     companion object {
         fun from(value: RaidPubSnapshot) = RaidPubResponse(
@@ -46,6 +47,7 @@ data class RaidPubResponse(
             myStatus = value.myStatus,
             globalActions = value.globalActions,
             result = value.result?.let(TownActionResultResponse::from),
+            battleObservationStatus = value.battleObservationStatus,
         )
     }
 }

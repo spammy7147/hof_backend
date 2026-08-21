@@ -636,6 +636,77 @@ class BattleMapServiceTest {
         assertEquals(listOf("RaidGoblin"), service.findMaps(account.id, "raid").map { it.mapCode })
     }
 
+    @Test
+    fun `레이드 최신 맵 관측은 실행 가능과 명시적 부재와 해석 불완전을 구분한다`() {
+        val account = savedAccount("battle-map-raid-observation")
+        gateway.defaultBody = """<a href="index.php?raid_common=RaidGoblin">고블린 전투 마차</a>"""
+
+        val observed = service.observeCurrentlyAvailableMaps(account.id, "raid")
+
+        assertEquals(CurrentBattleMapObservationStatus.OBSERVED, observed.status)
+        assertEquals(listOf("RaidGoblin"), observed.maps.map { it.mapCode })
+
+        gateway.defaultBody = "<html><body>현재 열린 레이드가 없습니다.</body></html>"
+        val absent = service.observeCurrentlyAvailableMaps(account.id, "raid")
+
+        assertEquals(CurrentBattleMapObservationStatus.ABSENT, absent.status)
+        assertTrue(absent.maps.isEmpty())
+
+        gateway.defaultBody = "<html><body><h1>Temporary upstream error</h1></body></html>"
+        val incomplete = service.observeCurrentlyAvailableMaps(account.id, "raid")
+
+        assertEquals(CurrentBattleMapObservationStatus.INCOMPLETE, incomplete.status)
+        assertTrue(incomplete.maps.isEmpty())
+    }
+
+    @Test
+    fun `레이드 최신 맵 관측은 다른 맵 응답에 남은 과거 쿨타임 상태를 포함하지 않는다`() {
+        val account = savedAccount("battle-map-raid-fresh-only")
+        gateway.defaultBody = """
+            <div id="mapgroup1">
+              <span>다음 전투까지 99초 남음</span>
+              <a href="index.php?raid_common=RaidOld">과거 레이드</a>
+            </div>
+        """.trimIndent()
+        assertEquals(
+            listOf("RaidOld"),
+            service.observeCurrentlyAvailableMaps(account.id, "raid").maps.map { it.mapCode },
+        )
+
+        gateway.defaultBody = """<a href="index.php?raid_common=RaidFresh">현재 레이드</a>"""
+
+        val observed = service.observeCurrentlyAvailableMaps(account.id, "raid")
+
+        assertEquals(CurrentBattleMapObservationStatus.OBSERVED, observed.status)
+        assertEquals(listOf("RaidFresh"), observed.maps.map { it.mapCode })
+    }
+
+    @Test
+    fun `레이드 최신 맵 관측은 같은 맵의 투영된 공유 쿨타임을 직접 관측으로 반환하지 않는다`() {
+        val account = savedAccount("battle-map-raid-direct-cooldown-only")
+        gateway.defaultBody = """
+            <div id="mapgroup1">
+              <span>다음 전투까지 99초 남음</span>
+              <a href="index.php?raid_common=RaidSame">같은 레이드</a>
+            </div>
+        """.trimIndent()
+        assertEquals(
+            99,
+            service.observeCurrentlyAvailableMaps(account.id, "raid").maps.single().cooldownRemainingSeconds,
+        )
+        val catalogMap = assertNotNull(queryRepository.findMapByCategoryIdAndMapCode("raid", "RaidSame"))
+        catalogMap.sharesMinuteCooldown = true
+        mapRepository.save(catalogMap)
+        mapRepository.flush()
+
+        gateway.defaultBody = """<a href="index.php?raid_common=RaidSame">같은 레이드</a>"""
+
+        val observed = service.observeCurrentlyAvailableMaps(account.id, "raid")
+
+        assertNull(observed.maps.single().cooldownRemainingSeconds)
+        assertNotNull(queryRepository.findStateForExecution(account.id, "raid", "RaidSame")?.cooldownUntil)
+    }
+
     private fun savedAccount(loginId: String): HofAccountEntity {
         val account = accountRepository.save(
             HofAccountEntity(

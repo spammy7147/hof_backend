@@ -58,6 +58,15 @@ interface ManagedAutomationAction {
 
     fun execute(): TypedAutomationExecution
     fun reconcile(): AmbiguousActionResolution
+
+    /**
+     * 일부 action family는 공용 RECONCILING 대신 자체 복구 상태가 불명확 제출을 소유한다.
+     * 반환값이 없으면 기존 공용 조정 절차를 사용한다.
+     */
+    fun handoffAmbiguousSubmission(
+        submittedAt: java.time.Instant?,
+        reason: String,
+    ): AmbiguousActionResolution.HandedOff? = null
 }
 
 data class AutomationActionDescriptor(
@@ -364,6 +373,12 @@ class UnifiedAutomationActionLifecycleModule(
                     override fun execute(): TypedAutomationExecution = executeBattleMap(accountId, stored, payload)
 
                     override fun reconcile(): AmbiguousActionResolution = reconcileBattleMap(accountId, stored, payload)
+
+                    override fun handoffAmbiguousSubmission(
+                        submittedAt: java.time.Instant?,
+                        reason: String,
+                    ): AmbiguousActionResolution.HandedOff? =
+                        handoffAmbiguousRaidBattle(accountId, stored, payload, submittedAt, reason)
                 }
             }
             is StoredTypedActionPayload.AdventureMap -> object : ManagedAutomationAction {
@@ -460,6 +475,9 @@ class UnifiedAutomationActionLifecycleModule(
                     display = StoredActionDisplay(mapName = action.mapName),
                     source = action.source,
                     sourceTargetKey = action.sourceTargetKey,
+                    recoveryChainId = action.recoveryChainId,
+                    raidRetransmissionCount = action.raidRetransmissionCount,
+                    raidSubmittedFromRunnable = action.raidSubmittedFromRunnable,
                 ),
             ),
         )
@@ -739,6 +757,50 @@ class UnifiedAutomationActionLifecycleModule(
         }
     }
 
+    private fun handoffAmbiguousRaidBattle(
+        accountId: Long,
+        stored: StoredTypedAutomationAction,
+        payload: StoredTypedActionPayload.BattleMap,
+        submittedAt: java.time.Instant?,
+        reason: String,
+    ): AmbiguousActionResolution.HandedOff? {
+        if (payload.source != BattleAutomationActionSource.RAID_AUTOMATION) return null
+        val raidId = payload.sourceTargetKey ?: return null
+        val attempt = RaidAttempt(
+            entryId = stored.entryId,
+            kind = RaidIntentKind.BATTLE,
+            raidId = raidId,
+            requestRaidId = null,
+            executionIdentity = stored.executionIdentity,
+            categoryId = payload.categoryId,
+            mapCode = payload.mapCode,
+            recoveryChainId = payload.recoveryChainId,
+            retransmissionCount = payload.raidRetransmissionCount,
+            submittedAt = submittedAt ?: timeProvider.now(),
+            submittedFromRunnable = payload.raidSubmittedFromRunnable,
+        )
+        val result = raidCycleModule.recordObservedResult(
+            accountId,
+            attempt,
+            RaidResultObservation.BattleAmbiguous(reason),
+        )
+        val recheck = result as? RaidRecordResult.BattleRecoveryStarted
+            ?: error("Ambiguous raid battle must enter the raid recovery state.")
+        try {
+            workLifecycle.waitForRaid(
+                accountId,
+                stored.entryId,
+                raidId,
+                recheck.at,
+                recheck.message,
+            )
+        } catch (error: Throwable) {
+            raidCycleModule.recordObservedResult(accountId, attempt, RaidResultObservation.ManualStop)
+            throw error
+        }
+        return AmbiguousActionResolution.HandedOff(recheck.at, recheck.message)
+    }
+
     private fun applyCompletedBattleMap(
         accountId: Long,
         stored: StoredTypedAutomationAction,
@@ -805,6 +867,9 @@ class UnifiedAutomationActionLifecycleModule(
         resolvedParty = ResolvedAutomationParty(battleRequest.characterIds, battleRequest.patternLoads),
         mapName = display?.mapName,
         sourceTargetKey = sourceTargetKey,
+        recoveryChainId = recoveryChainId,
+        raidRetransmissionCount = raidRetransmissionCount,
+        raidSubmittedFromRunnable = raidSubmittedFromRunnable,
     )
 
     private fun battleMapDescriptor(action: BattleMapAutomationAction) = AutomationActionDescriptor(
@@ -1082,6 +1147,7 @@ class UnifiedAutomationActionLifecycleModule(
         }
         is RaidRecordResult.NotApplied -> throw AmbiguousAutomationSubmissionException(result.message)
         is RaidRecordResult.NeedsRecheck -> throw AmbiguousAutomationSubmissionException(result.message)
+        is RaidRecordResult.BattleRecoveryStarted -> throw AmbiguousAutomationSubmissionException(result.message)
     }
 
     private fun reconcileRaidResult(
@@ -1100,6 +1166,8 @@ class UnifiedAutomationActionLifecycleModule(
         }
         is RaidRecordResult.NotApplied -> AmbiguousActionResolution.Resubmit
         is RaidRecordResult.NeedsRecheck -> AmbiguousActionResolution.VerifyLater(result.at, result.message)
+        is RaidRecordResult.BattleRecoveryStarted ->
+            AmbiguousActionResolution.HandedOff(result.at, result.message)
     }
 
     private fun StoredTypedActionPayload.RaidTown.toRaidAttempt(entryId: Long): RaidAttempt {

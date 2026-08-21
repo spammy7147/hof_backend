@@ -290,6 +290,21 @@ class BattleResultParserTest {
     }
 
     @Test
+    fun `실제 장애 형태의 빈 전투 응답 fixture는 제목과 통계 없이 UNKNOWN으로 유지한다`() {
+        val html = requireNotNull(
+            javaClass.getResource("/fixtures/battle/raid-ambiguous-timeout.html"),
+        ).readText()
+
+        val result = parser.parse(html, playerName = "《얼어붙은 손길》공민이")
+
+        assertEquals(HofBattleOutcome.UNKNOWN, result.outcome)
+        assertEquals("", result.title)
+        assertEquals(null, result.turns)
+        assertEquals(null, result.enemySide.hpCurrent)
+        assertEquals(null, result.allySide.hpCurrent)
+    }
+
+    @Test
     fun parsesEachBattleRoundFromThreeBattleResponse() {
         val results = parser.parseAll(
             html = """

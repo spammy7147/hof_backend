@@ -124,6 +124,39 @@ class JpaRaidCycleStore(
     }
 
     @Transactional
+    override fun saveBattleRecovery(
+        accountId: Long,
+        raidId: String,
+        recovery: RaidBattleRecovery,
+        now: Instant,
+    ): RaidCycleSnapshot {
+        query.lockAccount(accountId)
+        val cycle = requireOpenCycle(accountId, raidId)
+        cycle.battleRecoveryChainId = recovery.chainId
+        cycle.battleRecoveryOriginalExecutionIdentity = recovery.originalExecutionIdentity
+        cycle.battleRecoveryLatestExecutionIdentity = recovery.latestExecutionIdentity
+        cycle.battleRecoveryFirstAmbiguousAt = recovery.firstAmbiguousAt
+        cycle.battleRecoveryLastSubmittedAt = recovery.lastSubmittedAt
+        cycle.battleRecoveryRetransmissionCount = recovery.retransmissionCount
+        cycle.battleRecoveryNextCheckAt = recovery.nextCheckAt
+        cycle.battleRecoveryCategoryId = recovery.categoryId
+        cycle.battleRecoveryMapCode = recovery.mapCode
+        cycle.battleRecoverySubmittedFromRunnable = recovery.submittedFromRunnable
+        cycle.battleRecoveryLastObservation = recovery.lastObservation
+        cycle.updatedAt = now
+        return cycles.save(cycle).toSnapshot()
+    }
+
+    @Transactional
+    override fun clearBattleRecovery(accountId: Long, raidId: String, now: Instant): RaidCycleSnapshot {
+        query.lockAccount(accountId)
+        val cycle = requireOpenCycle(accountId, raidId)
+        cycle.clearBattleRecovery()
+        cycle.updatedAt = now
+        return cycles.save(cycle).toSnapshot()
+    }
+
+    @Transactional
     override fun finish(
         accountId: Long,
         raidId: String,
@@ -137,6 +170,7 @@ class JpaRaidCycleStore(
         cycle.lastObservedStatus = outcome.name
         cycle.openMarker = null
         cycle.nextCheckAt = null
+        cycle.clearBattleRecovery()
         cycle.finishedAt = now
         cycle.updatedAt = now
         if (advanceRotation) advanceRotation(cycle, now)
@@ -173,6 +207,7 @@ class JpaRaidCycleStore(
         raidName = raidName,
         status = status,
         nextCheckAt = nextCheckAt,
+        battleRecovery = toBattleRecoveryOrNull(),
     )
 
     private fun RaidCycleOutcomeKind.toPersistedStatus(): RaidAutomationCycleStatus = when (this) {
@@ -187,3 +222,21 @@ class JpaRaidCycleStore(
         const val LAST_OBSERVED_STATUS_LENGTH = 32
     }
 }
+
+internal fun RaidAutomationCycleEntity.toBattleRecoveryOrNull(): RaidBattleRecovery? =
+    battleRecoveryChainId?.let { chainId ->
+        RaidBattleRecovery(
+            chainId = chainId,
+            raidId = raidId,
+            categoryId = requireNotNull(battleRecoveryCategoryId),
+            mapCode = requireNotNull(battleRecoveryMapCode),
+            originalExecutionIdentity = requireNotNull(battleRecoveryOriginalExecutionIdentity),
+            latestExecutionIdentity = requireNotNull(battleRecoveryLatestExecutionIdentity),
+            firstAmbiguousAt = requireNotNull(battleRecoveryFirstAmbiguousAt),
+            lastSubmittedAt = requireNotNull(battleRecoveryLastSubmittedAt),
+            retransmissionCount = requireNotNull(battleRecoveryRetransmissionCount),
+            nextCheckAt = requireNotNull(battleRecoveryNextCheckAt),
+            submittedFromRunnable = requireNotNull(battleRecoverySubmittedFromRunnable),
+            lastObservation = requireNotNull(battleRecoveryLastObservation),
+        )
+    }

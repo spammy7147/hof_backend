@@ -14,6 +14,26 @@ class RaidCycleModuleTest {
     private val now = Instant.parse("2026-08-20T01:00:00Z")
 
     @Test
+    fun `비활성화된 레이드는 복구를 보존하고 GET과 POST를 모두 중단한다`() {
+        val target = target("raid-a", 0)
+        val recovery = recovery(target.raidId, nextCheckAt = now)
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, false, listOf(target), target.raidId),
+                RaidCycleSnapshot(1, 7, target.raidId, target.name, RaidAutomationCycleStatus.IN_BATTLE, null, recovery),
+            ),
+        )
+        val module = DefaultRaidCycleModule(
+            store,
+            RaidObservationReader { error("disabled raid recovery must not GET") },
+            TimeProvider { now },
+        )
+
+        assertIs<RaidDirective.Hold>(module.decideNext(1))
+        assertEquals(recovery.chainId, store.state.openCycle?.battleRecovery?.chainId)
+    }
+
+    @Test
     fun `새 사이클은 현재 순환 대상만 준비하고 그 대상에 필요한 RESET 한 행동만 반환한다`() {
         val current = target("raid-b", 1)
         val other = target("raid-a", 0)
@@ -362,10 +382,19 @@ class RaidCycleModuleTest {
     @Test
     fun `전투 뒤 완료 상태를 다시 관측하면 REWARD_PENDING에서 보상 한 행동을 반환한다`() {
         val target = target("raid-a", 0)
+        val activeRecovery = recovery(target.raidId, nextCheckAt = now)
         val store = InMemoryRaidCycleStore(
             RaidCycleAccountState(
                 RaidCycleConfiguration(7, true, listOf(target), target.raidId),
-                RaidCycleSnapshot(1, 7, target.raidId, target.name, RaidAutomationCycleStatus.IN_BATTLE, null),
+                RaidCycleSnapshot(
+                    1,
+                    7,
+                    target.raidId,
+                    target.name,
+                    RaidAutomationCycleStatus.IN_BATTLE,
+                    null,
+                    activeRecovery,
+                ),
             ),
         )
         val observation = RaidObservation(
@@ -386,11 +415,56 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
-        val reward = assertIs<RaidIntent.Town>(assertIs<RaidDirective.Execute>(module.decideNext(1)).intent)
+        val directive = assertIs<RaidDirective.Execute>(module.decideNext(1))
+        val reward = assertIs<RaidIntent.Town>(directive.intent)
 
         assertEquals(RaidIntentKind.REWARD, reward.kind)
+        assertEquals("RAID_BATTLE_APPLIED_COMPLETED", directive.reasonCode)
         assertEquals(null, reward.requestRaidId)
         assertEquals(RaidAutomationCycleStatus.REWARD_PENDING, store.state.openCycle?.status)
+        assertEquals(null, store.state.openCycle?.battleRecovery)
+    }
+
+    @Test
+    fun `완료 상태가 복구를 끝냈지만 보상 동작이 아직 없으면 적용 확인 사유로 기다린다`() {
+        val target = target("raid-a", 0)
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(
+                    1,
+                    7,
+                    target.raidId,
+                    target.name,
+                    RaidAutomationCycleStatus.IN_BATTLE,
+                    null,
+                    recovery(target.raidId, nextCheckAt = now),
+                ),
+            ),
+        )
+        val observation = RaidObservation(
+            raids = listOf(
+                RaidObservedTarget(
+                    id = target.raidId,
+                    name = target.name,
+                    playable = true,
+                    status = RaidObservedStatus.COMPLETED,
+                    statusText = "보상 확인 시간",
+                    joined = true,
+                    actions = emptySet(),
+                ),
+            ),
+            applied = true,
+            registrationWait = false,
+            globalActions = emptySet(),
+        )
+        val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
+
+        val hold = assertIs<RaidDirective.Hold>(module.decideNext(1))
+
+        assertEquals("RAID_BATTLE_APPLIED_COMPLETED", hold.reasonCode)
+        assertEquals(true, hold.message.contains("적용을 확인"))
+        assertEquals(null, store.state.openCycle?.battleRecovery)
     }
 
     @Test
@@ -884,6 +958,384 @@ class RaidCycleModuleTest {
         assertEquals(true, store.lastAdvanceRotation)
     }
 
+    @Test
+    fun `불명확한 레이드 전투는 IN_BATTLE을 유지하며 5분 복구로 기록한다`() {
+        val target = target("raid-a", 0)
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(1, 7, target.raidId, target.name, RaidAutomationCycleStatus.IN_BATTLE, null),
+            ),
+        )
+        val module = DefaultRaidCycleModule(
+            store,
+            RaidObservationReader { error("ambiguous handoff must not GET") },
+            TimeProvider { now },
+        )
+
+        val result = assertIs<RaidRecordResult.BattleRecoveryStarted>(module.recordObservedResult(
+            1,
+            ambiguousBattleAttempt(target.raidId, "execution-1", submittedAt = now),
+            RaidResultObservation.BattleAmbiguous("전투 단말 결과를 관측하지 못했습니다."),
+        ))
+
+        assertEquals(now.plusSeconds(300), result.at)
+        assertEquals(RaidAutomationCycleStatus.IN_BATTLE, store.state.openCycle?.status)
+        val recovery = requireNotNull(store.state.openCycle?.battleRecovery)
+        assertEquals("execution-1", recovery.originalExecutionIdentity)
+        assertEquals(0, recovery.retransmissionCount)
+        assertEquals(now.plusSeconds(300), recovery.nextCheckAt)
+        assertEquals(RaidBattleRecoveryObservation.RESULT_UNOBSERVED, recovery.lastObservation)
+    }
+
+    @Test
+    fun `복구 확인 전에는 GET하지 않고 확인 시각까지 레이드만 기다린다`() {
+        val target = target("raid-a", 0)
+        val recovery = recovery(target.raidId, nextCheckAt = now.plusSeconds(300))
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(
+                    1,
+                    7,
+                    target.raidId,
+                    target.name,
+                    RaidAutomationCycleStatus.IN_BATTLE,
+                    null,
+                    recovery,
+                ),
+            ),
+        )
+        val module = DefaultRaidCycleModule(
+            store,
+            RaidObservationReader { error("GET must wait for the recovery deadline") },
+            TimeProvider { now },
+        )
+
+        val wait = assertIs<RaidDirective.WaitUntil>(module.decideNext(1))
+
+        assertEquals(RaidWaitReason.BATTLE_RECOVERY_RECHECK, wait.reason)
+        assertEquals(now.plusSeconds(300), wait.at)
+    }
+
+    @Test
+    fun `복구 시 과거 캐시 관측은 실행 허가가 아니며 5분 뒤 최신 GET만 예약한다`() {
+        val target = target("raid-a", 0)
+        val recovery = recovery(target.raidId, nextCheckAt = now)
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(1, 7, target.raidId, target.name, RaidAutomationCycleStatus.IN_BATTLE, null, recovery),
+            ),
+        )
+        val stale = inBattleObservation(
+            target,
+            RaidBattleAvailability.RUNNABLE,
+            RaidObservedBattle("raid", recovery.mapCode),
+        ).copy(fresh = false)
+        val module = DefaultRaidCycleModule(store, RaidObservationReader { stale }, TimeProvider { now })
+
+        val hold = assertIs<RaidDirective.Hold>(module.decideNext(1))
+
+        assertEquals(RaidHoldReason.BATTLE_OBSERVATION_INCOMPLETE, hold.reason)
+        assertEquals(now.plusSeconds(300), hold.recheckAt)
+        assertEquals(RaidBattleRecoveryObservation.INCOMPLETE, store.state.openCycle?.battleRecovery?.lastObservation)
+    }
+
+    @Test
+    fun `복구 시각의 불완전 관측은 POST 없이 5분 뒤 최신 GET만 다시 예약한다`() {
+        val target = target("raid-a", 0)
+        val recovery = recovery(target.raidId, nextCheckAt = now)
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(1, 7, target.raidId, target.name, RaidAutomationCycleStatus.IN_BATTLE, null, recovery),
+            ),
+        )
+        var reads = 0
+        val observation = inBattleObservation(target, RaidBattleAvailability.INCOMPLETE, battle = null)
+        val module = DefaultRaidCycleModule(store, RaidObservationReader { reads += 1; observation }, TimeProvider { now })
+
+        val hold = assertIs<RaidDirective.Hold>(module.decideNext(1))
+
+        assertEquals(1, reads)
+        assertEquals(RaidHoldReason.BATTLE_OBSERVATION_INCOMPLETE, hold.reason)
+        assertEquals(now.plusSeconds(300), hold.recheckAt)
+        assertEquals(RaidBattleRecoveryObservation.INCOMPLETE, store.state.openCycle?.battleRecovery?.lastObservation)
+    }
+
+    @Test
+    fun `5분 뒤 같은 맵이 실행 가능하면 최신 프리셋으로 연결된 새 전투를 만든다`() {
+        val latestParty = ResolvedAutomationParty(listOf("latest-character"), listOf(BattlePatternLoadRequest("latest-character", 2)))
+        val target = target("raid-a", 0, latestParty).copy(presetId = 44)
+        val recovery = recovery(target.raidId, nextCheckAt = now)
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(1, 7, target.raidId, target.name, RaidAutomationCycleStatus.IN_BATTLE, null, recovery),
+            ),
+        )
+        val observation = inBattleObservation(
+            target,
+            RaidBattleAvailability.RUNNABLE,
+            RaidObservedBattle("raid", recovery.mapCode),
+        )
+        val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
+
+        val directive = assertIs<RaidDirective.Execute>(module.decideNext(1))
+        val battle = assertIs<RaidIntent.Battle>(directive.intent)
+
+        assertEquals(44, battle.presetId)
+        assertEquals(latestParty, battle.party)
+        assertEquals(recovery.chainId, battle.recoveryChainId)
+        assertEquals(1, battle.retransmissionCount)
+        assertEquals("RAID_BATTLE_RETRANSMIT", directive.reasonCode)
+        assertEquals(true, directive.warning?.contains("최초 미확정 ${recovery.firstAmbiguousAt}"))
+        assertEquals(true, directive.warning?.contains("재전송 1회"))
+        assertEquals(true, directive.warning?.contains("다음 확인 ${now.plusSeconds(300)}"))
+    }
+
+    @Test
+    fun `복구 중 다른 실행 가능 맵이 관측되면 상태 대체 사유와 함께 새 맵을 선택한다`() {
+        val party = ResolvedAutomationParty(
+            listOf("character-1"),
+            listOf(BattlePatternLoadRequest("character-1", 1)),
+        )
+        val target = target("raid-a", 0, party)
+        val recovery = recovery(target.raidId, nextCheckAt = now)
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(1, 7, target.raidId, target.name, RaidAutomationCycleStatus.IN_BATTLE, null, recovery),
+            ),
+        )
+        val observation = inBattleObservation(
+            target,
+            RaidBattleAvailability.RUNNABLE,
+            RaidObservedBattle("raid", "raid002"),
+        )
+        val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
+
+        val directive = assertIs<RaidDirective.Execute>(module.decideNext(1))
+
+        assertEquals("raid002", assertIs<RaidIntent.Battle>(directive.intent).mapCode)
+        assertEquals("RAID_BATTLE_RECOVERY_SUPERSEDED_BY_MAP", directive.reasonCode)
+        assertEquals(true, directive.message?.contains("다른 전투 맵"))
+        assertEquals(null, store.state.openCycle?.battleRecovery)
+    }
+
+    @Test
+    fun `복구 중 다른 맵으로 바뀐 뒤 프리셋이 유효하지 않아도 상태 대체 사유를 보존한다`() {
+        val target = target("raid-a", 0)
+        val recovery = recovery(target.raidId, nextCheckAt = now)
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(1, 7, target.raidId, target.name, RaidAutomationCycleStatus.IN_BATTLE, null, recovery),
+            ),
+        )
+        val observation = inBattleObservation(
+            target,
+            RaidBattleAvailability.RUNNABLE,
+            RaidObservedBattle("raid", "raid002"),
+        )
+        val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
+
+        val hold = assertIs<RaidDirective.Hold>(module.decideNext(1))
+
+        assertEquals(RaidHoldReason.INVALID_PRESET, hold.reason)
+        assertEquals("RAID_BATTLE_RECOVERY_SUPERSEDED_BY_MAP", hold.reasonCode)
+        assertEquals(true, hold.message.contains("이전 복구를 종료"))
+        assertEquals(null, store.state.openCycle?.battleRecovery)
+    }
+
+    @Test
+    fun `재전송이 다시 불명확해도 횟수 제한 없이 매번 5분 뒤 새 실행을 허용한다`() {
+        val party = ResolvedAutomationParty(listOf("character-1"), listOf(BattlePatternLoadRequest("character-1", 1)))
+        val target = target("raid-a", 0, party)
+        var current = now
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(1, 7, target.raidId, target.name, RaidAutomationCycleStatus.IN_BATTLE, null),
+            ),
+        )
+        val module = DefaultRaidCycleModule(
+            store,
+            RaidObservationReader {
+                inBattleObservation(target, RaidBattleAvailability.RUNNABLE, RaidObservedBattle("raid", "raid001"))
+            },
+            TimeProvider { current },
+        )
+
+        var attempt = ambiguousBattleAttempt(target.raidId, "execution-0", submittedAt = current)
+        repeat(4) { retryIndex ->
+            assertIs<RaidRecordResult.BattleRecoveryStarted>(module.recordObservedResult(
+                1,
+                attempt,
+                RaidResultObservation.BattleAmbiguous("결과 미관측"),
+            ))
+            current = current.plusSeconds(300)
+            val battle = assertIs<RaidIntent.Battle>(assertIs<RaidDirective.Execute>(module.decideNext(1)).intent)
+            assertEquals(retryIndex + 1, battle.retransmissionCount)
+            attempt = ambiguousBattleAttempt(
+                target.raidId,
+                "execution-${retryIndex + 1}",
+                submittedAt = current,
+                recoveryChainId = battle.recoveryChainId,
+                retransmissionCount = battle.retransmissionCount,
+            )
+        }
+    }
+
+    @Test
+    fun `실행 가능 상태 뒤 새 쿨타임은 적용 증거가 되어 복구를 해제한다`() {
+        val target = target("raid-a", 0)
+        val recovery = recovery(target.raidId, nextCheckAt = now, submittedFromRunnable = true)
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(1, 7, target.raidId, target.name, RaidAutomationCycleStatus.IN_BATTLE, null, recovery),
+            ),
+        )
+        val observation = inBattleObservation(
+            target,
+            RaidBattleAvailability.COOLDOWN,
+            RaidObservedBattle("raid", recovery.mapCode, 90),
+        )
+        val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
+
+        val wait = assertIs<RaidDirective.WaitUntil>(module.decideNext(1))
+
+        assertEquals(RaidWaitReason.BATTLE_APPLIED_COOLDOWN, wait.reason)
+        assertEquals(null, store.state.openCycle?.battleRecovery)
+    }
+
+    @Test
+    fun `제출 전 관측이 없는 legacy 복구는 현재 쿨타임만으로 적용을 추정하지 않는다`() {
+        val target = target("raid-a", 0)
+        val recovery = recovery(target.raidId, nextCheckAt = now, submittedFromRunnable = false)
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(1, 7, target.raidId, target.name, RaidAutomationCycleStatus.IN_BATTLE, null, recovery),
+            ),
+        )
+        val observation = inBattleObservation(
+            target,
+            RaidBattleAvailability.COOLDOWN,
+            RaidObservedBattle("raid", recovery.mapCode, 90),
+        )
+        val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
+
+        val wait = assertIs<RaidDirective.WaitUntil>(module.decideNext(1))
+
+        assertEquals(RaidWaitReason.BATTLE_COOLDOWN, wait.reason)
+        assertEquals(recovery.chainId, store.state.openCycle?.battleRecovery?.chainId)
+    }
+
+    @Test
+    fun `legacy 복구도 실행 가능 상태에서 재전송한 뒤에는 새 쿨타임을 적용 증거로 인정한다`() {
+        val party = ResolvedAutomationParty(
+            listOf("character-1"),
+            listOf(BattlePatternLoadRequest("character-1", 1)),
+        )
+        val target = target("raid-a", 0, party)
+        var current = now
+        var observation = inBattleObservation(
+            target,
+            RaidBattleAvailability.RUNNABLE,
+            RaidObservedBattle("raid", "raid001"),
+        )
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(
+                    1,
+                    7,
+                    target.raidId,
+                    target.name,
+                    RaidAutomationCycleStatus.IN_BATTLE,
+                    null,
+                    recovery(target.raidId, nextCheckAt = current, submittedFromRunnable = false),
+                ),
+            ),
+        )
+        val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { current })
+
+        val retransmission = assertIs<RaidIntent.Battle>(assertIs<RaidDirective.Execute>(module.decideNext(1)).intent)
+        assertEquals(true, retransmission.submittedFromRunnable)
+        assertIs<RaidRecordResult.BattleRecoveryStarted>(module.recordObservedResult(
+            1,
+            RaidAttempt(
+                entryId = retransmission.entryId,
+                kind = RaidIntentKind.BATTLE,
+                raidId = retransmission.raidId,
+                executionIdentity = "execution-1",
+                categoryId = retransmission.categoryId,
+                mapCode = retransmission.mapCode,
+                recoveryChainId = retransmission.recoveryChainId,
+                retransmissionCount = retransmission.retransmissionCount,
+                submittedAt = current,
+                submittedFromRunnable = retransmission.submittedFromRunnable,
+            ),
+            RaidResultObservation.BattleAmbiguous("재전송 결과 미관측"),
+        ))
+        current = current.plusSeconds(300)
+        observation = inBattleObservation(
+            target,
+            RaidBattleAvailability.COOLDOWN,
+            RaidObservedBattle("raid", "raid001", 90),
+        )
+
+        val wait = assertIs<RaidDirective.WaitUntil>(module.decideNext(1))
+
+        assertEquals(RaidWaitReason.BATTLE_APPLIED_COOLDOWN, wait.reason)
+        assertEquals(null, store.state.openCycle?.battleRecovery)
+    }
+
+    @Test
+    fun `전투 중 참가 해제가 관측되면 활성 복구보다 우선해 사이클을 종료한다`() {
+        val target = target("raid-a", 0)
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(
+                    1,
+                    7,
+                    target.raidId,
+                    target.name,
+                    RaidAutomationCycleStatus.IN_BATTLE,
+                    null,
+                    recovery(target.raidId, nextCheckAt = now),
+                ),
+            ),
+        )
+        val observation = RaidObservation(
+            raids = listOf(
+                RaidObservedTarget(
+                    id = target.raidId,
+                    name = target.name,
+                    playable = true,
+                    status = RaidObservedStatus.IN_BATTLE,
+                    statusText = "전투 중",
+                    joined = false,
+                    actions = emptySet(),
+                    battleAvailability = RaidBattleAvailability.INCOMPLETE,
+                ),
+            ),
+            applied = false,
+            registrationWait = false,
+        )
+        val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
+
+        val complete = assertIs<RaidDirective.Complete>(module.decideNext(1))
+
+        assertEquals(RaidCycleOutcomeKind.ABORTED_REGISTRATION_LOST, complete.outcome.kind)
+        assertEquals("RAID_BATTLE_RECOVERY_SUPERSEDED", complete.reasonCode)
+        assertEquals(null, store.state.openCycle)
+    }
+
     private fun target(id: String, order: Int, party: ResolvedAutomationParty? = null) = RaidCycleTarget(
         raidId = id,
         name = id,
@@ -901,6 +1353,67 @@ class RaidCycleModuleTest {
         statusText = if (resetRequired) "보상 확인 종료(리셋 가능)" else null,
         joined = false,
         actions = if (resetRequired) setOf(RaidIntentKind.RESET) else emptySet(),
+    )
+
+    private fun ambiguousBattleAttempt(
+        raidId: String,
+        executionIdentity: String,
+        submittedAt: Instant,
+        recoveryChainId: String? = null,
+        retransmissionCount: Int = 0,
+    ) = RaidAttempt(
+        entryId = 7,
+        kind = RaidIntentKind.BATTLE,
+        raidId = raidId,
+        requestRaidId = null,
+        executionIdentity = executionIdentity,
+        categoryId = "raid",
+        mapCode = "raid001",
+        recoveryChainId = recoveryChainId,
+        retransmissionCount = retransmissionCount,
+        submittedAt = submittedAt,
+        submittedFromRunnable = true,
+    )
+
+    private fun recovery(
+        raidId: String,
+        nextCheckAt: Instant,
+        submittedFromRunnable: Boolean = true,
+    ) = RaidBattleRecovery(
+        chainId = "recovery-1",
+        raidId = raidId,
+        categoryId = "raid",
+        mapCode = "raid001",
+        originalExecutionIdentity = "execution-0",
+        latestExecutionIdentity = "execution-0",
+        firstAmbiguousAt = now,
+        lastSubmittedAt = now,
+        retransmissionCount = 0,
+        nextCheckAt = nextCheckAt,
+        submittedFromRunnable = submittedFromRunnable,
+        lastObservation = RaidBattleRecoveryObservation.RESULT_UNOBSERVED,
+    )
+
+    private fun inBattleObservation(
+        target: RaidCycleTarget,
+        availability: RaidBattleAvailability,
+        battle: RaidObservedBattle?,
+    ) = RaidObservation(
+        raids = listOf(
+            RaidObservedTarget(
+                id = target.raidId,
+                name = target.name,
+                playable = true,
+                status = RaidObservedStatus.IN_BATTLE,
+                statusText = "전투 중",
+                joined = true,
+                actions = emptySet(),
+                battle = battle,
+                battleAvailability = availability,
+            ),
+        ),
+        applied = false,
+        registrationWait = false,
     )
 
     private class InMemoryRaidCycleStore(initial: RaidCycleAccountState) : RaidCycleStore {
@@ -933,6 +1446,23 @@ class RaidCycleModuleTest {
             now: Instant,
         ): RaidCycleSnapshot {
             val cycle = requireNotNull(state.openCycle).copy(status = status, nextCheckAt = nextCheckAt)
+            state = state.copy(openCycle = cycle)
+            return cycle
+        }
+
+        override fun saveBattleRecovery(
+            accountId: Long,
+            raidId: String,
+            recovery: RaidBattleRecovery,
+            now: Instant,
+        ): RaidCycleSnapshot {
+            val cycle = requireNotNull(state.openCycle).copy(battleRecovery = recovery)
+            state = state.copy(openCycle = cycle)
+            return cycle
+        }
+
+        override fun clearBattleRecovery(accountId: Long, raidId: String, now: Instant): RaidCycleSnapshot {
+            val cycle = requireNotNull(state.openCycle).copy(battleRecovery = null)
             state = state.copy(openCycle = cycle)
             return cycle
         }

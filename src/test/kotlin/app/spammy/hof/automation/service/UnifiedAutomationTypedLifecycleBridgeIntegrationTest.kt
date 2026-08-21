@@ -91,6 +91,34 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
     }
 
     @Test
+    fun `레이드 복구 재개는 저장 payload 대신 최신 상태를 즉시 읽도록 확인 시각을 당긴다`() {
+        val accountId = seed("raid-recovery-resume")
+        TransactionTemplate(transactionManager).executeWithoutResult {
+            entityManager.createNativeQuery("update automation_entries set automation_type = 'RAID' where account_id = ?1")
+                .setParameter(1, accountId).executeUpdate()
+            entityManager.createNativeQuery(
+                "insert into raid_automation_cycles (account_id,automation_entry_id,raid_id,raid_name,status,open_marker,started_at,updated_at,version," +
+                    "battle_recovery_chain_id,battle_recovery_original_execution_identity,battle_recovery_latest_execution_identity," +
+                    "battle_recovery_first_ambiguous_at,battle_recovery_last_submitted_at,battle_recovery_retransmission_count," +
+                    "battle_recovery_next_check_at,battle_recovery_category_id,battle_recovery_map_code," +
+                    "battle_recovery_submitted_from_runnable,battle_recovery_last_observation) " +
+                    "select account_id,id,'raid-1','레이드','IN_BATTLE',1,?2,?2,0,'chain-1','execution-1','execution-1'," +
+                    "?2,?2,0,?3,'raid','map-1',true,'RESULT_UNOBSERVED' from automation_entries where account_id = ?1",
+            ).setParameter(1, accountId)
+                .setParameter(2, NOW)
+                .setParameter(3, NOW.plusSeconds(300))
+                .executeUpdate()
+        }
+
+        TransactionTemplate(transactionManager).executeWithoutResult {
+            bridge.resume(accountId, "USER_RESUME")
+        }
+
+        assertEquals(NOW, requireNotNull(typedQuery.findOpenRaidCycle(accountId)).battleRecoveryNextCheckAt)
+        assertEquals("chain-1", typedQuery.findOpenRaidCycle(accountId)?.battleRecoveryChainId)
+    }
+
+    @Test
     fun `rollback changes no lifecycle state and emits no wake without any in-memory callback`() {
         val accountId = seed("rollback")
 
@@ -297,6 +325,16 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
                 "insert into raid_automation_cycles (account_id,automation_entry_id,raid_id,raid_name,status,open_marker,started_at,updated_at,version) " +
                     "select account_id,id,'raid-1','레이드','REGISTERED_WAITING',1,?2,?2,0 from automation_entries where account_id = ?1",
             ).setParameter(1, accountId).setParameter(2, NOW).executeUpdate()
+            entityManager.createNativeQuery(
+                "update raid_automation_cycles set battle_recovery_chain_id = 'chain-1', " +
+                    "battle_recovery_original_execution_identity = 'execution-1', " +
+                    "battle_recovery_latest_execution_identity = 'execution-1', " +
+                    "battle_recovery_first_ambiguous_at = ?2, battle_recovery_last_submitted_at = ?2, " +
+                    "battle_recovery_retransmission_count = 0, battle_recovery_next_check_at = ?2, " +
+                    "battle_recovery_category_id = 'raid', battle_recovery_map_code = 'map-1', " +
+                    "battle_recovery_submitted_from_runnable = true, " +
+                    "battle_recovery_last_observation = 'RESULT_UNOBSERVED' where account_id = ?1",
+            ).setParameter(1, accountId).setParameter(2, NOW).executeUpdate()
         }
 
         TransactionTemplate(transactionManager).executeWithoutResult {
@@ -307,6 +345,7 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
         assertEquals(TypedAutomationLifecycle.STOPPED, state.lifecycleStatus)
         assertNull(state.requestedLifecycle)
         assertEquals(AutomationStopReason.MANUAL_STOP.name, state.stopReason)
+        assertNull(requireNotNull(typedQuery.findOpenRaidCycle(accountId)).battleRecoveryChainId)
     }
 
     @Test

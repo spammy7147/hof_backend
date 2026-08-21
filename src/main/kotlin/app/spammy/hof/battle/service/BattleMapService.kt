@@ -32,6 +32,17 @@ data class AdventureMapSnapshot(
     val observations: List<HofBattleMap>,
 )
 
+enum class CurrentBattleMapObservationStatus {
+    OBSERVED,
+    ABSENT,
+    INCOMPLETE,
+}
+
+data class CurrentBattleMapObservation(
+    val status: CurrentBattleMapObservationStatus,
+    val maps: List<BattleMapResponse>,
+)
+
 @Service
 /**
  * 전투/모험 카테고리의 맵 목록을 조회한다.
@@ -80,9 +91,33 @@ class BattleMapService(
         accountId: Long,
         categoryId: String,
         origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
-    ): List<BattleMapResponse> {
+    ): List<BattleMapResponse> = observeCurrentlyAvailableMaps(accountId, categoryId, origin).maps
+
+    /**
+     * 이번 응답에서 직접 본 맵과 명시적인 맵 부재, 해석할 수 없는 빈 응답을 구분한다.
+     * 과거 카탈로그 상태는 어느 경우에도 반환하지 않는다.
+     */
+    fun observeCurrentlyAvailableMaps(
+        accountId: Long,
+        categoryId: String,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
+    ): CurrentBattleMapObservation {
         val snapshot = fetchMapSnapshot(accountId, categoryId, requireObservations = false, origin)
-        return if (snapshot.observations.isEmpty()) emptyList() else synchronizeSnapshot(snapshot)
+        if (snapshot.observations.isNotEmpty()) {
+            return CurrentBattleMapObservation(
+                CurrentBattleMapObservationStatus.OBSERVED,
+                synchronizeCurrentSnapshot(snapshot),
+            )
+        }
+        val status = if (
+            snapshot.category == BattleCategoryId.RAID &&
+            battleMapParser.observesAuthoritativeRaidAbsence(snapshot.responseBody)
+        ) {
+            CurrentBattleMapObservationStatus.ABSENT
+        } else {
+            CurrentBattleMapObservationStatus.INCOMPLETE
+        }
+        return CurrentBattleMapObservation(status, emptyList())
     }
 
     /** 전투 정보실에 노출된 등록 가능 레이드를 자동화 설정에서도 검증할 수 있도록 정적 카탈로그에 반영한다. */
@@ -228,6 +263,13 @@ class BattleMapService(
         val account = accountQueryRepository.findById(snapshot.accountId)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
         return catalogService.synchronizeCategory(account, snapshot.category.value, snapshot.observations)
+            .map(BattleMapResponse::from)
+    }
+
+    private fun synchronizeCurrentSnapshot(snapshot: BattleMapSnapshot): List<BattleMapResponse> {
+        val account = accountQueryRepository.findById(snapshot.accountId)
+            ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
+        return catalogService.synchronizeCurrentCategory(account, snapshot.category.value, snapshot.observations)
             .map(BattleMapResponse::from)
     }
 

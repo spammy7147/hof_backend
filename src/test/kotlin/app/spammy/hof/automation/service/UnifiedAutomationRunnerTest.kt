@@ -23,6 +23,7 @@ import java.time.LocalDate
 import java.io.IOException
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import org.mockito.Mockito
@@ -117,7 +118,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(lifecycleModule.describe(action)).thenReturn(descriptor)
         Mockito.`when`(runtime.prepare(7L, "token", stored)).thenReturn(row)
         Mockito.`when`(lifecycleModule.restore(row, 7L)).thenReturn(managed)
-        Mockito.`when`(runtime.markSubmitting(7L, "token", 88L)).thenReturn(true)
+        Mockito.`when`(runtime.markSubmitting(7L, "token", 88L)).thenReturn(Instant.EPOCH)
         Mockito.`when`(managed.execute()).thenReturn(TypedAutomationExecution.Completed)
         Mockito.`when`(journal.appendDecision(Mockito.eq(7L), anyCoordination()))
             .thenReturn(41L)
@@ -197,6 +198,129 @@ class UnifiedAutomationRunnerTest {
     }
 
     @Test
+    fun `레이드 전투의 불명확 결과는 공용 RECONCILING 대신 레이드 복구로 인계한다`() {
+        val submittedAt = Instant.parse("2026-08-21T00:00:00Z")
+        val retryAt = submittedAt.plusSeconds(300)
+        val journal = Mockito.mock(AutomationDecisionJournal::class.java)
+        val stored = StoredTypedAutomationAction(
+            entryId = 12,
+            executionIdentity = "raid-execution-1",
+            payload = StoredTypedActionPayload.BattleMap(
+                progressDate = LocalDate.parse("2026-08-21"),
+                categoryId = "raid",
+                mapCode = "raid001",
+                presetMode = PresetSelectionMode.PRIMARY,
+                presetId = 301,
+                battleCount = 1,
+                battleRequest = app.spammy.hof.battle.dto.RunBattleRequest(
+                    "raid",
+                    "raid001",
+                    listOf("character-1"),
+                    listOf(BattlePatternLoadRequest("character-1", 1)),
+                    1,
+                ),
+                source = BattleAutomationActionSource.RAID_AUTOMATION,
+                sourceTargetKey = "RaidGoblin",
+            ),
+        )
+        val row = Mockito.mock(TypedAutomationActionRunEntity::class.java)
+        Mockito.`when`(row.id).thenReturn(88L)
+        Mockito.`when`(row.status).thenReturn(TypedAutomationActionStatus.RECONCILING)
+        Mockito.`when`(row.submittedAt).thenReturn(submittedAt)
+        Mockito.`when`(row.lastError).thenReturn("전투 응답 시간 초과")
+        Mockito.`when`(preflight.ensureReady(7L)).thenReturn(AutomationDailyPreflight.Result.Ready)
+        Mockito.`when`(runtime.claim(7L)).thenReturn(TypedRuntimeClaim.Acquired("token", row))
+        Mockito.`when`(actionLifecycleModule.restore(row, 7L)).thenReturn(managedAction)
+        Mockito.`when`(managedAction.storedAction).thenReturn(stored)
+        Mockito.`when`(journal.appendPreparedActionAttempt(Mockito.eq(7L), anyActionTrace())).thenReturn(41L)
+        Mockito.`when`(
+            managedAction.handoffAmbiguousSubmission(submittedAt, "전투 응답 시간 초과"),
+        ).thenReturn(AmbiguousActionResolution.HandedOff(retryAt, "레이드 전투 결과 미확정"))
+        Mockito.`when`(
+            runtime.handoffAmbiguousAction(
+                7L,
+                "token",
+                88L,
+                "레이드 전투 결과 미확정",
+                "RAID_BATTLE_RECOVERY_STARTED",
+            ),
+        ).thenReturn(true)
+
+        val scopedRunner = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            Mockito.mock(AutomationDecisionSource::class.java),
+            wakeup,
+            sharedCooldowns,
+            actionLifecycleModule,
+            journal,
+        )
+
+        scopedRunner.runOne(7L)
+
+        Mockito.verify(managedAction).handoffAmbiguousSubmission(submittedAt, "전투 응답 시간 초과")
+        Mockito.verify(managedAction, Mockito.never()).reconcile()
+        Mockito.verify(runtime).handoffAmbiguousAction(
+            7L,
+            "token",
+            88L,
+            "레이드 전투 결과 미확정",
+            "RAID_BATTLE_RECOVERY_STARTED",
+        )
+        assertTrue(Mockito.mockingDetails(runtime).invocations.none {
+            it.method.name == "deferReconciliation"
+        })
+        val traceCaptor = org.mockito.ArgumentCaptor.forClass(AutomationActionTrace::class.java)
+        Mockito.verify(journal).appendPreparedActionAttempt(Mockito.eq(7L), captureTrace(traceCaptor))
+        assertEquals("RAID_BATTLE_RECOVERY_HANDOFF", traceCaptor.value.reasonCode)
+        assertTrue(traceCaptor.value.message.contains("다음 확인 시각까지 기다립니다"))
+        assertFalse(traceCaptor.value.message.contains("재확인"))
+    }
+
+    @Test
+    fun `방금 제출한 레이드 전투의 timeout도 즉시 레이드 복구로 인계한다`() {
+        val submittedAt = Instant.parse("2026-08-21T00:00:00Z")
+        val retryAt = submittedAt.plusSeconds(300)
+        val row = Mockito.mock(TypedAutomationActionRunEntity::class.java)
+        Mockito.`when`(row.id).thenReturn(90L)
+        Mockito.`when`(row.status).thenReturn(TypedAutomationActionStatus.PREPARED)
+        Mockito.`when`(preflight.ensureReady(7L)).thenReturn(AutomationDailyPreflight.Result.Ready)
+        Mockito.`when`(runtime.claim(7L)).thenReturn(TypedRuntimeClaim.Acquired("token", row))
+        Mockito.`when`(runtime.markSubmitting(7L, "token", 90L)).thenReturn(submittedAt)
+        Mockito.doThrow(AmbiguousAutomationSubmissionException("전투 응답 시간 초과"))
+            .`when`(managedAction).execute()
+        Mockito.`when`(
+            managedAction.handoffAmbiguousSubmission(submittedAt, "전투 응답 시간 초과"),
+        ).thenReturn(AmbiguousActionResolution.HandedOff(retryAt, "레이드 전투 결과 미확정"))
+        Mockito.`when`(
+            runtime.handoffAmbiguousAction(
+                7L,
+                "token",
+                90L,
+                "레이드 전투 결과 미확정",
+                "RAID_BATTLE_RECOVERY_STARTED",
+            ),
+        ).thenReturn(true)
+
+        runner.runOne(7L)
+
+        Mockito.verify(managedAction).handoffAmbiguousSubmission(submittedAt, "전투 응답 시간 초과")
+        Mockito.verify(runtime).handoffAmbiguousAction(
+            7L,
+            "token",
+            90L,
+            "레이드 전투 결과 미확정",
+            "RAID_BATTLE_RECOVERY_STARTED",
+        )
+        Mockito.verify(runtime, Mockito.never()).markReconcilingAndEnqueueWake(
+            Mockito.anyLong(),
+            Mockito.anyString(),
+            Mockito.anyLong(),
+            Mockito.anyString(),
+        )
+    }
+
+    @Test
     fun `production decision source replaces the global snapshot coordinator`() {
         val decisions = Mockito.mock(AutomationDecisionSource::class.java)
         val action = legacyBattleAction()
@@ -206,7 +330,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token"))
         Mockito.`when`(decisions.select(7)).thenReturn(AutomationCoordination.Runnable(10, action, emptyList()))
         Mockito.`when`(runtime.prepare(Mockito.eq(7L), eqString("token"), anyStoredAction())).thenReturn(row)
-        Mockito.`when`(runtime.markSubmitting(7, "token", 88L)).thenReturn(true)
+        Mockito.`when`(runtime.markSubmitting(7, "token", 88L)).thenReturn(Instant.EPOCH)
         val scopedRunner = UnifiedAutomationRunner(
             preflight, runtime, decisions, wakeup, sharedCooldowns, actionLifecycleModule,
         )
@@ -347,6 +471,7 @@ class UnifiedAutomationRunnerTest {
     @Test
     fun `runner persists submits and checkpoints one action then wakes a fresh evaluation`() {
         val snapshot = AutomationCoordinatorSnapshot(emptyList())
+        val recoveryWarning = "레이드 전투 결과 미확정 · 최초 미확정 2026-08-21T00:00:00Z · 재전송 1회"
         val action = BattleMapAutomationAction(
             7,
             LocalDate.parse("2026-07-16"),
@@ -363,15 +488,20 @@ class UnifiedAutomationRunnerTest {
                 listOf(BattlePatternLoadRequest("character-1", 1)),
             ),
             sourceTargetKey = "RaidGoblin",
+            recoveryChainId = "chain-1",
+            raidRetransmissionCount = 1,
+            raidSubmittedFromRunnable = true,
         )
         val row = Mockito.mock(TypedAutomationActionRunEntity::class.java)
         Mockito.`when`(row.id).thenReturn(88L)
         Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
         Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token"))
         Mockito.`when`(loader.loadTyped(7)).thenReturn(snapshot)
-        Mockito.`when`(coordinator.coordinate(snapshot)).thenReturn(AutomationCoordination.Runnable(12, action, emptyList()))
+        Mockito.`when`(coordinator.coordinate(snapshot)).thenReturn(
+            AutomationCoordination.Runnable(12, action, listOf(recoveryWarning)),
+        )
         Mockito.`when`(runtime.prepare(Mockito.eq(7L), eqString("token"), anyStoredAction())).thenReturn(row)
-        Mockito.`when`(runtime.markSubmitting(7, "token", 88L)).thenReturn(true)
+        Mockito.`when`(runtime.markSubmitting(7, "token", 88L)).thenReturn(Instant.EPOCH)
         val stored = StoredTypedAutomationAction(
             entryId = 12L,
             executionIdentity = action.executionIdentity,
@@ -392,6 +522,9 @@ class UnifiedAutomationRunnerTest {
                 display = StoredActionDisplay(mapName = action.mapName),
                 source = action.source,
                 sourceTargetKey = action.sourceTargetKey,
+                recoveryChainId = action.recoveryChainId,
+                raidRetransmissionCount = action.raidRetransmissionCount,
+                raidSubmittedFromRunnable = action.raidSubmittedFromRunnable,
             ),
         )
         Mockito.`when`(managedAction.storedAction).thenReturn(stored)
@@ -404,9 +537,93 @@ class UnifiedAutomationRunnerTest {
         Mockito.verify(runtime).prepare(Mockito.eq(7L), eqString("token"), capture(storedCaptor))
         assertEquals(StoredActionDisplay(mapName = "거대 보스"), storedCaptor.value.payload.display)
         Mockito.verify(managedAction).execute()
-        Mockito.verify(runtime).recordWarnings(7, "token", emptyList())
+        Mockito.verify(runtime).recordWarnings(7, "token", listOf(recoveryWarning))
         Mockito.verify(sharedCooldowns).applyAfterSuccessfulBattle(7, "battle_map", "gb0")
-        Mockito.verify(runtime).succeedAndEnqueueWake(7, "token", 88L, "TYPED_ACTION_COMPLETED", emptyList())
+        Mockito.verify(runtime).succeedAndEnqueueWake(
+            7,
+            "token",
+            88L,
+            "RAID_BATTLE_APPLIED_TERMINAL_RESULT",
+            emptyList(),
+        )
+    }
+
+    @Test
+    fun `재전송의 정확한 전투 단말 결과는 전용 적용 확인 사유를 판단 이력에 남긴다`() {
+        val decisions = Mockito.mock(AutomationDecisionSource::class.java)
+        val journal = Mockito.mock(AutomationDecisionJournal::class.java)
+        val action = BattleMapAutomationAction(
+            accountId = 7,
+            progressDate = LocalDate.parse("2026-08-21"),
+            categoryId = "raid",
+            mapCode = "raid001",
+            presetMode = PresetSelectionMode.PRIMARY,
+            presetId = 301,
+            battleCount = 1,
+            executionIdentity = "execution-2",
+            source = BattleAutomationActionSource.RAID_AUTOMATION,
+            resolvedParty = ResolvedAutomationParty(
+                listOf("character-1"),
+                listOf(BattlePatternLoadRequest("character-1", 1)),
+            ),
+            sourceTargetKey = "RaidGoblin",
+            recoveryChainId = "chain-1",
+            raidRetransmissionCount = 1,
+            raidSubmittedFromRunnable = true,
+        )
+        val decision = AutomationCoordination.Runnable(12, action, emptyList())
+        val row = Mockito.mock(TypedAutomationActionRunEntity::class.java)
+        Mockito.`when`(row.id).thenReturn(88L)
+        Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
+        Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token"))
+        Mockito.`when`(decisions.select(7)).thenReturn(decision)
+        Mockito.`when`(runtime.prepare(Mockito.eq(7L), eqString("token"), anyStoredAction())).thenReturn(row)
+        Mockito.`when`(runtime.markSubmitting(7, "token", 88L)).thenReturn(Instant.EPOCH)
+        Mockito.`when`(managedAction.storedAction).thenReturn(
+            StoredTypedAutomationAction(
+                entryId = 12,
+                executionIdentity = action.executionIdentity,
+                payload = StoredTypedActionPayload.BattleMap(
+                    progressDate = action.progressDate,
+                    categoryId = action.categoryId,
+                    mapCode = action.mapCode,
+                    presetMode = action.presetMode,
+                    presetId = requireNotNull(action.presetId),
+                    battleCount = action.battleCount,
+                    battleRequest = app.spammy.hof.battle.dto.RunBattleRequest(
+                        action.categoryId,
+                        action.mapCode,
+                        requireNotNull(action.resolvedParty).characterIds,
+                        requireNotNull(action.resolvedParty).patternLoads,
+                        action.battleCount,
+                    ),
+                    source = action.source,
+                    sourceTargetKey = action.sourceTargetKey,
+                    recoveryChainId = action.recoveryChainId,
+                    raidRetransmissionCount = action.raidRetransmissionCount,
+                    raidSubmittedFromRunnable = action.raidSubmittedFromRunnable,
+                ),
+            ),
+        )
+        Mockito.`when`(managedAction.execute()).thenReturn(TypedAutomationExecution.BattleCompleted("raid", "raid001"))
+        Mockito.`when`(journal.appendDecision(7L, decision)).thenReturn(41L)
+        val scopedRunner = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            actionLifecycleModule,
+            journal,
+        )
+
+        scopedRunner.runOne(7)
+
+        val traceCaptor = org.mockito.ArgumentCaptor.forClass(AutomationActionTrace::class.java)
+        Mockito.verify(journal, Mockito.times(2)).appendActionResult(Mockito.eq(41L), captureTrace(traceCaptor))
+        val result = traceCaptor.allValues.last()
+        assertEquals("RAID_BATTLE_APPLIED_TERMINAL_RESULT", result.reasonCode)
+        assertEquals(true, result.message.contains("정확한 전투 단말 결과"))
     }
 
     @Test
@@ -422,7 +639,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token"))
         Mockito.`when`(decisions.select(7)).thenReturn(decision)
         Mockito.`when`(runtime.prepare(Mockito.eq(7L), eqString("token"), anyStoredAction())).thenReturn(row)
-        Mockito.`when`(runtime.markSubmitting(7, "token", 88L)).thenReturn(true)
+        Mockito.`when`(runtime.markSubmitting(7, "token", 88L)).thenReturn(Instant.EPOCH)
         Mockito.`when`(managedAction.execute())
             .thenReturn(TypedAutomationExecution.RaidCycleFinished(outcome))
         Mockito.`when`(journal.appendDecision(7L, decision)).thenReturn(41L)
@@ -470,7 +687,7 @@ class UnifiedAutomationRunnerTest {
         )
         Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
         Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token", row))
-        Mockito.`when`(runtime.markSubmitting(7, "token", 88)).thenReturn(true)
+        Mockito.`when`(runtime.markSubmitting(7, "token", 88)).thenReturn(Instant.EPOCH)
         Mockito.`when`(managedAction.execute()).thenReturn(
             TypedAutomationExecution.SharedCooldown("raid", "castle", retryAt),
         )
@@ -498,7 +715,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(coordinator.coordinate(snapshot)).thenReturn(AutomationCoordination.Runnable(12, action, listOf("warning")))
         Mockito.`when`(runtime.prepare(Mockito.eq(7L), eqString("prepare-token"), anyStoredAction())).thenReturn(null)
         Mockito.`when`(runtime.prepare(Mockito.eq(7L), eqString("submit-token"), anyStoredAction())).thenReturn(row)
-        Mockito.`when`(runtime.markSubmitting(7, "submit-token", 88)).thenReturn(false)
+        Mockito.`when`(runtime.markSubmitting(7, "submit-token", 88)).thenReturn(null)
 
         runner.runOne(7)
         runner.runOne(7)
@@ -731,7 +948,7 @@ class UnifiedAutomationRunnerTest {
         )
         Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
         Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token", row))
-        Mockito.`when`(runtime.markSubmitting(7, "token", 88)).thenReturn(true)
+        Mockito.`when`(runtime.markSubmitting(7, "token", 88)).thenReturn(Instant.EPOCH)
         Mockito.doThrow(HofAutomationDeferredException(retryAt, 3))
             .`when`(managedAction).execute()
         val message = "HOF automation requests are deferred until $retryAt"
@@ -898,6 +1115,10 @@ class UnifiedAutomationRunnerTest {
             "capture",
         )
 
+    private fun anyActionTrace(): AutomationActionTrace =
+        Mockito.any(AutomationActionTrace::class.java)
+            ?: AutomationActionTrace(AutomationHistoryEventKind.WAITING, "capture", "capture")
+
     private fun captureCoordination(
         captor: org.mockito.ArgumentCaptor<AutomationCoordination>,
     ): AutomationCoordination = captor.capture() ?: AutomationCoordination.Idle(emptyList())
@@ -945,7 +1166,7 @@ class UnifiedAutomationRunnerTest {
         )
         Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
         Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token", row))
-        Mockito.`when`(runtime.markSubmitting(7, "token", 88)).thenReturn(true)
+        Mockito.`when`(runtime.markSubmitting(7, "token", 88)).thenReturn(Instant.EPOCH)
         Mockito.doThrow(error).`when`(managedAction).execute()
         val retryAt = Instant.parse("2026-07-25T00:05:00Z")
         Mockito.`when`(runtime.scheduleAutomaticRetry(Mockito.eq(7L), eqString("token"), Mockito.eq(88L), eqValue(expectedReason), anyStringValue()))
@@ -980,7 +1201,7 @@ class UnifiedAutomationRunnerTest {
         )
         Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
         Mockito.`when`(runtime.claim(7)).thenReturn(TypedRuntimeClaim.Acquired("token", row))
-        Mockito.`when`(runtime.markSubmitting(7, "token", row.id)).thenReturn(true)
+        Mockito.`when`(runtime.markSubmitting(7, "token", row.id)).thenReturn(Instant.EPOCH)
         Mockito.doThrow(error).`when`(managedAction).execute()
 
         runner.runOne(7)

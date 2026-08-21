@@ -180,6 +180,10 @@ class BattleMapParser {
         )
     }
 
+    /** 빈 결과를 파싱 실패가 아닌 정상적인 레이드 맵 부재로 확정할 수 있는 문구만 인정한다. */
+    fun observesAuthoritativeRaidAbsence(html: String): Boolean =
+        RAID_ABSENCE_PATTERN.containsMatchIn(HofHtmlParser.parse(html, HOF_BASE_URL).text())
+
     private fun coalesceMapLinks(
         candidateLinks: List<Element>,
         queryPattern: Regex,
@@ -535,6 +539,7 @@ class BattleMapParser {
             "0004" to "사막의 살인적",
         )
         val UNION_PAGE_MARKER = Regex("Union(?:\\s*Monster|\\s*Battle\\s*Log)", RegexOption.IGNORE_CASE)
+        val RAID_ABSENCE_PATTERN = Regex("현재\\s*열린\\s*레이드가\\s*없습니다[.]?")
     }
 
     private data class GroupMetadata(

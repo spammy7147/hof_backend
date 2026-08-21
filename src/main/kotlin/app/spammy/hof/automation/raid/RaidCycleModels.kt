@@ -42,6 +42,9 @@ sealed interface RaidIntent {
         val presetMode: PresetSelectionMode,
         val presetId: Long,
         val party: ResolvedAutomationParty,
+        val recoveryChainId: String? = null,
+        val retransmissionCount: Int = 0,
+        val submittedFromRunnable: Boolean = true,
     ) : RaidIntent {
         override val kind: RaidIntentKind = RaidIntentKind.BATTLE
     }
@@ -52,6 +55,13 @@ data class RaidAttempt(
     val kind: RaidIntentKind,
     val raidId: String,
     val requestRaidId: String? = raidId,
+    val executionIdentity: String? = null,
+    val categoryId: String? = null,
+    val mapCode: String? = null,
+    val recoveryChainId: String? = null,
+    val retransmissionCount: Int = 0,
+    val submittedAt: Instant? = null,
+    val submittedFromRunnable: Boolean = false,
 )
 
 enum class RaidObservedStatus {
@@ -71,6 +81,13 @@ data class RaidObservedBattle(
     val cooldownRemainingSeconds: Long? = null,
 )
 
+enum class RaidBattleAvailability {
+    RUNNABLE,
+    COOLDOWN,
+    ABSENT,
+    INCOMPLETE,
+}
+
 data class RaidObservedTarget(
     val id: String,
     val name: String,
@@ -81,6 +98,11 @@ data class RaidObservedTarget(
     val joined: Boolean,
     val actions: Set<RaidIntentKind>,
     val battle: RaidObservedBattle? = null,
+    val battleAvailability: RaidBattleAvailability = when {
+        battle == null -> RaidBattleAvailability.INCOMPLETE
+        battle.cooldownRemainingSeconds?.let { it > 0 } == true -> RaidBattleAvailability.COOLDOWN
+        else -> RaidBattleAvailability.RUNNABLE
+    },
 )
 
 data class RaidObservation(
@@ -90,12 +112,16 @@ data class RaidObservation(
     val registrationWaitSeconds: Int? = null,
     val globalActions: Set<RaidIntentKind> = emptySet(),
     val resultMessages: List<String> = emptyList(),
+    val observedAt: Instant? = null,
+    val fresh: Boolean = true,
 )
 
 sealed interface RaidResultObservation {
     data class Page(val value: RaidObservation) : RaidResultObservation
     data object BattleCompleted : RaidResultObservation
+    data class BattleAmbiguous(val reason: String) : RaidResultObservation
     data object ManualHandoff : RaidResultObservation
+    data object ManualStop : RaidResultObservation
     data class LegacyCycleAbort(val reason: RaidCycleOutcomeKind) : RaidResultObservation
 }
 
@@ -103,6 +129,8 @@ enum class RaidWaitReason {
     REGISTRATION_COOLDOWN,
     WAITING_TO_START,
     BATTLE_COOLDOWN,
+    BATTLE_APPLIED_COOLDOWN,
+    BATTLE_RECOVERY_RECHECK,
     REWARD_CONFIRMATION,
     POST_REWARD_CHECK,
 }
@@ -114,6 +142,8 @@ enum class RaidHoldReason {
     TARGET_TEMPORARILY_MISSING,
     UNKNOWN_OR_CONFLICTING_STATE,
     ACTION_UNAVAILABLE,
+    BATTLE_OBSERVATION_INCOMPLETE,
+    BATTLE_TARGET_ABSENT,
 }
 
 enum class RaidCycleOutcomeKind {
@@ -131,7 +161,12 @@ data class RaidCycleOutcome(
 )
 
 sealed interface RaidDirective {
-    data class Execute(val intent: RaidIntent) : RaidDirective
+    data class Execute(
+        val intent: RaidIntent,
+        val reasonCode: String? = null,
+        val message: String? = null,
+        val warning: String? = null,
+    ) : RaidDirective
     data class WaitUntil(
         val at: Instant,
         val reason: RaidWaitReason,
@@ -145,14 +180,20 @@ sealed interface RaidDirective {
         val recheckAt: Instant? = null,
         val entryId: Long? = null,
         val raidId: String? = null,
+        val reasonCode: String? = null,
     ) : RaidDirective
-    data class Complete(val outcome: RaidCycleOutcome) : RaidDirective
+    data class Complete(
+        val outcome: RaidCycleOutcome,
+        val reasonCode: String? = null,
+        val message: String? = null,
+    ) : RaidDirective
 }
 
 sealed interface RaidRecordResult {
     data class Recorded(val completion: RaidCycleOutcome? = null) : RaidRecordResult
     data class NotApplied(val message: String) : RaidRecordResult
     data class NeedsRecheck(val at: Instant, val message: String) : RaidRecordResult
+    data class BattleRecoveryStarted(val at: Instant, val message: String) : RaidRecordResult
 }
 
 data class RaidCycleTarget(
@@ -171,7 +212,45 @@ data class RaidCycleSnapshot(
     val raidName: String,
     val status: RaidAutomationCycleStatus,
     val nextCheckAt: Instant?,
+    val battleRecovery: RaidBattleRecovery? = null,
 )
+
+enum class RaidBattleRecoveryObservation {
+    RESULT_UNOBSERVED,
+    RUNNABLE,
+    COOLDOWN,
+    ABSENT,
+    INCOMPLETE,
+}
+
+data class RaidBattleRecovery(
+    val chainId: String,
+    val raidId: String,
+    val categoryId: String,
+    val mapCode: String,
+    val originalExecutionIdentity: String,
+    val latestExecutionIdentity: String,
+    val firstAmbiguousAt: Instant,
+    val lastSubmittedAt: Instant,
+    val retransmissionCount: Int,
+    val nextCheckAt: Instant,
+    val submittedFromRunnable: Boolean,
+    val lastObservation: RaidBattleRecoveryObservation,
+)
+
+internal fun RaidBattleRecovery.warningMessage(
+    detail: String = lastObservation.defaultWarningDetail(),
+): String =
+    "레이드 전투 결과 미확정 · 최초 미확정 $firstAmbiguousAt · " +
+        "재전송 ${retransmissionCount}회 · 다음 확인 $nextCheckAt · $detail"
+
+private fun RaidBattleRecoveryObservation.defaultWarningDetail(): String = when (this) {
+    RaidBattleRecoveryObservation.RESULT_UNOBSERVED -> "레이드 전투 결과를 아직 관측하지 못했습니다."
+    RaidBattleRecoveryObservation.RUNNABLE -> "최신 관측에서 같은 레이드 전투 맵이 실행 가능합니다."
+    RaidBattleRecoveryObservation.COOLDOWN -> "현재 쿨타임만으로 이전 제출의 적용 여부를 확정하지 못했습니다."
+    RaidBattleRecoveryObservation.ABSENT -> "최신 레이드 화면에서 전투 맵이 보이지 않습니다."
+    RaidBattleRecoveryObservation.INCOMPLETE -> "최신 레이드 전투 맵 관측이 불완전합니다."
+}
 
 data class RaidCycleConfiguration(
     val entryId: Long,

@@ -1,10 +1,10 @@
 package app.spammy.hof.automation.raid
 
 import app.spammy.hof.automation.service.HofSessionRecoveryExecutor
-import app.spammy.hof.battle.service.BattleMapService
-import app.spammy.hof.external.model.HofRequestOrigin
+import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.town.raid.dto.RaidPubResponse
 import app.spammy.hof.town.raid.model.RaidAction
+import app.spammy.hof.town.raid.model.RaidBattleObservationStatus
 import app.spammy.hof.town.raid.model.RaidStatus
 import app.spammy.hof.town.raid.service.RaidPubService
 import org.springframework.stereotype.Component
@@ -12,12 +12,11 @@ import org.springframework.stereotype.Component
 @Component
 class HofRaidObservationAdapter(
     private val raidPubService: RaidPubService,
-    private val battleMapService: BattleMapService,
     private val sessionRecovery: HofSessionRecoveryExecutor,
+    private val timeProvider: TimeProvider,
 ) : RaidObservationReader {
     override fun read(accountId: Long): RaidObservation {
         val load = {
-            battleMapService.findMaps(accountId, RAID_CATEGORY, HofRequestOrigin.AUTOMATION)
             from(raidPubService.load(accountId))
         }
         return sessionRecovery.execute(accountId, load)
@@ -41,6 +40,14 @@ class HofRaidObservationAdapter(
                         cooldownRemainingSeconds = target.cooldownRemainingSeconds,
                     )
                 },
+                battleAvailability = when {
+                    raid.battleTarget?.cooldownRemainingSeconds?.let { it > 0 } == true ->
+                        RaidBattleAvailability.COOLDOWN
+                    raid.battleTarget != null -> RaidBattleAvailability.RUNNABLE
+                    response.battleObservationStatus == RaidBattleObservationStatus.ABSENT ->
+                        RaidBattleAvailability.ABSENT
+                    else -> RaidBattleAvailability.INCOMPLETE
+                },
             )
         },
         applied = response.applied,
@@ -48,6 +55,8 @@ class HofRaidObservationAdapter(
         registrationWaitSeconds = response.applyWaitSeconds,
         globalActions = response.globalActions.mapNotNull { action -> action.toIntentKind() }.toSet(),
         resultMessages = response.result?.messages.orEmpty(),
+        observedAt = timeProvider.now(),
+        fresh = true,
     )
 
     private fun RaidStatus.toObservedStatus(): RaidObservedStatus = when (this) {
@@ -70,9 +79,5 @@ class HofRaidObservationAdapter(
         RaidAction.LEAVE,
         RaidAction.WAIT_RESET,
         -> null
-    }
-
-    private companion object {
-        const val RAID_CATEGORY = "raid"
     }
 }

@@ -22,6 +22,8 @@ import app.spammy.hof.automation.raid.RaidCycleModule
 import app.spammy.hof.automation.raid.RaidIntentKind
 import app.spammy.hof.automation.raid.RaidRecordResult
 import app.spammy.hof.automation.raid.RaidResultObservation
+import app.spammy.hof.automation.raid.toBattleRecoveryOrNull
+import app.spammy.hof.automation.raid.warningMessage
 import app.spammy.hof.automation.repository.AdventureAutomationMapCommandRepository
 import app.spammy.hof.automation.repository.AutomationEntryCommandRepository
 import app.spammy.hof.automation.repository.AutomationWorkSessionQueryRepository
@@ -620,6 +622,9 @@ class UnifiedAutomationService(
 
     private fun buildTypedAggregate(accountId: Long): TypedAutomationAggregateResponse {
         val entries = typedAutomationQueryRepository.findEntries(accountId)
+        val activeRaidRecoveryWarning = typedAutomationQueryRepository.findOpenRaidCycle(accountId)
+            ?.toBattleRecoveryOrNull()
+            ?.warningMessage()
         val holdWarningsByEntry = workSessionQueries.findWaiting(accountId)
             .asSequence()
             .filter { it.workType == AutomationWorkType.RAID }
@@ -798,7 +803,7 @@ class UnifiedAutomationService(
         val persistedWarnings = runtime?.warningText.orEmpty().lineSequence()
             .map(String::trim)
             .filter(String::isNotEmpty)
-            .toList()
+            .toList() + listOfNotNull(activeRaidRecoveryWarning)
         val configWarnings = responses.flatMap(TypedAutomationEntryResponse::warnings)
         return TypedAutomationAggregateResponse(
             entries = responses,

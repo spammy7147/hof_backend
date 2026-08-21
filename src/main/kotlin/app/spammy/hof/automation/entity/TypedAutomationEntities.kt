@@ -1,6 +1,7 @@
 package app.spammy.hof.automation.entity
 
 import app.spammy.hof.account.entity.HofAccountEntity
+import app.spammy.hof.automation.raid.RaidBattleRecoveryObservation
 import app.spammy.hof.party.entity.PartyPresetEntity
 import jakarta.persistence.Column
 import jakarta.persistence.Entity
@@ -255,6 +256,28 @@ class RaidAutomationCycleEntity(
     var lastObservedStatus: String? = null,
     @Column(name = "next_check_at")
     var nextCheckAt: Instant? = null,
+    @Column(name = "battle_recovery_chain_id", length = 64)
+    var battleRecoveryChainId: String? = null,
+    @Column(name = "battle_recovery_original_execution_identity", length = 128)
+    var battleRecoveryOriginalExecutionIdentity: String? = null,
+    @Column(name = "battle_recovery_latest_execution_identity", length = 128)
+    var battleRecoveryLatestExecutionIdentity: String? = null,
+    @Column(name = "battle_recovery_first_ambiguous_at")
+    var battleRecoveryFirstAmbiguousAt: Instant? = null,
+    @Column(name = "battle_recovery_last_submitted_at")
+    var battleRecoveryLastSubmittedAt: Instant? = null,
+    @Column(name = "battle_recovery_retransmission_count")
+    var battleRecoveryRetransmissionCount: Int? = null,
+    @Column(name = "battle_recovery_next_check_at")
+    var battleRecoveryNextCheckAt: Instant? = null,
+    @Column(name = "battle_recovery_category_id", length = 50)
+    var battleRecoveryCategoryId: String? = null,
+    @Column(name = "battle_recovery_map_code", length = 100)
+    var battleRecoveryMapCode: String? = null,
+    @Column(name = "battle_recovery_submitted_from_runnable")
+    var battleRecoverySubmittedFromRunnable: Boolean? = null,
+    @Enumerated(EnumType.STRING) @Column(name = "battle_recovery_last_observation", length = 32)
+    var battleRecoveryLastObservation: RaidBattleRecoveryObservation? = null,
     @Column(name = "open_marker")
     var openMarker: Int? = 1,
     @Column(name = "started_at", nullable = false)
@@ -265,4 +288,18 @@ class RaidAutomationCycleEntity(
     var finishedAt: Instant? = null,
     @Version @Column(name = "version", nullable = false)
     var version: Long? = null,
-)
+) {
+    fun clearBattleRecovery() {
+        battleRecoveryChainId = null
+        battleRecoveryOriginalExecutionIdentity = null
+        battleRecoveryLatestExecutionIdentity = null
+        battleRecoveryFirstAmbiguousAt = null
+        battleRecoveryLastSubmittedAt = null
+        battleRecoveryRetransmissionCount = null
+        battleRecoveryNextCheckAt = null
+        battleRecoveryCategoryId = null
+        battleRecoveryMapCode = null
+        battleRecoverySubmittedFromRunnable = null
+        battleRecoveryLastObservation = null
+    }
+}

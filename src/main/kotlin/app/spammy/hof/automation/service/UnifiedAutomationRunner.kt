@@ -214,15 +214,43 @@ class UnifiedAutomationRunner @Autowired constructor(
             message: String,
             nextRunAt: Instant? = null,
         ) = actionTrace(stored, kind, code, message, nextRunAt, actionDescriptor)
+        fun finishRaidBattleHandoff(resolution: AmbiguousActionResolution.HandedOff) {
+            typedRuntime.handoffAmbiguousAction(
+                accountId,
+                token,
+                row.id,
+                resolution.reason,
+                RAID_BATTLE_RECOVERY_WAKE_REASON,
+            )
+            decisionCycleId?.let { cycleId ->
+                decisionJournal?.appendActionResult(cycleId, trace(
+                    AutomationHistoryEventKind.WAITING,
+                    "RAID_BATTLE_RECOVERY_STARTED",
+                    "레이드 전투 결과가 불확실해 레이드 전용 복구로 인계했습니다. ${resolution.reason}",
+                    resolution.retryAt,
+                ))
+            }
+        }
         if (decisionCycleId == null) {
             decisionCycleId = try {
                 val reconciling = row.status == app.spammy.hof.automation.entity.TypedAutomationActionStatus.RECONCILING
+                val raidRecoveryHandoff = reconciling &&
+                    (stored.payload as? StoredTypedActionPayload.BattleMap)?.let { payload ->
+                        payload.source == BattleAutomationActionSource.RAID_AUTOMATION &&
+                            payload.sourceTargetKey != null
+                    } == true
                 decisionJournal?.appendPreparedActionAttempt(
                     accountId,
                     trace(
                         if (reconciling) AutomationHistoryEventKind.WAITING else AutomationHistoryEventKind.SELECTED,
-                        if (reconciling) "AMBIGUOUS_RESULT_VERIFY" else "PREPARED_ACTION_RETRY",
-                        if (reconciling) {
+                        when {
+                            raidRecoveryHandoff -> "RAID_BATTLE_RECOVERY_HANDOFF"
+                            reconciling -> "AMBIGUOUS_RESULT_VERIFY"
+                            else -> "PREPARED_ACTION_RETRY"
+                        },
+                        if (raidRecoveryHandoff) {
+                            "저장된 레이드 전투의 불명확 결과를 전용 복구로 인계하고 다음 확인 시각까지 기다립니다."
+                        } else if (reconciling) {
                             "이전 요청의 처리 결과가 불확실해 HOF 최신 상태로 적용 여부를 재확인합니다."
                         } else {
                             "저장된 작업을 이어서 재시도합니다."
@@ -236,6 +264,13 @@ class UnifiedAutomationRunner @Autowired constructor(
         }
         if (row.status == app.spammy.hof.automation.entity.TypedAutomationActionStatus.RECONCILING) {
             val resolution = try {
+                managedAction.handoffAmbiguousSubmission(
+                    row.submittedAt,
+                    row.lastError ?: "Stored raid battle submission outcome is ambiguous.",
+                )?.let { handedOff ->
+                    finishRaidBattleHandoff(handedOff)
+                    return
+                }
                 managedAction.reconcile()
             } catch (error: Throwable) {
                 error.findHofAutomationDeferral()?.let { deferred ->
@@ -316,10 +351,12 @@ class UnifiedAutomationRunner @Autowired constructor(
                         wakeupPort.schedule(accountId, resolution.retryAt, "TYPED_RECONCILE_RETRY")
                     }
                 }
+                is AmbiguousActionResolution.HandedOff -> finishRaidBattleHandoff(resolution)
             }
             return
         }
-        if (!typedRuntime.markSubmitting(accountId, token, row.id)) {
+        val submittedAt = typedRuntime.markSubmitting(accountId, token, row.id)
+        if (submittedAt == null) {
             typedRuntime.releaseAndEnqueueWake(accountId, token, "TYPED_CONFIG_RELOAD")
             return
         }
@@ -328,6 +365,11 @@ class UnifiedAutomationRunner @Autowired constructor(
         }
         try {
             val execution = managedAction.execute()
+            val storedBattle = stored.payload as? StoredTypedActionPayload.BattleMap
+            val recoveryAppliedByTerminalResult =
+                execution is TypedAutomationExecution.BattleCompleted &&
+                    storedBattle?.source == BattleAutomationActionSource.RAID_AUTOMATION &&
+                    storedBattle.recoveryChainId != null
             val wakeReason = when (execution) {
                 TypedAutomationExecution.Completed -> "TYPED_ACTION_COMPLETED"
                 is TypedAutomationExecution.BattleCompleted -> {
@@ -336,7 +378,11 @@ class UnifiedAutomationRunner @Autowired constructor(
                         execution.categoryId,
                         execution.mapCode,
                     )
-                    "TYPED_ACTION_COMPLETED"
+                    if (recoveryAppliedByTerminalResult) {
+                        RAID_BATTLE_APPLIED_TERMINAL_RESULT
+                    } else {
+                        "TYPED_ACTION_COMPLETED"
+                    }
                 }
                 is TypedAutomationExecution.SharedCooldown -> {
                     sharedBattleCooldowns.learnAndApply(
@@ -349,10 +395,24 @@ class UnifiedAutomationRunner @Autowired constructor(
                 }
                 is TypedAutomationExecution.RaidCycleFinished -> "TYPED_RAID_CYCLE_FINISHED"
             }
-            typedRuntime.succeedAndEnqueueWake(accountId, token, row.id, wakeReason, selectedWarnings)
+            val finalWarnings = if (
+                execution is TypedAutomationExecution.BattleCompleted &&
+                (stored.payload as? StoredTypedActionPayload.BattleMap)?.source ==
+                    BattleAutomationActionSource.RAID_AUTOMATION
+            ) {
+                selectedWarnings.orEmpty().filterNot { it.startsWith("레이드 전투 결과 미확정") }
+            } else {
+                selectedWarnings
+            }
+            typedRuntime.succeedAndEnqueueWake(accountId, token, row.id, wakeReason, finalWarnings)
             decisionCycleId?.let { cycleId ->
                 val trace = when (execution) {
                     is TypedAutomationExecution.RaidCycleFinished -> execution.outcome.toAutomationActionTrace()
+                    is TypedAutomationExecution.BattleCompleted if recoveryAppliedByTerminalResult -> trace(
+                        AutomationHistoryEventKind.ACTION_SUCCEEDED,
+                        RAID_BATTLE_APPLIED_TERMINAL_RESULT,
+                        "정확한 전투 단말 결과로 레이드 전투 적용을 확인하고 복구를 종료했습니다.",
+                    )
                     else -> trace(
                         AutomationHistoryEventKind.ACTION_SUCCEEDED,
                         wakeReason,
@@ -384,6 +444,21 @@ class UnifiedAutomationRunner @Autowired constructor(
                 return
             }
             error.findAmbiguousSubmission()?.let { ambiguous ->
+                val message = ambiguous.message ?: "Automation submission outcome is ambiguous."
+                val handedOff = runCatching {
+                    managedAction.handoffAmbiguousSubmission(submittedAt, message)
+                }.onFailure { handoffError ->
+                    log.warn(
+                        "Typed automation ambiguous handoff failed accountId={} actionId={} errorType={}",
+                        accountId,
+                        row.id,
+                        handoffError.javaClass.name,
+                    )
+                }.getOrNull()
+                if (handedOff != null) {
+                    finishRaidBattleHandoff(handedOff)
+                    return
+                }
                 decisionCycleId?.let { cycleId -> runCatching {
                     decisionJournal?.appendActionResult(cycleId, trace(
                         AutomationHistoryEventKind.WAITING,
@@ -395,7 +470,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                     accountId,
                     token,
                     row.id,
-                    ambiguous.message ?: "Automation submission outcome is ambiguous.",
+                    message,
                 )
                 return
             }
@@ -571,5 +646,7 @@ class UnifiedAutomationRunner @Autowired constructor(
     private companion object {
         const val HOF_COOLDOWN_WAKE_REASON = "HOF_503_COOLDOWN"
         const val AUTOMATIC_RETRY_WAKE_REASON = "TYPED_AUTOMATIC_RETRY"
+        const val RAID_BATTLE_RECOVERY_WAKE_REASON = "RAID_BATTLE_RECOVERY_STARTED"
+        const val RAID_BATTLE_APPLIED_TERMINAL_RESULT = "RAID_BATTLE_APPLIED_TERMINAL_RESULT"
     }
 }

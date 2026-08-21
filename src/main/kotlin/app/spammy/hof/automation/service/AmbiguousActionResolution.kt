@@ -13,4 +13,9 @@ sealed interface AmbiguousActionResolution {
         val retryAt: Instant,
         val reason: String,
     ) : AmbiguousActionResolution
+
+    data class HandedOff(
+        val retryAt: Instant,
+        val reason: String,
+    ) : AmbiguousActionResolution
 }

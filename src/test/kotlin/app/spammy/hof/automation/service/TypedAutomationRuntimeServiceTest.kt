@@ -196,6 +196,39 @@ class TypedAutomationRuntimeServiceTest {
     }
 
     @Test
+    fun `레이드 복구 인계는 기존 action을 종료하고 경고를 보존한 채 다른 자동화를 깨운다`() {
+        val state = state().apply {
+            leaseToken = "token"
+            leaseUntil = now.plusSeconds(300)
+        }
+        val entry = AutomationEntryEntity(9, account, AutomationType.RAID, 0, true, now, now)
+        val action = TypedAutomationActionRunEntity(
+            23, account, entry, "raid-battle-1", "BATTLE_MAP", "{}", "e".repeat(64),
+            TypedAutomationActionStatus.RECONCILING, leaseToken = "token", createdAt = now, updatedAt = now,
+        )
+        Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
+        Mockito.`when`(query.lockTypedAction(action.id)).thenReturn(action)
+
+        assertTrue(
+            service.handoffAmbiguousAction(
+                7,
+                "token",
+                action.id,
+                "레이드 전투 결과 미확정 · 다음 확인 ${now.plusSeconds(300)}",
+                "RAID_BATTLE_RECOVERY_STARTED",
+            ),
+        )
+
+        assertEquals(TypedAutomationActionStatus.AMBIGUOUS, action.status)
+        assertEquals(now, action.finishedAt)
+        assertEquals(TypedAutomationLifecycle.RUNNING, state.lifecycleStatus)
+        assertNull(state.nextAttemptAt)
+        assertNull(state.leaseToken)
+        assertTrue(requireNotNull(state.warningText).contains("레이드 전투 결과 미확정"))
+        Mockito.verify(outbox).enqueue(7, "RAID_BATTLE_RECOVERY_STARTED")
+    }
+
+    @Test
     fun `reconciliation can resubmit defer or succeed the same stored action`() {
         val retryAt = now.plusSeconds(10)
         val state = state().apply { leaseToken = "token"; leaseUntil = now.plusSeconds(300) }

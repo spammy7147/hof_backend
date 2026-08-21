@@ -121,7 +121,9 @@ class AutomationTargetSelector(
                             return AutomationCoordination.Runnable(
                                 entry.id,
                                 directive.intent.toPreparedAction(accountId),
-                                warnings.toList(),
+                                warnings.toList() + listOfNotNull(
+                                    directive.warning ?: directive.intent.recoveryWarning(),
+                                ),
                                 trace.toList(),
                             )
                         }
@@ -194,7 +196,7 @@ class AutomationTargetSelector(
         is RaidDirective.Execute -> AutomationCoordination.Runnable(
             session.entryId,
             directive.intent.toPreparedAction(accountId),
-            initialWarnings,
+            initialWarnings + listOfNotNull(directive.warning ?: directive.intent.recoveryWarning()),
             initialTrace + directive.toTrace(session.entryId, initialTrace.size),
         )
         is RaidDirective.WaitUntil -> {
@@ -235,8 +237,14 @@ class AutomationTargetSelector(
             entryId = entryId,
             type = AutomationType.RAID,
             outcome = AutomationDecisionOutcome.SELECTED,
-            reasonCode = "RUNNABLE",
-            message = "레이드 ${intent.kind.name} 단계를 실행합니다.",
+            reasonCode = reasonCode ?: if ((intent as? RaidIntent.Battle)?.recoveryChainId != null) {
+                "RAID_BATTLE_RETRANSMIT"
+            } else {
+                "RUNNABLE"
+            },
+            message = message ?: (intent as? RaidIntent.Battle)?.takeIf { it.recoveryChainId != null }?.let {
+                "레이드 전투를 복구 체인으로 재전송합니다. 재전송 ${it.retransmissionCount}회"
+            } ?: "레이드 ${intent.kind.name} 단계를 실행합니다.",
             actionKind = intent.kind.name,
             targetKey = intent.raidId,
             targetName = intent.raidName,
@@ -258,7 +266,7 @@ class AutomationTargetSelector(
             entryId,
             AutomationType.RAID,
             if (recheckAt == null) AutomationDecisionOutcome.CONFIGURATION_WARNING else AutomationDecisionOutcome.WAITING,
-            reason.name,
+            reasonCode ?: reason.name,
             message,
             recheckAt,
             actionKind = "HOLD",
@@ -273,8 +281,8 @@ class AutomationTargetSelector(
             } else {
                 AutomationDecisionOutcome.CYCLE_ABORTED
             },
-            outcome.kind.name,
-            "레이드 사이클을 ${outcome.kind.name} 상태로 마쳤습니다.",
+            reasonCode ?: outcome.kind.name,
+            message ?: "레이드 사이클을 ${outcome.kind.name} 상태로 마쳤습니다.",
             targetKey = outcome.raidId,
         )
     }
@@ -326,8 +334,16 @@ class AutomationTargetSelector(
             resolvedParty = party,
             mapName = raidName,
             sourceTargetKey = raidId,
+            recoveryChainId = recoveryChainId,
+            raidRetransmissionCount = retransmissionCount,
+            raidSubmittedFromRunnable = submittedFromRunnable,
         )
     }
+
+    private fun RaidIntent.recoveryWarning(): String? =
+        (this as? RaidIntent.Battle)?.takeIf { it.recoveryChainId != null }?.let {
+            "레이드 전투 결과 복구 중 · 재전송 ${it.retransmissionCount}회 실행"
+        }
 
     private fun RaidIntentKind.toTownAction() = when (this) {
         RaidIntentKind.RESET -> app.spammy.hof.town.raid.model.RaidAction.RESET

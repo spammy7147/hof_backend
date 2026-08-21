@@ -28,6 +28,7 @@ import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import org.mockito.Mockito
 
@@ -247,6 +248,7 @@ class AutomationTargetSelectorTest {
                 message = "레이드 전투 프리셋 구성을 확인해 주세요.",
                 entryId = raidEntry.id,
                 raidId = "RaidGoblin",
+                reasonCode = "RAID_BATTLE_RECOVERY_SUPERSEDED_BY_MAP",
             ),
         )
         Mockito.`when`(loader.loadEntry(7, 11, null, null)).thenReturn(battleSnapshot)
@@ -256,6 +258,7 @@ class AutomationTargetSelectorTest {
         val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
 
         assertEquals(11, selected.entryId)
+        assertEquals("RAID_BATTLE_RECOVERY_SUPERSEDED_BY_MAP", selected.trace.first().reasonCode)
         Mockito.verify(lifecycle).waitForRaid(
             7,
             raidEntry.id,
@@ -352,6 +355,51 @@ class AutomationTargetSelectorTest {
         Mockito.verify(lifecycle).resumeForCheck(7, 32)
         Mockito.verify(raidModule).decideNext(7)
         Mockito.verify(loader, Mockito.never()).loadEntry(7, 13, "RaidGoblin")
+    }
+
+    @Test
+    fun `due raid recovery selects a new linked execution and keeps a distinct retransmission warning`() {
+        val dueRaid = session(
+            33, raidEntry, AutomationWorkType.RAID, "RaidGoblin",
+            AutomationWorkStatus.WAITING_COOLDOWN, nextCheckAt = now,
+        )
+        val party = ResolvedAutomationParty(
+            listOf("101"),
+            listOf(app.spammy.hof.battle.dto.BattlePatternLoadRequest("101", 1)),
+        )
+        Mockito.`when`(work.findRunning(7)).thenReturn(null)
+        Mockito.`when`(work.findWaiting(7)).thenReturn(listOf(dueRaid))
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(raidEntry))
+        Mockito.`when`(defaultRaidModule.decideNext(7)).thenReturn(
+            RaidDirective.Execute(
+                RaidIntent.Battle(
+                    entryId = raidEntry.id,
+                    raidId = "RaidGoblin",
+                    raidName = "고블린",
+                    categoryId = "raid",
+                    mapCode = "map-2",
+                    presetMode = PresetSelectionMode.EXPLICIT,
+                    presetId = 44L,
+                    party = party,
+                    recoveryChainId = "chain-1",
+                    retransmissionCount = 3,
+                ),
+            ),
+        )
+
+        val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
+        val selectedAgain = assertIs<AutomationCoordination.Runnable>(selector.select(7))
+
+        val action = assertIs<BattleMapAutomationAction>(selected.action)
+        val nextAction = assertIs<BattleMapAutomationAction>(selectedAgain.action)
+        assertEquals("chain-1", action.recoveryChainId)
+        assertEquals(action.recoveryChainId, nextAction.recoveryChainId)
+        assertNotEquals(action.executionIdentity, nextAction.executionIdentity)
+        assertEquals(3, action.raidRetransmissionCount)
+        assertEquals(44L, action.presetId)
+        assertEquals(party, action.resolvedParty)
+        assertEquals("RAID_BATTLE_RETRANSMIT", selected.trace.single().reasonCode)
+        assertTrue(selected.warnings.single().contains("재전송 3회"))
     }
 
     @Test

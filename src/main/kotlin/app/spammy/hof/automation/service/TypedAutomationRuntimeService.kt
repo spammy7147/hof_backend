@@ -107,17 +107,17 @@ class TypedAutomationRuntimeService(
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun markSubmitting(accountId: Long, token: String, actionId: Long): Boolean {
-        fencedState(accountId, token) ?: return false
-        val action = queryRepository.lockTypedAction(actionId) ?: return false
-        if (action.account.id != accountId || action.leaseToken != token || action.status != TypedAutomationActionStatus.PREPARED) return false
+    fun markSubmitting(accountId: Long, token: String, actionId: Long): Instant? {
+        fencedState(accountId, token) ?: return null
+        val action = queryRepository.lockTypedAction(actionId) ?: return null
+        if (action.account.id != accountId || action.leaseToken != token || action.status != TypedAutomationActionStatus.PREPARED) return null
         val now = timeProvider.now()
         action.status = TypedAutomationActionStatus.SUBMITTING
         action.nextAttemptAt = null
         action.lastError = null
         action.submittedAt = now
         action.updatedAt = now
-        return true
+        return now
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -183,6 +183,48 @@ class TypedAutomationRuntimeService(
         state.lastError = diagnostic
         state.updatedAt = now
         outbox.enqueue(accountId, "TYPED_AMBIGUOUS_RECONCILE")
+        return true
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun handoffAmbiguousAction(
+        accountId: Long,
+        token: String,
+        actionId: Long,
+        warning: String,
+        wakeReason: String,
+    ): Boolean {
+        val state = fencedState(accountId, token) ?: return false
+        val action = queryRepository.lockTypedAction(actionId) ?: return false
+        if (
+            action.account.id != accountId ||
+            action.leaseToken != token ||
+            action.status !in setOf(
+                TypedAutomationActionStatus.SUBMITTING,
+                TypedAutomationActionStatus.RECONCILING,
+            )
+        ) return false
+        val now = timeProvider.now()
+        val diagnostic = sanitizeDiagnostic(warning)
+        action.status = TypedAutomationActionStatus.AMBIGUOUS
+        action.nextAttemptAt = null
+        action.finishedAt = now
+        action.lastError = diagnostic
+        action.updatedAt = now
+        state.retryAttempt = 0
+        state.nextAttemptAt = null
+        state.waitReason = null
+        state.leaseToken = null
+        state.leaseUntil = null
+        state.warningText = diagnostic
+        state.lastError = null
+        state.stopReason = null
+        state.stopActionId = null
+        state.updatedAt = now
+        val paused = completeRequestedLifecycle(state, now)
+        if (!paused && state.lifecycleStatus == TypedAutomationLifecycle.RUNNING) {
+            outbox.enqueue(accountId, wakeReason)
+        }
         return true
     }
 

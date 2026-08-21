@@ -80,6 +80,7 @@ class FreshSchemaTest {
                 "29" to "observe character roster",
                 "30" to "deepen raid cycle module",
                 "31" to "persist raid hold messages",
+                "32" to "persist raid battle recovery",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -116,6 +117,7 @@ class FreshSchemaTest {
                 "V2__order_party_presets.sql",
                 "V30__deepen_raid_cycle_module.sql",
                 "V31__persist_raid_hold_messages.sql",
+                "V32__persist_raid_battle_recovery.sql",
                 "V3__add_automation_work_sessions.sql",
                 "V4__prepare_captcha_on_demand.sql",
                 "V5__track_character_detail_sync.sql",

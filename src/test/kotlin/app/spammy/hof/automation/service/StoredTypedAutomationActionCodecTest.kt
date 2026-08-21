@@ -96,6 +96,40 @@ class StoredTypedAutomationActionCodecTest {
     }
 
     @Test
+    fun `legacy raid battle payload without pre-submit evidence defaults to not runnable`() {
+        val json = """{"entryId":12,"executionIdentity":"legacy-raid-battle","payload":{"kind":"BATTLE_MAP","progressDate":"2026-07-16","categoryId":"raid","mapCode":"raid001","presetMode":"PRIMARY","presetId":44,"battleCount":1,"battleRequest":{"categoryId":"raid","mapCode":"raid001","characterIds":["c1"],"patternLoads":[{"characterId":"c1","slot":2}],"battleCount":1},"source":"RAID_AUTOMATION","sourceTargetKey":"RaidGoblin"}}"""
+
+        val payload = codec.decode(json).payload as StoredTypedActionPayload.BattleMap
+
+        assertEquals(false, payload.raidSubmittedFromRunnable)
+        assertNull(payload.recoveryChainId)
+        assertEquals(0, payload.raidRetransmissionCount)
+    }
+
+    @Test
+    fun `raid retransmission payload preserves its recovery link`() {
+        val request = RunBattleRequest(
+            "raid", "raid001", listOf("c1"),
+            listOf(app.spammy.hof.battle.dto.BattlePatternLoadRequest("c1", 2)), 1,
+        )
+        val action = StoredTypedAutomationAction(
+            12,
+            "raid-retry-3",
+            StoredTypedActionPayload.BattleMap(
+                LocalDate.parse("2026-07-16"), "raid", "raid001", PresetSelectionMode.PRIMARY, 44, 1,
+                request,
+                source = BattleAutomationActionSource.RAID_AUTOMATION,
+                sourceTargetKey = "RaidGoblin",
+                recoveryChainId = "chain-1",
+                raidRetransmissionCount = 3,
+                raidSubmittedFromRunnable = true,
+            ),
+        )
+
+        assertEquals(action, codec.decode(codec.encode(action).json))
+    }
+
+    @Test
     fun `all current payload kinds remain decodable when display is absent`() {
         val request = RunBattleRequest(
             "battle_map", "gb0", listOf("c1"),

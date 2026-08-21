@@ -1057,6 +1057,55 @@ class AutomationActionLifecycleModuleTest {
     }
 
     @Test
+    fun `불명확한 레이드 전투는 공용 조정 대신 5분 복구 체인으로 인계한다`() {
+        val retryAt = now.plusSeconds(300)
+        val action = battleMapAction().copy(
+            source = BattleAutomationActionSource.RAID_AUTOMATION,
+            sourceTargetKey = "RaidGoblin",
+            recoveryChainId = "raid-recovery-1",
+            raidRetransmissionCount = 2,
+            raidSubmittedFromRunnable = true,
+        )
+        Mockito.`when`(
+            raidCycleModule.recordObservedResult(
+                7L,
+                RaidAttempt(
+                    entryId = 13L,
+                    kind = RaidIntentKind.BATTLE,
+                    raidId = "RaidGoblin",
+                    requestRaidId = null,
+                    executionIdentity = action.executionIdentity,
+                    categoryId = action.categoryId,
+                    mapCode = action.mapCode,
+                    recoveryChainId = action.recoveryChainId,
+                    retransmissionCount = 2,
+                    submittedAt = now,
+                    submittedFromRunnable = true,
+                ),
+                RaidResultObservation.BattleAmbiguous("전투 응답 시간 초과"),
+            ),
+        ).thenReturn(RaidRecordResult.BattleRecoveryStarted(retryAt, "레이드 전투 결과 미확정 · 재전송 2회"))
+        val managed = assertNotNull(module.prepare(7L, 13L, action))
+
+        val resolution = assertIs<AmbiguousActionResolution.HandedOff>(
+            managed.handoffAmbiguousSubmission(now, "전투 응답 시간 초과"),
+        )
+
+        assertEquals(retryAt, resolution.retryAt)
+        val payload = assertIs<StoredTypedActionPayload.BattleMap>(managed.storedAction.payload)
+        assertEquals("raid-recovery-1", payload.recoveryChainId)
+        assertEquals(2, payload.raidRetransmissionCount)
+        Mockito.verify(workLifecycle).waitForRaid(
+            7L,
+            13L,
+            "RaidGoblin",
+            retryAt,
+            "레이드 전투 결과 미확정 · 재전송 2회",
+        )
+        Mockito.verifyNoInteractions(battleOutcome)
+    }
+
+    @Test
     fun `레이드 전투는 정확한 종료 증명 뒤에만 규칙 모듈에 완료를 기록한다`() {
         val action = battleMapAction().copy(
             source = BattleAutomationActionSource.RAID_AUTOMATION,

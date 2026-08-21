@@ -8,6 +8,8 @@ import app.spammy.hof.account.repository.CookieQueryRepository
 import app.spammy.hof.battle.dto.BattleMapResponse
 import app.spammy.hof.battle.model.BattleMapKeyMode
 import app.spammy.hof.battle.service.BattleMapService
+import app.spammy.hof.battle.service.CurrentBattleMapObservation
+import app.spammy.hof.battle.service.CurrentBattleMapObservationStatus
 import app.spammy.hof.external.client.*
 import app.spammy.hof.external.model.*
 import app.spammy.hof.external.parser.LoginStateParser
@@ -16,6 +18,7 @@ import app.spammy.hof.town.common.parser.HofResultParser
 import app.spammy.hof.town.common.service.*
 import app.spammy.hof.town.raid.dto.RaidPubActionRequest
 import app.spammy.hof.town.raid.model.RaidAction
+import app.spammy.hof.town.raid.model.RaidBattleObservationStatus
 import app.spammy.hof.town.raid.model.RaidStatus
 import app.spammy.hof.town.raid.parser.RaidPubParser
 import app.spammy.hof.town.raid.service.RaidPubService
@@ -303,13 +306,41 @@ class RaidPubParserTest {
 
     @Test fun `전투 정보실 id와 실제 raid_common 코드가 달라도 열린 단일 레이드 맵을 연결한다`() {
         val context = service(fixture())
-        Mockito.`when`(context.maps.findCurrentlyObservedMaps(7L, "raid"))
-            .thenReturn(listOf(observedMap("raid001", "고블린 전투 마차")))
+        Mockito.`when`(context.maps.observeCurrentlyAvailableMaps(7L, "raid"))
+            .thenReturn(CurrentBattleMapObservation(
+                CurrentBattleMapObservationStatus.OBSERVED,
+                listOf(observedMap("raid001", "고블린 전투 마차")),
+            ))
 
         val response = context.service.load(7L)
 
         assertEquals("raid001", response.raids.first().battleTarget?.mapCode)
         assertNull(response.raids[1].battleTarget)
+    }
+
+    @Test fun `raid_hunt의 명시적 맵 부재를 불완전 응답과 구분해 전달한다`() {
+        val context = service(fixture())
+        Mockito.`when`(context.maps.observeCurrentlyAvailableMaps(7L, "raid"))
+            .thenReturn(CurrentBattleMapObservation(CurrentBattleMapObservationStatus.ABSENT, emptyList()))
+
+        val response = context.service.load(7L)
+
+        assertEquals(RaidBattleObservationStatus.ABSENT, response.battleObservationStatus)
+        assertNull(response.raids.first().battleTarget)
+    }
+
+    @Test fun `raid_hunt에서 새로 시작된 쿨타임 맵도 참가한 raid의 적용 증거로 전달한다`() {
+        val context = service(fixture())
+        Mockito.`when`(context.maps.observeCurrentlyAvailableMaps(7L, "raid"))
+            .thenReturn(CurrentBattleMapObservation(
+                CurrentBattleMapObservationStatus.OBSERVED,
+                listOf(observedMap("RaidGoblin").copy(enabled = false, cooldownRemainingSeconds = 90)),
+            ))
+
+        val response = context.service.load(7L)
+
+        assertEquals("RaidGoblin", response.raids.first().battleTarget?.mapCode)
+        assertEquals(90, response.raids.first().battleTarget?.cooldownRemainingSeconds)
     }
 
     @Test fun `다른 raid의 action을 요청하면 POST 없이 fail closed한다`() {
@@ -356,7 +387,12 @@ class RaidPubParserTest {
         Mockito.`when`(accounts.findById(7L)).thenReturn(HofAccountEntity(7L, "raid", "encrypted", Instant.EPOCH))
         Mockito.`when`(cookies.findValueMapByAccountId(7L)).thenReturn(mapOf("PHPSESSID" to "session"))
         Mockito.`when`(locations.resolve(TownFeatureId.RAID_INFO, null)).thenReturn(ResolvedTownLocation(TownFeatureId.RAID_INFO, URL))
-        Mockito.`when`(maps.findCurrentlyObservedMaps(7L, "raid")).thenReturn(listOf(observedMap("RaidGoblin"), observedMap("RaidSiren")))
+        Mockito.`when`(maps.observeCurrentlyAvailableMaps(7L, "raid")).thenReturn(
+            CurrentBattleMapObservation(
+                CurrentBattleMapObservationStatus.OBSERVED,
+                listOf(observedMap("RaidGoblin"), observedMap("RaidSiren")),
+            ),
+        )
         Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies())).thenReturn(
             HofHttpResponse(200, URL, responses.first(), emptyMap()),
             *responses.drop(1).map { HofHttpResponse(200, URL, it, emptyMap()) }.toTypedArray(),

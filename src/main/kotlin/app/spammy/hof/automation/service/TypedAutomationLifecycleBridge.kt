@@ -146,6 +146,10 @@ class TypedAutomationLifecycleBridge(
             it.updatedAt = now
         }
         clearPreflight(accountId, now)
+        typed.findOpenRaidCycle(accountId)?.apply {
+            clearBattleRecovery()
+            updatedAt = now
+        }
         stopOpenWorkSessions(accountId, now)
         outboxQuery.deleteUnpublishedForAccount(accountId)
     }
@@ -223,6 +227,10 @@ class TypedAutomationLifecycleBridge(
     }
 
     private fun makeParkedRaidCheckDue(accountId: Long, now: java.time.Instant) {
+        typed.findOpenRaidCycle(accountId)?.takeIf { it.battleRecoveryChainId != null }?.let { cycle ->
+            cycle.battleRecoveryNextCheckAt = now
+            cycle.updatedAt = now
+        }
         workSessions.lockOpen(accountId)
             .filter { session ->
                 session.workType == app.spammy.hof.automation.entity.AutomationWorkType.RAID &&

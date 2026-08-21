@@ -47,6 +47,16 @@ class BattleMapCatalogService(
             transactionService.synchronizeCategory(account, categoryId, observations)
         }
 
+    /** 이번 응답에서 직접 관측돼 visible로 갱신된 맵만 반환한다. */
+    fun synchronizeCurrentCategory(
+        account: HofAccountEntity,
+        categoryId: String,
+        observations: List<HofBattleMap>,
+    ): List<HofBattleMap> =
+        withSynchronizationFence {
+            transactionService.synchronizeCurrentCategory(account, categoryId, observations)
+        }
+
     /** 외부 HOF 호출 없이 계정에서 코드까지 확인한 맵과 현재 visible 미해결 맵 tree를 조회한다. */
     fun findObservedByCategory(
         accountId: Long,
@@ -97,12 +107,27 @@ class BattleMapCatalogTransactionService(
         account: HofAccountEntity,
         categoryId: String,
         observations: List<HofBattleMap>,
+    ): List<HofBattleMap> = synchronizeCategory(account, categoryId, observations, includeHiddenResolved = true)
+
+    @Transactional
+    fun synchronizeCurrentCategory(
+        account: HofAccountEntity,
+        categoryId: String,
+        observations: List<HofBattleMap>,
+    ): List<HofBattleMap> = synchronizeCategory(account, categoryId, observations, includeHiddenResolved = false)
+
+    private fun synchronizeCategory(
+        account: HofAccountEntity,
+        categoryId: String,
+        observations: List<HofBattleMap>,
+        includeHiddenResolved: Boolean,
     ): List<HofBattleMap> {
         val now = timeProvider.now()
         val index = preloadIndex(account.id, categoryId)
+        val directlyObservedCooldowns = mutableMapOf<Long, Long?>()
         if (observations.isEmpty()) {
             return assembleObservedTree(
-                states = index.states(),
+                states = index.states().filter { includeHiddenResolved || it.visible },
                 unresolved = index.unresolvedRows().filter(UnresolvedBattleMapEntity::visible),
                 now = now,
             )
@@ -123,6 +148,7 @@ class BattleMapCatalogTransactionService(
                 refreshStaticMetadata(index, resolvedMap, observation, now)
                 ensureAliases(index, resolvedMap, observation.name)
                 upsertState(index, account, resolvedMap, observation, now)
+                directlyObservedCooldowns[resolvedMap.id] = observation.cooldownRemainingSeconds
                 removeMatchingUnresolved(index, observation)
             }
         }
@@ -130,9 +156,10 @@ class BattleMapCatalogTransactionService(
         stateRepository.flush()
         unresolvedRepository.flush()
         val result = assembleObservedTree(
-            states = index.states(),
+            states = index.states().filter { includeHiddenResolved || it.visible },
             unresolved = index.unresolvedRows().filter(UnresolvedBattleMapEntity::visible),
             now = now,
+            directlyObservedCooldowns = directlyObservedCooldowns.takeUnless { includeHiddenResolved },
         )
         log.info(
             "Battle map state synchronized accountId={} categoryId={} observationCount={} resultCount={}",
@@ -393,9 +420,16 @@ class BattleMapCatalogTransactionService(
         states: List<AccountBattleMapStateEntity>,
         unresolved: List<UnresolvedBattleMapEntity>,
         now: Instant,
+        directlyObservedCooldowns: Map<Long, Long?>? = null,
     ): List<HofBattleMap> {
         val resolvedMaps = states
-            .map { state -> state.toDomain(now) }
+            .map { state ->
+                state.toDomain(
+                    now = now,
+                    directlyObservedCooldown = directlyObservedCooldowns?.get(state.battleMap.id),
+                    useDirectlyObservedCooldown = directlyObservedCooldowns?.containsKey(state.battleMap.id) == true,
+                )
+            }
         val unresolvedMaps = unresolved
             .map { row -> row.toDomain(now) }
         return (resolvedMaps + unresolvedMaps).sortedWith(
@@ -407,8 +441,16 @@ class BattleMapCatalogTransactionService(
         )
     }
 
-    private fun AccountBattleMapStateEntity.toDomain(now: Instant): HofBattleMap {
-        val activeCooldown = cooldownUntil?.isAfter(now) == true
+    private fun AccountBattleMapStateEntity.toDomain(
+        now: Instant,
+        directlyObservedCooldown: Long? = null,
+        useDirectlyObservedCooldown: Boolean = false,
+    ): HofBattleMap {
+        val activeCooldown = if (useDirectlyObservedCooldown) {
+            directlyObservedCooldown?.let { it > 0 } == true
+        } else {
+            cooldownUntil?.isAfter(now) == true
+        }
         val hasZeroDynamicLimit = listOf(availableCount, attemptRemaining, winRemaining)
             .any { count -> count != null && count <= 0 }
         return HofBattleMap(
@@ -422,7 +464,11 @@ class BattleMapCatalogTransactionService(
             availableCount = availableCount,
             attemptCount = attemptRemaining,
             winCount = winRemaining,
-            cooldownRemainingSeconds = remainingSeconds(cooldownUntil, now),
+            cooldownRemainingSeconds = if (useDirectlyObservedCooldown) {
+                directlyObservedCooldown?.takeIf { it > 0 }
+            } else {
+                remainingSeconds(cooldownUntil, now)
+            },
             keyMode = keyMode,
             keyCount = keyCount,
             requiredTime = battleMap.requiredTime,

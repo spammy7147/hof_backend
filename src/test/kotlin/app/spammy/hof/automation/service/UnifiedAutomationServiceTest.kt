@@ -31,6 +31,7 @@ import app.spammy.hof.automation.entity.FishingAutomationMapEntity
 import app.spammy.hof.automation.entity.HomeQuestAutomationSelectionEntity
 import app.spammy.hof.automation.entity.UnionAutomationMapEntity
 import app.spammy.hof.automation.raid.RaidAttempt
+import app.spammy.hof.automation.raid.RaidBattleRecoveryObservation
 import app.spammy.hof.automation.raid.RaidCycleModule
 import app.spammy.hof.automation.raid.RaidCycleOutcome
 import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
@@ -687,6 +688,41 @@ class UnifiedAutomationServiceTest {
             RaidResultObservation.ManualHandoff,
         )
         Mockito.verify(entryRepository).delete(raidEntry)
+    }
+
+    @Test
+    fun `비활성화된 레이드의 활성 전투 복구 경고도 aggregate에 계속 노출한다`() {
+        val raidEntry = entry(96L, AutomationType.RAID, enabled = false)
+        val active = RaidAutomationCycleEntity(
+            id = 906L,
+            account = account(),
+            entry = raidEntry,
+            raidId = "raid-1",
+            raidName = "첫 번째 레이드",
+            status = RaidAutomationCycleStatus.IN_BATTLE,
+            battleRecoveryChainId = "recovery-1",
+            battleRecoveryOriginalExecutionIdentity = "execution-1",
+            battleRecoveryLatestExecutionIdentity = "execution-2",
+            battleRecoveryFirstAmbiguousAt = NOW,
+            battleRecoveryLastSubmittedAt = NOW.plusSeconds(300),
+            battleRecoveryRetransmissionCount = 1,
+            battleRecoveryNextCheckAt = NOW.plusSeconds(600),
+            battleRecoveryCategoryId = "raid",
+            battleRecoveryMapCode = "raid001",
+            battleRecoverySubmittedFromRunnable = true,
+            battleRecoveryLastObservation = RaidBattleRecoveryObservation.RESULT_UNOBSERVED,
+            startedAt = NOW,
+            updatedAt = NOW,
+        )
+        Mockito.`when`(accountQueryRepository.findById(ACCOUNT_ID)).thenReturn(account())
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(raidEntry))
+        Mockito.`when`(typedQuery.findOpenRaidCycle(ACCOUNT_ID)).thenReturn(active)
+
+        val response = service.getTyped(ACCOUNT_ID)
+
+        assertTrue(response.runtime.warnings.any { warning ->
+            warning.contains("레이드 전투 결과 미확정") && warning.contains("재전송 1회")
+        })
     }
 
     @Test

@@ -6,6 +6,8 @@ enum class RaidAction { REGISTER, LEAVE, START, RESET, REWARD, WAIT_RESET, REFRE
 
 enum class RaidStatus { RECRUITING, WAITING, READY, IN_BATTLE, COMPLETED, CLOSED, TESTING, UNKNOWN }
 
+enum class RaidBattleObservationStatus { OBSERVED, ABSENT, INCOMPLETE }
+
 fun isRaidResetRequiredStatus(statusText: String?): Boolean =
     statusText?.let { RESET_REQUIRED_STATUS.containsMatchIn(it) } == true
 
@@ -46,4 +48,5 @@ data class RaidPubSnapshot(
     val result: ParsedTownResult?,
     internal val globalActionIds: Map<RaidAction, String>,
     internal val observedRaidPubForm: Boolean,
+    val battleObservationStatus: RaidBattleObservationStatus = RaidBattleObservationStatus.INCOMPLETE,
 )

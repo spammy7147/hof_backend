@@ -91,6 +91,9 @@ data class BattleMapAutomationAction(
     val resolvedParty: ResolvedAutomationParty? = null,
     val mapName: String? = null,
     val sourceTargetKey: String? = null,
+    val recoveryChainId: String? = null,
+    val raidRetransmissionCount: Int = 0,
+    val raidSubmittedFromRunnable: Boolean = false,
 ) : PreparedAutomationAction
 
 enum class BattleAutomationRoundOutcome { VICTORY, DEFEAT, DRAW, NETWORK_FAILURE, UNKNOWN }

@@ -82,6 +82,10 @@ sealed interface StoredTypedActionPayload {
         override val display: StoredActionDisplay? = null,
         val source: BattleAutomationActionSource = BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
         val sourceTargetKey: String? = null,
+        val recoveryChainId: String? = null,
+        val raidRetransmissionCount: Int = 0,
+        /** Legacy payloads have no pre-submit observation, so absence must not be inferred as runnable. */
+        val raidSubmittedFromRunnable: Boolean = false,
     ) : StoredTypedActionPayload
     data class FishingTown(
         val action: app.spammy.hof.town.fishing.model.FishingAction,
@@ -171,7 +175,14 @@ class StoredTypedAutomationActionCodec(private val objectMapper: ObjectMapper) {
                 )
                 validateBattle(payload.presetId, payload.battleCount, payload.categoryId, payload.mapCode, payload.battleRequest)
             }
-            is StoredTypedActionPayload.BattleMap -> validateBattle(payload.presetId, payload.battleCount, payload.categoryId, payload.mapCode, payload.battleRequest)
+            is StoredTypedActionPayload.BattleMap -> {
+                validateBattle(payload.presetId, payload.battleCount, payload.categoryId, payload.mapCode, payload.battleRequest)
+                require(payload.raidRetransmissionCount >= 0)
+                if (payload.source != BattleAutomationActionSource.RAID_AUTOMATION) {
+                    require(payload.recoveryChainId == null && payload.raidRetransmissionCount == 0)
+                }
+                if (payload.recoveryChainId == null) require(payload.raidRetransmissionCount == 0)
+            }
             is StoredTypedActionPayload.AdventureMap -> validateBattle(payload.presetId, payload.battleCount, payload.categoryId, payload.mapCode, payload.battleRequest)
             is StoredTypedActionPayload.FishingTown -> {
                 require(payload.action in setOf(app.spammy.hof.town.fishing.model.FishingAction.START, app.spammy.hof.town.fishing.model.FishingAction.CATCH))

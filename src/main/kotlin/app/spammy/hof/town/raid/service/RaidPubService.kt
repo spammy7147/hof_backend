@@ -1,6 +1,7 @@
 package app.spammy.hof.town.raid.service
 
 import app.spammy.hof.battle.service.BattleMapService
+import app.spammy.hof.battle.service.CurrentBattleMapObservationStatus
 import app.spammy.hof.battle.model.BattleMapIdentityNormalizer
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
@@ -67,23 +68,31 @@ class RaidPubService(
 
     private fun withBattleAvailability(accountId: Long, snapshot: RaidPubSnapshot): RaidPubSnapshot {
         if (snapshot.raids.none { it.playable && it.joined }) return snapshot
-        val available = battleMaps.findCurrentlyObservedMaps(accountId, "raid")
-            .filter { it.enabled && it.resolved }
+        val current = battleMaps.observeCurrentlyAvailableMaps(accountId, "raid")
+        val available = current.maps
+            .filter { it.resolved && (it.enabled || it.cooldownRemainingSeconds?.let { seconds -> seconds > 0 } == true) }
             .filter { it.mapCode != null }
         val joined = snapshot.raids.filter { it.playable && it.joined }
-        return snapshot.copy(raids = snapshot.raids.map { raid ->
-            if (!raid.playable || !raid.joined) return@map raid.copy(battleTarget = null)
-            val byCode = available.singleOrNull { it.mapCode == raid.id }
-            val raidName = BattleMapIdentityNormalizer.normalize(raid.name)
-            val byName = available.filter { map ->
-                val mapName = BattleMapIdentityNormalizer.normalize(map.name)
-                mapName == raidName || mapName.endsWith(raidName) || raidName.endsWith(mapName)
-            }.singleOrNull()
-            val observed = byCode ?: byName ?: available.singleOrNull()?.takeIf { joined.size == 1 }
-            raid.copy(battleTarget = observed?.mapCode?.let { mapCode ->
-                RaidBattleTarget(mapCode = mapCode, cooldownRemainingSeconds = observed.cooldownRemainingSeconds)
-            })
-        })
+        return snapshot.copy(
+            raids = snapshot.raids.map { raid ->
+                if (!raid.playable || !raid.joined) return@map raid.copy(battleTarget = null)
+                val byCode = available.singleOrNull { it.mapCode == raid.id }
+                val raidName = BattleMapIdentityNormalizer.normalize(raid.name)
+                val byName = available.filter { map ->
+                    val mapName = BattleMapIdentityNormalizer.normalize(map.name)
+                    mapName == raidName || mapName.endsWith(raidName) || raidName.endsWith(mapName)
+                }.singleOrNull()
+                val observed = byCode ?: byName ?: available.singleOrNull()?.takeIf { joined.size == 1 }
+                raid.copy(battleTarget = observed?.mapCode?.let { mapCode ->
+                    RaidBattleTarget(mapCode = mapCode, cooldownRemainingSeconds = observed.cooldownRemainingSeconds)
+                })
+            },
+            battleObservationStatus = when (current.status) {
+                CurrentBattleMapObservationStatus.OBSERVED -> RaidBattleObservationStatus.OBSERVED
+                CurrentBattleMapObservationStatus.ABSENT -> RaidBattleObservationStatus.ABSENT
+                CurrentBattleMapObservationStatus.INCOMPLETE -> RaidBattleObservationStatus.INCOMPLETE
+            },
+        )
     }
 
     private fun rememberAutomationTargets(accountId: Long, snapshot: RaidPubSnapshot) {

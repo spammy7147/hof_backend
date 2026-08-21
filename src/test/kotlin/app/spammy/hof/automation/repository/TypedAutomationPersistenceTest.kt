@@ -18,6 +18,8 @@ import app.spammy.hof.automation.entity.TypedAutomationLifecycle
 import app.spammy.hof.automation.entity.TypedAutomationRuntimeStateEntity
 import app.spammy.hof.automation.entity.UnionAutomationMapEntity
 import app.spammy.hof.automation.raid.JpaRaidCycleStore
+import app.spammy.hof.automation.raid.RaidBattleRecovery
+import app.spammy.hof.automation.raid.RaidBattleRecoveryObservation
 import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
 import app.spammy.hof.automation.raid.RaidCycleTarget
 import app.spammy.hof.automation.outbox.AutomationOutboxService
@@ -203,6 +205,53 @@ class TypedAutomationPersistenceTest {
             RaidAutomationCycleStatus.REGISTERED_WAITING,
             queryRepository.findOpenRaidCycle(account.id)?.status,
         )
+    }
+
+    @Test
+    fun `레이드 전투 복구를 재시작 뒤에도 그대로 복원한다`() {
+        val now = Instant.parse("2026-08-21T00:00:00Z")
+        val account = newAccount("raid-battle-recovery", now)
+        val entry = entryRepository.save(newEntry(account, AutomationType.RAID, priority = 0, now))
+        raidTargetRepository.save(
+            RaidAutomationTargetEntity(
+                entry = entry,
+                raidId = "raid-a",
+                displayName = "레이드 A",
+                presetMode = PresetSelectionMode.PRIMARY,
+                executionOrder = 0,
+            ),
+        )
+        raidCycleStore.open(
+            account.id,
+            entry.id,
+            RaidCycleTarget("raid-a", "레이드 A", PresetSelectionMode.PRIMARY, null, 0, null),
+            now,
+            RaidAutomationCycleStatus.IN_BATTLE,
+        )
+        val expected = RaidBattleRecovery(
+            chainId = "recovery-1",
+            raidId = "raid-a",
+            categoryId = "raid",
+            mapCode = "raid001",
+            originalExecutionIdentity = "execution-1",
+            latestExecutionIdentity = "execution-2",
+            firstAmbiguousAt = now,
+            lastSubmittedAt = now.plusSeconds(300),
+            retransmissionCount = 1,
+            nextCheckAt = now.plusSeconds(600),
+            submittedFromRunnable = true,
+            lastObservation = RaidBattleRecoveryObservation.RESULT_UNOBSERVED,
+        )
+        raidCycleStore.saveBattleRecovery(account.id, "raid-a", expected, now.plusSeconds(301))
+        entityManager.flush()
+        entityManager.clear()
+
+        assertEquals(expected, raidCycleStore.load(account.id).openCycle?.battleRecovery)
+
+        raidCycleStore.clearBattleRecovery(account.id, "raid-a", now.plusSeconds(302))
+        entityManager.flush()
+        entityManager.clear()
+        assertEquals(null, raidCycleStore.load(account.id).openCycle?.battleRecovery)
     }
 
     @Test
