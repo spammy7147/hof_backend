@@ -118,6 +118,7 @@ internal fun QuestMission.displayLabel(): String {
 
 interface QuestAutomationProgressStore {
     fun startNewCycle(accountId: Long, resultId: String, questKey: String): String
+    fun findRecordedBattleVictoryCount(accountId: Long, resultId: String, action: QuestAction.Battle): Int?
     fun recordBattleResult(accountId: Long, resultId: String, action: QuestAction.Battle, victoryCount: Int)
 }
 
@@ -164,6 +165,22 @@ class JpaQuestAutomationProgressStore(
         return resultValue
     }
 
+    @Transactional(readOnly = true)
+    override fun findRecordedBattleVictoryCount(
+        accountId: Long,
+        resultId: String,
+        action: QuestAction.Battle,
+    ): Int? {
+        validateResultIdentity(resultId)
+        val recorded = queryRepository.findQuestProcessedResult(accountId, resultId) ?: return null
+        if (recorded.resultKind != QuestAutomationResultKind.BATTLE_VICTORY) {
+            throw QuestAutomationResultConflictException(resultId)
+        }
+        return (0..action.battleCount).singleOrNull { victoryCount ->
+            recorded.actionFingerprint == battleFingerprint(action, victoryCount)
+        } ?: throw QuestAutomationResultConflictException(resultId)
+    }
+
     @Transactional
     override fun recordBattleResult(
         accountId: Long,
@@ -175,18 +192,7 @@ class JpaQuestAutomationProgressStore(
         require(victoryCount in 0..action.battleCount) {
             "Quest battle victory count must be between zero and the requested battle count."
         }
-        val fingerprint = actionFingerprint(
-            QuestAutomationResultKind.BATTLE_VICTORY,
-            listOf(
-                action.questKey,
-                action.questCycle,
-                action.missionKey,
-                action.categoryId,
-                action.mapCode,
-                action.battleCount.toString(),
-                victoryCount.toString(),
-            ),
-        )
+        val fingerprint = battleFingerprint(action, victoryCount)
         val account = queryRepository.lockAccount(accountId)
         queryRepository.findQuestProcessedResult(accountId, resultId)?.let {
             it.requireReplayMatches(resultId, QuestAutomationResultKind.BATTLE_VICTORY, fingerprint)
@@ -259,17 +265,30 @@ class JpaQuestAutomationProgressStore(
         }
         return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(canonical))
     }
+
+    private fun battleFingerprint(action: QuestAction.Battle, victoryCount: Int) = actionFingerprint(
+        QuestAutomationResultKind.BATTLE_VICTORY,
+        listOf(
+            action.questKey,
+            action.questCycle,
+            action.missionKey,
+            action.categoryId,
+            action.mapCode,
+            action.battleCount.toString(),
+            victoryCount.toString(),
+        ),
+    )
 }
 
 /**
- * Pure quest priority evaluation plus explicit post-success progress callbacks.
- * No network request is made and [evaluate] never writes persistence state.
+ * 일반 퀘스트의 우선순위 판단과 권위 결과 반영을 한 경계에서 처리한다.
+ * 외부 요청은 수행하지 않으며 [evaluate]는 저장 상태를 변경하지 않는다.
  */
 @Service
-class QuestAutomationHandler(
+class DefaultQuestWorkCycleModule(
     private val progressStore: QuestAutomationProgressStore,
     private val timePolicy: BattleTimePolicy = BattleTimePolicy(),
-) : AutomationHandler<QuestAutomationSnapshot> {
+) : QuestWorkCycleModule {
     override fun evaluate(context: QuestAutomationSnapshot): HandlerEvaluation {
         val selections = context.selections
             .asSequence()
@@ -296,16 +315,65 @@ class QuestAutomationHandler(
         return HandlerEvaluation.Skipped
     }
 
-    fun onAcceptSucceeded(accountId: Long, resultId: String, action: QuestAction.Accept): String =
-        progressStore.startNewCycle(accountId, resultId, action.questKey)
-
-    fun onBattleCompleted(
+    override fun recordObservedResult(
         accountId: Long,
-        resultId: String,
-        action: QuestAction.Battle,
-        outcomes: List<BattleAutomationRoundOutcome>,
-    ) {
-        require(outcomes.size == action.battleCount) {
+        attempt: QuestAttempt,
+        observation: QuestResultObservation,
+    ): QuestRecordResult = when (attempt) {
+        is QuestAttempt.Accept -> recordAccept(accountId, attempt, observation)
+        is QuestAttempt.Claim -> recordClaim(attempt, observation)
+        is QuestAttempt.Battle -> recordBattle(accountId, attempt, observation)
+    }
+
+    private fun recordAccept(
+        accountId: Long,
+        attempt: QuestAttempt.Accept,
+        observation: QuestResultObservation,
+    ): QuestRecordResult {
+        val quests = (observation as? QuestResultObservation.Page)?.quests
+            ?: return QuestRecordResult.NeedsRecheck("Quest accept requires an authoritative quest page.")
+        val quest = quests.singleOrNull { it.questKey == attempt.questKey }
+            ?: return QuestRecordResult.NeedsRecheck(
+                "Quest ${attempt.questKey} is absent from the authoritative page.",
+            )
+        return when {
+            quest.state in setOf(QuestState.ACTIVE, QuestState.CLAIMABLE, QuestState.COMPLETED) ->
+                QuestRecordResult.Recorded(
+                    progressStore.startNewCycle(accountId, attempt.resultIdentity, attempt.questKey),
+                )
+            quest.state == QuestState.AVAILABLE && quest.actionNo == attempt.actionNo ->
+                QuestRecordResult.NotApplied("Quest accept is still available with the same action.")
+            else -> QuestRecordResult.NeedsRecheck("Quest accept outcome is not yet authoritative.")
+        }
+    }
+
+    private fun recordClaim(
+        attempt: QuestAttempt.Claim,
+        observation: QuestResultObservation,
+    ): QuestRecordResult {
+        val quests = (observation as? QuestResultObservation.Page)?.quests
+            ?: return QuestRecordResult.NeedsRecheck("Quest claim requires an authoritative quest page.")
+        val quest = quests.singleOrNull { it.questKey == attempt.questKey }
+            ?: return QuestRecordResult.Recorded()
+        return when {
+            quest.state == QuestState.COMPLETED -> QuestRecordResult.Recorded()
+            quest.state == QuestState.CLAIMABLE && quest.actionNo == attempt.actionNo ->
+                QuestRecordResult.NotApplied("Quest reward is still claimable with the same action.")
+            else -> QuestRecordResult.NeedsRecheck("Quest claim outcome is not yet authoritative.")
+        }
+    }
+
+    private fun recordBattle(
+        accountId: Long,
+        attempt: QuestAttempt.Battle,
+        observation: QuestResultObservation,
+    ): QuestRecordResult {
+        if (observation is QuestResultObservation.Page) {
+            return recordBattleFromQuestPage(accountId, attempt, observation.quests)
+        }
+        val outcomes = (observation as? QuestResultObservation.BattleRounds)?.outcomes
+            ?: return QuestRecordResult.NeedsRecheck("Quest battle requires a result observation.")
+        require(outcomes.size == attempt.action.battleCount) {
             "Quest battle result count must match the requested battle count."
         }
         require(outcomes.all {
@@ -317,10 +385,56 @@ class QuestAutomationHandler(
         }
         progressStore.recordBattleResult(
             accountId,
-            resultId,
-            action,
+            attempt.resultIdentity,
+            attempt.action,
             outcomes.count { it == BattleAutomationRoundOutcome.VICTORY },
         )
+        return QuestRecordResult.Recorded()
+    }
+
+    private fun recordBattleFromQuestPage(
+        accountId: Long,
+        attempt: QuestAttempt.Battle,
+        quests: List<QuestSnapshot>,
+    ): QuestRecordResult {
+        val action = attempt.action
+        progressStore.findRecordedBattleVictoryCount(accountId, attempt.resultIdentity, action)?.let {
+            return QuestRecordResult.Recorded()
+        }
+        val baseline = action.missionCurrent
+            ?: return QuestRecordResult.NeedsRecheck("Stored quest battle has no pre-submit mission progress.")
+        val quest = quests.singleOrNull { it.questKey == action.questKey }
+            ?: return QuestRecordResult.NeedsRecheck(
+                "Quest ${action.questKey} is absent from the authoritative page.",
+            )
+        val observed = (
+            quest.missions.singleOrNull { it.key == action.missionKey }?.progress?.current
+                ?: if (quest.state in setOf(QuestState.CLAIMABLE, QuestState.COMPLETED)) {
+                    action.missionRequired
+                } else {
+                    null
+                }
+            )
+            ?: return QuestRecordResult.NeedsRecheck(
+                "Quest mission ${action.missionKey} progress is not authoritative yet.",
+            )
+        val advancement = observed - baseline
+        if (advancement !in 1..action.battleCount) {
+            return QuestRecordResult.NeedsRecheck(
+                if (advancement == 0) {
+                    "Quest battle may have completed without mission progress; it will not be resent."
+                } else {
+                    "Quest mission progress does not safely bind the stored battle batch."
+                },
+            )
+        }
+        progressStore.recordBattleResult(
+            accountId,
+            attempt.resultIdentity,
+            action,
+            advancement,
+        )
+        return QuestRecordResult.Recorded()
     }
 
     private fun evaluateCombat(

@@ -27,9 +27,9 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.test.context.ActiveProfiles
 
-class QuestAutomationHandlerTest {
+class QuestWorkCycleModuleTest {
     private val progress = RecordingProgressStore()
-    private val handler = QuestAutomationHandler(progress)
+    private val handler = DefaultQuestWorkCycleModule(progress)
 
     @Test
     fun `quest battle map follows shared 100 and 300 TIME rules`() {
@@ -576,23 +576,159 @@ class QuestAutomationHandlerTest {
 
     @Test
     fun acceptSuccessStartsNewCycleAndBattleResultRecordsOnlyVictories() {
-        val first = QuestAction.Accept("q", "accept")
-        assertEquals("1", handler.onAcceptSucceeded(ACCOUNT_ID, "accept-result-1", first))
-        assertEquals("2", handler.onAcceptSucceeded(ACCOUNT_ID, "accept-result-2", first))
-
-        val action = QuestAction.Battle("q", "2", "kill", QuestMissionType.MONSTER_KILL, "battle_map", "chosen", "Chosen", QuestPresetSelection(PresetSelectionMode.PRIMARY), 3)
-        handler.onBattleCompleted(
-            ACCOUNT_ID,
-            "battle-result-1",
-            action,
-            listOf(
-                BattleAutomationRoundOutcome.VICTORY,
-                BattleAutomationRoundOutcome.DEFEAT,
-                BattleAutomationRoundOutcome.VICTORY,
-            ),
+        val page = QuestResultObservation.Page(
+            listOf(quest("q", QuestState.ACTIVE, 0, immediate())),
+        )
+        assertEquals(
+            "1",
+            assertIs<QuestRecordResult.Recorded>(
+                handler.recordObservedResult(
+                    ACCOUNT_ID,
+                    QuestAttempt.Accept("accept-result-1", "q", "accept"),
+                    page,
+                ),
+            ).questCycle,
+        )
+        assertEquals(
+            "2",
+            assertIs<QuestRecordResult.Recorded>(
+                handler.recordObservedResult(
+                    ACCOUNT_ID,
+                    QuestAttempt.Accept("accept-result-2", "q", "accept"),
+                    page,
+                ),
+            ).questCycle,
         )
 
+        val action = QuestAction.Battle("q", "2", "kill", QuestMissionType.MONSTER_KILL, "battle_map", "chosen", "Chosen", QuestPresetSelection(PresetSelectionMode.PRIMARY), 3)
+        assertIs<QuestRecordResult.Recorded>(handler.recordObservedResult(
+            ACCOUNT_ID,
+            QuestAttempt.Battle("battle-result-1", action),
+            QuestResultObservation.BattleRounds(
+                listOf(
+                    BattleAutomationRoundOutcome.VICTORY,
+                    BattleAutomationRoundOutcome.DEFEAT,
+                    BattleAutomationRoundOutcome.VICTORY,
+                ),
+            ),
+        ))
+
         assertEquals(listOf(action to 2), progress.results)
+    }
+
+    @Test
+    fun `수락과 보상은 권위 퀘스트 상태가 적용을 증명할 때만 기록한다`() {
+        val accept = QuestAttempt.Accept("accept-result", "q", "q-action")
+
+        assertIs<QuestRecordResult.NotApplied>(
+            handler.recordObservedResult(
+                ACCOUNT_ID,
+                accept,
+                QuestResultObservation.Page(listOf(quest("q", QuestState.AVAILABLE, 0, immediate()))),
+            ),
+        )
+        assertNull(progress.cycles[ACCOUNT_ID to "q"])
+
+        assertIs<QuestRecordResult.NeedsRecheck>(
+            handler.recordObservedResult(
+                ACCOUNT_ID,
+                accept,
+                QuestResultObservation.Page(emptyList()),
+            ),
+        )
+        assertNull(progress.cycles[ACCOUNT_ID to "q"])
+
+        assertEquals(
+            "1",
+            assertIs<QuestRecordResult.Recorded>(
+                handler.recordObservedResult(
+                    ACCOUNT_ID,
+                    accept,
+                    QuestResultObservation.Page(listOf(quest("q", QuestState.ACTIVE, 0, immediate()))),
+                ),
+            ).questCycle,
+        )
+
+        val claim = QuestAttempt.Claim("claim-result", "q", "q-action")
+        assertIs<QuestRecordResult.NotApplied>(
+            handler.recordObservedResult(
+                ACCOUNT_ID,
+                claim,
+                QuestResultObservation.Page(listOf(quest("q", QuestState.CLAIMABLE, 0, immediate()))),
+            ),
+        )
+        assertIs<QuestRecordResult.Recorded>(
+            handler.recordObservedResult(
+                ACCOUNT_ID,
+                claim,
+                QuestResultObservation.Page(emptyList()),
+            ),
+        )
+    }
+
+    @Test
+    fun `불명확한 전투는 권위 mission 증가분이 저장 batch에 맞을 때만 결과를 기록한다`() {
+        val action = QuestAction.Battle(
+            questKey = "q",
+            questCycle = "3",
+            missionKey = "kill",
+            missionType = QuestMissionType.MONSTER_KILL,
+            categoryId = "battle_map",
+            mapCode = "chosen",
+            mapName = "Chosen",
+            preset = QuestPresetSelection(PresetSelectionMode.PRIMARY),
+            battleCount = 3,
+            missionCurrent = 2,
+            missionRequired = 8,
+        )
+        val attempt = QuestAttempt.Battle("battle-execution", action)
+
+        assertIs<QuestRecordResult.Recorded>(
+            handler.recordObservedResult(
+                ACCOUNT_ID,
+                attempt,
+                QuestResultObservation.Page(
+                    listOf(
+                        quest(
+                            "q",
+                            QuestState.ACTIVE,
+                            0,
+                            QuestMission(
+                                "kill",
+                                QuestMissionType.MONSTER_KILL,
+                                "monster",
+                                QuestProgress(4, 8),
+                                false,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        assertEquals(listOf(action to 2), progress.results)
+
+        assertIs<QuestRecordResult.NeedsRecheck>(
+            handler.recordObservedResult(
+                ACCOUNT_ID,
+                attempt.copy(resultIdentity = "unchanged"),
+                QuestResultObservation.Page(
+                    listOf(
+                        quest(
+                            "q",
+                            QuestState.ACTIVE,
+                            0,
+                            QuestMission(
+                                "kill",
+                                QuestMissionType.MONSTER_KILL,
+                                "monster",
+                                QuestProgress(2, 8),
+                                false,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
     }
 
     @Test
@@ -608,9 +744,15 @@ class QuestAutomationHandlerTest {
         )
         assertEquals("second", battle(handler.evaluate(old)).mapCode)
 
-        val newCycle = handler.onAcceptSucceeded(ACCOUNT_ID, "repeat-result", QuestAction.Accept("q", "accept"))
+        val newCycle = assertIs<QuestRecordResult.Recorded>(
+            handler.recordObservedResult(
+                ACCOUNT_ID,
+                QuestAttempt.Accept("repeat-result", "q", "accept"),
+                QuestResultObservation.Page(listOf(quest("q", QuestState.ACTIVE, 0, immediate()))),
+            ),
+        ).questCycle
         assertEquals("9", newCycle)
-        assertEquals("first", battle(handler.evaluate(old.copy(currentCycles = mapOf("q" to newCycle), counters = emptyMap()))).mapCode)
+        assertEquals("first", battle(handler.evaluate(old.copy(currentCycles = mapOf("q" to requireNotNull(newCycle)), counters = emptyMap()))).mapCode)
     }
 
     private fun combatSnapshot(map: QuestAutomationMapSelection) = snapshot(
@@ -691,6 +833,11 @@ class QuestAutomationHandlerTest {
             val key = accountId to questKey
             return ((cycles[key]?.toLongOrNull() ?: 0) + 1).toString().also { cycles[key] = it }
         }
+        override fun findRecordedBattleVictoryCount(
+            accountId: Long,
+            resultId: String,
+            action: QuestAction.Battle,
+        ): Int? = null
         override fun recordBattleResult(accountId: Long, resultId: String, action: QuestAction.Battle, victoryCount: Int) {
             results += action to victoryCount
         }
@@ -709,6 +856,7 @@ class QuestAutomationProgressStorePersistenceTest {
     @Autowired private lateinit var progressStore: JpaQuestAutomationProgressStore
     @Autowired private lateinit var queryRepository: TypedAutomationQueryRepository
     @Autowired private lateinit var dailyRepository: BattleAutomationDailyProgressCommandRepository
+    @Autowired private lateinit var questWorkCycle: QuestWorkCycleModule
 
     @Test
     fun cyclesAdvanceAndConcurrentVictoriesIncrementOnlyQuestCounter() {
@@ -759,6 +907,71 @@ class QuestAutomationProgressStorePersistenceTest {
 
         assertEquals(setOf("1"), futures.map { it.get() }.toSet())
         assertEquals(1L, queryRepository.findQuestCycle(account.id, "repeat-q")?.currentCycle)
+    }
+
+    @Test
+    fun `정상 전투 기록 뒤 같은 stored action을 재조정해도 counter는 한 번만 반영된다`() {
+        val account = accountRepository.save(
+            HofAccountEntity(loginId = "quest-reconcile-${System.nanoTime()}", encryptedPassword = "encrypted", createdAt = NOW),
+        )
+        val action = battleAction(cycle = "1", mapCode = "chosen", battleCount = 3).copy(
+            missionCurrent = 2,
+            missionRequired = 8,
+        )
+        val attempt = QuestAttempt.Battle("stable-execution-identity", action)
+
+        assertIs<QuestRecordResult.Recorded>(
+            questWorkCycle.recordObservedResult(
+                account.id,
+                attempt,
+                QuestResultObservation.BattleRounds(
+                    listOf(
+                        BattleAutomationRoundOutcome.VICTORY,
+                        BattleAutomationRoundOutcome.DEFEAT,
+                        BattleAutomationRoundOutcome.VICTORY,
+                    ),
+                ),
+            ),
+        )
+        assertIs<QuestRecordResult.Recorded>(
+            questWorkCycle.recordObservedResult(
+                account.id,
+                attempt,
+                QuestResultObservation.Page(
+                    listOf(
+                        QuestSnapshot(
+                            questKey = action.questKey,
+                            name = action.questKey,
+                            state = QuestState.ACTIVE,
+                            section = QuestSection.ACTIVE,
+                            sourceOrder = 0,
+                            missions = listOf(
+                                QuestMission(
+                                    key = action.missionKey,
+                                    type = action.missionType,
+                                    target = null,
+                                    progress = QuestProgress(4, 8),
+                                    completable = false,
+                                ),
+                            ),
+                            actionNo = null,
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        assertEquals(
+            2,
+            queryRepository.findQuestMapWins(
+                account.id,
+                action.questKey,
+                action.questCycle,
+                action.missionKey,
+                action.categoryId,
+                action.mapCode,
+            ),
+        )
     }
 
     @Test

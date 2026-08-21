@@ -93,7 +93,7 @@ class UnifiedAutomationActionLifecycleModule(
     private val workOwnership: AutomationWorkOwnership,
     private val homeService: HomeService,
     private val questGateway: QuestGatewayService,
-    private val questHandler: QuestAutomationHandler,
+    private val questWorkCycle: QuestWorkCycleModule,
     private val battleSubmission: AutomationBattleSubmission,
     private val battleHandler: BattleMapAutomationHandler,
     private val battleOutcomeReconciler: BattleOutcomeReconciler,
@@ -321,13 +321,15 @@ class UnifiedAutomationActionLifecycleModule(
                 override val descriptor = payload.questDescriptor()
 
                 override fun execute(): TypedAutomationExecution {
-                    runMutation(accountId, "Quest") {
+                    val quests = runMutation(accountId, "Quest") {
                         questGateway.accept(accountId, payload.actionNo, HofRequestOrigin.AUTOMATION)
                     }
-                    questHandler.onAcceptSucceeded(
-                        accountId,
-                        stored.executionIdentity,
-                        QuestAction.Accept(payload.questKey, payload.actionNo),
+                    requireRecordedQuestResult(
+                        recordQuestResultAfterSubmission(
+                            accountId,
+                            QuestAttempt.Accept(stored.executionIdentity, payload.questKey, payload.actionNo),
+                            QuestResultObservation.Page(quests),
+                        ),
                     )
                     return TypedAutomationExecution.Completed
                 }
@@ -340,13 +342,21 @@ class UnifiedAutomationActionLifecycleModule(
                 override val descriptor = payload.questDescriptor()
 
                 override fun execute(): TypedAutomationExecution {
-                    runMutation(accountId, "Quest") {
+                    val quests = runMutation(accountId, "Quest") {
                         questGateway.claim(accountId, payload.actionNo, HofRequestOrigin.AUTOMATION)
                     }
+                    requireRecordedQuestResult(
+                        recordQuestResultAfterSubmission(
+                            accountId,
+                            QuestAttempt.Claim(stored.executionIdentity, payload.questKey, payload.actionNo),
+                            QuestResultObservation.Page(quests),
+                        ),
+                    )
                     return TypedAutomationExecution.Completed
                 }
 
-                override fun reconcile(): AmbiguousActionResolution = reconcileQuestClaim(accountId, payload)
+                override fun reconcile(): AmbiguousActionResolution =
+                    reconcileQuestClaim(accountId, stored.executionIdentity, payload)
             }
             is StoredTypedActionPayload.QuestBattle -> object : ManagedAutomationAction {
                 override val storedAction = stored
@@ -354,7 +364,7 @@ class UnifiedAutomationActionLifecycleModule(
 
                 override fun execute(): TypedAutomationExecution = executeQuestBattle(accountId, stored, payload)
 
-                override fun reconcile(): AmbiguousActionResolution = reconcileQuestBattle(accountId, payload)
+                override fun reconcile(): AmbiguousActionResolution = reconcileQuestBattle(accountId, stored, payload)
             }
             is StoredTypedActionPayload.BattleMap -> {
                 require(payload.source in MANAGED_BATTLE_MAP_SOURCES) {
@@ -616,72 +626,68 @@ class UnifiedAutomationActionLifecycleModule(
         executionIdentity: String,
         payload: StoredTypedActionPayload.QuestAccept,
     ): AmbiguousActionResolution {
-        val quest = sessionRecovery.execute(accountId) {
+        val quests = sessionRecovery.execute(accountId) {
             questGateway.load(accountId, HofRequestOrigin.AUTOMATION)
-        }.singleOrNull { it.questKey == payload.questKey }
-            ?: return verifyLater("Quest ${payload.questKey} is absent from the authoritative page.")
-        return when {
-            quest.state in setOf(
-                app.spammy.hof.quest.model.QuestState.ACTIVE,
-                app.spammy.hof.quest.model.QuestState.CLAIMABLE,
-                app.spammy.hof.quest.model.QuestState.COMPLETED,
-            ) -> {
-                questHandler.onAcceptSucceeded(
-                    accountId,
-                    executionIdentity,
-                    QuestAction.Accept(payload.questKey, payload.actionNo),
-                )
-                AmbiguousActionResolution.Applied()
-            }
-            quest.state == app.spammy.hof.quest.model.QuestState.AVAILABLE && quest.actionNo == payload.actionNo ->
-                AmbiguousActionResolution.Resubmit
-            else -> verifyLater("Quest accept outcome is not yet authoritative.")
         }
+        return questWorkCycle.recordObservedResult(
+            accountId,
+            QuestAttempt.Accept(executionIdentity, payload.questKey, payload.actionNo),
+            QuestResultObservation.Page(quests),
+        ).toAmbiguousResolution()
     }
 
     private fun reconcileQuestClaim(
         accountId: Long,
+        executionIdentity: String,
         payload: StoredTypedActionPayload.QuestClaim,
     ): AmbiguousActionResolution {
-        val quest = sessionRecovery.execute(accountId) {
+        val quests = sessionRecovery.execute(accountId) {
             questGateway.load(accountId, HofRequestOrigin.AUTOMATION)
-        }.singleOrNull { it.questKey == payload.questKey }
-            ?: return AmbiguousActionResolution.Applied()
-        return when {
-            quest.state == app.spammy.hof.quest.model.QuestState.COMPLETED ->
-                AmbiguousActionResolution.Applied()
-            quest.state == app.spammy.hof.quest.model.QuestState.CLAIMABLE && quest.actionNo == payload.actionNo ->
-                AmbiguousActionResolution.Resubmit
-            else -> verifyLater("Quest claim outcome is not yet authoritative.")
         }
+        return questWorkCycle.recordObservedResult(
+            accountId,
+            QuestAttempt.Claim(executionIdentity, payload.questKey, payload.actionNo),
+            QuestResultObservation.Page(quests),
+        ).toAmbiguousResolution()
     }
 
     private fun reconcileQuestBattle(
         accountId: Long,
+        stored: StoredTypedAutomationAction,
         payload: StoredTypedActionPayload.QuestBattle,
     ): AmbiguousActionResolution {
-        val quest = sessionRecovery.execute(accountId) {
-            questGateway.load(accountId, HofRequestOrigin.AUTOMATION)
-        }.singleOrNull { it.questKey == payload.questKey }
-            ?: return verifyLater("Quest ${payload.questKey} is absent from the authoritative page.")
-        if (quest.state in setOf(
-                app.spammy.hof.quest.model.QuestState.CLAIMABLE,
-                app.spammy.hof.quest.model.QuestState.COMPLETED,
-            )
-        ) {
-            return appliedQuestBattle(payload)
-        }
-        val mission = quest.missions.singleOrNull { it.key == payload.missionKey }
-            ?: return verifyLater("Quest mission ${payload.missionKey} is absent from the authoritative page.")
-        val current = mission.progress?.current
-            ?: return verifyLater("Quest mission progress is not authoritative yet.")
-        val baseline = payload.observedCurrent
-            ?: return verifyLater("Stored quest mission has no pre-submit progress.")
-        return when {
-            current > baseline -> appliedQuestBattle(payload)
-            current == baseline && quest.state == app.spammy.hof.quest.model.QuestState.ACTIVE ->
-                verifyLater("Quest battle may have completed without mission progress; it will not be resent.")
-            else -> verifyLater("Quest battle outcome is not yet authoritative.")
+        val probe = payload.toBattleProbe(accountId, stored.executionIdentity)
+        return when (val reconciliation = battleOutcomeReconciler.reloadRecentAuthoritativeEvidence(probe)) {
+            is BattleOutcomeReconciliation.Proven -> {
+                val evidence = reconciliation.evidence
+                if (!evidence.binds(probe) || !evidence.isCompleteTerminal()) {
+                    verifyLater("다시 읽은 퀘스트 전투 결과가 저장 행동과 정확히 일치하지 않습니다.")
+                } else {
+                    when (val result = questWorkCycle.recordObservedResult(
+                        accountId,
+                        QuestAttempt.Battle(stored.executionIdentity, payload.toQuestAction()),
+                        QuestResultObservation.BattleRounds(evidence.outcomes),
+                    )) {
+                        is QuestRecordResult.Recorded -> appliedQuestBattle(payload)
+                        is QuestRecordResult.NotApplied -> verifyLater(result.message)
+                        is QuestRecordResult.NeedsRecheck -> verifyLater(result.message)
+                    }
+                }
+            }
+            is BattleOutcomeReconciliation.Unproven -> {
+                val quests = sessionRecovery.execute(accountId) {
+                    questGateway.load(accountId, HofRequestOrigin.AUTOMATION)
+                }
+                when (val result = questWorkCycle.recordObservedResult(
+                    accountId,
+                    QuestAttempt.Battle(stored.executionIdentity, payload.toQuestAction()),
+                    QuestResultObservation.Page(quests),
+                )) {
+                    is QuestRecordResult.Recorded -> appliedQuestBattle(payload)
+                    is QuestRecordResult.NotApplied -> verifyLater(result.message)
+                    is QuestRecordResult.NeedsRecheck -> verifyLater(result.message)
+                }
+            }
         }
     }
 
@@ -1254,25 +1260,53 @@ class UnifiedAutomationActionLifecycleModule(
             return TypedAutomationExecution.SharedCooldown(payload.categoryId, payload.mapCode, submission.retryAt)
         }
         submission as AutomationBattleSubmissionResult.Completed
-        questHandler.onBattleCompleted(
-            accountId,
-            submission.resultIdentity,
-            QuestAction.Battle(
-                payload.questKey,
-                payload.questCycle,
-                payload.missionKey,
-                payload.missionType,
-                payload.categoryId,
-                payload.mapCode,
-                payload.mapCode,
-                QuestPresetSelection(payload.presetMode, payload.presetId),
-                payload.battleCount,
+        requireRecordedQuestResult(
+            recordQuestResultAfterSubmission(
+                accountId,
+                QuestAttempt.Battle(
+                    stored.executionIdentity,
+                    payload.toQuestAction(),
+                ),
+                QuestResultObservation.BattleRounds(submission.outcomes),
             ),
-            submission.outcomes,
         )
         emitBattleSignals(accountId, BattleAutomationActionSource.QUEST_AUTOMATION, submission)
         return TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode)
     }
+
+    private fun StoredTypedActionPayload.QuestBattle.toQuestAction() = QuestAction.Battle(
+        questKey = questKey,
+        questCycle = questCycle,
+        missionKey = missionKey,
+        missionType = missionType,
+        categoryId = categoryId,
+        mapCode = mapCode,
+        mapName = display?.mapName ?: mapCode,
+        preset = QuestPresetSelection(presetMode, presetId),
+        battleCount = battleCount,
+        questName = display?.questName,
+        missionLabel = display?.missionLabel,
+        missionCurrent = observedCurrent,
+        missionRequired = observedRequired,
+    )
+
+    private fun StoredTypedActionPayload.QuestBattle.toBattleProbe(
+        accountId: Long,
+        executionIdentity: String,
+    ) = BattleMapAutomationAction(
+        accountId = accountId,
+        progressDate = timeProvider.now().atZone(java.time.ZoneId.of("Asia/Seoul")).toLocalDate(),
+        categoryId = categoryId,
+        mapCode = mapCode,
+        presetMode = presetMode,
+        presetId = presetId,
+        battleCount = battleCount,
+        executionIdentity = executionIdentity,
+        source = BattleAutomationActionSource.QUEST_AUTOMATION,
+        resolvedParty = ResolvedAutomationParty(battleRequest.characterIds, battleRequest.patternLoads),
+        mapName = display?.mapName,
+        sourceTargetKey = questKey,
+    )
 
     private fun emitBattleSignals(
         accountId: Long,
@@ -1336,6 +1370,37 @@ class UnifiedAutomationActionLifecycleModule(
         timeProvider.now().plusSeconds(10),
         reason,
     )
+
+    private fun QuestRecordResult.toAmbiguousResolution(): AmbiguousActionResolution = when (this) {
+        is QuestRecordResult.Recorded -> AmbiguousActionResolution.Applied()
+        is QuestRecordResult.NotApplied -> AmbiguousActionResolution.Resubmit
+        is QuestRecordResult.NeedsRecheck -> verifyLater(message)
+    }
+
+    private fun requireRecordedQuestResult(result: QuestRecordResult) {
+        if (result is QuestRecordResult.Recorded) return
+        val message = when (result) {
+            is QuestRecordResult.NotApplied -> result.message
+            is QuestRecordResult.NeedsRecheck -> result.message
+            is QuestRecordResult.Recorded -> error("unreachable")
+        }
+        throw AmbiguousAutomationSubmissionException(
+            "$message The quest action will be reconciled before any retry.",
+        )
+    }
+
+    private fun recordQuestResultAfterSubmission(
+        accountId: Long,
+        attempt: QuestAttempt,
+        observation: QuestResultObservation,
+    ): QuestRecordResult = try {
+        questWorkCycle.recordObservedResult(accountId, attempt, observation)
+    } catch (error: Throwable) {
+        throw AmbiguousAutomationSubmissionException(
+            "The HOF quest response was observed, but local cycle recording must be reconciled.",
+            error,
+        )
+    }
 
     private fun <T> runMutation(accountId: Long, family: String, operation: () -> T): T =
         try {

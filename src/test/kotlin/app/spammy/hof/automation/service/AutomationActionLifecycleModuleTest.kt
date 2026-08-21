@@ -64,7 +64,10 @@ class AutomationActionLifecycleModuleTest {
     private val accountService = Mockito.mock(HofAccountService::class.java)
     private val home = Mockito.mock(HomeService::class.java)
     private val questGateway = Mockito.mock(QuestGatewayService::class.java)
-    private val questHandler = Mockito.mock(QuestAutomationHandler::class.java)
+    private val questWorkCycle = Mockito.mock(QuestWorkCycleModule::class.java) { invocation ->
+        if (invocation.method.name == "recordObservedResult") QuestRecordResult.Recorded()
+        else Mockito.RETURNS_DEFAULTS.answer(invocation)
+    }
     private val fishingService = Mockito.mock(FishingService::class.java)
     private val battleRun = Mockito.mock(BattleRunService::class.java)
     private val battleOutcome = Mockito.mock(BattleOutcomeReconciler::class.java)
@@ -84,7 +87,7 @@ class AutomationActionLifecycleModuleTest {
         workOwnership = workOwnership,
         homeService = home,
         questGateway = questGateway,
-        questHandler = questHandler,
+        questWorkCycle = questWorkCycle,
         battleSubmission = battleSubmission,
         battleHandler = battleHandler,
         battleOutcomeReconciler = battleOutcome,
@@ -170,6 +173,9 @@ class AutomationActionLifecycleModuleTest {
     @Test
     fun `일반 퀘스트 수락을 저장하고 같은 descriptor와 작업 귀속을 사용한다`() {
         val action = QuestAction.Accept("quest-1", "accept-1", "첫 번째 퀘스트")
+        val observed = listOf(quest(QuestState.ACTIVE, null))
+        Mockito.`when`(questGateway.accept(7L, "accept-1", HofRequestOrigin.AUTOMATION))
+            .thenReturn(observed)
 
         val managed = assertNotNull(module.prepare(7L, 12L, action))
 
@@ -192,16 +198,19 @@ class AutomationActionLifecycleModuleTest {
         )
         assertEquals(TypedAutomationExecution.Completed, managed.execute())
         Mockito.verify(questGateway).accept(7L, "accept-1", HofRequestOrigin.AUTOMATION)
-        Mockito.verify(questHandler).onAcceptSucceeded(
+        Mockito.verify(questWorkCycle).recordObservedResult(
             7L,
-            managed.storedAction.executionIdentity,
-            QuestAction.Accept("quest-1", "accept-1"),
+            QuestAttempt.Accept(managed.storedAction.executionIdentity, "quest-1", "accept-1"),
+            QuestResultObservation.Page(observed),
         )
     }
 
     @Test
     fun `일반 퀘스트 보상 수령을 저장하고 정확히 한 번 실행한다`() {
         val action = QuestAction.Claim("quest-1", "claim-1", "첫 번째 퀘스트")
+        val observed = emptyList<QuestSnapshot>()
+        Mockito.`when`(questGateway.claim(7L, "claim-1", HofRequestOrigin.AUTOMATION))
+            .thenReturn(observed)
 
         val managed = assertNotNull(module.prepare(7L, 12L, action))
 
@@ -217,6 +226,65 @@ class AutomationActionLifecycleModuleTest {
         assertEquals("퀘스트 보상 수령 · 첫 번째 퀘스트", managed.descriptor.context)
         assertEquals(TypedAutomationExecution.Completed, managed.execute())
         Mockito.verify(questGateway).claim(7L, "claim-1", HofRequestOrigin.AUTOMATION)
+        Mockito.verify(questWorkCycle).recordObservedResult(
+            7L,
+            QuestAttempt.Claim(managed.storedAction.executionIdentity, "quest-1", "claim-1"),
+            QuestResultObservation.Page(observed),
+        )
+    }
+
+    @Test
+    fun `일반 퀘스트 응답이 적용을 증명하지 못하면 완료하지 않고 조정으로 전환한다`() {
+        val managed = assertNotNull(
+            module.prepare(7L, 12L, QuestAction.Accept("quest-1", "accept-1")),
+        )
+        val observed = listOf(quest(QuestState.AVAILABLE, "accept-1"))
+        val attempt = QuestAttempt.Accept(
+            managed.storedAction.executionIdentity,
+            "quest-1",
+            "accept-1",
+        )
+        Mockito.`when`(questGateway.accept(7L, "accept-1", HofRequestOrigin.AUTOMATION))
+            .thenReturn(observed)
+        Mockito.`when`(
+            questWorkCycle.recordObservedResult(
+                7L,
+                attempt,
+                QuestResultObservation.Page(observed),
+            ),
+        ).thenReturn(QuestRecordResult.NotApplied("still available"))
+
+        assertFailsWith<AmbiguousAutomationSubmissionException> { managed.execute() }
+
+        Mockito.verify(questGateway, Mockito.times(1))
+            .accept(7L, "accept-1", HofRequestOrigin.AUTOMATION)
+    }
+
+    @Test
+    fun `퀘스트 원격 적용 뒤 로컬 cycle 기록 실패는 저장 action 조정으로 전환한다`() {
+        val managed = assertNotNull(
+            module.prepare(7L, 12L, QuestAction.Accept("quest-1", "accept-1")),
+        )
+        val observed = listOf(quest(QuestState.ACTIVE, null))
+        val attempt = QuestAttempt.Accept(
+            managed.storedAction.executionIdentity,
+            "quest-1",
+            "accept-1",
+        )
+        Mockito.`when`(questGateway.accept(7L, "accept-1", HofRequestOrigin.AUTOMATION))
+            .thenReturn(observed)
+        Mockito.`when`(
+            questWorkCycle.recordObservedResult(
+                7L,
+                attempt,
+                QuestResultObservation.Page(observed),
+            ),
+        ).thenThrow(IllegalStateException("cycle store unavailable"))
+
+        assertFailsWith<AmbiguousAutomationSubmissionException> { managed.execute() }
+
+        Mockito.verify(questGateway, Mockito.times(1))
+            .accept(7L, "accept-1", HofRequestOrigin.AUTOMATION)
     }
 
     @Test
@@ -229,6 +297,11 @@ class AutomationActionLifecycleModuleTest {
             listOf(quest(QuestState.CLAIMABLE, "claim-1")),
             listOf(quest(QuestState.ACTIVE, null)),
         )
+        Mockito.doReturn(
+            QuestRecordResult.Recorded(),
+            QuestRecordResult.NotApplied("still claimable"),
+            QuestRecordResult.NeedsRecheck("not authoritative"),
+        ).`when`(questWorkCycle).recordObservedResult(Mockito.eq(7L), anyQuestAttempt(), anyQuestObservation())
 
         assertIs<AmbiguousActionResolution.Applied>(managed.reconcile())
         assertIs<AmbiguousActionResolution.Resubmit>(managed.reconcile())
@@ -246,12 +319,17 @@ class AutomationActionLifecycleModuleTest {
             listOf(quest(QuestState.AVAILABLE, "accept-1")),
             listOf(quest(QuestState.UNAVAILABLE, null)),
         )
+        Mockito.doReturn(
+            QuestRecordResult.Recorded("1"),
+            QuestRecordResult.NotApplied("still available"),
+            QuestRecordResult.NeedsRecheck("not authoritative"),
+        ).`when`(questWorkCycle).recordObservedResult(Mockito.eq(7L), anyQuestAttempt(), anyQuestObservation())
 
         assertIs<AmbiguousActionResolution.Applied>(managed.reconcile())
-        Mockito.verify(questHandler).onAcceptSucceeded(
+        Mockito.verify(questWorkCycle).recordObservedResult(
             7L,
-            managed.storedAction.executionIdentity,
-            QuestAction.Accept("quest-1", "accept-1"),
+            QuestAttempt.Accept(managed.storedAction.executionIdentity, "quest-1", "accept-1"),
+            QuestResultObservation.Page(listOf(quest(QuestState.ACTIVE, null))),
         )
         assertIs<AmbiguousActionResolution.Resubmit>(managed.reconcile())
         assertIs<AmbiguousActionResolution.VerifyLater>(managed.reconcile())
@@ -341,30 +419,38 @@ class AutomationActionLifecycleModuleTest {
                 observedRequired = 5,
             ),
         )
-        Mockito.verify(questHandler).onBattleCompleted(
+        Mockito.verify(questWorkCycle).recordObservedResult(
             7L,
-            managed.storedAction.executionIdentity,
-            QuestAction.Battle(
-                "quest-1",
-                "2",
-                "kill-slime",
-                QuestMissionType.MONSTER_KILL,
-                "battle_map",
-                "map-1",
-                "map-1",
-                QuestPresetSelection(PresetSelectionMode.PRIMARY, 301L),
-                3,
+            QuestAttempt.Battle(
+                managed.storedAction.executionIdentity,
+                QuestAction.Battle(
+                    "quest-1",
+                    "2",
+                    "kill-slime",
+                    QuestMissionType.MONSTER_KILL,
+                    "battle_map",
+                    "map-1",
+                    "슬라임 동굴",
+                    QuestPresetSelection(PresetSelectionMode.PRIMARY, 301L),
+                    3,
+                    questName = "첫 번째 퀘스트",
+                    missionLabel = "몬스터 처치 · 슬라임",
+                    missionCurrent = 2,
+                    missionRequired = 5,
+                ),
             ),
-            listOf(
-                BattleAutomationRoundOutcome.VICTORY,
-                BattleAutomationRoundOutcome.DEFEAT,
-                BattleAutomationRoundOutcome.VICTORY,
+            QuestResultObservation.BattleRounds(
+                listOf(
+                    BattleAutomationRoundOutcome.VICTORY,
+                    BattleAutomationRoundOutcome.DEFEAT,
+                    BattleAutomationRoundOutcome.VICTORY,
+                ),
             ),
         )
     }
 
     @Test
-    fun `불명확한 퀘스트 전투는 권위 mission 진행으로 적용 여부를 조정한다`() {
+    fun `불명확한 퀘스트 전투는 권위 단말 결과를 같은 작업 사이클 모듈에 기록한다`() {
         val request = battleRequest()
         val managed = assertNotNull(
             module.prepare(
@@ -386,19 +472,69 @@ class AutomationActionLifecycleModuleTest {
                 ),
             ),
         )
-        Mockito.`when`(questGateway.load(7L, HofRequestOrigin.AUTOMATION)).thenReturn(
-            listOf(activeQuest(progress = 3)),
-            listOf(activeQuest(progress = 2)),
-            listOf(activeQuest(progress = null)),
+        val evidence = BattleAuthoritativeOutcomeEvidence(
+            accountId = 7L,
+            executionIdentity = managed.storedAction.executionIdentity,
+            categoryId = "battle_map",
+            mapCode = "map-1",
+            battleCount = 1,
+            resultIdentity = "quest-result-1",
+            outcomes = listOf(BattleAutomationRoundOutcome.VICTORY),
         )
+        Mockito.`when`(battleOutcome.reloadRecentAuthoritativeEvidence(anyBattleAction())).thenReturn(
+            BattleOutcomeReconciliation.Proven(evidence),
+            BattleOutcomeReconciliation.Unproven("terminal proof missing"),
+            BattleOutcomeReconciliation.Proven(evidence.copy(mapCode = "other-map")),
+        )
+        val fallbackPage = listOf(activeQuest(progress = 3))
+        Mockito.`when`(questGateway.load(7L, HofRequestOrigin.AUTOMATION)).thenReturn(fallbackPage)
 
         val applied = assertIs<AmbiguousActionResolution.Applied>(managed.reconcile())
         assertEquals(
             TypedAutomationExecution.BattleCompleted("battle_map", "map-1"),
             applied.execution,
         )
-        val unchanged = assertIs<AmbiguousActionResolution.VerifyLater>(managed.reconcile())
-        assertEquals(now.plusSeconds(10), unchanged.retryAt)
+        Mockito.verify(questWorkCycle).recordObservedResult(
+            7L,
+            QuestAttempt.Battle(
+                managed.storedAction.executionIdentity,
+                QuestAction.Battle(
+                    questKey = "quest-1",
+                    questCycle = "2",
+                    missionKey = "kill-slime",
+                    missionType = QuestMissionType.MONSTER_KILL,
+                    categoryId = "battle_map",
+                    mapCode = "map-1",
+                    mapName = "슬라임 동굴",
+                    preset = QuestPresetSelection(PresetSelectionMode.PRIMARY, 301L),
+                    battleCount = 1,
+                    missionCurrent = 2,
+                    missionRequired = 5,
+                ),
+            ),
+            QuestResultObservation.BattleRounds(listOf(BattleAutomationRoundOutcome.VICTORY)),
+        )
+        assertIs<AmbiguousActionResolution.Applied>(managed.reconcile())
+        Mockito.verify(questWorkCycle).recordObservedResult(
+            7L,
+            QuestAttempt.Battle(
+                managed.storedAction.executionIdentity,
+                QuestAction.Battle(
+                    questKey = "quest-1",
+                    questCycle = "2",
+                    missionKey = "kill-slime",
+                    missionType = QuestMissionType.MONSTER_KILL,
+                    categoryId = "battle_map",
+                    mapCode = "map-1",
+                    mapName = "슬라임 동굴",
+                    preset = QuestPresetSelection(PresetSelectionMode.PRIMARY, 301L),
+                    battleCount = 1,
+                    missionCurrent = 2,
+                    missionRequired = 5,
+                ),
+            ),
+            QuestResultObservation.Page(fallbackPage),
+        )
         val verifyLater = assertIs<AmbiguousActionResolution.VerifyLater>(managed.reconcile())
         assertEquals(now.plusSeconds(10), verifyLater.retryAt)
     }
@@ -417,7 +553,7 @@ class AutomationActionLifecycleModuleTest {
 
         assertFailsWith<AmbiguousAutomationSubmissionException> { managed.execute() }
 
-        Mockito.verifyNoInteractions(questHandler, executionSignals)
+        Mockito.verifyNoInteractions(questWorkCycle, executionSignals)
     }
 
     @Test
@@ -432,7 +568,7 @@ class AutomationActionLifecycleModuleTest {
             TypedAutomationExecution.SharedCooldown("battle_map", "map-1", retryAt),
             managed.execute(),
         )
-        Mockito.verifyNoInteractions(questHandler, executionSignals)
+        Mockito.verifyNoInteractions(questWorkCycle, executionSignals)
     }
 
     @Test
@@ -1250,6 +1386,14 @@ class AutomationActionLifecycleModuleTest {
             executionIdentity = "matcher",
             source = BattleAutomationActionSource.QUEST_AUTOMATION,
         )
+
+    private fun anyQuestAttempt(): QuestAttempt =
+        Mockito.any(QuestAttempt::class.java)
+            ?: QuestAttempt.Claim("matcher", "matcher", "matcher")
+
+    private fun anyQuestObservation(): QuestResultObservation =
+        Mockito.any(QuestResultObservation::class.java)
+            ?: QuestResultObservation.Page(emptyList())
 
     private fun actionRow(
         codec: StoredTypedAutomationActionCodec,
