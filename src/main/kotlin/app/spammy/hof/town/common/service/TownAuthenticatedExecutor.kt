@@ -543,6 +543,7 @@ class TownAuthenticatedExecutor(
         requiredSubmitField: String,
         requiredSyntheticFields: Set<String>,
         requiredReplacedFields: Set<String> = emptySet(),
+        allowedAbsentRawReplacedFields: Set<String> = emptySet(),
         materialize: (html: String, finalUrl: String) -> String,
         resolve: (html: String, finalUrl: String, page: ParsedTownPage) -> Pair<TownActionRequest, Map<String, String>>,
         projector: (
@@ -552,8 +553,9 @@ class TownAuthenticatedExecutor(
             page: ParsedTownPage,
         ) -> T,
     ): T = withAccountActionFence(accountId) {
-        require(requiredScalarFields.isNotEmpty() && requiredSyntheticFields.isNotEmpty())
+        require(requiredSyntheticFields.isNotEmpty())
         require(requiredSyntheticFields.intersect(requiredReplacedFields).isEmpty())
+        require(allowedAbsentRawReplacedFields.all { it in requiredReplacedFields })
         require((requiredScalarFields + requiredSyntheticFields + requiredReplacedFields).size <= 8)
         val context = authenticatedContext(accountId)
         val current = executeAuthenticated(
@@ -596,7 +598,10 @@ class TownAuthenticatedExecutor(
         val preservedMaterializedControls = materializedControls.filterNot { it.name in ignoredMaterializedFields }
         if (preservedRawControls != preservedMaterializedControls ||
             materializedControls.filter { it.name in requiredSyntheticFields }.map(ControlSignature::name).toSet() != requiredSyntheticFields ||
-            requiredReplacedFields.any { name -> rawControls.none { it.name == name } || materializedControls.none { it.name == name } }
+            requiredReplacedFields.any { name ->
+                materializedControls.none { it.name == name } ||
+                    (name !in allowedAbsentRawReplacedFields && rawControls.none { it.name == name })
+            }
         ) throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 동적 입력 양식이 변경되었습니다.")
         val rawScalarControls = rawForm.select("input,select,textarea").filter { control ->
             control.closest("form") === rawForm && !control.hasAttr("disabled") && control.attr("name") in requiredScalarFields
@@ -823,6 +828,88 @@ class TownAuthenticatedExecutor(
             ),
             context.cookies + main.setCookies + entryResponse.setCookies,
         )
+        val result = resultParser.parse(finalResponse.body)
+        val page = formParser.parse(finalResponse.body, finalResponse.finalUrl)
+        projector(finalResponse.body, finalResponse.finalUrl, result, page)
+    }
+
+    /**
+     * 최신 캐릭터 화면에 직접 item form이 있으면 한 번 제출하고, 없으면 같은 GET에서 확인한
+     * reset 진입 form과 그 응답의 최종 form을 연속 제출한다. 두 경로 모두 같은 계정 fence와
+     * cookie chain을 사용하며 최종 응답만 기능 module에 투영한다.
+     */
+    fun <T> executeResolvedDirectOrTwoStepProjected(
+        accountId: Long,
+        pageUrl: String,
+        requiredDirectSubmitField: String,
+        directAction: (ParsedTownPage) -> TownActionRequest?,
+        requiredEntrySubmitField: String,
+        entryAction: (ParsedTownPage) -> TownActionRequest?,
+        requiredFinalSubmitField: String,
+        finalAction: (ParsedTownPage) -> TownActionRequest?,
+        projector: (String, String, app.spammy.hof.town.common.model.ParsedTownResult, ParsedTownPage) -> T,
+    ): T? = withAccountActionFence(accountId) {
+        require(
+            requiredDirectSubmitField.isNotBlank() &&
+                requiredEntrySubmitField.isNotBlank() &&
+                requiredFinalSubmitField.isNotBlank(),
+        )
+        val context = authenticatedContext(accountId)
+        val main = executeAuthenticated(
+            context.account,
+            requestFactory.townPage(pageUrl, HofRequestOrigin.INTERACTIVE),
+            context.cookies,
+        )
+        val mainPage = formParser.parse(main.body, main.finalUrl)
+        val direct = directAction(mainPage)
+        val finalResponse = if (direct != null) {
+            val guarded = actionGuard.guard(mainPage, direct)
+            if (!guarded.form.submitFields.singleOrNull()?.name.equals(requiredDirectSubmitField, true)) {
+                throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 직접 작업 양식이 변경되었습니다.")
+            }
+            executeAuthenticated(
+                context.account,
+                requestFactory.townForm(
+                    guarded.form.method,
+                    guarded.form.actionUrl,
+                    guarded.formEntries,
+                    HofRequestOrigin.INTERACTIVE,
+                ),
+                context.cookies + main.setCookies,
+            )
+        } else {
+            val requestedEntry = entryAction(mainPage) ?: return@withAccountActionFence null
+            val guardedEntry = actionGuard.guard(mainPage, requestedEntry)
+            if (!guardedEntry.form.submitFields.singleOrNull()?.name.equals(requiredEntrySubmitField, true)) {
+                throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 1단계 작업 양식이 변경되었습니다.")
+            }
+            val entryResponse = executeAuthenticated(
+                context.account,
+                requestFactory.townForm(
+                    guardedEntry.form.method,
+                    guardedEntry.form.actionUrl,
+                    guardedEntry.formEntries,
+                    HofRequestOrigin.INTERACTIVE,
+                ),
+                context.cookies + main.setCookies,
+            )
+            val entryPage = formParser.parse(entryResponse.body, entryResponse.finalUrl)
+            val requestedFinal = finalAction(entryPage) ?: return@withAccountActionFence null
+            val guardedFinal = actionGuard.guard(entryPage, requestedFinal)
+            if (!guardedFinal.form.submitFields.singleOrNull()?.name.equals(requiredFinalSubmitField, true)) {
+                throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 최종 작업 양식이 변경되었습니다.")
+            }
+            executeAuthenticated(
+                context.account,
+                requestFactory.townForm(
+                    guardedFinal.form.method,
+                    guardedFinal.form.actionUrl,
+                    guardedFinal.formEntries,
+                    HofRequestOrigin.INTERACTIVE,
+                ),
+                context.cookies + main.setCookies + entryResponse.setCookies,
+            )
+        }
         val result = resultParser.parse(finalResponse.body)
         val page = formParser.parse(finalResponse.body, finalResponse.finalUrl)
         projector(finalResponse.body, finalResponse.finalUrl, result, page)

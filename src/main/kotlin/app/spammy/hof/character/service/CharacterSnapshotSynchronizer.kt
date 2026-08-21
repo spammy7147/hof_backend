@@ -13,6 +13,7 @@ import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.client.AccountHofGateway
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.HofCharacter
+import app.spammy.hof.external.model.HofEquipmentCandidate
 import app.spammy.hof.external.parser.CharacterDetailParser
 import app.spammy.hof.external.parser.CharacterPageParseResult
 import app.spammy.hof.town.common.service.AccountHofMutationFence
@@ -71,6 +72,18 @@ class CharacterSnapshotSynchronizer(
         val character = characterQueryRepository.findByAccountIdAndHofCharacterId(accountId, hofCharacterId)
             ?: error("캐릭터를 찾지 못했습니다: $hofCharacterId")
         snapshotWriter.write(character, parsed, timeProvider.now(), sections)
+        characterService.findDetail(accountId, hofCharacterId)
+    }
+
+    fun writeEquipmentCandidateSubset(
+        accountId: Long,
+        hofCharacterId: String,
+        observed: List<HofEquipmentCandidate>,
+        typeCodes: Set<String>,
+    ): CharacterDetailResponse = mutationFence.execute(accountId) {
+        val character = characterQueryRepository.findByAccountIdAndHofCharacterId(accountId, hofCharacterId)
+            ?: error("캐릭터를 찾지 못했습니다: $hofCharacterId")
+        snapshotWriter.writeEquipmentCandidateSubset(character, observed, typeCodes, timeProvider.now())
         characterService.findDetail(accountId, hofCharacterId)
     }
 

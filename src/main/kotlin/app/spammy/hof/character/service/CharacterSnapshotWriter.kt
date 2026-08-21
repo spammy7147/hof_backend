@@ -4,6 +4,7 @@ import app.spammy.hof.character.entity.*
 import app.spammy.hof.character.repository.*
 import app.spammy.hof.external.parser.CharacterPageParseResult
 import app.spammy.hof.external.parser.CharacterSectionParseResult
+import app.spammy.hof.external.model.HofEquipmentCandidate
 import java.time.Instant
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -48,6 +49,38 @@ class CharacterSnapshotWriter(
         if (result.sections.keys.any { CharacterSection.valueOf(it.name) in selectedSections }) {
             character.detailSyncedAt = attemptedAt
         }
+        character.updatedAt = attemptedAt
+        characters.save(character)
+    }
+
+    /** 일시적으로 열린 selector가 권위 있게 보여 준 후보 종류만 교체한다. */
+    @Transactional
+    fun writeEquipmentCandidateSubset(
+        character: CharacterEntity,
+        observed: List<HofEquipmentCandidate>,
+        typeCodes: Set<String>,
+        attemptedAt: Instant,
+    ) {
+        require(typeCodes.isNotEmpty())
+        require(observed.all { it.typeCode in typeCodes })
+        val existing = query.findEquipmentCandidates(character.id)
+        replace(existing.filter { it.typeCode in typeCodes }, candidates)
+        val nextOrder = existing.filter { it.typeCode !in typeCodes }
+            .maxOfOrNull { it.candidateOrder }
+            ?.plus(1)
+            ?: 0
+        candidates.saveAll(observed.distinctBy { it.typeCode to it.value }.mapIndexed { index, item ->
+            CharacterEquipmentCandidateEntity(
+                character = character,
+                candidateOrder = nextOrder + index,
+                sourceValue = item.value,
+                typeCode = item.typeCode,
+                name = item.name,
+                iconUrl = item.iconUrl,
+                description = item.description,
+                quantity = item.quantity,
+            )
+        })
         character.updatedAt = attemptedAt
         characters.save(character)
     }

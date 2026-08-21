@@ -36,15 +36,16 @@ class HofCharacterCommandAdapterTest {
         val management = Mockito.mock(CharacterManagementService::class.java)
         arrangeSequence(executor)
         val page = formPage("<form method='post'><input type='submit' name='Pray' value='기도한다'></form>")
-        Mockito.`when`(executor.load(1L, CHARACTER_URL)).thenReturn(page)
         val form = page.forms.single()
-        Mockito.`when`(management.execute(1L, "hof-10", app.spammy.hof.town.common.model.TownActionRequest(form.actionId)))
-            .thenReturn(CharacterManagementSnapshotResponse(null, emptyList(), listOf("기도 완료")))
+        arrangeProjectedAction(executor, page, listOf("기도 완료")) { request ->
+            assertEquals(TownActionRequest(form.actionId), request)
+        }
         val adapter = adapter(executor, management)
 
         val result = execute(adapter, CharacterCommand.Pray(7L, revision))
 
         assertEquals(listOf("기도 완료"), assertIs<CharacterCommandObservation.Applied>(result).messages)
+        Mockito.verifyNoInteractions(management)
     }
 
     @Test
@@ -52,8 +53,10 @@ class HofCharacterCommandAdapterTest {
         val executor = Mockito.mock(TownAuthenticatedExecutor::class.java)
         val management = Mockito.mock(CharacterManagementService::class.java)
         arrangeSequence(executor)
-        Mockito.`when`(executor.load(1L, CHARACTER_URL)).thenReturn(
+        arrangeProjectedAction(
+            executor,
             formPage("<form method='post'><input type='submit' name='BrandNewFeature' value='새 기능'></form>"),
+            emptyList(),
         )
         val adapter = adapter(executor, management)
 
@@ -69,22 +72,20 @@ class HofCharacterCommandAdapterTest {
         val management = Mockito.mock(CharacterManagementService::class.java)
         arrangeSequence(executor)
         val page = formPage("<form method='post'><input type='radio' name='job' value='523'>Mathematician<input type='submit' name='classchange' value='ClassChange'></form>")
-        Mockito.`when`(executor.load(1L, CHARACTER_URL)).thenReturn(page)
         val form = page.forms.single()
         val choice = form.candidates.single { it.inputName == "job" && it.inputValue == "523" }
-        Mockito.`when`(
-            management.execute(
-                1L,
-                "hof-10",
+        arrangeProjectedAction(executor, page, listOf("전직 완료")) { request ->
+            assertEquals(
                 TownActionRequest(form.actionId, selections = listOf(app.spammy.hof.town.common.model.TownActionSelection(choice.id))),
-            ),
-        )
-            .thenReturn(CharacterManagementSnapshotResponse(null, emptyList(), listOf("전직 완료")))
+                request,
+            )
+        }
         val adapter = adapter(executor, management)
 
         val result = execute(adapter, CharacterCommand.ChangeClass(7L, revision, "523"))
 
         assertEquals(listOf("전직 완료"), assertIs<CharacterCommandObservation.Applied>(result).messages)
+        Mockito.verifyNoInteractions(management)
     }
 
     @Test
@@ -92,16 +93,13 @@ class HofCharacterCommandAdapterTest {
         val executor = Mockito.mock(TownAuthenticatedExecutor::class.java)
         val management = Mockito.mock(CharacterManagementService::class.java)
         arrangeSequence(executor)
-        val page = formPage("<form method='post'><input type='submit' name='showreset' value='Use'></form>")
-        Mockito.`when`(executor.load(1L, CHARACTER_URL)).thenReturn(page)
-        Mockito.`when`(management.executeResetItem(1L, "hof-10", "7510"))
-            .thenReturn(CharacterManagementSnapshotResponse(null, emptyList(), listOf("성장 아이템 사용 완료")))
+        arrangeTwoStepAction(executor, listOf("성장 아이템 사용 완료"))
         val adapter = adapter(executor, management)
 
         val result = execute(adapter, CharacterCommand.UseItem(7L, revision, "7510"))
 
         assertEquals(listOf("성장 아이템 사용 완료"), assertIs<CharacterCommandObservation.Applied>(result).messages)
-        Mockito.verify(management).executeResetItem(1L, "hof-10", "7510")
+        Mockito.verifyNoInteractions(management)
     }
 
     @Test
@@ -110,16 +108,24 @@ class HofCharacterCommandAdapterTest {
         val management = Mockito.mock(CharacterManagementService::class.java)
         arrangeSequence(executor)
         val page = formPage("<form method='post'><input type='submit' name='showreset' value='Use'></form>")
-        Mockito.`when`(executor.load(1L, CHARACTER_URL)).thenReturn(page)
         val form = page.forms.single()
-        Mockito.`when`(management.execute(1L, "hof-10", TownActionRequest(form.actionId)))
-            .thenReturn(CharacterManagementSnapshotResponse(null, emptyList(), emptyList()))
+        val selectorHtml = "<form method='post'><select name='itemUse'><option value='7510'>Reset</option></select>" +
+            "<input type='submit' name='resetVarious' value='Use'></form>"
+        arrangeProjectedAction(
+            executor,
+            page,
+            emptyList(),
+            responseHtml = selectorHtml,
+            responsePage = formPage(selectorHtml),
+        ) { request ->
+            assertEquals(TownActionRequest(form.actionId), request)
+        }
         val adapter = adapter(executor, management)
 
         val result = execute(adapter, CharacterCommand.PrepareItems(7L, revision))
 
         assertIs<CharacterCommandObservation.Applied>(result)
-        Mockito.verify(management).execute(1L, "hof-10", TownActionRequest(form.actionId))
+        Mockito.verifyNoInteractions(management)
     }
 
     @Test
@@ -285,6 +291,77 @@ class HofCharacterCommandAdapterTest {
     private fun anySequence(): () -> CharacterCommandObservation =
         Mockito.any<() -> CharacterCommandObservation>() ?: { error("matcher") }
 
+    private fun arrangeProjectedAction(
+        executor: TownAuthenticatedExecutor,
+        page: ParsedTownPage,
+        messages: List<String>,
+        responseHtml: String = "<div class='carpet_frame'>소셜<br>Lv.60 Social Knight</div>",
+        responsePage: ParsedTownPage = page,
+        verifyAction: (TownActionRequest) -> Unit = {},
+    ) {
+        Mockito.doAnswer { invocation ->
+            val resolver = invocation.getArgument<(String, String, ParsedTownPage) -> TownActionRequest>(3)
+            val projector = invocation.getArgument<(String, String, ParsedTownResult, ParsedTownPage) -> List<String>>(4)
+            verifyAction(resolver("<div class='carpet_frame'>소셜<br>Lv.60 Social Knight</div>", CHARACTER_URL, page))
+            projector(
+                responseHtml,
+                CHARACTER_URL,
+                ParsedTownResult(messages, emptyList()),
+                responsePage,
+            )
+        }.`when`(executor).executeProjected<List<String>>(
+            Mockito.eq(1L),
+            eqString(CHARACTER_URL),
+            anyOrigin(),
+            anyActionResolver(),
+            anyActionProjector(),
+        )
+    }
+
+    private fun arrangeTwoStepAction(executor: TownAuthenticatedExecutor, messages: List<String>) {
+        val entryPage = formPage("<form method='post'><input type='submit' name='showreset' value='Use'></form>")
+        val finalPage = formPage(
+            "<form method='post'><select name='itemUse'><option value='7510'>Reset Crystal</option></select>" +
+                "<input type='submit' name='resetVarious' value='Use'></form>",
+        )
+        Mockito.doAnswer { invocation ->
+            val direct = invocation.getArgument<(ParsedTownPage) -> TownActionRequest?>(3)(entryPage)
+            val entry = requireNotNull(invocation.getArgument<(ParsedTownPage) -> TownActionRequest?>(5)(entryPage))
+            val final = requireNotNull(invocation.getArgument<(ParsedTownPage) -> TownActionRequest?>(7)(finalPage))
+            assertEquals(null, direct)
+            assertEquals("showreset", entryPage.forms.single { it.actionId == entry.actionId }.submitSource)
+            assertEquals("7510", finalPage.forms.single { it.actionId == final.actionId }
+                .candidates.single { it.id == final.selections.single().candidateId }.inputValue)
+            invocation.getArgument<(String, String, ParsedTownResult, ParsedTownPage) -> List<String>>(8)
+                .invoke(
+                    "<div class='carpet_frame'>소셜<br>Lv.60 Social Knight</div>",
+                    CHARACTER_URL,
+                    ParsedTownResult(messages, emptyList()),
+                    finalPage,
+                )
+        }.`when`(executor).executeResolvedDirectOrTwoStepProjected<List<String>>(
+            Mockito.eq(1L),
+            eqString(CHARACTER_URL),
+            eqString("use_char_item"),
+            anyPageActionResolver(),
+            eqString("showreset"),
+            anyPageActionResolver(),
+            eqString("resetVarious"),
+            anyPageActionResolver(),
+            anyActionProjector(),
+        )
+    }
+
+    private fun anyActionResolver(): (String, String, ParsedTownPage) -> TownActionRequest =
+        Mockito.any<(String, String, ParsedTownPage) -> TownActionRequest>() ?: { _, _, _ -> error("matcher") }
+
+    private fun anyPageActionResolver(): (ParsedTownPage) -> TownActionRequest? =
+        Mockito.any<(ParsedTownPage) -> TownActionRequest?>() ?: { null }
+
+    private fun anyActionProjector(): (String, String, ParsedTownResult, ParsedTownPage) -> List<String> =
+        Mockito.any<(String, String, ParsedTownResult, ParsedTownPage) -> List<String>>()
+            ?: { _, _, _, _ -> error("matcher") }
+
     private fun arrangeIdentitySequence(
         executor: TownAuthenticatedExecutor,
         requiredFields: List<String>,
@@ -358,7 +435,6 @@ class HofCharacterCommandAdapterTest {
     private fun adapter(executor: TownAuthenticatedExecutor, management: CharacterManagementService) =
         HofCharacterCommandAdapter(
             executor,
-            management,
             HofRequestFactory(),
             CharacterRosterParser(),
             CharacterDetailParser(),

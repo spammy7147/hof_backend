@@ -11,3 +11,15 @@ object CharacterEquipmentCommandRules {
         return itemValue
     }
 }
+
+object CharacterStatCommandRules {
+    fun requireAllocation(amounts: Map<CharacterStat, Int>, observedStatusPoints: Int) {
+        require(amounts.isNotEmpty() && amounts.values.any { it > 0 }) {
+            "배분할 스탯 포인트를 입력해 주세요."
+        }
+        require(amounts.values.all { it >= 0 }) { "스탯 포인트는 음수로 배분할 수 없습니다." }
+        require(observedStatusPoints >= 0 && amounts.values.sumOf(Int::toLong) <= observedStatusPoints.toLong()) {
+            "보유한 Status Point보다 많이 배분할 수 없습니다."
+        }
+    }
+}

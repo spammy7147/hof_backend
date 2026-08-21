@@ -49,6 +49,31 @@ class CharacterCommandExecutorTest {
     }
 
     @Test
+    fun `semantic rule rejection becomes a typed command result`() {
+        val query = Mockito.mock(CharacterQueryRepository::class.java)
+        Mockito.`when`(query.findByAccountIdAndId(1L, 7L)).thenReturn(character())
+        val service = commandExecutor(
+            query,
+            passThroughGate(),
+            remote { _, _ -> throw IllegalArgumentException("보유한 Status Point보다 많이 배분할 수 없습니다.") },
+        )
+
+        val result = assertIs<CharacterCommandResult.Rejected>(
+            service.execute(
+                1L,
+                CharacterCommand.AllocateStats(
+                    7L,
+                    revision,
+                    mapOf(CharacterStat.STR to 3, CharacterStat.INT to 3),
+                ),
+            ),
+        )
+
+        assertEquals("INVALID_COMMAND", result.code)
+        assertEquals("보유한 Status Point보다 많이 배분할 수 없습니다.", result.message)
+    }
+
+    @Test
     fun `command reloads the character after automation is paused and uses the latest hof id`() {
         val query = Mockito.mock(CharacterQueryRepository::class.java)
         val beforePause = character()

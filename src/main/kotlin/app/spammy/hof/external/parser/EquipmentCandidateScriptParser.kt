@@ -9,8 +9,9 @@ object EquipmentCandidateScriptParser {
     private val caseRegex = Regex("""case\s+["']([^"']+)["']\s*:""")
     private val quantityRegex = Regex("""(?:^|\s)x\s*(\d+)(?=\s|/|$)""", RegexOption.IGNORE_CASE)
 
-    fun parse(document: Document): List<HofEquipmentCandidate> = buildList {
-        document.select("script").forEach { script ->
+    /** `equip_item` form에 동적으로 삽입되는 `Listtype_equip` 장비 카탈로그만 반환한다. */
+    fun parseEquipmentCatalog(document: Document): List<HofEquipmentCandidate> = buildList {
+        document.select("script").filter { it.data().contains("Listtype_equip") }.forEach { script ->
             var typeCode = ""
             script.data().lineSequence().forEach { line ->
                 caseRegex.find(line)?.groupValues?.get(1)?.let { typeCode = it }
@@ -34,6 +35,10 @@ object EquipmentCandidateScriptParser {
                 )
             }
         }
+    }.distinctBy { it.typeCode to it.value }
+
+    fun parse(document: Document): List<HofEquipmentCandidate> = buildList {
+        addAll(parseEquipmentCatalog(document))
         // 사용 가능 아이템은 JavaScript stock 목록이 아니라 실제 form DOM에만 있는 페이지가 있다.
         document.select("form").filter { form ->
             form.select("input[type=submit][name=use_char_item]").isNotEmpty()

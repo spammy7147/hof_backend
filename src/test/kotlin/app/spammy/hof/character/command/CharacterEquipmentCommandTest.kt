@@ -22,3 +22,33 @@ class CharacterEquipmentCommandTest {
         assertFailsWith<IllegalArgumentException> { CharacterEquipmentCommandRules.requirePresetSlot(3) }
     }
 }
+
+class CharacterStatCommandRulesTest {
+    @Test
+    fun `multiple stat allocations must fit the latest observed status point balance`() {
+        CharacterStatCommandRules.requireAllocation(
+            mapOf(CharacterStat.STR to 3, CharacterStat.INT to 2),
+            observedStatusPoints = 5,
+        )
+
+        assertFailsWith<IllegalArgumentException> {
+            CharacterStatCommandRules.requireAllocation(
+                mapOf(CharacterStat.STR to 3, CharacterStat.INT to 3),
+                observedStatusPoints = 5,
+            )
+        }
+    }
+
+    @Test
+    fun `stat allocation rejects empty zero and negative requests`() {
+        assertFailsWith<IllegalArgumentException> {
+            CharacterStatCommandRules.requireAllocation(emptyMap(), observedStatusPoints = 5)
+        }
+        assertFailsWith<IllegalArgumentException> {
+            CharacterStatCommandRules.requireAllocation(mapOf(CharacterStat.STR to 0), observedStatusPoints = 5)
+        }
+        assertFailsWith<IllegalArgumentException> {
+            CharacterStatCommandRules.requireAllocation(mapOf(CharacterStat.STR to -1), observedStatusPoints = 5)
+        }
+    }
+}

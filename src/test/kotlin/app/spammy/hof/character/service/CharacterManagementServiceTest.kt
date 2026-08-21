@@ -17,8 +17,11 @@ import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofRequest
+import app.spammy.hof.external.model.HofEquipmentCandidate
 import app.spammy.hof.external.parser.CharacterDetailParser
 import app.spammy.hof.external.parser.CharacterRosterParser
+import app.spammy.hof.external.parser.CharacterPageSection
+import app.spammy.hof.external.parser.CharacterSectionParseResult
 import app.spammy.hof.external.parser.LoginStateParser
 import app.spammy.hof.town.common.model.TownActionRequest
 import app.spammy.hof.town.common.parser.HofFormParser
@@ -69,7 +72,6 @@ class CharacterManagementServiceTest {
     )
     private val commandAdapter = HofCharacterCommandAdapter(
         executor,
-        service,
         HofRequestFactory(),
         CharacterRosterParser(),
         detailParser,
@@ -77,21 +79,23 @@ class CharacterManagementServiceTest {
     )
 
     @Test
-    fun `item preparation keeps reset candidates from the immediate action response`() {
+    fun `semantic item preparation projects reset candidates from the immediate action response`() {
         Mockito.`when`(accounts.findById(1L)).thenReturn(account)
         Mockito.`when`(cookies.findValueMapByAccountId(1L)).thenReturn(mapOf("PHPSESSID" to "session"))
         Mockito.`when`(characters.findByAccountIdAndHofCharacterId(1L, "hof-10")).thenReturn(character)
         Mockito.`when`(characterService.findAll(1L)).thenReturn(emptyList())
-        val parsedSnapshots = mutableListOf<app.spammy.hof.external.parser.CharacterPageParseResult>()
+        val observedCandidates = mutableListOf<HofEquipmentCandidate>()
+        var observedTypes = emptySet<String>()
         Mockito.`when`(
-            synchronizer.writeParsed(
+            synchronizer.writeEquipmentCandidateSubset(
                 Mockito.eq(1L),
                 Mockito.anyString(),
-                anyPage(),
+                anyCandidates(),
                 Mockito.anySet(),
             ),
         ).thenAnswer { invocation ->
-            parsedSnapshots += invocation.getArgument<app.spammy.hof.external.parser.CharacterPageParseResult>(2)
+            observedCandidates += invocation.getArgument<List<HofEquipmentCandidate>>(2)
+            observedTypes = invocation.getArgument(3)
             Mockito.mock(CharacterDetailResponse::class.java)
         }
         val calls = AtomicInteger()
@@ -103,24 +107,63 @@ class CharacterManagementServiceTest {
             ),
         ).thenAnswer {
             when (calls.getAndIncrement()) {
-                0, 1 -> response(BASE_PAGE)
-                2 -> response(RESET_SELECTOR_PAGE)
+                0 -> response(BASE_PAGE)
+                1 -> response(RESET_SELECTOR_PAGE)
                 else -> response(BASE_PAGE)
             }
         }
-        val actionId = forms.parse(BASE_PAGE, CHARACTER_URL).forms.single().actionId
 
-        service.execute(1L, "hof-10", TownActionRequest(actionId))
-
-        assertTrue(
-            parsedSnapshots.single().snapshot.equipmentCandidates.any {
-                it.typeCode == "resetitem" && it.value == "7510"
-            },
+        assertIs<CharacterCommandObservation.Applied>(
+            execute(CharacterCommand.PrepareItems(7L, now)),
         )
+
+        assertEquals(listOf("7510"), observedCandidates.map { it.value })
+        assertEquals(setOf("resetitem"), observedTypes)
     }
 
     @Test
-    fun `reset item use reopens the transient selector and submits it without another page reload`() {
+    fun `semantic item preparation rejects an unsupported selector response without deleting saved candidates`() {
+        Mockito.`when`(accounts.findById(1L)).thenReturn(account)
+        Mockito.`when`(cookies.findValueMapByAccountId(1L)).thenReturn(mapOf("PHPSESSID" to "session"))
+        Mockito.`when`(
+            gateway.execute(Mockito.eq(1L), anyRequest(), Mockito.anyMap<String, String>()),
+        ).thenReturn(response(BASE_PAGE), response(BASE_PAGE))
+
+        val observed = assertIs<CharacterCommandObservation.Rejected>(
+            execute(CharacterCommand.PrepareItems(7L, now)),
+        )
+
+        assertEquals("FORM_NOT_OBSERVED", observed.code)
+        Mockito.verifyNoInteractions(synchronizer)
+    }
+
+    @Test
+    fun `semantic item preparation accepts an observed empty selector as an authoritative clear`() {
+        Mockito.`when`(accounts.findById(1L)).thenReturn(account)
+        Mockito.`when`(cookies.findValueMapByAccountId(1L)).thenReturn(mapOf("PHPSESSID" to "session"))
+        var observedCandidates = listOf(HofEquipmentCandidate("old", "resetitem", "Old"))
+        Mockito.`when`(
+            synchronizer.writeEquipmentCandidateSubset(
+                Mockito.eq(1L),
+                Mockito.anyString(),
+                anyCandidates(),
+                Mockito.anySet(),
+            ),
+        ).thenAnswer { invocation ->
+            observedCandidates = invocation.getArgument(2)
+            Mockito.mock(CharacterDetailResponse::class.java)
+        }
+        Mockito.`when`(
+            gateway.execute(Mockito.eq(1L), anyRequest(), Mockito.anyMap<String, String>()),
+        ).thenReturn(response(BASE_PAGE), response(EMPTY_RESET_SELECTOR_PAGE))
+
+        assertIs<CharacterCommandObservation.Applied>(execute(CharacterCommand.PrepareItems(7L, now)))
+
+        assertEquals(emptyList(), observedCandidates)
+    }
+
+    @Test
+    fun `semantic reset item use reopens the transient selector and returns the common applied result`() {
         Mockito.`when`(accounts.findById(1L)).thenReturn(account)
         Mockito.`when`(cookies.findValueMapByAccountId(1L)).thenReturn(mapOf("PHPSESSID" to "session"))
         Mockito.`when`(characters.findByAccountIdAndHofCharacterId(1L, "hof-10")).thenReturn(character)
@@ -141,9 +184,11 @@ class CharacterManagementServiceTest {
             ),
         ).thenReturn(response(BASE_PAGE), response(RESET_SELECTOR_PAGE), response(BASE_PAGE))
 
-        val snapshot = requireNotNull(service.executeResetItem(1L, "hof-10", "7510"))
+        val observed = assertIs<CharacterCommandObservation.Applied>(
+            execute(CharacterCommand.UseItem(7L, now, "7510")),
+        )
 
-        assertEquals(emptyList(), snapshot.messages)
+        assertEquals(emptyList(), observed.messages)
         val requests = ArgumentCaptor.forClass(HofRequest::class.java)
         Mockito.verify(gateway, Mockito.times(3)).execute(
             Mockito.eq(1L),
@@ -159,7 +204,7 @@ class CharacterManagementServiceTest {
     }
 
     @Test
-    fun `reset item use stops before final submission when the item is no longer offered`() {
+    fun `semantic reset item use stops before final submission when the item is no longer offered`() {
         Mockito.`when`(accounts.findById(1L)).thenReturn(account)
         Mockito.`when`(cookies.findValueMapByAccountId(1L)).thenReturn(mapOf("PHPSESSID" to "session"))
         Mockito.`when`(characters.findByAccountIdAndHofCharacterId(1L, "hof-10")).thenReturn(character)
@@ -171,15 +216,141 @@ class CharacterManagementServiceTest {
             ),
         ).thenReturn(response(BASE_PAGE), response(RESET_SELECTOR_PAGE))
 
-        val snapshot = service.executeResetItem(1L, "hof-10", "missing-item")
+        val observed = assertIs<CharacterCommandObservation.Rejected>(
+            execute(CharacterCommand.UseItem(7L, now, "missing-item")),
+        )
 
-        assertEquals(null, snapshot)
+        assertEquals("FORM_NOT_OBSERVED", observed.code)
         Mockito.verify(gateway, Mockito.times(2)).execute(
             Mockito.eq(1L),
             anyRequest(),
             Mockito.anyMap<String, String>(),
         )
         Mockito.verifyNoInteractions(synchronizer)
+    }
+
+    @Test
+    fun `semantic ordinary item use returns the same applied lifecycle result`() {
+        Mockito.`when`(accounts.findById(1L)).thenReturn(account)
+        Mockito.`when`(cookies.findValueMapByAccountId(1L)).thenReturn(mapOf("PHPSESSID" to "session"))
+        Mockito.`when`(
+            synchronizer.writeParsed(
+                Mockito.eq(1L),
+                Mockito.anyString(),
+                anyPage(),
+                Mockito.anySet(),
+            ),
+        ).thenReturn(Mockito.mock(CharacterDetailResponse::class.java))
+        Mockito.`when`(
+            gateway.execute(Mockito.eq(1L), anyRequest(), Mockito.anyMap<String, String>()),
+        ).thenReturn(response(NORMAL_ITEM_PAGE), response(BASE_PAGE))
+
+        val observed = assertIs<CharacterCommandObservation.Applied>(
+            execute(CharacterCommand.UseItem(7L, now, "potion-1")),
+        )
+
+        assertEquals(emptyList(), observed.messages)
+        val requests = ArgumentCaptor.forClass(HofRequest::class.java)
+        Mockito.verify(gateway, Mockito.times(2)).execute(
+            Mockito.eq(1L),
+            capture(requests, HofRequest(HofHttpMethod.GET, CHARACTER_URL)),
+            Mockito.anyMap<String, String>(),
+        )
+        assertEquals(mapOf("item_no" to "potion-1", "use_char_item" to "Use"), requests.allValues[1].formFields)
+    }
+
+    @Test
+    fun `semantic equipment command selects the exact latest candidate and projects its response`() {
+        Mockito.`when`(accounts.findById(1L)).thenReturn(account)
+        Mockito.`when`(cookies.findValueMapByAccountId(1L)).thenReturn(mapOf("PHPSESSID" to "session"))
+        val projected = ArgumentCaptor.forClass(app.spammy.hof.external.parser.CharacterPageParseResult::class.java)
+        Mockito.`when`(
+            synchronizer.writeParsed(
+                Mockito.eq(1L),
+                Mockito.anyString(),
+                capture(
+                    projected,
+                    app.spammy.hof.external.parser.CharacterPageParseResult(
+                        app.spammy.hof.external.model.HofCharacter(id = ""),
+                        emptyMap(),
+                    ),
+                ),
+                Mockito.anySet(),
+            ),
+        ).thenReturn(Mockito.mock(CharacterDetailResponse::class.java))
+        Mockito.`when`(
+            gateway.execute(Mockito.eq(1L), anyRequest(), Mockito.anyMap<String, String>()),
+        ).thenReturn(response(EQUIPMENT_PAGE), response(EQUIPMENT_RESULT_PAGE))
+
+        val observed = assertIs<CharacterCommandObservation.Applied>(
+            execute(CharacterCommand.EquipItem(7L, now, "item-2")),
+        )
+
+        assertEquals(emptyList(), observed.messages)
+        val requests = ArgumentCaptor.forClass(HofRequest::class.java)
+        Mockito.verify(gateway, Mockito.times(2)).execute(
+            Mockito.eq(1L),
+            capture(requests, HofRequest(HofHttpMethod.GET, CHARACTER_URL)),
+            Mockito.anyMap<String, String>(),
+        )
+        assertEquals(
+            mapOf("item_no" to "item-2", "list_type" to "armor", "equip_item" to "Equip"),
+            requests.allValues[1].formFields,
+        )
+        assertIs<CharacterSectionParseResult.Success>(projected.value.sections[CharacterPageSection.EQUIPMENT])
+    }
+
+    @Test
+    fun `semantic equipment command does not treat an ordinary item form as equipment`() {
+        Mockito.`when`(accounts.findById(1L)).thenReturn(account)
+        Mockito.`when`(cookies.findValueMapByAccountId(1L)).thenReturn(mapOf("PHPSESSID" to "session"))
+        Mockito.`when`(
+            gateway.execute(Mockito.eq(1L), anyRequest(), Mockito.anyMap<String, String>()),
+        ).thenReturn(response(EQUIPMENT_PAGE_WITH_ORDINARY_ITEM))
+
+        val observed = assertIs<CharacterCommandObservation.Rejected>(
+            execute(CharacterCommand.EquipItem(7L, now, "potion-1")),
+        )
+
+        assertEquals("FORM_NOT_OBSERVED", observed.code)
+        Mockito.verify(gateway).execute(Mockito.eq(1L), anyRequest(), Mockito.anyMap<String, String>())
+    }
+
+    @Test
+    fun `semantic skill command projects the returned learned skill section`() {
+        Mockito.`when`(accounts.findById(1L)).thenReturn(account)
+        Mockito.`when`(cookies.findValueMapByAccountId(1L)).thenReturn(mapOf("PHPSESSID" to "session"))
+        val projected = ArgumentCaptor.forClass(app.spammy.hof.external.parser.CharacterPageParseResult::class.java)
+        Mockito.`when`(
+            synchronizer.writeParsed(
+                Mockito.eq(1L),
+                Mockito.anyString(),
+                capture(
+                    projected,
+                    app.spammy.hof.external.parser.CharacterPageParseResult(
+                        app.spammy.hof.external.model.HofCharacter(id = ""),
+                        emptyMap(),
+                    ),
+                ),
+                Mockito.anySet(),
+            ),
+        ).thenReturn(Mockito.mock(CharacterDetailResponse::class.java))
+        Mockito.`when`(
+            gateway.execute(Mockito.eq(1L), anyRequest(), Mockito.anyMap<String, String>()),
+        ).thenReturn(response(SKILL_PAGE), response(SKILL_RESULT_PAGE))
+
+        assertIs<CharacterCommandObservation.Applied>(
+            execute(CharacterCommand.LearnSkill(7L, now, "skill-2")),
+        )
+
+        val requests = ArgumentCaptor.forClass(HofRequest::class.java)
+        Mockito.verify(gateway, Mockito.times(2)).execute(
+            Mockito.eq(1L),
+            capture(requests, HofRequest(HofHttpMethod.GET, CHARACTER_URL)),
+            Mockito.anyMap<String, String>(),
+        )
+        assertEquals(mapOf("newskill" to "skill-2", "learnskill" to "Learn"), requests.allValues[1].formFields)
+        assertIs<CharacterSectionParseResult.Success>(projected.value.sections[CharacterPageSection.SKILLS])
     }
 
     @Test
@@ -324,6 +495,9 @@ class CharacterManagementServiceTest {
                 emptyMap(),
             )
 
+    private fun anyCandidates(): List<HofEquipmentCandidate> =
+        Mockito.anyList<HofEquipmentCandidate>() ?: emptyList()
+
     private fun anyRequest(): HofRequest =
         Mockito.any(HofRequest::class.java) ?: HofRequest(HofHttpMethod.GET, CHARACTER_URL)
 
@@ -343,6 +517,91 @@ class CharacterManagementServiceTest {
               <select name="itemUse"><option value="7510">Reset Crystal x 2</option></select>
               <input type="submit" name="resetVarious" value="Use">
             </form>
+        """
+        private const val EMPTY_RESET_SELECTOR_PAGE = """
+            <div class="carpet_frame">소셜<br>Lv.60 Social Knight</div>
+            <form action="?char=hof-10" method="post">
+              <select name="itemUse"></select>
+              <input type="submit" name="resetVarious" value="Use">
+            </form>
+        """
+        private const val NORMAL_ITEM_PAGE = """
+            <div class="carpet_frame">소셜<br>Lv.60 Social Knight</div>
+            <form action="?char=hof-10" method="post">
+              <input type="radio" name="item_no" value="potion-1">Potion
+              <input type="submit" name="use_char_item" value="Use">
+            </form>
+        """
+        private const val EQUIPMENT_PAGE = """
+            <div class="carpet_frame">소셜<br>Lv.60 Social Knight</div>
+            <script type="text/javascript">
+              function Listtype_equip(mode) {
+              switch(mode) {
+              case "weapon":
+              html = '<input type="radio" name="item_no" value="item-1">같은 이름<br />'; break;
+              case "armor":
+              html = '<input type="radio" name="item_no" value="item-2">같은 이름<br />'; break;
+              }
+              return(html);
+              }
+            </script>
+            <form id="equip"><select name="type_equip"><option value="weapon">Weapon</option><option value="armor">Armor</option></select></form>
+            <form action="?char=hof-10" method="post">
+              <div id="list0">None.</div>
+              <input type="submit" name="equip_item" value="Equip">
+            </form>
+        """
+        private const val EQUIPMENT_PAGE_WITH_ORDINARY_ITEM = """
+            <div class="carpet_frame">소셜<br>Lv.60 Social Knight</div>
+            <script type="text/javascript">
+              function Listtype_equip(mode) {
+              switch(mode) {
+              case "weapon":
+              html = '<input type="radio" name="item_no" value="item-1">Sword<br />'; break;
+              }
+              return(html);
+              }
+            </script>
+            <form id="equip"><select name="type_equip"><option value="weapon">Weapon</option></select></form>
+            <form action="?char=hof-10" method="post">
+              <input type="radio" name="item_no" value="potion-1">Potion
+              <input type="submit" name="use_char_item" value="Use">
+            </form>
+            <form action="?char=hof-10" method="post">
+              <div id="list0"><input type="radio" name="item_no" value="item-1">Sword</div>
+              <input type="submit" name="equip_item" value="Equip">
+            </form>
+        """
+        private const val EQUIPMENT_RESULT_PAGE = """
+            <div class="carpet_frame">소셜<br>Lv.60 Social Knight</div>
+            <table>
+              <tr><td class="align-right">Weapon :</td><td><input name="spot" value="weapon"></td></tr>
+              <tr><td class="align-right">Shield :</td><td><input name="spot" value="shield"></td></tr>
+              <tr><td class="align-right">Armor :</td><td><input name="spot" value="armor"></td></tr>
+              <tr><td class="align-right">Head :</td><td><input name="spot" value="head"></td></tr>
+              <tr><td class="align-right">Arms :</td><td><input name="spot" value="arms"></td></tr>
+              <tr><td class="align-right">Feet :</td><td><input name="spot" value="feet"></td></tr>
+              <tr><td class="align-right">Accessory1 :</td><td><input name="spot" value="accessory1"></td></tr>
+              <tr><td class="align-right">Accessory2 :</td><td><input name="spot" value="accessory2"></td></tr>
+              <tr><td class="align-right">Accessory3 :</td><td><input name="spot" value="accessory3"></td></tr>
+              <tr><td class="align-right">Accessory4 :</td><td><input name="spot" value="accessory4"></td></tr>
+              <tr><td class="align-right">Accessory5 :</td><td><input name="spot" value="accessory5"></td></tr>
+              <tr><td class="align-right">Accessory6 :</td><td><input name="spot" value="accessory6"></td></tr>
+            </table>
+        """
+        private const val SKILL_PAGE = """
+            <div class="carpet_frame">소셜<br>Lv.60 Social Knight</div>
+            <form action="?char=hof-10" method="post">
+              <input type="radio" name="newskill" value="skill-1">Skill One
+              <input type="radio" name="newskill" value="skill-2">Skill Two
+              <input type="submit" name="learnskill" value="Learn">
+            </form>
+        """
+        private const val SKILL_RESULT_PAGE = """
+            <div class="carpet_frame">소셜<br>Lv.60 Social Knight</div>
+            <h4>Skill</h4>
+            <div class="u bold">Active</div>
+            <table><tr><td>Skill Two</td></tr></table>
         """
         private const val KNOCKBACK_PAGE = """
             <div class="carpet_frame">소셜<br>Lv.60 Social Knight</div>

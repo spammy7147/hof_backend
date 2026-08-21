@@ -1,11 +1,13 @@
 package app.spammy.hof.character.command
 
-import app.spammy.hof.character.service.CharacterManagementService
 import app.spammy.hof.character.service.CharacterSnapshotSynchronizer
 import app.spammy.hof.external.client.HofRequestFactory
-import app.spammy.hof.external.parser.CharacterRosterParser
 import app.spammy.hof.external.parser.CharacterDetailParser
+import app.spammy.hof.external.parser.CharacterRosterParser
+import app.spammy.hof.external.parser.EquipmentCandidateScriptParser
+import app.spammy.hof.external.parser.HofHtmlParser
 import app.spammy.hof.town.common.model.ParsedTownForm
+import app.spammy.hof.town.common.model.ParsedTownPage
 import app.spammy.hof.town.common.model.TownActionRequest
 import app.spammy.hof.town.common.model.TownActionSelection
 import app.spammy.hof.town.common.model.TownFieldValue
@@ -17,7 +19,6 @@ import org.springframework.stereotype.Component
 @Component
 class HofCharacterCommandAdapter(
     private val executor: TownAuthenticatedExecutor,
-    private val management: CharacterManagementService,
     private val requestFactory: HofRequestFactory,
     private val rosterParser: CharacterRosterParser,
     private val detailParser: CharacterDetailParser,
@@ -63,19 +64,13 @@ class HofCharacterCommandAdapter(
                 rememberContinuation,
             ) { roster, observedAt, messages -> CharacterCommandObservation.KnockbackApplied(roster, observedAt, messages) }
             is CharacterCommand.Pray -> executeSimple(context, "pray")
-            is CharacterCommand.PrepareItems -> executeSimple(context, "showreset")
-            is CharacterCommand.UseItem ->
-                executeChoice(context, "use_char_item", "item_no", command.itemValue)
-                    ?: management.executeResetItem(
-                        context.accountId,
-                        context.hofCharacterId,
-                        command.itemValue,
-                    )?.messages
+            is CharacterCommand.PrepareItems -> executePrepareItems(context)
+            is CharacterCommand.UseItem -> executeItem(context, command.itemValue)
             is CharacterCommand.LearnSkill -> executeChoice(context, "learnskill", "newskill", command.skillValue)
             is CharacterCommand.ChangeClass -> executeChoice(context, "classchange", "job", command.classValue)
             is CharacterCommand.AllocateStat -> executeStat(context, command)
             is CharacterCommand.AllocateStats -> executeStats(context, command)
-            is CharacterCommand.EquipItem -> executeChoice(context, "equip_item", "item_no", command.itemValue)
+            is CharacterCommand.EquipItem -> executeEquipment(context, command.itemValue)
             is CharacterCommand.RemoveEquipment -> executeChoice(context, "remove", "spot", command.equipmentPart)
             is CharacterCommand.RemoveAllEquipment -> executeSimple(context, "remove_all")
             is CharacterCommand.SaveEquipmentPreset -> {
@@ -151,14 +146,24 @@ class HofCharacterCommandAdapter(
 
     private fun executeRename(context: CharacterCommandContext, newName: String): List<String>? {
         if (newName.isBlank() || newName.length > 16) return null
-        executeSimple(context, "rename") ?: return null
-        val form = findForm(context, "namechange") ?: return null
-        val field = form.editableFields.singleOrNull { it.inputName.equals("newname", true) } ?: return null
-        return management.execute(
-            context.accountId,
-            context.hofCharacterId,
-            TownActionRequest(form.actionId, values = listOf(TownFieldValue(field.id, newName))),
-        ).messages
+        return executor.executeResolvedTwoStepProjected(
+            accountId = context.accountId,
+            pageUrl = characterUrl(context),
+            requiredEntrySubmitField = "rename",
+            requiredFinalSubmitField = "namechange",
+            entryAction = { page -> page.semanticForm("rename")?.let { TownActionRequest(it.actionId) } },
+            finalAction = { page ->
+                page.semanticForm("namechange")?.let { form ->
+                    form.editableFields.singleOrNull { it.inputName.equals("newname", true) }
+                        ?.let { field ->
+                            TownActionRequest(form.actionId, values = listOf(TownFieldValue(field.id, newName)))
+                        }
+                }
+            },
+        ) { html, _, result, _ ->
+            projectSnapshot(context, html)
+            result.messages
+        }
     }
 
     private fun executeStat(context: CharacterCommandContext, command: CharacterCommand.AllocateStat): List<String>? {
@@ -173,29 +178,27 @@ class HofCharacterCommandAdapter(
     }
 
     private fun executeStats(context: CharacterCommandContext, command: CharacterCommand.AllocateStats): List<String>? {
-        if (command.amounts.isEmpty() || command.amounts.values.any { it !in 0..10_000 }) return null
-        val form = findForm(context, "stup") ?: return null
-        val selections = CharacterStat.entries.map { stat ->
-            val amount = command.amounts[stat] ?: 0
-            val candidate = form.candidates.singleOrNull {
-                it.inputName.equals("up${stat.name}", true) && it.inputValue == amount.toString()
-            } ?: return null
-            TownActionSelection(candidate.id)
+        return executeProjected(context) { html, page ->
+            val form = page.semanticForm("stup") ?: return@executeProjected null
+            val statusPoints = detailParser.parsePage(context.hofCharacterId, html).snapshot.stats.statusPoints
+                ?: return@executeProjected null
+            CharacterStatCommandRules.requireAllocation(command.amounts, statusPoints)
+            val selections = CharacterStat.entries.map { stat ->
+                form.uniqueCandidate("up${stat.name}", (command.amounts[stat] ?: 0).toString())
+                    ?.let { TownActionSelection(it.id) }
+                    ?: return@executeProjected null
+            }
+            TownActionRequest(form.actionId, selections = selections)
         }
-        return management.execute(
-            context.accountId,
-            context.hofCharacterId,
-            TownActionRequest(form.actionId, selections = selections),
-        ).messages
     }
 
     private fun executeSimple(context: CharacterCommandContext, source: String): List<String>? {
-        return executeSimpleSnapshot(context, source)?.messages
+        return executeSimpleSnapshot(context, source)
     }
 
-    private fun executeSimpleSnapshot(context: CharacterCommandContext, source: String) =
-        findForm(context, source)?.let { form ->
-            management.execute(context.accountId, context.hofCharacterId, TownActionRequest(form.actionId))
+    private fun executeSimpleSnapshot(context: CharacterCommandContext, source: String): List<String>? =
+        executeProjected(context) { _, page ->
+            page.semanticForm(source)?.let { form -> TownActionRequest(form.actionId) }
         }
 
     private fun executeChoice(
@@ -204,21 +207,174 @@ class HofCharacterCommandAdapter(
         inputName: String,
         inputValue: String,
     ): List<String>? {
-        val form = findForm(context, source) ?: return null
-        val candidate = form.candidates.singleOrNull {
-            it.inputName.equals(inputName, true) && it.inputValue == inputValue
-        } ?: return null
-        return management.execute(
-            context.accountId,
-            context.hofCharacterId,
-            TownActionRequest(form.actionId, selections = listOf(TownActionSelection(candidate.id))),
-        ).messages
+        return executeProjected(context) { _, page ->
+            val form = page.semanticForm(source) ?: return@executeProjected null
+            val observedValues = form.candidates
+                .filter { it.inputName.equals(inputName, true) }
+                .map { it.inputValue }
+            val exactValue = inputValue.takeIf { value -> observedValues.count { it == value } == 1 }
+                ?: return@executeProjected null
+            val candidate = form.uniqueCandidate(inputName, exactValue) ?: return@executeProjected null
+            TownActionRequest(form.actionId, selections = listOf(TownActionSelection(candidate.id)))
+        }
     }
 
-    private fun findForm(context: CharacterCommandContext, source: String): ParsedTownForm? =
-        executor.load(context.accountId, requestFactory.characterPage(context.hofCharacterId).url)
-            .forms.singleOrNull { it.submitSource.equals(source, true) }
+    private fun executeEquipment(context: CharacterCommandContext, itemValue: String): List<String>? = try {
+        executor.executeMaterializedResolvedProjectedWithScalars(
+            accountId = context.accountId,
+            pageUrl = characterUrl(context),
+            requiredScalarFields = emptySet(),
+            requiredSubmitField = "equip_item",
+            requiredSyntheticFields = setOf("list_type"),
+            requiredReplacedFields = setOf("item_no"),
+            allowedAbsentRawReplacedFields = setOf("item_no"),
+            materialize = { html, finalUrl -> materializeEquipmentForm(html, finalUrl, itemValue) },
+            resolve = { _, _, page ->
+                val form = page.semanticForm("equip_item") ?: throw FormNotObserved()
+                val candidate = form.uniqueCandidate("item_no", itemValue) ?: throw FormNotObserved()
+                TownActionRequest(form.actionId, selections = listOf(TownActionSelection(candidate.id))) to emptyMap()
+            },
+        ) { html, _, result, _ ->
+            projectSnapshot(context, html)
+            result.messages
+        }
+    } catch (_: FormNotObserved) {
+        null
+    } catch (_: IllegalArgumentException) {
+        null
+    }
+
+    private fun materializeEquipmentForm(html: String, finalUrl: String, itemValue: String): String {
+        val document = HofHtmlParser.parse(html, finalUrl)
+        val candidates = EquipmentCandidateScriptParser.parseEquipmentCatalog(document)
+        val exactValue = CharacterEquipmentCommandRules.requireExactCandidate(
+            itemValue,
+            candidates.map { it.value },
+        )
+        val candidate = candidates.single { it.value == exactValue }
+        require(candidate.typeCode.isNotBlank() && candidate.typeCode.length <= 80) {
+            "현재 장비 분류를 안전하게 확인하지 못했습니다."
+        }
+        val typeSelectors = document.select("select[name=type_equip]")
+        if (typeSelectors.size != 1 ||
+            typeSelectors.single().select("option").count { it.attr("value") == candidate.typeCode } != 1
+        ) throw FormNotObserved()
+        val form = document.select("form").singleOrNull { observed ->
+            observed.select("input[type=submit][name=equip_item], button[type=submit][name=equip_item]").size == 1
+        } ?: throw FormNotObserved()
+        val list = form.selectFirst("#list0") ?: throw FormNotObserved()
+        list.empty()
+        list.appendElement("input")
+            .attr("type", "radio")
+            .attr("name", "item_no")
+            .attr("value", candidate.value)
+        list.appendElement("input")
+            .attr("type", "hidden")
+            .attr("name", "list_type")
+            .attr("value", candidate.typeCode)
+        return document.outerHtml()
+    }
+
+    private fun executePrepareItems(context: CharacterCommandContext): List<String>? = try {
+        executor.executeProjected(
+            accountId = context.accountId,
+            pageUrl = characterUrl(context),
+            resolveAction = { _, _, page ->
+                page.semanticForm("showreset")?.let { TownActionRequest(it.actionId) }
+                    ?: throw FormNotObserved()
+            },
+        ) { html, finalUrl, result, page ->
+            page.semanticForm("resetVarious") ?: throw FormNotObserved()
+            val document = HofHtmlParser.parse(html, finalUrl)
+            val resetForms = document.select("form").filter { form ->
+                form.select("input[type=submit][name=resetVarious], button[type=submit][name=resetVarious]").size == 1
+            }
+            if (resetForms.singleOrNull()?.select("select[name=itemUse]")?.size != 1) throw FormNotObserved()
+            val candidates = EquipmentCandidateScriptParser.parse(document)
+                .filter { it.typeCode == RESET_ITEM_TYPE }
+            snapshots.writeEquipmentCandidateSubset(
+                context.accountId,
+                context.hofCharacterId,
+                candidates,
+                setOf(RESET_ITEM_TYPE),
+            )
+            result.messages
+        }
+    } catch (_: FormNotObserved) {
+        null
+    }
+
+    private fun executeItem(context: CharacterCommandContext, itemValue: String): List<String>? =
+        executor.executeResolvedDirectOrTwoStepProjected(
+            accountId = context.accountId,
+            pageUrl = characterUrl(context),
+            requiredDirectSubmitField = "use_char_item",
+            directAction = { page ->
+                page.semanticForm("use_char_item")?.let { form ->
+                    form.uniqueCandidate("item_no", itemValue)?.let { candidate ->
+                        TownActionRequest(form.actionId, selections = listOf(TownActionSelection(candidate.id)))
+                    }
+                }
+            },
+            requiredEntrySubmitField = "showreset",
+            requiredFinalSubmitField = "resetVarious",
+            entryAction = { page -> page.semanticForm("showreset")?.let { TownActionRequest(it.actionId) } },
+            finalAction = { page ->
+                page.semanticForm("resetVarious")?.let { form ->
+                    form.uniqueCandidate("itemUse", itemValue)?.let { candidate ->
+                        TownActionRequest(
+                            form.actionId,
+                            selections = listOf(TownActionSelection(candidate.id)),
+                        )
+                    }
+                }
+            },
+        ) { html, _, result, _ ->
+            projectSnapshot(context, html)
+            result.messages
+        }
+
+    private fun executeProjected(
+        context: CharacterCommandContext,
+        resolve: (html: String, page: ParsedTownPage) -> TownActionRequest?,
+    ): List<String>? = try {
+        executor.executeProjected(
+            accountId = context.accountId,
+            pageUrl = characterUrl(context),
+            resolveAction = { html, _, page -> resolve(html, page) ?: throw FormNotObserved() },
+        ) { html, _, result, _ ->
+            projectSnapshot(context, html)
+            result.messages
+        }
+    } catch (_: FormNotObserved) {
+        null
+    }
+
+    private fun projectSnapshot(context: CharacterCommandContext, html: String) {
+        snapshots.writeParsed(
+            context.accountId,
+            context.hofCharacterId,
+            detailParser.parsePage(context.hofCharacterId, html),
+        )
+    }
+
+    private fun characterUrl(context: CharacterCommandContext): String =
+        requestFactory.characterPage(context.hofCharacterId).url
+
+    private fun ParsedTownPage.semanticForm(source: String): ParsedTownForm? =
+        forms.singleOrNull { it.submitSource.equals(source, true) }
+
+    private fun ParsedTownForm.uniqueCandidate(inputName: String, inputValue: String) =
+        candidates.singleOrNull {
+            it.inputName.equals(inputName, true) && it.inputValue == inputValue
+        }
 
     private fun rejected(code: String, message: String) =
         CharacterCommandObservation.Rejected(code, message)
+
+    private class FormNotObserved : RuntimeException()
+
+    private companion object {
+        const val RESET_ITEM_TYPE = "resetitem"
+    }
 }

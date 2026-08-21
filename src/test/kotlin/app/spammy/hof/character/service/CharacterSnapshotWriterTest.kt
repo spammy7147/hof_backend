@@ -91,6 +91,39 @@ class CharacterSnapshotWriterTest {
     }
 
     @Test
+    fun `transient reset selector replaces only reset candidates`() {
+        val account = accounts.save(HofAccountEntity(loginId = "subset-writer", encryptedPassword = "x", createdAt = T0))
+        val character = characters.save(
+            CharacterEntity(account = account, hofCharacterId = "char-subset", name = "소셜", job = "Knight", updatedAt = T0),
+        )
+        candidates.saveAll(
+            listOf(
+                CharacterEquipmentCandidateEntity(
+                    character = character, candidateOrder = 0, sourceValue = "sword", typeCode = "weapon",
+                    name = "검", iconUrl = "sword.gif", description = "검",
+                ),
+                CharacterEquipmentCandidateEntity(
+                    character = character, candidateOrder = 1, sourceValue = "old-reset", typeCode = "resetitem",
+                    name = "옛 리셋", iconUrl = "", description = "옛 리셋",
+                ),
+            ),
+        )
+
+        writer.writeEquipmentCandidateSubset(
+            character,
+            listOf(HofEquipmentCandidate("new-reset", "resetitem", "새 리셋", quantity = 2)),
+            setOf("resetitem"),
+            T1,
+        )
+
+        val stored = query.findEquipmentCandidates(character.id)
+        assertEquals(listOf("sword", "new-reset"), stored.map { it.sourceValue })
+        assertEquals(listOf("weapon", "resetitem"), stored.map { it.typeCode })
+        assertEquals(2, stored.last().quantity)
+        assertEquals(T1, character.updatedAt)
+    }
+
+    @Test
     fun `captured HOF page flows through parser and section persistence without losing options or equipment`() {
         val account = accounts.save(HofAccountEntity(loginId = "fixture-pipeline", encryptedPassword = "x", createdAt = T0))
         val character = characters.save(
