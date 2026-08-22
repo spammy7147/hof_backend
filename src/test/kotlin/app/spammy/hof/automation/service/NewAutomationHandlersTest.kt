@@ -72,6 +72,21 @@ class NewAutomationHandlersTest {
     }
 
     @Test
+    fun `blocked fishing without a target becomes an authoritative observation gap`() {
+        val state = fishing(FishingPrimaryAction.NONE).copy(blockedByBattle = true, battleTarget = null)
+
+        val gap = assertIs<HandlerEvaluation.ObservationGap>(
+            FishingAutomationHandler().evaluate(
+                FishingAutomationSnapshot(1, state, emptyList(), null, now),
+            ),
+        )
+
+        assertEquals("FISHING_BATTLE_TARGET_MISSING", gap.reasonCode)
+        assertEquals(null, gap.scopeKey)
+        assertEquals(true, gap.authoritative)
+    }
+
+    @Test
     fun `fishing battle selects the preset configured for its exact map`() {
         val state = fishing(FishingPrimaryAction.NONE).copy(
             blockedByBattle = true,

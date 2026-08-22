@@ -13,8 +13,16 @@ class AutomationEvidenceRetentionScheduler(
 ) {
     @Scheduled(cron = "\${hof.automation-convergence.evidence-cleanup-cron:0 35 4 * * *}")
     @Transactional
-    fun deleteExpiredEvidence(): Int = entityManager.createQuery(
-        "delete from AutomationEvidenceCaseEntity evidence where evidence.expiresAt <= :now",
-    ).setParameter("now", timeProvider.now())
-        .executeUpdate()
+    fun deleteExpiredEvidence(): Int {
+        val now = timeProvider.now()
+        val evidenceCases = entityManager.createQuery(
+            "delete from AutomationEvidenceCaseEntity evidence where evidence.expiresAt <= :now",
+        ).setParameter("now", now)
+            .executeUpdate()
+        val shadowEvaluations = entityManager.createQuery(
+            "delete from AutomationConvergenceShadowEvaluationEntity shadow where shadow.expiresAt <= :now",
+        ).setParameter("now", now)
+            .executeUpdate()
+        return evidenceCases + shadowEvaluations
+    }
 }

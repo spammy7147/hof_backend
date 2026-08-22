@@ -9,6 +9,7 @@ import org.springframework.stereotype.Component
 
 enum class ActionEvidenceSource {
     DIRECT_RESPONSE,
+    LIFECYCLE_RESULT,
     ACCOUNT_OBSERVATION,
     SHARED_OBSERVATION,
 }
@@ -27,6 +28,12 @@ enum class ObservationFreshness {
 sealed interface ActionObservedState {
     val fingerprint: String
 }
+
+data class LifecycleResultObservedState(
+    override val fingerprint: String,
+    val actionKind: AutomationActionKind,
+    val resultKind: String,
+) : ActionObservedState
 
 data class QuestObservedState(
     override val fingerprint: String,
@@ -110,12 +117,16 @@ class DefaultActionEvidencePolicies : ActionEvidencePolicies {
                 observation.capturedAt,
                 observation.battleGateChallengeId,
                 reason,
+                observation.responseShapeFingerprint,
+                observation.sanitizedSnippet,
             )
         }
         if (observation.explicitRejected) {
             return AutomationActionEvidence.DirectRejected(
                 observation.capturedAt,
                 observation.rejectionReason ?: "ACTION_REJECTED",
+                observation.responseShapeFingerprint,
+                observation.sanitizedSnippet,
             )
         }
         if (
@@ -125,12 +136,27 @@ class DefaultActionEvidencePolicies : ActionEvidencePolicies {
             return AutomationActionEvidence.IncompleteObservation(
                 observation.capturedAt,
                 "${observation.completeness.name}_${observation.freshness.name}",
+                responseShapeFingerprint = observation.responseShapeFingerprint,
+                sanitizedSnippet = observation.sanitizedSnippet,
             )
         }
         val state = observation.state ?: return AutomationActionEvidence.IncompleteObservation(
             observation.capturedAt,
             "OBSERVED_STATE_MISSING",
+            responseShapeFingerprint = observation.responseShapeFingerprint,
+            sanitizedSnippet = observation.sanitizedSnippet,
         )
+        if (observation.source == ActionEvidenceSource.LIFECYCLE_RESULT) {
+            val lifecycle = state as? LifecycleResultObservedState
+                ?: return incomplete(observation, "LIFECYCLE_RESULT_STATE_EXPECTED")
+            if (
+                lifecycle.actionKind != selection.actionKind ||
+                !lifecycleResultProvesApplied(selection.actionKind, lifecycle.resultKind)
+            ) {
+                return incomplete(observation, "LIFECYCLE_RESULT_NOT_AUTHORITATIVE")
+            }
+            return directApplied(observation, lifecycle)
+        }
         return when (selection.actionKind) {
             AutomationActionKind.QUEST_ACCEPT,
             AutomationActionKind.QUEST_CLAIM,
@@ -170,7 +196,7 @@ class DefaultActionEvidencePolicies : ActionEvidencePolicies {
                 QuestState.CLAIMABLE,
                 QuestState.COMPLETED,
             )
-            AutomationActionKind.QUEST_CLAIM -> !state.present || state.state in setOf(
+            AutomationActionKind.QUEST_CLAIM -> state.present && state.state in setOf(
                 QuestState.COMPLETED,
                 QuestState.UNAVAILABLE,
             )
@@ -190,10 +216,8 @@ class DefaultActionEvidencePolicies : ActionEvidencePolicies {
                 HomeQuestState.ACTIVE,
                 HomeQuestState.CLAIMABLE,
             )
-            AutomationActionKind.HOME_CLAIM -> !state.present || state.state in setOf(
-                HomeQuestState.WAITING,
-                HomeQuestState.COMPLETED,
-            )
+            AutomationActionKind.HOME_CLAIM -> state.present &&
+                state.state in setOf(HomeQuestState.WAITING, HomeQuestState.COMPLETED)
             else -> false
         }
         return if (directApplied) directApplied(observation, state) else changedOrSame(selection, observation, state)
@@ -228,8 +252,11 @@ class DefaultActionEvidencePolicies : ActionEvidencePolicies {
         ) {
             return directApplied(observation, state)
         }
-        if (!state.mapPresent || state.personalCooldown) {
-            return AutomationActionEvidence.StateAdvanced(observation.capturedAt, state.fingerprint)
+        if (state.personalCooldown && state.mapPresent) {
+            return directApplied(observation, state)
+        }
+        if (!state.mapPresent) {
+            return stateAdvanced(observation, state)
         }
         return changedOrSame(selection, observation, state)
     }
@@ -241,7 +268,7 @@ class DefaultActionEvidencePolicies : ActionEvidencePolicies {
     ): AutomationActionEvidence {
         val state = observed as? FishingObservedState ?: return incomplete(observation, "FISHING_STATE_EXPECTED")
         if (state.blockedByBattle) {
-            return AutomationActionEvidence.StateAdvanced(observation.capturedAt, state.fingerprint)
+            return stateAdvanced(observation, state)
         }
         val directApplied = observation.source == ActionEvidenceSource.DIRECT_RESPONSE && when (selection.actionKind) {
             AutomationActionKind.FISHING_START -> state.primaryAction == FishingPrimaryAction.CATCH ||
@@ -265,8 +292,9 @@ class DefaultActionEvidencePolicies : ActionEvidencePolicies {
         val applied = direct && when (selection.actionKind) {
             AutomationActionKind.RAID_REGISTER -> state.joined
             AutomationActionKind.RAID_START -> observation.actionSuccessMarker && state.sharedStatus == "IN_BATTLE"
-            AutomationActionKind.RAID_RESET -> !state.joined && state.sharedStatus in setOf("READY", "REGISTERABLE", "WAITING")
-            AutomationActionKind.RAID_REWARD -> state.rewardAvailable == false
+            AutomationActionKind.RAID_RESET -> observation.actionSuccessMarker && !state.joined &&
+                state.sharedStatus in setOf("ABSENT", "RECRUITING", "READY", "WAITING")
+            AutomationActionKind.RAID_REWARD -> observation.actionSuccessMarker && state.rewardAvailable == false
             AutomationActionKind.RAID_REFRESH -> observation.actionSuccessMarker
             AutomationActionKind.RAID_BATTLE -> state.terminalOutcomes.isNotEmpty() &&
                 state.terminalOutcomes.all(::terminalBattleOutcome)
@@ -275,10 +303,13 @@ class DefaultActionEvidencePolicies : ActionEvidencePolicies {
         }
         if (applied) return directApplied(observation, state)
         if (!state.joined && state.sharedStatus in setOf("IN_BATTLE", "COMPLETED")) {
-            return AutomationActionEvidence.StateAdvanced(observation.capturedAt, state.fingerprint)
+            return stateAdvanced(observation, state)
         }
-        if (state.personalCooldown || state.sharedStatus == "COMPLETED") {
-            return AutomationActionEvidence.StateAdvanced(observation.capturedAt, state.fingerprint)
+        if (state.joined && state.personalCooldown) {
+            return directApplied(observation, state)
+        }
+        if (state.sharedStatus == "COMPLETED") {
+            return stateAdvanced(observation, state)
         }
         return changedOrSame(selection, observation, state)
     }
@@ -288,21 +319,67 @@ class DefaultActionEvidencePolicies : ActionEvidencePolicies {
         observation: ActionPolicyObservation,
         state: ActionObservedState,
     ): AutomationActionEvidence = if (state.fingerprint != selection.baselineFingerprint) {
-        AutomationActionEvidence.StateAdvanced(observation.capturedAt, state.fingerprint)
+        stateAdvanced(observation, state)
     } else {
-        AutomationActionEvidence.SameState(observation.capturedAt, state.fingerprint)
+        AutomationActionEvidence.SameState(
+            observation.capturedAt,
+            state.fingerprint,
+            observation.responseShapeFingerprint,
+            observation.sanitizedSnippet,
+        )
     }
+
+    private fun stateAdvanced(
+        observation: ActionPolicyObservation,
+        state: ActionObservedState,
+    ) = AutomationActionEvidence.StateAdvanced(
+        observation.capturedAt,
+        state.fingerprint,
+        observation.responseShapeFingerprint,
+        observation.sanitizedSnippet,
+    )
 
     private fun directApplied(
         observation: ActionPolicyObservation,
         state: ActionObservedState,
-    ) = AutomationActionEvidence.DirectApplied(observation.capturedAt, state.fingerprint)
+    ) = AutomationActionEvidence.DirectApplied(
+        observation.capturedAt,
+        state.fingerprint,
+        observation.responseShapeFingerprint,
+        observation.sanitizedSnippet,
+    )
 
     private fun incomplete(
         observation: ActionPolicyObservation,
         reason: String,
-    ) = AutomationActionEvidence.IncompleteObservation(observation.capturedAt, reason)
+    ) = AutomationActionEvidence.IncompleteObservation(
+        observation.capturedAt,
+        reason,
+        responseShapeFingerprint = observation.responseShapeFingerprint,
+        sanitizedSnippet = observation.sanitizedSnippet,
+    )
 
     private fun terminalBattleOutcome(value: String): Boolean = value in setOf("VICTORY", "DEFEAT", "DRAW")
-}
 
+    private fun lifecycleResultProvesApplied(actionKind: AutomationActionKind, resultKind: String): Boolean = when (
+        resultKind
+    ) {
+        "Completed" -> actionKind == AutomationActionKind.RAID_CYCLE_ABORT
+        "ReconciledApplied" -> true
+        "BattleCompleted" -> actionKind.battle
+        "RaidCycleFinished" -> actionKind in RAID_ACTION_KINDS
+        else -> false
+    }
+
+    private companion object {
+        val RAID_ACTION_KINDS: Set<AutomationActionKind> = setOf(
+            AutomationActionKind.RAID_RESET,
+            AutomationActionKind.RAID_REGISTER,
+            AutomationActionKind.RAID_START,
+            AutomationActionKind.RAID_REWARD,
+            AutomationActionKind.RAID_REFRESH,
+            AutomationActionKind.RAID_BATTLE,
+            AutomationActionKind.RAID_CYCLE_ABORT,
+        )
+    }
+}

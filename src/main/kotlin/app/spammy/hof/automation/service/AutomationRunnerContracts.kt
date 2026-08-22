@@ -1,6 +1,7 @@
 package app.spammy.hof.automation.service
 
 import app.spammy.hof.automation.entity.AutomationType
+import app.spammy.hof.automation.convergence.ActionObservedState
 import app.spammy.hof.automation.raid.RaidCycleOutcome
 import app.spammy.hof.quest.model.QuestSnapshot
 import java.time.Instant
@@ -84,9 +85,20 @@ sealed interface AutomationCoordination {
 sealed interface TypedAutomationExecution {
     data object Completed : TypedAutomationExecution
 
+    /** 실제 remote 응답에서 정규화한 poststate를 convergence policy에 전달한다. */
+    data class ActionCompleted(
+        val observedState: ActionObservedState,
+        val responseShapeMaterial: String,
+        val sanitizedSnippet: String,
+        val actionSuccessMarker: Boolean = false,
+        val raidOutcome: RaidCycleOutcome? = null,
+    ) : TypedAutomationExecution
+
     data class BattleCompleted(
         val categoryId: String,
         val mapCode: String,
+        val terminalOutcomes: List<String> = emptyList(),
+        val raidOutcome: RaidCycleOutcome? = null,
     ) : TypedAutomationExecution
 
     data class SharedCooldown(
@@ -104,6 +116,11 @@ class SafeRetryableAutomationException(message: String, cause: Throwable? = null
 class FatalAutomationException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
 class AmbiguousAutomationSubmissionException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
 class AutomationActionPreconditionChangedException(
+    message: String,
+    cause: Throwable? = null,
+) : RuntimeException(message, cause)
+
+class AutomationPreSubmitObservationIncompleteException(
     message: String,
     cause: Throwable? = null,
 ) : RuntimeException(message, cause)

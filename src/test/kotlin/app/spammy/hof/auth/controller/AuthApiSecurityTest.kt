@@ -31,8 +31,8 @@ import kotlin.test.assertTrue
 @SpringBootTest(
     properties = [
         "hof.auth.login-rate-limit-per-id=2",
-        "hof.auth.login-rate-limit-per-ip=1000",
-        "hof.auth.refresh-rate-limit-per-ip=1000",
+        "hof.auth.refresh-rate-limit-per-family=1000",
+        "hof.auth.refresh-rate-limit-per-account=1000",
     ],
 )
 @AutoConfigureMockMvc

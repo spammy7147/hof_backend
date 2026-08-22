@@ -48,6 +48,9 @@ class AutomationActionAttemptEntity(
     @Column(name = "baseline_fingerprint", nullable = false, length = 128)
     val baselineFingerprint: String,
 
+    @Column(name = "observation_only", nullable = false)
+    val observationOnly: Boolean = false,
+
     @Column(name = "created_at", nullable = false)
     val createdAt: Instant,
 
@@ -78,8 +81,8 @@ class ActionConvergenceEntity(
     val scopeKey: String,
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "result", length = 30)
-    var result: ActionConvergenceResult? = null,
+    @Column(name = "result", nullable = false, length = 30)
+    var result: ActionConvergenceResult = ActionConvergenceResult.PENDING,
 
     @Column(name = "active_marker")
     var activeMarker: Int? = ACTIVE,
@@ -181,6 +184,81 @@ class AutomationEvidenceCaseEntity(
 
     @Column(name = "reason_code", nullable = false, length = 100)
     val reasonCode: String,
+
+    @Column(name = "policy_version", nullable = false, length = 80)
+    val policyVersion: String,
+
+    @Column(name = "build_version", nullable = false, length = 80)
+    val buildVersion: String,
+
+    @Column(name = "created_at", nullable = false)
+    val createdAt: Instant,
+
+    @Column(name = "expires_at", nullable = false)
+    val expiresAt: Instant,
+)
+
+@Entity
+@Table(name = "automation_convergence_shadow_evaluations")
+class AutomationConvergenceShadowEvaluationEntity(
+    @Id
+    @Column(name = "id", length = 64)
+    val id: String,
+
+    @Column(name = "account_id", nullable = false)
+    val accountId: Long,
+
+    @Column(name = "execution_identity_hash", nullable = false, length = 64)
+    val executionIdentityHash: String,
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "action_kind", nullable = false, length = 50)
+    val actionKind: AutomationActionKind,
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "scope_kind", nullable = false, length = 50)
+    val scopeKind: AutomationIsolationScopeKind,
+
+    @Column(name = "scope_key_hash", nullable = false, length = 64)
+    val scopeKeyHash: String,
+
+    @Column(name = "evidence_kind", nullable = false, length = 50)
+    val evidenceKind: String,
+
+    @Column(name = "evidence_completeness", nullable = false, length = 40)
+    val evidenceCompleteness: String,
+
+    @Column(name = "response_shape_fingerprint", nullable = false, length = 64)
+    val responseShapeFingerprint: String,
+
+    @Column(name = "sanitized_snippet", nullable = false, length = 1000)
+    val sanitizedSnippet: String,
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "legacy_decision", nullable = false, length = 40)
+    val legacyDecision: LegacyConvergenceDecision,
+
+    @Column(name = "legacy_reason_code", nullable = false, length = 100)
+    val legacyReasonCode: String,
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "new_result", nullable = false, length = 30)
+    val newResult: ActionConvergenceResult,
+
+    @Column(name = "new_reason_code", nullable = false, length = 100)
+    val newReasonCode: String,
+
+    @Column(name = "result_differs", nullable = false)
+    val resultDiffers: Boolean,
+
+    @Column(name = "reason_differs", nullable = false)
+    val reasonDiffers: Boolean,
+
+    @Column(name = "shape_differs", nullable = false)
+    val shapeDiffers: Boolean,
+
+    @Column(name = "completeness_differs", nullable = false)
+    val completenessDiffers: Boolean,
 
     @Column(name = "policy_version", nullable = false, length = 80)
     val policyVersion: String,

@@ -57,6 +57,8 @@ data class SelectedAutomationAction(
     val scope: AutomationIsolationScope,
     val policyVersion: String,
     val baselineFingerprint: String,
+    /** 제출 payload 없이 selector가 최신 GET 관측만 반복하는 gap 상태다. */
+    val observationOnly: Boolean = false,
 ) {
     init {
         require(entryId > 0) { "Automation entry id must be positive." }
@@ -68,46 +70,68 @@ data class SelectedAutomationAction(
 
 sealed interface AutomationActionEvidence {
     val capturedAt: Instant
+    val responseShapeFingerprint: String?
+        get() = null
+    val sanitizedSnippet: String?
+        get() = null
 
     data class DirectApplied(
         override val capturedAt: Instant,
         val stateFingerprint: String,
+        override val responseShapeFingerprint: String? = null,
+        override val sanitizedSnippet: String? = null,
     ) : AutomationActionEvidence
 
     data class DirectRejected(
         override val capturedAt: Instant,
         val reason: String,
+        override val responseShapeFingerprint: String? = null,
+        override val sanitizedSnippet: String? = null,
     ) : AutomationActionEvidence
 
     data class StateAdvanced(
         override val capturedAt: Instant,
         val stateFingerprint: String,
+        override val responseShapeFingerprint: String? = null,
+        override val sanitizedSnippet: String? = null,
     ) : AutomationActionEvidence
 
     data class SameState(
         override val capturedAt: Instant,
         val stateFingerprint: String,
+        override val responseShapeFingerprint: String? = null,
+        override val sanitizedSnippet: String? = null,
     ) : AutomationActionEvidence
 
     data class IncompleteObservation(
         override val capturedAt: Instant,
         val reason: String,
+        /** 완전한 권위 페이지에서 필수 식별자만 누락된 경우 관측 예산에 포함한다. */
+        val authoritative: Boolean = false,
+        override val responseShapeFingerprint: String? = null,
+        override val sanitizedSnippet: String? = null,
     ) : AutomationActionEvidence
 
     data class NetworkFailure(
         override val capturedAt: Instant,
         val reason: String,
+        override val responseShapeFingerprint: String? = null,
+        override val sanitizedSnippet: String? = null,
     ) : AutomationActionEvidence
 
     data class ResultUnobserved(
         override val capturedAt: Instant,
         val reason: String,
+        override val responseShapeFingerprint: String? = null,
+        override val sanitizedSnippet: String? = null,
     ) : AutomationActionEvidence
 
     data class BattleGateRequired(
         override val capturedAt: Instant,
         val challengeId: Long?,
         val reason: String,
+        override val responseShapeFingerprint: String? = null,
+        override val sanitizedSnippet: String? = null,
     ) : AutomationActionEvidence
 }
 
@@ -117,6 +141,7 @@ sealed interface ConvergenceDirective {
     data class Probe(
         val attemptId: Long,
         val executionIdentity: String,
+        val entryId: Long? = null,
     ) : ConvergenceDirective
 
     data class WaitUntil(
@@ -136,7 +161,7 @@ data class ActionConvergenceRecord(
     val attemptId: Long,
     val accountId: Long,
     val selection: SelectedAutomationAction,
-    var result: ActionConvergenceResult? = null,
+    var result: ActionConvergenceResult? = ActionConvergenceResult.PENDING,
     var submittedAt: Instant? = null,
     var successfulObservationCount: Int = 0,
     var firstPendingAt: Instant? = null,
@@ -146,7 +171,7 @@ data class ActionConvergenceRecord(
     var updatedAt: Instant,
 ) {
     val active: Boolean
-        get() = result == null || result == ActionConvergenceResult.PENDING
+        get() = result == ActionConvergenceResult.PENDING || result == null
 }
 
 data class AccountBattleGate(

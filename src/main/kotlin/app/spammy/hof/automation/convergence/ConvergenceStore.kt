@@ -9,6 +9,7 @@ interface ConvergenceStore {
     fun findActiveScopes(accountId: Long): Set<AutomationIsolationScope>
     fun findSuppressedBaselines(accountId: Long): Map<AutomationIsolationScope, Set<String>>
     fun findDue(accountId: Long, now: Instant): ActionConvergenceRecord?
+    fun normalizeOrphans(accountId: Long, now: Instant): Int
     fun get(attemptId: Long): ActionConvergenceRecord?
     fun save(record: ActionConvergenceRecord)
     fun releaseSuppression(accountId: Long, attemptId: Long, releasedAt: Instant): Boolean
@@ -67,8 +68,22 @@ class InMemoryConvergenceStore : ConvergenceStore {
     override fun findDue(accountId: Long, now: Instant): ActionConvergenceRecord? = records.values
         .asSequence()
         .filter { it.accountId == accountId && it.result == ActionConvergenceResult.PENDING }
+        .filterNot { it.selection.observationOnly }
         .filter { it.nextProbeAt?.isAfter(now) != true }
         .minWithOrNull(compareBy<ActionConvergenceRecord> { it.nextProbeAt }.thenBy { it.attemptId })
+
+    @Synchronized
+    override fun normalizeOrphans(accountId: Long, now: Instant): Int {
+        val orphans = records.values.filter { it.accountId == accountId && it.result == null }
+        orphans.forEach { record ->
+            record.result = ActionConvergenceResult.PENDING
+            record.firstPendingAt = record.firstPendingAt ?: now
+            record.nextProbeAt = now
+            record.reasonCode = "ORPHAN_RESULT_RECONCILED"
+            record.updatedAt = now
+        }
+        return orphans.size
+    }
 
     @Synchronized
     override fun get(attemptId: Long): ActionConvergenceRecord? = records[attemptId]

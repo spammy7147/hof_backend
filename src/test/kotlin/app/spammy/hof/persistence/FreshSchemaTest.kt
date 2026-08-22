@@ -82,6 +82,7 @@ class FreshSchemaTest {
                 "31" to "persist raid hold messages",
                 "32" to "persist raid battle recovery",
                 "33" to "add automation action convergence",
+                "34" to "harden convergence and persist shadow",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -120,6 +121,7 @@ class FreshSchemaTest {
                 "V31__persist_raid_hold_messages.sql",
                 "V32__persist_raid_battle_recovery.sql",
                 "V33__add_automation_action_convergence.sql",
+                "V34__harden_convergence_and_persist_shadow.sql",
                 "V3__add_automation_work_sessions.sql",
                 "V4__prepare_captcha_on_demand.sql",
                 "V5__track_character_detail_sync.sql",

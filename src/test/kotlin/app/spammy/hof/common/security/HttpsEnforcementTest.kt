@@ -12,7 +12,12 @@ import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPat
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 
 @ActiveProfiles("test")
-@SpringBootTest(properties = ["hof.auth.require-https=true"])
+@SpringBootTest(
+    properties = [
+        "hof.auth.require-https=true",
+        "server.forward-headers-strategy=framework",
+    ],
+)
 @AutoConfigureMockMvc
 class HttpsEnforcementTest(
     @Autowired private val mockMvc: MockMvc,
@@ -28,6 +33,17 @@ class HttpsEnforcementTest(
     @Test
     fun acceptsSecureRequestsWhenProductionEnforcementIsEnabled() {
         mockMvc.perform(get("/api/status").secure(true))
+            .andExpect(status().isUnauthorized)
+    }
+
+    @Test
+    fun acceptsTrustedForwardedHttpsWhenFrameworkHeaderHandlingIsEnabled() {
+        mockMvc.perform(
+            get("/api/status")
+                .secure(false)
+                .header("X-Forwarded-Proto", "https")
+                .header("X-Forwarded-Host", "api.example.com"),
+        )
             .andExpect(status().isUnauthorized)
     }
 }

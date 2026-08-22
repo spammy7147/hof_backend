@@ -20,6 +20,11 @@ pipeline {
         PUBLISH_TOKEN_CREDENTIAL_ID = 'hof-spammy-publish-token'
         DEPLOY_TARGET = 'spammy@192.168.50.202'
         DEPLOY_HOST_IP = '192.168.50.202'
+        BACKEND_BIND_ADDRESS = '192.168.50.202'
+        TRUSTED_INGRESS_MODE = 'disabled'
+        TRUSTED_PROXY_SOURCE_CIDR = ''
+        SERVER_FORWARD_HEADERS_STRATEGY = 'NONE'
+        PUBLIC_HEALTH_URL = 'https://api-hof.spammy.app/actuator/health'
         SSH_KNOWN_HOSTS_FILE = "${WORKSPACE}/.jenkins/known_hosts"
         IMAGE_REPOSITORY = 'hof-backend'
         CONTAINER_NAME = 'hof-backend'
@@ -68,6 +73,7 @@ pipeline {
                     command -v ssh
                     command -v scp
                     command -v ssh-keygen
+                    command -v curl
                     docker info >/dev/null
                     test -x ./gradlew
                     test -r "$SSH_KNOWN_HOSTS_FILE"
@@ -78,9 +84,56 @@ pipeline {
                         credentialsId: "${SSH_CREDENTIAL_ID}",
                         keyFileVariable: 'SSH_KEY_FILE',
                     ),
+                    file(
+                        credentialsId: "${ENV_FILE_CREDENTIAL_ID}",
+                        variable: 'HOF_ENV_FILE',
+                    ),
                 ]) {
-                    sh '''
-                        set -eu
+                    sh '''#!/usr/bin/env bash
+                        set -Eeuo pipefail
+                        case "$SERVER_FORWARD_HEADERS_STRATEGY" in
+                            NONE|FRAMEWORK) ;;
+                            *) echo 'SERVER_FORWARD_HEADERS_STRATEGY must be NONE or FRAMEWORK.' >&2; exit 1 ;;
+                        esac
+                        case "$TRUSTED_INGRESS_MODE" in
+                            disabled)
+                                if [ "$SERVER_FORWARD_HEADERS_STRATEGY" != 'NONE' ]; then
+                                    echo 'Forwarded headers require a verified trusted ingress.' >&2
+                                    exit 1
+                                fi
+                                ;;
+                            loopback)
+                                case "$BACKEND_BIND_ADDRESS" in
+                                    127.0.0.1) ;;
+                                    *) echo 'Loopback ingress mode requires a loopback backend bind.' >&2; exit 1 ;;
+                                esac
+                                ;;
+                            firewall-verified)
+                                test -n "$TRUSTED_PROXY_SOURCE_CIDR" || {
+                                    echo 'Firewall ingress mode requires TRUSTED_PROXY_SOURCE_CIDR.' >&2
+                                    exit 1
+                                }
+                                if curl --fail --silent --show-error --max-time 3 \
+                                    "http://${DEPLOY_HOST_IP}:${HOST_PORT}/actuator/health" >/dev/null 2>&1; then
+                                    echo 'Direct backend health is still reachable from the Jenkins agent.' >&2
+                                    exit 1
+                                fi
+                                ;;
+                            *) echo 'TRUSTED_INGRESS_MODE must be disabled, loopback, or firewall-verified.' >&2; exit 1 ;;
+                        esac
+                        if [ "$SERVER_FORWARD_HEADERS_STRATEGY" = 'FRAMEWORK' ]; then
+                            [ "$TRUSTED_INGRESS_MODE" != 'disabled' ]
+                            if grep -Eq '^HOF_AUTH_REFRESH_COOKIE_SECURE=true\r?$' "$HOF_ENV_FILE" && \
+                                ! grep -Eq '^HOF_AUTH_REQUIRE_HTTPS=true\r?$' "$HOF_ENV_FILE"; then
+                                echo 'Secure Cookie cutover requires HTTPS enforcement first.' >&2
+                                exit 1
+                            fi
+                        else
+                            if grep -Eq '^HOF_AUTH_REQUIRE_HTTPS=true\r?$|^HOF_AUTH_REFRESH_COOKIE_SECURE=true\r?$' "$HOF_ENV_FILE"; then
+                                echo 'HTTPS enforcement and Secure Cookie require verified forwarded-header handling.' >&2
+                                exit 1
+                            fi
+                        fi
                         ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes \
                           -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
                           "$DEPLOY_TARGET" \
@@ -171,7 +224,7 @@ pipeline {
                             ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes \
                               -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
                               "$DEPLOY_TARGET" \
-                              "IMAGE='$IMAGE' IMAGE_REPOSITORY='$IMAGE_REPOSITORY' CONTAINER_NAME='$CONTAINER_NAME' DEPLOY_HOST_IP='$DEPLOY_HOST_IP' HOST_PORT='$HOST_PORT' CONTAINER_PORT='$CONTAINER_PORT' RELEASE_HOST_DIR='$RELEASE_HOST_DIR' RELEASE_CONTAINER_DIR='$RELEASE_CONTAINER_DIR' REMOTE_ENV_FILE='$REMOTE_ENV_FILE' REMOTE_FIREBASE_FILE='$REMOTE_FIREBASE_FILE' REMOTE_RELEASE_ENV_FILE='$REMOTE_RELEASE_ENV_FILE' BUILD_NUMBER='$BUILD_NUMBER' bash -s" <<'REMOTE_SCRIPT'
+                              "IMAGE='$IMAGE' IMAGE_REPOSITORY='$IMAGE_REPOSITORY' CONTAINER_NAME='$CONTAINER_NAME' BACKEND_BIND_ADDRESS='$BACKEND_BIND_ADDRESS' HOST_PORT='$HOST_PORT' CONTAINER_PORT='$CONTAINER_PORT' SERVER_FORWARD_HEADERS_STRATEGY='$SERVER_FORWARD_HEADERS_STRATEGY' PUBLIC_HEALTH_URL='$PUBLIC_HEALTH_URL' RELEASE_HOST_DIR='$RELEASE_HOST_DIR' RELEASE_CONTAINER_DIR='$RELEASE_CONTAINER_DIR' REMOTE_ENV_FILE='$REMOTE_ENV_FILE' REMOTE_FIREBASE_FILE='$REMOTE_FIREBASE_FILE' REMOTE_RELEASE_ENV_FILE='$REMOTE_RELEASE_ENV_FILE' BUILD_NUMBER='$BUILD_NUMBER' bash -s" <<'REMOTE_SCRIPT'
                             set -Eeuo pipefail
 
                             rollback_name="${CONTAINER_NAME}-rollback"
@@ -224,13 +277,14 @@ pipeline {
 
                             if ! docker run -d \
                                 --name "$CONTAINER_NAME" \
-                                --publish "$DEPLOY_HOST_IP:$HOST_PORT:$CONTAINER_PORT" \
+                                --publish "$BACKEND_BIND_ADDRESS:$HOST_PORT:$CONTAINER_PORT" \
                                 --env-file "$REMOTE_ENV_FILE" \
                                 --env-file "$REMOTE_RELEASE_ENV_FILE" \
                                 --mount "type=bind,src=$secret_path,dst=/run/secrets/firebase-service-account.json,readonly" \
                                 --mount "type=bind,src=$RELEASE_HOST_DIR,dst=$RELEASE_CONTAINER_DIR,readonly" \
                                 --env "GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/firebase-service-account.json" \
                                 --env "HOF_RELEASE_STORAGE_ROOT=$RELEASE_CONTAINER_DIR" \
+                                --env "SERVER_FORWARD_HEADERS_STRATEGY=$SERVER_FORWARD_HEADERS_STRATEGY" \
                                 --restart unless-stopped \
                                 "$IMAGE" >/dev/null; then
                                 restore_previous
@@ -241,7 +295,7 @@ pipeline {
                             healthy=0
                             for attempt in $(seq 1 30); do
                                 if curl --fail --silent \
-                                    "http://${DEPLOY_HOST_IP}:${HOST_PORT}/actuator/health" | \
+                                    "http://${BACKEND_BIND_ADDRESS}:${HOST_PORT}/actuator/health" | \
                                     grep -Eq '"status"[[:space:]]*:[[:space:]]*"UP"'; then
                                     healthy=1
                                     break
@@ -250,6 +304,15 @@ pipeline {
                             done
 
                             if [ "$healthy" -ne 1 ]; then
+                                docker logs --tail 100 "$CONTAINER_NAME" || true
+                                restore_previous
+                                rm -f -- "$secret_path"
+                                exit 1
+                            fi
+
+                            if ! curl --fail --silent --show-error --max-time 10 "$PUBLIC_HEALTH_URL" | \
+                                grep -Eq '"status"[[:space:]]*:[[:space:]]*"UP"'; then
+                                echo 'Public HTTPS health check failed; restoring previous container.' >&2
                                 docker logs --tail 100 "$CONTAINER_NAME" || true
                                 restore_previous
                                 rm -f -- "$secret_path"

@@ -115,13 +115,13 @@ class ActionEvidencePoliciesTest {
     }
 
     @Test
-    fun `유니온 맵 소멸과 개인 쿨다운 시작은 모두 Superseded다`() {
+    fun `유니온 맵 소멸은 superseded지만 개인 쿨다운 시작은 applied다`() {
         val selection = selection(AutomationActionKind.UNION_BATTLE, "union-entry")
 
         assertIs<AutomationActionEvidence.StateAdvanced>(
             policies.evaluate(selection, fresh(UnionObservedState("gone", mapPresent = false, personalCooldown = false))),
         )
-        assertIs<AutomationActionEvidence.StateAdvanced>(
+        assertIs<AutomationActionEvidence.DirectApplied>(
             policies.evaluate(selection, fresh(UnionObservedState("cooldown", mapPresent = true, personalCooldown = true))),
         )
         assertIs<AutomationActionEvidence.SameState>(
@@ -171,6 +171,57 @@ class ActionEvidencePoliciesTest {
                 fresh(RaidObservedState("external", joined = false, sharedStatus = "COMPLETED")),
             ),
         )
+    }
+
+    @Test
+    fun `참여 중인 레이드의 개인 쿨다운은 내 전투 적용 증거다`() {
+        val battle = selection(AutomationActionKind.RAID_BATTLE, "raid-battle")
+
+        assertIs<AutomationActionEvidence.DirectApplied>(
+            policies.evaluate(
+                battle,
+                fresh(RaidObservedState("cooldown", joined = true, sharedStatus = "IN_BATTLE", personalCooldown = true)),
+            ),
+        )
+        assertIs<AutomationActionEvidence.StateAdvanced>(
+            policies.evaluate(
+                battle,
+                fresh(RaidObservedState("external", joined = false, sharedStatus = "COMPLETED")),
+            ),
+        )
+    }
+
+    @Test
+    fun `검증된 raid cycle 완료는 모든 raid action의 applied 증거다`() {
+        val raidActions = listOf(
+            AutomationActionKind.RAID_RESET,
+            AutomationActionKind.RAID_REGISTER,
+            AutomationActionKind.RAID_START,
+            AutomationActionKind.RAID_REWARD,
+            AutomationActionKind.RAID_REFRESH,
+            AutomationActionKind.RAID_BATTLE,
+            AutomationActionKind.RAID_CYCLE_ABORT,
+        )
+
+        raidActions.forEach { actionKind ->
+            val selection = selection(actionKind, actionKind.name)
+            assertIs<AutomationActionEvidence.DirectApplied>(
+                policies.evaluate(
+                    selection,
+                    ActionPolicyObservation(
+                        capturedAt = now,
+                        source = ActionEvidenceSource.LIFECYCLE_RESULT,
+                        completeness = ObservationCompleteness.COMPLETE,
+                        freshness = ObservationFreshness.FRESH,
+                        state = LifecycleResultObservedState(
+                            fingerprint = "raid-cycle-finished",
+                            actionKind = actionKind,
+                            resultKind = "RaidCycleFinished",
+                        ),
+                    ),
+                ),
+            )
+        }
     }
 
     private fun selection(kind: AutomationActionKind, key: String) = SelectedAutomationAction(

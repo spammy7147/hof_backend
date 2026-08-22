@@ -33,6 +33,7 @@ class JpaConvergenceStore(
             scopeKey = selection.scope.key,
             policyVersion = selection.policyVersion,
             baselineFingerprint = selection.baselineFingerprint,
+            observationOnly = selection.observationOnly,
             createdAt = now,
         )
         entityManager.persist(attempt)
@@ -58,7 +59,7 @@ class JpaConvergenceStore(
         """
         select convergence from ActionConvergenceEntity convergence
         join fetch convergence.attempt attempt
-        left join fetch attempt.entry
+        join fetch attempt.entry entry
         where convergence.accountId = :accountId
           and convergence.scopeKind = :scopeKind
           and convergence.scopeKey = :scopeKey
@@ -79,7 +80,9 @@ class JpaConvergenceStore(
         entityManager.createQuery(
             """
             select convergence from ActionConvergenceEntity convergence
-            where convergence.accountId = :accountId and convergence.activeMarker = 1
+            where convergence.accountId = :accountId
+              and convergence.activeMarker = 1
+              and convergence.attempt.entry is not null
             """.trimIndent(),
             ActionConvergenceEntity::class.java,
         ).setParameter("accountId", accountId)
@@ -93,6 +96,7 @@ class JpaConvergenceStore(
             """
             select convergence from ActionConvergenceEntity convergence
             join fetch convergence.attempt attempt
+            join attempt.entry entry
             where convergence.accountId = :accountId
               and convergence.result in :results
               and convergence.suppressionReleasedAt is null
@@ -115,12 +119,15 @@ class JpaConvergenceStore(
         """
         select convergence from ActionConvergenceEntity convergence
         join fetch convergence.attempt attempt
-        left join fetch attempt.entry
+        join fetch attempt.entry entry
         where convergence.accountId = :accountId
           and convergence.result = :pending
           and convergence.activeMarker = 1
+          and attempt.observationOnly = false
           and (convergence.nextProbeAt is null or convergence.nextProbeAt <= :now)
-        order by convergence.nextProbeAt asc, convergence.id asc
+        order by entry.priority asc,
+                 convergence.nextProbeAt asc,
+                 convergence.id asc
         """.trimIndent(),
         ActionConvergenceEntity::class.java,
     ).setParameter("accountId", accountId)
@@ -131,15 +138,56 @@ class JpaConvergenceStore(
         .firstOrNull()
         ?.toRecord()
 
+    override fun normalizeOrphans(accountId: Long, now: Instant): Int {
+        val deletedEntries = entityManager.createQuery(
+            """
+            update ActionConvergenceEntity convergence
+            set convergence.result = :superseded,
+                convergence.activeMarker = null,
+                convergence.nextProbeAt = null,
+                convergence.reasonCode = :deletedReason,
+                convergence.finishedAt = :now,
+                convergence.updatedAt = :now
+            where convergence.accountId = :accountId
+              and convergence.activeMarker = 1
+              and convergence.attempt.entry is null
+            """.trimIndent(),
+        ).setParameter("superseded", ActionConvergenceResult.SUPERSEDED)
+            .setParameter("deletedReason", "AUTOMATION_ENTRY_DELETED")
+            .setParameter("now", now)
+            .setParameter("accountId", accountId)
+            .executeUpdate()
+        val missingResults = entityManager.createQuery(
+            """
+            update ActionConvergenceEntity convergence
+            set convergence.result = :pending,
+                convergence.firstPendingAt = coalesce(convergence.firstPendingAt, :now),
+                convergence.nextProbeAt = :now,
+                convergence.reasonCode = :orphanReason,
+                convergence.updatedAt = :now
+            where convergence.accountId = :accountId
+              and convergence.activeMarker = 1
+              and convergence.result is null
+            """.trimIndent(),
+        ).setParameter("pending", ActionConvergenceResult.PENDING)
+            .setParameter("now", now)
+            .setParameter("orphanReason", "ORPHAN_RESULT_RECONCILED")
+            .setParameter("accountId", accountId)
+            .executeUpdate()
+        return deletedEntries + missingResults
+    }
+
     @Transactional(readOnly = true)
-    override fun get(attemptId: Long): ActionConvergenceRecord? = findConvergence(attemptId)?.toRecord()
+    override fun get(attemptId: Long): ActionConvergenceRecord? = findConvergence(attemptId)
+        ?.takeIf { it.attempt.entry != null }
+        ?.toRecord()
 
     override fun save(record: ActionConvergenceRecord) {
         val entity = requireNotNull(findConvergence(record.attemptId)) {
             "Convergence attempt ${record.attemptId} does not exist."
         }
         entity.attempt.submittedAt = record.submittedAt
-        entity.result = record.result
+        entity.result = record.result ?: ActionConvergenceResult.PENDING
         entity.activeMarker = if (record.active) ActionConvergenceEntity.ACTIVE else null
         entity.successfulObservationCount = record.successfulObservationCount
         entity.firstPendingAt = record.firstPendingAt
@@ -205,7 +253,7 @@ class JpaConvergenceStore(
             """
             select convergence from ActionConvergenceEntity convergence
             join fetch convergence.attempt attempt
-            left join fetch attempt.entry
+            join fetch attempt.entry
             where attempt.account.id = :accountId and attempt.executionIdentity = :executionIdentity
             """.trimIndent(),
             ActionConvergenceEntity::class.java,
@@ -242,6 +290,7 @@ class JpaConvergenceStore(
                 scope = AutomationIsolationScope(attempt.scopeKind, attempt.scopeKey),
                 policyVersion = attempt.policyVersion,
                 baselineFingerprint = attempt.baselineFingerprint,
+                observationOnly = attempt.observationOnly,
             ),
             result = result,
             submittedAt = attempt.submittedAt,

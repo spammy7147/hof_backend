@@ -36,9 +36,8 @@ class AuthController(
     @PostMapping("/login")
     fun login(
         @Valid @RequestBody request: LoginRequest,
-        servletRequest: HttpServletRequest,
     ): ResponseEntity<TokenResponse> {
-        rateLimiter.checkLogin(servletRequest.remoteAddr, request.loginId)
+        rateLimiter.checkLogin(request.loginId)
         return response(authService.login(request.loginId, request.password, request.clientType))
     }
 
@@ -47,9 +46,7 @@ class AuthController(
     fun refresh(
         @RequestBody(required = false) request: RefreshRequest?,
         @CookieValue(name = REFRESH_COOKIE, required = false) cookieToken: String?,
-        servletRequest: HttpServletRequest,
     ): ResponseEntity<TokenResponse> {
-        rateLimiter.checkRefresh(servletRequest.remoteAddr)
         return response(authService.refresh(selectRefreshToken(request?.refreshToken, cookieToken)))
     }
 

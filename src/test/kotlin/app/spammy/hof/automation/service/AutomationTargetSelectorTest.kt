@@ -2,6 +2,15 @@ package app.spammy.hof.automation.service
 
 import app.spammy.hof.automation.convergence.AutomationConvergenceSelectionConstraints
 import app.spammy.hof.automation.convergence.AutomationConvergenceSelectionGuard
+import app.spammy.hof.automation.convergence.AutomationActionKind
+import app.spammy.hof.automation.convergence.AutomationConvergenceMode
+import app.spammy.hof.automation.convergence.AutomationConvergenceProperties
+import app.spammy.hof.automation.convergence.AutomationConvergenceRollout
+import app.spammy.hof.automation.convergence.AutomationIsolationScope
+import app.spammy.hof.automation.convergence.AutomationIsolationScopeKind
+import app.spammy.hof.automation.convergence.DefaultAutomationActionConvergenceModule
+import app.spammy.hof.automation.convergence.InMemoryConvergenceStore
+import app.spammy.hof.automation.convergence.StoreBackedAutomationConvergenceSelectionGuard
 import app.spammy.hof.automation.convergence.StoredActionConvergenceSelectionFactory
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.automation.entity.AutomationEntryEntity
@@ -157,6 +166,138 @@ class AutomationTargetSelectorTest {
 
         assertEquals(questEntry.id, selected.entryId)
         assertEquals(questAction, selected.action)
+    }
+
+    @Test
+    fun `자택 식별자 gap은 해당 scope만 pending으로 만들고 다음 entry를 계속 선택한다`() {
+        val homeEntry = AutomationEntryEntity(15, account, AutomationType.HOME_QUEST, 0, true, now, now)
+        val store = InMemoryConvergenceStore()
+        val convergence = DefaultAutomationActionConvergenceModule(store, TimeProvider { now })
+        val action = QuestAction.Accept("quest-1", "accept-1")
+        val activeSelector = AutomationTargetSelector(
+            typed = typed,
+            work = work,
+            loader = loader,
+            lifecycle = lifecycle,
+            timeProvider = TimeProvider { now },
+            raidModule = defaultRaidModule,
+            quest = fixedQuestRules(QuestDirective.Execute(action)),
+            battle = AutomationHandler { HandlerEvaluation.Skipped },
+            adventure = AutomationHandler { HandlerEvaluation.Skipped },
+            union = AutomationHandler { HandlerEvaluation.Skipped },
+            fishing = AutomationHandler { HandlerEvaluation.Skipped },
+            homeQuest = AutomationHandler {
+                HandlerEvaluation.ObservationGap(
+                    actionKind = AutomationActionKind.HOME_ACCEPT,
+                    scopeKind = AutomationIsolationScopeKind.HOME_TARGET,
+                    scopeKey = "home-1",
+                    baseline = "home|accept|home-1|missing",
+                    nextRunAt = now.plusSeconds(10),
+                    reasonCode = "HOME_ACTION_ID_MISSING",
+                    message = "자택 action id가 없습니다.",
+                    authoritative = true,
+                )
+            },
+            convergenceSelectionFactory = StoredActionConvergenceSelectionFactory(),
+            convergenceRollout = AutomationConvergenceRollout(
+                AutomationConvergenceProperties(mode = AutomationConvergenceMode.ACTIVE),
+            ),
+            convergenceModule = convergence,
+        )
+        Mockito.`when`(work.findRunning(7)).thenReturn(null)
+        Mockito.`when`(work.findWaiting(7)).thenReturn(emptyList())
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(homeEntry, questEntry))
+        Mockito.`when`(loader.loadEntry(7, homeEntry.id, null, null)).thenReturn(
+            AutomationEntrySnapshot(
+                homeEntry.id,
+                AutomationType.HOME_QUEST,
+                homeQuest = HomeQuestAutomationSnapshot(7L, emptyList(), emptyList(), now),
+            ),
+        )
+        Mockito.`when`(loader.loadEntry(7, questEntry.id, null, null)).thenReturn(questDecisionEntry())
+
+        val selected = assertIs<AutomationCoordination.Runnable>(activeSelector.select(7L))
+
+        assertEquals(questEntry.id, selected.entryId)
+        assertEquals(
+            1,
+            store.findActive(
+                7L,
+                AutomationIsolationScope(AutomationIsolationScopeKind.HOME_TARGET, "home-1"),
+            )?.successfulObservationCount,
+        )
+    }
+
+    @Test
+    fun `자택 식별자 gap이 해소되면 observation scope를 닫고 최신 행동을 선택한다`() {
+        val homeEntry = AutomationEntryEntity(15, account, AutomationType.HOME_QUEST, 0, true, now, now)
+        val store = InMemoryConvergenceStore()
+        val convergence = DefaultAutomationActionConvergenceModule(store, TimeProvider { now })
+        val scope = AutomationIsolationScope(AutomationIsolationScopeKind.HOME_TARGET, "home-1")
+        val runnable = HomeQuestAutomationAction(
+            accountId = 7L,
+            questId = "home-1",
+            questName = "자택 퀘스트",
+            actionId = "accept-1",
+            action = HomeQuestAutomationActionType.ACCEPT,
+        )
+        var observation = 0
+        val activeSelector = AutomationTargetSelector(
+            typed = typed,
+            work = work,
+            loader = loader,
+            lifecycle = lifecycle,
+            timeProvider = TimeProvider { now },
+            raidModule = defaultRaidModule,
+            quest = Mockito.mock(QuestWorkCycleModule::class.java),
+            battle = AutomationHandler { HandlerEvaluation.Skipped },
+            adventure = AutomationHandler { HandlerEvaluation.Skipped },
+            union = AutomationHandler { HandlerEvaluation.Skipped },
+            fishing = AutomationHandler { HandlerEvaluation.Skipped },
+            homeQuest = AutomationHandler {
+                if (observation++ == 0) {
+                    HandlerEvaluation.ObservationGap(
+                        actionKind = AutomationActionKind.HOME_ACCEPT,
+                        scopeKind = AutomationIsolationScopeKind.HOME_TARGET,
+                        scopeKey = "home-1",
+                        baseline = "home|accept|home-1|missing",
+                        nextRunAt = now.plusSeconds(10),
+                        reasonCode = "HOME_ACTION_ID_MISSING",
+                        message = "자택 action id가 없습니다.",
+                        authoritative = true,
+                    )
+                } else {
+                    HandlerEvaluation.Runnable(runnable)
+                }
+            },
+            convergenceGuard = StoreBackedAutomationConvergenceSelectionGuard(store),
+            convergenceSelectionFactory = StoredActionConvergenceSelectionFactory(),
+            convergenceRollout = AutomationConvergenceRollout(
+                AutomationConvergenceProperties(mode = AutomationConvergenceMode.ACTIVE),
+            ),
+            convergenceModule = convergence,
+        )
+        Mockito.`when`(work.findRunning(7)).thenReturn(null)
+        Mockito.`when`(work.findWaiting(7)).thenReturn(emptyList())
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(homeEntry))
+        Mockito.`when`(loader.loadEntry(7, homeEntry.id, null, null)).thenReturn(
+            AutomationEntrySnapshot(
+                homeEntry.id,
+                AutomationType.HOME_QUEST,
+                homeQuest = HomeQuestAutomationSnapshot(7L, emptyList(), emptyList(), now),
+            ),
+        )
+
+        assertIs<AutomationCoordination.Unavailable>(activeSelector.select(7L))
+        val gapAttemptId = requireNotNull(store.findActive(7L, scope)).attemptId
+
+        val selected = assertIs<AutomationCoordination.Runnable>(activeSelector.select(7L))
+
+        assertEquals(runnable, selected.action)
+        assertEquals(
+            app.spammy.hof.automation.convergence.ActionConvergenceResult.SUPERSEDED,
+            store.get(gapAttemptId)?.result,
+        )
     }
 
     @Test

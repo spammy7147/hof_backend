@@ -1,6 +1,9 @@
 package app.spammy.hof.automation.convergence
 
 import app.spammy.hof.common.time.TimeProvider
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
+import java.util.HexFormat
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import org.slf4j.LoggerFactory
@@ -51,7 +54,8 @@ interface AutomationConvergenceShadowEvaluator {
  */
 @Service
 class DefaultAutomationConvergenceShadowEvaluator(
-    timeProvider: TimeProvider,
+    private val timeProvider: TimeProvider,
+    private val recorder: AutomationConvergenceShadowRecorder = NoOpAutomationConvergenceShadowRecorder,
 ) : AutomationConvergenceShadowEvaluator {
     private val log = LoggerFactory.getLogger(javaClass)
     private val store = InMemoryConvergenceStore()
@@ -59,13 +63,32 @@ class DefaultAutomationConvergenceShadowEvaluator(
     private val attempts = ConcurrentHashMap<Pair<Long, String>, Long>()
     private val aggregate = ConcurrentHashMap<ShadowKey, AtomicLong>()
 
+    @Synchronized
     override fun selected(accountId: Long, selection: SelectedAutomationAction) {
+        store.findActive(accountId, selection.scope)
+            ?.takeIf { it.selection.executionIdentity != selection.executionIdentity }
+            ?.let { replaced ->
+                val replacedKey = accountId to replaced.selection.executionIdentity
+                attempts.putIfAbsent(replacedKey, replaced.attemptId)
+                observe(
+                    accountId,
+                    replaced.selection.executionIdentity,
+                    AutomationActionEvidence.StateAdvanced(
+                        capturedAt = timeProvider.now(),
+                        stateFingerprint = fingerprint(
+                            "shadow-selection-replaced:${replaced.selection.actionKind}:${selection.executionIdentity}",
+                        ),
+                    ),
+                    LegacyConvergenceDecision.SUPERSEDED,
+                )
+            }
         val directive = engine.prepare(accountId, selection)
         if (directive is ConvergenceDirective.Submit) {
             attempts[accountId to selection.executionIdentity] = directive.attemptId
         }
     }
 
+    @Synchronized
     override fun observe(
         accountId: Long,
         executionIdentity: String,
@@ -81,6 +104,38 @@ class DefaultAutomationConvergenceShadowEvaluator(
         val newResult = after.result ?: ActionConvergenceResult.PENDING
         val evidenceKind = evidence.javaClass.simpleName
         val differs = legacyDecision.expectedNewResult() != newResult
+        val completeness = evidence.completeness()
+        val newReasonCode = after.reasonCode ?: "SHADOW_REASON_MISSING"
+        val legacyReasonCode = legacyDecision.expectedReasonCode(evidence)
+        val shapeFingerprint = evidence.responseShapeFingerprint ?: fingerprint(evidence.shapeMaterial())
+        val shapeDiffers = if (evidence.responseShapeFingerprint == null) {
+            evidenceKind !in legacyDecision.expectedEvidenceKinds()
+        } else {
+            shapeFingerprint !in ProductionEvidenceShapes.knownFingerprints(before.selection.actionKind)
+        }
+        recorder.record(
+            DurableShadowEvaluation(
+                accountId = accountId,
+                executionIdentityHash = fingerprint(executionIdentity),
+                actionKind = before.selection.actionKind,
+                scopeKind = before.selection.scope.kind,
+                scopeKeyHash = fingerprint(before.selection.scope.key),
+                evidenceKind = evidenceKind,
+                evidenceCompleteness = completeness,
+                responseShapeFingerprint = shapeFingerprint,
+                sanitizedSnippet = evidence.sanitizedSnippet ?: evidence.shapeMaterial(),
+                legacyDecision = legacyDecision,
+                legacyReasonCode = legacyReasonCode,
+                newResult = newResult,
+                newReasonCode = newReasonCode,
+                resultDiffers = differs,
+                reasonDiffers = legacyReasonCode != newReasonCode,
+                shapeDiffers = shapeDiffers,
+                completenessDiffers = legacyDecision.expectedCompleteness(completeness) != completeness,
+                policyVersion = before.selection.policyVersion,
+                observedAt = evidence.capturedAt,
+            ),
+        )
         val shadowKey = ShadowKey(before.selection.actionKind, evidenceKind, legacyDecision, newResult, differs)
         val count = aggregate.computeIfAbsent(shadowKey) { AtomicLong() }.incrementAndGet()
         log.info(
@@ -115,6 +170,60 @@ class DefaultAutomationConvergenceShadowEvaluator(
         LegacyConvergenceDecision.HELD -> ActionConvergenceResult.HELD
         LegacyConvergenceDecision.RESULT_UNOBSERVED -> ActionConvergenceResult.RESULT_UNOBSERVED
     }
+
+    private fun LegacyConvergenceDecision.expectedReasonCode(evidence: AutomationActionEvidence): String = when (this) {
+        LegacyConvergenceDecision.APPLIED -> "DIRECT_RESPONSE_APPLIED"
+        LegacyConvergenceDecision.RECONCILING -> when (evidence) {
+            is AutomationActionEvidence.NetworkFailure -> "OBSERVATION_NETWORK_FAILURE"
+            is AutomationActionEvidence.IncompleteObservation -> "OBSERVATION_INCOMPLETE"
+            else -> "AUTHORITATIVE_STATE_UNCHANGED"
+        }
+        LegacyConvergenceDecision.RESUBMIT -> "DIRECT_RESPONSE_REJECTED"
+        LegacyConvergenceDecision.SUPERSEDED -> "AUTHORITATIVE_STATE_ADVANCED"
+        LegacyConvergenceDecision.HELD -> "PENDING_BUDGET_EXHAUSTED"
+        LegacyConvergenceDecision.RESULT_UNOBSERVED -> "RESULT_UNOBSERVED"
+    }
+
+    private fun LegacyConvergenceDecision.expectedCompleteness(actual: String): String = when (this) {
+        LegacyConvergenceDecision.RECONCILING -> actual
+        LegacyConvergenceDecision.HELD,
+        LegacyConvergenceDecision.RESULT_UNOBSERVED,
+        -> "INCOMPLETE"
+        else -> "COMPLETE"
+    }
+
+    private fun LegacyConvergenceDecision.expectedEvidenceKinds(): Set<String> = when (this) {
+        LegacyConvergenceDecision.APPLIED -> setOf("DirectApplied")
+        LegacyConvergenceDecision.RECONCILING -> setOf("SameState", "IncompleteObservation", "NetworkFailure")
+        LegacyConvergenceDecision.RESUBMIT -> setOf("DirectRejected")
+        LegacyConvergenceDecision.SUPERSEDED -> setOf("StateAdvanced")
+        LegacyConvergenceDecision.HELD -> setOf("BattleGateRequired", "IncompleteObservation")
+        LegacyConvergenceDecision.RESULT_UNOBSERVED -> setOf("ResultUnobserved")
+    }
+
+    private fun AutomationActionEvidence.completeness(): String = when (this) {
+        is AutomationActionEvidence.IncompleteObservation ->
+            if (authoritative) "AUTHORITATIVE_IDENTITY_INCOMPLETE" else "INCOMPLETE"
+        is AutomationActionEvidence.NetworkFailure -> "NETWORK_FAILURE"
+        is AutomationActionEvidence.ResultUnobserved -> "UNOBSERVED"
+        is AutomationActionEvidence.BattleGateRequired -> "BATTLE_GATE"
+        else -> "COMPLETE"
+    }
+
+    private fun AutomationActionEvidence.shapeMaterial(): String = when (this) {
+        is AutomationActionEvidence.DirectApplied -> "DirectApplied"
+        is AutomationActionEvidence.DirectRejected -> "DirectRejected"
+        is AutomationActionEvidence.StateAdvanced -> "StateAdvanced"
+        is AutomationActionEvidence.SameState -> "SameState"
+        is AutomationActionEvidence.IncompleteObservation -> "IncompleteObservation|authoritative=$authoritative"
+        is AutomationActionEvidence.NetworkFailure -> "NetworkFailure"
+        is AutomationActionEvidence.ResultUnobserved -> "ResultUnobserved"
+        is AutomationActionEvidence.BattleGateRequired -> "BattleGateRequired"
+    }
+
+    private fun fingerprint(value: String): String = HexFormat.of().formatHex(
+        MessageDigest.getInstance("SHA-256").digest(value.toByteArray(StandardCharsets.UTF_8)),
+    )
 
     private data class ShadowKey(
         val actionKind: AutomationActionKind,

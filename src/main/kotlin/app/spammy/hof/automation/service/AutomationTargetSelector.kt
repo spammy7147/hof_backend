@@ -2,6 +2,9 @@ package app.spammy.hof.automation.service
 
 import app.spammy.hof.automation.convergence.AutomationConvergenceSelectionGuard
 import app.spammy.hof.automation.convergence.AutomationConvergenceRollout
+import app.spammy.hof.automation.convergence.AutomationActionConvergenceModule
+import app.spammy.hof.automation.convergence.AutomationActionEvidence
+import app.spammy.hof.automation.convergence.ConvergenceDirective
 import app.spammy.hof.automation.convergence.StoredActionConvergenceSelectionFactory
 import app.spammy.hof.automation.raid.RaidCycleModule
 import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
@@ -41,6 +44,7 @@ class AutomationTargetSelector(
     private val convergenceGuard: AutomationConvergenceSelectionGuard? = null,
     private val convergenceSelectionFactory: StoredActionConvergenceSelectionFactory? = null,
     private val convergenceRollout: AutomationConvergenceRollout? = null,
+    private val convergenceModule: AutomationActionConvergenceModule? = null,
 ) : AutomationDecisionSource {
 
     override fun select(accountId: Long): AutomationCoordination {
@@ -220,7 +224,9 @@ class AutomationTargetSelector(
         accountId: Long,
         entry: AutomationEntrySnapshot,
     ): AutomationCoordination {
-        val result = evaluateEntry(entry, quest, battle, adventure, union, fishing, homeQuest)
+        val result = evaluateEntry(entry, quest, battle, adventure, union, fishing, homeQuest) { gap ->
+            coordinateObservationGap(accountId, entry, gap)
+        }
         val runnable = result as? AutomationCoordination.Runnable ?: return result
         if (!isConvergenceBlocked(accountId, entry.id, runnable.action)) return result
         return AutomationCoordination.Idle(
@@ -238,6 +244,76 @@ class AutomationTargetSelector(
         )
     }
 
+    private fun coordinateObservationGap(
+        accountId: Long,
+        entry: AutomationEntrySnapshot,
+        gap: HandlerEvaluation.ObservationGap,
+    ): AutomationCoordination {
+        if (convergenceRollout?.active != true) return gap.toUnavailable(entry)
+        val module = convergenceModule ?: return gap.toUnavailable(entry)
+        val factory = convergenceSelectionFactory ?: return gap.toUnavailable(entry)
+        val selection = factory.createObservationGap(
+            entryId = entry.id,
+            actionKind = gap.actionKind,
+            scopeKind = gap.scopeKind,
+            scopeKey = gap.scopeKey ?: entry.id.toString(),
+            baseline = gap.baseline,
+        )
+        val directive = module.observeGap(
+            accountId,
+            selection,
+            AutomationActionEvidence.IncompleteObservation(
+                capturedAt = timeProvider.now(),
+                reason = gap.reasonCode,
+                authoritative = gap.authoritative,
+            ),
+        )
+        return when (directive) {
+            is ConvergenceDirective.WaitUntil -> gap.toUnavailable(entry, directive.at)
+            ConvergenceDirective.ContinueSelection -> AutomationCoordination.Idle(
+                warnings = listOf(gap.message),
+                trace = listOf(
+                    AutomationEvaluationTrace(
+                        sequence = 0,
+                        entryId = entry.id,
+                        type = entry.type,
+                        outcome = AutomationDecisionOutcome.WAITING,
+                        reasonCode = OBSERVATION_GAP_HELD_REASON,
+                        message = "${gap.message} 자동 관측 예산이 끝나 이 범위만 보류했습니다.",
+                        actionKind = gap.actionKind.name,
+                        targetKey = gap.scopeKey,
+                    ),
+                ),
+            )
+            is ConvergenceDirective.BattleGateWait -> gap.toUnavailable(entry)
+            is ConvergenceDirective.Probe,
+            is ConvergenceDirective.Submit,
+            -> error("Observation-only convergence returned a submission directive.")
+        }
+    }
+
+    private fun HandlerEvaluation.ObservationGap.toUnavailable(
+        entry: AutomationEntrySnapshot,
+        at: Instant = nextRunAt,
+    ) = AutomationCoordination.Unavailable(
+        nextRunAt = at,
+        warnings = emptyList(),
+        trace = listOf(
+            AutomationEvaluationTrace(
+                sequence = 0,
+                entryId = entry.id,
+                type = entry.type,
+                outcome = AutomationDecisionOutcome.WAITING,
+                reasonCode = reasonCode,
+                message = message,
+                nextRunAt = at,
+                actionKind = actionKind.name,
+                targetKey = scopeKey,
+            ),
+        ),
+        waitScope = AutomationWaitScope.RELEASE_OTHER_AUTOMATIONS,
+    )
+
     private fun isConvergenceBlocked(
         accountId: Long,
         entryId: Long,
@@ -246,11 +322,15 @@ class AutomationTargetSelector(
         if (convergenceRollout?.active == false) return false
         val guard = convergenceGuard ?: return false
         val factory = convergenceSelectionFactory ?: return false
-        return guard.constraints(accountId).blocks(factory.preview(entryId, action))
+        val preview = factory.preview(entryId, action)
+        if (convergenceRollout?.active == true) {
+            convergenceModule?.resolveObservationGap(accountId, preview.scope, timeProvider.now())
+        }
+        return guard.constraints(accountId).blocks(preview)
     }
 
     private fun AutomationCoordination.Idle.convergenceBlocked(): Boolean =
-        trace.any { it.reasonCode == CONVERGENCE_BLOCKED_REASON }
+        trace.any { it.reasonCode in setOf(CONVERGENCE_BLOCKED_REASON, OBSERVATION_GAP_HELD_REASON) }
 
     private fun selectRaidSession(
         accountId: Long,
@@ -458,6 +538,7 @@ class AutomationTargetSelector(
         val SEOUL: ZoneId = ZoneId.of("Asia/Seoul")
         const val CONVERGENCE_BLOCKED_REASON = "CONVERGENCE_SCOPE_BLOCKED"
         const val CONVERGENCE_BLOCKED_MESSAGE = "이전 행동 결과를 확인 중이라 해당 범위만 잠시 건너뜁니다."
+        const val OBSERVATION_GAP_HELD_REASON = "OBSERVATION_GAP_HELD"
     }
 }
 
@@ -469,6 +550,7 @@ private fun evaluateEntry(
     union: AutomationHandler<UnionAutomationSnapshot>,
     fishing: AutomationHandler<FishingAutomationSnapshot>,
     homeQuest: AutomationHandler<HomeQuestAutomationSnapshot>,
+    observationGap: ((HandlerEvaluation.ObservationGap) -> AutomationCoordination)? = null,
 ): AutomationCoordination {
     val evaluation = when (entry.type) {
         AutomationType.QUEST -> entry.quest?.let { quest.decideNext(it).toEntryEvaluation() }
@@ -536,6 +618,17 @@ private fun evaluateEntry(
             message = evaluation.message,
             actionKind = if (evaluation.transition == AutomationWorkTransition.Complete) "COMPLETE" else "WAIT",
         )
+        is HandlerEvaluation.ObservationGap -> AutomationEvaluationTrace(
+            0,
+            entry.id,
+            entry.type,
+            AutomationDecisionOutcome.WAITING,
+            evaluation.reasonCode,
+            evaluation.message,
+            evaluation.nextRunAt,
+            evaluation.actionKind.name,
+            evaluation.scopeKey,
+        )
         HandlerEvaluation.Skipped -> AutomationEvaluationTrace(
             0,
             entry.id,
@@ -577,6 +670,13 @@ private fun evaluateEntry(
             trace = listOf(trace),
             workTransition = evaluation.transition,
         )
+        is HandlerEvaluation.ObservationGap -> observationGap?.invoke(evaluation)
+            ?: AutomationCoordination.Unavailable(
+                evaluation.nextRunAt,
+                emptyList(),
+                listOf(trace),
+                AutomationWaitScope.RELEASE_OTHER_AUTOMATIONS,
+            )
         HandlerEvaluation.Skipped -> AutomationCoordination.Idle(emptyList(), listOf(trace))
     }
 }

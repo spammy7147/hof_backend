@@ -21,10 +21,12 @@ import kotlin.test.assertNull
 class RefreshTokenServiceTest {
     private val repository = Mockito.mock(RefreshTokenRepository::class.java)
     private val queryRepository = Mockito.mock(RefreshTokenQueryRepository::class.java)
+    private val rateLimiter = Mockito.mock(AuthRateLimiter::class.java)
     private var now = CREATED_AT
     private val service = RefreshTokenService(
         repository = repository,
         queryRepository = queryRepository,
+        rateLimiter = rateLimiter,
         properties = properties(),
         timeProvider = TimeProvider { now },
     )
@@ -60,6 +62,7 @@ class RefreshTokenServiceTest {
         assertEquals(FAMILY_ID, rotated.familyId)
         assertEquals(now.plus(Duration.ofDays(30)), rotated.expiresAt)
         assertNotEquals(TOKEN, rotated.value)
+        Mockito.verify(rateLimiter).checkRefresh(FAMILY_ID, ACCOUNT.id)
     }
 
     @Test
@@ -75,6 +78,7 @@ class RefreshTokenServiceTest {
 
         assertEquals(ErrorCode.REFRESH_RETRY_REQUIRED, error.errorCode)
         Mockito.verify(queryRepository, Mockito.never()).findByFamilyId(FAMILY_ID)
+        Mockito.verifyNoInteractions(rateLimiter)
     }
 
     @Test
@@ -93,6 +97,7 @@ class RefreshTokenServiceTest {
         assertEquals(ErrorCode.REFRESH_TOKEN_REUSED, error.errorCode)
         assertEquals(now, original.revokedAt)
         assertEquals(now, current.revokedAt)
+        Mockito.verifyNoInteractions(rateLimiter)
     }
 
     @Test
@@ -116,6 +121,7 @@ class RefreshTokenServiceTest {
             ErrorCode.AUTH_TOKEN_INVALID,
             assertFailsWith<ApiException> { service.rotate("revoked") }.errorCode,
         )
+        Mockito.verifyNoInteractions(rateLimiter)
     }
 
     @Test

@@ -26,6 +26,7 @@ import java.util.UUID
 class RefreshTokenService(
     private val repository: RefreshTokenRepository,
     private val queryRepository: RefreshTokenQueryRepository,
+    private val rateLimiter: AuthRateLimiter,
     private val properties: AuthProperties,
     private val timeProvider: TimeProvider,
 ) {
@@ -64,6 +65,7 @@ class RefreshTokenService(
             )
         }
 
+        rateLimiter.checkRefresh(token.familyId, token.account.id)
         token.rotatedAt = now
         return issue(token.account, token.clientType, token.familyId, now)
     }

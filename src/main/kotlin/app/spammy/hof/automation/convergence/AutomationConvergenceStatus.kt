@@ -38,6 +38,7 @@ data class AutomationConvergenceItemResponse(
     val successfulObservationCount: Int,
     val nextProbeAt: Instant?,
     val reasonCode: String?,
+    val reasonMessage: String,
     val evidenceCaseId: String?,
     val impactScope: String,
     val releaseCondition: String,
@@ -88,7 +89,7 @@ class JpaAutomationConvergenceStatusReader(
         return AutomationConvergenceStatusResponse(
             battleGate = gate,
             items = convergences.map { convergence ->
-                val result = convergence.result ?: ActionConvergenceResult.PENDING
+                val result = convergence.result
                 AutomationConvergenceItemResponse(
                     attemptId = requireNotNull(convergence.attempt.id),
                     entryId = convergence.attempt.entry?.id,
@@ -99,6 +100,7 @@ class JpaAutomationConvergenceStatusReader(
                     successfulObservationCount = convergence.successfulObservationCount,
                     nextProbeAt = convergence.nextProbeAt,
                     reasonCode = convergence.reasonCode,
+                    reasonMessage = convergence.reasonCode.reasonMessage(result),
                     evidenceCaseId = convergence.evidenceCaseId,
                     impactScope = convergence.scopeKind.impactLabel(convergence.scopeKey),
                     releaseCondition = result.releaseCondition(),
@@ -125,6 +127,27 @@ class JpaAutomationConvergenceStatusReader(
         ActionConvergenceResult.HELD -> "상태 변경 또는 사용자의 새 행동 판단 허용"
         ActionConvergenceResult.RESULT_UNOBSERVED -> "상태 변경 또는 사용자의 새 행동 판단 허용"
         else -> "종료됨"
+    }
+
+    private fun String?.reasonMessage(result: ActionConvergenceResult): String = when (this) {
+        "HOME_ACTION_ID_MISSING" -> "자택 퀘스트 실행 식별자를 읽지 못해 최신 상태를 다시 확인하고 있습니다."
+        "FISHING_BATTLE_TARGET_MISSING" -> "낚시를 막은 전투 대상 식별자를 읽지 못해 최신 상태를 다시 확인하고 있습니다."
+        "OBSERVATION_INCOMPLETE" -> "최신 권위 상태가 완전하지 않아 아직 결과를 확정하지 못했습니다."
+        "OBSERVATION_NETWORK_FAILURE" -> "상태 확인 중 연결 오류가 발생했으며 이 시도는 관측 횟수에 포함하지 않습니다."
+        "AUTHORITATIVE_STATE_UNCHANGED" -> "최신 권위 상태가 이전과 같아 적용 여부를 계속 확인하고 있습니다."
+        "PENDING_BUDGET_EXHAUSTED" -> "최대 5회 또는 2분의 자동 관측 예산 안에 결과를 확정하지 못했습니다."
+        "ORPHAN_RESULT_RECONCILED" -> "이전 실행의 누락된 결과 상태를 복구해 다시 확인하고 있습니다."
+        "RESULT_UNOBSERVED" -> "행동 결과를 권위 있게 식별하지 못해 자동 재제출을 막았습니다."
+        "BATTLE_GATE_REQUIRED" -> "전투에 캡차 확인이 필요해 전투 범위만 보류했습니다."
+        "AUTHORITATIVE_STATE_ADVANCED" -> "외부 상태가 이미 바뀌어 저장된 행동을 새로 제출하지 않았습니다."
+        "DIRECT_RESPONSE_APPLIED" -> "행동별 성공 조건을 만족하는 결과를 확인했습니다."
+        "DIRECT_RESPONSE_REJECTED" -> "행동이 적용되지 않았다는 명시적 결과를 확인했습니다."
+        else -> when (result) {
+            ActionConvergenceResult.PENDING -> "중복 실행 없이 최신 권위 상태를 다시 확인하고 있습니다."
+            ActionConvergenceResult.HELD -> "자동 관측 예산이 끝나 이 범위만 보류했습니다."
+            ActionConvergenceResult.RESULT_UNOBSERVED -> "결과를 식별하지 못해 자동 재제출을 막았습니다."
+            else -> "행동 결과 확인이 종료되었습니다."
+        }
     }
 }
 

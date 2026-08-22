@@ -31,7 +31,11 @@ class AutomationConvergenceRolloutTest {
     @Test
     fun `shadow evaluates the real evidence stream without writing the production store`() {
         val production = InMemoryConvergenceStore()
-        val evaluator = DefaultAutomationConvergenceShadowEvaluator(TimeProvider { now })
+        val durable = mutableListOf<DurableShadowEvaluation>()
+        val evaluator = DefaultAutomationConvergenceShadowEvaluator(
+            TimeProvider { now },
+            AutomationConvergenceShadowRecorder(durable::add),
+        )
         val selection = SelectedAutomationAction(
             entryId = 5L,
             executionIdentity = "shadow-union-1",
@@ -52,6 +56,13 @@ class AutomationConvergenceRolloutTest {
         assertEquals(ActionConvergenceResult.PENDING, evaluation?.newResult)
         assertEquals(null, production.findActive(7L, selection.scope))
         assertEquals(1L, evaluator.snapshot().single().count)
+        assertEquals(1, durable.size)
+        assertEquals(64, durable.single().executionIdentityHash.length)
+        assertFalse(durable.single().executionIdentityHash.contains(selection.executionIdentity))
+        assertEquals("INCOMPLETE", durable.single().evidenceCompleteness)
+        assertEquals(64, durable.single().responseShapeFingerprint.length)
+        assertEquals("IncompleteObservation|authoritative=false", durable.single().sanitizedSnippet)
+        assertFalse(durable.single().shapeDiffers)
     }
 
     @Test
@@ -76,5 +87,155 @@ class AutomationConvergenceRolloutTest {
 
         assertEquals(ActionConvergenceResult.SUPERSEDED, evaluation?.newResult)
         assertFalse(requireNotNull(evaluation).differs)
+    }
+
+    @Test
+    fun `같은 scope의 새 identity는 이전 shadow attempt를 대체하고 새 표본을 받는다`() {
+        val durable = mutableListOf<DurableShadowEvaluation>()
+        val evaluator = DefaultAutomationConvergenceShadowEvaluator(
+            TimeProvider { now },
+            AutomationConvergenceShadowRecorder(durable::add),
+        )
+        val previous = SelectedAutomationAction(
+            entryId = 5L,
+            executionIdentity = "shadow-quest-previous",
+            actionKind = AutomationActionKind.QUEST_CLAIM,
+            scope = AutomationIsolationScope(AutomationIsolationScopeKind.QUEST_TARGET, "quest"),
+            policyVersion = "v1",
+            baselineFingerprint = "claimable-v1",
+        )
+        val replacement = previous.copy(
+            executionIdentity = "shadow-quest-replacement",
+            baselineFingerprint = "claimable-v2",
+        )
+        evaluator.selected(7L, previous)
+        evaluator.observe(
+            7L,
+            previous.executionIdentity,
+            AutomationActionEvidence.IncompleteObservation(now, "result pending"),
+            LegacyConvergenceDecision.RECONCILING,
+        )
+
+        evaluator.selected(7L, replacement)
+        val replacementEvaluation = evaluator.observe(
+            7L,
+            replacement.executionIdentity,
+            AutomationActionEvidence.DirectApplied(now, "claim-applied"),
+            LegacyConvergenceDecision.APPLIED,
+        )
+
+        assertEquals(ActionConvergenceResult.APPLIED, replacementEvaluation?.newResult)
+        assertEquals(
+            listOf(
+                LegacyConvergenceDecision.RECONCILING,
+                LegacyConvergenceDecision.SUPERSEDED,
+                LegacyConvergenceDecision.APPLIED,
+            ),
+            durable.map(DurableShadowEvaluation::legacyDecision),
+        )
+        assertEquals(
+            null,
+            evaluator.observe(
+                7L,
+                previous.executionIdentity,
+                AutomationActionEvidence.DirectApplied(now, "late-old-result"),
+                LegacyConvergenceDecision.APPLIED,
+            ),
+        )
+    }
+
+    @Test
+    fun `shadow separates decision agreement from unexpected evidence shape`() {
+        val durable = mutableListOf<DurableShadowEvaluation>()
+        val evaluator = DefaultAutomationConvergenceShadowEvaluator(
+            TimeProvider { now },
+            AutomationConvergenceShadowRecorder(durable::add),
+        )
+        val selection = SelectedAutomationAction(
+            entryId = 5L,
+            executionIdentity = "shadow-shape-1",
+            actionKind = AutomationActionKind.QUEST_CLAIM,
+            scope = AutomationIsolationScope(AutomationIsolationScopeKind.QUEST_TARGET, "quest"),
+            policyVersion = "v1",
+            baselineFingerprint = "baseline",
+        )
+
+        evaluator.selected(7L, selection)
+        evaluator.observe(
+            7L,
+            selection.executionIdentity,
+            AutomationActionEvidence.IncompleteObservation(now, "unexpected response"),
+            LegacyConvergenceDecision.APPLIED,
+        )
+
+        assertTrue(durable.single().shapeDiffers)
+        assertTrue(durable.single().resultDiffers)
+    }
+
+    @Test
+    fun `shadow는 결과가 같아도 production 응답 fingerprint의 알려지지 않은 구조를 분리한다`() {
+        val durable = mutableListOf<DurableShadowEvaluation>()
+        val evaluator = DefaultAutomationConvergenceShadowEvaluator(
+            TimeProvider { now },
+            AutomationConvergenceShadowRecorder(durable::add),
+        )
+        val selection = SelectedAutomationAction(
+            entryId = 5L,
+            executionIdentity = "shadow-unknown-shape",
+            actionKind = AutomationActionKind.QUEST_CLAIM,
+            scope = AutomationIsolationScope(AutomationIsolationScopeKind.QUEST_TARGET, "quest"),
+            policyVersion = "v1",
+            baselineFingerprint = "baseline",
+        )
+        evaluator.selected(7L, selection)
+
+        evaluator.observe(
+            7L,
+            selection.executionIdentity,
+            AutomationActionEvidence.DirectApplied(
+                capturedAt = now,
+                stateFingerprint = "claim-applied",
+                responseShapeFingerprint = ProductionEvidenceShapes.fingerprint("UnknownQuestResponse|newField"),
+                sanitizedSnippet = "UnknownQuestResponse|newFieldPresent=true",
+            ),
+            LegacyConvergenceDecision.APPLIED,
+        )
+
+        assertFalse(durable.single().resultDiffers)
+        assertTrue(durable.single().shapeDiffers)
+    }
+
+    @Test
+    fun `shadow는 action별 production 응답 allowlist fingerprint를 정상 구조로 인식한다`() {
+        val durable = mutableListOf<DurableShadowEvaluation>()
+        val evaluator = DefaultAutomationConvergenceShadowEvaluator(
+            TimeProvider { now },
+            AutomationConvergenceShadowRecorder(durable::add),
+        )
+        val selection = SelectedAutomationAction(
+            entryId = 5L,
+            executionIdentity = "shadow-known-shape",
+            actionKind = AutomationActionKind.QUEST_CLAIM,
+            scope = AutomationIsolationScope(AutomationIsolationScopeKind.QUEST_TARGET, "quest"),
+            policyVersion = "v1",
+            baselineFingerprint = "baseline",
+        )
+        evaluator.selected(7L, selection)
+
+        evaluator.observe(
+            7L,
+            selection.executionIdentity,
+            AutomationActionEvidence.DirectApplied(
+                capturedAt = now,
+                stateFingerprint = "claim-applied",
+                responseShapeFingerprint = ProductionEvidenceShapes.fingerprint(
+                    ProductionEvidenceShapes.QUEST_RESPONSE,
+                ),
+                sanitizedSnippet = "QuestResponse|targetPresent=false",
+            ),
+            LegacyConvergenceDecision.APPLIED,
+        )
+
+        assertFalse(durable.single().shapeDiffers)
     }
 }

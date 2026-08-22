@@ -2,6 +2,8 @@ package app.spammy.hof.automation.service
 
 import java.time.Instant
 import app.spammy.hof.battle.dto.BattlePatternLoadRequest
+import app.spammy.hof.automation.convergence.AutomationActionKind
+import app.spammy.hof.automation.convergence.AutomationIsolationScopeKind
 
 data class ResolvedAutomationParty(val characterIds: List<String>, val patternLoads: List<BattlePatternLoadRequest>) {
     init { require(characterIds.isNotEmpty() && characterIds.size <= 5); require(patternLoads.size == characterIds.size) }
@@ -32,6 +34,16 @@ sealed interface HandlerEvaluation {
         val transition: AutomationWorkTransition,
         val reasonCode: String,
         val message: String,
+    ) : HandlerEvaluation
+    data class ObservationGap(
+        val actionKind: AutomationActionKind,
+        val scopeKind: AutomationIsolationScopeKind,
+        val scopeKey: String? = null,
+        val baseline: String,
+        val nextRunAt: Instant,
+        val reasonCode: String,
+        val message: String,
+        val authoritative: Boolean,
     ) : HandlerEvaluation
     data class Fatal(val reason: AutomationStopReason, val message: String) : HandlerEvaluation
 }

@@ -594,13 +594,14 @@ internal object FreshSchemaContract {
             requiredVarchar("execution_identity", 128), requiredVarchar("action_kind", 50),
             requiredVarchar("scope_kind", 50), requiredVarchar("scope_key", 200),
             requiredVarchar("policy_version", 80), requiredVarchar("baseline_fingerprint", 128),
+            requiredBoolean("observation_only"),
             requiredInstant("created_at"), optionalInstant("submitted_at"),
         ),
         table(
             "automation_action_convergences",
             serialId(), requiredBigint("attempt_id"), requiredBigint("account_id"),
             requiredVarchar("scope_kind", 50), requiredVarchar("scope_key", 200),
-            optionalVarchar("result", 30), optionalInteger("active_marker"),
+            requiredVarchar("result", 30), optionalInteger("active_marker"),
             requiredInteger("successful_observation_count"), optionalInstant("first_pending_at"),
             optionalInstant("next_probe_at"), optionalVarchar("reason_code", 100),
             optionalVarchar("evidence_case_id", 64), optionalInstant("suppression_released_at"),
@@ -620,6 +621,21 @@ internal object FreshSchemaContract {
             optionalVarchar("sanitized_snippet", 1000), requiredVarchar("reason_code", 100),
             requiredVarchar("policy_version", 80), requiredVarchar("build_version", 80),
             requiredInstant("created_at"), requiredInstant("expires_at"),
+            primaryKey = listOf("id"),
+        ),
+        table(
+            "automation_convergence_shadow_evaluations",
+            requiredVarchar("id", 64), requiredBigint("account_id"),
+            requiredVarchar("execution_identity_hash", 64), requiredVarchar("action_kind", 50),
+            requiredVarchar("scope_kind", 50), requiredVarchar("scope_key_hash", 64),
+            requiredVarchar("evidence_kind", 50), requiredVarchar("evidence_completeness", 40),
+            requiredVarchar("response_shape_fingerprint", 64), requiredVarchar("sanitized_snippet", 1000),
+            requiredVarchar("legacy_decision", 40),
+            requiredVarchar("legacy_reason_code", 100), requiredVarchar("new_result", 30),
+            requiredVarchar("new_reason_code", 100), requiredBoolean("result_differs"),
+            requiredBoolean("reason_differs"), requiredBoolean("shape_differs"),
+            requiredBoolean("completeness_differs"), requiredVarchar("policy_version", 80),
+            requiredVarchar("build_version", 80), requiredInstant("created_at"), requiredInstant("expires_at"),
             primaryKey = listOf("id"),
         ),
         table(
@@ -995,6 +1011,12 @@ internal object FreshSchemaContract {
         fk("fk_automation_account_battle_gate_account", "automation_account_battle_gates.account_id", "hof_accounts.id", DeleteAction.CASCADE),
         fk("fk_automation_evidence_case_attempt", "automation_evidence_cases.attempt_id", "automation_action_attempts.id", DeleteAction.CASCADE),
         fk(
+            "fk_automation_convergence_shadow_account",
+            "automation_convergence_shadow_evaluations.account_id",
+            "hof_accounts.id",
+            DeleteAction.CASCADE,
+        ),
+        fk(
             "fk_captcha_form_fields_challenge", "captcha_form_fields.challenge_id",
             "captcha_challenges.id", DeleteAction.CASCADE,
         ),
@@ -1167,6 +1189,16 @@ internal object FreshSchemaContract {
             "account_id", "active_marker", "next_probe_at", "id",
         ),
         index("automation_evidence_cases", "idx_automation_evidence_cases_expiry", "expires_at", "id"),
+        index(
+            "automation_convergence_shadow_evaluations",
+            "idx_automation_convergence_shadow_gate",
+            "created_at", "action_kind", "result_differs", "reason_differs", "shape_differs", "completeness_differs",
+        ),
+        index(
+            "automation_convergence_shadow_evaluations",
+            "idx_automation_convergence_shadow_expiry",
+            "expires_at", "id",
+        ),
     )
 
     private val CHECKS = listOf(
@@ -1293,9 +1325,8 @@ internal object FreshSchemaContract {
         check(
             "automation_action_convergences",
             "ck_automation_action_convergence_active",
-            "(result is null and active_marker = 1 and finished_at is null) or " +
-                "(result = 'PENDING' and active_marker = 1 and finished_at is null) or " +
-                "(result is not null and result <> 'PENDING' and active_marker is null and finished_at is not null)",
+            "(result = 'PENDING' and active_marker = 1 and finished_at is null) or " +
+                "(result <> 'PENDING' and active_marker is null and finished_at is not null)",
         ),
         check(
             "automation_action_convergences",

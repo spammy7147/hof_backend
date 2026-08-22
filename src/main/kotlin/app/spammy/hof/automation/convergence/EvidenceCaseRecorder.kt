@@ -1,7 +1,10 @@
 package app.spammy.hof.automation.convergence
 
 import jakarta.persistence.EntityManager
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import java.time.Duration
+import java.util.HexFormat
 import java.util.UUID
 import org.springframework.stereotype.Repository
 import org.springframework.transaction.annotation.Transactional
@@ -35,6 +38,7 @@ class JpaEvidenceCaseRecorder(
         val attempt = requireNotNull(
             entityManager.find(AutomationActionAttemptEntity::class.java, record.attemptId),
         ) { "Convergence attempt ${record.attemptId} does not exist." }
+        val sanitizedSnippet = evidence.sanitizedSnippet ?: evidence.structuralSnippet()
         val evidenceCase = AutomationEvidenceCaseEntity(
             id = UUID.randomUUID().toString(),
             attempt = attempt,
@@ -42,6 +46,8 @@ class JpaEvidenceCaseRecorder(
             observationCompleteness = evidence.completenessName(),
             observationFreshness = evidence.freshnessName(),
             stateFingerprint = evidence.stateFingerprint(),
+            responseShapeFingerprint = evidence.responseShapeFingerprint ?: fingerprint(sanitizedSnippet),
+            sanitizedSnippet = sanitizedSnippet,
             reasonCode = reasonCode,
             policyVersion = record.selection.policyVersion,
             buildVersion = BUILD_VERSION,
@@ -60,7 +66,7 @@ class JpaEvidenceCaseRecorder(
     private fun AutomationActionEvidence.sourceName(): String = when (this) {
         is AutomationActionEvidence.DirectApplied,
         is AutomationActionEvidence.DirectRejected,
-        -> ActionEvidenceSource.DIRECT_RESPONSE.name
+        -> "POLICY_DECISION"
         is AutomationActionEvidence.StateAdvanced,
         is AutomationActionEvidence.SameState,
         -> "AUTHORITATIVE_OBSERVATION"
@@ -91,6 +97,24 @@ class JpaEvidenceCaseRecorder(
         is AutomationActionEvidence.SameState -> stateFingerprint
         else -> null
     }
+
+    /** 원문 payload, 식별자, 오류 메시지를 배제한 분류 정보만 진단 샘플로 보존한다. */
+    private fun AutomationActionEvidence.structuralSnippet(): String = when (this) {
+        is AutomationActionEvidence.DirectApplied -> "evidence=DirectApplied"
+        is AutomationActionEvidence.DirectRejected -> "evidence=DirectRejected"
+        is AutomationActionEvidence.StateAdvanced -> "evidence=StateAdvanced"
+        is AutomationActionEvidence.SameState -> "evidence=SameState"
+        is AutomationActionEvidence.IncompleteObservation ->
+            "evidence=IncompleteObservation;authoritative=$authoritative"
+        is AutomationActionEvidence.NetworkFailure -> "evidence=NetworkFailure"
+        is AutomationActionEvidence.ResultUnobserved -> "evidence=ResultUnobserved"
+        is AutomationActionEvidence.BattleGateRequired ->
+            "evidence=BattleGateRequired;challengePresent=${challengeId != null}"
+    }
+
+    private fun fingerprint(value: String): String = HexFormat.of().formatHex(
+        MessageDigest.getInstance("SHA-256").digest(value.toByteArray(StandardCharsets.UTF_8)),
+    )
 
     private companion object {
         val DETAIL_RETENTION: Duration = Duration.ofDays(30)

@@ -33,6 +33,26 @@ class StoredActionConvergenceSelectionFactory {
         )
     }
 
+    fun createObservationGap(
+        entryId: Long,
+        actionKind: AutomationActionKind,
+        scopeKind: AutomationIsolationScopeKind,
+        scopeKey: String,
+        baseline: String,
+    ): SelectedAutomationAction {
+        val baselineFingerprint = fingerprint(baseline)
+        val identityMaterial = "gap|$entryId|$actionKind|$scopeKind|$scopeKey|$baselineFingerprint"
+        return SelectedAutomationAction(
+            entryId = entryId,
+            executionIdentity = "observation-gap:${fingerprint(identityMaterial)}",
+            actionKind = actionKind,
+            scope = scope(scopeKind, scopeKey),
+            policyVersion = POLICY_VERSION,
+            baselineFingerprint = baselineFingerprint,
+            observationOnly = true,
+        )
+    }
+
     fun preview(entryId: Long, action: PreparedAutomationAction): ConvergenceSelectionPreview = when (action) {
         is QuestAction.Accept -> preview(
             AutomationActionKind.QUEST_ACCEPT,

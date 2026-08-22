@@ -1,5 +1,7 @@
 package app.spammy.hof.automation.service
 
+import app.spammy.hof.automation.convergence.AutomationActionKind
+import app.spammy.hof.automation.convergence.AutomationIsolationScopeKind
 import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.town.fishing.dto.FishingResponse
 import app.spammy.hof.town.fishing.model.FishingAction
@@ -34,7 +36,15 @@ data class FishingTownAutomationAction(
 class FishingAutomationHandler : AutomationHandler<FishingAutomationSnapshot> {
     override fun evaluate(context: FishingAutomationSnapshot): HandlerEvaluation {
         if (context.state.blockedByBattle) {
-            val target = context.state.battleTarget ?: return retry(context, "FISHING_BATTLE_TARGET_MISSING", "낚시 전투 대상을 다시 확인합니다.")
+            val target = context.state.battleTarget ?: return HandlerEvaluation.ObservationGap(
+                actionKind = AutomationActionKind.FISHING_OBSTRUCTION_BATTLE,
+                scopeKind = AutomationIsolationScopeKind.FISHING_ENTRY,
+                baseline = "fishing|blocked|battle-target-missing",
+                nextRunAt = context.now.plusSeconds(10),
+                reasonCode = "FISHING_BATTLE_TARGET_MISSING",
+                message = "낚시 전투 대상 식별자를 읽지 못해 최신 상태를 다시 확인합니다.",
+                authoritative = true,
+            )
             val setting = context.maps.singleOrNull { it.categoryId == target.categoryId && it.mapCode == target.mapCode }
             val selected = setting?.let { FishingAutomationPreset(it.presetMode, it.presetId, it.resolvedParty) }
                 ?: context.primaryPreset

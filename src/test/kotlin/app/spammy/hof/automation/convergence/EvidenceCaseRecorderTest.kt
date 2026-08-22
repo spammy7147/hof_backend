@@ -10,7 +10,7 @@ import jakarta.persistence.EntityManager
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertNull
+import kotlin.test.assertFalse
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
 import org.springframework.context.annotation.Import
@@ -66,6 +66,8 @@ class EvidenceCaseRecorderTest {
         assertEquals(1, cases.size)
         assertEquals("state-a", cases.single().stateFingerprint)
         assertEquals(now.plusSeconds(30L * 24 * 60 * 60), cases.single().expiresAt)
-        assertNull(cases.single().sanitizedSnippet)
+        assertEquals("evidence=SameState", cases.single().sanitizedSnippet)
+        assertEquals(64, cases.single().responseShapeFingerprint?.length)
+        assertFalse(cases.single().sanitizedSnippet.orEmpty().contains("execution-evidence"))
     }
 }

@@ -18,27 +18,62 @@ class AuthRateLimiterTest {
     )
 
     @Test
-    fun limitsLoginByNormalizedHofIdWithinWindow() {
-        limiter.checkLogin("203.0.113.1", " HOF-User ")
-        limiter.checkLogin("203.0.113.2", "hof-user")
+    fun limitsLoginByNormalizedHofIdWithoutCouplingDifferentIds() {
+        limiter.checkLogin(" HOF-User ")
+        limiter.checkLogin("hof-user")
 
         val error = assertFailsWith<ApiException> {
-            limiter.checkLogin("203.0.113.3", "HOF-USER")
+            limiter.checkLogin("HOF-USER")
         }
 
         assertEquals(ErrorCode.RATE_LIMITED, error.errorCode)
         assertEquals(60L, error.retryAfterSeconds)
+        limiter.checkLogin("another-user")
     }
 
     @Test
-    fun limitsRefreshByClientAddressAndAllowsRequestsAfterWindow() {
-        limiter.checkRefresh("203.0.113.10")
-        limiter.checkRefresh("203.0.113.10")
+    fun limitsRefreshByFamilyAndAllowsDifferentFamiliesForSameAccount() {
+        limiter.checkRefresh("family-a", 42L)
+        limiter.checkRefresh("family-a", 42L)
 
-        assertFailsWith<ApiException> { limiter.checkRefresh("203.0.113.10") }
+        assertFailsWith<ApiException> { limiter.checkRefresh("family-a", 42L) }
 
-        now = now.plusSeconds(61)
-        limiter.checkRefresh("203.0.113.10")
+        limiter.checkRefresh("family-b", 42L)
+        limiter.checkRefresh("family-b", 42L)
+    }
+
+    @Test
+    fun limitsRefreshAcrossFamiliesByAccountWithoutCouplingDifferentAccounts() {
+        repeat(4) { index -> limiter.checkRefresh("family-$index", 42L) }
+
+        val error = assertFailsWith<ApiException> { limiter.checkRefresh("family-extra", 42L) }
+
+        assertEquals(ErrorCode.RATE_LIMITED, error.errorCode)
+        limiter.checkRefresh("other-account-family", 84L)
+    }
+
+    @Test
+    fun rejectedMultiScopeRefreshDoesNotPartiallyConsumeFamilyAllowance() {
+        repeat(4) { index -> limiter.checkRefresh("account-full-$index", 42L) }
+
+        assertFailsWith<ApiException> { limiter.checkRefresh("target-family", 42L) }
+
+        limiter.checkRefresh("target-family", 84L)
+        limiter.checkRefresh("target-family", 84L)
+        assertFailsWith<ApiException> { limiter.checkRefresh("target-family", 84L) }
+    }
+
+    @Test
+    fun allowsRequestsAfterWindowAndReportsRemainingRetryAfter() {
+        limiter.checkRefresh("family", 42L)
+        limiter.checkRefresh("family", 42L)
+        now = now.plusSeconds(15).plusMillis(1)
+
+        val error = assertFailsWith<ApiException> { limiter.checkRefresh("family", 42L) }
+
+        assertEquals(45L, error.retryAfterSeconds)
+        now = now.plusSeconds(46)
+        limiter.checkRefresh("family", 42L)
     }
 
     private fun properties() = AuthProperties(
@@ -46,9 +81,9 @@ class AuthRateLimiterTest {
         credentialEncryptionKey = SECRET,
         cookieEncryptionKey = SECRET,
         rateLimitWindow = Duration.ofMinutes(1),
-        loginRateLimitPerIp = 10,
         loginRateLimitPerId = 2,
-        refreshRateLimitPerIp = 2,
+        refreshRateLimitPerFamily = 2,
+        refreshRateLimitPerAccount = 4,
     )
 
     private companion object {

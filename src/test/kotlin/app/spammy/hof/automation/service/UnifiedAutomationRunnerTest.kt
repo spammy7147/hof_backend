@@ -6,9 +6,15 @@ import app.spammy.hof.automation.convergence.AutomationActionKind
 import app.spammy.hof.automation.convergence.AutomationConvergenceMode
 import app.spammy.hof.automation.convergence.AutomationConvergenceProperties
 import app.spammy.hof.automation.convergence.AutomationConvergenceRollout
+import app.spammy.hof.automation.convergence.AutomationConvergenceShadowEvaluator
 import app.spammy.hof.automation.convergence.AutomationIsolationScope
 import app.spammy.hof.automation.convergence.AutomationIsolationScopeKind
 import app.spammy.hof.automation.convergence.ConvergenceDirective
+import app.spammy.hof.automation.convergence.DefaultActionEvidencePolicies
+import app.spammy.hof.automation.convergence.LegacyConvergenceDecision
+import app.spammy.hof.automation.convergence.ProductionActionEvidenceInterpreter
+import app.spammy.hof.automation.convergence.ProductionEvidenceShapes
+import app.spammy.hof.automation.convergence.QuestObservedState
 import app.spammy.hof.automation.convergence.SelectedAutomationAction
 import app.spammy.hof.automation.convergence.StoredActionConvergenceSelectionFactory
 import app.spammy.hof.automation.convergence.StoredConvergenceActionLoader
@@ -25,6 +31,7 @@ import app.spammy.hof.battle.dto.BattlePatternLoadRequest
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.client.HofAutomationDeferredException
+import app.spammy.hof.quest.model.QuestState
 import java.time.Instant
 import java.time.LocalDate
 import kotlin.test.Test
@@ -44,6 +51,7 @@ class UnifiedAutomationRunnerTest {
     private val managed = Mockito.mock(ManagedAutomationAction::class.java)
     private val freshExecution = executionRight()
     private val defaultStored = defaultStoredAction()
+    private val productionEvidenceInterpreter = ProductionActionEvidenceInterpreter(DefaultActionEvidencePolicies())
     private val preparedExecution = executionRight(
         TypedRuntimeCheckpoint(defaultStored, TypedRuntimeCheckpointPhase.PREPARED, null, null),
     )
@@ -63,6 +71,8 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(managed.storedAction).thenReturn(defaultStored)
         Mockito.`when`(managed.descriptor).thenReturn(defaultDescriptor())
         Mockito.`when`(managed.execute()).thenReturn(TypedAutomationExecution.Completed)
+        Mockito.`when`(managed.applyLegacyExecution(anyTypedExecution())).thenAnswer { it.arguments[0] }
+        Mockito.`when`(managed.applyPolicyAcceptedExecution(anyTypedExecution())).thenAnswer { it.arguments[0] }
         Mockito.`when`(lifecycle.describe(anyPreparedAction())).thenReturn(defaultDescriptor())
         Mockito.`when`(
             lifecycle.prepare(Mockito.eq(7L), Mockito.anyLong(), anyPreparedAction()),
@@ -117,6 +127,168 @@ class UnifiedAutomationRunnerTest {
         Mockito.verify(journal, Mockito.times(2)).appendActionResult(Mockito.eq(41L), captureTrace(traceCaptor))
         assertTrue(traceCaptor.allValues.all { it.actionKind == "QUEST_CLAIM" })
         assertTrue(traceCaptor.allValues.all { it.message.startsWith("퀘스트 보상 수령 · quest") })
+    }
+
+    @Test
+    fun `SHADOW 장애는 production row와 실제 성공 결과에 영향을 주지 않는다`() {
+        val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
+        val shadow = Mockito.mock(AutomationConvergenceShadowEvaluator::class.java)
+        val factory = StoredActionConvergenceSelectionFactory()
+        Mockito.`when`(decisions.select(7L)).thenReturn(
+            AutomationCoordination.Runnable(12L, QuestAction.Claim("quest", "claim"), emptyList()),
+        )
+        Mockito.doThrow(IllegalStateException("shadow selected failed"))
+            .`when`(shadow)
+            .selected(Mockito.eq(7L), anyConvergenceSelection())
+        Mockito.doThrow(IllegalStateException("shadow observe failed"))
+            .`when`(shadow)
+            .observe(
+                Mockito.eq(7L),
+                Mockito.anyString(),
+                anyConvergenceEvidence(),
+                anyLegacyConvergenceDecision(),
+            )
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            convergenceModule = convergence,
+            convergenceSelectionFactory = factory,
+            rollout = AutomationConvergenceRollout(
+                AutomationConvergenceProperties(mode = AutomationConvergenceMode.SHADOW),
+            ),
+            shadowEvaluator = shadow,
+        )
+
+        scoped.runOne(7L)
+
+        Mockito.verify(convergence, Mockito.never()).prepare(Mockito.anyLong(), anyConvergenceSelection())
+        assertIs<TypedRuntimeOutcome.ActionSucceeded>(capturedOutcome())
+    }
+
+    @Test
+    fun `SHADOW는 legacy projection 뒤 실제 재조정 판정과 policy evidence를 한 번 기록한다`() {
+        val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
+        val shadow = Mockito.mock(AutomationConvergenceShadowEvaluator::class.java)
+        Mockito.`when`(decisions.select(7L)).thenReturn(
+            AutomationCoordination.Runnable(12L, QuestAction.Claim("quest", "claim"), emptyList()),
+        )
+        Mockito.`when`(managed.execute()).thenReturn(
+            TypedAutomationExecution.ActionCompleted(
+                observedState = QuestObservedState(
+                    fingerprint = "empty-quest-response",
+                    present = false,
+                    state = null,
+                    actionNo = null,
+                ),
+                responseShapeMaterial = "${ProductionEvidenceShapes.QUEST_RESPONSE}|variant=UNCLASSIFIED",
+                sanitizedSnippet = "QuestResponse|targetMultiplicity=NONE|targetPresent=false",
+            ),
+        )
+        Mockito.doThrow(AmbiguousAutomationSubmissionException("legacy result requires reconciliation"))
+            .`when`(managed)
+            .applyLegacyExecution(anyTypedExecution())
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            convergenceModule = convergence,
+            convergenceSelectionFactory = StoredActionConvergenceSelectionFactory(),
+            rollout = AutomationConvergenceRollout(
+                AutomationConvergenceProperties(mode = AutomationConvergenceMode.SHADOW),
+            ),
+            shadowEvaluator = shadow,
+            evidenceInterpreter = productionEvidenceInterpreter,
+        )
+
+        scoped.runOne(7L)
+
+        val evidenceCaptor = ArgumentCaptor.forClass(AutomationActionEvidence::class.java)
+        val decisionCaptor = ArgumentCaptor.forClass(LegacyConvergenceDecision::class.java)
+        Mockito.verify(shadow).observe(
+            Mockito.eq(7L),
+            Mockito.eq(defaultStored.executionIdentity) ?: defaultStored.executionIdentity,
+            captureConvergenceEvidence(evidenceCaptor),
+            captureLegacyDecision(decisionCaptor),
+        )
+        assertIs<AutomationActionEvidence.IncompleteObservation>(evidenceCaptor.value)
+        assertEquals(LegacyConvergenceDecision.RECONCILING, decisionCaptor.value)
+        assertIs<TypedRuntimeOutcome.SubmissionAmbiguous>(capturedOutcome())
+        Mockito.verify(managed).applyLegacyExecution(anyTypedExecution())
+        Mockito.verify(managed, Mockito.never()).applyPolicyAcceptedExecution(anyTypedExecution())
+    }
+
+    @Test
+    fun `SHADOW는 HOF deferral을 network reconciling 표본으로 남긴다`() {
+        val shadow = Mockito.mock(AutomationConvergenceShadowEvaluator::class.java)
+        val retryAt = Instant.parse("2026-07-25T00:01:00Z")
+        Mockito.`when`(decisions.select(7L)).thenReturn(
+            AutomationCoordination.Runnable(12L, QuestAction.Claim("quest", "claim"), emptyList()),
+        )
+        Mockito.doThrow(HofAutomationDeferredException(retryAt, 1)).`when`(managed).execute()
+
+        shadowRunner(shadow).runOne(7L)
+
+        val (evidence, decision) = shadowObservation(shadow, defaultStored.executionIdentity)
+        assertIs<AutomationActionEvidence.NetworkFailure>(evidence)
+        assertEquals(LegacyConvergenceDecision.RECONCILING, decision)
+        assertIs<TypedRuntimeOutcome.SubmissionDeferred>(capturedOutcome())
+    }
+
+    @Test
+    fun `SHADOW는 미분류 제출 실패를 result unobserved 표본으로 남긴다`() {
+        val shadow = Mockito.mock(AutomationConvergenceShadowEvaluator::class.java)
+        Mockito.`when`(decisions.select(7L)).thenReturn(
+            AutomationCoordination.Runnable(12L, QuestAction.Claim("quest", "claim"), emptyList()),
+        )
+        Mockito.doThrow(IllegalStateException("unexpected adapter failure")).`when`(managed).execute()
+
+        shadowRunner(shadow).runOne(7L)
+
+        val (evidence, decision) = shadowObservation(shadow, defaultStored.executionIdentity)
+        assertIs<AutomationActionEvidence.ResultUnobserved>(evidence)
+        assertEquals(LegacyConvergenceDecision.RESULT_UNOBSERVED, decision)
+        assertIs<TypedRuntimeOutcome.RetryableFailure>(capturedOutcome())
+    }
+
+    @Test
+    fun `SHADOW는 레이드 handoff를 incomplete reconciling 표본으로 남긴다`() {
+        val shadow = Mockito.mock(AutomationConvergenceShadowEvaluator::class.java)
+        val stored = raidStoredAction()
+        val prepared = executionRight(
+            TypedRuntimeCheckpoint(stored, TypedRuntimeCheckpointPhase.PREPARED, null, null),
+        )
+        Mockito.`when`(decisions.select(7L)).thenReturn(
+            AutomationCoordination.Runnable(12L, legacyBattleAction(), emptyList()),
+        )
+        Mockito.`when`(managed.storedAction).thenReturn(stored)
+        Mockito.`when`(runtime.persistPrepared(anyExecution(), anyStoredAction(), anyWarnings()))
+            .thenReturn(TypedRuntimePreparation.Ready(prepared))
+        Mockito.`when`(runtime.beginSubmission(prepared))
+            .thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
+        Mockito.`when`(
+            managed.handoffAmbiguousSubmission(Instant.EPOCH, "전투 응답 시간 초과"),
+        ).thenReturn(
+            AmbiguousActionResolution.HandedOff(
+                Instant.EPOCH.plusSeconds(300),
+                "레이드 전투 결과 미확정",
+            ),
+        )
+        Mockito.doThrow(AmbiguousAutomationSubmissionException("전투 응답 시간 초과"))
+            .`when`(managed).execute()
+
+        shadowRunner(shadow).runOne(7L)
+
+        val (evidence, decision) = shadowObservation(shadow, stored.executionIdentity)
+        assertIs<AutomationActionEvidence.IncompleteObservation>(evidence)
+        assertEquals(LegacyConvergenceDecision.RECONCILING, decision)
+        assertIs<TypedRuntimeOutcome.AmbiguousHandoff>(capturedOutcome())
     }
 
     @Test
@@ -223,6 +395,79 @@ class UnifiedAutomationRunnerTest {
         Mockito.verify(sharedCooldowns).learnAndApply(7, "raid", "castle", retryAt)
         assertIs<TypedRuntimeOutcome.SharedCooldownHandled>(capturedOutcome())
         Mockito.verifyNoInteractions(wakeup)
+    }
+
+    @Test
+    fun `ACTIVE shared cooldown은 수렴을 종료하면서 계정 전투 상태에도 반영한다`() {
+        val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
+        val factory = StoredActionConvergenceSelectionFactory()
+        val stored = raidStoredAction()
+        val selection = factory.create(stored)
+        val prepared = executionRight(
+            TypedRuntimeCheckpoint(stored, TypedRuntimeCheckpointPhase.PREPARED, null, null),
+        )
+        val retryAt = Instant.parse("2026-07-24T00:00:56Z")
+        Mockito.`when`(convergence.resumeDue(7L)).thenReturn(ConvergenceDirective.ContinueSelection)
+        Mockito.`when`(decisions.select(7L)).thenReturn(
+            AutomationCoordination.Runnable(12L, legacyBattleAction(), emptyList()),
+        )
+        Mockito.`when`(managed.storedAction).thenReturn(stored)
+        Mockito.`when`(runtime.persistPrepared(anyExecution(), anyStoredAction(), anyWarnings()))
+            .thenReturn(TypedRuntimePreparation.Ready(prepared))
+        Mockito.`when`(runtime.beginSubmission(prepared))
+            .thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
+        Mockito.`when`(convergence.prepare(7L, selection)).thenReturn(ConvergenceDirective.Submit(113L))
+        Mockito.`when`(convergence.record(Mockito.eq(113L), anyConvergenceEvidence()))
+            .thenReturn(ConvergenceDirective.ContinueSelection)
+        Mockito.`when`(managed.execute()).thenReturn(
+            TypedAutomationExecution.SharedCooldown("raid", "castle", retryAt),
+        )
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            convergenceModule = convergence,
+            convergenceSelectionFactory = factory,
+            evidenceInterpreter = productionEvidenceInterpreter,
+        )
+
+        scoped.runOne(7L)
+
+        assertIs<AutomationActionEvidence.StateAdvanced>(convergenceEvidence(convergence, 113L))
+        Mockito.verify(sharedCooldowns).learnAndApply(7L, "raid", "castle", retryAt)
+        assertIs<TypedRuntimeOutcome.SharedCooldownHandled>(capturedOutcome())
+    }
+
+    @Test
+    fun `SHADOW shared cooldown은 적용 성공이 아닌 shared-state 대체로 비교한다`() {
+        val shadow = Mockito.mock(AutomationConvergenceShadowEvaluator::class.java)
+        val stored = raidStoredAction()
+        val prepared = executionRight(
+            TypedRuntimeCheckpoint(stored, TypedRuntimeCheckpointPhase.PREPARED, null, null),
+        )
+        val retryAt = Instant.parse("2026-07-24T00:00:56Z")
+        Mockito.`when`(decisions.select(7L)).thenReturn(
+            AutomationCoordination.Runnable(12L, legacyBattleAction(), emptyList()),
+        )
+        Mockito.`when`(managed.storedAction).thenReturn(stored)
+        Mockito.`when`(runtime.persistPrepared(anyExecution(), anyStoredAction(), anyWarnings()))
+            .thenReturn(TypedRuntimePreparation.Ready(prepared))
+        Mockito.`when`(runtime.beginSubmission(prepared))
+            .thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
+        Mockito.`when`(managed.execute()).thenReturn(
+            TypedAutomationExecution.SharedCooldown("raid", "castle", retryAt),
+        )
+
+        shadowRunner(shadow).runOne(7L)
+
+        val (evidence, decision) = shadowObservation(shadow, stored.executionIdentity)
+        assertIs<AutomationActionEvidence.StateAdvanced>(evidence)
+        assertEquals(LegacyConvergenceDecision.SUPERSEDED, decision)
+        Mockito.verify(sharedCooldowns).learnAndApply(7L, "raid", "castle", retryAt)
+        assertIs<TypedRuntimeOutcome.SharedCooldownHandled>(capturedOutcome())
     }
 
     @Test
@@ -478,6 +723,70 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(convergence.prepare(7L, selection)).thenReturn(ConvergenceDirective.Submit(99L))
         Mockito.`when`(convergence.record(Mockito.eq(99L), anyConvergenceEvidence()))
             .thenReturn(ConvergenceDirective.ContinueSelection)
+        Mockito.`when`(managed.execute()).thenReturn(questClaimExecution())
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            convergenceModule = convergence,
+            convergenceSelectionFactory = factory,
+            evidenceInterpreter = productionEvidenceInterpreter,
+        )
+
+        scoped.runOne(7)
+
+        Mockito.verify(convergence).prepare(7L, selection)
+        val evidence = convergenceEvidence(convergence, 99L)
+        assertIs<AutomationActionEvidence.DirectApplied>(evidence)
+        assertIs<TypedRuntimeOutcome.ActionSucceeded>(capturedOutcome())
+    }
+
+    @Test
+    fun `active에서 poststate 없는 응답은 성공 완료하지 않고 재관측으로 넘긴다`() {
+        val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
+        val factory = StoredActionConvergenceSelectionFactory()
+        val selection = factory.create(defaultStored)
+        val probeAt = Instant.parse("2026-07-25T00:00:10Z")
+        Mockito.`when`(convergence.resumeDue(7L)).thenReturn(ConvergenceDirective.ContinueSelection)
+        Mockito.`when`(decisions.select(7)).thenReturn(
+            AutomationCoordination.Runnable(12, QuestAction.Claim("quest", "claim"), emptyList()),
+        )
+        Mockito.`when`(convergence.prepare(7L, selection)).thenReturn(ConvergenceDirective.Submit(111L))
+        Mockito.`when`(convergence.record(Mockito.eq(111L), anyConvergenceEvidence())).thenReturn(
+            ConvergenceDirective.WaitUntil(probeAt, selection.scope),
+        )
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            convergenceModule = convergence,
+            convergenceSelectionFactory = factory,
+            evidenceInterpreter = productionEvidenceInterpreter,
+        )
+
+        scoped.runOne(7L)
+
+        assertIs<AutomationActionEvidence.IncompleteObservation>(convergenceEvidence(convergence, 111L))
+        assertIs<TypedRuntimeOutcome.AmbiguousHandoff>(capturedOutcome())
+        Mockito.verify(wakeup).schedule(7L, probeAt, "TYPED_CONVERGENCE_PROBE")
+    }
+
+    @Test
+    fun `prepared payload 저장 실패는 convergence attempt를 만들지 않는다`() {
+        val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
+        val factory = StoredActionConvergenceSelectionFactory()
+        Mockito.`when`(convergence.resumeDue(7L)).thenReturn(ConvergenceDirective.ContinueSelection)
+        Mockito.`when`(decisions.select(7L)).thenReturn(
+            AutomationCoordination.Runnable(12L, QuestAction.Claim("quest", "claim"), emptyList()),
+        )
+        Mockito.`when`(runtime.persistPrepared(anyExecution(), anyStoredAction(), anyWarnings()))
+            .thenThrow(IllegalStateException("checkpoint write failed"))
         val scoped = UnifiedAutomationRunner(
             preflight,
             runtime,
@@ -489,12 +798,72 @@ class UnifiedAutomationRunnerTest {
             convergenceSelectionFactory = factory,
         )
 
-        scoped.runOne(7)
+        scoped.runOne(7L)
 
-        Mockito.verify(convergence).prepare(7L, selection)
-        val evidence = convergenceEvidence(convergence, 99L)
-        assertIs<AutomationActionEvidence.DirectApplied>(evidence)
-        assertIs<TypedRuntimeOutcome.ActionSucceeded>(capturedOutcome())
+        Mockito.verify(convergence, Mockito.never()).prepare(Mockito.eq(7L), anyConvergenceSelection())
+        assertIs<TypedRuntimeOutcome.RetryableFailure>(capturedOutcome())
+    }
+
+    @Test
+    fun `제출 시작 뒤 분류되지 않은 예외도 convergence attempt를 terminal 처리한다`() {
+        val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
+        val factory = StoredActionConvergenceSelectionFactory()
+        val selection = factory.create(defaultStored)
+        Mockito.`when`(convergence.resumeDue(7L)).thenReturn(ConvergenceDirective.ContinueSelection)
+        Mockito.`when`(decisions.select(7L)).thenReturn(
+            AutomationCoordination.Runnable(12L, QuestAction.Claim("quest", "claim"), emptyList()),
+        )
+        Mockito.`when`(convergence.prepare(7L, selection)).thenReturn(ConvergenceDirective.Submit(106L))
+        Mockito.`when`(convergence.record(Mockito.eq(106L), anyConvergenceEvidence()))
+            .thenReturn(ConvergenceDirective.ContinueSelection)
+        Mockito.doThrow(IllegalStateException("unexpected adapter failure")).`when`(managed).execute()
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            convergenceModule = convergence,
+            convergenceSelectionFactory = factory,
+        )
+
+        scoped.runOne(7L)
+
+        assertIs<AutomationActionEvidence.ResultUnobserved>(convergenceEvidence(convergence, 106L))
+        assertIs<TypedRuntimeOutcome.RetryableFailure>(capturedOutcome())
+    }
+
+    @Test
+    fun `HOF deferral은 convergence 관측 횟수를 소비하지 않는 network pending으로 기록한다`() {
+        val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
+        val factory = StoredActionConvergenceSelectionFactory()
+        val selection = factory.create(defaultStored)
+        val retryAt = Instant.parse("2026-07-25T00:01:00Z")
+        Mockito.`when`(convergence.resumeDue(7L)).thenReturn(ConvergenceDirective.ContinueSelection)
+        Mockito.`when`(decisions.select(7L)).thenReturn(
+            AutomationCoordination.Runnable(12L, QuestAction.Claim("quest", "claim"), emptyList()),
+        )
+        Mockito.`when`(convergence.prepare(7L, selection)).thenReturn(ConvergenceDirective.Submit(107L))
+        Mockito.`when`(convergence.record(Mockito.eq(107L), anyConvergenceEvidence())).thenReturn(
+            ConvergenceDirective.WaitUntil(retryAt, selection.scope),
+        )
+        Mockito.doThrow(HofAutomationDeferredException(retryAt, 1)).`when`(managed).execute()
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            convergenceModule = convergence,
+            convergenceSelectionFactory = factory,
+        )
+
+        scoped.runOne(7L)
+
+        assertIs<AutomationActionEvidence.NetworkFailure>(convergenceEvidence(convergence, 107L))
+        assertIs<TypedRuntimeOutcome.SubmissionDeferred>(capturedOutcome())
     }
 
     @Test
@@ -527,6 +896,41 @@ class UnifiedAutomationRunnerTest {
 
         assertIs<TypedRuntimeOutcome.ActionSuperseded>(capturedOutcome())
         assertIs<AutomationActionEvidence.StateAdvanced>(convergenceEvidence(convergence, 105L))
+    }
+
+    @Test
+    fun `제출 직전 불완전 관측은 POST 없이 convergence 재관측만 예약한다`() {
+        val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
+        val factory = StoredActionConvergenceSelectionFactory()
+        val selection = factory.create(defaultStored)
+        val retryAt = Instant.parse("2026-07-25T00:00:10Z")
+        Mockito.`when`(convergence.resumeDue(7L)).thenReturn(ConvergenceDirective.ContinueSelection)
+        Mockito.`when`(decisions.select(7L)).thenReturn(
+            AutomationCoordination.Runnable(12L, QuestAction.Claim("quest", "claim"), emptyList()),
+        )
+        Mockito.`when`(convergence.prepare(7L, selection)).thenReturn(ConvergenceDirective.Submit(108L))
+        Mockito.`when`(convergence.record(Mockito.eq(108L), anyConvergenceEvidence())).thenReturn(
+            ConvergenceDirective.WaitUntil(retryAt, selection.scope),
+        )
+        Mockito.doThrow(
+            AutomationPreSubmitObservationIncompleteException("최신 전투 맵을 완전하게 관측하지 못했습니다."),
+        ).`when`(managed).validateBeforeSubmission()
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            convergenceModule = convergence,
+            convergenceSelectionFactory = factory,
+        )
+
+        scoped.runOne(7L)
+
+        assertIs<AutomationActionEvidence.IncompleteObservation>(convergenceEvidence(convergence, 108L))
+        assertIs<TypedRuntimeOutcome.PreparedDiscarded>(capturedOutcome())
+        Mockito.verify(managed, Mockito.never()).execute()
     }
 
     @Test
@@ -563,7 +967,7 @@ class UnifiedAutomationRunnerTest {
     }
 
     @Test
-    fun `레이드 전용 handoff는 기존 convergence attempt를 ResultUnobserved로 닫는다`() {
+    fun `레이드 전용 handoff도 기존 convergence attempt의 유한 재관측으로 넘긴다`() {
         val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
         val factory = StoredActionConvergenceSelectionFactory()
         val stored = raidStoredAction()
@@ -582,7 +986,7 @@ class UnifiedAutomationRunnerTest {
             .thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
         Mockito.`when`(convergence.prepare(7L, selection)).thenReturn(ConvergenceDirective.Submit(102L))
         Mockito.`when`(convergence.record(Mockito.eq(102L), anyConvergenceEvidence()))
-            .thenReturn(ConvergenceDirective.ContinueSelection)
+            .thenReturn(ConvergenceDirective.WaitUntil(Instant.EPOCH.plusSeconds(10), selection.scope))
         Mockito.`when`(
             managed.handoffAmbiguousSubmission(Instant.EPOCH, "전투 응답 시간 초과"),
         ).thenReturn(
@@ -606,8 +1010,9 @@ class UnifiedAutomationRunnerTest {
 
         scoped.runOne(7)
 
-        assertIs<AutomationActionEvidence.ResultUnobserved>(convergenceEvidence(convergence, 102L))
+        assertIs<AutomationActionEvidence.IncompleteObservation>(convergenceEvidence(convergence, 102L))
         assertIs<TypedRuntimeOutcome.AmbiguousHandoff>(capturedOutcome())
+        Mockito.verify(wakeup).schedule(7L, Instant.EPOCH.plusSeconds(10), "TYPED_CONVERGENCE_PROBE")
     }
 
     @Test
@@ -675,6 +1080,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(convergence.prepare(7L, otherSelection)).thenReturn(ConvergenceDirective.Submit(100L))
         Mockito.`when`(convergence.record(Mockito.eq(100L), anyConvergenceEvidence()))
             .thenReturn(ConvergenceDirective.ContinueSelection)
+        Mockito.`when`(managed.execute()).thenReturn(questClaimExecution())
         val scoped = UnifiedAutomationRunner(
             preflight,
             runtime,
@@ -684,6 +1090,7 @@ class UnifiedAutomationRunnerTest {
             lifecycle,
             convergenceModule = convergence,
             convergenceSelectionFactory = factory,
+            evidenceInterpreter = productionEvidenceInterpreter,
         )
 
         scoped.runOne(7L)
@@ -692,6 +1099,47 @@ class UnifiedAutomationRunnerTest {
         Mockito.verify(managed, Mockito.never()).reconcile()
         Mockito.verify(convergence, Mockito.never()).record(Mockito.eq(99L), anyConvergenceEvidence())
         assertIs<AutomationActionEvidence.DirectApplied>(convergenceEvidence(convergence, 100L))
+    }
+
+    @Test
+    fun `due probe entry가 fresh entry보다 앞서면 판단 주기에서 probe 하나만 실행한다`() {
+        val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
+        val loader = Mockito.mock(StoredConvergenceActionLoader::class.java)
+        Mockito.`when`(convergence.resumeDue(7L)).thenReturn(
+            ConvergenceDirective.Probe(109L, defaultStored.executionIdentity, entryId = 12L),
+        )
+        Mockito.`when`(decisions.select(7L)).thenReturn(
+            AutomationCoordination.Runnable(
+                13L,
+                QuestAction.Claim("other-quest", "other-claim"),
+                emptyList(),
+            ),
+        )
+        Mockito.`when`(loader.load(7L, defaultStored.executionIdentity)).thenReturn(defaultStored)
+        Mockito.`when`(lifecycle.restoreVerified(defaultStored, 7L)).thenReturn(managed)
+        Mockito.`when`(managed.reconcile()).thenReturn(AmbiguousActionResolution.Resubmit)
+        Mockito.`when`(convergence.record(Mockito.eq(109L), anyConvergenceEvidence()))
+            .thenReturn(ConvergenceDirective.ContinueSelection)
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            convergenceModule = convergence,
+            convergenceSelectionFactory = StoredActionConvergenceSelectionFactory(),
+            storedConvergenceActionLoader = loader,
+            convergenceWorkPriority = AutomationConvergenceWorkPriority { _, probeEntryId, freshEntryId ->
+                probeEntryId < freshEntryId
+            },
+        )
+
+        scoped.runOne(7L)
+
+        Mockito.verify(managed).reconcile()
+        Mockito.verify(managed, Mockito.never()).execute()
+        assertIs<AutomationActionEvidence.SameState>(convergenceEvidence(convergence, 109L))
     }
 
     @Test
@@ -779,10 +1227,83 @@ class UnifiedAutomationRunnerTest {
         Mockito.verifyNoInteractions(wakeup)
     }
 
+    @Test
+    fun `전투 직전 상태 확인에서 캡차가 발생해도 battle gate를 열고 POST하지 않는다`() {
+        val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
+        val factory = StoredActionConvergenceSelectionFactory()
+        val stored = raidStoredAction()
+        val selection = factory.create(stored)
+        val prepared = executionRight(
+            TypedRuntimeCheckpoint(stored, TypedRuntimeCheckpointPhase.PREPARED, null, null),
+        )
+        Mockito.`when`(convergence.resumeDue(7L)).thenReturn(ConvergenceDirective.ContinueSelection)
+        Mockito.`when`(decisions.select(7)).thenReturn(
+            AutomationCoordination.Runnable(12, legacyBattleAction(), emptyList()),
+        )
+        Mockito.`when`(managed.storedAction).thenReturn(stored)
+        Mockito.`when`(runtime.persistPrepared(anyExecution(), anyStoredAction(), anyWarnings()))
+            .thenReturn(TypedRuntimePreparation.Ready(prepared))
+        Mockito.`when`(convergence.prepare(7L, selection)).thenReturn(ConvergenceDirective.Submit(110L))
+        Mockito.`when`(convergence.record(Mockito.eq(110L), anyConvergenceEvidence())).thenReturn(
+            ConvergenceDirective.BattleGateWait(Instant.EPOCH, "CAPTCHA_REQUIRED"),
+        )
+        Mockito.doThrow(ApiException(ErrorCode.CAPTCHA_REQUIRED, "captcha"))
+            .`when`(managed)
+            .validateBeforeSubmission()
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            convergenceModule = convergence,
+            convergenceSelectionFactory = factory,
+        )
+
+        scoped.runOne(7L)
+
+        assertIs<AutomationActionEvidence.BattleGateRequired>(convergenceEvidence(convergence, 110L))
+        assertIs<TypedRuntimeOutcome.PreparedDiscarded>(capturedOutcome())
+        Mockito.verify(managed, Mockito.never()).execute()
+        Mockito.verify(runtime, Mockito.never()).beginSubmission(anyExecution())
+    }
+
     private fun capturedOutcome(): TypedRuntimeOutcome {
         val captor = ArgumentCaptor.forClass(TypedRuntimeOutcome::class.java)
         Mockito.verify(runtime).complete(anyExecution(), captureOutcome(captor))
         return captor.value
+    }
+
+    private fun shadowRunner(shadow: AutomationConvergenceShadowEvaluator) = UnifiedAutomationRunner(
+        preflight,
+        runtime,
+        decisions,
+        wakeup,
+        sharedCooldowns,
+        lifecycle,
+        convergenceModule = Mockito.mock(AutomationActionConvergenceModule::class.java),
+        convergenceSelectionFactory = StoredActionConvergenceSelectionFactory(),
+        rollout = AutomationConvergenceRollout(
+            AutomationConvergenceProperties(mode = AutomationConvergenceMode.SHADOW),
+        ),
+        shadowEvaluator = shadow,
+        evidenceInterpreter = productionEvidenceInterpreter,
+    )
+
+    private fun shadowObservation(
+        shadow: AutomationConvergenceShadowEvaluator,
+        executionIdentity: String,
+    ): Pair<AutomationActionEvidence, LegacyConvergenceDecision> {
+        val evidenceCaptor = ArgumentCaptor.forClass(AutomationActionEvidence::class.java)
+        val decisionCaptor = ArgumentCaptor.forClass(LegacyConvergenceDecision::class.java)
+        Mockito.verify(shadow).observe(
+            Mockito.eq(7L),
+            Mockito.eq(executionIdentity) ?: executionIdentity,
+            captureConvergenceEvidence(evidenceCaptor),
+            captureLegacyDecision(decisionCaptor),
+        )
+        return evidenceCaptor.value to decisionCaptor.value
     }
 
     private fun executionRight(checkpoint: TypedRuntimeCheckpoint? = null): TypedRuntimeExecutionRight =
@@ -854,6 +1375,9 @@ class UnifiedAutomationRunnerTest {
     private fun anyOutcome(): TypedRuntimeOutcome =
         Mockito.any(TypedRuntimeOutcome::class.java) ?: TypedRuntimeOutcome.Idle
 
+    private fun anyTypedExecution(): TypedAutomationExecution =
+        Mockito.any(TypedAutomationExecution::class.java) ?: TypedAutomationExecution.Completed
+
     private fun captureOutcome(captor: ArgumentCaptor<TypedRuntimeOutcome>): TypedRuntimeOutcome =
         captor.capture() ?: TypedRuntimeOutcome.Idle
 
@@ -879,6 +1403,23 @@ class UnifiedAutomationRunnerTest {
         Mockito.any(AutomationActionEvidence::class.java)
             ?: AutomationActionEvidence.ResultUnobserved(Instant.EPOCH, "matcher")
 
+    private fun anyConvergenceSelection(): SelectedAutomationAction =
+        Mockito.any(SelectedAutomationAction::class.java) ?: SelectedAutomationAction(
+            entryId = 1L,
+            executionIdentity = "matcher",
+            actionKind = AutomationActionKind.QUEST_CLAIM,
+            scope = AutomationIsolationScope(AutomationIsolationScopeKind.QUEST_TARGET, "matcher"),
+            policyVersion = "matcher",
+            baselineFingerprint = "matcher",
+        )
+
+    private fun anyLegacyConvergenceDecision(): LegacyConvergenceDecision =
+        Mockito.any(LegacyConvergenceDecision::class.java) ?: LegacyConvergenceDecision.APPLIED
+
+    private fun captureLegacyDecision(
+        captor: ArgumentCaptor<LegacyConvergenceDecision>,
+    ): LegacyConvergenceDecision = captor.capture() ?: LegacyConvergenceDecision.APPLIED
+
     private fun convergenceEvidence(
         convergence: AutomationActionConvergenceModule,
         attemptId: Long,
@@ -891,7 +1432,18 @@ class UnifiedAutomationRunnerTest {
     private fun captureConvergenceEvidence(
         captor: ArgumentCaptor<AutomationActionEvidence>,
     ): AutomationActionEvidence = captor.capture()
-        ?: AutomationActionEvidence.ResultUnobserved(Instant.EPOCH, "capture")
+            ?: AutomationActionEvidence.ResultUnobserved(Instant.EPOCH, "capture")
+
+    private fun questClaimExecution() = TypedAutomationExecution.ActionCompleted(
+        observedState = QuestObservedState(
+            fingerprint = "quest-claim-response",
+            present = true,
+            state = QuestState.UNAVAILABLE,
+            actionNo = null,
+        ),
+        responseShapeMaterial = ProductionEvidenceShapes.QUEST_RESPONSE,
+        sanitizedSnippet = "QuestResponse|targetPresent=true|state=UNAVAILABLE|actionNoPresent=false|progressPresent=false",
+    )
 
     private companion object {
         val RETRY_AT: Instant = Instant.parse("2026-07-25T00:05:00Z")

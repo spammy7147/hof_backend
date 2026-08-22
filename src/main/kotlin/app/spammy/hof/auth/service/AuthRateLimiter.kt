@@ -26,24 +26,28 @@ class AuthRateLimiter(
 
     init {
         require(!properties.rateLimitWindow.isZero && !properties.rateLimitWindow.isNegative)
-        require(properties.loginRateLimitPerIp > 0)
         require(properties.loginRateLimitPerId > 0)
-        require(properties.refreshRateLimitPerIp > 0)
+        require(properties.refreshRateLimitPerFamily > 0)
+        require(properties.refreshRateLimitPerAccount > 0)
     }
 
-    /** 로그인은 공격 출발지와 공격 대상 계정을 각각 제한한다. */
-    fun checkLogin(clientAddress: String, loginId: String) {
+    /** Ingress의 출발지 제한과 별개로 HOF 로그인 대상 ID를 제한한다. */
+    fun checkLogin(loginId: String) {
         consume(
             listOf(
-                LimitKey("login:ip:${normalizeAddress(clientAddress)}", properties.loginRateLimitPerIp),
                 LimitKey("login:id:${hashLoginId(loginId)}", properties.loginRateLimitPerId),
             ),
         )
     }
 
-    /** Refresh Token 원문은 limiter key나 로그에 넣지 않고 출발지 주소만 제한한다. */
-    fun checkRefresh(clientAddress: String) {
-        consume(listOf(LimitKey("refresh:ip:${normalizeAddress(clientAddress)}", properties.refreshRateLimitPerIp)))
+    /** 검증된 내부 식별자만 사용해 로그인 패밀리와 계정 전체의 갱신을 원자적으로 제한한다. */
+    fun checkRefresh(familyId: String, accountId: Long) {
+        consume(
+            listOf(
+                LimitKey("refresh:family:$familyId", properties.refreshRateLimitPerFamily),
+                LimitKey("refresh:account:$accountId", properties.refreshRateLimitPerAccount),
+            ),
+        )
     }
 
     private fun consume(keys: List<LimitKey>) = synchronized(lock) {
@@ -72,15 +76,14 @@ class AuthRateLimiter(
     }
 
     private fun rateLimited(now: Instant, resetsAt: Instant): ApiException {
-        val retryAfter = Duration.between(now, resetsAt).seconds.coerceAtLeast(1)
+        val remainingMillis = Duration.between(now, resetsAt).toMillis().coerceAtLeast(1)
+        val retryAfter = ((remainingMillis + 999) / 1_000).coerceAtLeast(1)
         return ApiException(
             errorCode = ErrorCode.RATE_LIMITED,
             message = "요청이 너무 많습니다. 잠시 후 다시 시도해주세요.",
             retryAfterSeconds = retryAfter,
         )
     }
-
-    private fun normalizeAddress(clientAddress: String): String = clientAddress.trim().ifBlank { "unknown" }
 
     private fun hashLoginId(loginId: String): String =
         MessageDigest.getInstance("SHA-256")

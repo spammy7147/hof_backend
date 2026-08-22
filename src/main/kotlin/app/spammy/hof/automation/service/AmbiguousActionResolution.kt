@@ -9,6 +9,10 @@ sealed interface AmbiguousActionResolution {
 
     data object Resubmit : AmbiguousActionResolution
 
+    data class Superseded(
+        val reason: String,
+    ) : AmbiguousActionResolution
+
     data class VerifyLater(
         val retryAt: Instant,
         val reason: String,
