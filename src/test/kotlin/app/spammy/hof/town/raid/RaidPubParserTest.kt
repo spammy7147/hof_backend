@@ -21,6 +21,7 @@ import app.spammy.hof.town.raid.model.RaidAction
 import app.spammy.hof.town.raid.model.RaidBattleObservationStatus
 import app.spammy.hof.town.raid.model.RaidStatus
 import app.spammy.hof.town.raid.parser.RaidPubParser
+import app.spammy.hof.town.raid.service.RaidActionPreconditionChangedException
 import app.spammy.hof.town.raid.service.RaidPubService
 import java.time.Instant
 import kotlin.test.*
@@ -226,6 +227,24 @@ class RaidPubParserTest {
         assertFailsWith<app.spammy.hof.common.error.ApiException> {
             context.service.action(7L, RaidPubActionRequest(RaidAction.REWARD, null))
         }
+        assertEquals(1, context.requests().size)
+    }
+
+    @Test fun `자동화 보상은 다른 레이드의 전역 보상 버튼을 대상 성공으로 쓰지 않는다`() {
+        val anotherRaidCompleted = fixture().replace(
+            "현재 상태 : 418초 후 출발",
+            "현재 상태 : 보상 확인 시간 (남은 시간 앞으로 0시간 26분 43초)",
+        )
+        val context = service(anotherRaidCompleted)
+
+        assertFailsWith<RaidActionPreconditionChangedException> {
+            context.service.actionForAutomation(
+                7L,
+                RaidPubActionRequest(RaidAction.REWARD, null),
+                "RaidGoblin",
+            )
+        }
+
         assertEquals(1, context.requests().size)
     }
 

@@ -498,6 +498,38 @@ class UnifiedAutomationRunnerTest {
     }
 
     @Test
+    fun `제출 직전 권위 상태 변경은 저장 행동과 convergence attempt를 종료하고 fresh 판단으로 넘긴다`() {
+        val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
+        val factory = StoredActionConvergenceSelectionFactory()
+        val selection = factory.create(defaultStored)
+        Mockito.`when`(convergence.resumeDue(7L)).thenReturn(ConvergenceDirective.ContinueSelection)
+        Mockito.`when`(decisions.select(7L)).thenReturn(
+            AutomationCoordination.Runnable(12L, QuestAction.Claim("quest", "claim"), emptyList()),
+        )
+        Mockito.`when`(convergence.prepare(7L, selection)).thenReturn(ConvergenceDirective.Submit(105L))
+        Mockito.`when`(convergence.record(Mockito.eq(105L), anyConvergenceEvidence()))
+            .thenReturn(ConvergenceDirective.ContinueSelection)
+        Mockito.doThrow(
+            AutomationActionPreconditionChangedException("최신 상태에서 저장 행동의 사전조건이 사라졌습니다."),
+        ).`when`(managed).execute()
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            convergenceModule = convergence,
+            convergenceSelectionFactory = factory,
+        )
+
+        scoped.runOne(7L)
+
+        assertIs<TypedRuntimeOutcome.ActionSuperseded>(capturedOutcome())
+        assertIs<AutomationActionEvidence.StateAdvanced>(convergenceEvidence(convergence, 105L))
+    }
+
+    @Test
     fun `불명확 제출은 기존 action을 terminal 처리하고 수렴 확인만 예약한다`() {
         val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
         val factory = StoredActionConvergenceSelectionFactory()

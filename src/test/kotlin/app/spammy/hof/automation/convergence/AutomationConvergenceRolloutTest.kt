@@ -53,4 +53,28 @@ class AutomationConvergenceRolloutTest {
         assertEquals(null, production.findActive(7L, selection.scope))
         assertEquals(1L, evaluator.snapshot().single().count)
     }
+
+    @Test
+    fun `shadow agrees when a fresh authoritative state supersedes the stored action`() {
+        val evaluator = DefaultAutomationConvergenceShadowEvaluator(TimeProvider { now })
+        val selection = SelectedAutomationAction(
+            entryId = 5L,
+            executionIdentity = "shadow-raid-reward-1",
+            actionKind = AutomationActionKind.RAID_REWARD,
+            scope = AutomationIsolationScope(AutomationIsolationScopeKind.RAID_ENTRY, "RaidGoblin"),
+            policyVersion = "v1",
+            baselineFingerprint = "reward-pending",
+        )
+
+        evaluator.selected(7L, selection)
+        val evaluation = evaluator.observe(
+            7L,
+            selection.executionIdentity,
+            AutomationActionEvidence.StateAdvanced(now, "raid-recruiting"),
+            LegacyConvergenceDecision.SUPERSEDED,
+        )
+
+        assertEquals(ActionConvergenceResult.SUPERSEDED, evaluation?.newResult)
+        assertFalse(requireNotNull(evaluation).differs)
+    }
 }

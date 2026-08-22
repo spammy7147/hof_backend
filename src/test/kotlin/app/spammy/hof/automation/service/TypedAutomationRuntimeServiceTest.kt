@@ -116,6 +116,36 @@ class TypedAutomationRuntimeServiceTest {
     }
 
     @Test
+    fun `제출 직전 사전조건이 변경된 행동은 종료하고 즉시 새로 판단한다`() {
+        val state = state().apply {
+            retryAttempt = 4
+            lastError = "stale failure"
+            waitReason = AutomationWaitReason.SCHEDULED
+        }
+        val fixture = action(TypedAutomationActionStatus.PREPARED)
+        val execution = acquire(state, fixture.row)
+        assertIs<TypedRuntimeSubmission.Started>(service.beginSubmission(execution))
+
+        val projection = service.complete(
+            execution,
+            TypedRuntimeOutcome.ActionSuperseded(
+                "최신 상태에서 저장 행동의 사전조건이 사라졌습니다.",
+                "TYPED_ACTION_SUPERSEDED",
+            ),
+        )
+
+        assertTrue(projection.applied)
+        assertEquals(TypedAutomationActionStatus.FAILED, fixture.row.status)
+        assertEquals(now, fixture.row.finishedAt)
+        assertEquals(0, state.retryAttempt)
+        assertNull(state.nextAttemptAt)
+        assertNull(state.waitReason)
+        assertNull(state.lastError)
+        assertEquals("최신 상태에서 저장 행동의 사전조건이 사라졌습니다.", state.warningText)
+        Mockito.verify(outbox).enqueue(7, "TYPED_ACTION_SUPERSEDED")
+    }
+
+    @Test
     fun `submitted HOF deferral returns checkpoint to prepared and sanitizes diagnostics`() {
         val retryAt = now.plusSeconds(30)
         val state = state()

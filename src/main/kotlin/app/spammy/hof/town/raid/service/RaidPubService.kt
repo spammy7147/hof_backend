@@ -27,7 +27,27 @@ class RaidPubService(
         return RaidPubResponse.from(withBattleAvailability(accountId, snapshot))
     }
 
-    fun action(accountId: Long, request: RaidPubActionRequest): RaidPubResponse {
+    fun action(accountId: Long, request: RaidPubActionRequest): RaidPubResponse =
+        action(accountId, request, reportPreconditionChange = false)
+
+    /** 저장 행동을 실행할 때 최신 GET에서 사전조건이 사라졌음을 POST 전에 구분한다. */
+    fun actionForAutomation(
+        accountId: Long,
+        request: RaidPubActionRequest,
+        expectedRaidId: String?,
+    ): RaidPubResponse = action(
+        accountId = accountId,
+        request = request,
+        reportPreconditionChange = true,
+        expectedRaidId = expectedRaidId,
+    )
+
+    private fun action(
+        accountId: Long,
+        request: RaidPubActionRequest,
+        reportPreconditionChange: Boolean,
+        expectedRaidId: String? = null,
+    ): RaidPubResponse {
         val projected = executor.executeProjectedWithSingleFallbackGet(
             accountId = accountId,
             pageUrl = url(),
@@ -36,20 +56,36 @@ class RaidPubService(
                 val actionId = if (request.action in RAID_ACTIONS) {
                     val id = request.raidId?.takeIf(String::isNotBlank) ?: invalid("레이드를 선택해 주세요.")
                     val raid = current.raids.singleOrNull { it.id == id }
-                        ?: invalid("현재 해당 레이드를 확인할 수 없습니다.")
+                        ?: unavailable(reportPreconditionChange, "현재 해당 레이드를 확인할 수 없습니다.")
                     if (!canExecute(current, raid, request.action)) {
-                        invalid("현재 해당 레이드에서 실행할 수 없는 동작입니다.")
+                        unavailable(reportPreconditionChange, "현재 해당 레이드에서 실행할 수 없는 동작입니다.")
                     }
-                    raid.actionIds[request.action] ?: invalid("현재 해당 레이드에서 실행할 수 없는 동작입니다.")
+                    raid.actionIds[request.action]
+                        ?: unavailable(reportPreconditionChange, "현재 해당 레이드에서 실행할 수 없는 동작입니다.")
                 } else {
                     if (request.raidId != null) invalid("전체 레이드 동작에는 레이드 식별자가 필요하지 않습니다.")
-                    if (request.action == RaidAction.REWARD &&
-                        (current.applyWait || current.raids.none {
-                            it.status == RaidStatus.COMPLETED && !isRaidResetRequiredStatus(it.statusText)
-                        })
-                    ) invalid("현재 보상을 확인할 수 있는 완료 레이드가 없습니다.")
+                    if (request.action == RaidAction.REWARD) {
+                        val expectedRaid = if (reportPreconditionChange) {
+                            val id = expectedRaidId?.takeIf(String::isNotBlank)
+                                ?: unavailable(true, "저장된 보상 행동의 대상 레이드를 확인할 수 없습니다.")
+                            current.raids.singleOrNull { it.id == id }
+                                ?: unavailable(reportPreconditionChange, "현재 대상 레이드를 확인할 수 없습니다.")
+                        } else null
+                        if (expectedRaid != null &&
+                            (expectedRaid.status != RaidStatus.COMPLETED ||
+                                isRaidResetRequiredStatus(expectedRaid.statusText))
+                        ) {
+                            unavailable(reportPreconditionChange, "대상 레이드가 더 이상 보상 확인 단계가 아닙니다.")
+                        }
+                        if (current.applyWait || current.raids.none {
+                                it.status == RaidStatus.COMPLETED && !isRaidResetRequiredStatus(it.statusText)
+                            }
+                        ) {
+                            unavailable(reportPreconditionChange, "현재 보상을 확인할 수 있는 완료 레이드가 없습니다.")
+                        }
+                    }
                     current.globalActionIds[request.action]
-                        ?: invalid("현재 실행할 수 없는 전투 정보실 동작입니다.")
+                        ?: unavailable(reportPreconditionChange, "현재 실행할 수 없는 전투 정보실 동작입니다.")
                 }
                 TownActionRequest(actionId)
             },
@@ -116,7 +152,13 @@ class RaidPubService(
 
     private fun url() = locations.resolve(TownFeatureId.RAID_INFO).url
     private fun invalid(message: String): Nothing = throw ApiException(ErrorCode.INVALID_REQUEST, message)
+    private fun unavailable(reportPreconditionChange: Boolean, message: String): Nothing {
+        if (reportPreconditionChange) throw RaidActionPreconditionChangedException(message)
+        invalid(message)
+    }
     private companion object {
         val RAID_ACTIONS = setOf(RaidAction.REGISTER, RaidAction.LEAVE, RaidAction.START, RaidAction.RESET)
     }
 }
+
+class RaidActionPreconditionChangedException(message: String) : RuntimeException(message)

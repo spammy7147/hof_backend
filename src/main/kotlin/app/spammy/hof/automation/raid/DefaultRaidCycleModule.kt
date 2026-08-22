@@ -224,12 +224,15 @@ class DefaultRaidCycleModule(
             )
         }
         if (
-            cycle.status in setOf(
-                RaidAutomationCycleStatus.IN_BATTLE,
-                RaidAutomationCycleStatus.REWARD_PENDING,
-            ) &&
+            cycle.status == RaidAutomationCycleStatus.IN_BATTLE &&
             !observed.joined &&
             observed.status in REGISTRATION_STATUSES
+        ) {
+            return completeCycle(accountId, cycle)
+        }
+        if (
+            cycle.status == RaidAutomationCycleStatus.REWARD_PENDING &&
+            observed.status != RaidObservedStatus.COMPLETED
         ) {
             return completeCycle(accountId, cycle)
         }

@@ -29,6 +29,7 @@ import app.spammy.hof.town.fishing.model.FishingPrimaryAction
 import app.spammy.hof.town.fishing.service.FishingService
 import app.spammy.hof.town.raid.dto.RaidPubActionRequest
 import app.spammy.hof.town.raid.model.RaidAction
+import app.spammy.hof.town.raid.service.RaidActionPreconditionChangedException
 import app.spammy.hof.town.raid.service.RaidPubService
 import java.io.IOException
 import java.util.UUID
@@ -1245,8 +1246,19 @@ class UnifiedAutomationActionLifecycleModule(
         stored: StoredTypedAutomationAction,
         payload: StoredTypedActionPayload.RaidTown,
     ): TypedAutomationExecution {
-        val response = runMutation(accountId, "Raid") {
-            raidPubService.action(accountId, RaidPubActionRequest(payload.action, payload.raidId))
+        val response = try {
+            runMutation(accountId, "Raid") {
+                raidPubService.actionForAutomation(
+                    accountId,
+                    RaidPubActionRequest(payload.action, payload.raidId),
+                    payload.targetRaidId,
+                )
+            }
+        } catch (error: RaidActionPreconditionChangedException) {
+            throw AutomationActionPreconditionChangedException(
+                error.message ?: "최신 레이드 상태에서 저장 행동의 사전조건이 사라졌습니다.",
+                error,
+            )
         }
         val completion = recordRaidResult(
             accountId,

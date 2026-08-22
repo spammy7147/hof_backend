@@ -861,6 +861,41 @@ class RaidCycleModuleTest {
     }
 
     @Test
+    fun `REWARD_PENDING 대상이 새 모집 단계로 바뀌면 다른 레이드의 전역 보상 버튼을 실행하지 않는다`() {
+        val target = target("raid-auto", 0)
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(1, 7, target.raidId, target.name, RaidAutomationCycleStatus.REWARD_PENDING, null),
+            ),
+        )
+        val observation = RaidObservation(
+            raids = listOf(
+                RaidObservedTarget(
+                    id = target.raidId,
+                    name = target.name,
+                    playable = true,
+                    status = RaidObservedStatus.RECRUITING,
+                    statusText = "파티 모집 중 (1799초 후 출발 가능)",
+                    waitSeconds = 1799,
+                    joined = true,
+                    actions = emptySet(),
+                ),
+            ),
+            applied = false,
+            registrationWait = false,
+            globalActions = setOf(RaidIntentKind.REWARD),
+        )
+        val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
+
+        val complete = assertIs<RaidDirective.Complete>(module.decideNext(1))
+
+        assertEquals(RaidCycleOutcomeKind.COMPLETED, complete.outcome.kind)
+        assertEquals(null, store.state.openCycle)
+        assertEquals(true, store.lastAdvanceRotation)
+    }
+
+    @Test
     fun `보상 후 GET에 쿨타임 정보가 없으면 REFRESH 한 행동을 반환한다`() {
         val target = target("raid-auto", 0)
         val store = InMemoryRaidCycleStore(

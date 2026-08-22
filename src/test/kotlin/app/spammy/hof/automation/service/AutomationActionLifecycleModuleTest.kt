@@ -50,6 +50,7 @@ import app.spammy.hof.town.fishing.service.FishingService
 import app.spammy.hof.town.raid.dto.RaidPubActionRequest
 import app.spammy.hof.town.raid.dto.RaidPubResponse
 import app.spammy.hof.town.raid.model.RaidAction
+import app.spammy.hof.town.raid.service.RaidActionPreconditionChangedException
 import app.spammy.hof.town.raid.service.RaidPubService
 import java.io.IOException
 import java.time.Instant
@@ -1073,7 +1074,13 @@ class AutomationActionLifecycleModuleTest {
     fun `레이드 마을 행동을 저장하고 응답 관측만 레이드 규칙 모듈에 전달한다`() {
         val response = RaidPubResponse(emptyList(), false, false, null, null, emptySet(), null)
         val observation = RaidObservation(emptyList(), false, false)
-        Mockito.`when`(raidPubService.action(7L, RaidPubActionRequest(RaidAction.RESET, "RaidGoblin")))
+        Mockito.`when`(
+            raidPubService.actionForAutomation(
+                7L,
+                RaidPubActionRequest(RaidAction.RESET, "RaidGoblin"),
+                "RaidGoblin",
+            ),
+        )
             .thenReturn(response)
         Mockito.`when`(raidObservationAdapter.from(response)).thenReturn(observation)
         Mockito.`when`(
@@ -1119,7 +1126,13 @@ class AutomationActionLifecycleModuleTest {
         val response = RaidPubResponse(emptyList(), true, true, 10_000, null, emptySet(), null)
         val observation = RaidObservation(emptyList(), true, true, 10_000)
         val completion = RaidCycleOutcome(13L, "RaidGoblin", RaidCycleOutcomeKind.COMPLETED)
-        Mockito.`when`(raidPubService.action(7L, RaidPubActionRequest(RaidAction.REWARD, null)))
+        Mockito.`when`(
+            raidPubService.actionForAutomation(
+                7L,
+                RaidPubActionRequest(RaidAction.REWARD, null),
+                "RaidGoblin",
+            ),
+        )
             .thenReturn(response)
         Mockito.`when`(raidObservationAdapter.from(response)).thenReturn(observation)
         Mockito.`when`(
@@ -1139,6 +1152,29 @@ class AutomationActionLifecycleModuleTest {
 
         assertEquals(TypedAutomationExecution.RaidCycleFinished(completion), managed.execute())
         Mockito.verify(workLifecycle).completeRaidCycle(7L, 13L)
+    }
+
+    @Test
+    fun `최신 레이드 상태에서 저장 행동이 무효하면 상위 런너에 상태 변경으로 알린다`() {
+        Mockito.doThrow(RaidActionPreconditionChangedException("대상 레이드가 모집 단계로 변경됐습니다."))
+            .`when`(raidPubService)
+            .actionForAutomation(
+                7L,
+                RaidPubActionRequest(RaidAction.REWARD, null),
+                "RaidGoblin",
+            )
+        val managed = assertNotNull(
+            module.prepare(
+                7L,
+                13L,
+                RaidTownAutomationAction(7L, RaidAction.REWARD, null, "RaidGoblin", "고블린 레이드"),
+            ),
+        )
+
+        assertFailsWith<AutomationActionPreconditionChangedException> {
+            managed.execute()
+        }
+        Mockito.verifyNoInteractions(raidObservationAdapter, raidCycleModule, workLifecycle)
     }
 
     @Test

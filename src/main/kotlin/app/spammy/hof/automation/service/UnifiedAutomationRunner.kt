@@ -658,6 +658,40 @@ class UnifiedAutomationRunner @Autowired constructor(
                 decisionJournal?.appendActionResult(cycleId, resultTrace)
             }
         } catch (error: Throwable) {
+            error.findActionPreconditionChanged()?.let { changed ->
+                val evidence = AutomationActionEvidence.StateAdvanced(
+                    capturedAt = now(),
+                    stateFingerprint = "precondition-changed:${stored.payload.kind()}",
+                )
+                val directive = convergenceAttemptId?.let { attemptId ->
+                    convergenceModule?.record(attemptId, evidence)
+                }
+                observeShadow(
+                    accountId,
+                    stored.executionIdentity,
+                    evidence,
+                    LegacyConvergenceDecision.SUPERSEDED,
+                )
+                decisionCycleId?.let { cycleId -> runCatching {
+                    decisionJournal?.appendActionResult(
+                        cycleId,
+                        trace(
+                            AutomationHistoryEventKind.SKIPPED,
+                            ACTION_SUPERSEDED_REASON,
+                            "제출 직전 최신 상태가 바뀌어 저장 행동을 폐기하고 새로 판단합니다. 사유: ${changed.message}",
+                        ),
+                    )
+                } }
+                typedRuntime.complete(
+                    execution,
+                    TypedRuntimeOutcome.ActionSuperseded(
+                        warning = changed.message ?: "최신 상태에서 저장 행동의 사전조건이 사라졌습니다.",
+                        wakeReason = ACTION_SUPERSEDED_REASON,
+                    ),
+                )
+                directive?.let { scheduleConvergenceDirective(accountId, it) }
+                return
+            }
             val captcha = error.findCaptchaRequired()
             if (
                 captcha != null &&
@@ -1026,6 +1060,11 @@ class UnifiedAutomationRunner @Autowired constructor(
     private fun Throwable.findAmbiguousSubmission(): AmbiguousAutomationSubmissionException? =
         generateSequence(this) { it.cause }.filterIsInstance<AmbiguousAutomationSubmissionException>().firstOrNull()
 
+    private fun Throwable.findActionPreconditionChanged(): AutomationActionPreconditionChangedException? =
+        generateSequence(this) { it.cause }
+            .filterIsInstance<AutomationActionPreconditionChangedException>()
+            .firstOrNull()
+
     private fun Throwable.findCaptchaRequired(): ApiException? =
         generateSequence(this) { it.cause }
             .filterIsInstance<ApiException>()
@@ -1104,6 +1143,7 @@ class UnifiedAutomationRunner @Autowired constructor(
         const val TYPED_CONVERGENCE_WAKE_REASON = "TYPED_CONVERGENCE_CONTINUE"
         const val TYPED_CONVERGENCE_PROBE_REASON = "TYPED_CONVERGENCE_PROBE"
         const val TYPED_BATTLE_GATE_WAKE_REASON = "TYPED_BATTLE_GATE_OPENED"
+        const val ACTION_SUPERSEDED_REASON = "ACTION_SUPERSEDED_BY_FRESH_STATE"
         const val POST_KILL_SWITCH_WAKE_REASON = "AUTOMATION_POST_KILL_SWITCH"
         const val POST_KILL_SWITCH_RECHECK_SECONDS = 30L
     }

@@ -10,6 +10,7 @@ enum class LegacyConvergenceDecision {
     APPLIED,
     RECONCILING,
     RESUBMIT,
+    SUPERSEDED,
     HELD,
     RESULT_UNOBSERVED,
 }
@@ -110,6 +111,7 @@ class DefaultAutomationConvergenceShadowEvaluator(
         LegacyConvergenceDecision.APPLIED -> ActionConvergenceResult.APPLIED
         LegacyConvergenceDecision.RECONCILING -> ActionConvergenceResult.PENDING
         LegacyConvergenceDecision.RESUBMIT -> ActionConvergenceResult.NOT_APPLIED
+        LegacyConvergenceDecision.SUPERSEDED -> ActionConvergenceResult.SUPERSEDED
         LegacyConvergenceDecision.HELD -> ActionConvergenceResult.HELD
         LegacyConvergenceDecision.RESULT_UNOBSERVED -> ActionConvergenceResult.RESULT_UNOBSERVED
     }
