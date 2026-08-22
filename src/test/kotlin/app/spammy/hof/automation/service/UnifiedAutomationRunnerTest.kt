@@ -1,5 +1,17 @@
 package app.spammy.hof.automation.service
 
+import app.spammy.hof.automation.convergence.AutomationActionConvergenceModule
+import app.spammy.hof.automation.convergence.AutomationActionEvidence
+import app.spammy.hof.automation.convergence.AutomationActionKind
+import app.spammy.hof.automation.convergence.AutomationConvergenceMode
+import app.spammy.hof.automation.convergence.AutomationConvergenceProperties
+import app.spammy.hof.automation.convergence.AutomationConvergenceRollout
+import app.spammy.hof.automation.convergence.AutomationIsolationScope
+import app.spammy.hof.automation.convergence.AutomationIsolationScopeKind
+import app.spammy.hof.automation.convergence.ConvergenceDirective
+import app.spammy.hof.automation.convergence.SelectedAutomationAction
+import app.spammy.hof.automation.convergence.StoredActionConvergenceSelectionFactory
+import app.spammy.hof.automation.convergence.StoredConvergenceActionLoader
 import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.entity.AutomationWaitReason
 import app.spammy.hof.automation.entity.PresetSelectionMode
@@ -10,6 +22,8 @@ import app.spammy.hof.automation.port.AutomationWakeupPort
 import app.spammy.hof.automation.raid.RaidCycleOutcome
 import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
 import app.spammy.hof.battle.dto.BattlePatternLoadRequest
+import app.spammy.hof.common.error.ApiException
+import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.client.HofAutomationDeferredException
 import java.time.Instant
 import java.time.LocalDate
@@ -328,6 +342,37 @@ class UnifiedAutomationRunnerTest {
     }
 
     @Test
+    fun `post kill switch keeps selection and reads available but never begins submission`() {
+        val action = QuestAction.Claim("quest", "claim")
+        Mockito.`when`(decisions.select(7)).thenReturn(
+            AutomationCoordination.Runnable(12, action, emptyList()),
+        )
+        val rollout = AutomationConvergenceRollout(
+            AutomationConvergenceProperties(
+                mode = AutomationConvergenceMode.ACTIVE,
+                automationPostsEnabled = false,
+            ),
+        )
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            rollout = rollout,
+            timeProvider = app.spammy.hof.common.time.TimeProvider { Instant.EPOCH },
+        )
+
+        scoped.runOne(7)
+
+        Mockito.verify(runtime, Mockito.never()).beginSubmission(anyExecution())
+        Mockito.verify(managed, Mockito.never()).execute()
+        val wait = assertIs<TypedRuntimeOutcome.ScheduledWait>(capturedOutcome())
+        assertEquals(Instant.EPOCH.plusSeconds(30), wait.nextRunAt)
+    }
+
+    @Test
     fun `raid terminal battle result clears recovery warning and records stable reason`() {
         val journal = Mockito.mock(AutomationDecisionJournal::class.java)
         val action = legacyBattleAction(recoveryChainId = "chain-1")
@@ -419,6 +464,287 @@ class UnifiedAutomationRunnerTest {
         assertEquals("RaidGoblin", result.targetKey)
         assertEquals("고블린", result.targetName)
         assertTrue(result.message.startsWith("레이드 전투 · RaidGoblin · "))
+    }
+
+    @Test
+    fun `새 행동은 격리 범위 시도를 만들고 직접 성공 증거로 종료한다`() {
+        val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
+        val factory = StoredActionConvergenceSelectionFactory()
+        val selection = factory.create(defaultStored)
+        Mockito.`when`(convergence.resumeDue(7L)).thenReturn(ConvergenceDirective.ContinueSelection)
+        Mockito.`when`(decisions.select(7)).thenReturn(
+            AutomationCoordination.Runnable(12, QuestAction.Claim("quest", "claim"), emptyList()),
+        )
+        Mockito.`when`(convergence.prepare(7L, selection)).thenReturn(ConvergenceDirective.Submit(99L))
+        Mockito.`when`(convergence.record(Mockito.eq(99L), anyConvergenceEvidence()))
+            .thenReturn(ConvergenceDirective.ContinueSelection)
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            convergenceModule = convergence,
+            convergenceSelectionFactory = factory,
+        )
+
+        scoped.runOne(7)
+
+        Mockito.verify(convergence).prepare(7L, selection)
+        val evidence = convergenceEvidence(convergence, 99L)
+        assertIs<AutomationActionEvidence.DirectApplied>(evidence)
+        assertIs<TypedRuntimeOutcome.ActionSucceeded>(capturedOutcome())
+    }
+
+    @Test
+    fun `불명확 제출은 기존 action을 terminal 처리하고 수렴 확인만 예약한다`() {
+        val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
+        val factory = StoredActionConvergenceSelectionFactory()
+        val selection = factory.create(defaultStored)
+        val probeAt = Instant.parse("2026-07-25T00:00:10Z")
+        Mockito.`when`(convergence.resumeDue(7L)).thenReturn(ConvergenceDirective.ContinueSelection)
+        Mockito.`when`(decisions.select(7)).thenReturn(
+            AutomationCoordination.Runnable(12, QuestAction.Claim("quest", "claim"), emptyList()),
+        )
+        Mockito.`when`(convergence.prepare(7L, selection)).thenReturn(ConvergenceDirective.Submit(99L))
+        Mockito.`when`(convergence.record(Mockito.eq(99L), anyConvergenceEvidence())).thenReturn(
+            ConvergenceDirective.WaitUntil(probeAt, selection.scope),
+        )
+        Mockito.doThrow(AmbiguousAutomationSubmissionException("result unknown")).`when`(managed).execute()
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            convergenceModule = convergence,
+            convergenceSelectionFactory = factory,
+        )
+
+        scoped.runOne(7)
+
+        assertIs<AutomationActionEvidence.IncompleteObservation>(convergenceEvidence(convergence, 99L))
+        assertIs<TypedRuntimeOutcome.AmbiguousHandoff>(capturedOutcome())
+        Mockito.verify(wakeup).schedule(7L, probeAt, "TYPED_CONVERGENCE_PROBE")
+    }
+
+    @Test
+    fun `레이드 전용 handoff는 기존 convergence attempt를 ResultUnobserved로 닫는다`() {
+        val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
+        val factory = StoredActionConvergenceSelectionFactory()
+        val stored = raidStoredAction()
+        val selection = factory.create(stored)
+        val prepared = executionRight(
+            TypedRuntimeCheckpoint(stored, TypedRuntimeCheckpointPhase.PREPARED, null, null),
+        )
+        Mockito.`when`(convergence.resumeDue(7L)).thenReturn(ConvergenceDirective.ContinueSelection)
+        Mockito.`when`(decisions.select(7)).thenReturn(
+            AutomationCoordination.Runnable(12, legacyBattleAction(), emptyList()),
+        )
+        Mockito.`when`(managed.storedAction).thenReturn(stored)
+        Mockito.`when`(runtime.persistPrepared(anyExecution(), anyStoredAction(), anyWarnings()))
+            .thenReturn(TypedRuntimePreparation.Ready(prepared))
+        Mockito.`when`(runtime.beginSubmission(prepared))
+            .thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
+        Mockito.`when`(convergence.prepare(7L, selection)).thenReturn(ConvergenceDirective.Submit(102L))
+        Mockito.`when`(convergence.record(Mockito.eq(102L), anyConvergenceEvidence()))
+            .thenReturn(ConvergenceDirective.ContinueSelection)
+        Mockito.`when`(
+            managed.handoffAmbiguousSubmission(Instant.EPOCH, "전투 응답 시간 초과"),
+        ).thenReturn(
+            AmbiguousActionResolution.HandedOff(
+                Instant.EPOCH.plusSeconds(300),
+                "레이드 전투 결과 미확정",
+            ),
+        )
+        Mockito.doThrow(AmbiguousAutomationSubmissionException("전투 응답 시간 초과"))
+            .`when`(managed).execute()
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            convergenceModule = convergence,
+            convergenceSelectionFactory = factory,
+        )
+
+        scoped.runOne(7)
+
+        assertIs<AutomationActionEvidence.ResultUnobserved>(convergenceEvidence(convergence, 102L))
+        assertIs<TypedRuntimeOutcome.AmbiguousHandoff>(capturedOutcome())
+    }
+
+    @Test
+    fun `기한이 된 수렴 확인은 저장 payload를 재제출하지 않고 최신 상태만 관측한다`() {
+        val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
+        val loader = Mockito.mock(StoredConvergenceActionLoader::class.java)
+        val selection = SelectedAutomationAction(
+            12L,
+            defaultStored.executionIdentity,
+            AutomationActionKind.QUEST_CLAIM,
+            AutomationIsolationScope(AutomationIsolationScopeKind.QUEST_TARGET, "quest"),
+            "policy-v1",
+            "baseline",
+        )
+        Mockito.`when`(convergence.resumeDue(7L)).thenReturn(
+            ConvergenceDirective.Probe(99L, defaultStored.executionIdentity),
+        )
+        Mockito.`when`(loader.load(7L, defaultStored.executionIdentity)).thenReturn(defaultStored)
+        Mockito.`when`(lifecycle.restoreVerified(defaultStored, 7L)).thenReturn(managed)
+        Mockito.`when`(managed.reconcile()).thenReturn(AmbiguousActionResolution.Applied())
+        Mockito.`when`(convergence.record(Mockito.eq(99L), anyConvergenceEvidence()))
+            .thenReturn(ConvergenceDirective.ContinueSelection)
+        Mockito.`when`(decisions.select(7L)).thenReturn(AutomationCoordination.Idle(emptyList()))
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            convergenceModule = convergence,
+            convergenceSelectionFactory = StoredActionConvergenceSelectionFactory(),
+            storedConvergenceActionLoader = loader,
+        )
+
+        scoped.runOne(7)
+
+        Mockito.verify(managed).reconcile()
+        Mockito.verify(managed, Mockito.never()).execute()
+        assertIs<AutomationActionEvidence.StateAdvanced>(convergenceEvidence(convergence, 99L))
+        Mockito.verify(decisions).select(7L)
+        assertIs<TypedRuntimeOutcome.SelectionChanged>(capturedOutcome())
+    }
+
+    @Test
+    fun `기한이 된 수렴 확인은 관련 없는 실행 가능 행동에 한 번 양보한다`() {
+        val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
+        val factory = StoredActionConvergenceSelectionFactory()
+        val otherStored = defaultStored.copy(
+            executionIdentity = "execution-other",
+            payload = StoredTypedActionPayload.QuestClaim("other-quest", "other-claim"),
+        )
+        val otherSelection = factory.create(otherStored)
+        Mockito.`when`(convergence.resumeDue(7L)).thenReturn(
+            ConvergenceDirective.Probe(99L, defaultStored.executionIdentity),
+        )
+        Mockito.`when`(decisions.select(7L)).thenReturn(
+            AutomationCoordination.Runnable(
+                13L,
+                QuestAction.Claim("other-quest", "other-claim"),
+                emptyList(),
+            ),
+        )
+        Mockito.`when`(managed.storedAction).thenReturn(otherStored)
+        Mockito.`when`(convergence.prepare(7L, otherSelection)).thenReturn(ConvergenceDirective.Submit(100L))
+        Mockito.`when`(convergence.record(Mockito.eq(100L), anyConvergenceEvidence()))
+            .thenReturn(ConvergenceDirective.ContinueSelection)
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            convergenceModule = convergence,
+            convergenceSelectionFactory = factory,
+        )
+
+        scoped.runOne(7L)
+
+        Mockito.verify(managed).execute()
+        Mockito.verify(managed, Mockito.never()).reconcile()
+        Mockito.verify(convergence, Mockito.never()).record(Mockito.eq(99L), anyConvergenceEvidence())
+        assertIs<AutomationActionEvidence.DirectApplied>(convergenceEvidence(convergence, 100L))
+    }
+
+    @Test
+    fun `active 전환은 legacy reconciling을 한 번 관측하고 payload 재제출 없이 새 수렴으로 넘긴다`() {
+        val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
+        val factory = StoredActionConvergenceSelectionFactory()
+        val selection = factory.create(defaultStored)
+        val legacyExecution = executionRight(
+            TypedRuntimeCheckpoint(
+                defaultStored,
+                TypedRuntimeCheckpointPhase.RECONCILING,
+                Instant.EPOCH,
+                "legacy ambiguous",
+            ),
+        )
+        val probeAt = Instant.parse("2026-07-25T00:00:10Z")
+        Mockito.`when`(runtime.acquire(7)).thenReturn(TypedRuntimeAcquisition.Acquired(legacyExecution))
+        Mockito.`when`(lifecycle.restoreVerified(defaultStored, 7L)).thenReturn(managed)
+        Mockito.`when`(managed.reconcile()).thenReturn(AmbiguousActionResolution.Resubmit)
+        Mockito.`when`(convergence.prepare(7L, selection)).thenReturn(ConvergenceDirective.Submit(101L))
+        Mockito.`when`(convergence.record(Mockito.eq(101L), anyConvergenceEvidence())).thenReturn(
+            ConvergenceDirective.WaitUntil(probeAt, selection.scope),
+        )
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            convergenceModule = convergence,
+            convergenceSelectionFactory = factory,
+            rollout = AutomationConvergenceRollout(
+                AutomationConvergenceProperties(mode = AutomationConvergenceMode.ACTIVE),
+            ),
+        )
+
+        scoped.runOne(7)
+
+        assertIs<AutomationActionEvidence.SameState>(convergenceEvidence(convergence, 101L))
+        Mockito.verify(managed).reconcile()
+        Mockito.verify(managed, Mockito.never()).execute()
+        assertIs<TypedRuntimeOutcome.AmbiguousHandoff>(capturedOutcome())
+        Mockito.verify(wakeup).schedule(7L, probeAt, "TYPED_CONVERGENCE_PROBE")
+    }
+
+    @Test
+    fun `전투 중 캡차는 계정 전투 gate만 열고 자동화 runtime을 중단하지 않는다`() {
+        val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
+        val factory = StoredActionConvergenceSelectionFactory()
+        val stored = raidStoredAction()
+        val selection = factory.create(stored)
+        val prepared = executionRight(
+            TypedRuntimeCheckpoint(stored, TypedRuntimeCheckpointPhase.PREPARED, null, null),
+        )
+        Mockito.`when`(convergence.resumeDue(7L)).thenReturn(ConvergenceDirective.ContinueSelection)
+        Mockito.`when`(decisions.select(7)).thenReturn(
+            AutomationCoordination.Runnable(12, legacyBattleAction(), emptyList()),
+        )
+        Mockito.`when`(managed.storedAction).thenReturn(stored)
+        Mockito.`when`(runtime.persistPrepared(anyExecution(), anyStoredAction(), anyWarnings()))
+            .thenReturn(TypedRuntimePreparation.Ready(prepared))
+        Mockito.`when`(runtime.beginSubmission(prepared))
+            .thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
+        Mockito.`when`(convergence.prepare(7L, selection)).thenReturn(ConvergenceDirective.Submit(99L))
+        Mockito.`when`(convergence.record(Mockito.eq(99L), anyConvergenceEvidence())).thenReturn(
+            ConvergenceDirective.BattleGateWait(Instant.EPOCH, "CAPTCHA_REQUIRED"),
+        )
+        Mockito.doThrow(ApiException(ErrorCode.CAPTCHA_REQUIRED, "captcha")).`when`(managed).execute()
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            convergenceModule = convergence,
+            convergenceSelectionFactory = factory,
+        )
+
+        scoped.runOne(7)
+
+        assertIs<AutomationActionEvidence.BattleGateRequired>(convergenceEvidence(convergence, 99L))
+        assertIs<TypedRuntimeOutcome.AmbiguousHandoff>(capturedOutcome())
+        Mockito.verifyNoInteractions(wakeup)
     }
 
     private fun capturedOutcome(): TypedRuntimeOutcome {
@@ -516,6 +842,24 @@ class UnifiedAutomationRunnerTest {
             "capture",
             "capture",
         )
+
+    private fun anyConvergenceEvidence(): AutomationActionEvidence =
+        Mockito.any(AutomationActionEvidence::class.java)
+            ?: AutomationActionEvidence.ResultUnobserved(Instant.EPOCH, "matcher")
+
+    private fun convergenceEvidence(
+        convergence: AutomationActionConvergenceModule,
+        attemptId: Long,
+    ): AutomationActionEvidence {
+        val captor = ArgumentCaptor.forClass(AutomationActionEvidence::class.java)
+        Mockito.verify(convergence).record(Mockito.eq(attemptId), captureConvergenceEvidence(captor))
+        return captor.value
+    }
+
+    private fun captureConvergenceEvidence(
+        captor: ArgumentCaptor<AutomationActionEvidence>,
+    ): AutomationActionEvidence = captor.capture()
+        ?: AutomationActionEvidence.ResultUnobserved(Instant.EPOCH, "capture")
 
     private companion object {
         val RETRY_AT: Instant = Instant.parse("2026-07-25T00:05:00Z")

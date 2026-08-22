@@ -284,6 +284,13 @@ class TypedAutomationRuntimeService(
                 outcome.warning,
                 outcome.wakeReason,
             ).projection()
+            is TypedRuntimeOutcome.PreparedDiscarded -> discardPreparedAction(
+                right.accountId,
+                right.leaseToken,
+                right.requireActionId(),
+                outcome.warning,
+                outcome.wakeReason,
+            ).projection()
             is TypedRuntimeOutcome.IntegrityFailure -> {
                 val retryAt = isolateIntegrityFailureForRetry(
                     right.accountId,
@@ -380,6 +387,44 @@ class TypedAutomationRuntimeService(
         val now = timeProvider.now()
         val diagnostic = sanitizeDiagnostic(warning)
         action.status = TypedAutomationActionStatus.AMBIGUOUS
+        action.nextAttemptAt = null
+        action.finishedAt = now
+        action.lastError = diagnostic
+        action.updatedAt = now
+        state.retryAttempt = 0
+        state.nextAttemptAt = null
+        state.waitReason = null
+        state.leaseToken = null
+        state.leaseUntil = null
+        state.warningText = diagnostic
+        state.lastError = null
+        state.stopReason = null
+        state.stopActionId = null
+        state.updatedAt = now
+        val paused = completeRequestedLifecycle(state, now)
+        if (!paused && state.lifecycleStatus == TypedAutomationLifecycle.RUNNING) {
+            outbox.enqueue(accountId, wakeReason)
+        }
+        return true
+    }
+
+    private fun discardPreparedAction(
+        accountId: Long,
+        token: String,
+        actionId: Long,
+        warning: String,
+        wakeReason: String,
+    ): Boolean {
+        val state = fencedState(accountId, token) ?: return false
+        val action = queryRepository.lockTypedAction(actionId) ?: return false
+        if (
+            action.account.id != accountId ||
+            action.leaseToken != token ||
+            action.status != TypedAutomationActionStatus.PREPARED
+        ) return false
+        val now = timeProvider.now()
+        val diagnostic = sanitizeDiagnostic(warning)
+        action.status = TypedAutomationActionStatus.FAILED
         action.nextAttemptAt = null
         action.finishedAt = now
         action.lastError = diagnostic

@@ -74,6 +74,10 @@ sealed interface TypedRuntimeOutcome {
         val warning: String,
         val wakeReason: String,
     ) : TypedRuntimeOutcome
+    data class PreparedDiscarded(
+        val warning: String,
+        val wakeReason: String,
+    ) : TypedRuntimeOutcome
     data class IntegrityFailure(val message: String) : TypedRuntimeOutcome
 }
 

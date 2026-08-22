@@ -2,6 +2,8 @@ package app.spammy.hof.captcha.service
 
 import app.spammy.hof.automation.service.TypedAutomationRuntimeService
 import app.spammy.hof.automation.service.TypedCaptchaAutomationResumeService
+import app.spammy.hof.automation.convergence.AutomationActionConvergenceModule
+import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.captcha.entity.CaptchaChallengeEntity
 import org.springframework.context.ApplicationEventPublisher
 import org.springframework.stereotype.Component
@@ -15,6 +17,8 @@ class CaptchaAutomationHook(
     private val typedRuntimeService: TypedAutomationRuntimeService,
     private val typedCaptchaResumeService: TypedCaptchaAutomationResumeService,
     private val eventPublisher: ApplicationEventPublisher,
+    private val convergenceModule: AutomationActionConvergenceModule? = null,
+    private val timeProvider: TimeProvider? = null,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
@@ -49,6 +53,10 @@ class CaptchaAutomationHook(
 
     private fun deliverTypedResumeSafely(accountId: Long) {
         try {
+            convergenceModule?.releaseBattleGate(
+                accountId,
+                timeProvider?.now() ?: java.time.Instant.now(),
+            )
             typedCaptchaResumeService.resumeAfterCaptcha(accountId)
         } catch (exception: Exception) {
             log.warn(

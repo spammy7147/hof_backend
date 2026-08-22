@@ -25,6 +25,8 @@ import app.spammy.hof.battle.model.BattleMapKeyMode
 import app.spammy.hof.battle.service.BattleRunService
 import app.spammy.hof.battle.service.SharedBattleCooldownRejectedException
 import app.spammy.hof.battle.service.BattleMapService
+import app.spammy.hof.battle.service.CurrentBattleMapObservation
+import app.spammy.hof.battle.service.CurrentBattleMapObservationStatus
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
@@ -42,6 +44,7 @@ import app.spammy.hof.town.home.model.HomeQuestState
 import app.spammy.hof.town.home.service.HomeService
 import app.spammy.hof.town.fishing.dto.FishingResponse
 import app.spammy.hof.town.fishing.model.FishingAction
+import app.spammy.hof.town.fishing.model.FishingOutcome
 import app.spammy.hof.town.fishing.model.FishingPrimaryAction
 import app.spammy.hof.town.fishing.service.FishingService
 import app.spammy.hof.town.raid.dto.RaidPubActionRequest
@@ -113,6 +116,8 @@ class AutomationActionLifecycleModuleTest {
             action = HomeQuestAutomationActionType.ACCEPT,
         )
 
+        Mockito.`when`(home.runHomeQuest(7L, "accept-action"))
+            .thenReturn(homeResponse(HomeQuestState.ACTIVE, null))
         val managed = assertNotNull(module.prepare(7L, 12L, prepared))
         val payload = assertIs<StoredTypedActionPayload.HomeQuest>(managed.storedAction.payload)
 
@@ -136,6 +141,15 @@ class AutomationActionLifecycleModuleTest {
     }
 
     @Test
+    fun `자택 직접 응답이 행동별 후속 상태를 증명하지 못하면 완료하지 않는다`() {
+        val managed = assertNotNull(module.prepare(7L, 12L, homeAction(HomeQuestAutomationActionType.ACCEPT)))
+        Mockito.`when`(home.runHomeQuest(7L, "action-1"))
+            .thenReturn(homeResponse(HomeQuestState.AVAILABLE, "action-1"))
+
+        assertFailsWith<AmbiguousAutomationSubmissionException> { managed.execute() }
+    }
+
+    @Test
     fun `권위 있는 자택 퀘스트 상태로 적용 재제출 재확인을 구분한다`() {
         val accept = assertNotNull(module.prepare(7L, 12L, homeAction(HomeQuestAutomationActionType.ACCEPT)))
         Mockito.`when`(home.load(7L, HomeMode.HOME)).thenReturn(
@@ -151,6 +165,9 @@ class AutomationActionLifecycleModuleTest {
 
         val claim = assertNotNull(module.prepare(7L, 12L, homeAction(HomeQuestAutomationActionType.CLAIM)))
         Mockito.`when`(home.load(7L, HomeMode.HOME)).thenReturn(
+            HomeResponse(HomeMode.HOME, emptyList(), emptyList(), null, null),
+        )
+        Mockito.`when`(home.runHomeQuest(7L, "action-1")).thenReturn(
             HomeResponse(HomeMode.HOME, emptyList(), emptyList(), null, null),
         )
         assertIs<AmbiguousActionResolution.Applied>(claim.reconcile())
@@ -675,11 +692,85 @@ class AutomationActionLifecycleModuleTest {
         val managed = assertNotNull(module.prepare(7L, 12L, battleMapAction()))
         Mockito.`when`(battleOutcome.reloadRecentAuthoritativeEvidence(anyBattleAction()))
             .thenReturn(BattleOutcomeReconciliation.Unproven("아직 결과가 보이지 않습니다."))
+        Mockito.`when`(
+            battleMapService.observeCurrentlyAvailableMaps(7L, "battle_map", HofRequestOrigin.AUTOMATION),
+        ).thenReturn(CurrentBattleMapObservation(CurrentBattleMapObservationStatus.INCOMPLETE, emptyList()))
 
         val resolution = assertIs<AmbiguousActionResolution.VerifyLater>(managed.reconcile())
 
         assertEquals(now.plusSeconds(10), resolution.retryAt)
         Mockito.verifyNoInteractions(battleHandler, workLifecycle, unionProgress)
+    }
+
+    @Test
+    fun `불명확한 일반 전투는 최신 완전 맵에서 대상이 사라지면 결과 id 없이 수렴한다`() {
+        val managed = assertNotNull(module.prepare(7L, 12L, battleMapAction()))
+        Mockito.`when`(battleOutcome.reloadRecentAuthoritativeEvidence(anyBattleAction()))
+            .thenReturn(BattleOutcomeReconciliation.Unproven("결과 식별자가 없습니다."))
+        Mockito.`when`(
+            battleMapService.observeCurrentlyAvailableMaps(7L, "battle_map", HofRequestOrigin.AUTOMATION),
+        ).thenReturn(
+            CurrentBattleMapObservation(
+                CurrentBattleMapObservationStatus.OBSERVED,
+                listOf(mapResponse(null).copy(mapCode = "other-map")),
+            ),
+        )
+
+        val resolution = assertIs<AmbiguousActionResolution.Applied>(managed.reconcile())
+
+        assertEquals(
+            TypedAutomationExecution.BattleCompleted("battle_map", "map-1"),
+            resolution.execution,
+        )
+        Mockito.verify(workLifecycle).completeBattleMapAction(7L, 12L, "battle_map", "map-1")
+        Mockito.verifyNoInteractions(battleHandler, unionProgress)
+    }
+
+    @Test
+    fun `불명확한 유니온 전투는 최신 맵이 권위 있게 사라지면 한 번의 조회로 적용한다`() {
+        val action = battleMapAction().copy(
+            categoryId = "union",
+            source = BattleAutomationActionSource.UNION_AUTOMATION,
+            executionIdentity = "union-ambiguous-1",
+            mapName = "고블린 침공군",
+        )
+        val managed = assertNotNull(module.prepare(7L, 13L, action))
+        Mockito.`when`(
+            battleMapService.observeCurrentlyAvailableMaps(7L, "union", HofRequestOrigin.AUTOMATION),
+        ).thenReturn(CurrentBattleMapObservation(CurrentBattleMapObservationStatus.ABSENT, emptyList()))
+
+        val resolution = assertIs<AmbiguousActionResolution.Applied>(managed.reconcile())
+
+        assertEquals(
+            TypedAutomationExecution.BattleCompleted("union", "map-1"),
+            resolution.execution,
+        )
+        Mockito.verify(unionProgress).battleCompleted(7L, 13L, "union", "map-1")
+        Mockito.verifyNoInteractions(battleOutcome, battleHandler, workLifecycle)
+    }
+
+    @Test
+    fun `불명확한 유니온 전투의 최신 맵이 그대로면 전투를 다시 보내지 않고 재확인한다`() {
+        val action = battleMapAction().copy(
+            categoryId = "union",
+            source = BattleAutomationActionSource.UNION_AUTOMATION,
+            executionIdentity = "union-ambiguous-2",
+            mapName = "고블린 침공군",
+        )
+        val managed = assertNotNull(module.prepare(7L, 13L, action))
+        Mockito.`when`(
+            battleMapService.observeCurrentlyAvailableMaps(7L, "union", HofRequestOrigin.AUTOMATION),
+        ).thenReturn(
+            CurrentBattleMapObservation(
+                CurrentBattleMapObservationStatus.OBSERVED,
+                listOf(mapResponse(attemptCount = null, categoryId = "union")),
+            ),
+        )
+
+        val resolution = assertIs<AmbiguousActionResolution.VerifyLater>(managed.reconcile())
+
+        assertEquals(now.plusSeconds(10), resolution.retryAt)
+        Mockito.verifyNoInteractions(battleOutcome, battleHandler, workLifecycle, unionProgress)
     }
 
     @Test
@@ -864,6 +955,12 @@ class AutomationActionLifecycleModuleTest {
             )
 
             val managed = assertNotNull(module.prepare(7L, 15L, prepared))
+            val response = if (action == FishingAction.START) {
+                fishingResponse(FishingPrimaryAction.CATCH, 10 - index, FishingOutcome.STARTED)
+            } else {
+                fishingResponse(FishingPrimaryAction.START, 10 - index, FishingOutcome.CAUGHT)
+            }
+            Mockito.`when`(fishingService.act(7L, action)).thenReturn(response)
 
             assertEquals(AutomationType.FISHING, managed.descriptor.source)
             assertEquals(action.name, managed.descriptor.actionKind)
@@ -877,6 +974,19 @@ class AutomationActionLifecycleModuleTest {
             15L,
             AutomationWorkAssignment(AutomationWorkType.FISHING, "DAILY_FISHING"),
         )
+    }
+
+    @Test
+    fun `낚시 직접 응답이 같은 행동 상태면 generic 성공으로 완료하지 않는다`() {
+        val managed = assertNotNull(module.prepare(
+            7L,
+            15L,
+            FishingTownAutomationAction(7L, FishingAction.CATCH, FishingPrimaryAction.CATCH, 10),
+        ))
+        val unchanged = fishingResponse(FishingPrimaryAction.CATCH, 10, null)
+        Mockito.`when`(fishingService.act(7L, FishingAction.CATCH)).thenReturn(unchanged)
+
+        assertFailsWith<AmbiguousAutomationSubmissionException> { managed.execute() }
     }
 
     @Test
@@ -1388,8 +1498,11 @@ class AutomationActionLifecycleModuleTest {
         }
     }
 
-    private fun mapResponse(attemptCount: Int?) = BattleMapResponse(
-        categoryId = "battle_map",
+    private fun mapResponse(
+        attemptCount: Int?,
+        categoryId: String = "battle_map",
+    ) = BattleMapResponse(
+        categoryId = categoryId,
         mapCode = "map-1",
         name = "모험 동굴",
         groupName = null,
@@ -1410,10 +1523,16 @@ class AutomationActionLifecycleModuleTest {
         rawHref = "?map=map-1",
     )
 
-    private fun fishingResponse(primaryAction: FishingPrimaryAction, remainingCasts: Int?) =
+    private fun fishingResponse(
+        primaryAction: FishingPrimaryAction,
+        remainingCasts: Int?,
+        lastOutcome: FishingOutcome? = null,
+    ) =
         Mockito.mock(FishingResponse::class.java).also { response ->
             Mockito.`when`(response.primaryAction).thenReturn(primaryAction)
             Mockito.`when`(response.remainingCasts).thenReturn(remainingCasts)
+            Mockito.`when`(response.lastOutcome).thenReturn(lastOutcome)
+            Mockito.`when`(response.blockedByBattle).thenReturn(false)
         }
 
     private fun anyBattleAction(): BattleMapAutomationAction =

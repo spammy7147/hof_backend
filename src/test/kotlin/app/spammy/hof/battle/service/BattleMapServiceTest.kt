@@ -422,6 +422,29 @@ class BattleMapServiceTest {
     }
 
     @Test
+    fun `유니온 최신 관측은 인증된 페이지의 대상 소멸을 권위 있는 부재로 구분한다`() {
+        val account = savedAccount("union-current-absence")
+        gateway.defaultBody = """
+            <div id="menu2">Funds : ${'$'} 1 Time : 10/10</div>
+            <h4>UnionMonster</h4>
+            <a href="index.php?union=0003">도적소탕</a>
+            <h4>Union Battle Log 전투표시</h4>
+        """.trimIndent()
+
+        val observed = service.observeCurrentlyAvailableMaps(account.id, "union")
+        assertEquals(CurrentBattleMapObservationStatus.OBSERVED, observed.status)
+
+        gateway.defaultBody = """
+            <div id="menu2">Funds : ${'$'} 1 Time : 10/10</div>
+            <h4>Union Battle Log 전투표시</h4>
+        """.trimIndent()
+
+        val absent = service.observeCurrentlyAvailableMaps(account.id, "union")
+        assertEquals(CurrentBattleMapObservationStatus.ABSENT, absent.status)
+        assertTrue(absent.maps.isEmpty())
+    }
+
+    @Test
     fun manualMapListDoesNotDetectOrCreateCaptchaChallenges() {
         val account = savedAccount("battle-map-manual-captcha")
         gateway.defaultBody = directAdventureHtml(sharedCount = 3, includeStale = false)

@@ -81,6 +81,7 @@ class FreshSchemaTest {
                 "30" to "deepen raid cycle module",
                 "31" to "persist raid hold messages",
                 "32" to "persist raid battle recovery",
+                "33" to "add automation action convergence",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -118,6 +119,7 @@ class FreshSchemaTest {
                 "V30__deepen_raid_cycle_module.sql",
                 "V31__persist_raid_hold_messages.sql",
                 "V32__persist_raid_battle_recovery.sql",
+                "V33__add_automation_action_convergence.sql",
                 "V3__add_automation_work_sessions.sql",
                 "V4__prepare_captcha_on_demand.sql",
                 "V5__track_character_detail_sync.sql",

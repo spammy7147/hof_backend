@@ -1,16 +1,27 @@
 package app.spammy.hof.automation.service
 
+import app.spammy.hof.automation.convergence.AutomationActionConvergenceModule
+import app.spammy.hof.automation.convergence.AutomationActionEvidence
+import app.spammy.hof.automation.convergence.AutomationConvergenceRollout
+import app.spammy.hof.automation.convergence.AutomationConvergenceShadowEvaluator
+import app.spammy.hof.automation.convergence.ConvergenceDirective
+import app.spammy.hof.automation.convergence.LegacyConvergenceDecision
+import app.spammy.hof.automation.convergence.SelectedAutomationAction
+import app.spammy.hof.automation.convergence.StoredActionConvergenceSelectionFactory
+import app.spammy.hof.automation.convergence.StoredConvergenceActionLoader
 import app.spammy.hof.automation.entity.AutomationWaitReason
 import app.spammy.hof.automation.history.*
 import app.spammy.hof.automation.port.AutomationWakeupPort
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.client.HofAutomationDeferredException
+import app.spammy.hof.common.time.TimeProvider
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Service
 import org.springframework.transaction.support.TransactionSynchronizationManager
 import java.time.Instant
+import java.util.concurrent.ConcurrentHashMap
 
 /** 최신 타입별 스냅샷 결정 또는 저장된 prepared payload 중 action 하나만 실행하는 자동화 루프다. */
 @Service
@@ -22,8 +33,15 @@ class UnifiedAutomationRunner @Autowired constructor(
     private val sharedBattleCooldowns: SharedBattleCooldownService,
     private val actionLifecycleModule: AutomationActionLifecycleModule,
     private val decisionJournal: AutomationDecisionJournal? = null,
+    private val convergenceModule: AutomationActionConvergenceModule? = null,
+    private val convergenceSelectionFactory: StoredActionConvergenceSelectionFactory? = null,
+    private val storedConvergenceActionLoader: StoredConvergenceActionLoader? = null,
+    private val timeProvider: TimeProvider? = null,
+    private val rollout: AutomationConvergenceRollout? = null,
+    private val shadowEvaluator: AutomationConvergenceShadowEvaluator? = null,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
+    private val convergenceProbeYieldedAccounts = ConcurrentHashMap.newKeySet<Long>()
 
     /** 한 wakeup에서 최대 action 하나만 실행하고 후속 판단은 새 wakeup과 새 스냅샷에 맡긴다. */
     fun runOne(accountId: Long) {
@@ -42,7 +60,35 @@ class UnifiedAutomationRunner @Autowired constructor(
             }
             is TypedRuntimeAcquisition.Acquired -> {
                 if (!completingCurrentAction && !ensurePreflight(accountId, acquisition.execution)) return
-                runAcquired(accountId, acquisition.execution)
+                val dueDirective = if (
+                    !completingCurrentAction &&
+                    acquisition.execution.checkpoint == null &&
+                    convergenceActive()
+                ) {
+                    convergenceModule?.resumeDue(accountId)
+                } else {
+                    null
+                }
+                when (dueDirective) {
+                    null,
+                    ConvergenceDirective.ContinueSelection,
+                    -> {
+                        convergenceProbeYieldedAccounts.remove(accountId)
+                        runAcquired(accountId, acquisition.execution)
+                    }
+                    is ConvergenceDirective.Probe -> {
+                        if (convergenceProbeYieldedAccounts.remove(accountId)) {
+                            runConvergenceProbe(accountId, acquisition.execution, dueDirective)
+                        } else {
+                            convergenceProbeYieldedAccounts.add(accountId)
+                            runAcquired(accountId, acquisition.execution, dueDirective)
+                        }
+                    }
+                    else -> {
+                        convergenceProbeYieldedAccounts.remove(accountId)
+                        releaseForConvergenceDirective(accountId, acquisition.execution, dueDirective)
+                    }
+                }
             }
         }
     }
@@ -100,11 +146,15 @@ class UnifiedAutomationRunner @Autowired constructor(
     private fun runAcquired(
         accountId: Long,
         initialExecution: TypedRuntimeExecutionRight,
+        fallbackConvergenceProbe: ConvergenceDirective.Probe? = null,
     ) {
         var execution = initialExecution
         var checkpoint = execution.checkpoint
+        val resumedLegacyCheckpoint = checkpoint != null
         var decisionCycleId: Long? = null
         var selectedWarnings: List<String>? = null
+        var convergenceAttemptId: Long? = null
+        var convergenceSelection: SelectedAutomationAction? = null
         lateinit var managedAction: ManagedAutomationAction
         val stored: StoredTypedAutomationAction
 
@@ -120,6 +170,11 @@ class UnifiedAutomationRunner @Autowired constructor(
                     AUTOMATIC_RETRY_WAKE_REASON,
                 )
                 return
+            }
+            if (rollout?.shadow == true) {
+                convergenceSelectionFactory?.create(stored)?.let { selection ->
+                    shadowEvaluator?.selected(accountId, selection)
+                }
             }
         } else {
             val decision = try {
@@ -221,6 +276,11 @@ class UnifiedAutomationRunner @Autowired constructor(
                     return
                 }
                 is AutomationCoordination.Unavailable -> {
+                    if (fallbackConvergenceProbe != null) {
+                        convergenceProbeYieldedAccounts.remove(accountId)
+                        runConvergenceProbe(accountId, execution, fallbackConvergenceProbe)
+                        return
+                    }
                     completeAndSchedule(
                         accountId,
                         execution,
@@ -234,6 +294,11 @@ class UnifiedAutomationRunner @Autowired constructor(
                     return
                 }
                 is AutomationCoordination.Idle -> {
+                    if (fallbackConvergenceProbe != null) {
+                        convergenceProbeYieldedAccounts.remove(accountId)
+                        runConvergenceProbe(accountId, execution, fallbackConvergenceProbe)
+                        return
+                    }
                     if (decision.warnings.isEmpty()) {
                         typedRuntime.complete(execution, TypedRuntimeOutcome.Idle)
                     } else {
@@ -248,6 +313,31 @@ class UnifiedAutomationRunner @Autowired constructor(
                 }
             }
             stored = managedAction.storedAction
+            val selectionFactory = convergenceSelectionFactory
+            if (selectionFactory != null && convergenceActive()) {
+                val convergence = convergenceModule
+                if (convergence == null) {
+                    stopPreparationFailure(
+                        accountId,
+                        execution,
+                        stored.entryId,
+                        "CONVERGENCE_MODULE",
+                        IllegalStateException("Active convergence module is missing."),
+                    )
+                    return
+                }
+                convergenceSelection = selectionFactory.create(stored)
+                when (val directive = convergence.prepare(accountId, requireNotNull(convergenceSelection))) {
+                    is ConvergenceDirective.Submit -> convergenceAttemptId = directive.attemptId
+                    else -> {
+                        releaseForConvergenceDirective(accountId, execution, directive)
+                        return
+                    }
+                }
+            } else if (selectionFactory != null && rollout?.shadow == true) {
+                val selection = selectionFactory.create(stored)
+                shadowEvaluator?.selected(accountId, selection)
+            }
             val preparation = try {
                 typedRuntime.persistPrepared(execution, stored, selectedWarnings.orEmpty())
             } catch (error: Exception) {
@@ -330,6 +420,24 @@ class UnifiedAutomationRunner @Autowired constructor(
                 return
             }
         }
+        if (resumedLegacyCheckpoint && convergenceActive()) {
+            when (activeCheckpoint.phase) {
+                TypedRuntimeCheckpointPhase.PREPARED -> {
+                    typedRuntime.complete(
+                        execution,
+                        TypedRuntimeOutcome.PreparedDiscarded(
+                            warning = "Active convergence cutover discarded an unsubmitted legacy payload.",
+                            wakeReason = TYPED_CONVERGENCE_WAKE_REASON,
+                        ),
+                    )
+                    return
+                }
+                TypedRuntimeCheckpointPhase.RECONCILING -> {
+                    cutoverLegacyReconciliation(accountId, execution, managedAction, stored)
+                    return
+                }
+            }
+        }
         if (activeCheckpoint.phase == TypedRuntimeCheckpointPhase.RECONCILING) {
             val resolution = try {
                 managedAction.handoffAmbiguousSubmission(
@@ -369,6 +477,12 @@ class UnifiedAutomationRunner @Autowired constructor(
             }
             when (resolution) {
                 is AmbiguousActionResolution.Applied -> {
+                    observeShadow(
+                        accountId,
+                        stored.executionIdentity,
+                        AutomationActionEvidence.StateAdvanced(now(), "advanced:${stored.executionIdentity}"),
+                        LegacyConvergenceDecision.APPLIED,
+                    )
                     applyRecoveredExecution(accountId, resolution.execution)
                     typedRuntime.complete(
                         execution,
@@ -387,6 +501,12 @@ class UnifiedAutomationRunner @Autowired constructor(
                     }
                 }
                 AmbiguousActionResolution.Resubmit -> {
+                    observeShadow(
+                        accountId,
+                        stored.executionIdentity,
+                        AutomationActionEvidence.SameState(now(), "same:${stored.executionIdentity}"),
+                        LegacyConvergenceDecision.RESUBMIT,
+                    )
                     decisionCycleId?.let { cycleId ->
                         decisionJournal?.appendActionResult(cycleId, trace(
                             AutomationHistoryEventKind.WAITING,
@@ -400,6 +520,12 @@ class UnifiedAutomationRunner @Autowired constructor(
                     )
                 }
                 is AmbiguousActionResolution.VerifyLater -> {
+                    observeShadow(
+                        accountId,
+                        stored.executionIdentity,
+                        AutomationActionEvidence.IncompleteObservation(now(), resolution.reason),
+                        LegacyConvergenceDecision.RECONCILING,
+                    )
                     decisionCycleId?.let { cycleId ->
                         decisionJournal?.appendActionResult(cycleId, trace(
                             AutomationHistoryEventKind.WAITING,
@@ -417,6 +543,25 @@ class UnifiedAutomationRunner @Autowired constructor(
                 }
                 is AmbiguousActionResolution.HandedOff -> finishRaidBattleHandoff(resolution)
             }
+            return
+        }
+
+        if (rollout?.automationPostsEnabled == false) {
+            val retryAt = now().plusSeconds(POST_KILL_SWITCH_RECHECK_SECONDS)
+            decisionCycleId?.let { cycleId -> runCatching {
+                decisionJournal?.appendActionResult(cycleId, trace(
+                    AutomationHistoryEventKind.WAITING,
+                    POST_KILL_SWITCH_WAKE_REASON,
+                    "운영 안전장치가 자동화 제출을 일시 중지했습니다. 상태 확인은 계속 사용할 수 있습니다.",
+                    retryAt,
+                ))
+            } }
+            completeAndSchedule(
+                accountId,
+                execution,
+                TypedRuntimeOutcome.ScheduledWait(retryAt, AutomationWaitReason.SCHEDULED),
+                POST_KILL_SWITCH_WAKE_REASON,
+            )
             return
         }
 
@@ -480,6 +625,21 @@ class UnifiedAutomationRunner @Autowired constructor(
             } else {
                 TypedRuntimeOutcome.ActionSucceeded(wakeReason, finalWarnings)
             }
+            convergenceAttemptId?.let { attemptId ->
+                convergenceModule?.record(
+                    attemptId,
+                    AutomationActionEvidence.DirectApplied(
+                        capturedAt = now(),
+                        stateFingerprint = "direct:${stored.executionIdentity}",
+                    ),
+                )
+            }
+            observeShadow(
+                accountId,
+                stored.executionIdentity,
+                AutomationActionEvidence.DirectApplied(now(), "direct:${stored.executionIdentity}"),
+                LegacyConvergenceDecision.APPLIED,
+            )
             typedRuntime.complete(execution, outcome)
             decisionCycleId?.let { cycleId ->
                 val resultTrace = when (domainExecution) {
@@ -498,6 +658,45 @@ class UnifiedAutomationRunner @Autowired constructor(
                 decisionJournal?.appendActionResult(cycleId, resultTrace)
             }
         } catch (error: Throwable) {
+            val captcha = error.findCaptchaRequired()
+            if (
+                captcha != null &&
+                convergenceAttemptId != null &&
+                convergenceActive() &&
+                convergenceSelection?.actionKind?.battle == true
+            ) {
+                val directive = convergenceModule?.record(
+                    requireNotNull(convergenceAttemptId),
+                    AutomationActionEvidence.BattleGateRequired(
+                        capturedAt = now(),
+                        challengeId = null,
+                        reason = ErrorCode.CAPTCHA_REQUIRED.name,
+                    ),
+                )
+                if (directive != null) {
+                    typedRuntime.complete(
+                        execution,
+                        TypedRuntimeOutcome.AmbiguousHandoff(
+                            warning = captcha.message,
+                            wakeReason = TYPED_BATTLE_GATE_WAKE_REASON,
+                        ),
+                    )
+                    scheduleConvergenceDirective(accountId, directive)
+                    return
+                }
+            }
+            if (captcha != null) {
+                observeShadow(
+                    accountId,
+                    stored.executionIdentity,
+                    AutomationActionEvidence.BattleGateRequired(
+                        capturedAt = now(),
+                        challengeId = null,
+                        reason = ErrorCode.CAPTCHA_REQUIRED.name,
+                    ),
+                    LegacyConvergenceDecision.HELD,
+                )
+            }
             error.findHofAutomationDeferral()?.let { deferred ->
                 decisionCycleId?.let { cycleId -> runCatching {
                     decisionJournal?.appendActionResult(cycleId, trace(
@@ -530,9 +729,44 @@ class UnifiedAutomationRunner @Autowired constructor(
                     )
                 }.getOrNull()
                 if (handedOff != null) {
+                    convergenceAttemptId?.let { attemptId ->
+                        convergenceModule?.record(
+                            attemptId,
+                            AutomationActionEvidence.ResultUnobserved(
+                                capturedAt = now(),
+                                reason = handedOff.reason,
+                            ),
+                        )
+                    }
                     finishRaidBattleHandoff(handedOff)
                     return
                 }
+                convergenceAttemptId?.let { attemptId ->
+                    val directive = convergenceModule?.record(
+                        attemptId,
+                        AutomationActionEvidence.IncompleteObservation(
+                            capturedAt = now(),
+                            reason = ambiguous.message ?: "SUBMISSION_RESULT_UNKNOWN",
+                        ),
+                    )
+                    if (directive != null) {
+                        typedRuntime.complete(
+                            execution,
+                            TypedRuntimeOutcome.AmbiguousHandoff(
+                                warning = message,
+                                wakeReason = TYPED_CONVERGENCE_WAKE_REASON,
+                            ),
+                        )
+                        scheduleConvergenceDirective(accountId, directive)
+                        return
+                    }
+                }
+                observeShadow(
+                    accountId,
+                    stored.executionIdentity,
+                    AutomationActionEvidence.IncompleteObservation(now(), message),
+                    LegacyConvergenceDecision.RECONCILING,
+                )
                 decisionCycleId?.let { cycleId -> runCatching {
                     decisionJournal?.appendActionResult(cycleId, trace(
                         AutomationHistoryEventKind.WAITING,
@@ -553,6 +787,167 @@ class UnifiedAutomationRunner @Autowired constructor(
             retryExecution(accountId, execution, classifyActionStop(error), error.message ?: error.javaClass.simpleName)
         }
     }
+
+    private fun runConvergenceProbe(
+        accountId: Long,
+        execution: TypedRuntimeExecutionRight,
+        directive: ConvergenceDirective.Probe,
+    ) {
+        val convergence = convergenceModule ?: return
+        val evidence = observeStoredConvergenceAction(accountId, directive)
+        val next = convergence.record(directive.attemptId, evidence)
+        typedRuntime.complete(
+            execution,
+            TypedRuntimeOutcome.SelectionChanged(TYPED_CONVERGENCE_WAKE_REASON),
+        )
+        scheduleConvergenceDirective(accountId, next)
+    }
+
+    private fun convergenceActive(): Boolean = rollout?.active ?: (convergenceModule != null)
+
+    private fun cutoverLegacyReconciliation(
+        accountId: Long,
+        execution: TypedRuntimeExecutionRight,
+        managed: ManagedAutomationAction,
+        stored: StoredTypedAutomationAction,
+    ) {
+        val convergence = convergenceModule
+        val factory = convergenceSelectionFactory
+        if (convergence == null || factory == null) {
+            typedRuntime.complete(
+                execution,
+                TypedRuntimeOutcome.AmbiguousHandoff(
+                    "Active convergence cutover dependencies are missing.",
+                    TYPED_CONVERGENCE_WAKE_REASON,
+                ),
+            )
+            return
+        }
+        val directive = when (val prepared = convergence.prepare(accountId, factory.create(stored))) {
+            is ConvergenceDirective.Submit -> {
+                val observation = try {
+                    when (val resolution = managed.reconcile()) {
+                        is AmbiguousActionResolution.Applied -> {
+                            applyRecoveredExecution(accountId, resolution.execution)
+                            AutomationActionEvidence.StateAdvanced(now(), "advanced:${stored.executionIdentity}")
+                        }
+                        AmbiguousActionResolution.Resubmit -> AutomationActionEvidence.SameState(
+                            now(),
+                            "same:${stored.executionIdentity}",
+                        )
+                        is AmbiguousActionResolution.VerifyLater -> AutomationActionEvidence.IncompleteObservation(
+                            now(),
+                            resolution.reason,
+                        )
+                        is AmbiguousActionResolution.HandedOff -> AutomationActionEvidence.ResultUnobserved(
+                            now(),
+                            resolution.reason,
+                        )
+                    }
+                } catch (error: Throwable) {
+                    if (error.findHofAutomationDeferral() != null) {
+                        AutomationActionEvidence.NetworkFailure(now(), error.message ?: "HOF_DEFERRED")
+                    } else {
+                        AutomationActionEvidence.ResultUnobserved(
+                            now(),
+                            error.message ?: error.javaClass.simpleName,
+                        )
+                    }
+                }
+                convergence.record(prepared.attemptId, observation)
+            }
+            else -> prepared
+        }
+        typedRuntime.complete(
+            execution,
+            TypedRuntimeOutcome.AmbiguousHandoff(
+                "Legacy ambiguous payload was closed after one fresh authoritative observation.",
+                TYPED_CONVERGENCE_WAKE_REASON,
+            ),
+        )
+        scheduleConvergenceDirective(accountId, directive)
+    }
+
+    private fun observeShadow(
+        accountId: Long,
+        executionIdentity: String,
+        evidence: AutomationActionEvidence,
+        legacyDecision: LegacyConvergenceDecision,
+    ) {
+        if (rollout?.shadow == true) {
+            shadowEvaluator?.observe(accountId, executionIdentity, evidence, legacyDecision)
+        }
+    }
+
+    private fun observeStoredConvergenceAction(
+        accountId: Long,
+        directive: ConvergenceDirective.Probe,
+    ): AutomationActionEvidence {
+        val stored = storedConvergenceActionLoader?.load(accountId, directive.executionIdentity)
+            ?: return AutomationActionEvidence.ResultUnobserved(now(), "STORED_ACTION_NOT_FOUND")
+        val managed = try {
+            actionLifecycleModule.restoreVerified(stored, accountId)
+        } catch (error: RuntimeException) {
+            return AutomationActionEvidence.ResultUnobserved(
+                now(),
+                error.message ?: "STORED_ACTION_INVALID",
+            )
+        }
+        return try {
+            when (val resolution = managed.reconcile()) {
+                is AmbiguousActionResolution.Applied -> {
+                    applyRecoveredExecution(accountId, resolution.execution)
+                    AutomationActionEvidence.StateAdvanced(
+                        now(),
+                        "advanced:${directive.executionIdentity}",
+                    )
+                }
+                AmbiguousActionResolution.Resubmit -> AutomationActionEvidence.SameState(
+                    now(),
+                    "unchanged:${directive.executionIdentity}",
+                )
+                is AmbiguousActionResolution.VerifyLater -> AutomationActionEvidence.IncompleteObservation(
+                    now(),
+                    resolution.reason,
+                )
+                is AmbiguousActionResolution.HandedOff -> AutomationActionEvidence.ResultUnobserved(
+                    now(),
+                    resolution.reason,
+                )
+            }
+        } catch (error: Throwable) {
+            error.findHofAutomationDeferral()?.let {
+                return AutomationActionEvidence.NetworkFailure(
+                    now(),
+                    it.message ?: "HOF_DEFERRED",
+                )
+            }
+            AutomationActionEvidence.NetworkFailure(
+                now(),
+                error.message ?: error.javaClass.simpleName,
+            )
+        }
+    }
+
+    private fun releaseForConvergenceDirective(
+        accountId: Long,
+        execution: TypedRuntimeExecutionRight,
+        directive: ConvergenceDirective,
+    ) {
+        typedRuntime.complete(
+            execution,
+            TypedRuntimeOutcome.SelectionChanged(TYPED_CONVERGENCE_WAKE_REASON),
+        )
+        scheduleConvergenceDirective(accountId, directive)
+    }
+
+    private fun scheduleConvergenceDirective(accountId: Long, directive: ConvergenceDirective) {
+        if (directive is ConvergenceDirective.WaitUntil) {
+            wakeupPort.schedule(accountId, directive.at, TYPED_CONVERGENCE_PROBE_REASON)
+        }
+    }
+
+    private fun now(): Instant = timeProvider?.now() ?: Instant.now()
 
     private fun completeAndSchedule(
         accountId: Long,
@@ -631,6 +1026,11 @@ class UnifiedAutomationRunner @Autowired constructor(
     private fun Throwable.findAmbiguousSubmission(): AmbiguousAutomationSubmissionException? =
         generateSequence(this) { it.cause }.filterIsInstance<AmbiguousAutomationSubmissionException>().firstOrNull()
 
+    private fun Throwable.findCaptchaRequired(): ApiException? =
+        generateSequence(this) { it.cause }
+            .filterIsInstance<ApiException>()
+            .firstOrNull { it.errorCode == ErrorCode.CAPTCHA_REQUIRED }
+
     private fun applyRecoveredExecution(accountId: Long, execution: TypedAutomationExecution) {
         when (execution) {
             TypedAutomationExecution.Completed -> Unit
@@ -701,5 +1101,10 @@ class UnifiedAutomationRunner @Autowired constructor(
         const val AUTOMATIC_RETRY_WAKE_REASON = "TYPED_AUTOMATIC_RETRY"
         const val RAID_BATTLE_RECOVERY_WAKE_REASON = "RAID_BATTLE_RECOVERY_STARTED"
         const val RAID_BATTLE_APPLIED_TERMINAL_RESULT = "RAID_BATTLE_APPLIED_TERMINAL_RESULT"
+        const val TYPED_CONVERGENCE_WAKE_REASON = "TYPED_CONVERGENCE_CONTINUE"
+        const val TYPED_CONVERGENCE_PROBE_REASON = "TYPED_CONVERGENCE_PROBE"
+        const val TYPED_BATTLE_GATE_WAKE_REASON = "TYPED_BATTLE_GATE_OPENED"
+        const val POST_KILL_SWITCH_WAKE_REASON = "AUTOMATION_POST_KILL_SWITCH"
+        const val POST_KILL_SWITCH_RECHECK_SECONDS = 30L
     }
 }

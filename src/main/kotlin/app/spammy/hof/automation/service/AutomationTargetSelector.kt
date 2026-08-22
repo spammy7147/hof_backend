@@ -1,5 +1,8 @@
 package app.spammy.hof.automation.service
 
+import app.spammy.hof.automation.convergence.AutomationConvergenceSelectionGuard
+import app.spammy.hof.automation.convergence.AutomationConvergenceRollout
+import app.spammy.hof.automation.convergence.StoredActionConvergenceSelectionFactory
 import app.spammy.hof.automation.raid.RaidCycleModule
 import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
 import app.spammy.hof.automation.raid.RaidDirective
@@ -35,6 +38,9 @@ class AutomationTargetSelector(
     private val union: AutomationHandler<UnionAutomationSnapshot>,
     private val fishing: AutomationHandler<FishingAutomationSnapshot>,
     private val homeQuest: AutomationHandler<HomeQuestAutomationSnapshot>,
+    private val convergenceGuard: AutomationConvergenceSelectionGuard? = null,
+    private val convergenceSelectionFactory: StoredActionConvergenceSelectionFactory? = null,
+    private val convergenceRollout: AutomationConvergenceRollout? = null,
 ) : AutomationDecisionSource {
 
     override fun select(accountId: Long): AutomationCoordination {
@@ -53,7 +59,7 @@ class AutomationTargetSelector(
         }
         val entry = loader.loadEntry(accountId, session.entryId, session.targetKey)
             .withQuestWorkSession(session)
-        return when (val result = coordinate(entry)) {
+        return when (val result = coordinate(accountId, entry)) {
             is AutomationCoordination.Runnable -> {
                 result.withPrefix(initialWarnings, initialTrace)
             }
@@ -72,6 +78,13 @@ class AutomationTargetSelector(
                 }
             }
             is AutomationCoordination.Idle -> {
+                if (result.convergenceBlocked()) {
+                    return selectConfigured(
+                        accountId,
+                        initialWarnings + result.warnings,
+                        initialTrace + result.trace.resequenced(initialTrace.size),
+                    )
+                }
                 result.workTransition?.let {
                     lifecycle.applyTransition(accountId, session.id, it)
                 } ?: if (session.workType != AutomationWorkType.QUEST) {
@@ -123,10 +136,23 @@ class AutomationTargetSelector(
                 if (entry.type == AutomationType.RAID) {
                     when (val directive = raidModule.decideNext(accountId)) {
                         is RaidDirective.Execute -> {
+                            val action = directive.intent.toPreparedAction(accountId)
+                            if (isConvergenceBlocked(accountId, entry.id, action)) {
+                                warnings += CONVERGENCE_BLOCKED_MESSAGE
+                                trace += AutomationEvaluationTrace(
+                                    trace.size,
+                                    entry.id,
+                                    entry.type,
+                                    AutomationDecisionOutcome.WAITING,
+                                    CONVERGENCE_BLOCKED_REASON,
+                                    CONVERGENCE_BLOCKED_MESSAGE,
+                                )
+                                return@forEach
+                            }
                             trace += directive.toTrace(entry.id, trace.size)
                             return AutomationCoordination.Runnable(
                                 entry.id,
-                                directive.intent.toPreparedAction(accountId),
+                                action,
                                 warnings.toList() + listOfNotNull(
                                     directive.warning ?: directive.intent.recoveryWarning(),
                                 ),
@@ -166,7 +192,7 @@ class AutomationTargetSelector(
                 val snapshot = loader.loadEntry(accountId, entry.id).excludingWaitingQuests(
                     waiting.map(AutomationWorkSessionView::targetKey).toSet(),
                 )
-                when (val result = coordinate(snapshot)) {
+                when (val result = coordinate(accountId, snapshot)) {
                     is AutomationCoordination.Runnable -> return result.copy(
                         warnings = warnings + result.warnings,
                         trace = trace + result.trace.resequenced(trace.size),
@@ -190,8 +216,41 @@ class AutomationTargetSelector(
             ?: AutomationCoordination.Idle(warnings, trace)
     }
 
-    private fun coordinate(entry: AutomationEntrySnapshot): AutomationCoordination =
-        evaluateEntry(entry, quest, battle, adventure, union, fishing, homeQuest)
+    private fun coordinate(
+        accountId: Long,
+        entry: AutomationEntrySnapshot,
+    ): AutomationCoordination {
+        val result = evaluateEntry(entry, quest, battle, adventure, union, fishing, homeQuest)
+        val runnable = result as? AutomationCoordination.Runnable ?: return result
+        if (!isConvergenceBlocked(accountId, entry.id, runnable.action)) return result
+        return AutomationCoordination.Idle(
+            warnings = listOf(CONVERGENCE_BLOCKED_MESSAGE),
+            trace = listOf(
+                AutomationEvaluationTrace(
+                    sequence = 0,
+                    entryId = entry.id,
+                    type = entry.type,
+                    outcome = AutomationDecisionOutcome.WAITING,
+                    reasonCode = CONVERGENCE_BLOCKED_REASON,
+                    message = CONVERGENCE_BLOCKED_MESSAGE,
+                ),
+            ),
+        )
+    }
+
+    private fun isConvergenceBlocked(
+        accountId: Long,
+        entryId: Long,
+        action: PreparedAutomationAction,
+    ): Boolean {
+        if (convergenceRollout?.active == false) return false
+        val guard = convergenceGuard ?: return false
+        val factory = convergenceSelectionFactory ?: return false
+        return guard.constraints(accountId).blocks(factory.preview(entryId, action))
+    }
+
+    private fun AutomationCoordination.Idle.convergenceBlocked(): Boolean =
+        trace.any { it.reasonCode == CONVERGENCE_BLOCKED_REASON }
 
     private fun selectRaidSession(
         accountId: Long,
@@ -199,12 +258,30 @@ class AutomationTargetSelector(
         initialWarnings: List<String>,
         initialTrace: List<AutomationEvaluationTrace>,
     ): AutomationCoordination = when (val directive = raidModule.decideNext(accountId)) {
-        is RaidDirective.Execute -> AutomationCoordination.Runnable(
-            session.entryId,
-            directive.intent.toPreparedAction(accountId),
-            initialWarnings + listOfNotNull(directive.warning ?: directive.intent.recoveryWarning()),
-            initialTrace + directive.toTrace(session.entryId, initialTrace.size),
-        )
+        is RaidDirective.Execute -> {
+            val action = directive.intent.toPreparedAction(accountId)
+            if (isConvergenceBlocked(accountId, session.entryId, action)) {
+                selectConfigured(
+                    accountId,
+                    initialWarnings + CONVERGENCE_BLOCKED_MESSAGE,
+                    initialTrace + AutomationEvaluationTrace(
+                        initialTrace.size,
+                        session.entryId,
+                        AutomationType.RAID,
+                        AutomationDecisionOutcome.WAITING,
+                        CONVERGENCE_BLOCKED_REASON,
+                        CONVERGENCE_BLOCKED_MESSAGE,
+                    ),
+                )
+            } else {
+                AutomationCoordination.Runnable(
+                    session.entryId,
+                    action,
+                    initialWarnings + listOfNotNull(directive.warning ?: directive.intent.recoveryWarning()),
+                    initialTrace + directive.toTrace(session.entryId, initialTrace.size),
+                )
+            }
+        }
         is RaidDirective.WaitUntil -> {
             lifecycle.waitForCooldown(accountId, session.id, directive.at)
             selectConfigured(
@@ -379,6 +456,8 @@ class AutomationTargetSelector(
 
     private companion object {
         val SEOUL: ZoneId = ZoneId.of("Asia/Seoul")
+        const val CONVERGENCE_BLOCKED_REASON = "CONVERGENCE_SCOPE_BLOCKED"
+        const val CONVERGENCE_BLOCKED_MESSAGE = "이전 행동 결과를 확인 중이라 해당 범위만 잠시 건너뜁니다."
     }
 }
 

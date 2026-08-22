@@ -589,6 +589,40 @@ internal object FreshSchemaContract {
             optionalInstant("finished_at"), requiredInstant("updated_at"),
         ),
         table(
+            "automation_action_attempts",
+            serialId(), requiredBigint("account_id"), optionalBigint("automation_entry_id"),
+            requiredVarchar("execution_identity", 128), requiredVarchar("action_kind", 50),
+            requiredVarchar("scope_kind", 50), requiredVarchar("scope_key", 200),
+            requiredVarchar("policy_version", 80), requiredVarchar("baseline_fingerprint", 128),
+            requiredInstant("created_at"), optionalInstant("submitted_at"),
+        ),
+        table(
+            "automation_action_convergences",
+            serialId(), requiredBigint("attempt_id"), requiredBigint("account_id"),
+            requiredVarchar("scope_kind", 50), requiredVarchar("scope_key", 200),
+            optionalVarchar("result", 30), optionalInteger("active_marker"),
+            requiredInteger("successful_observation_count"), optionalInstant("first_pending_at"),
+            optionalInstant("next_probe_at"), optionalVarchar("reason_code", 100),
+            optionalVarchar("evidence_case_id", 64), optionalInstant("suppression_released_at"),
+            optionalInstant("finished_at"), requiredInstant("updated_at"), requiredBigint("version"),
+        ),
+        table(
+            "automation_account_battle_gates",
+            requiredBigint("account_id"), optionalBigint("challenge_id"), requiredVarchar("reason", 100),
+            requiredInstant("opened_at"), optionalInstant("resolved_at"), requiredBigint("version"),
+            primaryKey = listOf("account_id"),
+        ),
+        table(
+            "automation_evidence_cases",
+            requiredVarchar("id", 64), requiredBigint("attempt_id"), requiredVarchar("evidence_source", 40),
+            optionalVarchar("observation_completeness", 30), optionalVarchar("observation_freshness", 20),
+            optionalVarchar("state_fingerprint", 128), optionalVarchar("response_shape_fingerprint", 128),
+            optionalVarchar("sanitized_snippet", 1000), requiredVarchar("reason_code", 100),
+            requiredVarchar("policy_version", 80), requiredVarchar("build_version", 80),
+            requiredInstant("created_at"), requiredInstant("expires_at"),
+            primaryKey = listOf("id"),
+        ),
+        table(
             "device_push_targets",
             serialId(), requiredBigint("account_id"), requiredVarchar("platform", 20),
             requiredVarchar("target_type", 20), requiredVarchar("installation_id", 160), requiredText("target_value"),
@@ -776,6 +810,13 @@ internal object FreshSchemaContract {
         ),
         key("captcha_form_fields", "uk_captcha_form_fields_challenge_name", "challenge_id", "field_name"),
         key("typed_automation_action_runs", "uk_typed_action_execution", "account_id", "execution_identity"),
+        key("automation_action_attempts", "uk_automation_action_attempt_execution", "account_id", "execution_identity"),
+        key("automation_action_convergences", "uk_automation_action_convergence_attempt", "attempt_id"),
+        key(
+            "automation_action_convergences",
+            "uk_automation_action_convergence_active_scope",
+            "account_id", "scope_kind", "scope_key", "active_marker",
+        ),
     )
 
     private val FOREIGN_KEYS = listOf(
@@ -947,6 +988,12 @@ internal object FreshSchemaContract {
         fk("fk_typed_runtime_stop_action", "typed_automation_runtime_states.stop_action_id", "typed_automation_action_runs.id", DeleteAction.SET_NULL),
         fk("fk_typed_action_account", "typed_automation_action_runs.account_id", "hof_accounts.id", DeleteAction.CASCADE),
         fk("fk_typed_action_entry", "typed_automation_action_runs.automation_entry_id", "automation_entries.id", DeleteAction.SET_NULL),
+        fk("fk_automation_action_attempt_account", "automation_action_attempts.account_id", "hof_accounts.id", DeleteAction.CASCADE),
+        fk("fk_automation_action_attempt_entry", "automation_action_attempts.automation_entry_id", "automation_entries.id", DeleteAction.SET_NULL),
+        fk("fk_automation_action_convergence_attempt", "automation_action_convergences.attempt_id", "automation_action_attempts.id", DeleteAction.CASCADE),
+        fk("fk_automation_action_convergence_account", "automation_action_convergences.account_id", "hof_accounts.id", DeleteAction.CASCADE),
+        fk("fk_automation_account_battle_gate_account", "automation_account_battle_gates.account_id", "hof_accounts.id", DeleteAction.CASCADE),
+        fk("fk_automation_evidence_case_attempt", "automation_evidence_cases.attempt_id", "automation_action_attempts.id", DeleteAction.CASCADE),
         fk(
             "fk_captcha_form_fields_challenge", "captcha_form_fields.challenge_id",
             "captcha_challenges.id", DeleteAction.CASCADE,
@@ -1114,6 +1161,12 @@ internal object FreshSchemaContract {
         ),
         index("captcha_form_fields", "idx_captcha_form_fields_challenge_order", "challenge_id", "field_order", "id"),
         index("typed_automation_action_runs", "idx_typed_action_account_status", "account_id", "status", "updated_at", "id"),
+        index(
+            "automation_action_convergences",
+            "idx_automation_action_convergence_due",
+            "account_id", "active_marker", "next_probe_at", "id",
+        ),
+        index("automation_evidence_cases", "idx_automation_evidence_cases_expiry", "expires_at", "id"),
     )
 
     private val CHECKS = listOf(
@@ -1222,6 +1275,33 @@ internal object FreshSchemaContract {
         check("typed_automation_action_runs", "ck_typed_action_status", "locate(',' || status || ',', ',PREPARED,SUBMITTING,RECONCILING,SUCCEEDED,FAILED,AMBIGUOUS,') > 0"),
         check("typed_automation_action_runs", "ck_typed_action_retry", "retry_attempt >= 0"),
         check("typed_automation_action_runs", "ck_typed_action_fingerprint", "char_length(action_fingerprint) = 64"),
+        check(
+            "automation_action_attempts",
+            "ck_automation_action_attempt_scope_key",
+            "char_length(trim(scope_key)) between 1 and 200",
+        ),
+        check(
+            "automation_action_attempts",
+            "ck_automation_action_attempt_baseline",
+            "char_length(trim(baseline_fingerprint)) between 1 and 128",
+        ),
+        check(
+            "automation_action_convergences",
+            "ck_automation_action_convergence_result",
+            "result is null or locate(',' || result || ',', ',APPLIED,NOT_APPLIED,SUPERSEDED,PENDING,HELD,RESULT_UNOBSERVED,') > 0",
+        ),
+        check(
+            "automation_action_convergences",
+            "ck_automation_action_convergence_active",
+            "(result is null and active_marker = 1 and finished_at is null) or " +
+                "(result = 'PENDING' and active_marker = 1 and finished_at is null) or " +
+                "(result is not null and result <> 'PENDING' and active_marker is null and finished_at is not null)",
+        ),
+        check(
+            "automation_action_convergences",
+            "ck_automation_action_convergence_observations",
+            "successful_observation_count >= 0",
+        ),
         check(
             "town_feature_locations", "ck_town_feature_locations_public_menu",
             "href regexp '^[?]menu=[A-Za-z0-9_-]{1,80}$'",

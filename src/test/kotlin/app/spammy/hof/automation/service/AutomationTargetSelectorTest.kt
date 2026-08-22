@@ -1,5 +1,8 @@
 package app.spammy.hof.automation.service
 
+import app.spammy.hof.automation.convergence.AutomationConvergenceSelectionConstraints
+import app.spammy.hof.automation.convergence.AutomationConvergenceSelectionGuard
+import app.spammy.hof.automation.convergence.StoredActionConvergenceSelectionFactory
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.AutomationType
@@ -109,6 +112,51 @@ class AutomationTargetSelectorTest {
         assertEquals(10, selected.entryId)
         Mockito.verify(loader, Mockito.never()).loadEntry(7, 11, null)
         Mockito.verify(loader, Mockito.never()).loadEntry(7, 12, null)
+    }
+
+    @Test
+    fun `전투 gate가 열린 동안 전투 entry를 건너뛰고 비전투 퀘스트를 선택한다`() {
+        val battleSnapshot = battleDecisionEntry()
+        val questSnapshot = questDecisionEntry()
+        val battleAction = BattleMapAutomationAction(
+            accountId = 7L,
+            progressDate = java.time.LocalDate.parse("2026-07-23"),
+            categoryId = "battle_map",
+            mapCode = "map-1",
+            presetMode = PresetSelectionMode.PRIMARY,
+            presetId = 3L,
+            battleCount = 1,
+            executionIdentity = "blocked-battle",
+        )
+        val questAction = QuestAction.Accept("quest-1", "accept-1")
+        val guarded = AutomationTargetSelector(
+            typed = typed,
+            work = work,
+            loader = loader,
+            lifecycle = lifecycle,
+            timeProvider = TimeProvider { now },
+            raidModule = defaultRaidModule,
+            quest = fixedQuestRules(QuestDirective.Execute(questAction)),
+            battle = AutomationHandler { HandlerEvaluation.Runnable(battleAction) },
+            adventure = AutomationHandler { HandlerEvaluation.Skipped },
+            union = AutomationHandler { HandlerEvaluation.Skipped },
+            fishing = AutomationHandler { HandlerEvaluation.Skipped },
+            homeQuest = AutomationHandler { HandlerEvaluation.Skipped },
+            convergenceGuard = AutomationConvergenceSelectionGuard {
+                AutomationConvergenceSelectionConstraints(emptySet(), battleGateActive = true)
+            },
+            convergenceSelectionFactory = StoredActionConvergenceSelectionFactory(),
+        )
+        Mockito.`when`(work.findRunning(7)).thenReturn(null)
+        Mockito.`when`(work.findWaiting(7)).thenReturn(emptyList())
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(battleEntry, questEntry))
+        Mockito.`when`(loader.loadEntry(7, battleEntry.id, null, null)).thenReturn(battleSnapshot)
+        Mockito.`when`(loader.loadEntry(7, questEntry.id, null, null)).thenReturn(questSnapshot)
+
+        val selected = assertIs<AutomationCoordination.Runnable>(guarded.select(7L))
+
+        assertEquals(questEntry.id, selected.entryId)
+        assertEquals(questAction, selected.action)
     }
 
     @Test

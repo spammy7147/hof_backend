@@ -1,0 +1,161 @@
+package app.spammy.hof.automation.convergence
+
+import java.time.Instant
+
+enum class ActionConvergenceResult {
+    APPLIED,
+    NOT_APPLIED,
+    SUPERSEDED,
+    PENDING,
+    HELD,
+    RESULT_UNOBSERVED,
+}
+
+enum class AutomationActionKind(val battle: Boolean = false) {
+    QUEST_ACCEPT,
+    QUEST_CLAIM,
+    QUEST_BATTLE(true),
+    HOME_ACCEPT,
+    HOME_CLAIM,
+    MAP_BATTLE(true),
+    ADVENTURE_BATTLE(true),
+    UNION_BATTLE(true),
+    FISHING_START,
+    FISHING_CATCH,
+    FISHING_OBSTRUCTION_BATTLE(true),
+    RAID_RESET,
+    RAID_REGISTER,
+    RAID_START,
+    RAID_REWARD,
+    RAID_REFRESH,
+    RAID_BATTLE(true),
+    RAID_CYCLE_ABORT,
+}
+
+enum class AutomationIsolationScopeKind {
+    QUEST_TARGET,
+    HOME_TARGET,
+    BATTLE_COOLDOWN_SCOPE,
+    UNION_ENTRY,
+    FISHING_ENTRY,
+    RAID_ENTRY,
+}
+
+data class AutomationIsolationScope(
+    val kind: AutomationIsolationScopeKind,
+    val key: String,
+) {
+    init {
+        require(key.isNotBlank()) { "Automation isolation scope key must not be blank." }
+    }
+}
+
+data class SelectedAutomationAction(
+    val entryId: Long,
+    val executionIdentity: String,
+    val actionKind: AutomationActionKind,
+    val scope: AutomationIsolationScope,
+    val policyVersion: String,
+    val baselineFingerprint: String,
+) {
+    init {
+        require(entryId > 0) { "Automation entry id must be positive." }
+        require(executionIdentity.isNotBlank()) { "Execution identity must not be blank." }
+        require(policyVersion.isNotBlank()) { "Policy version must not be blank." }
+        require(baselineFingerprint.isNotBlank()) { "Baseline fingerprint must not be blank." }
+    }
+}
+
+sealed interface AutomationActionEvidence {
+    val capturedAt: Instant
+
+    data class DirectApplied(
+        override val capturedAt: Instant,
+        val stateFingerprint: String,
+    ) : AutomationActionEvidence
+
+    data class DirectRejected(
+        override val capturedAt: Instant,
+        val reason: String,
+    ) : AutomationActionEvidence
+
+    data class StateAdvanced(
+        override val capturedAt: Instant,
+        val stateFingerprint: String,
+    ) : AutomationActionEvidence
+
+    data class SameState(
+        override val capturedAt: Instant,
+        val stateFingerprint: String,
+    ) : AutomationActionEvidence
+
+    data class IncompleteObservation(
+        override val capturedAt: Instant,
+        val reason: String,
+    ) : AutomationActionEvidence
+
+    data class NetworkFailure(
+        override val capturedAt: Instant,
+        val reason: String,
+    ) : AutomationActionEvidence
+
+    data class ResultUnobserved(
+        override val capturedAt: Instant,
+        val reason: String,
+    ) : AutomationActionEvidence
+
+    data class BattleGateRequired(
+        override val capturedAt: Instant,
+        val challengeId: Long?,
+        val reason: String,
+    ) : AutomationActionEvidence
+}
+
+sealed interface ConvergenceDirective {
+    data class Submit(val attemptId: Long) : ConvergenceDirective
+
+    data class Probe(
+        val attemptId: Long,
+        val executionIdentity: String,
+    ) : ConvergenceDirective
+
+    data class WaitUntil(
+        val at: Instant,
+        val scope: AutomationIsolationScope,
+    ) : ConvergenceDirective
+
+    data class BattleGateWait(
+        val openedAt: Instant,
+        val reason: String,
+    ) : ConvergenceDirective
+
+    data object ContinueSelection : ConvergenceDirective
+}
+
+data class ActionConvergenceRecord(
+    val attemptId: Long,
+    val accountId: Long,
+    val selection: SelectedAutomationAction,
+    var result: ActionConvergenceResult? = null,
+    var submittedAt: Instant? = null,
+    var successfulObservationCount: Int = 0,
+    var firstPendingAt: Instant? = null,
+    var nextProbeAt: Instant? = null,
+    var reasonCode: String? = null,
+    var finishedAt: Instant? = null,
+    var updatedAt: Instant,
+) {
+    val active: Boolean
+        get() = result == null || result == ActionConvergenceResult.PENDING
+}
+
+data class AccountBattleGate(
+    val accountId: Long,
+    val challengeId: Long?,
+    val reason: String,
+    val openedAt: Instant,
+    var resolvedAt: Instant? = null,
+) {
+    val active: Boolean
+        get() = resolvedAt == null
+}

@@ -109,10 +109,12 @@ class BattleMapService(
                 synchronizeCurrentSnapshot(snapshot),
             )
         }
-        val status = if (
-            snapshot.category == BattleCategoryId.RAID &&
-            battleMapParser.observesAuthoritativeRaidAbsence(snapshot.responseBody)
-        ) {
+        val authoritativeAbsence = when (snapshot.category) {
+            BattleCategoryId.RAID -> battleMapParser.observesAuthoritativeRaidAbsence(snapshot.responseBody)
+            BattleCategoryId.UNION -> battleMapParser.parseUnionPageState(snapshot.responseBody).authoritative
+            else -> false
+        }
+        val status = if (authoritativeAbsence) {
             CurrentBattleMapObservationStatus.ABSENT
         } else {
             CurrentBattleMapObservationStatus.INCOMPLETE

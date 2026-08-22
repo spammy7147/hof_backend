@@ -947,6 +947,15 @@ class QuestWorkCycleModuleTest {
                 QuestResultObservation.Page(emptyList()),
             ),
         )
+        assertIs<QuestRecordResult.Recorded>(
+            handler.recordObservedResult(
+                ACCOUNT_ID,
+                claim.copy(resultIdentity = "claim-repeat-result"),
+                QuestResultObservation.Page(
+                    listOf(quest("q", QuestState.UNAVAILABLE, 0, immediate())),
+                ),
+            ),
+        )
     }
 
     @Test

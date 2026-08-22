@@ -3,6 +3,8 @@ package app.spammy.hof.captcha.service
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.automation.service.TypedAutomationRuntimeService
 import app.spammy.hof.automation.service.TypedCaptchaAutomationResumeService
+import app.spammy.hof.automation.convergence.AutomationActionConvergenceModule
+import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.captcha.entity.CaptchaChallengeEntity
 import java.time.Instant
 import kotlin.test.Test
@@ -72,6 +74,24 @@ class CaptchaAutomationHookTest {
         hook.answered(challenge)
 
         Mockito.verify(typedResume).resumeAfterCaptcha(7L)
+    }
+
+    @Test
+    fun `answered captcha releases battle gate before requesting a fresh automation decision`() {
+        val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
+        val scoped = CaptchaAutomationHook(
+            typedRuntime,
+            typedResume,
+            eventPublisher,
+            convergence,
+            TimeProvider { NOW },
+        )
+
+        scoped.answered(challenge())
+
+        val ordered = Mockito.inOrder(convergence, typedResume)
+        ordered.verify(convergence).releaseBattleGate(7L, NOW)
+        ordered.verify(typedResume).resumeAfterCaptcha(7L)
     }
 
     @Test

@@ -137,6 +137,21 @@ class TypedAutomationQueryRepository(
             )
             .fetchOne()
 
+    fun findTypedActionByExecutionIdentity(
+        accountId: Long,
+        executionIdentity: String,
+    ): TypedAutomationActionRunEntity? =
+        queryFactory.selectFrom(typedAutomationActionRunEntity)
+            .join(typedAutomationActionRunEntity.account, actionAccount).fetchJoin()
+            .leftJoin(typedAutomationActionRunEntity.entry, actionEntry).fetchJoin()
+            .leftJoin(actionEntry.account, actionEntryAccount).fetchJoin()
+            .where(
+                typedAutomationActionRunEntity.account.id.eq(accountId),
+                typedAutomationActionRunEntity.executionIdentity.eq(executionIdentity),
+            )
+            .orderBy(typedAutomationActionRunEntity.id.desc())
+            .fetchFirst()
+
     fun lockTypedAction(actionId: Long): TypedAutomationActionRunEntity? =
         queryFactory.selectFrom(typedAutomationActionRunEntity)
             .join(typedAutomationActionRunEntity.account, actionAccount).fetchJoin()

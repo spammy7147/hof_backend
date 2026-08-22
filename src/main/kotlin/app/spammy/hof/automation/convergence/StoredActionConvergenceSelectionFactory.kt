@@ -1,0 +1,293 @@
+package app.spammy.hof.automation.convergence
+
+import app.spammy.hof.automation.service.BattleAutomationActionSource
+import app.spammy.hof.automation.service.BattleMapAutomationAction
+import app.spammy.hof.automation.service.AdventureMapAutomationAction
+import app.spammy.hof.automation.service.FishingTownAutomationAction
+import app.spammy.hof.automation.service.HomeQuestAutomationAction
+import app.spammy.hof.automation.service.HomeQuestAutomationActionType
+import app.spammy.hof.automation.service.PreparedAutomationAction
+import app.spammy.hof.automation.service.QuestAction
+import app.spammy.hof.automation.service.RaidCycleAbortAutomationAction
+import app.spammy.hof.automation.service.RaidTownAutomationAction
+import app.spammy.hof.automation.service.StoredTypedActionPayload
+import app.spammy.hof.automation.service.StoredTypedAutomationAction
+import app.spammy.hof.town.fishing.model.FishingAction
+import app.spammy.hof.town.raid.model.RaidAction
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
+import java.util.HexFormat
+import org.springframework.stereotype.Component
+
+@Component
+class StoredActionConvergenceSelectionFactory {
+    fun create(stored: StoredTypedAutomationAction): SelectedAutomationAction {
+        val mapping = map(stored)
+        return SelectedAutomationAction(
+            entryId = stored.entryId,
+            executionIdentity = stored.executionIdentity,
+            actionKind = mapping.actionKind,
+            scope = mapping.scope,
+            policyVersion = POLICY_VERSION,
+            baselineFingerprint = fingerprint(mapping.baseline),
+        )
+    }
+
+    fun preview(entryId: Long, action: PreparedAutomationAction): ConvergenceSelectionPreview = when (action) {
+        is QuestAction.Accept -> preview(
+            AutomationActionKind.QUEST_ACCEPT,
+            AutomationIsolationScopeKind.QUEST_TARGET,
+            action.questKey,
+            "quest|accept|${action.questKey}|${action.actionNo}",
+        )
+        is QuestAction.Claim -> preview(
+            AutomationActionKind.QUEST_CLAIM,
+            AutomationIsolationScopeKind.QUEST_TARGET,
+            action.questKey,
+            "quest|claim|${action.questKey}|${action.actionNo}",
+        )
+        is QuestAction.Battle -> preview(
+            AutomationActionKind.QUEST_BATTLE,
+            AutomationIsolationScopeKind.QUEST_TARGET,
+            action.questKey,
+            "quest|battle|${action.questKey}|${action.missionKey}|${action.missionCurrent}|${action.missionRequired}",
+        )
+        is HomeQuestAutomationAction -> preview(
+            if (action.action == HomeQuestAutomationActionType.ACCEPT) {
+                AutomationActionKind.HOME_ACCEPT
+            } else {
+                AutomationActionKind.HOME_CLAIM
+            },
+            AutomationIsolationScopeKind.HOME_TARGET,
+            action.questId,
+            "home|${action.action}|${action.questId}|${action.actionId}",
+        )
+        is BattleMapAutomationAction -> when (action.source) {
+            BattleAutomationActionSource.BATTLE_MAP_AUTOMATION -> preview(
+                AutomationActionKind.MAP_BATTLE,
+                AutomationIsolationScopeKind.BATTLE_COOLDOWN_SCOPE,
+                SHARED_BATTLE_COOLDOWN_SCOPE,
+                action.battleBaseline(),
+            )
+            BattleAutomationActionSource.QUEST_AUTOMATION -> preview(
+                AutomationActionKind.QUEST_BATTLE,
+                AutomationIsolationScopeKind.QUEST_TARGET,
+                action.sourceTargetKey ?: "entry:$entryId:${action.categoryId}:${action.mapCode}",
+                action.battleBaseline(),
+            )
+            BattleAutomationActionSource.ADVENTURE_AUTOMATION -> preview(
+                AutomationActionKind.ADVENTURE_BATTLE,
+                AutomationIsolationScopeKind.BATTLE_COOLDOWN_SCOPE,
+                SHARED_BATTLE_COOLDOWN_SCOPE,
+                action.battleBaseline(),
+            )
+            BattleAutomationActionSource.UNION_AUTOMATION -> preview(
+                AutomationActionKind.UNION_BATTLE,
+                AutomationIsolationScopeKind.UNION_ENTRY,
+                action.sourceTargetKey ?: entryId.toString(),
+                action.battleBaseline(),
+            )
+            BattleAutomationActionSource.FISHING_AUTOMATION -> preview(
+                AutomationActionKind.FISHING_OBSTRUCTION_BATTLE,
+                AutomationIsolationScopeKind.FISHING_ENTRY,
+                entryId.toString(),
+                action.battleBaseline(),
+            )
+            BattleAutomationActionSource.RAID_AUTOMATION -> preview(
+                AutomationActionKind.RAID_BATTLE,
+                AutomationIsolationScopeKind.RAID_ENTRY,
+                action.sourceTargetKey ?: entryId.toString(),
+                action.battleBaseline(),
+            )
+        }
+        is AdventureMapAutomationAction -> preview(
+            AutomationActionKind.ADVENTURE_BATTLE,
+            AutomationIsolationScopeKind.BATTLE_COOLDOWN_SCOPE,
+            SHARED_BATTLE_COOLDOWN_SCOPE,
+            "adventure|${action.categoryId}|${action.mapCode}|${action.observedCooldownUntil}|" +
+                "${action.observedAttemptRemaining}|${action.observedWinRemaining}|${action.observedAvailableCount}",
+        )
+        is FishingTownAutomationAction -> preview(
+            if (action.action == FishingAction.START) {
+                AutomationActionKind.FISHING_START
+            } else {
+                AutomationActionKind.FISHING_CATCH
+            },
+            AutomationIsolationScopeKind.FISHING_ENTRY,
+            entryId.toString(),
+            "fishing|${action.action}|${action.observedPrimaryAction}|${action.observedRemainingCasts}",
+        )
+        is RaidTownAutomationAction -> preview(
+            action.action.toConvergenceKind(),
+            AutomationIsolationScopeKind.RAID_ENTRY,
+            action.targetRaidId ?: action.raidId ?: entryId.toString(),
+            "raid|${action.action}|${action.targetRaidId}|${action.raidId}",
+        )
+        is RaidCycleAbortAutomationAction -> preview(
+            AutomationActionKind.RAID_CYCLE_ABORT,
+            AutomationIsolationScopeKind.RAID_ENTRY,
+            action.raidId,
+            "raid|abort|${action.raidId}|${action.reason}",
+        )
+    }
+
+    private fun map(stored: StoredTypedAutomationAction): Mapping = when (val payload = stored.payload) {
+        is StoredTypedActionPayload.QuestAccept -> Mapping(
+            AutomationActionKind.QUEST_ACCEPT,
+            scope(AutomationIsolationScopeKind.QUEST_TARGET, payload.questKey),
+            "quest|accept|${payload.questKey}|${payload.actionNo}",
+        )
+        is StoredTypedActionPayload.QuestClaim -> Mapping(
+            AutomationActionKind.QUEST_CLAIM,
+            scope(AutomationIsolationScopeKind.QUEST_TARGET, payload.questKey),
+            "quest|claim|${payload.questKey}|${payload.actionNo}",
+        )
+        is StoredTypedActionPayload.QuestBattle -> Mapping(
+            AutomationActionKind.QUEST_BATTLE,
+            scope(AutomationIsolationScopeKind.QUEST_TARGET, payload.questKey),
+            "quest|battle|${payload.questKey}|${payload.missionKey}|${payload.observedCurrent}|${payload.observedRequired}",
+        )
+        is StoredTypedActionPayload.HomeQuest -> Mapping(
+            when (payload.action) {
+                HomeQuestAutomationActionType.ACCEPT -> AutomationActionKind.HOME_ACCEPT
+                HomeQuestAutomationActionType.CLAIM -> AutomationActionKind.HOME_CLAIM
+            },
+            scope(AutomationIsolationScopeKind.HOME_TARGET, payload.questId),
+            "home|${payload.action}|${payload.questId}|${payload.actionId}",
+        )
+        is StoredTypedActionPayload.BattleMap -> mapBattle(stored.entryId, payload)
+        is StoredTypedActionPayload.AdventureMap -> Mapping(
+            AutomationActionKind.ADVENTURE_BATTLE,
+            scope(
+                AutomationIsolationScopeKind.BATTLE_COOLDOWN_SCOPE,
+                SHARED_BATTLE_COOLDOWN_SCOPE,
+            ),
+            "adventure|${payload.categoryId}|${payload.mapCode}|${payload.observedCooldownUntil}|" +
+                "${payload.observedAttemptRemaining}|${payload.observedWinRemaining}|${payload.observedAvailableCount}",
+        )
+        is StoredTypedActionPayload.FishingTown -> Mapping(
+            when (payload.action) {
+                FishingAction.START -> AutomationActionKind.FISHING_START
+                FishingAction.CATCH -> AutomationActionKind.FISHING_CATCH
+                else -> error("Unsupported stored fishing action ${payload.action}.")
+            },
+            scope(AutomationIsolationScopeKind.FISHING_ENTRY, stored.entryId.toString()),
+            "fishing|${payload.action}|${payload.observedPrimaryAction}|${payload.observedRemainingCasts}",
+        )
+        is StoredTypedActionPayload.RaidTown -> Mapping(
+            payload.action.toConvergenceKind(),
+            scope(
+                AutomationIsolationScopeKind.RAID_ENTRY,
+                payload.targetRaidId ?: payload.raidId ?: stored.entryId.toString(),
+            ),
+            "raid|${payload.action}|${payload.targetRaidId}|${payload.raidId}",
+        )
+        is StoredTypedActionPayload.RaidCycleAbort -> Mapping(
+            AutomationActionKind.RAID_CYCLE_ABORT,
+            scope(AutomationIsolationScopeKind.RAID_ENTRY, payload.raidId),
+            "raid|abort|${payload.raidId}|${payload.reason}",
+        )
+    }
+
+    private fun mapBattle(
+        entryId: Long,
+        payload: StoredTypedActionPayload.BattleMap,
+    ): Mapping = when (payload.source) {
+        BattleAutomationActionSource.BATTLE_MAP_AUTOMATION -> Mapping(
+            AutomationActionKind.MAP_BATTLE,
+            scope(
+                AutomationIsolationScopeKind.BATTLE_COOLDOWN_SCOPE,
+                SHARED_BATTLE_COOLDOWN_SCOPE,
+            ),
+            payload.battleBaseline(),
+        )
+        BattleAutomationActionSource.QUEST_AUTOMATION -> Mapping(
+            AutomationActionKind.QUEST_BATTLE,
+            scope(
+                AutomationIsolationScopeKind.QUEST_TARGET,
+                payload.sourceTargetKey ?: "entry:$entryId:${payload.categoryId}:${payload.mapCode}",
+            ),
+            payload.battleBaseline(),
+        )
+        BattleAutomationActionSource.ADVENTURE_AUTOMATION -> Mapping(
+            AutomationActionKind.ADVENTURE_BATTLE,
+            scope(
+                AutomationIsolationScopeKind.BATTLE_COOLDOWN_SCOPE,
+                SHARED_BATTLE_COOLDOWN_SCOPE,
+            ),
+            payload.battleBaseline(),
+        )
+        BattleAutomationActionSource.UNION_AUTOMATION -> Mapping(
+            AutomationActionKind.UNION_BATTLE,
+            scope(
+                AutomationIsolationScopeKind.UNION_ENTRY,
+                payload.sourceTargetKey ?: entryId.toString(),
+            ),
+            payload.battleBaseline(),
+        )
+        BattleAutomationActionSource.FISHING_AUTOMATION -> Mapping(
+            AutomationActionKind.FISHING_OBSTRUCTION_BATTLE,
+            scope(AutomationIsolationScopeKind.FISHING_ENTRY, entryId.toString()),
+            payload.battleBaseline(),
+        )
+        BattleAutomationActionSource.RAID_AUTOMATION -> Mapping(
+            AutomationActionKind.RAID_BATTLE,
+            scope(
+                AutomationIsolationScopeKind.RAID_ENTRY,
+                payload.sourceTargetKey ?: entryId.toString(),
+            ),
+            payload.battleBaseline(),
+        )
+    }
+
+    private fun StoredTypedActionPayload.BattleMap.battleBaseline(): String =
+        "battle|$source|$categoryId|$mapCode|$battleCount|$progressDate|$sourceTargetKey|$recoveryChainId|$raidRetransmissionCount"
+
+    private fun BattleMapAutomationAction.battleBaseline(): String =
+        "battle|$source|$categoryId|$mapCode|$battleCount|$progressDate|$sourceTargetKey|$recoveryChainId|$raidRetransmissionCount"
+
+    private fun RaidAction.toConvergenceKind(): AutomationActionKind = when (this) {
+        RaidAction.RESET -> AutomationActionKind.RAID_RESET
+        RaidAction.REGISTER -> AutomationActionKind.RAID_REGISTER
+        RaidAction.START -> AutomationActionKind.RAID_START
+        RaidAction.REWARD -> AutomationActionKind.RAID_REWARD
+        RaidAction.REFRESH -> AutomationActionKind.RAID_REFRESH
+        RaidAction.LEAVE,
+        RaidAction.WAIT_RESET,
+        -> error("Unsupported stored raid action $this.")
+    }
+
+    private fun scope(kind: AutomationIsolationScopeKind, key: String) = AutomationIsolationScope(kind, key)
+
+    private fun preview(
+        actionKind: AutomationActionKind,
+        scopeKind: AutomationIsolationScopeKind,
+        scopeKey: String,
+        baseline: String,
+    ) = ConvergenceSelectionPreview(
+        actionKind,
+        scope(scopeKind, scopeKey),
+        fingerprint(baseline),
+    )
+
+    private fun fingerprint(value: String): String = HexFormat.of().formatHex(
+        MessageDigest.getInstance("SHA-256").digest(value.toByteArray(StandardCharsets.UTF_8)),
+    )
+
+    private data class Mapping(
+        val actionKind: AutomationActionKind,
+        val scope: AutomationIsolationScope,
+        val baseline: String,
+    )
+
+    companion object {
+        const val POLICY_VERSION = "automation-action-convergence-v1"
+        const val SHARED_BATTLE_COOLDOWN_SCOPE = "shared-battle-cooldown"
+    }
+}
+
+data class ConvergenceSelectionPreview(
+    val actionKind: AutomationActionKind,
+    val scope: AutomationIsolationScope,
+    val baselineFingerprint: String? = null,
+)

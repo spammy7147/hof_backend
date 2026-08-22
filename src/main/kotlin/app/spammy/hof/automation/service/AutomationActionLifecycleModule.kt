@@ -13,6 +13,7 @@ import app.spammy.hof.automation.raid.RaidRecordResult
 import app.spammy.hof.automation.raid.RaidResultObservation
 import app.spammy.hof.battle.dto.RunBattleRequest
 import app.spammy.hof.battle.service.BattleMapService
+import app.spammy.hof.battle.service.CurrentBattleMapObservationStatus
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
@@ -23,6 +24,8 @@ import app.spammy.hof.town.home.model.HomeMode
 import app.spammy.hof.town.home.model.HomeQuestState
 import app.spammy.hof.town.home.service.HomeService
 import app.spammy.hof.town.fishing.model.FishingAction
+import app.spammy.hof.town.fishing.model.FishingOutcome
+import app.spammy.hof.town.fishing.model.FishingPrimaryAction
 import app.spammy.hof.town.fishing.service.FishingService
 import app.spammy.hof.town.raid.dto.RaidPubActionRequest
 import app.spammy.hof.town.raid.model.RaidAction
@@ -331,9 +334,10 @@ class UnifiedAutomationActionLifecycleModule(
                 override val descriptor = payload.descriptor()
 
                 override fun execute(): TypedAutomationExecution {
-                    runMutation(accountId, "Home quest") {
+                    val response = runMutation(accountId, "Home quest") {
                         homeService.runHomeQuest(accountId, payload.actionId)
                     }
+                    requireHomeDirectApplied(payload, response)
                     return TypedAutomationExecution.Completed
                 }
 
@@ -421,9 +425,10 @@ class UnifiedAutomationActionLifecycleModule(
                 override val descriptor = payload.fishingDescriptor()
 
                 override fun execute(): TypedAutomationExecution {
-                    runMutation(accountId, "Fishing") {
+                    val response = runMutation(accountId, "Fishing") {
                         fishingService.act(accountId, payload.action)
                     }
+                    requireFishingDirectApplied(payload, response)
                     return TypedAutomationExecution.Completed
                 }
 
@@ -445,6 +450,48 @@ class UnifiedAutomationActionLifecycleModule(
 
                 override fun reconcile(): AmbiguousActionResolution = reconcileRaidAbort(accountId, stored, payload)
             }
+        }
+    }
+
+    private fun requireHomeDirectApplied(
+        payload: StoredTypedActionPayload.HomeQuest,
+        response: app.spammy.hof.town.home.dto.HomeResponse,
+    ) {
+        val quest = response.quests.singleOrNull { it.id == payload.questId }
+        val applied = when (payload.action) {
+            HomeQuestAutomationActionType.ACCEPT -> quest?.state in setOf(
+                HomeQuestState.ACTIVE,
+                HomeQuestState.CLAIMABLE,
+            )
+            HomeQuestAutomationActionType.CLAIM -> quest == null || quest.state in setOf(
+                HomeQuestState.WAITING,
+                HomeQuestState.COMPLETED,
+            )
+        }
+        if (!applied) {
+            throw AmbiguousAutomationSubmissionException(
+                "Home quest direct response did not prove the action-specific poststate.",
+            )
+        }
+    }
+
+    private fun requireFishingDirectApplied(
+        payload: StoredTypedActionPayload.FishingTown,
+        response: app.spammy.hof.town.fishing.dto.FishingResponse,
+    ) {
+        val applied = when (payload.action) {
+            FishingAction.START -> response.primaryAction == FishingPrimaryAction.CATCH ||
+                response.lastOutcome == FishingOutcome.STARTED
+            FishingAction.CATCH -> response.lastOutcome in setOf(
+                FishingOutcome.CAUGHT,
+                FishingOutcome.ESCAPED,
+            ) || response.primaryAction == FishingPrimaryAction.START || response.blockedByBattle
+            else -> false
+        }
+        if (!applied) {
+            throw AmbiguousAutomationSubmissionException(
+                "Fishing direct response did not prove the action-specific poststate.",
+            )
         }
     }
 
@@ -760,6 +807,9 @@ class UnifiedAutomationActionLifecycleModule(
         stored: StoredTypedAutomationAction,
         payload: StoredTypedActionPayload.BattleMap,
     ): AmbiguousActionResolution {
+        if (payload.source == BattleAutomationActionSource.UNION_AUTOMATION) {
+            return reconcileUnionBattleMap(accountId, stored, payload)
+        }
         val action = payload.toPrepared(accountId, stored.executionIdentity)
         return when (val reconciliation = battleOutcomeReconciler.reloadRecentAuthoritativeEvidence(action)) {
             is BattleOutcomeReconciliation.Proven -> {
@@ -780,8 +830,87 @@ class UnifiedAutomationActionLifecycleModule(
                     )
                 }
             }
-            is BattleOutcomeReconciliation.Unproven -> verifyLater(reconciliation.message)
+            is BattleOutcomeReconciliation.Unproven -> {
+                if (payload.source == BattleAutomationActionSource.BATTLE_MAP_AUTOMATION) {
+                    reconcileGenericBattleMapPoststate(accountId, stored, payload, reconciliation.message)
+                } else {
+                    verifyLater(reconciliation.message)
+                }
+            }
         }
+    }
+
+    private fun reconcileGenericBattleMapPoststate(
+        accountId: Long,
+        stored: StoredTypedAutomationAction,
+        payload: StoredTypedActionPayload.BattleMap,
+        unprovenReason: String,
+    ): AmbiguousActionResolution {
+        val observation = battleMapService.observeCurrentlyAvailableMaps(
+            accountId,
+            payload.categoryId,
+            HofRequestOrigin.AUTOMATION,
+        )
+        if (observation.status != CurrentBattleMapObservationStatus.OBSERVED) {
+            return verifyLater("$unprovenReason 최신 전투맵 화면도 완전하지 않습니다.")
+        }
+        val target = observation.maps.firstOrNull { it.mapCode == payload.mapCode }
+        val advanced = target == null || !target.enabled ||
+            (target.cooldownRemainingSeconds ?: 0L) > 0L
+        if (!advanced) {
+            return verifyLater("$unprovenReason 대상 맵이 아직 실행 가능한 상태입니다.")
+        }
+        workLifecycle.completeBattleMapAction(
+            accountId,
+            stored.entryId,
+            payload.categoryId,
+            payload.mapCode,
+        )
+        return AmbiguousActionResolution.Applied(
+            TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode),
+        )
+    }
+
+    /**
+     * 유니온은 전투 결과 식별자보다 최신 유니온 페이지의 맵 소멸/쿨타임이 더 직접적인 후상태다.
+     * 불완전한 페이지나 동일하게 실행 가능한 맵은 성공으로 추정하지 않는다.
+     */
+    private fun reconcileUnionBattleMap(
+        accountId: Long,
+        stored: StoredTypedAutomationAction,
+        payload: StoredTypedActionPayload.BattleMap,
+    ): AmbiguousActionResolution {
+        val observation = battleMapService.observeCurrentlyAvailableMaps(
+            accountId,
+            payload.categoryId,
+            HofRequestOrigin.AUTOMATION,
+        )
+        val target = observation.maps.firstOrNull { it.mapCode == payload.mapCode }
+        val applied = when (observation.status) {
+            CurrentBattleMapObservationStatus.ABSENT -> true
+            CurrentBattleMapObservationStatus.INCOMPLETE -> false
+            CurrentBattleMapObservationStatus.OBSERVED -> target == null ||
+                !target.enabled ||
+                (target.cooldownRemainingSeconds ?: 0L) > 0L
+        }
+        if (!applied) {
+            return verifyLater(
+                if (observation.status == CurrentBattleMapObservationStatus.INCOMPLETE) {
+                    "유니온 최신 페이지가 완전하지 않아 대상 소멸 여부를 판정할 수 없습니다."
+                } else {
+                    "유니온 대상 맵이 아직 실행 가능한 상태로 관측됩니다."
+                },
+            )
+        }
+        unionProgress.battleCompleted(
+            accountId,
+            stored.entryId,
+            payload.categoryId,
+            payload.mapCode,
+        )
+        return AmbiguousActionResolution.Applied(
+            TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode),
+        )
     }
 
     private fun handoffAmbiguousRaidBattle(

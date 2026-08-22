@@ -739,7 +739,8 @@ class DefaultQuestWorkCycleModule(
         val quest = quests.singleOrNull { it.questKey == attempt.questKey }
             ?: return QuestRecordResult.Recorded()
         return when {
-            quest.state == QuestState.COMPLETED -> QuestRecordResult.Recorded()
+            quest.state in setOf(QuestState.COMPLETED, QuestState.UNAVAILABLE) ->
+                QuestRecordResult.Recorded()
             quest.state == QuestState.CLAIMABLE && quest.actionNo == attempt.actionNo ->
                 QuestRecordResult.NotApplied("Quest reward is still claimable with the same action.")
             else -> QuestRecordResult.NeedsRecheck("Quest claim outcome is not yet authoritative.")
