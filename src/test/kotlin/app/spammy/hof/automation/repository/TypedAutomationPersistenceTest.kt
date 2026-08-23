@@ -23,6 +23,7 @@ import app.spammy.hof.automation.raid.RaidBattleRecoveryObservation
 import app.spammy.hof.automation.raid.RaidBattleSafetyGate
 import app.spammy.hof.automation.raid.RaidCooldownSource
 import app.spammy.hof.automation.raid.RaidRewardRecovery
+import app.spammy.hof.automation.raid.RaidRewardRecoveryKind
 import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
 import app.spammy.hof.automation.raid.RaidCycleTarget
 import app.spammy.hof.automation.outbox.AutomationOutboxService
@@ -326,7 +327,7 @@ class TypedAutomationPersistenceTest {
             now,
             RaidAutomationCycleStatus.REWARD_PENDING,
         )
-        val expected = RaidRewardRecovery("reward-2", now, 5, 1, held = true)
+        val expected = RaidRewardRecovery("reward-2", now, 5, 1, held = true, kind = RaidRewardRecoveryKind.ACTION_RESULT)
         raidCycleStore.saveRewardRecovery(account.id, "raid-a", expected, now.plusSeconds(40))
         entityManager.flush()
         entityManager.clear()

@@ -9,7 +9,7 @@ alter table automation_decision_events
 
 alter table automation_decision_events
     add constraint ck_automation_decision_events_diagnostic_kind check (
-        diagnostic_kind is null or position(',' || diagnostic_kind || ',' in ',RAID_HOF_COOLDOWN,RAID_SINGLE_TARGET_TIMER,RAID_LOCAL_SAFETY_GATE,RAID_DEPLOYMENT_SAFETY_GATE,RAID_COOLDOWN_OBSERVATION_AMBIGUOUS,RAID_COOLDOWN_OBSERVATION_HELD,RAID_EXPLICIT_COOLDOWN_WAIT,RAID_REWARD_CONFIRMATION_WAIT,RAID_REWARD_RESULT_RECHECK,RAID_BATTLE_RESULT_UNKNOWN,RAID_REWARD_RESULT_HELD,') > 0
+        diagnostic_kind is null or position(',' || diagnostic_kind || ',' in ',RAID_HOF_COOLDOWN,RAID_SINGLE_TARGET_TIMER,RAID_LOCAL_SAFETY_GATE,RAID_DEPLOYMENT_SAFETY_GATE,RAID_COOLDOWN_OBSERVATION_AMBIGUOUS,RAID_COOLDOWN_OBSERVATION_HELD,RAID_EXPLICIT_COOLDOWN_WAIT,RAID_REWARD_CONFIRMATION_WAIT,RAID_REWARD_RESULT_RECHECK,RAID_REWARD_OBSERVATION_HELD,RAID_BATTLE_RESULT_UNKNOWN,RAID_REWARD_RESULT_HELD,') > 0
     );
 alter table automation_decision_events
     add constraint ck_automation_decision_events_cooldown_source check (

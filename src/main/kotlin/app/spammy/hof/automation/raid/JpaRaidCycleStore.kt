@@ -201,6 +201,7 @@ class JpaRaidCycleStore(
     ): RaidCycleSnapshot {
         query.lockAccount(accountId)
         val cycle = requireOpenCycle(accountId, raidId)
+        cycle.rewardRecoveryKind = recovery.kind
         cycle.rewardRecoveryExecutionIdentity = recovery.executionIdentity
         cycle.rewardRecoveryFirstAmbiguousAt = recovery.firstAmbiguousAt
         cycle.rewardRecoveryObservationCount = recovery.successfulObservationCount
@@ -328,12 +329,16 @@ internal fun RaidAutomationCycleEntity.toBattleSafetyGateOrNull(): RaidBattleSaf
     }
 
 internal fun RaidAutomationCycleEntity.toRewardRecoveryOrNull(): RaidRewardRecovery? =
-    rewardRecoveryExecutionIdentity?.let { executionIdentity ->
+    rewardRecoveryFirstAmbiguousAt?.let { firstAmbiguousAt ->
+        val kind = rewardRecoveryKind ?: rewardRecoveryExecutionIdentity
+            ?.let { RaidRewardRecoveryKind.ACTION_RESULT }
+            ?: return null
         RaidRewardRecovery(
-            executionIdentity = executionIdentity,
-            firstAmbiguousAt = requireNotNull(rewardRecoveryFirstAmbiguousAt),
+            executionIdentity = rewardRecoveryExecutionIdentity,
+            firstAmbiguousAt = firstAmbiguousAt,
             successfulObservationCount = requireNotNull(rewardRecoveryObservationCount),
             retryCount = requireNotNull(rewardRecoveryRetryCount),
             held = rewardRecoveryHeld,
+            kind = kind,
         )
     }

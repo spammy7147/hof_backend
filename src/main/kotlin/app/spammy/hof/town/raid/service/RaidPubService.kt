@@ -21,7 +21,7 @@ class RaidPubService(
     private val locations: TownLocationResolver,
     private val parser: RaidPubParser,
     private val battleMaps: BattleMapService,
-    private val cooldownEvidence: RaidCooldownEvidenceRecorder = NoOpRaidCooldownEvidenceRecorder,
+    private val cooldownEvidence: RaidCooldownEvidenceRecorder = NonPersistentRaidCooldownEvidenceRecorder,
 ) {
     fun load(accountId: Long): RaidPubResponse {
         val snapshot = loadRaw(accountId)
@@ -112,7 +112,16 @@ class RaidPubService(
             .filter { it.mapCode != null }
         val joined = snapshot.raids.filter { it.playable && it.joined }
         val evidenceCaseId = current.raidCooldown?.takeIf { it.incomplete }?.let { evidence ->
-            cooldownEvidence.record(accountId, evidence, joined.size)
+            cooldownEvidence.record(
+                RaidCooldownEvidenceContext(
+                    accountId = accountId,
+                    actionKind = RaidCooldownEvidenceAction.RAID_BATTLE_WINDOW,
+                    raidScope = joined.sortedBy { it.id }.take(MAX_EVIDENCE_SCOPE_RAIDS)
+                        .joinToString(",") { it.id.take(MAX_EVIDENCE_RAID_ID_LENGTH) },
+                    activeJoinedRaidCount = joined.size,
+                ),
+                evidence,
+            )
         }
         return snapshot.copy(
             raids = snapshot.raids.map { raid ->
@@ -185,6 +194,8 @@ class RaidPubService(
     }
     private companion object {
         val RAID_ACTIONS = setOf(RaidAction.REGISTER, RaidAction.LEAVE, RaidAction.START, RaidAction.RESET)
+        const val MAX_EVIDENCE_SCOPE_RAIDS = 5
+        const val MAX_EVIDENCE_RAID_ID_LENGTH = 40
     }
 }
 

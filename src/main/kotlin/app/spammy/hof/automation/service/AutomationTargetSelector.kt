@@ -481,6 +481,7 @@ class AutomationTargetSelector(
             diagnosticKind in setOf(
                 AutomationDiagnosticKind.RAID_BATTLE_RESULT_UNKNOWN,
                 AutomationDiagnosticKind.RAID_COOLDOWN_OBSERVATION_HELD,
+                AutomationDiagnosticKind.RAID_REWARD_OBSERVATION_HELD,
                 AutomationDiagnosticKind.RAID_REWARD_RESULT_HELD,
             )
 

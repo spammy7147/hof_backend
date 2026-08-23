@@ -6,6 +6,8 @@ import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.parser.RaidCooldownAssociationStatus
 import app.spammy.hof.external.parser.RaidCooldownPageObservation
 import app.spammy.hof.town.raid.service.JpaRaidCooldownEvidenceRecorder
+import app.spammy.hof.town.raid.service.RaidCooldownEvidenceAction
+import app.spammy.hof.town.raid.service.RaidCooldownEvidenceContext
 import app.spammy.hof.town.raid.service.RaidCooldownEvidenceCaseEntity
 import jakarta.persistence.EntityManager
 import java.time.Duration
@@ -40,15 +42,23 @@ class RaidCooldownEvidenceRecorderTest {
             reasonCode = "RAID_COOLDOWN_ASSOCIATION_AMBIGUOUS",
         )
 
-        val caseId = recorder.record(account.id, observation, activeJoinedRaidCount = 1)
+        val context = RaidCooldownEvidenceContext(
+            accountId = account.id,
+            actionKind = RaidCooldownEvidenceAction.RAID_BATTLE_WINDOW,
+            raidScope = "RaidGoblin",
+            activeJoinedRaidCount = 1,
+        )
+        val caseId = recorder.record(context, observation)
         now = now.plusSeconds(15)
-        assertEquals(caseId, recorder.record(account.id, observation, activeJoinedRaidCount = 1))
+        assertEquals(caseId, recorder.record(context, observation))
         entityManager.flush()
         entityManager.clear()
 
         val stored = entityManager.find(RaidCooldownEvidenceCaseEntity::class.java, caseId)
         assertEquals(2, stored.observationCount)
         assertEquals("119,120", stored.candidateSeconds)
+        assertEquals(RaidCooldownEvidenceAction.RAID_BATTLE_WINDOW, stored.actionKind)
+        assertEquals("RaidGoblin", stored.raidScope)
         assertEquals(1, stored.activeJoinedRaidCount)
         assertEquals(firstAt, stored.firstObservedAt)
         assertEquals(now, stored.lastObservedAt)
@@ -72,7 +82,15 @@ class RaidCooldownEvidenceRecorderTest {
             reasonCode = "RAID_COOLDOWN_ASSOCIATION_AMBIGUOUS",
         )
 
-        val caseId = recorder.record(account.id, observation, activeJoinedRaidCount = 1)
+        val caseId = recorder.record(
+            RaidCooldownEvidenceContext(
+                accountId = account.id,
+                actionKind = RaidCooldownEvidenceAction.RAID_BATTLE_WINDOW,
+                raidScope = "RaidGoblin",
+                activeJoinedRaidCount = 1,
+            ),
+            observation,
+        )
         entityManager.flush()
         entityManager.clear()
 

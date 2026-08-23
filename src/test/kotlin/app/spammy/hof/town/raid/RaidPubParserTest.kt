@@ -26,7 +26,7 @@ import app.spammy.hof.town.raid.model.RaidRewardWindowStatus
 import app.spammy.hof.town.raid.parser.RaidPubParser
 import app.spammy.hof.town.raid.service.RaidActionPreconditionChangedException
 import app.spammy.hof.town.raid.service.RaidPubService
-import app.spammy.hof.town.raid.service.NoOpRaidCooldownEvidenceRecorder
+import app.spammy.hof.town.raid.service.NonPersistentRaidCooldownEvidenceRecorder
 import app.spammy.hof.town.raid.service.RaidCooldownEvidenceRecorder
 import java.time.Instant
 import kotlin.test.*
@@ -371,8 +371,10 @@ class RaidPubParserTest {
 
     @Test fun `모호한 raid 쿨타임 evidence case 식별자를 응답까지 보존한다`() {
         var activeJoinedRaidCount = -1
-        val recorder = RaidCooldownEvidenceRecorder { _, _, activeCount ->
-            activeJoinedRaidCount = activeCount
+        var raidScope = ""
+        val recorder = RaidCooldownEvidenceRecorder { evidenceContext, _ ->
+            activeJoinedRaidCount = evidenceContext.activeJoinedRaidCount
+            raidScope = evidenceContext.raidScope
             "case-raid-cooldown"
         }
         val context = service(fixture(), cooldownEvidence = recorder)
@@ -395,6 +397,7 @@ class RaidPubParserTest {
 
         assertEquals("case-raid-cooldown", response.battleObservationEvidence?.caseId)
         assertEquals(1, activeJoinedRaidCount)
+        assertEquals("RaidGoblin", raidScope)
     }
 
     @Test fun `다른 raid의 action을 요청하면 POST 없이 fail closed한다`() {
@@ -434,7 +437,7 @@ class RaidPubParserTest {
         .replace("- [다른 사람]", "- [《테스트 길드》현재사용자]")
     private fun service(
         vararg responses: String,
-        cooldownEvidence: RaidCooldownEvidenceRecorder = NoOpRaidCooldownEvidenceRecorder,
+        cooldownEvidence: RaidCooldownEvidenceRecorder = NonPersistentRaidCooldownEvidenceRecorder,
     ): Context {
         val accounts = Mockito.mock(AccountQueryRepository::class.java)
         val cookies = Mockito.mock(CookieQueryRepository::class.java)

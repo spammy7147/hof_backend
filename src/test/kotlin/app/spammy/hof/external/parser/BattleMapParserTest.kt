@@ -79,6 +79,29 @@ class BattleMapParserTest {
     }
 
     @Test
+    fun `다중 맵 페이지에서도 카드에 직접 결합된 레이드 쿨타임은 direct로 유지한다`() {
+        val html = """
+            <div id="mapgroup1">
+              <div>
+                <span>다음 전투까지 99초 남음</span>
+                <a href="index.php?raid_common=raid001">Raid - 마을 시가지</a>
+              </div>
+              <div>
+                <a href="index.php?raid_common=raid002">Raid - 지하 수로</a>
+              </div>
+            </div>
+        """.trimIndent()
+
+        val maps = parser.parse("raid", "raid_common", html)
+        val observation = parser.inspectRaidCooldown(html, maps)
+
+        assertEquals(2, maps.size)
+        assertEquals(99L, maps.single { it.mapCode == "raid001" }.cooldownRemainingSeconds)
+        assertEquals(null, maps.single { it.mapCode == "raid002" }.cooldownRemainingSeconds)
+        assertEquals(RaidCooldownAssociationStatus.HOF_DIRECT, observation.status)
+    }
+
+    @Test
     fun `바깥 wrapper의 레이드 타이머는 실제 fixture 전까지 실행 가능으로 추정하지 않는다`() {
         val html = """
             <section class="raid-wrapper">

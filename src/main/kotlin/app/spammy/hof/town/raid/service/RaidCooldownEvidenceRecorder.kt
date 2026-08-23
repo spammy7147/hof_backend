@@ -18,19 +18,28 @@ import java.util.UUID
 import org.springframework.stereotype.Repository
 import org.springframework.transaction.annotation.Transactional
 
+enum class RaidCooldownEvidenceAction {
+    RAID_BATTLE_WINDOW,
+}
+
+data class RaidCooldownEvidenceContext(
+    val accountId: Long,
+    val actionKind: RaidCooldownEvidenceAction,
+    val raidScope: String,
+    val activeJoinedRaidCount: Int,
+)
+
 fun interface RaidCooldownEvidenceRecorder {
     fun record(
-        accountId: Long,
+        context: RaidCooldownEvidenceContext,
         observation: RaidCooldownPageObservation,
-        activeJoinedRaidCount: Int,
     ): String
 }
 
-object NoOpRaidCooldownEvidenceRecorder : RaidCooldownEvidenceRecorder {
+object NonPersistentRaidCooldownEvidenceRecorder : RaidCooldownEvidenceRecorder {
     override fun record(
-        accountId: Long,
+        context: RaidCooldownEvidenceContext,
         observation: RaidCooldownPageObservation,
-        activeJoinedRaidCount: Int,
     ): String = observation.responseShapeFingerprint.take(16)
 }
 
@@ -41,6 +50,8 @@ object NoOpRaidCooldownEvidenceRecorder : RaidCooldownEvidenceRecorder {
         name = "uk_raid_cooldown_evidence_shape",
         columnNames = [
             "account_id",
+            "action_kind",
+            "raid_scope",
             "association_mode",
             "reason_code",
             "dom_fingerprint",
@@ -55,6 +66,13 @@ class RaidCooldownEvidenceCaseEntity(
 
     @Column(name = "account_id", nullable = false)
     val accountId: Long,
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "action_kind", nullable = false, length = 40)
+    val actionKind: RaidCooldownEvidenceAction,
+
+    @Column(name = "raid_scope", nullable = false, length = 255)
+    val raidScope: String,
 
     @Enumerated(EnumType.STRING)
     @Column(name = "association_mode", nullable = false, length = 40)
@@ -114,19 +132,21 @@ class JpaRaidCooldownEvidenceRecorder(
     private val timeProvider: TimeProvider,
 ) : RaidCooldownEvidenceRecorder {
     override fun record(
-        accountId: Long,
+        context: RaidCooldownEvidenceContext,
         observation: RaidCooldownPageObservation,
-        activeJoinedRaidCount: Int,
     ): String {
         require(observation.incomplete) { "Only incomplete raid cooldown observations are evidence cases." }
         val now = timeProvider.now()
         val existing = entityManager.createQuery(
             "select evidence from RaidCooldownEvidenceCaseEntity evidence " +
-                "where evidence.accountId = :accountId and evidence.associationMode = :associationMode " +
+                "where evidence.accountId = :accountId and evidence.actionKind = :actionKind " +
+                "and evidence.raidScope = :raidScope and evidence.associationMode = :associationMode " +
                 "and evidence.reasonCode = :reasonCode and evidence.domFingerprint = :domFingerprint " +
                 "and evidence.responseShapeFingerprint = :responseShapeFingerprint",
             RaidCooldownEvidenceCaseEntity::class.java,
-        ).setParameter("accountId", accountId)
+        ).setParameter("accountId", context.accountId)
+            .setParameter("actionKind", context.actionKind)
+            .setParameter("raidScope", context.raidScope)
             .setParameter("associationMode", observation.status)
             .setParameter("reasonCode", observation.reasonCode)
             .setParameter("domFingerprint", observation.domFingerprint)
@@ -140,7 +160,7 @@ class JpaRaidCooldownEvidenceRecorder(
             existing.candidateSeconds = normalizedSeconds
             existing.candidateCount = observation.candidateCount
             existing.mapCount = observation.mapCount
-            existing.activeJoinedRaidCount = activeJoinedRaidCount
+            existing.activeJoinedRaidCount = context.activeJoinedRaidCount
             existing.lastObservedAt = now
             existing.observationCount += 1
             existing.expiresAt = now.plus(RETENTION)
@@ -148,14 +168,16 @@ class JpaRaidCooldownEvidenceRecorder(
         }
         val created = RaidCooldownEvidenceCaseEntity(
             id = UUID.randomUUID().toString(),
-            accountId = accountId,
+            accountId = context.accountId,
+            actionKind = context.actionKind,
+            raidScope = context.raidScope,
             associationMode = observation.status,
             reasonCode = observation.reasonCode,
             timerShape = observation.timerShape(),
             candidateSeconds = normalizedSeconds,
             candidateCount = observation.candidateCount,
             mapCount = observation.mapCount,
-            activeJoinedRaidCount = activeJoinedRaidCount,
+            activeJoinedRaidCount = context.activeJoinedRaidCount,
             domFingerprint = observation.domFingerprint,
             responseShapeFingerprint = observation.responseShapeFingerprint,
             policyVersion = POLICY_VERSION,

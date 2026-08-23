@@ -547,7 +547,7 @@ internal object FreshSchemaContract {
             optionalInstant("battle_cooldown_last_observed_at"),
             optionalVarchar("battle_cooldown_evidence_case_id", 64),
             requiredBoolean("battle_cooldown_held"), requiredInteger("battle_safety_version"),
-            optionalVarchar("reward_recovery_execution_identity", 128),
+            optionalVarchar("reward_recovery_kind", 32), optionalVarchar("reward_recovery_execution_identity", 128),
             optionalInstant("reward_recovery_first_ambiguous_at"),
             optionalInteger("reward_recovery_observation_count"), optionalInteger("reward_recovery_retry_count"),
             requiredBoolean("reward_recovery_held"),
@@ -570,7 +570,8 @@ internal object FreshSchemaContract {
         ),
         table(
             "raid_cooldown_evidence_cases",
-            requiredVarchar("id", 64), requiredBigint("account_id"), requiredVarchar("association_mode", 40),
+            requiredVarchar("id", 64), requiredBigint("account_id"), requiredVarchar("action_kind", 40),
+            requiredVarchar("raid_scope", 255), requiredVarchar("association_mode", 40),
             requiredVarchar("reason_code", 100), requiredVarchar("timer_shape", 40),
             requiredVarchar("candidate_seconds", 255), requiredInteger("candidate_count"),
             requiredInteger("map_count"), requiredInteger("active_joined_raid_count"),
@@ -843,7 +844,8 @@ internal object FreshSchemaContract {
         key(
             "raid_cooldown_evidence_cases",
             "uk_raid_cooldown_evidence_shape",
-            "account_id", "association_mode", "reason_code", "dom_fingerprint", "response_shape_fingerprint",
+            "account_id", "action_kind", "raid_scope", "association_mode", "reason_code",
+            "dom_fingerprint", "response_shape_fingerprint",
         ),
         key("adventure_daily_refresh", "uk_adventure_daily_refresh_account_date", "account_id", "refresh_date"),
         key(
@@ -1559,7 +1561,8 @@ internal object FreshSchemaContract {
                 "',RAID_HOF_COOLDOWN,RAID_SINGLE_TARGET_TIMER,RAID_LOCAL_SAFETY_GATE," +
                 "RAID_DEPLOYMENT_SAFETY_GATE,RAID_COOLDOWN_OBSERVATION_AMBIGUOUS,RAID_COOLDOWN_OBSERVATION_HELD," +
                 "RAID_EXPLICIT_COOLDOWN_WAIT,RAID_REWARD_CONFIRMATION_WAIT," +
-                "RAID_REWARD_RESULT_RECHECK,RAID_BATTLE_RESULT_UNKNOWN,RAID_REWARD_RESULT_HELD,') > 0",
+                "RAID_REWARD_RESULT_RECHECK,RAID_REWARD_OBSERVATION_HELD," +
+                "RAID_BATTLE_RESULT_UNKNOWN,RAID_REWARD_RESULT_HELD,') > 0",
         ),
         check(
             "automation_decision_events",
@@ -1571,6 +1574,17 @@ internal object FreshSchemaContract {
             "automation_decision_events",
             "ck_automation_decision_events_impact_scope",
             "impact_scope is null or impact_scope = 'RAID_ONLY'",
+        ),
+        check(
+            "raid_cooldown_evidence_cases",
+            "ck_raid_cooldown_evidence_action",
+            "action_kind = 'RAID_BATTLE_WINDOW'",
+        ),
+        check(
+            "raid_automation_cycles",
+            "ck_raid_reward_recovery_kind",
+            "reward_recovery_kind is null or locate(',' || reward_recovery_kind || ',', " +
+                "',WINDOW_OBSERVATION,ACTION_RESULT,') > 0",
         ),
         check(
             "raid_cooldown_evidence_cases",

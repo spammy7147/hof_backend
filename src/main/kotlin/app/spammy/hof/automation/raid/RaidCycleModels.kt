@@ -273,12 +273,18 @@ data class RaidBattleSafetyGate(
     val held: Boolean = false,
 )
 
+enum class RaidRewardRecoveryKind {
+    WINDOW_OBSERVATION,
+    ACTION_RESULT,
+}
+
 data class RaidRewardRecovery(
-    val executionIdentity: String,
+    val executionIdentity: String?,
     val firstAmbiguousAt: Instant,
     val successfulObservationCount: Int,
     val retryCount: Int,
     val held: Boolean = false,
+    val kind: RaidRewardRecoveryKind = RaidRewardRecoveryKind.ACTION_RESULT,
 )
 
 enum class RaidBattleRecoveryObservation {

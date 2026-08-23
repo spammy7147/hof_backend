@@ -2,6 +2,7 @@ package app.spammy.hof.automation.raid
 
 import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.automation.entity.RaidAutomationCycleStatus
+import app.spammy.hof.automation.service.AutomationDiagnosticKind
 import app.spammy.hof.automation.service.ResolvedAutomationParty
 import app.spammy.hof.battle.dto.BattlePatternLoadRequest
 import app.spammy.hof.common.time.TimeProvider
@@ -897,6 +898,129 @@ class RaidCycleModuleTest {
         assertEquals(RaidWaitReason.REWARD_CONFIRMATION, wait.reason)
         assertEquals(now.plusSeconds(1_800), wait.at)
         assertEquals(now.plusSeconds(1_800), store.state.openCycle?.nextCheckAt)
+    }
+
+    @Test
+    fun `불완전한 보상 창은 5회만 읽고 레이드 보상 관측을 held한다`() {
+        val target = target("raid-auto", 0)
+        var current = now
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(1, 7, target.raidId, target.name, RaidAutomationCycleStatus.REWARD_PENDING, null),
+            ),
+        )
+        val incomplete = RaidObservation(
+            raids = listOf(
+                RaidObservedTarget(
+                    id = target.raidId,
+                    name = target.name,
+                    playable = true,
+                    status = RaidObservedStatus.COMPLETED,
+                    statusText = "보상 상태 확인 필요",
+                    joined = true,
+                    actions = emptySet(),
+                    rewardWindow = RaidRewardWindowObservation.Incomplete("reward-window-case"),
+                ),
+            ),
+            applied = false,
+            registrationWait = false,
+            globalActions = setOf(RaidIntentKind.REWARD),
+        )
+        val module = DefaultRaidCycleModule(
+            store,
+            RaidObservationReader { incomplete.copy(observedAt = current) },
+            TimeProvider { current },
+        )
+
+        repeat(4) {
+            val recheck = assertIs<RaidDirective.Hold>(module.decideNext(1))
+            assertEquals(current.plusSeconds(10), recheck.recheckAt)
+            current = current.plusSeconds(10)
+        }
+        val held = assertIs<RaidDirective.Hold>(module.decideNext(1))
+
+        assertEquals(null, held.recheckAt)
+        assertEquals("RAID_REWARD_OBSERVATION_HELD", held.reasonCode)
+        assertEquals(AutomationDiagnosticKind.RAID_REWARD_OBSERVATION_HELD, held.diagnosticKind)
+        assertEquals(RaidRewardRecoveryKind.WINDOW_OBSERVATION, store.state.openCycle?.rewardRecovery?.kind)
+        assertEquals(true, store.state.openCycle?.rewardRecovery?.held)
+    }
+
+    @Test
+    fun `불완전했던 보상 창이 available이면 관측 예산을 지우고 새 보상만 선택한다`() {
+        val target = target("raid-auto", 0)
+        var rewardWindow: RaidRewardWindowObservation = RaidRewardWindowObservation.Incomplete()
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(1, 7, target.raidId, target.name, RaidAutomationCycleStatus.REWARD_PENDING, null),
+            ),
+        )
+        val module = DefaultRaidCycleModule(
+            store,
+            RaidObservationReader {
+                RaidObservation(
+                    raids = listOf(
+                        RaidObservedTarget(
+                            id = target.raidId,
+                            name = target.name,
+                            playable = true,
+                            status = RaidObservedStatus.COMPLETED,
+                            statusText = "보상 확인",
+                            joined = true,
+                            actions = emptySet(),
+                            rewardWindow = rewardWindow,
+                        ),
+                    ),
+                    applied = false,
+                    registrationWait = false,
+                    globalActions = setOf(RaidIntentKind.REWARD),
+                )
+            },
+            TimeProvider { now },
+        )
+
+        assertIs<RaidDirective.Hold>(module.decideNext(1))
+        rewardWindow = RaidRewardWindowObservation.Available
+        val execute = assertIs<RaidDirective.Execute>(module.decideNext(1))
+
+        assertEquals(RaidIntentKind.REWARD, execute.intent.kind)
+        assertEquals(null, store.state.openCycle?.rewardRecovery)
+    }
+
+    @Test
+    fun `보상 창이 absent이면 외부 상태 진전으로 종결하고 보상 POST를 만들지 않는다`() {
+        val target = target("raid-auto", 0)
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(1, 7, target.raidId, target.name, RaidAutomationCycleStatus.REWARD_PENDING, null),
+            ),
+        )
+        val observation = RaidObservation(
+            raids = listOf(
+                RaidObservedTarget(
+                    id = target.raidId,
+                    name = target.name,
+                    playable = true,
+                    status = RaidObservedStatus.COMPLETED,
+                    statusText = "보상 없음",
+                    joined = true,
+                    actions = emptySet(),
+                    rewardWindow = RaidRewardWindowObservation.Absent,
+                ),
+            ),
+            applied = false,
+            registrationWait = false,
+            globalActions = setOf(RaidIntentKind.REWARD),
+        )
+        val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
+
+        val complete = assertIs<RaidDirective.Complete>(module.decideNext(1))
+
+        assertEquals(RaidCycleOutcomeKind.SUPERSEDED_BY_OBSERVED_RAID, complete.outcome.kind)
+        assertEquals("RAID_REWARD_WINDOW_ABSENT_SUPERSEDED", complete.reasonCode)
     }
 
     @Test

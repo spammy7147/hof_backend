@@ -225,7 +225,7 @@ class BattleMapParser {
         val status = when {
             markerPresent && candidateSeconds.isEmpty() -> RaidCooldownAssociationStatus.PARSE_FAILED
             candidateSeconds.isEmpty() -> RaidCooldownAssociationStatus.NONE
-            candidateSeconds.size == 1 && maps.size == 1 && directlyParsed == candidateSeconds ->
+            directlyParsed.isNotEmpty() && directlyParsed.sorted() == candidateSeconds.sorted() ->
                 RaidCooldownAssociationStatus.HOF_DIRECT
             else -> RaidCooldownAssociationStatus.AMBIGUOUS
         }

@@ -2,6 +2,7 @@ package app.spammy.hof.automation.entity
 
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.automation.raid.RaidBattleRecoveryObservation
+import app.spammy.hof.automation.raid.RaidRewardRecoveryKind
 import app.spammy.hof.party.entity.PartyPresetEntity
 import jakarta.persistence.Column
 import jakarta.persistence.Entity
@@ -304,6 +305,9 @@ class RaidAutomationCycleEntity(
     var battleCooldownHeld: Boolean = false,
     @Column(name = "battle_safety_version", nullable = false)
     var battleSafetyVersion: Int = app.spammy.hof.automation.raid.CURRENT_RAID_BATTLE_SAFETY_VERSION,
+    @Enumerated(EnumType.STRING)
+    @Column(name = "reward_recovery_kind", length = 32)
+    var rewardRecoveryKind: RaidRewardRecoveryKind? = null,
     @Column(name = "reward_recovery_execution_identity", length = 128)
     var rewardRecoveryExecutionIdentity: String? = null,
     @Column(name = "reward_recovery_first_ambiguous_at")
@@ -355,6 +359,7 @@ class RaidAutomationCycleEntity(
     }
 
     fun clearRewardRecovery() {
+        rewardRecoveryKind = null
         rewardRecoveryExecutionIdentity = null
         rewardRecoveryFirstAmbiguousAt = null
         rewardRecoveryObservationCount = null

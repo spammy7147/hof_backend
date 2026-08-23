@@ -1,6 +1,8 @@
 create table raid_cooldown_evidence_cases (
     id varchar(64) not null,
     account_id bigint not null,
+    action_kind varchar(40) not null,
+    raid_scope varchar(255) not null,
     association_mode varchar(40) not null,
     reason_code varchar(100) not null,
     timer_shape varchar(40) not null,
@@ -21,6 +23,8 @@ create table raid_cooldown_evidence_cases (
     constraint fk_raid_cooldown_evidence_account foreign key (account_id) references hof_accounts(id) on delete cascade,
     constraint uk_raid_cooldown_evidence_shape unique (
         account_id,
+        action_kind,
+        raid_scope,
         association_mode,
         reason_code,
         dom_fingerprint,
@@ -28,6 +32,9 @@ create table raid_cooldown_evidence_cases (
     ),
     constraint ck_raid_cooldown_evidence_mode check (
         position(',' || association_mode || ',' in ',NONE,HOF_DIRECT,AMBIGUOUS,PARSE_FAILED,') > 0
+    ),
+    constraint ck_raid_cooldown_evidence_action check (
+        action_kind = 'RAID_BATTLE_WINDOW'
     ),
     constraint ck_raid_cooldown_evidence_timer_shape check (
         position(',' || timer_shape || ',' in ',MARKER_UNPARSEABLE,SINGLE_POSITIVE_SECONDS,MULTIPLE_POSITIVE_SECONDS,NO_PARSED_SECONDS,') > 0

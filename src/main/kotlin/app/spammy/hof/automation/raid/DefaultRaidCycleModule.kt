@@ -332,20 +332,11 @@ class DefaultRaidCycleModule(
             )
         }
         if (cycle.status == RaidAutomationCycleStatus.REWARD_PENDING) {
-            cycle.rewardRecovery?.takeIf { it.held }?.let {
-                return RaidDirective.Hold(
-                    reason = RaidHoldReason.ACTION_UNAVAILABLE,
-                    message = "두 번째 보상 요청도 결과를 확정하지 못해 이 레이드 보상만 수동 확인으로 보류합니다.",
-                    entryId = configuration.entryId,
-                    raidId = cycle.raidId,
-                    reasonCode = "RAID_REWARD_RESULT_HELD",
-                    diagnosticKind = AutomationDiagnosticKind.RAID_REWARD_RESULT_HELD,
-                    impactScope = AutomationImpactScope.RAID_ONLY,
-                    releaseCondition = "수동 확인 또는 외부 상태 변경 뒤 새 판단",
-                )
-            }
             when (val rewardWindow = observed.rewardWindow) {
                 is RaidRewardWindowObservation.Wait -> {
+                    if (cycle.rewardRecovery != null) {
+                        cycle = store.clearRewardRecovery(accountId, cycle.raidId, timeProvider.now())
+                    }
                     val deadline = timeProvider.now().plusSeconds(rewardWindow.remainingSeconds.coerceAtLeast(1))
                     store.transition(
                         accountId = accountId,
@@ -367,29 +358,46 @@ class DefaultRaidCycleModule(
                     )
                 }
                 is RaidRewardWindowObservation.Incomplete -> {
-                    return RaidDirective.Hold(
-                        reason = RaidHoldReason.ACTION_UNAVAILABLE,
-                        message = "보상 확인 가능 상태를 완전하게 관측하지 못해 POST 없이 다시 확인합니다.",
-                        recheckAt = timeProvider.now().plusSeconds(SAFETY_RECHECK_SECONDS),
-                        entryId = configuration.entryId,
-                        raidId = cycle.raidId,
-                        reasonCode = "RAID_REWARD_WINDOW_INCOMPLETE",
-                        diagnosticKind = AutomationDiagnosticKind.RAID_REWARD_RESULT_RECHECK,
-                        impactScope = AutomationImpactScope.RAID_ONLY,
-                        releaseCondition = "최신 보상 가능 상태를 완전하게 관측하면 새 판단",
-                    )
+                    cycle.rewardRecovery?.takeIf { it.held }?.let { recovery ->
+                        return rewardHeldDirective(configuration, cycle, recovery)
+                    }
+                    return observeIncompleteRewardWindow(accountId, configuration, cycle)
                 }
                 RaidRewardWindowObservation.Absent -> {
-                    return RaidDirective.Hold(
-                        reason = RaidHoldReason.ACTION_UNAVAILABLE,
-                        message = "최신 완료 레이드에서 보상 가능 창을 확인할 수 없습니다.",
-                        recheckAt = timeProvider.now().plusSeconds(DEFAULT_RECHECK_SECONDS),
-                        entryId = configuration.entryId,
-                        raidId = cycle.raidId,
-                        reasonCode = "RAID_REWARD_WINDOW_ABSENT",
+                    if (cycle.rewardRecovery != null) {
+                        store.clearRewardRecovery(accountId, cycle.raidId, timeProvider.now())
+                    }
+                    return RaidDirective.Complete(
+                        outcome = RaidCycleOutcome(
+                            entryId = configuration.entryId,
+                            raidId = cycle.raidId,
+                            kind = RaidCycleOutcomeKind.SUPERSEDED_BY_OBSERVED_RAID,
+                        ),
+                        reasonCode = "RAID_REWARD_WINDOW_ABSENT_SUPERSEDED",
+                        message = "보상 가능 창이 사라져 외부 상태 진전으로 현재 레이드 사이클을 종결합니다.",
                     )
                 }
-                RaidRewardWindowObservation.Available -> Unit
+                RaidRewardWindowObservation.Available -> {
+                    cycle.rewardRecovery?.takeIf {
+                        it.held && it.kind == RaidRewardRecoveryKind.ACTION_RESULT
+                    }?.let { recovery ->
+                        return rewardHeldDirective(configuration, cycle, recovery)
+                    }
+                    cycle.rewardRecovery?.takeIf {
+                        it.kind == RaidRewardRecoveryKind.WINDOW_OBSERVATION
+                    }?.let { recovery ->
+                        cycle = if (recovery.retryCount == 0) {
+                            store.clearRewardRecovery(accountId, cycle.raidId, timeProvider.now())
+                        } else {
+                            store.saveRewardRecovery(
+                                accountId,
+                                cycle.raidId,
+                                recovery.copy(held = false, successfulObservationCount = 0),
+                                timeProvider.now(),
+                            )
+                        }
+                    }
+                }
             }
             if (RaidIntentKind.REWARD in observation.globalActions) {
                 return RaidDirective.Execute(
@@ -844,6 +852,70 @@ class DefaultRaidCycleModule(
                 "두 번째 보상 요청도 결과를 확정하지 못해 이 레이드 보상만 수동 확인으로 보류합니다.",
             )
         }
+    }
+
+    private fun observeIncompleteRewardWindow(
+        accountId: Long,
+        configuration: RaidCycleConfiguration,
+        cycle: RaidCycleSnapshot,
+    ): RaidDirective.Hold {
+        val now = timeProvider.now()
+        val existing = cycle.rewardRecovery
+        val current = if (existing?.kind == RaidRewardRecoveryKind.WINDOW_OBSERVATION) {
+            existing.copy(successfulObservationCount = existing.successfulObservationCount + 1)
+        } else {
+            RaidRewardRecovery(
+                executionIdentity = null,
+                firstAmbiguousAt = now,
+                successfulObservationCount = 1,
+                retryCount = existing?.retryCount ?: 0,
+                kind = RaidRewardRecoveryKind.WINDOW_OBSERVATION,
+            )
+        }
+        val held = current.successfulObservationCount >= MAX_REWARD_OBSERVATIONS ||
+            !now.isBefore(current.firstAmbiguousAt.plusSeconds(MAX_REWARD_OBSERVATION_SECONDS))
+        val updated = current.copy(held = held)
+        store.saveRewardRecovery(accountId, cycle.raidId, updated, now)
+        if (held) return rewardHeldDirective(configuration, cycle, updated)
+        return RaidDirective.Hold(
+            reason = RaidHoldReason.ACTION_UNAVAILABLE,
+            message = "보상 확인 가능 상태를 POST 없이 다시 관측합니다. " +
+                "성공 관측 ${updated.successfulObservationCount}/$MAX_REWARD_OBSERVATIONS",
+            recheckAt = now.plusSeconds(SAFETY_RECHECK_SECONDS),
+            entryId = configuration.entryId,
+            raidId = cycle.raidId,
+            reasonCode = "RAID_REWARD_WINDOW_INCOMPLETE",
+            diagnosticKind = AutomationDiagnosticKind.RAID_REWARD_RESULT_RECHECK,
+            impactScope = AutomationImpactScope.RAID_ONLY,
+            releaseCondition = "최대 5회 또는 2분 안에 최신 보상 가능 상태를 완전하게 관측",
+        )
+    }
+
+    private fun rewardHeldDirective(
+        configuration: RaidCycleConfiguration,
+        cycle: RaidCycleSnapshot,
+        recovery: RaidRewardRecovery,
+    ): RaidDirective.Hold = when (recovery.kind) {
+        RaidRewardRecoveryKind.WINDOW_OBSERVATION -> RaidDirective.Hold(
+            reason = RaidHoldReason.ACTION_UNAVAILABLE,
+            message = "보상 가능 상태를 제한된 관측 예산 안에 확정하지 못해 이 레이드 보상만 보류합니다.",
+            entryId = configuration.entryId,
+            raidId = cycle.raidId,
+            reasonCode = "RAID_REWARD_OBSERVATION_HELD",
+            diagnosticKind = AutomationDiagnosticKind.RAID_REWARD_OBSERVATION_HELD,
+            impactScope = AutomationImpactScope.RAID_ONLY,
+            releaseCondition = "외부 보상 상태 변경 또는 수동 확인 뒤 새 판단",
+        )
+        RaidRewardRecoveryKind.ACTION_RESULT -> RaidDirective.Hold(
+            reason = RaidHoldReason.ACTION_UNAVAILABLE,
+            message = "두 번째 보상 요청도 결과를 확정하지 못해 이 레이드 보상만 수동 확인으로 보류합니다.",
+            entryId = configuration.entryId,
+            raidId = cycle.raidId,
+            reasonCode = "RAID_REWARD_RESULT_HELD",
+            diagnosticKind = AutomationDiagnosticKind.RAID_REWARD_RESULT_HELD,
+            impactScope = AutomationImpactScope.RAID_ONLY,
+            releaseCondition = "수동 확인 또는 외부 상태 변경 뒤 새 판단",
+        )
     }
 
     private fun decideBattleRecovery(
