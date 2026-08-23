@@ -12,6 +12,7 @@ class RaidAutomationPropertiesTest {
 
         assertEquals(Duration.ofSeconds(120), properties.fallbackCooldown)
         assertEquals(true, properties.fallbackEnforcementEnabled)
+        assertEquals(false, properties.fixtureProbeEnabled)
     }
 
     @Test

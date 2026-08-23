@@ -7,6 +7,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties
 data class RaidAutomationProperties(
     val fallbackCooldown: Duration = Duration.ofSeconds(120),
     val fallbackEnforcementEnabled: Boolean = true,
+    val fixtureProbeEnabled: Boolean = false,
 ) {
     init {
         require(!fallbackCooldown.isZero && !fallbackCooldown.isNegative) {

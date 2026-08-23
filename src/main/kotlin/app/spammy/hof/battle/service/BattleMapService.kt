@@ -62,6 +62,7 @@ class BattleMapService(
     private val battleMapParser: BattleMapParser,
     private val catalogService: BattleMapCatalogService,
     private val loginStateParser: LoginStateParser,
+    private val raidCooldownFixtureProbe: RaidCooldownFixtureProbe = RaidCooldownFixtureProbe.Disabled,
 ) {
     private val log = LoggerFactory.getLogger(BattleMapService::class.java)
 
@@ -109,6 +110,9 @@ class BattleMapService(
         if (snapshot.observations.isNotEmpty()) {
             val raidCooldown = snapshot.takeIf { it.category == BattleCategoryId.RAID }
                 ?.let { battleMapParser.inspectRaidCooldown(it.responseBody, it.observations) }
+            if (raidCooldown != null) {
+                raidCooldownFixtureProbe.capture(snapshot.responseBody, raidCooldown)
+            }
             if (raidCooldown?.incomplete == true) {
                 log.warn(
                     "Raid cooldown observation incomplete accountId={} reasonCode={} candidateCount={} mapCount={} " +
