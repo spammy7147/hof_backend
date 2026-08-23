@@ -284,7 +284,6 @@ pipeline {
                                 --mount "type=bind,src=$RELEASE_HOST_DIR,dst=$RELEASE_CONTAINER_DIR,readonly" \
                                 --env "GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/firebase-service-account.json" \
                                 --env "HOF_RELEASE_STORAGE_ROOT=$RELEASE_CONTAINER_DIR" \
-                                --env "HOF_AUTOMATION_RAID_FIXTURE_PROBE_ENABLED=true" \
                                 --env "SERVER_FORWARD_HEADERS_STRATEGY=$SERVER_FORWARD_HEADERS_STRATEGY" \
                                 --restart unless-stopped \
                                 "$IMAGE" >/dev/null; then
