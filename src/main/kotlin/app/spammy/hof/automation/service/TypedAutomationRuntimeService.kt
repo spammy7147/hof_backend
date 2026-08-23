@@ -245,6 +245,13 @@ class TypedAutomationRuntimeService(
                 outcome.wakeReason,
                 outcome.warnings,
             ).projection()
+            is TypedRuntimeOutcome.BattleGateBlocked -> supersedeAction(
+                right.accountId,
+                right.leaseToken,
+                right.requireActionId(),
+                outcome.warning,
+                outcome.wakeReason,
+            ).projection()
             is TypedRuntimeOutcome.SubmissionDeferred -> deferSubmittedAction(
                 right.accountId,
                 right.leaseToken,

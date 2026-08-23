@@ -65,6 +65,10 @@ sealed interface TypedRuntimeOutcome {
         val wakeReason: String = "TYPED_SHARED_COOLDOWN_SKIPPED",
         val warnings: List<String>? = emptyList(),
     ) : TypedRuntimeOutcome
+    data class BattleGateBlocked(
+        val warning: String,
+        val wakeReason: String,
+    ) : TypedRuntimeOutcome
     data class SubmissionDeferred(val retryAt: Instant, val message: String) : TypedRuntimeOutcome
     data class SubmissionAmbiguous(val message: String) : TypedRuntimeOutcome
     data class ReconciliationApplied(val wakeReason: String) : TypedRuntimeOutcome

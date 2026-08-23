@@ -247,6 +247,21 @@ class AutomationActionConvergenceModuleTest {
         assertIs<ConvergenceDirective.Submit>(module.prepare(7L, battleSelection("map-entry-after")))
     }
 
+    @Test
+    fun `수렴 시도가 없는 전투 캡차도 관문을 열고 저장 전투 재사용을 막는다`() {
+        assertIs<ConvergenceDirective.BattleGateWait>(
+            module.requireBattleGate(
+                accountId = 7L,
+                challengeId = 45L,
+                reason = "CAPTCHA_REQUIRED",
+                capturedAt = clock.now(),
+            ),
+        )
+
+        assertIs<ConvergenceDirective.BattleGateWait>(module.prepare(7L, battleSelection("map-shadow")))
+        assertIs<ConvergenceDirective.Submit>(module.prepare(7L, questSelection("quest-shadow")))
+    }
+
     private fun questSelection(key: String) = SelectedAutomationAction(
         entryId = 12L,
         executionIdentity = "execution-$key",

@@ -156,6 +156,9 @@ class AutomationTargetSelectorTest {
                 AutomationConvergenceSelectionConstraints(emptySet(), battleGateActive = true)
             },
             convergenceSelectionFactory = StoredActionConvergenceSelectionFactory(),
+            convergenceRollout = AutomationConvergenceRollout(
+                AutomationConvergenceProperties(mode = AutomationConvergenceMode.SHADOW),
+            ),
         )
         Mockito.`when`(work.findRunning(7)).thenReturn(null)
         Mockito.`when`(work.findWaiting(7)).thenReturn(emptyList())

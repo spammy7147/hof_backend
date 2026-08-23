@@ -124,6 +124,27 @@ class TypedAutomationLifecycleBridge(
     }
 
     @Transactional(propagation = Propagation.MANDATORY)
+    fun wakeFreshAfterCaptcha(accountId: Long, wakeReason: String): Boolean {
+        accounts.findByIdForUpdate(accountId) ?: error("Account $accountId does not exist.")
+        val state = typed.lockRuntimeState(accountId) ?: return false
+        if (state.lifecycleStatus != TypedAutomationLifecycle.RUNNING) return false
+        val now = timeProvider.now()
+        when (discardActiveBattleActionAfterCaptcha(accountId, now)) {
+            CaptchaActionDisposition.BATTLE_DISCARDED -> clearRuntime(state, now)
+            CaptchaActionDisposition.NO_ACTIVE_ACTION -> {
+                state.nextAttemptAt = null
+                state.waitReason = null
+                state.updatedAt = now
+            }
+            CaptchaActionDisposition.NON_BATTLE_PRESERVED -> Unit
+        }
+        clearPreflight(accountId, now)
+        makeParkedRaidCheckDue(accountId, now)
+        outbox.enqueue(accountId, wakeReason)
+        return true
+    }
+
+    @Transactional(propagation = Propagation.MANDATORY)
     fun stop(accountId: Long, reason: AutomationStopReason, wakeReason: String) {
         require(reason == AutomationStopReason.MANUAL_STOP) {
             "Only an explicit user request may stop typed automation."
@@ -190,6 +211,34 @@ class TypedAutomationLifecycleBridge(
         action.updatedAt = now
     }
 
+    private fun discardActiveBattleActionAfterCaptcha(
+        accountId: Long,
+        now: java.time.Instant,
+    ): CaptchaActionDisposition {
+        val active = typed.findActiveTypedAction(accountId)
+            ?: return CaptchaActionDisposition.NO_ACTIVE_ACTION
+        if (active.actionKind !in BATTLE_ACTION_KINDS) {
+            return CaptchaActionDisposition.NON_BATTLE_PRESERVED
+        }
+        val action = typed.lockTypedAction(active.id)
+            ?.takeIf {
+                it.account.id == accountId &&
+                    it.actionKind in BATTLE_ACTION_KINDS &&
+                    it.status in setOf(
+                        TypedAutomationActionStatus.PREPARED,
+                        TypedAutomationActionStatus.SUBMITTING,
+                        TypedAutomationActionStatus.RECONCILING,
+                    )
+            }
+            ?: return CaptchaActionDisposition.NO_ACTIVE_ACTION
+        action.status = TypedAutomationActionStatus.FAILED
+        action.nextAttemptAt = null
+        action.lastError = "캡차 해소 뒤 저장된 전투를 종료했습니다. 최신 HOF 상태에서 다시 판단합니다."
+        action.finishedAt = now
+        action.updatedAt = now
+        return CaptchaActionDisposition.BATTLE_DISCARDED
+    }
+
     private fun clearRuntime(state: TypedAutomationRuntimeStateEntity, now: java.time.Instant) {
         state.stopReason = null
         state.stopActionId = null
@@ -244,5 +293,15 @@ class TypedAutomationLifecycleBridge(
                 session.updatedAt = now
                 workSessionCommands.save(session)
             }
+    }
+
+    private companion object {
+        enum class CaptchaActionDisposition {
+            BATTLE_DISCARDED,
+            NON_BATTLE_PRESERVED,
+            NO_ACTIVE_ACTION,
+        }
+
+        val BATTLE_ACTION_KINDS = setOf("QUEST_BATTLE", "BATTLE_MAP", "ADVENTURE_MAP")
     }
 }

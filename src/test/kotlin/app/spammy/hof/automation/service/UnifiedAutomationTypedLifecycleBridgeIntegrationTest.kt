@@ -390,6 +390,76 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
     }
 
     @Test
+    fun `captcha answer wakes running runtime for a fresh decision`() {
+        val accountId = seed("captcha-running-wake")
+        TransactionTemplate(transactionManager).executeWithoutResult {
+            entityManager.createNativeQuery(
+                "update typed_automation_action_runs set status = 'RECONCILING', finished_at = null, " +
+                    "lease_token = 'captcha-lease' where account_id = ?1",
+            ).setParameter(1, accountId).executeUpdate()
+            entityManager.createNativeQuery(
+                "update typed_automation_runtime_states set lifecycle_status = 'RUNNING', " +
+                    "stop_reason = null, stop_action_id = null, next_attempt_at = ?1, " +
+                    "wait_reason = 'SCHEDULED', lease_token = 'captcha-lease', lease_until = ?2 " +
+                    "where account_id = ?3",
+            ).setParameter(1, NOW.plusSeconds(300))
+                .setParameter(2, NOW.plusSeconds(60))
+                .setParameter(3, accountId)
+                .executeUpdate()
+        }
+
+        val woken = TransactionTemplate(transactionManager).execute {
+            bridge.wakeFreshAfterCaptcha(accountId, "CAPTCHA_ANSWERED")
+        }
+
+        assertTrue(requireNotNull(woken))
+        val state = requireNotNull(typedQuery.findRuntimeState(accountId))
+        assertEquals(TypedAutomationLifecycle.RUNNING, state.lifecycleStatus)
+        assertNull(state.nextAttemptAt)
+        assertNull(state.waitReason)
+        assertNull(state.leaseToken)
+        assertNull(state.leaseUntil)
+        assertNull(typedQuery.findActiveTypedAction(accountId))
+        val actionStatus = TransactionTemplate(transactionManager).execute {
+            entityManager.createNativeQuery(
+                "select status from typed_automation_action_runs where account_id = ?1",
+            ).setParameter(1, accountId).singleResult.toString()
+        }
+        assertEquals(TypedAutomationActionStatus.FAILED.name, actionStatus)
+        val events = outboxQuery.findUnpublished(NOW.plusSeconds(1)).filter { it.account.id == accountId }
+        assertEquals(1, events.size)
+        assertTrue(events.single().payload.contains("\"reason\":\"CAPTCHA_ANSWERED\""))
+    }
+
+    @Test
+    fun `captcha answer preserves an active non battle action`() {
+        val accountId = seed("captcha-running-non-battle")
+        TransactionTemplate(transactionManager).executeWithoutResult {
+            entityManager.createNativeQuery(
+                "update typed_automation_action_runs set action_kind = 'QUEST_CLAIM', status = 'RECONCILING', " +
+                    "finished_at = null, lease_token = 'non-battle-lease' where account_id = ?1",
+            ).setParameter(1, accountId).executeUpdate()
+            entityManager.createNativeQuery(
+                "update typed_automation_runtime_states set lifecycle_status = 'RUNNING', stop_reason = null, " +
+                    "stop_action_id = null, next_attempt_at = ?1, wait_reason = 'SCHEDULED', " +
+                    "lease_token = null, lease_until = null where account_id = ?2",
+            ).setParameter(1, NOW.plusSeconds(300)).setParameter(2, accountId).executeUpdate()
+        }
+
+        val woken = TransactionTemplate(transactionManager).execute {
+            bridge.wakeFreshAfterCaptcha(accountId, "CAPTCHA_ANSWERED")
+        }
+
+        assertTrue(requireNotNull(woken))
+        val state = requireNotNull(typedQuery.findRuntimeState(accountId))
+        assertEquals(NOW.plusSeconds(300), state.nextAttemptAt)
+        assertEquals(AutomationWaitReason.SCHEDULED, state.waitReason)
+        assertNull(state.leaseToken)
+        assertNull(state.leaseUntil)
+        assertEquals("QUEST_CLAIM", requireNotNull(typedQuery.findActiveTypedAction(accountId)).actionKind)
+    }
+
+    @Test
     fun `captcha answer never resumes network manual or authentication stops`() {
         listOf(
             AutomationStopReason.NETWORK,

@@ -30,6 +30,7 @@ import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
 import app.spammy.hof.battle.dto.BattlePatternLoadRequest
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
+import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.client.HofAutomationDeferredException
 import app.spammy.hof.quest.model.QuestState
 import java.time.Instant
@@ -1223,8 +1224,106 @@ class UnifiedAutomationRunnerTest {
         scoped.runOne(7)
 
         assertIs<AutomationActionEvidence.BattleGateRequired>(convergenceEvidence(convergence, 99L))
-        assertIs<TypedRuntimeOutcome.AmbiguousHandoff>(capturedOutcome())
+        assertIs<TypedRuntimeOutcome.BattleGateBlocked>(capturedOutcome())
         Mockito.verifyNoInteractions(wakeup)
+    }
+
+    @Test
+    fun `SHADOW 전투 캡차도 저장 행동을 종료하고 계정 전투 gate를 연다`() {
+        val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
+        val shadow = Mockito.mock(AutomationConvergenceShadowEvaluator::class.java)
+        val factory = StoredActionConvergenceSelectionFactory()
+        val stored = raidStoredAction()
+        val prepared = executionRight(
+            TypedRuntimeCheckpoint(stored, TypedRuntimeCheckpointPhase.PREPARED, null, null),
+        )
+        Mockito.`when`(decisions.select(7L)).thenReturn(
+            AutomationCoordination.Runnable(12L, legacyBattleAction(), emptyList()),
+        )
+        Mockito.`when`(managed.storedAction).thenReturn(stored)
+        Mockito.`when`(runtime.persistPrepared(anyExecution(), anyStoredAction(), anyWarnings()))
+            .thenReturn(TypedRuntimePreparation.Ready(prepared))
+        Mockito.`when`(runtime.beginSubmission(prepared))
+            .thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
+        Mockito.`when`(
+            convergence.requireBattleGate(7L, null, ErrorCode.CAPTCHA_REQUIRED.name, Instant.EPOCH),
+        ).thenReturn(ConvergenceDirective.BattleGateWait(Instant.EPOCH, ErrorCode.CAPTCHA_REQUIRED.name))
+        Mockito.doThrow(ApiException(ErrorCode.CAPTCHA_REQUIRED, "captcha")).`when`(managed).execute()
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            convergenceModule = convergence,
+            convergenceSelectionFactory = factory,
+            timeProvider = TimeProvider { Instant.EPOCH },
+            rollout = AutomationConvergenceRollout(
+                AutomationConvergenceProperties(mode = AutomationConvergenceMode.SHADOW),
+            ),
+            shadowEvaluator = shadow,
+            evidenceInterpreter = productionEvidenceInterpreter,
+        )
+
+        scoped.runOne(7L)
+
+        Mockito.verify(convergence).requireBattleGate(
+            7L,
+            null,
+            ErrorCode.CAPTCHA_REQUIRED.name,
+            Instant.EPOCH,
+        )
+        val (evidence, decision) = shadowObservation(shadow, stored.executionIdentity)
+        assertIs<AutomationActionEvidence.BattleGateRequired>(evidence)
+        assertEquals(LegacyConvergenceDecision.HELD, decision)
+        assertIs<TypedRuntimeOutcome.BattleGateBlocked>(capturedOutcome())
+    }
+
+    @Test
+    fun `LEGACY 전투 캡차도 저장 행동을 종료하고 계정 전투 gate를 연다`() {
+        val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
+        val factory = StoredActionConvergenceSelectionFactory()
+        val stored = raidStoredAction()
+        val prepared = executionRight(
+            TypedRuntimeCheckpoint(stored, TypedRuntimeCheckpointPhase.PREPARED, null, null),
+        )
+        Mockito.`when`(decisions.select(7L)).thenReturn(
+            AutomationCoordination.Runnable(12L, legacyBattleAction(), emptyList()),
+        )
+        Mockito.`when`(managed.storedAction).thenReturn(stored)
+        Mockito.`when`(runtime.persistPrepared(anyExecution(), anyStoredAction(), anyWarnings()))
+            .thenReturn(TypedRuntimePreparation.Ready(prepared))
+        Mockito.`when`(runtime.beginSubmission(prepared))
+            .thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
+        Mockito.`when`(
+            convergence.requireBattleGate(7L, null, ErrorCode.CAPTCHA_REQUIRED.name, Instant.EPOCH),
+        ).thenReturn(ConvergenceDirective.BattleGateWait(Instant.EPOCH, ErrorCode.CAPTCHA_REQUIRED.name))
+        Mockito.doThrow(ApiException(ErrorCode.CAPTCHA_REQUIRED, "captcha")).`when`(managed).execute()
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            convergenceModule = convergence,
+            convergenceSelectionFactory = factory,
+            timeProvider = TimeProvider { Instant.EPOCH },
+            rollout = AutomationConvergenceRollout(
+                AutomationConvergenceProperties(mode = AutomationConvergenceMode.LEGACY),
+            ),
+        )
+
+        scoped.runOne(7L)
+
+        Mockito.verify(convergence).requireBattleGate(
+            7L,
+            null,
+            ErrorCode.CAPTCHA_REQUIRED.name,
+            Instant.EPOCH,
+        )
+        assertIs<TypedRuntimeOutcome.BattleGateBlocked>(capturedOutcome())
     }
 
     @Test
@@ -1264,7 +1363,7 @@ class UnifiedAutomationRunnerTest {
         scoped.runOne(7L)
 
         assertIs<AutomationActionEvidence.BattleGateRequired>(convergenceEvidence(convergence, 110L))
-        assertIs<TypedRuntimeOutcome.PreparedDiscarded>(capturedOutcome())
+        assertIs<TypedRuntimeOutcome.BattleGateBlocked>(capturedOutcome())
         Mockito.verify(managed, Mockito.never()).execute()
         Mockito.verify(runtime, Mockito.never()).beginSubmission(anyExecution())
     }

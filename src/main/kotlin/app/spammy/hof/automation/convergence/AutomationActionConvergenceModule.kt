@@ -18,6 +18,12 @@ interface AutomationActionConvergenceModule {
         scope: AutomationIsolationScope,
         resolvedAt: Instant,
     ): Boolean
+    fun requireBattleGate(
+        accountId: Long,
+        challengeId: Long?,
+        reason: String,
+        capturedAt: Instant,
+    ): ConvergenceDirective.BattleGateWait
     fun resumeDue(accountId: Long): ConvergenceDirective
     fun releaseBattleGate(accountId: Long, resolvedAt: Instant): Boolean
     fun allowFreshDecision(accountId: Long, attemptId: Long, allowedAt: Instant): Boolean
@@ -175,6 +181,16 @@ class DefaultAutomationActionConvergenceModule(
             ),
         )
         return true
+    }
+
+    override fun requireBattleGate(
+        accountId: Long,
+        challengeId: Long?,
+        reason: String,
+        capturedAt: Instant,
+    ): ConvergenceDirective.BattleGateWait {
+        val gate = store.openBattleGate(accountId, challengeId, reason, capturedAt)
+        return ConvergenceDirective.BattleGateWait(gate.openedAt, gate.reason)
     }
 
     override fun resumeDue(accountId: Long): ConvergenceDirective {

@@ -402,6 +402,50 @@ class UnifiedAutomationRunner @Autowired constructor(
                 ))
             }
         }
+        fun closeBattleForCaptcha(error: Throwable): Boolean {
+            val captcha = error.findCaptchaRequired() ?: return false
+            val selection = convergenceSelection
+                ?: evidenceSelection
+                ?: convergenceSelectionFactory?.create(stored)
+                ?: return false
+            if (!selection.actionKind.battle) return false
+            val convergence = convergenceModule ?: return false
+            val evidence = AutomationActionEvidence.BattleGateRequired(
+                capturedAt = now(),
+                challengeId = null,
+                reason = ErrorCode.CAPTCHA_REQUIRED.name,
+            )
+            val directive = convergenceAttemptId?.let { attemptId ->
+                convergence.record(attemptId, evidence)
+            } ?: convergence.requireBattleGate(
+                accountId = accountId,
+                challengeId = null,
+                reason = ErrorCode.CAPTCHA_REQUIRED.name,
+                capturedAt = evidence.capturedAt,
+            )
+            observeShadow(
+                accountId,
+                stored.executionIdentity,
+                evidence,
+                LegacyConvergenceDecision.HELD,
+            )
+            typedRuntime.complete(
+                execution,
+                TypedRuntimeOutcome.BattleGateBlocked(
+                    warning = captcha.message,
+                    wakeReason = TYPED_BATTLE_GATE_WAKE_REASON,
+                ),
+            )
+            decisionCycleId?.let { cycleId -> runCatching {
+                decisionJournal?.appendActionResult(cycleId, trace(
+                    AutomationHistoryEventKind.WAITING,
+                    ErrorCode.CAPTCHA_REQUIRED.name,
+                    "캡차가 해결될 때까지 전투만 보류하고 저장된 전투는 폐기합니다.",
+                ))
+            } }
+            scheduleConvergenceDirective(accountId, directive)
+            return true
+        }
         if (decisionCycleId == null) {
             decisionCycleId = try {
                 val reconciling = activeCheckpoint.phase == TypedRuntimeCheckpointPhase.RECONCILING
@@ -656,31 +700,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             }
             return
         } catch (error: Throwable) {
-            val captcha = error.findCaptchaRequired()
-            if (
-                captcha != null &&
-                convergenceAttemptId != null &&
-                convergenceActive() &&
-                convergenceSelection?.actionKind?.battle == true
-            ) {
-                val directive = convergenceModule?.record(
-                    requireNotNull(convergenceAttemptId),
-                    AutomationActionEvidence.BattleGateRequired(
-                        capturedAt = now(),
-                        challengeId = null,
-                        reason = ErrorCode.CAPTCHA_REQUIRED.name,
-                    ),
-                )
-                typedRuntime.complete(
-                    execution,
-                    TypedRuntimeOutcome.PreparedDiscarded(
-                        warning = captcha.message,
-                        wakeReason = TYPED_BATTLE_GATE_WAKE_REASON,
-                    ),
-                )
-                if (directive != null) scheduleConvergenceDirective(accountId, directive)
-                return
-            }
+            if (closeBattleForCaptcha(error)) return
             val message = error.message ?: "제출 직전 최신 상태 확인에 실패했습니다."
             val evidence = AutomationActionEvidence.NetworkFailure(now(), message)
             val directive = convergenceAttemptId?.let { attemptId ->
@@ -912,45 +932,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                 directive?.let { scheduleConvergenceDirective(accountId, it) }
                 return
             }
-            val captcha = error.findCaptchaRequired()
-            if (
-                captcha != null &&
-                convergenceAttemptId != null &&
-                convergenceActive() &&
-                convergenceSelection?.actionKind?.battle == true
-            ) {
-                val directive = convergenceModule?.record(
-                    requireNotNull(convergenceAttemptId),
-                    AutomationActionEvidence.BattleGateRequired(
-                        capturedAt = now(),
-                        challengeId = null,
-                        reason = ErrorCode.CAPTCHA_REQUIRED.name,
-                    ),
-                )
-                if (directive != null) {
-                    typedRuntime.complete(
-                        execution,
-                        TypedRuntimeOutcome.AmbiguousHandoff(
-                            warning = captcha.message,
-                            wakeReason = TYPED_BATTLE_GATE_WAKE_REASON,
-                        ),
-                    )
-                    scheduleConvergenceDirective(accountId, directive)
-                    return
-                }
-            }
-            if (captcha != null) {
-                observeShadow(
-                    accountId,
-                    stored.executionIdentity,
-                    AutomationActionEvidence.BattleGateRequired(
-                        capturedAt = now(),
-                        challengeId = null,
-                        reason = ErrorCode.CAPTCHA_REQUIRED.name,
-                    ),
-                    LegacyConvergenceDecision.HELD,
-                )
-            }
+            if (closeBattleForCaptcha(error)) return
             error.findHofAutomationDeferral()?.let { deferred ->
                 val evidence = AutomationActionEvidence.NetworkFailure(
                     capturedAt = now(),

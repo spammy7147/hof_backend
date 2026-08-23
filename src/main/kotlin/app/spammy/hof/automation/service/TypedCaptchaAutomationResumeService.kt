@@ -10,5 +10,6 @@ class TypedCaptchaAutomationResumeService(
 ) {
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun resumeAfterCaptcha(accountId: Long): Boolean =
-        lifecycleBridge.resumeIfStoppedForCaptcha(accountId, "CAPTCHA_ANSWERED")
+        lifecycleBridge.resumeIfStoppedForCaptcha(accountId, "CAPTCHA_ANSWERED") ||
+            lifecycleBridge.wakeFreshAfterCaptcha(accountId, "CAPTCHA_ANSWERED")
 }

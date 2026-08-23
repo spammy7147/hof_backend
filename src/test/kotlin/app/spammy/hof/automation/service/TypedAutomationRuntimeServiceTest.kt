@@ -167,7 +167,7 @@ class TypedAutomationRuntimeServiceTest {
     }
 
     @Test
-    fun `retryable submitted failure preserves action for authoritative reconciliation`() {
+    fun `전투 캡차는 저장 행동을 종료하고 전투 관문 판단을 즉시 깨운다`() {
         val state = state()
         val fixture = action(TypedAutomationActionStatus.PREPARED)
         val execution = acquire(state, fixture.row)
@@ -175,16 +175,18 @@ class TypedAutomationRuntimeServiceTest {
 
         val projection = service.complete(
             execution,
-            TypedRuntimeOutcome.RetryableFailure(
-                AutomationStopReason.CAPTCHA,
-                "captcha",
+            TypedRuntimeOutcome.BattleGateBlocked(
+                warning = "captcha",
+                wakeReason = "TYPED_BATTLE_GATE",
             ),
         )
 
-        assertEquals(now.plusSeconds(10), projection.nextAttemptAt)
-        assertEquals(TypedAutomationActionStatus.RECONCILING, fixture.row.status)
-        assertEquals(AutomationStopReason.CAPTCHA.name, state.stopReason)
+        assertNull(projection.nextAttemptAt)
+        assertEquals(TypedAutomationActionStatus.FAILED, fixture.row.status)
+        assertEquals(now, fixture.row.finishedAt)
+        assertNull(state.stopReason)
         assertEquals(TypedAutomationLifecycle.RUNNING, state.lifecycleStatus)
+        Mockito.verify(outbox).enqueue(7L, "TYPED_BATTLE_GATE")
     }
 
     @Test

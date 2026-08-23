@@ -320,10 +320,12 @@ class AutomationTargetSelector(
         entryId: Long,
         action: PreparedAutomationAction,
     ): Boolean {
-        if (convergenceRollout?.active == false) return false
         val guard = convergenceGuard ?: return false
         val factory = convergenceSelectionFactory ?: return false
         val preview = factory.preview(entryId, action)
+        val constraints = guard.constraints(accountId)
+        if (constraints.battleGateActive && preview.actionKind.battle) return true
+        if (convergenceRollout?.active == false) return false
         if (convergenceRollout?.active == true) {
             convergenceModule?.resolveObservationGap(accountId, preview.scope, timeProvider.now())
         }
