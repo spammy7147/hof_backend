@@ -115,13 +115,13 @@ class ActionEvidencePoliciesTest {
     }
 
     @Test
-    fun `유니온 맵 소멸은 superseded지만 개인 쿨다운 시작은 applied다`() {
+    fun `terminal round 없는 유니온 맵 소멸과 개인 쿨다운은 superseded다`() {
         val selection = selection(AutomationActionKind.UNION_BATTLE, "union-entry")
 
         assertIs<AutomationActionEvidence.StateAdvanced>(
             policies.evaluate(selection, fresh(UnionObservedState("gone", mapPresent = false, personalCooldown = false))),
         )
-        assertIs<AutomationActionEvidence.DirectApplied>(
+        assertIs<AutomationActionEvidence.StateAdvanced>(
             policies.evaluate(selection, fresh(UnionObservedState("cooldown", mapPresent = true, personalCooldown = true))),
         )
         assertIs<AutomationActionEvidence.SameState>(
@@ -174,10 +174,10 @@ class ActionEvidencePoliciesTest {
     }
 
     @Test
-    fun `참여 중인 레이드의 개인 쿨다운은 내 전투 적용 증거다`() {
+    fun `terminal round 없는 레이드 개인 쿨다운은 내 전투 적용 증거가 아니다`() {
         val battle = selection(AutomationActionKind.RAID_BATTLE, "raid-battle")
 
-        assertIs<AutomationActionEvidence.DirectApplied>(
+        assertIs<AutomationActionEvidence.StateAdvanced>(
             policies.evaluate(
                 battle,
                 fresh(RaidObservedState("cooldown", joined = true, sharedStatus = "IN_BATTLE", personalCooldown = true)),

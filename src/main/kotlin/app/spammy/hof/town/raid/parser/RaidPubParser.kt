@@ -31,12 +31,17 @@ class RaidPubParser {
                 parsed
             }
         }
-        val forms = doc.select("form").filter { form ->
+        val contents = doc.selectFirst("#contents") ?: return empty(normalizedResult)
+        val forms = contents.select("form").filter { form ->
             form.attr("method").equals("post", true) &&
                 form.attr("action").contains("raidpub", true) && safeRaidPubUrl(resolve(finalUrl, form.attr("action")))
         }
         if (forms.size != 1) return empty(normalizedResult)
         val form = forms.single()
+        if (
+            form.select("a[href*=raidlog]").size != 1 ||
+            !hasCompletePageTerminator(doc)
+        ) return empty(normalizedResult)
         val submitControlCounts = form.children()
             .filter { it.tagName() in setOf("input", "button") && isSubmit(it) }
             .map { control ->
@@ -83,6 +88,16 @@ class RaidPubParser {
             current?.appendText(nodeText(node))
         }
         flush()
+
+        val declaredCodes = form.select("h4 a[name^=Raid]")
+            .filter { anchor -> anchor.closest("form") === form }
+            .map { anchor -> anchor.attr("name").trim() }
+        if (
+            declaredCodes.size > MAX_RAIDS ||
+            declaredCodes.any { code -> !RAID_CODE.matches(code) } ||
+            declaredCodes.distinct().size != declaredCodes.size ||
+            sections.map(MutableRaid::code) != declaredCodes
+        ) return empty(normalizedResult)
 
         val pageText = clean(doc.text()).take(MAX_PAGE_TEXT)
         val playerName = PLAYER_NAME.find(pageText)?.groupValues
@@ -142,6 +157,7 @@ class RaidPubParser {
                 rewardWaitSeconds = rewardWait,
             )
         }
+        if (raids.size != sections.size) return empty(normalizedResult)
         val applyWaiting = APPLY_WAIT_STATE.containsMatchIn(pageText)
         val applyWait = APPLY_WAIT.find(pageText)?.let(::boundedDurationSeconds)
         return RaidPubSnapshot(
@@ -153,11 +169,17 @@ class RaidPubParser {
             globalActions = global.keys,
             result = normalizedResult,
             globalActionIds = global,
-            observedRaidPubForm = true,
+            pageComplete = true,
         )
     }
 
     private fun empty(result: ParsedTownResult?) = RaidPubSnapshot(emptyList(), false, false, null, null, emptySet(), result, emptyMap(), false)
+    private fun hasCompletePageTerminator(document: org.jsoup.nodes.Document): Boolean =
+        document.select("h5").any { clean(it.text()).contains("copy right", ignoreCase = true) } &&
+            document.select("h6").any { clean(it.text()).contains("h.o.f korean ver", ignoreCase = true) } &&
+            document.select("img[src]").any { image ->
+                image.attr("src").substringBefore('?').substringAfterLast('/').equals("zerohof.gif", true)
+            }
     private fun nodeText(node: Node): String = when (node) { is TextNode -> node.text(); is Element -> node.text(); else -> "" }
     private fun isSubmit(element: Element): Boolean = when (element.tagName()) {
         "button" -> element.attr("type").lowercase().let { it.isBlank() || it == "submit" }

@@ -88,6 +88,32 @@ class ProductionActionEvidenceInterpreterTest {
         )
     }
 
+    @Test
+    fun `레이드와 유니온 전투의 terminal direct response는 action kind와 무관하게 applied다`() {
+        listOf(
+            AutomationActionKind.RAID_BATTLE to AutomationIsolationScopeKind.RAID_ENTRY,
+            AutomationActionKind.UNION_BATTLE to AutomationIsolationScopeKind.UNION_ENTRY,
+        ).forEach { (actionKind, scopeKind) ->
+            val battleSelection = selection.copy(
+                actionKind = actionKind,
+                scope = AutomationIsolationScope(scopeKind, actionKind.name),
+            )
+
+            assertIs<AutomationActionEvidence.DirectApplied>(
+                interpreter.fromExecution(
+                    battleSelection,
+                    TypedAutomationExecution.BattleCompleted(
+                        categoryId = actionKind.name,
+                        mapCode = "target",
+                        terminalOutcomes = listOf("VICTORY", "DEFEAT", "DRAW"),
+                    ),
+                    NOW,
+                ),
+                actionKind.name,
+            )
+        }
+    }
+
     private fun questClaimCompleted() = TypedAutomationExecution.ActionCompleted(
         observedState = QuestObservedState(
             fingerprint = "quest-claim-response",

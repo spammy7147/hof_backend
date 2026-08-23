@@ -91,18 +91,23 @@ class RaidPubService(
                 }
                 TownActionRequest(actionId)
             },
-            acceptsActionResponse = RaidPubSnapshot::observedRaidPubForm,
+            acceptsActionResponse = RaidPubSnapshot::pageComplete,
         ) { html, finalUrl, result, page -> parser.parse(html, finalUrl, page, result) }
-        if (!projected.observedRaidPubForm) invalid("HOF 전투 정보실 양식을 확인하지 못했습니다.")
+        if (!projected.pageComplete) incompletePage()
         rememberAutomationTargets(accountId, projected)
         return RaidPubResponse.from(withBattleAvailability(accountId, projected))
     }
 
     private fun loadRaw(accountId: Long): RaidPubSnapshot = executor.loadProjected(accountId, url()) { html, finalUrl, page ->
         val parsed = parser.parse(html, finalUrl, page)
-        if (!parsed.observedRaidPubForm) invalid("HOF 전투 정보실 양식을 확인하지 못했습니다.")
+        if (!parsed.pageComplete) incompletePage()
         parsed
     }
+
+    private fun incompletePage(): Nothing = throw ApiException(
+        ErrorCode.HOF_REQUEST_FAILED,
+        "HOF 전투 정보실의 완전한 응답을 확인하지 못했습니다.",
+    )
 
     private fun withBattleAvailability(accountId: Long, snapshot: RaidPubSnapshot): RaidPubSnapshot {
         if (snapshot.raids.none { it.playable && it.joined }) return snapshot

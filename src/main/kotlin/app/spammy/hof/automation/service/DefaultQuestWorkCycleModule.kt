@@ -135,6 +135,7 @@ data class QuestAutomationSnapshot(
     val timeSnapshot: AutomationTimeSnapshot? = null,
     val workSessionId: Long? = null,
     val workSessionRevision: Long? = null,
+    val pageComplete: Boolean = true,
 )
 
 internal fun QuestMission.displayLabel(): String {
@@ -599,6 +600,13 @@ class DefaultQuestWorkCycleModule(
         ) {
             return staleProgressRecheck(snapshot)
         }
+        if (!snapshot.pageComplete) {
+            return QuestDirective.Recheck(
+                at = snapshot.now.plusSeconds(INCOMPLETE_PAGE_RECHECK_DELAY_SECONDS),
+                reasonCode = "QUEST_PAGE_INCOMPLETE",
+                message = "퀘스트 목록의 완전성을 확인하지 못해 이 항목을 잠시 뒤 다시 확인합니다.",
+            )
+        }
         reconcileAuthoritativeMapClearProgress(snapshot, work?.mapClearProgress)?.let { return it }
         val next = evaluateRules(snapshot)
         if (next is QuestDirective.Hold && work != null) {
@@ -663,7 +671,7 @@ class DefaultQuestWorkCycleModule(
     }
 
     private fun staleProgressRecheck(snapshot: QuestAutomationSnapshot) = QuestDirective.Recheck(
-        at = snapshot.now,
+        at = snapshot.now.plusSeconds(STALE_RECHECK_DELAY_SECONDS),
         reasonCode = "QUEST_PROGRESS_STALE",
         message = "퀘스트 진행 상태가 판단 중 변경되어 최신 상태를 즉시 다시 확인합니다.",
     )
@@ -733,8 +741,10 @@ class DefaultQuestWorkCycleModule(
         attempt: QuestAttempt.Accept,
         observation: QuestResultObservation,
     ): QuestRecordResult {
-        val quests = (observation as? QuestResultObservation.Page)?.quests
+        val page = observation as? QuestResultObservation.Page
             ?: return QuestRecordResult.NeedsRecheck("Quest accept requires an authoritative quest page.")
+        if (!page.complete) return QuestRecordResult.NeedsRecheck("Quest accept page is incomplete.")
+        val quests = page.quests
         val quest = quests.singleOrNull { it.questKey == attempt.questKey }
             ?: return QuestRecordResult.NeedsRecheck(
                 "Quest ${attempt.questKey} is absent from the authoritative page.",
@@ -754,8 +764,10 @@ class DefaultQuestWorkCycleModule(
         attempt: QuestAttempt.Claim,
         observation: QuestResultObservation,
     ): QuestRecordResult {
-        val quests = (observation as? QuestResultObservation.Page)?.quests
+        val page = observation as? QuestResultObservation.Page
             ?: return QuestRecordResult.NeedsRecheck("Quest claim requires an authoritative quest page.")
+        if (!page.complete) return QuestRecordResult.NeedsRecheck("Quest claim page is incomplete.")
+        val quests = page.quests
         val quest = quests.singleOrNull { it.questKey == attempt.questKey }
             ?: return QuestRecordResult.Recorded()
         return when {
@@ -773,6 +785,9 @@ class DefaultQuestWorkCycleModule(
         observation: QuestResultObservation,
     ): QuestRecordResult {
         if (observation is QuestResultObservation.Page) {
+            if (!observation.complete) {
+                return QuestRecordResult.NeedsRecheck("Quest battle page is incomplete.")
+            }
             return recordBattleFromQuestPage(accountId, attempt, observation.quests)
         }
         val outcomes = (observation as? QuestResultObservation.BattleRounds)?.outcomes
@@ -1134,6 +1149,8 @@ class DefaultQuestWorkCycleModule(
         const val INITIAL_CYCLE = "0"
         const val DEFAULT_BATTLE_CATEGORY = "battle_map"
         const val ADVENTURE_MAP_CATEGORY = "adventure_map"
+        const val STALE_RECHECK_DELAY_SECONDS = 10L
+        const val INCOMPLETE_PAGE_RECHECK_DELAY_SECONDS = 10L
         val TIME_REWARD = Regex("""\bTime\s*\+\s*([\d,]+)\b""", RegexOption.IGNORE_CASE)
     }
 }

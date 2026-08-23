@@ -8,8 +8,11 @@ import app.spammy.hof.automation.service.*
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.party.entity.PartyPresetEntity
 import jakarta.persistence.EntityManager
+import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import org.springframework.transaction.support.TransactionSynchronization
+import org.springframework.transaction.support.TransactionSynchronizationManager
 import java.time.Instant
 
 data class AutomationActionTrace(
@@ -75,6 +78,7 @@ class JpaAutomationDecisionJournal(
     private val timeProvider: TimeProvider,
     private val cycleCommands: AutomationDecisionCycleCommandRepository,
     private val eventCommands: AutomationDecisionEventCommandRepository,
+    private val progressTelemetry: AutomationProgressTelemetry? = null,
 ) : AutomationDecisionJournal {
     @Transactional
     override fun appendDecision(accountId: Long, decision: AutomationCoordination): Long {
@@ -103,6 +107,7 @@ class JpaAutomationDecisionJournal(
             impactScope = item.impactScope, releaseCondition = item.releaseCondition,
         ) })
         eventCommands.flush()
+        afterCommitTelemetry { progressTelemetry?.recordDecision(accountId, decision) }
         return cycle.id
     }
 
@@ -127,9 +132,13 @@ class JpaAutomationDecisionJournal(
         val cycle = entityManager.find(AutomationDecisionCycleEntity::class.java, cycleId)
             ?: throw IllegalArgumentException("Automation decision cycle not found.")
         val next = entityManager.createQuery(
-            "select coalesce(max(e.sequence), -1) + 1 from AutomationDecisionEventEntity e where e.cycle.id = :cycleId", java.lang.Integer::class.java,
+            "select coalesce(max(e.sequence), -1) + 1 from AutomationDecisionEventEntity e where e.cycle.id = :cycleId",
+            Int::class.javaObjectType,
         ).setParameter("cycleId", cycleId).singleResult.toInt()
         eventCommands.save(result.toEntity(cycle, next, cycle.accountId, timeProvider.now()))
+        if (result.kind == AutomationHistoryEventKind.ACTION_SUCCEEDED) {
+            afterCommitTelemetry { progressTelemetry?.recordTerminalAction(cycle.accountId, result.type) }
+        }
     }
 
     @Transactional
@@ -212,4 +221,28 @@ class JpaAutomationDecisionJournal(
         impactScope = impactScope,
         releaseCondition = releaseCondition,
     )
+
+    private fun afterCommitTelemetry(action: () -> Unit) {
+        if (progressTelemetry == null) return
+        val safeAction = {
+            try {
+                action()
+            } catch (error: RuntimeException) {
+                log.warn("Automation progress telemetry failed after journal commit.", error)
+            }
+        }
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(
+                object : TransactionSynchronization {
+                    override fun afterCommit() = safeAction()
+                },
+            )
+        } else {
+            safeAction()
+        }
+    }
+
+    private companion object {
+        val log = LoggerFactory.getLogger(JpaAutomationDecisionJournal::class.java)
+    }
 }

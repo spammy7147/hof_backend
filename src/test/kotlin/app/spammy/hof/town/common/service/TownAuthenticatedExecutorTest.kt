@@ -113,6 +113,24 @@ class TownAuthenticatedExecutorTest {
     }
 
     @Test
+    fun `non-success HOF response never reaches a feature projector`() {
+        stubAccount()
+        Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies())).thenReturn(
+            HofHttpResponse(500, HOF_URL, "<div id='contents'>stale skeleton</div>", emptyMap()),
+        )
+        var projected = false
+
+        val error = assertFailsWith<ApiException> {
+            executor.loadProjected(7L, HOF_URL) { _, _, _ ->
+                projected = true
+            }
+        }
+
+        assertEquals(ErrorCode.HOF_REQUEST_FAILED, error.errorCode)
+        assertFalse(projected)
+    }
+
+    @Test
     fun `observed GET keeps exact query order and fresh response cookies inside account fence`() {
         stubAccount()
         val current = "<a href='?menu=quest&amp;action=get&amp;no=R%2B10'>수락</a>"

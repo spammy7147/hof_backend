@@ -2,6 +2,8 @@ package app.spammy.hof.external.parser
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class BattleMapParserTest {
     private val parser = BattleMapParser()
@@ -27,6 +29,98 @@ class BattleMapParserTest {
         assertEquals(listOf("Conc001", "Conc002"), maps.map { it.mapCode })
         assertEquals(listOf(0, null), maps.map { it.winCount })
         assertEquals(listOf(null, null), maps.map { it.cooldownRemainingSeconds })
+    }
+
+    @Test
+    fun `모험맵 대상 부재는 전체 문서와 모든 map identity를 해석했을 때만 권위가 있다`() {
+        val html = """
+            <html><body>
+              <div id="contents">
+                <div>HOF 마을 지하 묘지 (2)</div>
+                <div id="mapgroup9">
+                  <a href="index.php?sp_common=Conc001">Catacomb- 첫 번째 묘소</a>
+                  <a href="index.php?sp_common=Conc002">Catacomb- 두 번째 묘소</a>
+                </div>
+              </div>
+              <h5>Copy Right sanitized fixture</h5>
+              <h6>H.O.F Korean Ver sanitized fixture</h6>
+              <img src="image/zerohof.gif">
+            </body></html>
+        """.trimIndent()
+        val maps = parser.parse("adventure_map", "sp_common", html)
+
+        assertTrue(
+            parser.observesCompleteAdventureMapPage(
+                html,
+                "http://sic.zerosic.com/ZeroHOF/index.php?sp_hunt",
+                200,
+                maps,
+            ),
+        )
+        assertFalse(
+            parser.observesCompleteAdventureMapPage(
+                html.substringBefore("<h5>"),
+                "http://sic.zerosic.com/ZeroHOF/index.php?sp_hunt",
+                200,
+                maps,
+            ),
+        )
+        assertFalse(
+            parser.observesCompleteAdventureMapPage(
+                html,
+                "http://sic.zerosic.com/ZeroHOF/index.php?sp_hunt",
+                503,
+                maps,
+            ),
+        )
+        assertFalse(
+            parser.observesCompleteAdventureMapPage(
+                html,
+                "http://sic.zerosic.com/ZeroHOF/index.php?hunt",
+                200,
+                maps,
+            ),
+        )
+    }
+
+    @Test
+    fun `해석하지 못한 모험맵 identity가 있으면 완전한 footer가 있어도 권위가 없다`() {
+        val html = """
+            <html><body>
+              <div id="contents">
+                <div id="mapgroup9">
+                  <a href="index.php?sp_common=Conc001">Catacomb- 첫 번째 묘소</a>
+                  <a href="index.php?sp_hunt#"><img src="unknown.gif"></a>
+                </div>
+              </div>
+              <h5>Copy Right sanitized fixture</h5>
+              <h6>H.O.F Korean Ver sanitized fixture</h6>
+              <img src="image/zerohof.gif">
+            </body></html>
+        """.trimIndent()
+        val maps = parser.parse("adventure_map", "sp_common", html)
+
+        assertFalse(
+            parser.observesCompleteAdventureMapPage(
+                html,
+                "http://sic.zerosic.com/ZeroHOF/index.php?sp_hunt",
+                200,
+                maps,
+            ),
+        )
+
+        val unknownActionLink = html.replace(
+            "<a href=\"index.php?sp_hunt#\"><img src=\"unknown.gif\"></a>",
+            "<a href=\"index.php?new_sp_map=MissingTarget\">New map markup</a>",
+        )
+        assertFalse(
+            parser.observesCompleteAdventureMapPage(
+                unknownActionLink,
+                "http://sic.zerosic.com/ZeroHOF/index.php?sp_hunt",
+                200,
+                parser.parse("adventure_map", "sp_common", unknownActionLink),
+            ),
+        )
     }
 
     @Test

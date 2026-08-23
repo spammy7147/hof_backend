@@ -72,6 +72,9 @@ data class AutomationEvaluationTrace(
     val cooldownSource: RaidCooldownSource? = null,
     val impactScope: AutomationImpactScope? = null,
     val releaseCondition: String? = null,
+    val workSessionId: Long? = null,
+    val scope: String? = null,
+    val observedAt: Instant? = null,
 )
 
 sealed interface AutomationCoordination {

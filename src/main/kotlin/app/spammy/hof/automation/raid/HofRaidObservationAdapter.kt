@@ -73,12 +73,13 @@ class HofRaidObservationAdapter(
             )
         },
         applied = response.applied,
+        actionSuccessMarker = response.result?.status == "SUCCESS",
         registrationWait = response.applyWait,
         registrationWaitSeconds = response.applyWaitSeconds,
         globalActions = response.globalActions.mapNotNull { action -> action.toIntentKind() }.toSet(),
         resultMessages = response.result?.messages.orEmpty(),
         observedAt = timeProvider.now(),
-        fresh = true,
+        fresh = response.pageComplete,
     )
 
     private fun RaidStatus.toObservedStatus(): RaidObservedStatus = when (this) {

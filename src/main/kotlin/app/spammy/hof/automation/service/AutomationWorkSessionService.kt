@@ -13,11 +13,14 @@ import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
+import org.springframework.transaction.support.TransactionSynchronization
+import org.springframework.transaction.support.TransactionSynchronizationManager
 
 internal const val FISHING_CYCLE_TARGET = "DAILY_FISHING"
 
 interface AutomationWorkLifecycle {
     fun resumeForCheck(accountId: Long, sessionId: Long)
+    fun handoffForPriority(accountId: Long, currentSessionId: Long, dueSessionId: Long): Boolean
     fun triggerCheck(accountId: Long, sessionId: Long)
     fun yieldForPriority(accountId: Long, sessionId: Long): Boolean
     fun applyTransition(accountId: Long, sessionId: Long, transition: AutomationWorkTransition)
@@ -48,7 +51,37 @@ class AutomationWorkSessionService(
     private val commands: AutomationWorkSessionCommandRepository,
     private val timeProvider: TimeProvider,
     private val properties: AutomationSessionProperties = AutomationSessionProperties(),
+    private val progressTelemetry: AutomationProgressTelemetry? = null,
 ) : AutomationWorkOwnership, AutomationWorkLifecycle {
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    override fun handoffForPriority(
+        accountId: Long,
+        currentSessionId: Long,
+        dueSessionId: Long,
+    ): Boolean {
+        requireRunningRuntime(accountId)
+        val now = timeProvider.now()
+        val open = queries.lockOpen(accountId)
+        val current = open.singleOrNull { it.id == currentSessionId } ?: return false
+        val due = open.singleOrNull { it.id == dueSessionId } ?: return false
+        if (current.status != AutomationWorkStatus.RUNNING) return false
+        require(current.workType != AutomationWorkType.RAID) {
+            "An immediately runnable raid work session keeps priority until it waits or completes."
+        }
+        require(
+            due.status in setOf(
+                AutomationWorkStatus.YIELDED_PRIORITY,
+                AutomationWorkStatus.WAITING_COOLDOWN,
+                AutomationWorkStatus.WAITING_RESOURCE,
+            ) && due.nextCheckAt?.isAfter(now) == false,
+        ) { "Only an explicitly due parked work session may receive priority ownership." }
+
+        val transfer = releaseOwnership(open, due, now)
+        resumeAsOwner(due, now)
+        logOwnershipTransfer(accountId, transfer, due, AutomationOwnershipTransferReason.DUE_RESUME)
+        return true
+    }
+
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     override fun resumeForCheck(accountId: Long, sessionId: Long) {
         requireRunningRuntime(accountId)
@@ -64,7 +97,7 @@ class AutomationWorkSessionService(
         val open = queries.lockOpen(accountId)
         val transfer = releaseOwnership(open, session, now)
         resumeAsOwner(session, now)
-        logOwnershipTransfer(accountId, transfer, session)
+        logOwnershipTransfer(accountId, transfer, session, AutomationOwnershipTransferReason.DUE_RESUME)
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -123,12 +156,12 @@ class AutomationWorkSessionService(
             val transfer = releaseOwnership(open, selected, now)
             if (selected.status == AutomationWorkStatus.RUNNING) {
                 selected.alignRaidTarget(spec, entry.updatedAt.toString())?.let(commands::save)
-                logOwnershipTransfer(accountId, transfer, selected)
+                logOwnershipTransfer(accountId, transfer, selected, AutomationOwnershipTransferReason.ACTION_PREPARE)
                 return selected
             }
             resumeAsOwner(selected, now)
             selected.alignRaidTarget(spec, entry.updatedAt.toString())
-            logOwnershipTransfer(accountId, transfer, selected)
+            logOwnershipTransfer(accountId, transfer, selected, AutomationOwnershipTransferReason.ACTION_PREPARE)
             return selected
         }
         val transfer = releaseOwnership(open, null, now)
@@ -144,7 +177,7 @@ class AutomationWorkSessionService(
             updatedAt = now,
         )
         commands.save(session)
-        logOwnershipTransfer(accountId, transfer, session)
+        logOwnershipTransfer(accountId, transfer, session, AutomationOwnershipTransferReason.ACTION_PREPARE)
         return session
     }
 
@@ -156,10 +189,19 @@ class AutomationWorkSessionService(
             "An immediately runnable raid work session keeps priority until it waits or completes."
         }
         if (session.status != AutomationWorkStatus.RUNNING) return false
+        val now = timeProvider.now()
         session.transitionTo(AutomationWorkStatus.YIELDED_PRIORITY)
-        session.nextCheckAt = null
-        session.updatedAt = timeProvider.now()
+        session.nextCheckAt = now.plusSeconds(PRIORITY_YIELD_RECHECK_SECONDS)
+        session.updatedAt = now
         commands.save(session)
+        recordOwnershipTransferAfterCommit(AutomationOwnershipTransferReason.PRIORITY_YIELD, false)
+        log.info(
+            "Automation work ownership released accountId={} sessionId={} entryId={} reason={}",
+            accountId,
+            session.id,
+            session.entry.id,
+            AutomationOwnershipTransferReason.PRIORITY_YIELD,
+        )
         return true
     }
 
@@ -201,6 +243,14 @@ class AutomationWorkSessionService(
         }
         session.updatedAt = now
         commands.save(session)
+        recordOwnershipTransferAfterCommit(
+            if (transition == AutomationWorkTransition.Complete) {
+                AutomationOwnershipTransferReason.COMPLETE
+            } else {
+                AutomationOwnershipTransferReason.WAIT
+            },
+            false,
+        )
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -212,6 +262,7 @@ class AutomationWorkSessionService(
         session.nextCheckAt = nextCheckAt
         session.updatedAt = timeProvider.now()
         commands.save(session)
+        recordOwnershipTransferAfterCommit(AutomationOwnershipTransferReason.WAIT, false)
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -235,6 +286,7 @@ class AutomationWorkSessionService(
         }
         if (session != null) {
             require(session.status in OPEN_SESSION_STATUSES)
+            val releasedOwnership = session.status == AutomationWorkStatus.RUNNING
             session.targetKey = raidId
             session.transitionTo(AutomationWorkStatus.WAITING_COOLDOWN)
             session.configVersion = entry.updatedAt.toString()
@@ -243,6 +295,9 @@ class AutomationWorkSessionService(
             session.finishedAt = null
             session.updatedAt = now
             commands.save(session)
+            if (releasedOwnership) {
+                recordOwnershipTransferAfterCommit(AutomationOwnershipTransferReason.WAIT, false)
+            }
             return
         }
         commands.save(
@@ -298,6 +353,7 @@ class AutomationWorkSessionService(
         session.finishedAt = now
         session.updatedAt = now
         commands.save(session)
+        recordOwnershipTransferAfterCommit(AutomationOwnershipTransferReason.COMPLETE, false)
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -322,6 +378,7 @@ class AutomationWorkSessionService(
         session.finishedAt = now
         session.updatedAt = now
         commands.save(session)
+        recordOwnershipTransferAfterCommit(AutomationOwnershipTransferReason.COMPLETE, false)
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -339,6 +396,7 @@ class AutomationWorkSessionService(
         session.finishedAt = now
         session.updatedAt = now
         commands.save(session)
+        recordOwnershipTransferAfterCommit(AutomationOwnershipTransferReason.COMPLETE, false)
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -405,7 +463,7 @@ class AutomationWorkSessionService(
         if (previous.isNotEmpty()) {
             previous.forEach { session ->
                 session.transitionTo(AutomationWorkStatus.YIELDED_PRIORITY)
-                session.nextCheckAt = null
+                session.nextCheckAt = now.plusSeconds(PRIORITY_YIELD_RECHECK_SECONDS)
                 session.updatedAt = now
             }
             commands.saveAll(previous)
@@ -431,11 +489,12 @@ class AutomationWorkSessionService(
         accountId: Long,
         transfer: OwnershipTransfer,
         target: AutomationWorkSessionEntity,
+        reason: AutomationOwnershipTransferReason,
     ) {
         if (!transfer.ownershipChanged) return
         val message =
             "Automation work ownership transferred accountId={} previousSessionIds={} targetSessionId={} " +
-                "targetEntryId={} targetWorkType={} targetKey={} duplicateRepair={}"
+                "targetEntryId={} targetWorkType={} targetKey={} duplicateRepair={} reason={}"
         val arguments = arrayOf(
             accountId,
             transfer.previous.map { it.id },
@@ -444,7 +503,9 @@ class AutomationWorkSessionService(
             target.workType,
             target.targetKey,
             transfer.duplicateRepair,
+            reason,
         )
+        recordOwnershipTransferAfterCommit(reason, transfer.duplicateRepair)
         if (transfer.duplicateRepair) {
             log.warn(message, *arguments)
         } else {
@@ -458,9 +519,33 @@ class AutomationWorkSessionService(
         val ownershipChanged: Boolean,
     )
 
+    private fun recordOwnershipTransferAfterCommit(
+        reason: AutomationOwnershipTransferReason,
+        duplicateRepair: Boolean,
+    ) {
+        if (progressTelemetry == null) return
+        val safeAction = {
+            try {
+                progressTelemetry.recordOwnershipTransfer(reason, duplicateRepair)
+            } catch (error: RuntimeException) {
+                log.warn("Automation ownership telemetry failed after commit reason={}", reason, error)
+            }
+        }
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(
+                object : TransactionSynchronization {
+                    override fun afterCommit() = safeAction()
+                },
+            )
+        } else {
+            safeAction()
+        }
+    }
+
     private companion object {
         val log = LoggerFactory.getLogger(AutomationWorkSessionService::class.java)
         const val MAX_HOLD_MESSAGE_LENGTH = 1000
+        const val PRIORITY_YIELD_RECHECK_SECONDS = 10L
         val OPEN_SESSION_STATUSES = setOf(
             AutomationWorkStatus.RUNNING,
             AutomationWorkStatus.WAITING_COOLDOWN,

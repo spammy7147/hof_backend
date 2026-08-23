@@ -202,9 +202,71 @@ class BattleMapParser {
         )
     }
 
-    /** 빈 결과를 파싱 실패가 아닌 정상적인 레이드 맵 부재로 확정할 수 있는 문구만 인정한다. */
-    fun observesAuthoritativeRaidAbsence(html: String): Boolean =
-        RAID_ABSENCE_PATTERN.containsMatchIn(HofHtmlParser.parse(html, HOF_BASE_URL).text())
+    /** 빈 결과를 파싱 실패가 아닌 완전한 raid_hunt 페이지의 정상적인 맵 부재로만 확정한다. */
+    fun observesAuthoritativeRaidAbsence(
+        html: String,
+        finalUrl: String,
+        statusCode: Int,
+    ): Boolean {
+        if (statusCode !in 200..299 || !RAID_PAGE_URL_PATTERN.containsMatchIn(finalUrl)) return false
+        val document = HofHtmlParser.parse(html, HOF_BASE_URL)
+        val text = document.text()
+        return document.selectFirst("#contents") != null &&
+            RAID_PAGE_MARKER.containsMatchIn(text) &&
+            RAID_BATTLE_LOG_MARKER.containsMatchIn(text) &&
+            RAID_ABSENCE_PATTERN.containsMatchIn(text)
+    }
+
+    /**
+     * 모험맵 대상 소멸을 판단할 수 있는 완전한 목록인지 확인한다.
+     *
+     * 공통 footer까지 도착한 정상 sp_hunt 문서여야 하며, map group 안의 모든 모험맵 identity가 실제
+     * parser 결과에 포함돼야 한다. 일부 HTML만 내려오거나 새 행을 해석하지 못한 경우에는 target absence를
+     * 권위 증거로 사용하지 않는다.
+     */
+    fun observesCompleteAdventureMapPage(
+        html: String,
+        finalUrl: String,
+        statusCode: Int,
+        maps: List<HofBattleMap>,
+    ): Boolean {
+        if (statusCode !in 200..299 || !ADVENTURE_PAGE_URL_PATTERN.containsMatchIn(finalUrl)) return false
+        val document = HofHtmlParser.parse(html, HOF_BASE_URL)
+        val contents = document.selectFirst("#contents") ?: return false
+        if (!hasCompletePageTerminator(document)) return false
+
+        val queryPattern = Regex("""[?&]sp_common=([^&\"'#\s]+)""")
+        val candidates = coalesceMapLinks(
+            contents.select("a[href*=sp_common=], div[id^=$MAP_GROUP_ID_PREFIX] a[href]"),
+            queryPattern,
+        )
+        val declaredIdentities = linkedSetOf<String>()
+        candidates.forEach { candidate ->
+            val group = candidate.link.parents().firstOrNull { it.id().startsWith(MAP_GROUP_ID_PREFIX) }
+            val relevant = candidate.mapCode != null ||
+                (group != null && isRequestedPlaceholderHref(candidate.rawHref, setOf("sp_common", "sp_hunt")))
+            if (!relevant) {
+                // A new/unknown action link inside a map group could be a target this parser cannot see yet.
+                // Treating it as decoration would make a stored target look absent from an otherwise complete page.
+                if (group != null) return false
+                return@forEach
+            }
+            val identity = candidate.mapCode?.let { "code:$it" } ?: run {
+                val name = candidate.displayName
+                    .withoutKeySuffix()
+                    .withoutTrailingMapState()
+                    .takeIf(String::isNotBlank)
+                    ?: return false
+                "group:${group?.groupOrder()}:name:${BattleMapIdentityNormalizer.normalize(name)}"
+            }
+            declaredIdentities += identity
+        }
+        val parsedIdentities = maps.mapTo(linkedSetOf()) { map ->
+            map.mapCode?.let { "code:$it" }
+                ?: "group:${map.groupOrder}:name:${BattleMapIdentityNormalizer.normalize(map.name)}"
+        }
+        return declaredIdentities.isNotEmpty() && parsedIdentities == declaredIdentities
+    }
 
     /**
      * 레이드 쿨타임 광고와 현재 parser가 맵에 직접 결합한 결과가 일치하는지만 판정한다.
@@ -570,6 +632,13 @@ class BattleMapParser {
         MessageDigest.getInstance("SHA-256").digest(value.toByteArray(StandardCharsets.UTF_8)),
     )
 
+    private fun hasCompletePageTerminator(document: org.jsoup.nodes.Document): Boolean =
+        document.select("h5").any { it.text().normalizedText().contains("copy right", ignoreCase = true) } &&
+            document.select("h6").any { it.text().normalizedText().contains("h.o.f korean ver", ignoreCase = true) } &&
+            document.select("img[src]").any { image ->
+                image.attr("src").substringBefore('?').substringAfterLast('/').equals("zerohof.gif", true)
+            }
+
     private companion object {
         const val HOF_BASE_URL = "http://sic.zerosic.com/ZeroHOF/index.php"
         const val MAP_GROUP_ID_PREFIX = "mapgroup"
@@ -611,7 +680,15 @@ class BattleMapParser {
             "0004" to "사막의 살인적",
         )
         val UNION_PAGE_MARKER = Regex("Union(?:\\s*Monster|\\s*Battle\\s*Log)", RegexOption.IGNORE_CASE)
-        val RAID_ABSENCE_PATTERN = Regex("현재\\s*열린\\s*레이드가\\s*없습니다[.]?")
+        val RAID_ABSENCE_PATTERN = Regex(
+            "(?:현재\\s*열린\\s*레이드가|진행\\s*중인\\s*전투가)\\s*없습니다[.]?",
+        )
+        val RAID_PAGE_URL_PATTERN = Regex("""/ZeroHOF/index[.]php[?](?:[^#&]*&)*raid_hunt(?:[=&][^#]*)?(?:#.*)?$""")
+        val ADVENTURE_PAGE_URL_PATTERN = Regex(
+            """/ZeroHOF/index[.]php[?](?:[^#&]*&)*sp_hunt(?:[=&][^#]*)?(?:#.*)?$""",
+        )
+        val RAID_PAGE_MARKER = Regex("Special\\s*Battle", RegexOption.IGNORE_CASE)
+        val RAID_BATTLE_LOG_MARKER = Regex("Battle\\s*Log", RegexOption.IGNORE_CASE)
     }
 
     private data class GroupMetadata(

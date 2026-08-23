@@ -3,6 +3,8 @@ package app.spammy.hof.automation.service
 import app.spammy.hof.account.service.HofAccountService
 import app.spammy.hof.account.service.HofSessionRecoveryService
 import app.spammy.hof.account.entity.HofAccountEntity
+import app.spammy.hof.account.repository.AccountQueryRepository
+import app.spammy.hof.account.repository.CookieQueryRepository
 import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.entity.AutomationWorkType
@@ -10,7 +12,11 @@ import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.automation.entity.TypedAutomationActionRunEntity
 import app.spammy.hof.automation.entity.TypedAutomationActionStatus
 import app.spammy.hof.automation.convergence.AutomationActionEvidence
+import app.spammy.hof.automation.convergence.ActionConvergenceResult
+import app.spammy.hof.automation.convergence.ConvergenceDirective
 import app.spammy.hof.automation.convergence.DefaultActionEvidencePolicies
+import app.spammy.hof.automation.convergence.DefaultAutomationActionConvergenceModule
+import app.spammy.hof.automation.convergence.InMemoryConvergenceStore
 import app.spammy.hof.automation.convergence.ProductionActionEvidenceInterpreter
 import app.spammy.hof.automation.convergence.StoredActionConvergenceSelectionFactory
 import app.spammy.hof.automation.raid.HofRaidObservationAdapter
@@ -20,6 +26,8 @@ import app.spammy.hof.automation.raid.RaidCycleOutcome
 import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
 import app.spammy.hof.automation.raid.RaidIntentKind
 import app.spammy.hof.automation.raid.RaidObservation
+import app.spammy.hof.automation.raid.RaidObservedStatus
+import app.spammy.hof.automation.raid.RaidObservedTarget
 import app.spammy.hof.automation.raid.RaidRecordResult
 import app.spammy.hof.automation.raid.RaidResultObservation
 import app.spammy.hof.battle.dto.BattlePatternLoadRequest
@@ -35,12 +43,20 @@ import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.model.HofRequestOrigin
+import app.spammy.hof.external.client.AccountHofGateway
+import app.spammy.hof.external.client.HofRequestFactory
+import app.spammy.hof.external.model.HofHttpMethod
+import app.spammy.hof.external.model.HofHttpResponse
+import app.spammy.hof.external.model.HofRequest
+import app.spammy.hof.external.parser.LoginStateParser
 import app.spammy.hof.quest.model.QuestMissionType
 import app.spammy.hof.quest.model.QuestMission
 import app.spammy.hof.quest.model.QuestProgress
 import app.spammy.hof.quest.model.QuestSnapshot
 import app.spammy.hof.quest.model.QuestState
 import app.spammy.hof.quest.service.QuestGatewayService
+import app.spammy.hof.quest.parser.QuestPageObservation
+import app.spammy.hof.quest.parser.QuestPageParser
 import app.spammy.hof.town.home.dto.HomeQuestResponse
 import app.spammy.hof.town.home.dto.HomeResponse
 import app.spammy.hof.town.home.model.HomeMode
@@ -60,6 +76,15 @@ import app.spammy.hof.town.raid.model.RaidBattleObservationStatus
 import app.spammy.hof.town.raid.model.RaidStatus
 import app.spammy.hof.town.raid.service.RaidActionPreconditionChangedException
 import app.spammy.hof.town.raid.service.RaidPubService
+import app.spammy.hof.town.common.model.TownFeatureId
+import app.spammy.hof.town.common.parser.HofFormParser
+import app.spammy.hof.town.common.parser.HofResultParser
+import app.spammy.hof.town.common.service.AccountHofMutationFence
+import app.spammy.hof.town.common.service.ResolvedTownLocation
+import app.spammy.hof.town.common.service.TownActionGuard
+import app.spammy.hof.town.common.service.TownAuthenticatedExecutor
+import app.spammy.hof.town.common.service.TownLocationResolver
+import app.spammy.hof.town.raid.parser.RaidPubParser
 import java.io.IOException
 import java.time.Instant
 import kotlin.test.Test
@@ -95,12 +120,18 @@ class AutomationActionLifecycleModuleTest {
     private val raidObservationAdapter = Mockito.mock(HofRaidObservationAdapter::class.java)
     private val sessionRecovery = HofSessionRecoveryExecutor(HofSessionRecoveryService(accountService))
     private val battleSubmission = AutomationBattleSubmission(battleRun, sessionRecovery, battleOutcome)
-    private val module: AutomationActionLifecycleModule = UnifiedAutomationActionLifecycleModule(
+    private val module: AutomationActionLifecycleModule = lifecycleModule()
+
+    private fun lifecycleModule(
+        questCycle: QuestWorkCycleModule = questWorkCycle,
+        questGatewayOverride: QuestGatewayService = questGateway,
+        raidPubOverride: RaidPubService = raidPubService,
+    ): AutomationActionLifecycleModule = UnifiedAutomationActionLifecycleModule(
         codec = StoredTypedAutomationActionCodec(jacksonObjectMapper()),
         workOwnership = workOwnership,
         homeService = home,
-        questGateway = questGateway,
-        questWorkCycle = questWorkCycle,
+        questGateway = questGatewayOverride,
+        questWorkCycle = questCycle,
         battleSubmission = battleSubmission,
         battleHandler = battleHandler,
         battleOutcomeReconciler = battleOutcome,
@@ -108,7 +139,7 @@ class AutomationActionLifecycleModuleTest {
         workLifecycle = workLifecycle,
         unionProgress = unionProgress,
         fishingService = fishingService,
-        raidPubService = raidPubService,
+        raidPubService = raidPubOverride,
         raidCycleModule = raidCycleModule,
         raidObservationAdapter = raidObservationAdapter,
         executionSignals = executionSignals,
@@ -229,8 +260,8 @@ class AutomationActionLifecycleModuleTest {
         val managed = assertNotNull(
             module.prepare(7L, 12L, QuestAction.Claim("quest-1", "claim-1")),
         )
-        Mockito.`when`(questGateway.claim(7L, "claim-1", HofRequestOrigin.AUTOMATION))
-            .thenReturn(emptyList())
+        Mockito.`when`(questGateway.claimObservation(7L, "claim-1", HofRequestOrigin.AUTOMATION))
+            .thenReturn(QuestPageObservation(emptyList(), complete = false))
 
         val execution = assertIs<TypedAutomationExecution.ActionCompleted>(managed.execute())
         val evidence = assertIs<AutomationActionEvidence.IncompleteObservation>(
@@ -256,8 +287,8 @@ class AutomationActionLifecycleModuleTest {
     fun `일반 퀘스트 수락을 저장하고 같은 descriptor와 작업 귀속을 사용한다`() {
         val action = QuestAction.Accept("quest-1", "accept-1", "첫 번째 퀘스트")
         val observed = listOf(quest(QuestState.ACTIVE, null))
-        Mockito.`when`(questGateway.accept(7L, "accept-1", HofRequestOrigin.AUTOMATION))
-            .thenReturn(observed)
+        Mockito.`when`(questGateway.acceptObservation(7L, "accept-1", HofRequestOrigin.AUTOMATION))
+            .thenReturn(QuestPageObservation(observed, complete = true))
         Mockito.`when`(questWorkCycle.recordObservedResult(Mockito.eq(7L), anyQuestAttempt(), anyQuestObservation()))
             .thenReturn(QuestRecordResult.Recorded("1"))
 
@@ -282,11 +313,11 @@ class AutomationActionLifecycleModuleTest {
         )
         val execution = assertIs<TypedAutomationExecution.ActionCompleted>(managed.execute())
         managed.applyPolicyAcceptedExecution(execution)
-        Mockito.verify(questGateway).accept(7L, "accept-1", HofRequestOrigin.AUTOMATION)
+        Mockito.verify(questGateway).acceptObservation(7L, "accept-1", HofRequestOrigin.AUTOMATION)
         Mockito.verify(questWorkCycle).recordObservedResult(
             7L,
             QuestAttempt.Accept(managed.storedAction.executionIdentity, "quest-1", "accept-1"),
-            QuestResultObservation.Page(observed),
+            QuestResultObservation.Page(observed, complete = true),
         )
     }
 
@@ -294,8 +325,8 @@ class AutomationActionLifecycleModuleTest {
     fun `일반 퀘스트 보상 수령을 저장하고 정확히 한 번 실행한다`() {
         val action = QuestAction.Claim("quest-1", "claim-1", "첫 번째 퀘스트")
         val observed = emptyList<QuestSnapshot>()
-        Mockito.`when`(questGateway.claim(7L, "claim-1", HofRequestOrigin.AUTOMATION))
-            .thenReturn(observed)
+        Mockito.`when`(questGateway.claimObservation(7L, "claim-1", HofRequestOrigin.AUTOMATION))
+            .thenReturn(QuestPageObservation(observed, complete = true))
         Mockito.`when`(questWorkCycle.recordObservedResult(Mockito.eq(7L), anyQuestAttempt(), anyQuestObservation()))
             .thenReturn(QuestRecordResult.Recorded("1"))
 
@@ -312,13 +343,54 @@ class AutomationActionLifecycleModuleTest {
         assertEquals("QUEST_CLAIM", managed.descriptor.actionKind)
         assertEquals("퀘스트 보상 수령 · 첫 번째 퀘스트", managed.descriptor.context)
         val execution = assertIs<TypedAutomationExecution.ActionCompleted>(managed.execute())
+        assertIs<AutomationActionEvidence.DirectApplied>(policyEvidence(managed, execution))
         managed.applyPolicyAcceptedExecution(execution)
-        Mockito.verify(questGateway).claim(7L, "claim-1", HofRequestOrigin.AUTOMATION)
+        Mockito.verify(questGateway).claimObservation(7L, "claim-1", HofRequestOrigin.AUTOMATION)
         Mockito.verify(questWorkCycle).recordObservedResult(
             7L,
             QuestAttempt.Claim(managed.storedAction.executionIdentity, "quest-1", "claim-1"),
-            QuestResultObservation.Page(observed),
+            QuestResultObservation.Page(observed, complete = true),
         )
+    }
+
+    @Test
+    fun `실제 비대상 quest fixture는 HTTP 경계부터 durable applied까지 직접 수렴한다`() {
+        val html = checkNotNull(
+            javaClass.classLoader.getResource("fixtures/quest/quest-complete-empty.html"),
+        ).readText()
+        val current = """
+            <div id="contents"><h4>진행중인 퀘스트 목록</h4><table><tr>
+              <td class="td7s">[0777] fixture quest</td><td>미션 : 즉시 완료</td>
+              <td><a href="?menu=quest&amp;action=complete&amp;no=claim-1">완료</a></td>
+            </tr></table></div>
+        """.trimIndent()
+        val liveGateway = QuestGatewayService(
+            remoteExecutor(
+                HofHttpResponse(200, QUEST_URL, current, emptyMap()),
+                HofHttpResponse(200, QUEST_URL, html, emptyMap()),
+            ),
+            QuestPageParser(),
+        )
+        val action = QuestAction.Claim("fixture-quest", "claim-1", "fixture quest")
+        val durableQuestCycle = DefaultQuestWorkCycleModule(
+            Mockito.mock(QuestAutomationProgressStore::class.java),
+        )
+        val managed = assertNotNull(
+            lifecycleModule(durableQuestCycle, questGatewayOverride = liveGateway).prepare(7L, 12L, action),
+        )
+
+        val execution = assertIs<TypedAutomationExecution.ActionCompleted>(managed.execute())
+        val evidence = assertIs<AutomationActionEvidence.DirectApplied>(policyEvidence(managed, execution))
+        assertIs<TypedAutomationExecution.ActionCompleted>(managed.applyPolicyAcceptedExecution(execution))
+
+        val store = InMemoryConvergenceStore()
+        val convergence = DefaultAutomationActionConvergenceModule(store, TimeProvider { now })
+        val selection = StoredActionConvergenceSelectionFactory().create(managed.storedAction)
+        val attemptId = assertIs<ConvergenceDirective.Submit>(convergence.prepare(7L, selection)).attemptId
+
+        assertIs<ConvergenceDirective.ContinueSelection>(convergence.record(attemptId, evidence))
+        assertEquals(ActionConvergenceResult.APPLIED, store.get(attemptId)?.result)
+        assertEquals("DIRECT_RESPONSE_APPLIED", store.get(attemptId)?.reasonCode)
     }
 
     @Test
@@ -332,13 +404,13 @@ class AutomationActionLifecycleModuleTest {
             "quest-1",
             "accept-1",
         )
-        Mockito.`when`(questGateway.accept(7L, "accept-1", HofRequestOrigin.AUTOMATION))
-            .thenReturn(observed)
+        Mockito.`when`(questGateway.acceptObservation(7L, "accept-1", HofRequestOrigin.AUTOMATION))
+            .thenReturn(QuestPageObservation(observed, complete = true))
         Mockito.`when`(
             questWorkCycle.recordObservedResult(
                 7L,
                 attempt,
-                QuestResultObservation.Page(observed),
+                QuestResultObservation.Page(observed, complete = true),
             ),
         ).thenReturn(QuestRecordResult.NotApplied("still available"))
 
@@ -350,7 +422,7 @@ class AutomationActionLifecycleModuleTest {
         }
 
         Mockito.verify(questGateway, Mockito.times(1))
-            .accept(7L, "accept-1", HofRequestOrigin.AUTOMATION)
+            .acceptObservation(7L, "accept-1", HofRequestOrigin.AUTOMATION)
     }
 
     @Test
@@ -364,13 +436,13 @@ class AutomationActionLifecycleModuleTest {
             "quest-1",
             "accept-1",
         )
-        Mockito.`when`(questGateway.accept(7L, "accept-1", HofRequestOrigin.AUTOMATION))
-            .thenReturn(observed)
+        Mockito.`when`(questGateway.acceptObservation(7L, "accept-1", HofRequestOrigin.AUTOMATION))
+            .thenReturn(QuestPageObservation(observed, complete = true))
         Mockito.`when`(
             questWorkCycle.recordObservedResult(
                 7L,
                 attempt,
-                QuestResultObservation.Page(observed),
+                QuestResultObservation.Page(observed, complete = true),
             ),
         ).thenThrow(IllegalStateException("cycle store unavailable"))
 
@@ -380,7 +452,7 @@ class AutomationActionLifecycleModuleTest {
         }
 
         Mockito.verify(questGateway, Mockito.times(1))
-            .accept(7L, "accept-1", HofRequestOrigin.AUTOMATION)
+            .acceptObservation(7L, "accept-1", HofRequestOrigin.AUTOMATION)
     }
 
     @Test
@@ -388,10 +460,10 @@ class AutomationActionLifecycleModuleTest {
         val managed = assertNotNull(
             module.prepare(7L, 12L, QuestAction.Claim("quest-1", "claim-1")),
         )
-        Mockito.`when`(questGateway.load(7L, HofRequestOrigin.AUTOMATION)).thenReturn(
-            emptyList(),
-            listOf(quest(QuestState.CLAIMABLE, "claim-1")),
-            listOf(quest(QuestState.ACTIVE, null)),
+        Mockito.`when`(questGateway.loadObservation(7L, HofRequestOrigin.AUTOMATION)).thenReturn(
+            QuestPageObservation(emptyList(), complete = false),
+            QuestPageObservation(listOf(quest(QuestState.CLAIMABLE, "claim-1")), complete = true),
+            QuestPageObservation(listOf(quest(QuestState.ACTIVE, null)), complete = true),
         )
         Mockito.doReturn(
             QuestRecordResult.NotApplied("still claimable"),
@@ -409,10 +481,10 @@ class AutomationActionLifecycleModuleTest {
         val managed = assertNotNull(
             module.prepare(7L, 12L, QuestAction.Accept("quest-1", "accept-1")),
         )
-        Mockito.`when`(questGateway.load(7L, HofRequestOrigin.AUTOMATION)).thenReturn(
-            listOf(quest(QuestState.ACTIVE, null)),
-            listOf(quest(QuestState.AVAILABLE, "accept-1")),
-            listOf(quest(QuestState.UNAVAILABLE, null)),
+        Mockito.`when`(questGateway.loadObservation(7L, HofRequestOrigin.AUTOMATION)).thenReturn(
+            QuestPageObservation(listOf(quest(QuestState.ACTIVE, null)), complete = true),
+            QuestPageObservation(listOf(quest(QuestState.AVAILABLE, "accept-1")), complete = true),
+            QuestPageObservation(listOf(quest(QuestState.UNAVAILABLE, null)), complete = true),
         )
         Mockito.doReturn(
             QuestRecordResult.Recorded("1"),
@@ -424,7 +496,7 @@ class AutomationActionLifecycleModuleTest {
         Mockito.verify(questWorkCycle).recordObservedResult(
             7L,
             QuestAttempt.Accept(managed.storedAction.executionIdentity, "quest-1", "accept-1"),
-            QuestResultObservation.Page(listOf(quest(QuestState.ACTIVE, null))),
+            QuestResultObservation.Page(listOf(quest(QuestState.ACTIVE, null)), complete = true),
         )
         assertIs<AmbiguousActionResolution.Resubmit>(managed.reconcile())
         assertIs<AmbiguousActionResolution.VerifyLater>(managed.reconcile())
@@ -435,13 +507,13 @@ class AutomationActionLifecycleModuleTest {
         val managed = assertNotNull(
             module.prepare(7L, 12L, QuestAction.Claim("quest-1", "claim-1")),
         )
-        Mockito.`when`(questGateway.claim(7L, "claim-1", HofRequestOrigin.AUTOMATION))
+        Mockito.`when`(questGateway.claimObservation(7L, "claim-1", HofRequestOrigin.AUTOMATION))
             .thenThrow(ApiException(ErrorCode.HOF_REQUEST_FAILED, "upstream result unknown"))
 
         assertFailsWith<AmbiguousAutomationSubmissionException> { managed.execute() }
 
         Mockito.verify(questGateway, Mockito.times(1))
-            .claim(7L, "claim-1", HofRequestOrigin.AUTOMATION)
+            .claimObservation(7L, "claim-1", HofRequestOrigin.AUTOMATION)
     }
 
     @Test
@@ -449,15 +521,15 @@ class AutomationActionLifecycleModuleTest {
         val managed = assertNotNull(
             module.prepare(7L, 12L, QuestAction.Accept("quest-1", "accept-1")),
         )
-        Mockito.`when`(questGateway.accept(7L, "accept-1", HofRequestOrigin.AUTOMATION))
+        Mockito.`when`(questGateway.acceptObservation(7L, "accept-1", HofRequestOrigin.AUTOMATION))
             .thenThrow(ApiException(ErrorCode.HOF_SESSION_EXPIRED, "expired"))
-            .thenReturn(emptyList())
+            .thenReturn(QuestPageObservation(emptyList(), complete = false))
 
         assertIs<TypedAutomationExecution.ActionCompleted>(managed.execute())
 
         Mockito.verify(accountService).reauthenticate(7L, HofRequestOrigin.AUTOMATION)
         Mockito.verify(questGateway, Mockito.times(2))
-            .accept(7L, "accept-1", HofRequestOrigin.AUTOMATION)
+            .acceptObservation(7L, "accept-1", HofRequestOrigin.AUTOMATION)
     }
 
     @Test
@@ -575,7 +647,9 @@ class AutomationActionLifecycleModuleTest {
             BattleOutcomeReconciliation.Proven(evidence.copy(mapCode = "other-map")),
         )
         val fallbackPage = listOf(activeQuest(progress = 3))
-        Mockito.`when`(questGateway.load(7L, HofRequestOrigin.AUTOMATION)).thenReturn(fallbackPage)
+        Mockito.`when`(questGateway.loadObservation(7L, HofRequestOrigin.AUTOMATION)).thenReturn(
+            QuestPageObservation(fallbackPage, complete = true),
+        )
 
         val applied = assertIs<AmbiguousActionResolution.Applied>(managed.reconcile())
         assertEquals(
@@ -621,7 +695,7 @@ class AutomationActionLifecycleModuleTest {
                     missionRequired = 5,
                 ),
             ),
-            QuestResultObservation.Page(fallbackPage),
+            QuestResultObservation.Page(fallbackPage, complete = true),
         )
         val verifyLater = assertIs<AmbiguousActionResolution.VerifyLater>(managed.reconcile())
         assertEquals(now.plusSeconds(10), verifyLater.retryAt)
@@ -779,7 +853,7 @@ class AutomationActionLifecycleModuleTest {
     }
 
     @Test
-    fun `불명확한 일반 전투는 최신 완전 맵에서 대상이 사라지면 결과 id 없이 수렴한다`() {
+    fun `불명확한 일반 전투의 최신 맵 소멸은 내 적용이 아니라 외부 변경으로 닫는다`() {
         val managed = assertNotNull(module.prepare(7L, 12L, battleMapAction()))
         Mockito.`when`(battleOutcome.reloadRecentAuthoritativeEvidence(anyBattleAction()))
             .thenReturn(BattleOutcomeReconciliation.Unproven("결과 식별자가 없습니다."))
@@ -792,14 +866,9 @@ class AutomationActionLifecycleModuleTest {
             ),
         )
 
-        val resolution = assertIs<AmbiguousActionResolution.Applied>(managed.reconcile())
+        assertIs<AmbiguousActionResolution.Superseded>(managed.reconcile())
 
-        assertEquals(
-            TypedAutomationExecution.BattleCompleted("battle_map", "map-1"),
-            resolution.execution,
-        )
-        Mockito.verify(workLifecycle).completeBattleMapAction(7L, 12L, "battle_map", "map-1")
-        Mockito.verifyNoInteractions(battleHandler, unionProgress)
+        Mockito.verifyNoInteractions(battleHandler, workLifecycle, unionProgress)
     }
 
     @Test
@@ -844,8 +913,11 @@ class AutomationActionLifecycleModuleTest {
         }
 
         val questManaged = assertNotNull(module.prepare(7L, 12L, QuestAction.Accept("quest-1", "accept-1")))
-        Mockito.`when`(questGateway.load(7L, HofRequestOrigin.AUTOMATION)).thenReturn(
-            listOf(quest(QuestState.ACTIVE, null)),
+        Mockito.`when`(questGateway.loadObservation(7L, HofRequestOrigin.AUTOMATION)).thenReturn(
+            app.spammy.hof.quest.parser.QuestPageObservation(
+                listOf(quest(QuestState.ACTIVE, null)),
+                complete = true,
+            ),
         )
         assertFailsWith<AutomationActionPreconditionChangedException> {
             questManaged.validateBeforeSubmission()
@@ -868,7 +940,7 @@ class AutomationActionLifecycleModuleTest {
             RaidTownAutomationAction(7L, RaidAction.REFRESH, null, "RaidGoblin"),
         ))
         Mockito.`when`(raidPubService.load(7L)).thenReturn(
-            RaidPubResponse(emptyList(), false, false, null, null, emptySet(), null),
+            RaidPubResponse(emptyList(), false, false, null, null, emptySet(), null, pageComplete = true),
         )
         assertFailsWith<AutomationActionPreconditionChangedException> {
             raidManaged.validateBeforeSubmission()
@@ -894,6 +966,18 @@ class AutomationActionLifecycleModuleTest {
     }
 
     @Test
+    fun `퀘스트 제출 직전 페이지가 불완전하면 대상 부재로 단정하지 않는다`() {
+        val managed = assertNotNull(module.prepare(7L, 12L, QuestAction.Accept("quest-1", "accept-1")))
+        Mockito.`when`(questGateway.loadObservation(7L, HofRequestOrigin.AUTOMATION)).thenReturn(
+            app.spammy.hof.quest.parser.QuestPageObservation(emptyList(), complete = false),
+        )
+
+        assertFailsWith<AutomationPreSubmitObservationIncompleteException> {
+            managed.validateBeforeSubmission()
+        }
+    }
+
+    @Test
     fun `불명확한 유니온 전투에서 다른 사람이 맵을 제거하면 내 적용으로 귀속하지 않는다`() {
         val action = battleMapAction().copy(
             categoryId = "union",
@@ -913,7 +997,7 @@ class AutomationActionLifecycleModuleTest {
     }
 
     @Test
-    fun `불명확한 유니온 전투는 맵이 남고 개인 쿨다운이 시작됐을 때만 적용한다`() {
+    fun `불명확한 유니온 전투의 개인 쿨다운은 내 성공으로 귀속하지 않는다`() {
         val action = battleMapAction().copy(
             categoryId = "union",
             source = BattleAutomationActionSource.UNION_AUTOMATION,
@@ -930,10 +1014,9 @@ class AutomationActionLifecycleModuleTest {
             ),
         )
 
-        val resolution = assertIs<AmbiguousActionResolution.Applied>(managed.reconcile())
+        assertIs<AmbiguousActionResolution.Superseded>(managed.reconcile())
 
-        assertEquals(TypedAutomationExecution.BattleCompleted("union", "map-1"), resolution.execution)
-        Mockito.verify(unionProgress).battleCompleted(7L, 13L, "union", "map-1")
+        Mockito.verifyNoInteractions(unionProgress)
     }
 
     @Test
@@ -1003,7 +1086,7 @@ class AutomationActionLifecycleModuleTest {
     }
 
     @Test
-    fun `불명확한 모험맵은 권위 횟수 감소만 적용하고 기준이 없으면 재실행하지 않는다`() {
+    fun `불명확한 모험맵은 권위 상태가 변해도 내 성공으로 귀속하지 않는다`() {
         val decreased = assertNotNull(module.prepare(7L, 14L, adventureAction()))
         val noBaseline = assertNotNull(
             module.prepare(
@@ -1017,18 +1100,25 @@ class AutomationActionLifecycleModuleTest {
                 ),
             ),
         )
-        Mockito.`when`(battleMapService.findMaps(7L, "battle_map", HofRequestOrigin.AUTOMATION))
+        Mockito.`when`(
+            battleMapService.observeCurrentlyAvailableMaps(7L, "battle_map", HofRequestOrigin.AUTOMATION),
+        )
             .thenReturn(
-                listOf(mapResponse(attemptCount = 2)),
-                listOf(mapResponse(attemptCount = 3)),
+                CurrentBattleMapObservation(
+                    CurrentBattleMapObservationStatus.OBSERVED,
+                    listOf(mapResponse(attemptCount = 2)),
+                ),
+                CurrentBattleMapObservation(
+                    CurrentBattleMapObservationStatus.OBSERVED,
+                    listOf(mapResponse(attemptCount = 3)),
+                ),
             )
         Mockito.`when`(battleOutcome.reloadRecentAuthoritativeEvidence(anyBattleAction()))
             .thenReturn(BattleOutcomeReconciliation.Unproven("결과 식별자를 찾지 못했습니다."))
 
-        assertIs<AmbiguousActionResolution.Applied>(decreased.reconcile())
+        assertIs<AmbiguousActionResolution.Superseded>(decreased.reconcile())
         assertIs<AmbiguousActionResolution.VerifyLater>(noBaseline.reconcile())
-        Mockito.verify(workLifecycle, Mockito.times(1))
-            .completeAdventureAction(7L, 14L, "battle_map", "map-1")
+        Mockito.verifyNoInteractions(workLifecycle)
     }
 
     @Test
@@ -1041,16 +1131,59 @@ class AutomationActionLifecycleModuleTest {
                 adventureAction().copy(executionIdentity = "adventure-reset"),
             ),
         )
-        Mockito.`when`(battleMapService.findMaps(7L, "battle_map", HofRequestOrigin.AUTOMATION))
+        Mockito.`when`(
+            battleMapService.observeCurrentlyAvailableMaps(7L, "battle_map", HofRequestOrigin.AUTOMATION),
+        )
             .thenReturn(
-                listOf(mapResponse(attemptCount = 3)),
-                listOf(mapResponse(attemptCount = 4)),
+                CurrentBattleMapObservation(
+                    CurrentBattleMapObservationStatus.OBSERVED,
+                    listOf(mapResponse(attemptCount = 3)),
+                ),
+                CurrentBattleMapObservation(
+                    CurrentBattleMapObservationStatus.OBSERVED,
+                    listOf(mapResponse(attemptCount = 4)),
+                ),
             )
         Mockito.`when`(battleOutcome.reloadRecentAuthoritativeEvidence(anyBattleAction()))
             .thenReturn(BattleOutcomeReconciliation.Unproven("결과 식별자를 찾지 못했습니다."))
 
         assertIs<AmbiguousActionResolution.Resubmit>(unchanged.reconcile())
         assertIs<AmbiguousActionResolution.Superseded>(reset.reconcile())
+        Mockito.verifyNoInteractions(workLifecycle)
+    }
+
+    @Test
+    fun `불명확한 모험맵의 비권위 페이지는 과거 catalog로 적용 판정하지 않는다`() {
+        val managed = assertNotNull(module.prepare(7L, 14L, adventureAction()))
+        Mockito.`when`(battleOutcome.reloadRecentAuthoritativeEvidence(anyBattleAction()))
+            .thenReturn(BattleOutcomeReconciliation.Unproven("결과 식별자를 찾지 못했습니다."))
+        Mockito.`when`(
+            battleMapService.observeCurrentlyAvailableMaps(7L, "battle_map", HofRequestOrigin.AUTOMATION),
+        ).thenReturn(
+            CurrentBattleMapObservation(CurrentBattleMapObservationStatus.INCOMPLETE, emptyList()),
+        )
+
+        assertIs<AmbiguousActionResolution.VerifyLater>(managed.reconcile())
+        Mockito.verifyNoInteractions(workLifecycle)
+        Mockito.verify(battleMapService, Mockito.never())
+            .findMaps(7L, "battle_map", HofRequestOrigin.AUTOMATION)
+    }
+
+    @Test
+    fun `불명확한 모험맵 대상이 완전한 최신 목록에서 사라지면 다음 대상 선택으로 넘긴다`() {
+        val managed = assertNotNull(module.prepare(7L, 14L, adventureAction()))
+        Mockito.`when`(battleOutcome.reloadRecentAuthoritativeEvidence(anyBattleAction()))
+            .thenReturn(BattleOutcomeReconciliation.Unproven("결과 식별자를 찾지 못했습니다."))
+        Mockito.`when`(
+            battleMapService.observeCurrentlyAvailableMaps(7L, "battle_map", HofRequestOrigin.AUTOMATION),
+        ).thenReturn(
+            CurrentBattleMapObservation(
+                CurrentBattleMapObservationStatus.OBSERVED,
+                listOf(mapResponse(mapCode = "map-2", attemptCount = 3)),
+            ),
+        )
+
+        assertIs<AmbiguousActionResolution.Superseded>(managed.reconcile())
         Mockito.verifyNoInteractions(workLifecycle)
     }
 
@@ -1366,7 +1499,9 @@ class AutomationActionLifecycleModuleTest {
 
     @Test
     fun `레이드 마을 행동을 저장하고 응답 관측만 레이드 규칙 모듈에 전달한다`() {
-        val response = RaidPubResponse(emptyList(), false, false, null, null, emptySet(), null)
+        val response = RaidPubResponse(
+            emptyList(), false, false, null, null, emptySet(), null, pageComplete = true,
+        )
         val observation = RaidObservation(emptyList(), false, false)
         Mockito.`when`(
             raidPubService.actionForAutomation(
@@ -1418,8 +1553,126 @@ class AutomationActionLifecycleModuleTest {
     }
 
     @Test
+    fun `잘린 raid action 응답은 보충 GET 뒤 HTTP 경계부터 durable applied까지 수렴한다`() {
+        val fixture = checkNotNull(
+            javaClass.classLoader.getResource("fixtures/town/raid/raidpub.html"),
+        ).readText()
+        val resettable = fixture
+            .replace("현재 상태는 신청 대기 (신청 가능까지 6분 58초)", "현재 상태는 신청 가능")
+            .replace("현재 상태 : 모집 중", "현재 상태 : 보상 확인 종료(리셋 가능)")
+            .replace("[《테스트 길드》현재사용자]", "[다른 신청자]")
+            .replace(
+                "<input type=\"submit\" name=\"leave_goblin\" value=\"파티에서 나온다\">",
+                "<input type=\"submit\" name=\"leave_goblin\" value=\"파티에서 나온다\">" +
+                    "<input type=\"submit\" name=\"reset_goblin\" value=\"전투를 리셋한다\">",
+            )
+        val afterReset = fixture
+            .replace("현재 상태는 신청 대기 (신청 가능까지 6분 58초)", "현재 상태는 신청 가능")
+            .replace("현재 상태 : 모집 중", "현재 상태 : 파티 모집 중 (신청 안됨)")
+            .replace("[《테스트 길드》현재사용자]", "[다른 신청자]")
+        val formOnly = afterReset.replace("<a href=\"?menu=raidlog\">Battle Log 전부표시</a>", "")
+        val liveRaidPub = realRaidPubService(resettable, formOnly, afterReset)
+        val managed = assertNotNull(
+            lifecycleModule(raidPubOverride = liveRaidPub).prepare(
+                7L,
+                13L,
+                RaidTownAutomationAction(
+                    accountId = 7L,
+                    action = RaidAction.RESET,
+                    raidId = "RaidGoblin",
+                    targetRaidId = "RaidGoblin",
+                ),
+            ),
+        )
+
+        val execution = assertIs<TypedAutomationExecution.ActionCompleted>(managed.execute())
+        val evidence = assertIs<AutomationActionEvidence.DirectApplied>(policyEvidence(managed, execution))
+        val store = InMemoryConvergenceStore()
+        val convergence = DefaultAutomationActionConvergenceModule(store, TimeProvider { now })
+        val selection = StoredActionConvergenceSelectionFactory().create(managed.storedAction)
+        val attemptId = assertIs<ConvergenceDirective.Submit>(convergence.prepare(7L, selection)).attemptId
+
+        assertIs<ConvergenceDirective.ContinueSelection>(convergence.record(attemptId, evidence))
+        assertEquals(ActionConvergenceResult.APPLIED, store.get(attemptId)?.result)
+    }
+
+    @Test
+    fun `불완전 raid response의 target 부재는 reset이나 reward 성공이 아니다`() {
+        listOf(RaidAction.RESET to "RaidGoblin", RaidAction.REWARD to null).forEach { (action, raidId) ->
+            val response = RaidPubResponse(
+                emptyList(), false, false, null, null, emptySet(), null, pageComplete = false,
+            )
+            Mockito.`when`(
+                raidPubService.actionForAutomation(
+                    7L,
+                    RaidPubActionRequest(action, raidId),
+                    "RaidGoblin",
+                ),
+            ).thenReturn(response)
+            val managed = assertNotNull(
+                module.prepare(
+                    7L,
+                    13L,
+                    RaidTownAutomationAction(7L, action, raidId, "RaidGoblin"),
+                ),
+            )
+
+            val execution = assertIs<TypedAutomationExecution.ActionCompleted>(managed.execute())
+
+            assertIs<AutomationActionEvidence.IncompleteObservation>(policyEvidence(managed, execution))
+        }
+    }
+
+    @Test
+    fun `공용 result UNKNOWN은 레이드 action별 사후 상태 판정을 막지 않는다`() {
+        val cases = listOf(
+            Triple(RaidAction.REGISTER, RaidStatus.RECRUITING, AutomationActionEvidence.DirectApplied::class),
+            Triple(RaidAction.START, RaidStatus.IN_BATTLE, AutomationActionEvidence.StateAdvanced::class),
+            Triple(RaidAction.REWARD, RaidStatus.COMPLETED, AutomationActionEvidence.DirectApplied::class),
+        )
+        cases.forEach { (action, status, expectedEvidence) ->
+            val requestRaidId = if (action == RaidAction.REWARD) null else "RaidGoblin"
+            val base = raidBattleResponse(status = status, targetPresent = false)
+            val response = base.copy(
+                raids = base.raids.map { it.copy(joined = true) },
+                globalActions = emptySet(),
+                result = app.spammy.hof.town.fishing.dto.TownActionResultResponse(
+                    status = "UNKNOWN",
+                    messages = emptyList(),
+                    items = emptyList(),
+                ),
+            )
+            Mockito.`when`(
+                raidPubService.actionForAutomation(
+                    7L,
+                    RaidPubActionRequest(action, requestRaidId),
+                    "RaidGoblin",
+                ),
+            ).thenReturn(response)
+            val managed = assertNotNull(
+                module.prepare(
+                    7L,
+                    13L,
+                    RaidTownAutomationAction(
+                        accountId = 7L,
+                        action = action,
+                        raidId = requestRaidId,
+                        targetRaidId = "RaidGoblin",
+                    ),
+                ),
+            )
+
+            val execution = assertIs<TypedAutomationExecution.ActionCompleted>(managed.execute())
+
+            assertEquals(expectedEvidence, policyEvidence(managed, execution)::class, action.name)
+        }
+    }
+
+    @Test
     fun `레이드 완료 판단은 규칙 모듈의 결과로만 작업을 닫는다`() {
-        val response = RaidPubResponse(emptyList(), true, true, 10_000, null, emptySet(), null)
+        val response = RaidPubResponse(
+            emptyList(), true, true, 10_000, null, emptySet(), null, pageComplete = true,
+        )
         val observation = RaidObservation(emptyList(), true, true, 10_000)
         val completion = RaidCycleOutcome(13L, "RaidGoblin", RaidCycleOutcomeKind.COMPLETED)
         Mockito.`when`(
@@ -1504,6 +1757,43 @@ class AutomationActionLifecycleModuleTest {
         assertEquals(now.plusSeconds(30), resolution.retryAt)
         Mockito.verify(raidObservationAdapter).read(7L)
         Mockito.verifyNoInteractions(workLifecycle)
+    }
+
+    @Test
+    fun `성공 표식 없이 다른 참가자가 시작한 레이드는 현재 START 요청의 성공으로 귀속하지 않는다`() {
+        val observation = RaidObservation(
+            raids = listOf(
+                RaidObservedTarget(
+                    id = "RaidGoblin",
+                    name = "고블린 레이드",
+                    playable = true,
+                    status = RaidObservedStatus.IN_BATTLE,
+                    joined = true,
+                    actions = emptySet(),
+                ),
+            ),
+            applied = true,
+            registrationWait = false,
+            actionSuccessMarker = false,
+        )
+        Mockito.`when`(raidObservationAdapter.read(7L)).thenReturn(observation)
+        val managed = assertNotNull(
+            module.prepare(
+                7L,
+                13L,
+                RaidTownAutomationAction(
+                    accountId = 7L,
+                    action = RaidAction.START,
+                    raidId = "RaidGoblin",
+                    targetRaidId = "RaidGoblin",
+                ),
+            ),
+        )
+
+        val resolution = assertIs<AmbiguousActionResolution.Superseded>(managed.reconcile())
+
+        assertTrue(resolution.reason.contains("다른 참가자의 시작"))
+        Mockito.verifyNoInteractions(raidCycleModule, workLifecycle)
     }
 
     @Test
@@ -1907,6 +2197,7 @@ class AutomationActionLifecycleModuleTest {
         myStatus = null,
         globalActions = emptySet(),
         result = null,
+        pageComplete = true,
         battleObservationStatus = observationStatus,
     )
 
@@ -1930,9 +2221,10 @@ class AutomationActionLifecycleModuleTest {
     private fun mapResponse(
         attemptCount: Int?,
         categoryId: String = "battle_map",
+        mapCode: String = "map-1",
     ) = BattleMapResponse(
         categoryId = categoryId,
-        mapCode = "map-1",
+        mapCode = mapCode,
         name = "모험 동굴",
         groupName = null,
         groupOrder = 0,
@@ -1949,7 +2241,7 @@ class AutomationActionLifecycleModuleTest {
         enabled = true,
         resolved = true,
         iconUrl = null,
-        rawHref = "?map=map-1",
+        rawHref = "?map=$mapCode",
     )
 
     private fun fishingResponse(
@@ -1983,7 +2275,55 @@ class AutomationActionLifecycleModuleTest {
 
     private fun anyQuestObservation(): QuestResultObservation =
         Mockito.any(QuestResultObservation::class.java)
-            ?: QuestResultObservation.Page(emptyList())
+            ?: QuestResultObservation.Page(emptyList(), complete = false)
+
+    private fun realRaidPubService(vararg responseBodies: String): RaidPubService {
+        val locations = Mockito.mock(TownLocationResolver::class.java)
+        val battleMaps = Mockito.mock(BattleMapService::class.java)
+        Mockito.`when`(locations.resolve(TownFeatureId.RAID_INFO, null)).thenReturn(
+            ResolvedTownLocation(TownFeatureId.RAID_INFO, RAID_PUB_URL),
+        )
+        return RaidPubService(
+            remoteExecutor(
+                *responseBodies.map { body ->
+                    HofHttpResponse(200, RAID_PUB_URL, body, emptyMap())
+                }.toTypedArray(),
+            ),
+            locations,
+            RaidPubParser(),
+            battleMaps,
+        )
+    }
+
+    private fun remoteExecutor(vararg responses: HofHttpResponse): TownAuthenticatedExecutor {
+        require(responses.isNotEmpty())
+        val accounts = Mockito.mock(AccountQueryRepository::class.java)
+        val cookies = Mockito.mock(CookieQueryRepository::class.java)
+        val gateway = Mockito.mock(AccountHofGateway::class.java)
+        Mockito.`when`(accounts.findById(7L)).thenReturn(HofAccountEntity(7L, "fixture", "encrypted", now))
+        Mockito.`when`(cookies.findValueMapByAccountId(7L)).thenReturn(mapOf("PHPSESSID" to "fixture-session"))
+        Mockito.`when`(gateway.execute(Mockito.eq(7L), anyHofRequest(), anyHofCookies())).thenReturn(
+            responses.first(),
+            *responses.drop(1).toTypedArray(),
+        )
+        return TownAuthenticatedExecutor(
+            accounts,
+            cookies,
+            HofRequestFactory(),
+            gateway,
+            LoginStateParser(),
+            HofFormParser(),
+            HofResultParser(),
+            TownActionGuard(),
+            AccountHofMutationFence(),
+        )
+    }
+
+    private fun anyHofRequest(): HofRequest = Mockito.any(HofRequest::class.java)
+        ?: HofRequest(HofHttpMethod.GET, QUEST_URL)
+
+    private fun anyHofCookies(): Map<String, String> =
+        Mockito.anyMap<String, String>() ?: emptyMap()
 
     private fun actionRow(
         codec: StoredTypedAutomationActionCodec,
@@ -2006,5 +2346,10 @@ class AutomationActionLifecycleModuleTest {
             createdAt = now,
             updatedAt = now,
         )
+    }
+
+    private companion object {
+        const val QUEST_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=quest"
+        const val RAID_PUB_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=raidpub"
     }
 }

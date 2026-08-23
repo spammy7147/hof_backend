@@ -18,10 +18,96 @@ import org.jsoup.nodes.Node
 import org.jsoup.nodes.TextNode
 import org.springframework.stereotype.Component
 
+data class QuestPageObservation(
+    val quests: List<QuestSnapshot>,
+    val complete: Boolean,
+)
+
 @Component
 class QuestPageParser {
-    fun parse(html: String): List<QuestSnapshot> {
-        val document = HofHtmlParser.parse(html)
+    fun parse(html: String): List<QuestSnapshot> = parseDocument(HofHtmlParser.parse(html))
+
+    fun parseObservation(
+        html: String,
+        finalUrl: String,
+        statusCode: Int = 200,
+    ): QuestPageObservation {
+        val document = HofHtmlParser.parse(html, finalUrl)
+        val contents = document.selectFirst("#contents")
+        val normalizedText = contents?.text()?.replace(Regex("\\s+"), " ")?.trim().orEmpty()
+        val completeSections = contents?.let { scope ->
+            REQUIRED_SECTION_HEADINGS.mapNotNull { heading -> completeSection(scope, heading) }
+        }.orEmpty()
+        val hasCompleteSections = completeSections.size == REQUIRED_SECTION_HEADINGS.size &&
+            completeSections.all(::hasOnlyParsableRows)
+        val complete = statusCode in 200..299 &&
+            QUEST_URL_PATTERN.containsMatchIn(finalUrl) &&
+            contents != null &&
+            normalizedText.contains("퀘스트 목록") &&
+            hasCompleteSections &&
+            hasCompletePageTerminator(document)
+        return QuestPageObservation(parseDocument(document), complete)
+    }
+
+    private fun hasCompletePageTerminator(document: org.jsoup.nodes.Document): Boolean =
+        document.select("h5").any { normalize(it.text()).contains("copy right", ignoreCase = true) } &&
+            document.select("h6").any { normalize(it.text()).contains("h.o.f korean ver", ignoreCase = true) } &&
+            document.select("img[src]").any { image ->
+                image.attr("src").substringBefore('?').substringAfterLast('/').equals("zerohof.gif", true)
+            }
+
+    private fun completeSection(contents: Element, headingPattern: Regex): CompleteQuestSection? {
+        val heading = contents.select("h1, h2, h3, h4, h5, h6").firstOrNull { candidate ->
+            headingPattern.matches(normalize(candidate.text()))
+        } ?: return null
+        val sectionTable = generateSequence(heading.nextElementSibling()) { it.nextElementSibling() }
+            .takeWhile { sibling -> sibling.tagName() !in HEADING_TAGS }
+            .mapNotNull { sibling ->
+                if (sibling.tagName() == "table") sibling else sibling.selectFirst("table")
+            }
+            .firstOrNull()
+            ?: return null
+        val hasRequiredHeader = sectionTable.select("tr").any { row ->
+            row.children()
+                .filter { it.tagName() == "th" || it.tagName() == "td" }
+                .map { normalize(it.text()) } == REQUIRED_HEADERS
+        }
+        if (!hasRequiredHeader) return null
+        return CompleteQuestSection(sectionTable, parseSection(heading.text()))
+    }
+
+    private fun hasOnlyParsableRows(section: CompleteQuestSection): Boolean {
+        val rows = section.table.select("tr")
+            .filter { row -> row.closest("table") === section.table }
+            .filterNot { row ->
+            row.children()
+                .filter { it.tagName() == "th" || it.tagName() == "td" }
+                .map { normalize(it.text()) } == REQUIRED_HEADERS
+            }
+            .filter { row -> directCells(row).any { cell -> normalize(cell.text()).isNotEmpty() } }
+        var index = 0
+        while (index < rows.size) {
+            val start = rows[index]
+            if (!isQuestStart(start)) return false
+            val span = directCells(start)
+                .mapNotNull { cell -> cell.attr("rowspan").toIntOrNull() }
+                .maxOrNull()
+                ?: 1
+            if (span !in 1..MAX_COMPLETE_SECTION_ROWSPAN || index + span > rows.size) return false
+            val nodes = rows.subList(index, index + span)
+            if (nodes.drop(1).any(::isQuestStart)) return false
+            if (parseBlock(QuestBlock(start, nodes), section.section) == null) return false
+            index += span
+        }
+        return true
+    }
+
+    private data class CompleteQuestSection(
+        val table: Element,
+        val section: QuestSection?,
+    )
+
+    private fun parseDocument(document: org.jsoup.nodes.Document): List<QuestSnapshot> {
         val scope = document.selectFirst("#contents") ?: document
         var sourceOrder = 0
         val occurrences = questBlocks(scope)
@@ -434,6 +520,14 @@ class QuestPageParser {
     }
 
     private companion object {
+        val QUEST_URL_PATTERN = Regex("(?:[?&])menu=quest(?:&|$)", RegexOption.IGNORE_CASE)
+        val REQUIRED_SECTION_HEADINGS = listOf(
+            Regex("진행중인\\s*퀘스트\\s*목록"),
+            Regex("수락\\s*가능한\\s*퀘스트\\s*목록"),
+            Regex("대기중인\\s*퀘스트\\s*목록"),
+        )
+        val REQUIRED_HEADERS = listOf("퀘스트명", "타입", "제한", "보상", "행동")
+        val HEADING_TAGS = setOf("h1", "h2", "h3", "h4", "h5", "h6")
         val QUEST_ID = Regex("\\[([A-Za-z0-9_-]{4,})]")
         val PROGRESS = Regex("\\[\\s*(\\d+)\\s*/\\s*(\\d+)\\s*]")
         val ACTION = Regex("[?&]action=(get|complete)(?:[&#]|$)")
@@ -443,5 +537,6 @@ class QuestPageParser {
         val LABELED_REWARD_PREFIX = Regex("^\\s*보상\\s*[:：]\\s*")
         val WHITESPACE = Regex("\\s+")
         val MISSION_BLOCK_TAGS = setOf("div", "li", "p")
+        const val MAX_COMPLETE_SECTION_ROWSPAN = 20
     }
 }

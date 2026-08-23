@@ -157,6 +157,9 @@ class DefaultActionEvidencePolicies : ActionEvidencePolicies {
             }
             return directApplied(observation, lifecycle)
         }
+        if (selection.actionKind.battle && state is BattleObservedState) {
+            return evaluateBattle(selection, observation, state)
+        }
         return when (selection.actionKind) {
             AutomationActionKind.QUEST_ACCEPT,
             AutomationActionKind.QUEST_CLAIM,
@@ -196,7 +199,7 @@ class DefaultActionEvidencePolicies : ActionEvidencePolicies {
                 QuestState.CLAIMABLE,
                 QuestState.COMPLETED,
             )
-            AutomationActionKind.QUEST_CLAIM -> state.present && state.state in setOf(
+            AutomationActionKind.QUEST_CLAIM -> !state.present || state.state in setOf(
                 QuestState.COMPLETED,
                 QuestState.UNAVAILABLE,
             )
@@ -252,9 +255,6 @@ class DefaultActionEvidencePolicies : ActionEvidencePolicies {
         ) {
             return directApplied(observation, state)
         }
-        if (state.personalCooldown && state.mapPresent) {
-            return directApplied(observation, state)
-        }
         if (!state.mapPresent) {
             return stateAdvanced(observation, state)
         }
@@ -291,10 +291,11 @@ class DefaultActionEvidencePolicies : ActionEvidencePolicies {
         val direct = observation.source == ActionEvidenceSource.DIRECT_RESPONSE
         val applied = direct && when (selection.actionKind) {
             AutomationActionKind.RAID_REGISTER -> state.joined
-            AutomationActionKind.RAID_START -> observation.actionSuccessMarker && state.sharedStatus == "IN_BATTLE"
-            AutomationActionKind.RAID_RESET -> observation.actionSuccessMarker && !state.joined &&
+            AutomationActionKind.RAID_START -> observation.actionSuccessMarker &&
+                state.joined && state.sharedStatus == "IN_BATTLE"
+            AutomationActionKind.RAID_RESET -> !state.joined &&
                 state.sharedStatus in setOf("ABSENT", "RECRUITING", "READY", "WAITING")
-            AutomationActionKind.RAID_REWARD -> observation.actionSuccessMarker && state.rewardAvailable == false
+            AutomationActionKind.RAID_REWARD -> state.rewardAvailable == false
             AutomationActionKind.RAID_REFRESH -> observation.actionSuccessMarker
             AutomationActionKind.RAID_BATTLE -> state.terminalOutcomes.isNotEmpty() &&
                 state.terminalOutcomes.all(::terminalBattleOutcome)
@@ -304,9 +305,6 @@ class DefaultActionEvidencePolicies : ActionEvidencePolicies {
         if (applied) return directApplied(observation, state)
         if (!state.joined && state.sharedStatus in setOf("IN_BATTLE", "COMPLETED")) {
             return stateAdvanced(observation, state)
-        }
-        if (state.joined && state.personalCooldown) {
-            return directApplied(observation, state)
         }
         if (state.sharedStatus == "COMPLETED") {
             return stateAdvanced(observation, state)

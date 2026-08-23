@@ -143,6 +143,7 @@ data class RaidObservation(
     val resultMessages: List<String> = emptyList(),
     val observedAt: Instant? = null,
     val fresh: Boolean = true,
+    val actionSuccessMarker: Boolean = false,
 )
 
 sealed interface RaidResultObservation {

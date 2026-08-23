@@ -64,7 +64,7 @@ data class RaidPubSnapshot(
     val globalActions: Set<RaidAction>,
     val result: ParsedTownResult?,
     internal val globalActionIds: Map<RaidAction, String>,
-    internal val observedRaidPubForm: Boolean,
+    internal val pageComplete: Boolean,
     val battleObservationStatus: RaidBattleObservationStatus = RaidBattleObservationStatus.INCOMPLETE,
     val battleObservationEvidence: RaidBattleObservationEvidence? = null,
 )

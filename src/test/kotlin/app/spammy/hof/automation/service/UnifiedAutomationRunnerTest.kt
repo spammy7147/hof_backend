@@ -6,6 +6,8 @@ import app.spammy.hof.automation.convergence.AutomationActionKind
 import app.spammy.hof.automation.convergence.AutomationConvergenceMode
 import app.spammy.hof.automation.convergence.AutomationConvergenceProperties
 import app.spammy.hof.automation.convergence.AutomationConvergenceRollout
+import app.spammy.hof.automation.convergence.AutomationConvergenceSelectionConstraints
+import app.spammy.hof.automation.convergence.AutomationConvergenceSelectionGuard
 import app.spammy.hof.automation.convergence.AutomationConvergenceShadowEvaluator
 import app.spammy.hof.automation.convergence.AutomationIsolationScope
 import app.spammy.hof.automation.convergence.AutomationIsolationScopeKind
@@ -21,6 +23,9 @@ import app.spammy.hof.automation.convergence.SelectedAutomationAction
 import app.spammy.hof.automation.convergence.StoredActionConvergenceSelectionFactory
 import app.spammy.hof.automation.convergence.StoredConvergenceActionLoader
 import app.spammy.hof.automation.entity.AutomationType
+import app.spammy.hof.automation.entity.AutomationEntryEntity
+import app.spammy.hof.automation.entity.AutomationWorkStatus
+import app.spammy.hof.automation.entity.AutomationWorkType
 import app.spammy.hof.automation.entity.AutomationWaitReason
 import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.automation.history.AutomationActionTrace
@@ -29,12 +34,21 @@ import app.spammy.hof.automation.history.AutomationHistoryEventKind
 import app.spammy.hof.automation.port.AutomationWakeupPort
 import app.spammy.hof.automation.raid.RaidCycleOutcome
 import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
+import app.spammy.hof.automation.raid.RaidCycleModule
+import app.spammy.hof.automation.raid.RaidDirective
+import app.spammy.hof.automation.raid.RaidIntent
+import app.spammy.hof.automation.raid.RaidIntentKind
+import app.spammy.hof.automation.repository.AutomationWorkSessionQueryRepository
+import app.spammy.hof.automation.repository.AutomationWorkSessionView
+import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
+import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.battle.dto.BattlePatternLoadRequest
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.client.HofAutomationDeferredException
 import app.spammy.hof.quest.model.QuestState
+import app.spammy.hof.town.raid.model.RaidAction
 import java.time.Instant
 import java.time.LocalDate
 import kotlin.test.Test
@@ -130,6 +144,211 @@ class UnifiedAutomationRunnerTest {
         Mockito.verify(journal, Mockito.times(2)).appendActionResult(Mockito.eq(41L), captureTrace(traceCaptor))
         assertTrue(traceCaptor.allValues.all { it.actionKind == "QUEST_CLAIM" })
         assertTrue(traceCaptor.allValues.all { it.message.startsWith("퀘스트 보상 수령 · quest") })
+    }
+
+    @Test
+    fun `실제 selector와 상태형 work handoff를 통과해 blocked raid와 quest를 건너뛰고 adventure를 실행한다`() {
+        val observedAt = Instant.parse("2026-08-24T00:00:00Z")
+        var currentTime = observedAt
+        val account = HofAccountEntity(7L, "runner-progress", "encrypted", observedAt)
+        val raidEntry = AutomationEntryEntity(21L, account, AutomationType.RAID, 1, true, observedAt, observedAt)
+        val questEntry = AutomationEntryEntity(22L, account, AutomationType.QUEST, 4, true, observedAt, observedAt)
+        val adventureEntry = AutomationEntryEntity(
+            23L,
+            account,
+            AutomationType.ADVENTURE_MAP,
+            5,
+            true,
+            observedAt,
+            observedAt,
+        )
+        val sessions = linkedMapOf(
+            31L to AutomationWorkSessionView(
+                id = 31L,
+                accountId = 7L,
+                entryId = questEntry.id,
+                entryPriority = questEntry.priority,
+                workType = AutomationWorkType.QUEST,
+                targetKey = "quest-1",
+                status = AutomationWorkStatus.RUNNING,
+                materialName = null,
+                nextCheckAt = null,
+                revision = 7,
+            ),
+            32L to AutomationWorkSessionView(
+                id = 32L,
+                accountId = 7L,
+                entryId = raidEntry.id,
+                entryPriority = raidEntry.priority,
+                workType = AutomationWorkType.RAID,
+                targetKey = "RaidGoblin",
+                status = AutomationWorkStatus.WAITING_COOLDOWN,
+                materialName = null,
+                nextCheckAt = observedAt,
+                revision = 3,
+            ),
+        )
+        val workQueries = Mockito.mock(AutomationWorkSessionQueryRepository::class.java)
+        Mockito.`when`(workQueries.findRunning(7L)).thenAnswer {
+            sessions.values.singleOrNull { it.status == AutomationWorkStatus.RUNNING }
+        }
+        Mockito.`when`(workQueries.findWaiting(7L)).thenAnswer {
+            sessions.values.filter { it.status != AutomationWorkStatus.RUNNING }
+        }
+        val workLifecycle = Mockito.mock(AutomationWorkLifecycle::class.java)
+        Mockito.`when`(workLifecycle.handoffForPriority(7L, 31L, 32L)).thenAnswer {
+            sessions[31L] = requireNotNull(sessions[31L]).copy(
+                status = AutomationWorkStatus.YIELDED_PRIORITY,
+                nextCheckAt = observedAt.plusSeconds(10),
+                revision = 8,
+            )
+            sessions[32L] = requireNotNull(sessions[32L]).copy(
+                status = AutomationWorkStatus.RUNNING,
+                nextCheckAt = null,
+                revision = 4,
+            )
+            true
+        }
+        Mockito.doAnswer { invocation ->
+            val sessionId = invocation.arguments[1] as Long
+            val nextCheckAt = invocation.arguments[2] as Instant
+            sessions[sessionId] = requireNotNull(sessions[sessionId]).copy(
+                status = AutomationWorkStatus.WAITING_COOLDOWN,
+                nextCheckAt = nextCheckAt,
+                revision = requireNotNull(sessions[sessionId]).revision + 1,
+            )
+            null
+        }.`when`(workLifecycle).waitForCooldown(Mockito.eq(7L), Mockito.anyLong(), anyInstantValue())
+        Mockito.doAnswer { invocation ->
+            val sessionId = invocation.arguments[1] as Long
+            sessions[sessionId] = requireNotNull(sessions[sessionId]).copy(
+                status = AutomationWorkStatus.RUNNING,
+                nextCheckAt = null,
+                revision = requireNotNull(sessions[sessionId]).revision + 1,
+            )
+            null
+        }.`when`(workLifecycle).resumeForCheck(7L, 31L)
+
+        val typedQueries = Mockito.mock(TypedAutomationQueryRepository::class.java)
+        Mockito.`when`(typedQueries.findEntries(7L)).thenReturn(listOf(raidEntry, questEntry, adventureEntry))
+        val snapshotLoader = Mockito.mock(TypedAutomationSnapshotLoader::class.java)
+        val questSnapshot = AutomationEntrySnapshot(
+            questEntry.id,
+            AutomationType.QUEST,
+            quest = QuestAutomationSnapshot(
+                accountId = 7L,
+                quests = emptyList(),
+                selections = emptyList(),
+                mapStates = emptyList(),
+                currentCycles = emptyMap(),
+                counters = emptyMap(),
+                mapIdentityCandidates = emptyList(),
+                now = observedAt,
+            ),
+        )
+        Mockito.`when`(snapshotLoader.loadEntry(7L, questEntry.id, null, null)).thenReturn(questSnapshot)
+        Mockito.`when`(snapshotLoader.loadEntry(7L, questEntry.id, "quest-1", null)).thenReturn(questSnapshot)
+        Mockito.`when`(snapshotLoader.loadEntry(7L, adventureEntry.id, null, null)).thenReturn(
+            AutomationEntrySnapshot(
+                adventureEntry.id,
+                AutomationType.ADVENTURE_MAP,
+                adventure = AdventureMapAutomationSnapshot(
+                    accountId = 7L,
+                    settings = emptyList(),
+                    mapStates = emptyList(),
+                    presetResolutions = emptyMap(),
+                    executionIdentities = emptyMap(),
+                    evaluationInstant = observedAt,
+                ),
+            ),
+        )
+        val questRules = Mockito.mock(QuestWorkCycleModule::class.java)
+        val evaluatedQuestRevisions = mutableListOf<Long?>()
+        val resumedQuestAction = QuestAction.Accept("quest-1", "accept-1")
+        Mockito.`when`(questRules.decideNext(anyQuestSnapshotValue())).thenAnswer { invocation ->
+            val snapshot = invocation.arguments[0] as QuestAutomationSnapshot
+            evaluatedQuestRevisions += snapshot.workSessionRevision
+            if (snapshot.workSessionId == 31L) QuestDirective.Execute(resumedQuestAction) else QuestDirective.Skip
+        }
+        val adventureAction = AdventureMapAutomationAction(
+            accountId = 7L,
+            categoryId = "adventure_map",
+            mapCode = "adventure-1",
+            presetMode = PresetSelectionMode.PRIMARY,
+            presetId = 301L,
+            settingIdentity = 41L,
+            executionIdentity = "runner-adventure-1",
+        )
+        val raidIntent = RaidIntent.Town(
+            entryId = raidEntry.id,
+            raidId = "RaidGoblin",
+            raidName = "고블린 레이드",
+            kind = RaidIntentKind.REGISTER,
+        )
+        val raidRules = Mockito.mock(RaidCycleModule::class.java)
+        Mockito.`when`(raidRules.decideNext(7L)).thenReturn(RaidDirective.Execute(raidIntent))
+        val convergenceFactory = StoredActionConvergenceSelectionFactory()
+        val raidPrepared = RaidTownAutomationAction(
+            accountId = 7L,
+            action = RaidAction.REGISTER,
+            raidId = "RaidGoblin",
+            targetRaidId = "RaidGoblin",
+            raidName = "고블린 레이드",
+        )
+        val raidPreview = convergenceFactory.preview(raidEntry.id, raidPrepared)
+        val selector = AutomationTargetSelector(
+            typed = typedQueries,
+            work = workQueries,
+            loader = snapshotLoader,
+            lifecycle = workLifecycle,
+            timeProvider = TimeProvider { currentTime },
+            raidModule = raidRules,
+            quest = questRules,
+            battle = AutomationHandler { HandlerEvaluation.Skipped },
+            adventure = AutomationHandler { HandlerEvaluation.Runnable(adventureAction) },
+            union = AutomationHandler { HandlerEvaluation.Skipped },
+            fishing = AutomationHandler { HandlerEvaluation.Skipped },
+            homeQuest = AutomationHandler { HandlerEvaluation.Skipped },
+            convergenceGuard = AutomationConvergenceSelectionGuard {
+                AutomationConvergenceSelectionConstraints(
+                    blockedScopes = emptySet(),
+                    battleGateActive = false,
+                    suppressedBaselines = mapOf(
+                        raidPreview.scope to setOf(requireNotNull(raidPreview.baselineFingerprint)),
+                    ),
+                )
+            },
+            convergenceSelectionFactory = convergenceFactory,
+            convergenceRollout = AutomationConvergenceRollout(
+                AutomationConvergenceProperties(mode = AutomationConvergenceMode.SHADOW),
+            ),
+        )
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            selector,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+        )
+
+        scoped.runOne(7L)
+
+        Mockito.verify(workLifecycle).handoffForPriority(7L, 31L, 32L)
+        Mockito.verify(workLifecycle).waitForCooldown(7L, 32L, observedAt.plusSeconds(30))
+        Mockito.verify(lifecycle).prepare(7L, adventureEntry.id, adventureAction)
+        Mockito.verify(managed).execute()
+        assertEquals(AutomationWorkStatus.YIELDED_PRIORITY, sessions.getValue(31L).status)
+        assertEquals(AutomationWorkStatus.WAITING_COOLDOWN, sessions.getValue(32L).status)
+
+        currentTime = observedAt.plusSeconds(10)
+        scoped.runOne(7L)
+
+        Mockito.verify(workLifecycle).resumeForCheck(7L, 31L)
+        Mockito.verify(lifecycle).prepare(7L, questEntry.id, resumedQuestAction)
+        Mockito.verify(managed, Mockito.times(2)).execute()
+        assertTrue(9L in evaluatedQuestRevisions)
+        assertTrue(8L !in evaluatedQuestRevisions)
     }
 
     @Test
@@ -1762,6 +1981,20 @@ class UnifiedAutomationRunnerTest {
 
     private fun anyLegacyConvergenceDecision(): LegacyConvergenceDecision =
         Mockito.any(LegacyConvergenceDecision::class.java) ?: LegacyConvergenceDecision.APPLIED
+
+    private fun anyInstantValue(): Instant = Mockito.any(Instant::class.java) ?: Instant.EPOCH
+
+    private fun anyQuestSnapshotValue(): QuestAutomationSnapshot =
+        Mockito.any(QuestAutomationSnapshot::class.java) ?: QuestAutomationSnapshot(
+            accountId = 0,
+            quests = emptyList(),
+            selections = emptyList(),
+            mapStates = emptyList(),
+            currentCycles = emptyMap(),
+            counters = emptyMap(),
+            mapIdentityCandidates = emptyList(),
+            now = Instant.EPOCH,
+        )
 
     private fun captureLegacyDecision(
         captor: ArgumentCaptor<LegacyConvergenceDecision>,

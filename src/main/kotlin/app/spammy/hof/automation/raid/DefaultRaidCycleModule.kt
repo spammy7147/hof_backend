@@ -657,7 +657,10 @@ class DefaultRaidCycleModule(
         }
         if (attempt.kind == RaidIntentKind.START) {
             val target = page.raids.singleOrNull { it.id == attempt.raidId }
-            if (target?.status in setOf(RaidObservedStatus.IN_BATTLE, RaidObservedStatus.COMPLETED)) {
+            if (
+                page.actionSuccessMarker &&
+                target?.status in setOf(RaidObservedStatus.IN_BATTLE, RaidObservedStatus.COMPLETED)
+            ) {
                 store.transition(
                     accountId = accountId,
                     raidId = attempt.raidId,
@@ -976,11 +979,11 @@ class DefaultRaidCycleModule(
             )
         }
         if (observed.battleAvailability == RaidBattleAvailability.COOLDOWN) {
-            val applied =
+            val superseded =
                 recovery.submittedFromRunnable &&
                     battle.categoryId == recovery.categoryId &&
                     battle.mapCode == recovery.mapCode
-            if (applied) {
+            if (superseded) {
                 store.clearBattleRecovery(accountId, cycle.raidId, now)
             } else {
                 store.saveBattleRecovery(
@@ -993,9 +996,10 @@ class DefaultRaidCycleModule(
             val seconds = battle.cooldownRemainingSeconds?.takeIf { it > 0 } ?: RECOVERY_RECHECK_SECONDS
             return RaidDirective.WaitUntil(
                 at = now.plusSeconds(seconds),
-                reason = if (applied) RaidWaitReason.BATTLE_APPLIED_COOLDOWN else RaidWaitReason.BATTLE_COOLDOWN,
-                message = if (applied) {
-                    "새 쿨타임으로 이전 레이드 전투 적용을 확인했습니다. 다음 전투 가능 시각까지 기다립니다."
+                reason = RaidWaitReason.BATTLE_COOLDOWN,
+                message = if (superseded) {
+                    "새 쿨타임을 관측했지만 현재 요청의 단말 결과가 없어 외부 상태 변경으로 처리합니다. " +
+                        "다음 전투 가능 시각까지 기다립니다."
                 } else {
                     recoveryWarning(recovery, "제출 전 관측이 없어 현재 쿨타임만으로 적용을 추정하지 않습니다.")
                 },
@@ -1082,12 +1086,12 @@ class DefaultRaidCycleModule(
         val battle = observed.battle
         val hofSeconds = battle?.cooldownRemainingSeconds?.takeIf { it > 0 }
         if (observed.battleAvailability == RaidBattleAvailability.COOLDOWN && hofSeconds != null) {
-            val appliedRecovery = cycle.battleRecovery?.let { recovery ->
+            val supersededRecovery = cycle.battleRecovery?.let { recovery ->
                 recovery.submittedFromRunnable &&
                     battle.categoryId == recovery.categoryId &&
                     battle.mapCode == recovery.mapCode
             } == true
-            if (appliedRecovery) {
+            if (supersededRecovery) {
                 store.clearBattleRecovery(accountId, cycle.raidId, now)
             }
             val authoritative = gate.copy(
@@ -1098,7 +1102,7 @@ class DefaultRaidCycleModule(
                 lastObservedAt = now,
             )
             store.saveBattleSafetyGate(accountId, cycle.raidId, authoritative, now)
-            return battleSafetyWait(configuration, cycle, authoritative, appliedRecovery)
+            return battleSafetyWait(configuration, cycle, authoritative, supersededRecovery)
         }
         if (!properties.enforces(gate)) {
             store.clearBattleSafetyGate(accountId, cycle.raidId, now)
@@ -1169,12 +1173,13 @@ class DefaultRaidCycleModule(
         configuration: RaidCycleConfiguration,
         cycle: RaidCycleSnapshot,
         gate: RaidBattleSafetyGate,
-        appliedRecovery: Boolean = false,
+        supersededRecovery: Boolean = false,
     ) = RaidDirective.WaitUntil(
         at = gate.notBefore,
-        reason = if (appliedRecovery) RaidWaitReason.BATTLE_APPLIED_COOLDOWN else RaidWaitReason.BATTLE_COOLDOWN,
-        message = if (appliedRecovery) {
-            "새 HOF 쿨타임으로 이전 레이드 전투 적용을 확인했습니다. 다음 전투 가능 시각까지 기다립니다."
+        reason = RaidWaitReason.BATTLE_COOLDOWN,
+        message = if (supersededRecovery) {
+            "새 HOF 쿨타임을 관측했지만 현재 요청의 단말 결과가 없어 외부 상태 변경으로 처리합니다. " +
+                "다음 전투 가능 시각까지 기다립니다."
         } else when (gate.source) {
             RaidCooldownSource.HOF_DIRECT -> "HOF가 제공한 다음 레이드 전투 가능 시각까지 기다립니다."
             RaidCooldownSource.HOF_SINGLE_TARGET_INFERENCE ->

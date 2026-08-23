@@ -76,7 +76,7 @@ class BattleMapService(
     ): List<BattleMapResponse> {
         val snapshot = fetchMapSnapshot(accountId, categoryId, requireObservations = false, origin)
         if (snapshot.observations.isEmpty()) {
-            if (snapshot.category == BattleCategoryId.UNION) {
+            if (snapshot.category == BattleCategoryId.UNION && snapshot.statusCode in 200..299) {
                 val pageState = battleMapParser.parseUnionPageState(snapshot.responseBody)
                 if (pageState.authoritative) {
                     return synchronizeUnavailableSnapshot(snapshot, pageState.cooldownRemainingSeconds)
@@ -108,6 +108,23 @@ class BattleMapService(
     ): CurrentBattleMapObservation {
         val snapshot = fetchMapSnapshot(accountId, categoryId, requireObservations = false, origin)
         if (snapshot.observations.isNotEmpty()) {
+            if (
+                snapshot.category == BattleCategoryId.ADVENTURE_MAP &&
+                !battleMapParser.observesCompleteAdventureMapPage(
+                    html = snapshot.responseBody,
+                    finalUrl = snapshot.finalUrl,
+                    statusCode = snapshot.statusCode,
+                    maps = snapshot.observations,
+                )
+            ) {
+                log.warn(
+                    "Adventure map observation incomplete accountId={} categoryId={} mapCount={}",
+                    accountId,
+                    categoryId,
+                    snapshot.observations.size,
+                )
+                return CurrentBattleMapObservation(CurrentBattleMapObservationStatus.INCOMPLETE, emptyList())
+            }
             val raidCooldown = snapshot.takeIf { it.category == BattleCategoryId.RAID }
                 ?.let { battleMapParser.inspectRaidCooldown(it.responseBody, it.observations) }
             if (raidCooldown != null) {
@@ -136,8 +153,12 @@ class BattleMapService(
                 raidCooldown,
             )
         }
-        val authoritativeAbsence = when (snapshot.category) {
-            BattleCategoryId.RAID -> battleMapParser.observesAuthoritativeRaidAbsence(snapshot.responseBody)
+        val authoritativeAbsence = snapshot.statusCode in 200..299 && when (snapshot.category) {
+            BattleCategoryId.RAID -> battleMapParser.observesAuthoritativeRaidAbsence(
+                html = snapshot.responseBody,
+                finalUrl = snapshot.finalUrl,
+                statusCode = snapshot.statusCode,
+            )
             BattleCategoryId.UNION -> battleMapParser.parseUnionPageState(snapshot.responseBody).authoritative
             else -> false
         }
@@ -237,6 +258,7 @@ class BattleMapService(
         )
         val response = gateway.execute(account.id, requestFactory.battleMapPage(source.pageQuery, origin), cookies)
         val mapPageResponse = source.detailPageQuery
+            ?.takeIf { response.statusCode in 200..299 }
             ?.let { detailPageQuery ->
                 gateway.execute(
                     accountId = account.id,
@@ -253,6 +275,22 @@ class BattleMapService(
             }
             throw AdventureMapRefreshException.Fatal(
                 "HOF 모험 맵 요청이 거부되었습니다. status=${mapPageResponse.statusCode}",
+            )
+        }
+        if (mapPageResponse.statusCode !in 200..299) {
+            log.warn(
+                "Battle map list preserved accountId={} categoryId={} status={} reason=http-status",
+                account.id,
+                category.value,
+                mapPageResponse.statusCode,
+            )
+            return BattleMapSnapshot(
+                accountId = account.id,
+                category = category,
+                observations = emptyList(),
+                responseBody = mapPageResponse.body,
+                finalUrl = mapPageResponse.finalUrl,
+                statusCode = mapPageResponse.statusCode,
             )
         }
         val login = loginStateParser.parse(mapPageResponse.body)
@@ -285,7 +323,14 @@ class BattleMapService(
             }
         }
 
-        return BattleMapSnapshot(account.id, category, maps.toList(), mapPageResponse.body)
+        return BattleMapSnapshot(
+            accountId = account.id,
+            category = category,
+            observations = maps.toList(),
+            responseBody = mapPageResponse.body,
+            finalUrl = mapPageResponse.finalUrl,
+            statusCode = mapPageResponse.statusCode,
+        )
     }
 
     private fun synchronizeSnapshot(snapshot: BattleMapSnapshot): List<BattleMapResponse> {
@@ -342,6 +387,8 @@ class BattleMapService(
         val category: BattleCategoryId,
         val observations: List<HofBattleMap>,
         val responseBody: String = "",
+        val finalUrl: String = "",
+        val statusCode: Int = 0,
     )
 
     private fun Throwable.causes(): Sequence<Throwable> = generateSequence(this) { it.cause }

@@ -15,6 +15,7 @@ import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.external.client.HofAutomationDeferredException
 import app.spammy.hof.party.repository.PartyPresetQueryRepository
 import app.spammy.hof.quest.model.QuestSnapshot
+import app.spammy.hof.quest.parser.QuestPageObservation
 import app.spammy.hof.quest.service.QuestGatewayService
 import app.spammy.hof.status.service.HofStatusSnapshotService
 import app.spammy.hof.town.fishing.dto.FishingResponse
@@ -65,7 +66,10 @@ class TypedLiveAutomationSnapshotLoader(
             "Typed automation HTTP refresh must run without a transaction."
         }
         val live = if (questOverride != null) {
-            refreshLiveState(accountId, scopedBefore, includeQuests = false).copy(quests = questOverride)
+            refreshLiveState(accountId, scopedBefore, includeQuests = false).copy(
+                quests = questOverride,
+                questPageComplete = true,
+            )
         } else {
             refreshLiveState(
                 accountId,
@@ -87,8 +91,14 @@ class TypedLiveAutomationSnapshotLoader(
     ): LiveAutomationState = try {
         sessionRecovery.execute(accountId) {
             config.categories.forEach { battleMapService.findMaps(accountId, it, HofRequestOrigin.AUTOMATION) }
+            val questObservation = if (includeQuests) {
+                questGateway.loadObservation(accountId, HofRequestOrigin.AUTOMATION)
+            } else {
+                QuestPageObservation(emptyList(), complete = true)
+            }
             LiveAutomationState(
-                if (includeQuests) questGateway.load(accountId, HofRequestOrigin.AUTOMATION) else emptyList(),
+                questObservation.quests,
+                questObservation.complete,
                 if (config.entries.any { it.enabled && it.type == AutomationType.FISHING }) fishingService?.load(accountId) else null,
                 if (config.entries.any { it.enabled && it.type == AutomationType.HOME_QUEST }) homeService?.load(accountId, HomeMode.HOME) else null,
             )
@@ -206,7 +216,21 @@ class TypedLiveAutomationSnapshotLoader(
         }
         val runnableEntries = config.entries.filter { it.enabled && it.type != AutomationType.RAID }
         return runnableEntries.map { entry -> when (entry.type) {
-            AutomationType.QUEST -> AutomationEntrySnapshot(entry.id, entry.type, quest = questSnapshot(accountId, entry, live.quests, states, aliases, config, now, timeSnapshot))
+            AutomationType.QUEST -> AutomationEntrySnapshot(
+                entry.id,
+                entry.type,
+                quest = questSnapshot(
+                    accountId,
+                    entry,
+                    live.quests,
+                    live.questPageComplete,
+                    states,
+                    aliases,
+                    config,
+                    now,
+                    timeSnapshot,
+                ),
+            )
             AutomationType.HOME_QUEST -> AutomationEntrySnapshot(
                 entry.id,
                 entry.type,
@@ -246,7 +270,7 @@ class TypedLiveAutomationSnapshotLoader(
         PresetSelectionMode.EXPLICIT -> presetId?.takeIf { it in config.availablePresetIds }
     }
 
-    private fun questSnapshot(accountId: Long, entry: DetachedEntry, quests: List<QuestSnapshot>, states: List<AccountBattleMapStateEntity>, aliases: List<BattleMapIdentityCandidate>, config: DetachedConfiguration, now: Instant, timeSnapshot: AutomationTimeSnapshot?): QuestAutomationSnapshot {
+    private fun questSnapshot(accountId: Long, entry: DetachedEntry, quests: List<QuestSnapshot>, pageComplete: Boolean, states: List<AccountBattleMapStateEntity>, aliases: List<BattleMapIdentityCandidate>, config: DetachedConfiguration, now: Instant, timeSnapshot: AutomationTimeSnapshot?): QuestAutomationSnapshot {
         val selections = entry.quest.map { selection -> QuestAutomationSelection(selection.questKey, selection.enabled, selection.maps.map { map ->
             val resolved = when (map.presetMode) {
                 PresetSelectionMode.PRIMARY -> config.primary
@@ -266,7 +290,20 @@ class TypedLiveAutomationSnapshotLoader(
             val key = QuestCounterKey(selection.questKey, cycles.getValue(selection.questKey), map.missionKey, map.categoryId, map.mapCode)
             counters[key] = persistedCounters[key]?.successfulRuns ?: 0
         } }
-        return QuestAutomationSnapshot(accountId, quests, selections, states.map(::questState), cycles, counters, aliases, now, config.primary, config.primary?.let(config.parties::get), timeSnapshot)
+        return QuestAutomationSnapshot(
+            accountId,
+            quests,
+            selections,
+            states.map(::questState),
+            cycles,
+            counters,
+            aliases,
+            now,
+            config.primary,
+            config.primary?.let(config.parties::get),
+            timeSnapshot,
+            pageComplete = pageComplete,
+        )
     }
 
     private fun battleSnapshot(accountId: Long, entry: DetachedEntry, states: List<AccountBattleMapStateEntity>, config: DetachedConfiguration, now: Instant, timeSnapshot: AutomationTimeSnapshot?): BattleMapAutomationSnapshot {
@@ -354,7 +391,12 @@ class TypedLiveAutomationSnapshotLoader(
     private data class DetachedUnionSetting(val categoryId: String, val mapCode: String, val presetMode: PresetSelectionMode, val presetId: Long?, val executionOrder: Int)
     private data class DetachedFishingMap(val categoryId: String, val mapCode: String, val presetMode: PresetSelectionMode, val presetId: Long?)
     private data class DetachedMember(val presetId: Long, val slotIndex: Int, val characterId: String?, val patternSlot: String?, val canLoad: Boolean)
-    private data class LiveAutomationState(val quests: List<QuestSnapshot>, val fishing: FishingResponse?, val home: HomeResponse?)
+    private data class LiveAutomationState(
+        val quests: List<QuestSnapshot>,
+        val questPageComplete: Boolean,
+        val fishing: FishingResponse?,
+        val home: HomeResponse?,
+    )
 
     private companion object {
         val log = LoggerFactory.getLogger(TypedLiveAutomationSnapshotLoader::class.java)

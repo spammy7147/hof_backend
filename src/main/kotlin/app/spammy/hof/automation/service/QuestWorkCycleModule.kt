@@ -70,7 +70,10 @@ sealed interface QuestAttempt {
 }
 
 sealed interface QuestResultObservation {
-    data class Page(val quests: List<QuestSnapshot>) : QuestResultObservation
+    data class Page(
+        val quests: List<QuestSnapshot>,
+        val complete: Boolean = false,
+    ) : QuestResultObservation
     data class BattleRounds(val outcomes: List<BattleAutomationRoundOutcome>) : QuestResultObservation
 }
 

@@ -179,6 +179,35 @@ class AutomationWorkSessionServiceTest {
     }
 
     @Test
+    fun `priority handoff yields the old owner and resumes the due work under one locked transition`() {
+        val questEntry = AutomationEntryEntity(10, account, AutomationType.QUEST, 0, true, now, now)
+        val current = battleSession(status = AutomationWorkStatus.RUNNING, confirmedCount = 12)
+        val due = AutomationWorkSessionEntity(
+            id = 44,
+            account = account,
+            entry = questEntry,
+            workType = AutomationWorkType.QUEST,
+            targetKey = "quest-1",
+            status = AutomationWorkStatus.WAITING_COOLDOWN,
+            configVersion = questEntry.updatedAt.toString(),
+            nextCheckAt = now,
+            createdAt = now,
+            updatedAt = now,
+        )
+        Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
+        Mockito.`when`(queries.lockOpen(7)).thenReturn(listOf(current, due))
+
+        assertEquals(true, service.handoffForPriority(7, current.id, due.id))
+
+        assertEquals(AutomationWorkStatus.YIELDED_PRIORITY, current.status)
+        assertEquals(now.plusSeconds(10), current.nextCheckAt)
+        assertEquals(AutomationWorkStatus.RUNNING, due.status)
+        assertEquals(null, due.nextCheckAt)
+        Mockito.verify(queries, Mockito.never()).lockById(7, current.id)
+        Mockito.verify(queries, Mockito.never()).lockById(7, due.id)
+    }
+
+    @Test
     fun `yielded battle session resumes with confirmed wins intact`() {
         val session = battleSession(status = AutomationWorkStatus.YIELDED_PRIORITY, confirmedCount = 12)
         Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
@@ -219,6 +248,7 @@ class AutomationWorkSessionServiceTest {
         assertEquals(true, service.yieldForPriority(7, 22))
 
         assertEquals(AutomationWorkStatus.YIELDED_PRIORITY, session.status)
+        assertEquals(now.plusSeconds(10), session.nextCheckAt)
         service.resumeForCheck(7, 22)
 
         assertEquals(AutomationWorkStatus.RUNNING, session.status)

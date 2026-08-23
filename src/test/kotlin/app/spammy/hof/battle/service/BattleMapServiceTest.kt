@@ -654,9 +654,37 @@ class BattleMapServiceTest {
 
         assertEquals(listOf("RaidGoblin"), service.findMaps(account.id, "raid").map { it.mapCode })
 
-        gateway.defaultBody = "<html><body>현재 열린 레이드가 없습니다.</body></html>"
+        gateway.defaultBody = completeRaidAbsencePage("현재 열린 레이드가 없습니다.")
         assertTrue(service.findCurrentlyObservedMaps(account.id, "raid").isEmpty())
         assertEquals(listOf("RaidGoblin"), service.findMaps(account.id, "raid").map { it.mapCode })
+    }
+
+    @Test
+    fun `모험맵 최신 관측은 전체 목록의 완전성이 증명될 때만 observed다`() {
+        val account = savedAccount("battle-map-adventure-observation")
+        val url = "http://sic.zerosic.com/ZeroHOF/index.php?sp_hunt"
+        gateway.responsesByUrl[url] = HofHttpResponse(
+            statusCode = 200,
+            finalUrl = url,
+            body = completeAdventurePage(),
+            setCookies = emptyMap(),
+        )
+
+        val observed = service.observeCurrentlyAvailableMaps(account.id, ADVENTURE)
+
+        assertEquals(CurrentBattleMapObservationStatus.OBSERVED, observed.status)
+        assertEquals(listOf("shared01", "shared02"), observed.maps.map { it.mapCode })
+
+        gateway.responsesByUrl[url] = HofHttpResponse(
+            statusCode = 200,
+            finalUrl = url,
+            body = completeAdventurePage().substringBefore("<h5>"),
+            setCookies = emptyMap(),
+        )
+        val incomplete = service.observeCurrentlyAvailableMaps(account.id, ADVENTURE)
+
+        assertEquals(CurrentBattleMapObservationStatus.INCOMPLETE, incomplete.status)
+        assertTrue(incomplete.maps.isEmpty())
     }
 
     @Test
@@ -669,7 +697,7 @@ class BattleMapServiceTest {
         assertEquals(CurrentBattleMapObservationStatus.OBSERVED, observed.status)
         assertEquals(listOf("RaidGoblin"), observed.maps.map { it.mapCode })
 
-        gateway.defaultBody = "<html><body>현재 열린 레이드가 없습니다.</body></html>"
+        gateway.defaultBody = completeRaidAbsencePage("현재 열린 레이드가 없습니다.")
         val absent = service.observeCurrentlyAvailableMaps(account.id, "raid")
 
         assertEquals(CurrentBattleMapObservationStatus.ABSENT, absent.status)
@@ -680,6 +708,65 @@ class BattleMapServiceTest {
 
         assertEquals(CurrentBattleMapObservationStatus.INCOMPLETE, incomplete.status)
         assertTrue(incomplete.maps.isEmpty())
+    }
+
+    @Test
+    fun `non-success 맵 응답에 남은 링크는 최신 실행 가능 관측이 아니다`() {
+        val account = savedAccount("battle-map-error-with-stale-link")
+        val raidUrl = "http://sic.zerosic.com/ZeroHOF/index.php?raid_hunt"
+        gateway.responsesByUrl[raidUrl] = HofHttpResponse(
+            statusCode = 500,
+            finalUrl = raidUrl,
+            body = """<a href="index.php?raid_common=RaidStale">과거 레이드 링크</a>""",
+            setCookies = emptyMap(),
+        )
+
+        val observation = service.observeCurrentlyAvailableMaps(account.id, "raid")
+
+        assertEquals(CurrentBattleMapObservationStatus.INCOMPLETE, observation.status)
+        assertTrue(observation.maps.isEmpty())
+    }
+
+    @Test
+    fun `라이브 raid_hunt의 진행 중 전투 없음 문구는 권위 있는 부재다`() {
+        val account = savedAccount("battle-map-live-raid-absence")
+        gateway.defaultBody = checkNotNull(
+            javaClass.classLoader.getResource("fixtures/raid/raid-complete-absent.html"),
+        ).readText()
+
+        val observation = service.observeCurrentlyAvailableMaps(account.id, "raid")
+
+        assertEquals(CurrentBattleMapObservationStatus.ABSENT, observation.status)
+        assertTrue(observation.maps.isEmpty())
+    }
+
+    @Test
+    fun `레이드 부재 문구가 있어도 최종 URL이나 페이지 구조가 다르면 관측 불완전이다`() {
+        val account = savedAccount("battle-map-raid-absence-incomplete")
+        val raidUrl = "http://sic.zerosic.com/ZeroHOF/index.php?raid_hunt"
+        gateway.responsesByUrl[raidUrl] = HofHttpResponse(
+            statusCode = 200,
+            finalUrl = "http://sic.zerosic.com/ZeroHOF/index.php?menu=login",
+            body = completeRaidAbsencePage("진행 중인 전투가 없습니다."),
+            setCookies = emptyMap(),
+        )
+
+        assertEquals(
+            CurrentBattleMapObservationStatus.INCOMPLETE,
+            service.observeCurrentlyAvailableMaps(account.id, "raid").status,
+        )
+
+        gateway.responsesByUrl[raidUrl] = HofHttpResponse(
+            statusCode = 200,
+            finalUrl = raidUrl,
+            body = "<html><body>진행 중인 전투가 없습니다.</body></html>",
+            setCookies = emptyMap(),
+        )
+
+        assertEquals(
+            CurrentBattleMapObservationStatus.INCOMPLETE,
+            service.observeCurrentlyAvailableMaps(account.id, "raid").status,
+        )
     }
 
     @Test
@@ -766,6 +853,14 @@ class BattleMapServiceTest {
         return account
     }
 
+    private fun completeRaidAbsencePage(absence: String): String = """
+        <html><body><div id="contents">
+          <h2>Special Battle</h2>
+          <p>$absence</p>
+          <h4>Battle Log</h4>
+        </div></body></html>
+    """.trimIndent()
+
     private fun savedGroup(
         categoryId: String,
         name: String,
@@ -828,6 +923,22 @@ class BattleMapServiceTest {
               <p><a href="index.php?sp_common=shared01">Shared- 공유 맵</a> $sharedCount 가능</p>
               ${if (includeStale) "<p><a href=\"index.php?sp_common=stale01\">Shared- 사라질 맵 ( x10 )</a> 2 가능</p>" else ""}
             </div>
+        """.trimIndent()
+
+    private fun completeAdventurePage(): String =
+        """
+            <html><body>
+              <div id="contents">
+                <div>공유 지역 (2)</div>
+                <div id="mapgroup1">
+                  <a href="index.php?sp_common=shared01">Shared- 첫 번째 맵</a>
+                  <a href="index.php?sp_common=shared02">Shared- 두 번째 맵</a>
+                </div>
+              </div>
+              <h5>Copy Right sanitized fixture</h5>
+              <h6>H.O.F Korean Ver sanitized fixture</h6>
+              <img src="image/zerohof.gif">
+            </body></html>
         """.trimIndent()
 
     @TestConfiguration

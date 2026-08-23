@@ -83,6 +83,7 @@ class RaidPubParserTest {
         val duplicate = fixture().replace("RaidSiren", "RaidGoblin")
         val page = parser.parse(duplicate, URL, forms.parse(duplicate, URL))
         assertTrue(page.raids.none { it.id == "RaidGoblin" })
+        assertFalse(page.pageComplete)
     }
 
     @Test fun `비정상적으로 큰 신청 대기시간은 overflow 없이 누락한다`() {
@@ -156,6 +157,15 @@ class RaidPubParserTest {
         val getForm = fixture().replace("method=\"post\"", "method=\"get\"")
         assertTrue(parser.parse(external, URL, forms.parse(external, URL)).raids.isEmpty())
         assertTrue(parser.parse(getForm, URL, forms.parse(getForm, URL)).raids.isEmpty())
+    }
+
+    @Test fun `raidlog 종료 표식이 잘린 form-only 응답은 완전한 raidpub 페이지가 아니다`() {
+        val truncated = fixture().replace("<a href=\"?menu=raidlog\">Battle Log 전부표시</a>", "")
+
+        val page = parser.parse(truncated, URL, forms.parse(truncated, URL))
+
+        assertFalse(page.pageComplete)
+        assertTrue(page.raids.isEmpty())
     }
 
     @Test fun `콜론형 header에서도 현재 사용자 이름을 찾아 참가 상태를 판별한다`() {
@@ -414,6 +424,18 @@ class RaidPubParserTest {
         val context = service(html, battle, html)
         val response = context.service.action(7L, RaidPubActionRequest(RaidAction.START, "RaidSiren"))
         assertEquals(3, response.raids.size)
+        assertEquals(3, context.requests().size)
+        assertEquals(HofHttpMethod.GET, context.requests().last().method)
+    }
+
+    @Test fun `안전한 form만 남은 action 응답도 raidpub 최신 GET으로 보충한다`() {
+        val partial = fixture().replace("<a href=\"?menu=raidlog\">Battle Log 전부표시</a>", "")
+        val html = startableFixture()
+        val context = service(html, partial, html)
+
+        val response = context.service.action(7L, RaidPubActionRequest(RaidAction.START, "RaidSiren"))
+
+        assertTrue(response.pageComplete)
         assertEquals(3, context.requests().size)
         assertEquals(HofHttpMethod.GET, context.requests().last().method)
     }

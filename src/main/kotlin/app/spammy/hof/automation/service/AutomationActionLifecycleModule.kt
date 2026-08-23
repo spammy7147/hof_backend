@@ -16,6 +16,7 @@ import app.spammy.hof.automation.raid.RaidCycleModule
 import app.spammy.hof.automation.raid.RaidCycleOutcome
 import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
 import app.spammy.hof.automation.raid.RaidIntentKind
+import app.spammy.hof.automation.raid.RaidObservedStatus
 import app.spammy.hof.automation.raid.RaidRecordResult
 import app.spammy.hof.automation.raid.RaidResultObservation
 import app.spammy.hof.battle.dto.RunBattleRequest
@@ -395,11 +396,11 @@ class UnifiedAutomationActionLifecycleModule(
                 )
 
                 override fun execute(): TypedAutomationExecution {
-                    val quests = runMutation(accountId, "Quest") {
-                        questGateway.accept(accountId, payload.actionNo, HofRequestOrigin.AUTOMATION)
+                    val observation = runMutation(accountId, "Quest") {
+                        questGateway.acceptObservation(accountId, payload.actionNo, HofRequestOrigin.AUTOMATION)
                     }
-                    submittedObservation = QuestResultObservation.Page(quests)
-                    return questActionCompleted(payload, quests)
+                    submittedObservation = QuestResultObservation.Page(observation.quests, observation.complete)
+                    return questActionCompleted(payload, observation.quests, observation.complete)
                 }
 
                 private fun applyProjection(execution: TypedAutomationExecution): TypedAutomationExecution {
@@ -437,11 +438,11 @@ class UnifiedAutomationActionLifecycleModule(
                 )
 
                 override fun execute(): TypedAutomationExecution {
-                    val quests = runMutation(accountId, "Quest") {
-                        questGateway.claim(accountId, payload.actionNo, HofRequestOrigin.AUTOMATION)
+                    val observation = runMutation(accountId, "Quest") {
+                        questGateway.claimObservation(accountId, payload.actionNo, HofRequestOrigin.AUTOMATION)
                     }
-                    submittedObservation = QuestResultObservation.Page(quests)
-                    return questActionCompleted(payload, quests)
+                    submittedObservation = QuestResultObservation.Page(observation.quests, observation.complete)
+                    return questActionCompleted(payload, observation.quests, observation.complete)
                 }
 
                 private fun applyProjection(execution: TypedAutomationExecution): TypedAutomationExecution {
@@ -739,10 +740,15 @@ class UnifiedAutomationActionLifecycleModule(
         actionNo: String,
         expectedState: app.spammy.hof.quest.model.QuestState,
     ) {
-        val quests = sessionRecovery.execute(accountId) {
-            questGateway.load(accountId, HofRequestOrigin.AUTOMATION)
+        val observation = sessionRecovery.execute(accountId) {
+            questGateway.loadObservation(accountId, HofRequestOrigin.AUTOMATION)
         }
-        val quest = quests.singleOrNull { it.questKey == questKey }
+        if (!observation.complete) {
+            throw AutomationPreSubmitObservationIncompleteException(
+                "최신 퀘스트 페이지의 완전성을 확인하지 못했습니다.",
+            )
+        }
+        val quest = observation.quests.singleOrNull { it.questKey == questKey }
             ?: throw AutomationActionPreconditionChangedException(
                 "최신 퀘스트 상태에서 저장된 대상이 사라졌습니다.",
             )
@@ -878,6 +884,7 @@ class UnifiedAutomationActionLifecycleModule(
     private fun questActionCompleted(
         payload: StoredTypedActionPayload.QuestAccept,
         quests: List<app.spammy.hof.quest.model.QuestSnapshot>,
+        complete: Boolean,
     ): TypedAutomationExecution.ActionCompleted = questActionCompleted(
         questKey = payload.questKey,
         actionNo = payload.actionNo,
@@ -885,11 +892,13 @@ class UnifiedAutomationActionLifecycleModule(
         expectedState = QuestState.AVAILABLE,
         baselineAction = "accept",
         quests = quests,
+        complete = complete,
     )
 
     private fun questActionCompleted(
         payload: StoredTypedActionPayload.QuestClaim,
         quests: List<app.spammy.hof.quest.model.QuestSnapshot>,
+        complete: Boolean,
     ): TypedAutomationExecution.ActionCompleted = questActionCompleted(
         questKey = payload.questKey,
         actionNo = payload.actionNo,
@@ -897,6 +906,7 @@ class UnifiedAutomationActionLifecycleModule(
         expectedState = QuestState.CLAIMABLE,
         baselineAction = "claim",
         quests = quests,
+        complete = complete,
     )
 
     private fun questActionCompleted(
@@ -906,6 +916,7 @@ class UnifiedAutomationActionLifecycleModule(
         expectedState: QuestState,
         baselineAction: String,
         quests: List<app.spammy.hof.quest.model.QuestSnapshot>,
+        complete: Boolean,
     ): TypedAutomationExecution.ActionCompleted {
         val matches = quests.filter { it.questKey == questKey }
         val quest = matches.singleOrNull()
@@ -927,7 +938,7 @@ class UnifiedAutomationActionLifecycleModule(
             ),
             responseShapeMaterial = responseShapeMaterial(
                 ProductionEvidenceShapes.QUEST_RESPONSE,
-                structurallyKnown = quests.isNotEmpty() && matches.size <= 1,
+                structurallyKnown = complete && matches.size <= 1,
             ),
             sanitizedSnippet = snippet,
         )
@@ -999,7 +1010,18 @@ class UnifiedAutomationActionLifecycleModule(
         val snippet = "RaidPubResponse|targetMultiplicity=${targetMultiplicity(matches.size)}|" +
             "targetPresent=${raid != null}|joined=${raid?.joined == true}|" +
             "status=${raid?.status?.name ?: "ABSENT"}|battleTargetPresent=${raid?.battleTarget != null}|" +
-            "rewardAvailable=$rewardAvailable|resultStatus=${response.result?.status ?: "NONE"}"
+            "rewardAvailable=$rewardAvailable|pageComplete=${response.pageComplete}|" +
+            "resultStatus=${response.result?.status ?: "NONE"}"
+        val actionPoststateComplete = response.pageComplete && matches.size <= 1 && when (payload.action) {
+            RaidAction.REGISTER,
+            RaidAction.START,
+            -> raid != null && raid.status != RaidStatus.UNKNOWN
+            RaidAction.RESET,
+            RaidAction.REWARD,
+            -> raid == null || raid.status != RaidStatus.UNKNOWN
+            RaidAction.REFRESH -> response.raids.all { it.status != RaidStatus.UNKNOWN }
+            else -> false
+        }
         return TypedAutomationExecution.ActionCompleted(
             observedState = RaidObservedState(
                 fingerprint = ProductionEvidenceShapes.fingerprint(snippet),
@@ -1010,8 +1032,7 @@ class UnifiedAutomationActionLifecycleModule(
             ),
             responseShapeMaterial = responseShapeMaterial(
                 ProductionEvidenceShapes.RAID_RESPONSE,
-                structurallyKnown = matches.size <= 1 && raid?.status != RaidStatus.UNKNOWN &&
-                    knownTownResultStatus(response.result?.status),
+                structurallyKnown = actionPoststateComplete,
             ),
             sanitizedSnippet = snippet,
             actionSuccessMarker = response.result?.status == "SUCCESS",
@@ -1246,16 +1267,16 @@ class UnifiedAutomationActionLifecycleModule(
         executionIdentity: String,
         payload: StoredTypedActionPayload.QuestAccept,
     ): AmbiguousActionResolution {
-        val quests = sessionRecovery.execute(accountId) {
-            questGateway.load(accountId, HofRequestOrigin.AUTOMATION)
+        val observation = sessionRecovery.execute(accountId) {
+            questGateway.loadObservation(accountId, HofRequestOrigin.AUTOMATION)
         }
-        if (quests.isEmpty()) {
-            return verifyLater("퀘스트 영역이 비어 있어 수락 결과를 완전하게 확인할 수 없습니다.")
+        if (!observation.complete) {
+            return verifyLater("퀘스트 영역이 불완전해 수락 결과를 확인할 수 없습니다.")
         }
         return questWorkCycle.recordObservedResult(
             accountId,
             QuestAttempt.Accept(executionIdentity, payload.questKey, payload.actionNo),
-            QuestResultObservation.Page(quests),
+            QuestResultObservation.Page(observation.quests, complete = true),
         ).toAmbiguousResolution()
     }
 
@@ -1264,16 +1285,16 @@ class UnifiedAutomationActionLifecycleModule(
         executionIdentity: String,
         payload: StoredTypedActionPayload.QuestClaim,
     ): AmbiguousActionResolution {
-        val quests = sessionRecovery.execute(accountId) {
-            questGateway.load(accountId, HofRequestOrigin.AUTOMATION)
+        val observation = sessionRecovery.execute(accountId) {
+            questGateway.loadObservation(accountId, HofRequestOrigin.AUTOMATION)
         }
-        if (quests.isEmpty()) {
-            return verifyLater("퀘스트 영역이 비어 있어 보상 결과를 완전하게 확인할 수 없습니다.")
+        if (!observation.complete) {
+            return verifyLater("퀘스트 영역이 불완전해 보상 결과를 확인할 수 없습니다.")
         }
         return questWorkCycle.recordObservedResult(
             accountId,
             QuestAttempt.Claim(executionIdentity, payload.questKey, payload.actionNo),
-            QuestResultObservation.Page(quests),
+            QuestResultObservation.Page(observation.quests, complete = true),
         ).toAmbiguousResolution()
     }
 
@@ -1301,13 +1322,13 @@ class UnifiedAutomationActionLifecycleModule(
                 }
             }
             is BattleOutcomeReconciliation.Unproven -> {
-                val quests = sessionRecovery.execute(accountId) {
-                    questGateway.load(accountId, HofRequestOrigin.AUTOMATION)
+                val observation = sessionRecovery.execute(accountId) {
+                    questGateway.loadObservation(accountId, HofRequestOrigin.AUTOMATION)
                 }
                 when (val result = questWorkCycle.recordObservedResult(
                     accountId,
                     QuestAttempt.Battle(stored.executionIdentity, payload.toQuestAction()),
-                    QuestResultObservation.Page(quests),
+                    QuestResultObservation.Page(observation.quests, observation.complete),
                 )) {
                     is QuestRecordResult.Recorded -> appliedQuestBattle(payload)
                     is QuestRecordResult.NotApplied -> verifyLater(result.message)
@@ -1359,7 +1380,7 @@ class UnifiedAutomationActionLifecycleModule(
         payload: StoredTypedActionPayload.BattleMap,
     ): AmbiguousActionResolution {
         if (payload.source == BattleAutomationActionSource.UNION_AUTOMATION) {
-            return reconcileUnionBattleMap(accountId, stored, payload)
+            return reconcileUnionBattleMap(accountId, payload)
         }
         val action = payload.toPrepared(accountId, stored.executionIdentity)
         return when (val reconciliation = battleOutcomeReconciler.reloadRecentAuthoritativeEvidence(action)) {
@@ -1411,14 +1432,8 @@ class UnifiedAutomationActionLifecycleModule(
         if (!advanced) {
             return verifyLater("$unprovenReason 대상 맵이 아직 실행 가능한 상태입니다.")
         }
-        workLifecycle.completeBattleMapAction(
-            accountId,
-            stored.entryId,
-            payload.categoryId,
-            payload.mapCode,
-        )
-        return AmbiguousActionResolution.Applied(
-            TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode),
+        return AmbiguousActionResolution.Superseded(
+            "$unprovenReason 최신 전투맵 상태가 바뀌어 저장 행동을 현재 계정 성공으로 귀속하지 않습니다.",
         )
     }
 
@@ -1428,7 +1443,6 @@ class UnifiedAutomationActionLifecycleModule(
      */
     private fun reconcileUnionBattleMap(
         accountId: Long,
-        stored: StoredTypedAutomationAction,
         payload: StoredTypedActionPayload.BattleMap,
     ): AmbiguousActionResolution {
         val observation = battleMapService.observeCurrentlyAvailableMaps(
@@ -1457,14 +1471,8 @@ class UnifiedAutomationActionLifecycleModule(
                 },
             )
         }
-        unionProgress.battleCompleted(
-            accountId,
-            stored.entryId,
-            payload.categoryId,
-            payload.mapCode,
-        )
-        return AmbiguousActionResolution.Applied(
-            TypedAutomationExecution.BattleCompleted(payload.categoryId, payload.mapCode),
+        return AmbiguousActionResolution.Superseded(
+            "유니온 개인 쿨다운이 시작됐지만 terminal 결과가 없어 저장 행동을 성공으로 귀속하지 않습니다.",
         )
     }
 
@@ -1678,10 +1686,20 @@ class UnifiedAutomationActionLifecycleModule(
             }
             is BattleOutcomeReconciliation.Unproven -> Unit
         }
-        val current = sessionRecovery.execute(accountId) {
-            battleMapService.findMaps(accountId, payload.categoryId, HofRequestOrigin.AUTOMATION)
-        }.singleOrNull { it.mapCode == payload.mapCode }
-            ?: return verifyLater("Adventure map ${payload.categoryId}/${payload.mapCode} is absent.")
+        val observation = sessionRecovery.execute(accountId) {
+            battleMapService.observeCurrentlyAvailableMaps(
+                accountId,
+                payload.categoryId,
+                HofRequestOrigin.AUTOMATION,
+            )
+        }
+        if (observation.status != CurrentBattleMapObservationStatus.OBSERVED) {
+            return verifyLater("Adventure map page is not a fresh authoritative observation.")
+        }
+        val current = observation.maps.singleOrNull { it.mapCode == payload.mapCode }
+            ?: return AmbiguousActionResolution.Superseded(
+                "Adventure map ${payload.categoryId}/${payload.mapCode} is absent from the complete latest page.",
+            )
         val comparisons = listOf(
             payload.observedAttemptRemaining to current.attemptCount,
             payload.observedWinRemaining to current.winCount,
@@ -1691,7 +1709,9 @@ class UnifiedAutomationActionLifecycleModule(
         val decreased = comparisons.any { (before, after) -> before != null && after != null && after < before }
         val cooldownStarted = current.cooldownRemainingSeconds?.let { it > 0 } == true
         if (decreased || cooldownStarted || (current.resolved && !current.enabled)) {
-            return completeAdventure(accountId, stored.entryId, payload)
+            return AmbiguousActionResolution.Superseded(
+                "Adventure map authoritative state changed without a matching terminal battle result.",
+            )
         }
         val exhausted = listOf(current.attemptCount, current.winCount, current.availableCount)
             .any { it != null && it <= 0 }
@@ -1852,10 +1872,21 @@ class UnifiedAutomationActionLifecycleModule(
             stored.executionIdentity.takeIf { payload.action == RaidAction.REWARD },
         )
             ?: return verifyLater("저장된 레이드 대상이 없어 결과를 안전하게 확인할 수 없습니다.")
+        val observation = raidObservationAdapter.read(accountId)
+        if (
+            payload.action == RaidAction.START &&
+            !observation.actionSuccessMarker &&
+            observation.raids.singleOrNull { it.id == attempt.raidId }?.status in
+            setOf(RaidObservedStatus.IN_BATTLE, RaidObservedStatus.COMPLETED)
+        ) {
+            return AmbiguousActionResolution.Superseded(
+                "레이드가 시작됐지만 현재 요청의 성공 표식이 없어 다른 참가자의 시작으로 처리합니다.",
+            )
+        }
         return reconcileRaidResult(
             accountId,
             attempt,
-            RaidResultObservation.Page(raidObservationAdapter.read(accountId)),
+            RaidResultObservation.Page(observation),
         )
     }
 

@@ -300,6 +300,7 @@ class RaidCycleModuleTest {
                 ),
             ),
             applied = true,
+            actionSuccessMarker = true,
             registrationWait = false,
         )
 
@@ -311,6 +312,44 @@ class RaidCycleModuleTest {
 
         assertIs<RaidRecordResult.Recorded>(result)
         assertEquals(RaidAutomationCycleStatus.IN_BATTLE, store.state.openCycle?.status)
+    }
+
+    @Test
+    fun `성공 표식 없는 START 최신 상태는 다른 참가자의 시작일 수 있어 기록하지 않는다`() {
+        val target = target("raid-a", 0)
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(1, 7, target.raidId, target.name, RaidAutomationCycleStatus.REGISTERED_WAITING, null),
+            ),
+        )
+        val module = DefaultRaidCycleModule(store, RaidObservationReader { error("GET should not be used") }, TimeProvider { now })
+        val externallyStarted = RaidObservation(
+            raids = listOf(
+                RaidObservedTarget(
+                    id = target.raidId,
+                    name = target.name,
+                    playable = true,
+                    status = RaidObservedStatus.IN_BATTLE,
+                    statusText = "전투 중",
+                    joined = true,
+                    actions = emptySet(),
+                    battle = RaidObservedBattle("raid", "raid001"),
+                ),
+            ),
+            applied = true,
+            actionSuccessMarker = false,
+            registrationWait = false,
+        )
+
+        val result = module.recordObservedResult(
+            1,
+            RaidAttempt(7, RaidIntentKind.START, target.raidId),
+            RaidResultObservation.Page(externallyStarted),
+        )
+
+        assertIs<RaidRecordResult.NeedsRecheck>(result)
+        assertEquals(RaidAutomationCycleStatus.REGISTERED_WAITING, store.state.openCycle?.status)
     }
 
     @Test
@@ -1509,7 +1548,7 @@ class RaidCycleModuleTest {
     }
 
     @Test
-    fun `실행 가능 상태 뒤 새 쿨타임은 적용 증거가 되어 복구를 해제한다`() {
+    fun `실행 가능 상태 뒤 새 쿨타임은 외부 상태 변경으로 복구를 해제한다`() {
         val target = target("raid-a", 0)
         val recovery = recovery(target.raidId, nextCheckAt = now, submittedFromRunnable = true)
         val store = InMemoryRaidCycleStore(
@@ -1527,7 +1566,8 @@ class RaidCycleModuleTest {
 
         val wait = assertIs<RaidDirective.WaitUntil>(module.decideNext(1))
 
-        assertEquals(RaidWaitReason.BATTLE_APPLIED_COOLDOWN, wait.reason)
+        assertEquals(RaidWaitReason.BATTLE_COOLDOWN, wait.reason)
+        assertEquals(true, wait.message.contains("외부 상태 변경"))
         assertEquals(null, store.state.openCycle?.battleRecovery)
     }
 
@@ -1555,7 +1595,7 @@ class RaidCycleModuleTest {
     }
 
     @Test
-    fun `legacy 복구도 실행 가능 상태에서 재전송한 뒤에는 새 쿨타임을 적용 증거로 인정한다`() {
+    fun `legacy 복구도 재전송 뒤 새 쿨타임만으로 현재 요청 성공을 귀속하지 않는다`() {
         val party = ResolvedAutomationParty(
             listOf("character-1"),
             listOf(BattlePatternLoadRequest("character-1", 1)),
@@ -1610,7 +1650,8 @@ class RaidCycleModuleTest {
 
         val wait = assertIs<RaidDirective.WaitUntil>(module.decideNext(1))
 
-        assertEquals(RaidWaitReason.BATTLE_APPLIED_COOLDOWN, wait.reason)
+        assertEquals(RaidWaitReason.BATTLE_COOLDOWN, wait.reason)
+        assertEquals(true, wait.message.contains("외부 상태 변경"))
         assertEquals(null, store.state.openCycle?.battleRecovery)
     }
 

@@ -31,6 +31,7 @@ class HofRaidObservationAdapterTest {
             myStatus = null,
             globalActions = emptySet(),
             result = null,
+            pageComplete = true,
             battleObservationStatus = RaidBattleObservationStatus.INCOMPLETE,
         )
         Mockito.`when`(raidPubService.load(7L)).thenReturn(response)
@@ -75,6 +76,7 @@ class HofRaidObservationAdapterTest {
             myStatus = "신청 중",
             globalActions = setOf(RaidAction.REWARD, RaidAction.REFRESH),
             result = TownActionResultResponse("SUCCESS", listOf("적용되었습니다."), emptyList()),
+            pageComplete = true,
             battleObservationStatus = RaidBattleObservationStatus.OBSERVED,
         )
 
@@ -125,6 +127,7 @@ class HofRaidObservationAdapterTest {
             myStatus = null,
             globalActions = emptySet(),
             result = null,
+            pageComplete = true,
             battleObservationStatus = RaidBattleObservationStatus.ABSENT,
         ))
         val incomplete = adapter.from(RaidPubResponse(
@@ -135,6 +138,7 @@ class HofRaidObservationAdapterTest {
             myStatus = null,
             globalActions = emptySet(),
             result = null,
+            pageComplete = true,
             battleObservationStatus = RaidBattleObservationStatus.INCOMPLETE,
         ))
 

@@ -22,6 +22,7 @@ import app.spammy.hof.common.time.TimeProvider
 import java.time.Instant
 import java.time.ZoneId
 import java.util.UUID
+import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 
 fun interface AutomationDecisionSource {
@@ -46,14 +47,15 @@ class AutomationTargetSelector(
     private val convergenceSelectionFactory: StoredActionConvergenceSelectionFactory? = null,
     private val convergenceRollout: AutomationConvergenceRollout? = null,
     private val convergenceModule: AutomationActionConvergenceModule? = null,
+    private val progressTelemetry: AutomationProgressTelemetry? = null,
 ) : AutomationDecisionSource {
 
     override fun select(accountId: Long): AutomationCoordination {
         work.findRunning(accountId)?.let { running ->
             higherPriorityDueSession(accountId, running)?.let { due ->
-                if (lifecycle.yieldForPriority(accountId, running.id)) {
-                    lifecycle.resumeForCheck(accountId, due.id)
-                    return selectSession(accountId, due)
+                if (lifecycle.handoffForPriority(accountId, running.id, due.id)) {
+                    recordDueSessionSafely(accountId, due)
+                    return selectSession(accountId, reloadOwner(accountId, due))
                 }
             }
             return selectSession(accountId, running)
@@ -80,6 +82,7 @@ class AutomationTargetSelector(
         initialWarnings: List<String> = emptyList(),
         initialTrace: List<AutomationEvaluationTrace> = emptyList(),
         evaluatedSessionIds: Set<Long> = emptySet(),
+        staleRetried: Boolean = false,
     ): AutomationCoordination {
         val nextEvaluatedSessionIds = evaluatedSessionIds + session.id
         if (session.workType == AutomationWorkType.RAID) {
@@ -99,21 +102,52 @@ class AutomationTargetSelector(
             }
             is AutomationCoordination.Fatal -> result.withPrefix(initialWarnings, initialTrace)
             is AutomationCoordination.Unavailable -> {
-                val prefixed = result.withPrefix(initialWarnings, initialTrace)
-                if (result.waitScope == AutomationWaitScope.HOLD_CURRENT_WORK) {
+                val contextual = result.copy(
+                    trace = result.trace.map { item ->
+                        if (item.reasonCode == QUEST_PROGRESS_STALE_REASON) {
+                            item.copy(
+                                targetKey = item.targetKey ?: session.targetKey,
+                                workSessionId = session.id,
+                                scope = "QUEST:${session.targetKey}",
+                            )
+                        } else {
+                            item
+                        }
+                    },
+                )
+                val prefixed = contextual.withPrefix(initialWarnings, initialTrace)
+                if (
+                    session.workType == AutomationWorkType.QUEST &&
+                    !staleRetried &&
+                    contextual.trace.any { it.reasonCode == QUEST_PROGRESS_STALE_REASON }
+                ) {
+                    selectSession(
+                        accountId = accountId,
+                        session = reloadOwner(accountId, session),
+                        initialWarnings = initialWarnings + contextual.warnings,
+                        initialTrace = initialTrace + contextual.trace.resequenced(initialTrace.size),
+                        evaluatedSessionIds = evaluatedSessionIds,
+                        staleRetried = true,
+                    )
+                } else if (contextual.waitScope == AutomationWaitScope.HOLD_CURRENT_WORK) {
                     prefixed
                 } else {
-                    lifecycle.waitForCooldown(accountId, session.id, result.nextRunAt)
+                    lifecycle.waitForCooldown(accountId, session.id, contextual.nextRunAt)
                     selectConfigured(
                         accountId,
-                        initialWarnings + result.warnings,
-                        initialTrace + result.trace.resequenced(initialTrace.size),
+                        initialWarnings + contextual.warnings,
+                        initialTrace + contextual.trace.resequenced(initialTrace.size),
                         nextEvaluatedSessionIds,
                     )
                 }
             }
             is AutomationCoordination.Idle -> {
                 if (result.convergenceBlocked()) {
+                    lifecycle.waitForCooldown(
+                        accountId,
+                        session.id,
+                        timeProvider.now().plusSeconds(SCOPE_SUPPRESSION_RECHECK_SECONDS),
+                    )
                     return selectConfigured(
                         accountId,
                         initialWarnings + result.warnings,
@@ -164,22 +198,30 @@ class AutomationTargetSelector(
                     if (entry.type != AutomationType.QUEST) return@forEach
                 }
                 due?.let {
-                    lifecycle.resumeForCheck(accountId, due.id)
-                    return selectSession(accountId, due, warnings, trace, evaluatedSessionIds)
+                    recordDueSessionSafely(accountId, due)
+                    return selectSession(
+                        accountId,
+                        resumeFresh(accountId, due),
+                        warnings,
+                        trace,
+                        evaluatedSessionIds,
+                    )
                 }
                 if (entry.type == AutomationType.RAID) {
                     when (val directive = raidModule.decideNext(accountId)) {
                         is RaidDirective.Execute -> {
                             val action = directive.intent.toPreparedAction(accountId)
-                            if (isConvergenceBlocked(accountId, entry.id, action)) {
-                                warnings += CONVERGENCE_BLOCKED_MESSAGE
+                            val block = selectionBlock(accountId, entry.id, action)
+                            if (block != null) {
+                                warnings += block.message
                                 trace += AutomationEvaluationTrace(
                                     trace.size,
                                     entry.id,
                                     entry.type,
                                     AutomationDecisionOutcome.WAITING,
-                                    CONVERGENCE_BLOCKED_REASON,
-                                    CONVERGENCE_BLOCKED_MESSAGE,
+                                    block.reasonCode,
+                                    block.message,
+                                    observedAt = timeProvider.now(),
                                 )
                                 return@forEach
                             }
@@ -251,7 +293,25 @@ class AutomationTargetSelector(
     }
 
     private fun AutomationWorkSessionView.isDueForCheck(now: Instant): Boolean =
-        status == AutomationWorkStatus.YIELDED_PRIORITY || nextCheckAt?.isAfter(now) == false
+        nextCheckAt?.isAfter(now) == false
+
+    private fun resumeFresh(
+        accountId: Long,
+        parked: AutomationWorkSessionView,
+    ): AutomationWorkSessionView {
+        lifecycle.resumeForCheck(accountId, parked.id)
+        return reloadOwner(accountId, parked)
+    }
+
+    private fun reloadOwner(
+        accountId: Long,
+        expected: AutomationWorkSessionView,
+    ): AutomationWorkSessionView {
+        return work.findRunning(accountId)?.takeIf { it.id == expected.id }
+            ?: throw IllegalStateException(
+                "Resumed automation work ${expected.id} is not the current owner for account $accountId.",
+            )
+    }
 
     private fun coordinate(
         accountId: Long,
@@ -261,17 +321,18 @@ class AutomationTargetSelector(
             coordinateObservationGap(accountId, entry, gap)
         }
         val runnable = result as? AutomationCoordination.Runnable ?: return result
-        if (!isConvergenceBlocked(accountId, entry.id, runnable.action)) return result
+        val block = selectionBlock(accountId, entry.id, runnable.action) ?: return result
         return AutomationCoordination.Idle(
-            warnings = listOf(CONVERGENCE_BLOCKED_MESSAGE),
+            warnings = listOf(block.message),
             trace = listOf(
                 AutomationEvaluationTrace(
                     sequence = 0,
                     entryId = entry.id,
                     type = entry.type,
                     outcome = AutomationDecisionOutcome.WAITING,
-                    reasonCode = CONVERGENCE_BLOCKED_REASON,
-                    message = CONVERGENCE_BLOCKED_MESSAGE,
+                    reasonCode = block.reasonCode,
+                    message = block.message,
+                    observedAt = timeProvider.now(),
                 ),
             ),
         )
@@ -315,6 +376,7 @@ class AutomationTargetSelector(
                         message = "${gap.message} 자동 관측 예산이 끝나 이 범위만 보류했습니다.",
                         actionKind = gap.actionKind.name,
                         targetKey = gap.scopeKey,
+                        observedAt = timeProvider.now(),
                     ),
                 ),
             )
@@ -347,31 +409,57 @@ class AutomationTargetSelector(
         waitScope = AutomationWaitScope.RELEASE_OTHER_AUTOMATIONS,
     )
 
-    private fun isConvergenceBlocked(
+    private fun selectionBlock(
         accountId: Long,
         entryId: Long,
         action: PreparedAutomationAction,
-    ): Boolean {
-        val guard = convergenceGuard ?: return false
-        val factory = convergenceSelectionFactory ?: return false
+    ): SelectionBlock? {
+        val guard = convergenceGuard ?: return null
+        val factory = convergenceSelectionFactory ?: return null
         val preview = factory.preview(entryId, action)
         val constraints = guard.constraints(accountId)
         // Captcha gates and terminal legacy baseline suppression are safety controls, not policy rollout decisions.
-        if (constraints.battleGateActive && preview.actionKind.battle) return true
+        if (constraints.battleGateActive && preview.actionKind.battle) {
+            return SelectionBlock(CAPTCHA_BATTLE_GATE_REASON, CAPTCHA_BATTLE_GATE_MESSAGE)
+        }
         if (
             preview.baselineFingerprint?.let {
                 it in constraints.suppressedBaselines[preview.scope].orEmpty()
             } == true
-        ) return true
-        if (convergenceRollout?.active == false) return false
+        ) return SelectionBlock(CONVERGENCE_BLOCKED_REASON, CONVERGENCE_BLOCKED_MESSAGE)
+        if (convergenceRollout?.active == false) return null
         if (convergenceRollout?.active == true) {
             convergenceModule?.resolveObservationGap(accountId, preview.scope, timeProvider.now())
         }
-        return guard.constraints(accountId).blocks(preview)
+        return if (guard.constraints(accountId).blocks(preview)) {
+            SelectionBlock(CONVERGENCE_BLOCKED_REASON, CONVERGENCE_BLOCKED_MESSAGE)
+        } else {
+            null
+        }
     }
 
     private fun AutomationCoordination.Idle.convergenceBlocked(): Boolean =
-        trace.any { it.reasonCode in setOf(CONVERGENCE_BLOCKED_REASON, OBSERVATION_GAP_HELD_REASON) }
+        trace.any {
+            it.reasonCode in setOf(
+                CONVERGENCE_BLOCKED_REASON,
+                OBSERVATION_GAP_HELD_REASON,
+                CAPTCHA_BATTLE_GATE_REASON,
+            )
+        }
+
+    private fun recordDueSessionSafely(accountId: Long, due: AutomationWorkSessionView) {
+        try {
+            progressTelemetry?.recordDueSession(due.workType, due.nextCheckAt)
+        } catch (error: RuntimeException) {
+            log.warn(
+                "Automation due-session telemetry failed accountId={} sessionId={} workType={}",
+                accountId,
+                due.id,
+                due.workType,
+                error,
+            )
+        }
+    }
 
     private fun selectRaidSession(
         accountId: Long,
@@ -382,17 +470,24 @@ class AutomationTargetSelector(
     ): AutomationCoordination = when (val directive = raidModule.decideNext(accountId)) {
         is RaidDirective.Execute -> {
             val action = directive.intent.toPreparedAction(accountId)
-            if (isConvergenceBlocked(accountId, session.entryId, action)) {
+            val block = selectionBlock(accountId, session.entryId, action)
+            if (block != null) {
+                lifecycle.waitForCooldown(
+                    accountId,
+                    session.id,
+                    timeProvider.now().plusSeconds(SCOPE_SUPPRESSION_RECHECK_SECONDS),
+                )
                 selectConfigured(
                     accountId,
-                    initialWarnings + CONVERGENCE_BLOCKED_MESSAGE,
+                    initialWarnings + block.message,
                     initialTrace + AutomationEvaluationTrace(
                         initialTrace.size,
                         session.entryId,
                         AutomationType.RAID,
                         AutomationDecisionOutcome.WAITING,
-                        CONVERGENCE_BLOCKED_REASON,
-                        CONVERGENCE_BLOCKED_MESSAGE,
+                        block.reasonCode,
+                        block.message,
+                        observedAt = timeProvider.now(),
                     ),
                     evaluatedSessionIds,
                 )
@@ -620,11 +715,21 @@ class AutomationTargetSelector(
         )
     }
 
+    private data class SelectionBlock(
+        val reasonCode: String,
+        val message: String,
+    )
+
     private companion object {
+        val log = LoggerFactory.getLogger(AutomationTargetSelector::class.java)
         val SEOUL: ZoneId = ZoneId.of("Asia/Seoul")
         const val CONVERGENCE_BLOCKED_REASON = "CONVERGENCE_SCOPE_BLOCKED"
         const val CONVERGENCE_BLOCKED_MESSAGE = "이전 행동 결과를 확인 중이라 해당 범위만 잠시 건너뜁니다."
+        const val CAPTCHA_BATTLE_GATE_REASON = "CAPTCHA_BATTLE_GATE_BLOCKED"
+        const val CAPTCHA_BATTLE_GATE_MESSAGE = "캡차 해결 전까지 전투 범위만 잠시 건너뜁니다."
         const val OBSERVATION_GAP_HELD_REASON = "OBSERVATION_GAP_HELD"
+        const val QUEST_PROGRESS_STALE_REASON = "QUEST_PROGRESS_STALE"
+        const val SCOPE_SUPPRESSION_RECHECK_SECONDS = 30L
     }
 }
 
@@ -774,7 +879,7 @@ private fun QuestDirective.toEntryEvaluation(): HandlerEvaluation = when (this) 
         at,
         reasonCode,
         message,
-        AutomationWaitScope.HOLD_CURRENT_WORK,
+        AutomationWaitScope.RELEASE_OTHER_AUTOMATIONS,
     )
     is QuestDirective.WaitForResource -> HandlerEvaluation.WorkTransition(
         AutomationWorkTransition.WaitForResource(resourceName, missingCount),

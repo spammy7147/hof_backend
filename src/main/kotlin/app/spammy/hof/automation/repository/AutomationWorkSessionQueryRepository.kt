@@ -63,6 +63,7 @@ class AutomationWorkSessionQueryRepository(
                 automationWorkSessionEntity.status.`in`(
                     AutomationWorkStatus.WAITING_RESOURCE,
                     AutomationWorkStatus.WAITING_COOLDOWN,
+                    AutomationWorkStatus.YIELDED_PRIORITY,
                 ),
                 automationWorkSessionEntity.nextCheckAt.isNotNull,
                 automationWorkSessionEntity.nextCheckAt.loe(now),

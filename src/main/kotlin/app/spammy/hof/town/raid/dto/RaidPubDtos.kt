@@ -35,6 +35,7 @@ data class RaidPubResponse(
     val myStatus: String?,
     val globalActions: Set<RaidAction>,
     val result: TownActionResultResponse?,
+    val pageComplete: Boolean = false,
     val battleObservationStatus: RaidBattleObservationStatus = RaidBattleObservationStatus.INCOMPLETE,
     val battleObservationEvidence: RaidBattleObservationEvidence? = null,
 ) {
@@ -55,6 +56,7 @@ data class RaidPubResponse(
             myStatus = value.myStatus,
             globalActions = value.globalActions,
             result = value.result?.let(TownActionResultResponse::from),
+            pageComplete = value.pageComplete,
             battleObservationStatus = value.battleObservationStatus,
             battleObservationEvidence = value.battleObservationEvidence,
         )

@@ -21,6 +21,107 @@ class QuestPageParserTest {
     }
 
     @Test
+    fun `완전한 비대상 퀘스트 목록과 오류 화면을 구분한다`() {
+        val completeHtml = checkNotNull(
+            javaClass.classLoader.getResource("fixtures/quest/quest-complete-empty.html"),
+        ).readText()
+
+        val complete = parser.parseObservation(
+            completeHtml,
+            "http://sic.zerosic.com/ZeroHOF/index.php?menu=quest",
+        )
+        val error = parser.parseObservation(
+            "<html><body><h1>Temporary upstream error</h1></body></html>",
+            "http://sic.zerosic.com/ZeroHOF/index.php?menu=quest",
+        )
+
+        assertTrue(complete.complete)
+        assertEquals(listOf("0999"), complete.quests.map { it.displayCode })
+        assertFalse(error.complete)
+        assertTrue(error.quests.isEmpty())
+    }
+
+    @Test
+    fun `오류 상태와 페이지 종료 표식이 잘린 skeleton은 대상 부재를 증명하지 못한다`() {
+        val completeHtml = checkNotNull(
+            javaClass.classLoader.getResource("fixtures/quest/quest-complete-empty.html"),
+        ).readText()
+
+        val serverError = parser.parseObservation(
+            completeHtml,
+            "http://sic.zerosic.com/ZeroHOF/index.php?menu=quest",
+            statusCode = 500,
+        )
+        val truncated = parser.parseObservation(
+            completeHtml.substringBefore("<div class=\"hof-page-terminator\">"),
+            "http://sic.zerosic.com/ZeroHOF/index.php?menu=quest",
+        )
+
+        assertFalse(serverError.complete)
+        assertFalse(truncated.complete)
+    }
+
+    @Test
+    fun `필수 영역의 알 수 없는 data row는 target absence로 축약하지 않는다`() {
+        val completeHtml = checkNotNull(
+            javaClass.classLoader.getResource("fixtures/quest/quest-complete-empty.html"),
+        ).readText()
+        val unknownRow = completeHtml.replace(
+            "[0999] 비대상 대기 의뢰",
+            "식별 규칙이 바뀐 비대상 대기 의뢰",
+        )
+
+        val observation = parser.parseObservation(
+            unknownRow,
+            "http://sic.zerosic.com/ZeroHOF/index.php?menu=quest",
+        )
+
+        assertFalse(observation.complete)
+    }
+
+    @Test
+    fun `rowspan이 소유한 continuation row는 완전한 quest block으로 인정한다`() {
+        val completeHtml = checkNotNull(
+            javaClass.classLoader.getResource("fixtures/quest/quest-complete-empty.html"),
+        ).readText()
+        val multiRow = completeHtml.replace(
+            "<tr><td class=\"td7s\">[0999] 비대상 대기 의뢰</td><td>미션 : 즉시 완료</td>" +
+                "<td>1일 후 가능</td><td>-</td><td>-</td></tr>",
+            "<tr><td class=\"td7s\" rowspan=\"2\">[0999] 비대상 대기 의뢰</td>" +
+                "<td>연속 행 시작</td><td>1일 후 가능</td><td>-</td><td>-</td></tr>" +
+                "<tr><td colspan=\"4\">미션 : 즉시 완료</td></tr>",
+        )
+
+        val observation = parser.parseObservation(
+            multiRow,
+            "http://sic.zerosic.com/ZeroHOF/index.php?menu=quest",
+        )
+
+        assertTrue(observation.complete)
+        assertEquals(1, observation.quests.size)
+        assertEquals(QuestMissionType.IMMEDIATE, observation.quests.single().missions.single().type)
+    }
+
+    @Test
+    fun `필수 퀘스트 영역 하나가 잘린 응답은 대상 부재를 증명하지 못한다`() {
+        val completeHtml = checkNotNull(
+            javaClass.classLoader.getResource("fixtures/quest/quest-complete-empty.html"),
+        ).readText()
+        val partialHtml = completeHtml.replace(
+            Regex("<h4>대기중인 퀘스트 목록</h4>\\s*<table>.*?</table>", RegexOption.DOT_MATCHES_ALL),
+            "",
+        )
+
+        val observation = parser.parseObservation(
+            partialHtml,
+            "http://sic.zerosic.com/ZeroHOF/index.php?menu=quest",
+        )
+
+        assertFalse(observation.complete)
+        assertTrue(observation.quests.isEmpty())
+    }
+
+    @Test
     fun `quest identity survives action disappearance and distinguishes duplicate display codes`() {
         val actionable = parser.parse(
             """

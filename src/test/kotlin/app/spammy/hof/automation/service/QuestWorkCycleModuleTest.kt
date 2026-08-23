@@ -208,6 +208,23 @@ class QuestWorkCycleModuleTest {
     }
 
     @Test
+    fun `불완전 퀘스트 페이지에서 대상이 보이지 않아도 작업을 완료하지 않는다`() {
+        val sessionId = 44L
+        progress.runningWorkTargets[sessionId] = "q"
+
+        val result = handler.decideNext(snapshot(
+            quests = emptyList(),
+            selections = listOf(selection("q")),
+            workSessionId = sessionId,
+            pageComplete = false,
+        ))
+
+        val recheck = assertIs<QuestDirective.Recheck>(result)
+        assertEquals("QUEST_PAGE_INCOMPLETE", recheck.reasonCode)
+        assertEquals(NOW.plusSeconds(10), recheck.at)
+    }
+
+    @Test
     fun `TIME reward is not claimed without a current TIME snapshot`() {
         val result = handler.decideNext(snapshot(
             quests = listOf(
@@ -861,6 +878,7 @@ class QuestWorkCycleModuleTest {
     fun acceptSuccessStartsNewCycleAndBattleResultRecordsOnlyVictories() {
         val page = QuestResultObservation.Page(
             listOf(quest("q", QuestState.ACTIVE, 0, immediate())),
+            complete = true,
         )
         assertEquals(
             "1",
@@ -907,7 +925,7 @@ class QuestWorkCycleModuleTest {
             handler.recordObservedResult(
                 ACCOUNT_ID,
                 accept,
-                QuestResultObservation.Page(listOf(quest("q", QuestState.AVAILABLE, 0, immediate()))),
+                QuestResultObservation.Page(listOf(quest("q", QuestState.AVAILABLE, 0, immediate())), complete = true),
             ),
         )
         assertNull(progress.cycles[ACCOUNT_ID to "q"])
@@ -916,7 +934,7 @@ class QuestWorkCycleModuleTest {
             handler.recordObservedResult(
                 ACCOUNT_ID,
                 accept,
-                QuestResultObservation.Page(emptyList()),
+                QuestResultObservation.Page(emptyList(), complete = true),
             ),
         )
         assertNull(progress.cycles[ACCOUNT_ID to "q"])
@@ -927,7 +945,7 @@ class QuestWorkCycleModuleTest {
                 handler.recordObservedResult(
                     ACCOUNT_ID,
                     accept,
-                    QuestResultObservation.Page(listOf(quest("q", QuestState.ACTIVE, 0, immediate()))),
+                    QuestResultObservation.Page(listOf(quest("q", QuestState.ACTIVE, 0, immediate())), complete = true),
                 ),
             ).questCycle,
         )
@@ -937,14 +955,14 @@ class QuestWorkCycleModuleTest {
             handler.recordObservedResult(
                 ACCOUNT_ID,
                 claim,
-                QuestResultObservation.Page(listOf(quest("q", QuestState.CLAIMABLE, 0, immediate()))),
+                QuestResultObservation.Page(listOf(quest("q", QuestState.CLAIMABLE, 0, immediate())), complete = true),
             ),
         )
         assertIs<QuestRecordResult.Recorded>(
             handler.recordObservedResult(
                 ACCOUNT_ID,
                 claim,
-                QuestResultObservation.Page(emptyList()),
+                QuestResultObservation.Page(emptyList(), complete = true),
             ),
         )
         assertIs<QuestRecordResult.Recorded>(
@@ -953,6 +971,7 @@ class QuestWorkCycleModuleTest {
                 claim.copy(resultIdentity = "claim-repeat-result"),
                 QuestResultObservation.Page(
                     listOf(quest("q", QuestState.UNAVAILABLE, 0, immediate())),
+                    complete = true,
                 ),
             ),
         )
@@ -994,6 +1013,7 @@ class QuestWorkCycleModuleTest {
                             ),
                         ),
                     ),
+                    complete = true,
                 ),
             ),
         )
@@ -1018,6 +1038,7 @@ class QuestWorkCycleModuleTest {
                             ),
                         ),
                     ),
+                    complete = true,
                 ),
             ),
         )
@@ -1040,7 +1061,7 @@ class QuestWorkCycleModuleTest {
             handler.recordObservedResult(
                 ACCOUNT_ID,
                 QuestAttempt.Accept("repeat-result", "q", "accept"),
-                QuestResultObservation.Page(listOf(quest("q", QuestState.ACTIVE, 0, immediate()))),
+                QuestResultObservation.Page(listOf(quest("q", QuestState.ACTIVE, 0, immediate())), complete = true),
             ),
         ).questCycle
         assertEquals("9", newCycle)
@@ -1072,6 +1093,7 @@ class QuestWorkCycleModuleTest {
         workProgress: QuestWorkProgressSnapshot? = null,
         workSessionId: Long? = workProgress?.sessionId,
         workSessionRevision: Long? = workSessionId?.let { 0 },
+        pageComplete: Boolean = true,
     ): QuestAutomationSnapshot {
         workProgress?.let { progress.workBySession[it.sessionId] = it }
         return QuestAutomationSnapshot(
@@ -1088,6 +1110,7 @@ class QuestWorkCycleModuleTest {
             timeSnapshot = timeCurrent?.let { AutomationTimeSnapshot(it, 6000, NOW) },
             workSessionId = workSessionId,
             workSessionRevision = workSessionRevision,
+            pageComplete = pageComplete,
         )
     }
 
@@ -1333,6 +1356,7 @@ class QuestAutomationProgressStorePersistenceTest {
                             actionNo = null,
                         ),
                     ),
+                    complete = true,
                 ),
             ),
         )
@@ -1718,7 +1742,11 @@ class QuestAutomationProgressStorePersistenceTest {
 
         repeat(2) {
             assertIs<QuestRecordResult.Recorded>(
-                questWorkCycle.recordObservedResult(account.id, attempt, QuestResultObservation.Page(emptyList())),
+                questWorkCycle.recordObservedResult(
+                    account.id,
+                    attempt,
+                    QuestResultObservation.Page(emptyList(), complete = true),
+                ),
             )
         }
 

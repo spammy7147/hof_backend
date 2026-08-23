@@ -9,6 +9,7 @@ import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.quest.model.QuestSnapshot
 import app.spammy.hof.quest.model.QuestState
 import app.spammy.hof.quest.parser.QuestPageParser
+import app.spammy.hof.quest.parser.QuestPageObservation
 import app.spammy.hof.town.common.service.TownAuthenticatedExecutor
 import java.net.URI
 import java.net.URLDecoder
@@ -21,15 +22,40 @@ class QuestGatewayService(
     private val parser: QuestPageParser,
 ) {
     fun load(accountId: Long, origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE): List<QuestSnapshot> =
-        executor.loadProjected(accountId, QUEST_URL, origin) { html, _, _ -> parser.parse(html) }
+        loadObservation(accountId, origin).quests
+
+    fun loadObservation(
+        accountId: Long,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
+    ): QuestPageObservation = executor.loadProjected(accountId, QUEST_URL, origin) { html, finalUrl, _ ->
+        parser.parseObservation(html, finalUrl)
+    }
 
     fun accept(accountId: Long, actionNo: String, origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE): List<QuestSnapshot> =
-        execute(accountId, actionNo, "get", QuestState.AVAILABLE, origin)
+        acceptObservation(accountId, actionNo, origin).quests
+
+    fun acceptObservation(
+        accountId: Long,
+        actionNo: String,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
+    ): QuestPageObservation = execute(accountId, actionNo, "get", QuestState.AVAILABLE, origin)
 
     fun claim(accountId: Long, actionNo: String, origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE): List<QuestSnapshot> =
-        execute(accountId, actionNo, "complete", QuestState.CLAIMABLE, origin)
+        claimObservation(accountId, actionNo, origin).quests
 
-    private fun execute(accountId: Long, actionNo: String, action: String, requiredState: QuestState, origin: HofRequestOrigin): List<QuestSnapshot> {
+    fun claimObservation(
+        accountId: Long,
+        actionNo: String,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
+    ): QuestPageObservation = execute(accountId, actionNo, "complete", QuestState.CLAIMABLE, origin)
+
+    private fun execute(
+        accountId: Long,
+        actionNo: String,
+        action: String,
+        requiredState: QuestState,
+        origin: HofRequestOrigin,
+    ): QuestPageObservation {
         if (actionNo.isBlank() || actionNo.length > 200) invalid("퀘스트 action 번호가 올바르지 않습니다.")
         return executor.executeObservedGetProjected(
             accountId = accountId,
@@ -43,7 +69,7 @@ class QuestGatewayService(
                 requireObservedLink(html, finalUrl, action, actionNo)
                 listOf(HofFormField("action", action), HofFormField("no", actionNo))
             },
-            projector = { html, _, _, _ -> parser.parse(html) },
+            projector = { html, finalUrl, _, _ -> parser.parseObservation(html, finalUrl) },
         )
     }
 

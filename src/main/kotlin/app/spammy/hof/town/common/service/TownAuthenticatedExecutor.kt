@@ -1259,6 +1259,7 @@ class TownAuthenticatedExecutor(
         cookies: Map<String, String>,
     ): HofHttpResponse {
         val response = gateway.execute(account.id, request, cookies)
+        requireSuccessfulResponse(response)
         val login = loginStateParser.parse(response.body)
         if (login.hasLoginForm && !login.isLoggedIn) {
             throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "HOF 로그인 세션이 만료되었습니다.")
@@ -1272,11 +1273,20 @@ class TownAuthenticatedExecutor(
         cookies: Map<String, String>,
     ): DeferredCharacterRosterHofResponse {
         val deferred = gateway.executeWithoutCharacterRosterObservation(account.id, request, cookies)
+        requireSuccessfulResponse(deferred.response)
         val login = loginStateParser.parse(deferred.response.body)
         if (login.hasLoginForm && !login.isLoggedIn) {
             throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "HOF 로그인 세션이 만료되었습니다.")
         }
         return deferred
+    }
+
+    private fun requireSuccessfulResponse(response: HofHttpResponse) {
+        if (response.statusCode in 200..299) return
+        throw ApiException(
+            ErrorCode.HOF_REQUEST_FAILED,
+            "HOF 서버 응답을 확인할 수 없습니다. status=${response.statusCode}",
+        )
     }
 
     private fun executeAuthenticatedForResolvedSequence(
