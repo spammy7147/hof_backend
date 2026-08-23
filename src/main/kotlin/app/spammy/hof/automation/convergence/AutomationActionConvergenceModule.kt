@@ -18,6 +18,13 @@ interface AutomationActionConvergenceModule {
         scope: AutomationIsolationScope,
         resolvedAt: Instant,
     ): Boolean
+    fun holdUnresolved(
+        accountId: Long,
+        selection: SelectedAutomationAction,
+        evidence: AutomationActionEvidence.ResultUnobserved,
+        successfulObservationCount: Int,
+        firstPendingAt: Instant,
+    ): ConvergenceDirective
     fun requireBattleGate(
         accountId: Long,
         challengeId: Long?,
@@ -183,6 +190,34 @@ class DefaultAutomationActionConvergenceModule(
         return true
     }
 
+    override fun holdUnresolved(
+        accountId: Long,
+        selection: SelectedAutomationAction,
+        evidence: AutomationActionEvidence.ResultUnobserved,
+        successfulObservationCount: Int,
+        firstPendingAt: Instant,
+    ): ConvergenceDirective {
+        if (
+            selection.baselineFingerprint in
+            store.findSuppressedBaselines(accountId)[selection.scope].orEmpty()
+        ) return ConvergenceDirective.ContinueSelection
+        val record = store.createOrGet(accountId, selection, evidence.capturedAt)
+        if (!record.active) return ConvergenceDirective.ContinueSelection
+        evidenceCaseRecorder.record(record, evidence, "PENDING_BUDGET_EXHAUSTED")
+        record.successfulObservationCount = successfulObservationCount
+        record.firstPendingAt = firstPendingAt
+        return terminal(
+            record,
+            if (selection.actionKind.battle) {
+                ActionConvergenceResult.RESULT_UNOBSERVED
+            } else {
+                ActionConvergenceResult.HELD
+            },
+            "PENDING_BUDGET_EXHAUSTED",
+            evidence.capturedAt,
+        )
+    }
+
     override fun requireBattleGate(
         accountId: Long,
         challengeId: Long?,
@@ -248,8 +283,11 @@ class DefaultAutomationActionConvergenceModule(
     }
 
     private fun budgetExhausted(record: ActionConvergenceRecord, now: Instant): Boolean =
-        record.successfulObservationCount >= MAX_SUCCESSFUL_OBSERVATIONS ||
-            record.firstPendingAt?.plus(MAX_PENDING_DURATION)?.isAfter(now) == false
+        AutomationConvergenceBudget.exhausted(
+            record.successfulObservationCount,
+            record.firstPendingAt,
+            now,
+        )
 
     private fun AutomationActionEvidence.reasonCode(): String = when (this) {
         is AutomationActionEvidence.DirectApplied -> "DIRECT_RESPONSE_APPLIED"
@@ -263,8 +301,6 @@ class DefaultAutomationActionConvergenceModule(
     }
 
     private companion object {
-        const val MAX_SUCCESSFUL_OBSERVATIONS = 5
-        val MAX_PENDING_DURATION: Duration = Duration.ofMinutes(2)
         val PROBE_INTERVAL: Duration = Duration.ofSeconds(10)
     }
 }

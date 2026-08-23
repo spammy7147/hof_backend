@@ -21,8 +21,11 @@ import org.springframework.stereotype.Component
 
 @Component
 class StoredActionConvergenceSelectionFactory {
-    fun create(stored: StoredTypedAutomationAction): SelectedAutomationAction {
-        val mapping = map(stored)
+    fun create(
+        stored: StoredTypedAutomationAction,
+        legacySuppressionEpoch: String? = null,
+    ): SelectedAutomationAction {
+        val mapping = map(stored, legacySuppressionEpoch)
         return SelectedAutomationAction(
             entryId = stored.entryId,
             executionIdentity = stored.executionIdentity,
@@ -58,19 +61,20 @@ class StoredActionConvergenceSelectionFactory {
             AutomationActionKind.QUEST_ACCEPT,
             AutomationIsolationScopeKind.QUEST_TARGET,
             action.questKey,
-            "quest|accept|${action.questKey}|${action.actionNo}",
+            "quest|accept|${action.questKey}|${action.questCycle}|${action.actionNo}",
         )
         is QuestAction.Claim -> preview(
             AutomationActionKind.QUEST_CLAIM,
             AutomationIsolationScopeKind.QUEST_TARGET,
             action.questKey,
-            "quest|claim|${action.questKey}|${action.actionNo}",
+            "quest|claim|${action.questKey}|${action.questCycle}|${action.actionNo}",
         )
         is QuestAction.Battle -> preview(
             AutomationActionKind.QUEST_BATTLE,
             AutomationIsolationScopeKind.QUEST_TARGET,
             action.questKey,
-            "quest|battle|${action.questKey}|${action.missionKey}|${action.missionCurrent}|${action.missionRequired}",
+            "quest|battle|${action.questKey}|${action.questCycle}|${action.missionKey}|" +
+                "${action.missionCurrent}|${action.missionRequired}",
         )
         is HomeQuestAutomationAction -> preview(
             if (action.action == HomeQuestAutomationActionType.ACCEPT) {
@@ -135,7 +139,8 @@ class StoredActionConvergenceSelectionFactory {
             },
             AutomationIsolationScopeKind.FISHING_ENTRY,
             entryId.toString(),
-            "fishing|${action.action}|${action.observedPrimaryAction}|${action.observedRemainingCasts}",
+            "fishing|${action.progressDate}|${action.action}|${action.observedPrimaryAction}|" +
+                "${action.observedRemainingCasts}",
         )
         is RaidTownAutomationAction -> preview(
             action.action.toConvergenceKind(),
@@ -151,21 +156,25 @@ class StoredActionConvergenceSelectionFactory {
         )
     }
 
-    private fun map(stored: StoredTypedAutomationAction): Mapping = when (val payload = stored.payload) {
+    private fun map(
+        stored: StoredTypedAutomationAction,
+        legacySuppressionEpoch: String?,
+    ): Mapping = when (val payload = stored.payload) {
         is StoredTypedActionPayload.QuestAccept -> Mapping(
             AutomationActionKind.QUEST_ACCEPT,
             scope(AutomationIsolationScopeKind.QUEST_TARGET, payload.questKey),
-            "quest|accept|${payload.questKey}|${payload.actionNo}",
+            "quest|accept|${payload.questKey}|${payload.questCycle ?: legacySuppressionEpoch}|${payload.actionNo}",
         )
         is StoredTypedActionPayload.QuestClaim -> Mapping(
             AutomationActionKind.QUEST_CLAIM,
             scope(AutomationIsolationScopeKind.QUEST_TARGET, payload.questKey),
-            "quest|claim|${payload.questKey}|${payload.actionNo}",
+            "quest|claim|${payload.questKey}|${payload.questCycle ?: legacySuppressionEpoch}|${payload.actionNo}",
         )
         is StoredTypedActionPayload.QuestBattle -> Mapping(
             AutomationActionKind.QUEST_BATTLE,
             scope(AutomationIsolationScopeKind.QUEST_TARGET, payload.questKey),
-            "quest|battle|${payload.questKey}|${payload.missionKey}|${payload.observedCurrent}|${payload.observedRequired}",
+            "quest|battle|${payload.questKey}|${payload.questCycle}|${payload.missionKey}|" +
+                "${payload.observedCurrent}|${payload.observedRequired}",
         )
         is StoredTypedActionPayload.HomeQuest -> Mapping(
             when (payload.action) {
@@ -192,7 +201,8 @@ class StoredActionConvergenceSelectionFactory {
                 else -> error("Unsupported stored fishing action ${payload.action}.")
             },
             scope(AutomationIsolationScopeKind.FISHING_ENTRY, stored.entryId.toString()),
-            "fishing|${payload.action}|${payload.observedPrimaryAction}|${payload.observedRemainingCasts}",
+            "fishing|${payload.progressDate ?: legacySuppressionEpoch}|${payload.action}|${payload.observedPrimaryAction}|" +
+                "${payload.observedRemainingCasts}",
         )
         is StoredTypedActionPayload.RaidTown -> Mapping(
             payload.action.toConvergenceKind(),

@@ -1032,6 +1032,29 @@ class AutomationActionLifecycleModuleTest {
     }
 
     @Test
+    fun `불명확한 모험맵은 전체 기준이 같을 때만 동일 상태이며 증가한 횟수는 대체 상태다`() {
+        val unchanged = assertNotNull(module.prepare(7L, 14L, adventureAction()))
+        val reset = assertNotNull(
+            module.prepare(
+                7L,
+                14L,
+                adventureAction().copy(executionIdentity = "adventure-reset"),
+            ),
+        )
+        Mockito.`when`(battleMapService.findMaps(7L, "battle_map", HofRequestOrigin.AUTOMATION))
+            .thenReturn(
+                listOf(mapResponse(attemptCount = 3)),
+                listOf(mapResponse(attemptCount = 4)),
+            )
+        Mockito.`when`(battleOutcome.reloadRecentAuthoritativeEvidence(anyBattleAction()))
+            .thenReturn(BattleOutcomeReconciliation.Unproven("결과 식별자를 찾지 못했습니다."))
+
+        assertIs<AmbiguousActionResolution.Resubmit>(unchanged.reconcile())
+        assertIs<AmbiguousActionResolution.Superseded>(reset.reconcile())
+        Mockito.verifyNoInteractions(workLifecycle)
+    }
+
+    @Test
     fun `저장된 전투 모험 낚시 레이드 행동은 identity와 fingerprint를 검증해 복원한다`() {
         val codec = StoredTypedAutomationActionCodec(jacksonObjectMapper())
         val payloads = listOf<StoredTypedActionPayload>(

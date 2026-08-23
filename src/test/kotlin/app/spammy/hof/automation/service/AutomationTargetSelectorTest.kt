@@ -2,16 +2,19 @@ package app.spammy.hof.automation.service
 
 import app.spammy.hof.automation.convergence.AutomationConvergenceSelectionConstraints
 import app.spammy.hof.automation.convergence.AutomationConvergenceSelectionGuard
+import app.spammy.hof.automation.convergence.AutomationActionEvidence
 import app.spammy.hof.automation.convergence.AutomationActionKind
 import app.spammy.hof.automation.convergence.AutomationConvergenceMode
 import app.spammy.hof.automation.convergence.AutomationConvergenceProperties
 import app.spammy.hof.automation.convergence.AutomationConvergenceRollout
+import app.spammy.hof.automation.convergence.ConvergenceDirective
 import app.spammy.hof.automation.convergence.AutomationIsolationScope
 import app.spammy.hof.automation.convergence.AutomationIsolationScopeKind
 import app.spammy.hof.automation.convergence.DefaultAutomationActionConvergenceModule
 import app.spammy.hof.automation.convergence.InMemoryConvergenceStore
 import app.spammy.hof.automation.convergence.StoreBackedAutomationConvergenceSelectionGuard
 import app.spammy.hof.automation.convergence.StoredActionConvergenceSelectionFactory
+import app.spammy.hof.automation.convergence.SelectedAutomationAction
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.AutomationType
@@ -170,6 +173,69 @@ class AutomationTargetSelectorTest {
 
         assertEquals(questEntry.id, selected.entryId)
         assertEquals(questAction, selected.action)
+    }
+
+    @Test
+    fun `shadow에서도 legacy 결과 미관측 baseline만 보류하고 다른 entry를 선택한다`() {
+        val store = InMemoryConvergenceStore()
+        val convergence = DefaultAutomationActionConvergenceModule(store, TimeProvider { now })
+        val factory = StoredActionConvergenceSelectionFactory()
+        val questAction = QuestAction.Accept("quest-1", "accept-1")
+        val preview = factory.preview(questEntry.id, questAction)
+        val heldSelection = SelectedAutomationAction(
+            entryId = questEntry.id,
+            executionIdentity = "legacy-result-unobserved",
+            actionKind = preview.actionKind,
+            scope = preview.scope,
+            policyVersion = StoredActionConvergenceSelectionFactory.POLICY_VERSION,
+            baselineFingerprint = requireNotNull(preview.baselineFingerprint),
+        )
+        val attemptId = assertIs<ConvergenceDirective.Submit>(
+            convergence.prepare(7L, heldSelection),
+        ).attemptId
+        convergence.record(
+            attemptId,
+            AutomationActionEvidence.ResultUnobserved(now, "legacy budget exhausted"),
+        )
+        val battleAction = BattleMapAutomationAction(
+            accountId = 7L,
+            progressDate = java.time.LocalDate.parse("2026-07-23"),
+            categoryId = "battle_map",
+            mapCode = "map-1",
+            presetMode = PresetSelectionMode.PRIMARY,
+            presetId = 3L,
+            battleCount = 1,
+            executionIdentity = "independent-battle",
+        )
+        val guarded = AutomationTargetSelector(
+            typed = typed,
+            work = work,
+            loader = loader,
+            lifecycle = lifecycle,
+            timeProvider = TimeProvider { now },
+            raidModule = defaultRaidModule,
+            quest = fixedQuestRules(QuestDirective.Execute(questAction)),
+            battle = AutomationHandler { HandlerEvaluation.Runnable(battleAction) },
+            adventure = AutomationHandler { HandlerEvaluation.Skipped },
+            union = AutomationHandler { HandlerEvaluation.Skipped },
+            fishing = AutomationHandler { HandlerEvaluation.Skipped },
+            homeQuest = AutomationHandler { HandlerEvaluation.Skipped },
+            convergenceGuard = StoreBackedAutomationConvergenceSelectionGuard(store),
+            convergenceSelectionFactory = factory,
+            convergenceRollout = AutomationConvergenceRollout(
+                AutomationConvergenceProperties(mode = AutomationConvergenceMode.SHADOW),
+            ),
+        )
+        Mockito.`when`(work.findRunning(7)).thenReturn(null)
+        Mockito.`when`(work.findWaiting(7)).thenReturn(emptyList())
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(questEntry, battleEntry))
+        Mockito.`when`(loader.loadEntry(7, questEntry.id, null, null)).thenReturn(questDecisionEntry())
+        Mockito.`when`(loader.loadEntry(7, battleEntry.id, null, null)).thenReturn(battleDecisionEntry())
+
+        val selected = assertIs<AutomationCoordination.Runnable>(guarded.select(7L))
+
+        assertEquals(battleEntry.id, selected.entryId)
+        assertEquals(battleAction, selected.action)
     }
 
     @Test

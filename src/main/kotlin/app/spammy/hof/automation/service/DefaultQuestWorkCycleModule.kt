@@ -48,12 +48,14 @@ sealed interface QuestAction : PreparedAutomationAction {
         override val questKey: String,
         val actionNo: String,
         val questName: String? = null,
+        val questCycle: String? = null,
     ) : QuestAction
 
     data class Accept(
         override val questKey: String,
         val actionNo: String,
         val questName: String? = null,
+        val questCycle: String? = null,
     ) : QuestAction
 
     data class Battle(
@@ -676,7 +678,16 @@ class DefaultQuestWorkCycleModule(
             .sortedBy(QuestSnapshot::sourceOrder)
 
         candidates.firstOrNull { it.state == QuestState.AVAILABLE }?.let { quest ->
-            return quest.actionNo?.let { QuestDirective.Execute(QuestAction.Accept(quest.questKey, it, quest.name)) }
+            return quest.actionNo?.let {
+                QuestDirective.Execute(
+                    QuestAction.Accept(
+                        quest.questKey,
+                        it,
+                        quest.name,
+                        context.currentCycles[quest.questKey] ?: INITIAL_CYCLE,
+                    ),
+                )
+            }
                 ?: QuestDirective.Hold(
                     "Quest ${quest.questKey} has no accept action.",
                     "QUEST_ACCEPT_ACTION_MISSING",
@@ -686,7 +697,16 @@ class DefaultQuestWorkCycleModule(
         candidates.firstOrNull {
             it.state == QuestState.CLAIMABLE && it.canClaimWithoutWastingTime(context.timeSnapshot, context.now)
         }?.let { quest ->
-            return quest.actionNo?.let { QuestDirective.Execute(QuestAction.Claim(quest.questKey, it, quest.name)) }
+            return quest.actionNo?.let {
+                QuestDirective.Execute(
+                    QuestAction.Claim(
+                        quest.questKey,
+                        it,
+                        quest.name,
+                        context.currentCycles[quest.questKey] ?: INITIAL_CYCLE,
+                    ),
+                )
+            }
                 ?: QuestDirective.Hold(
                     "Quest ${quest.questKey} has no claim action.",
                     "QUEST_CLAIM_ACTION_MISSING",

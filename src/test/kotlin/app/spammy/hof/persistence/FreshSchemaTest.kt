@@ -86,6 +86,7 @@ class FreshSchemaTest {
                 "35" to "persist raid battle safety gate",
                 "36" to "add typed automation wait diagnostics",
                 "37" to "persist raid cooldown evidence",
+                "38" to "bound legacy action reconciliation",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -128,6 +129,7 @@ class FreshSchemaTest {
                 "V35__persist_raid_battle_safety_gate.sql",
                 "V36__add_typed_automation_wait_diagnostics.sql",
                 "V37__persist_raid_cooldown_evidence.sql",
+                "V38__bound_legacy_action_reconciliation.sql",
                 "V3__add_automation_work_sessions.sql",
                 "V4__prepare_captcha_on_demand.sql",
                 "V5__track_character_detail_sync.sql",
@@ -148,6 +150,8 @@ class FreshSchemaTest {
             assertTrue(connection.tableExists("party_preset_folders"))
             assertTrue(connection.columnExists("party_presets", "folder_id"))
             assertTrue(connection.columnExists("captcha_challenges", "preparation_version"))
+            assertTrue(connection.columnExists("typed_automation_action_runs", "reconciliation_observation_count"))
+            assertTrue(connection.columnExists("typed_automation_action_runs", "reconciliation_first_pending_at"))
             assertTrue(connection.columnExists("characters", "detail_synced_at"))
             assertTrue(connection.tableExists("character_operation_jobs"))
             assertTrue(connection.columnExists("battle_maps", "shares_minute_cooldown"))

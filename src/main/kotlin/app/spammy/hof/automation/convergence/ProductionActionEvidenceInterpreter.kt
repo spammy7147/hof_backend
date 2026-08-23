@@ -121,19 +121,11 @@ class ProductionActionEvidenceInterpreter(
                     ),
                 )
             }
-            AmbiguousActionResolution.Resubmit -> policies.evaluate(
-                selection,
-                ActionPolicyObservation(
-                    capturedAt = capturedAt,
-                    source = ActionEvidenceSource.LIFECYCLE_RESULT,
-                    completeness = ObservationCompleteness.COMPLETE,
-                    freshness = ObservationFreshness.FRESH,
-                    state = null,
-                    explicitRejected = true,
-                    rejectionReason = "AUTHORITATIVE_NOT_APPLIED",
-                    responseShapeFingerprint = diagnostics.fingerprint,
-                    sanitizedSnippet = diagnostics.snippet,
-                ),
+            AmbiguousActionResolution.Resubmit -> AutomationActionEvidence.SameState(
+                capturedAt = capturedAt,
+                stateFingerprint = selection.baselineFingerprint,
+                responseShapeFingerprint = diagnostics.fingerprint,
+                sanitizedSnippet = diagnostics.snippet,
             )
             is AmbiguousActionResolution.VerifyLater -> AutomationActionEvidence.IncompleteObservation(
                 capturedAt,

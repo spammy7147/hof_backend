@@ -2,6 +2,7 @@ package app.spammy.hof.automation.service
 
 import app.spammy.hof.automation.convergence.AutomationActionConvergenceModule
 import app.spammy.hof.automation.convergence.AutomationActionEvidence
+import app.spammy.hof.automation.convergence.AutomationConvergenceBudget
 import app.spammy.hof.automation.convergence.AutomationConvergenceRollout
 import app.spammy.hof.automation.convergence.AutomationConvergenceShadowEvaluator
 import app.spammy.hof.automation.convergence.ConvergenceDirective
@@ -490,7 +491,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                     return
                 }
                 TypedRuntimeCheckpointPhase.RECONCILING -> {
-                    cutoverLegacyReconciliation(accountId, execution, managedAction, stored)
+                    cutoverLegacyReconciliation(accountId, execution, managedAction, stored, activeCheckpoint)
                     return
                 }
             }
@@ -508,6 +509,28 @@ class UnifiedAutomationRunner @Autowired constructor(
             } catch (error: Throwable) {
                 error.findHofAutomationDeferral()?.let { deferred ->
                     val message = deferred.message ?: "HOF server returned 503 while verifying an ambiguous action."
+                    val observedAt = now()
+                    val firstPendingAt = activeCheckpoint.firstPendingAt ?: activeCheckpoint.submittedAt ?: observedAt
+                    if (
+                        AutomationConvergenceBudget.exhausted(
+                            activeCheckpoint.successfulObservationCount,
+                            firstPendingAt,
+                            observedAt,
+                        )
+                    ) {
+                        completeLegacyReconciliationBudget(
+                            accountId = accountId,
+                            execution = execution,
+                            stored = stored,
+                            actionDescriptor = actionDescriptor,
+                            activeCheckpoint = activeCheckpoint,
+                            observedAt = observedAt,
+                            reason = message,
+                            successfulObservation = false,
+                            decisionCycleId = decisionCycleId,
+                        )
+                        return
+                    }
                     decisionCycleId?.let { cycleId -> runCatching {
                         decisionJournal?.appendActionResult(cycleId, trace(
                             AutomationHistoryEventKind.WAITING,
@@ -519,7 +542,11 @@ class UnifiedAutomationRunner @Autowired constructor(
                     completeAndSchedule(
                         accountId,
                         execution,
-                        TypedRuntimeOutcome.ReconciliationDeferred(deferred.retryAt, message),
+                        TypedRuntimeOutcome.ReconciliationDeferred(
+                            deferred.retryAt,
+                            message,
+                            successfulObservation = false,
+                        ),
                         HOF_COOLDOWN_WAKE_REASON,
                     )
                     return
@@ -529,6 +556,28 @@ class UnifiedAutomationRunner @Autowired constructor(
                     accountId,
                     error.javaClass.name,
                 )
+                val observedAt = now()
+                val firstPendingAt = activeCheckpoint.firstPendingAt ?: activeCheckpoint.submittedAt ?: observedAt
+                if (
+                    AutomationConvergenceBudget.exhausted(
+                        activeCheckpoint.successfulObservationCount,
+                        firstPendingAt,
+                        observedAt,
+                    )
+                ) {
+                    completeLegacyReconciliationBudget(
+                        accountId = accountId,
+                        execution = execution,
+                        stored = stored,
+                        actionDescriptor = actionDescriptor,
+                        activeCheckpoint = activeCheckpoint,
+                        observedAt = observedAt,
+                        reason = error.message ?: error.javaClass.simpleName,
+                        successfulObservation = false,
+                        decisionCycleId = decisionCycleId,
+                    )
+                    return
+                }
                 retryExecution(accountId, execution, classifyActionStop(error), error.message ?: error.javaClass.simpleName)
                 return
             }
@@ -558,22 +607,52 @@ class UnifiedAutomationRunner @Autowired constructor(
                     }
                 }
                 AmbiguousActionResolution.Resubmit -> {
+                    val observedAt = now()
+                    val reason = "권위 상태가 행동 전과 같아 적용 여부를 아직 확정할 수 없습니다."
+                    val firstPendingAt = activeCheckpoint.firstPendingAt ?: activeCheckpoint.submittedAt ?: observedAt
+                    if (
+                        AutomationConvergenceBudget.exhausted(
+                            activeCheckpoint.successfulObservationCount + 1,
+                            firstPendingAt,
+                            observedAt,
+                        )
+                    ) {
+                        completeLegacyReconciliationBudget(
+                            accountId = accountId,
+                            execution = execution,
+                            stored = stored,
+                            actionDescriptor = actionDescriptor,
+                            activeCheckpoint = activeCheckpoint,
+                            observedAt = observedAt,
+                            reason = reason,
+                            successfulObservation = true,
+                            decisionCycleId = decisionCycleId,
+                        )
+                        return
+                    }
                     observeShadow(
                         accountId,
                         stored.executionIdentity,
-                        AutomationActionEvidence.SameState(now(), "same:${stored.executionIdentity}"),
+                        AutomationActionEvidence.SameState(observedAt, "same:${stored.executionIdentity}"),
                         LegacyConvergenceDecision.RESUBMIT,
                     )
                     decisionCycleId?.let { cycleId ->
                         decisionJournal?.appendActionResult(cycleId, trace(
                             AutomationHistoryEventKind.WAITING,
-                            "AMBIGUOUS_RESULT_RESUBMIT",
-                            "상태 재확인 결과 적용되지 않아 같은 단계를 다시 제출합니다.",
+                            "AMBIGUOUS_RESULT_UNCHANGED",
+                            "$reason 저장 행동은 다시 제출하지 않습니다.",
+                            observedAt.plusSeconds(RECONCILIATION_RETRY_SECONDS),
                         ))
                     }
-                    typedRuntime.complete(
+                    completeAndSchedule(
+                        accountId,
                         execution,
-                        TypedRuntimeOutcome.ReconciliationResubmit("TYPED_RECONCILED_RESUBMIT"),
+                        TypedRuntimeOutcome.ReconciliationDeferred(
+                            observedAt.plusSeconds(RECONCILIATION_RETRY_SECONDS),
+                            reason,
+                            successfulObservation = true,
+                        ),
+                        "TYPED_RECONCILE_RETRY",
                     )
                 }
                 is AmbiguousActionResolution.Superseded -> {
@@ -596,10 +675,32 @@ class UnifiedAutomationRunner @Autowired constructor(
                     )
                 }
                 is AmbiguousActionResolution.VerifyLater -> {
+                    val observedAt = now()
+                    val firstPendingAt = activeCheckpoint.firstPendingAt ?: activeCheckpoint.submittedAt ?: observedAt
+                    if (
+                        AutomationConvergenceBudget.exhausted(
+                            activeCheckpoint.successfulObservationCount + 1,
+                            firstPendingAt,
+                            observedAt,
+                        )
+                    ) {
+                        completeLegacyReconciliationBudget(
+                            accountId = accountId,
+                            execution = execution,
+                            stored = stored,
+                            actionDescriptor = actionDescriptor,
+                            activeCheckpoint = activeCheckpoint,
+                            observedAt = observedAt,
+                            reason = resolution.reason,
+                            successfulObservation = true,
+                            decisionCycleId = decisionCycleId,
+                        )
+                        return
+                    }
                     observeShadow(
                         accountId,
                         stored.executionIdentity,
-                        AutomationActionEvidence.IncompleteObservation(now(), resolution.reason),
+                        AutomationActionEvidence.IncompleteObservation(observedAt, resolution.reason),
                         LegacyConvergenceDecision.RECONCILING,
                     )
                     decisionCycleId?.let { cycleId ->
@@ -613,7 +714,11 @@ class UnifiedAutomationRunner @Autowired constructor(
                     completeAndSchedule(
                         accountId,
                         execution,
-                        TypedRuntimeOutcome.ReconciliationDeferred(resolution.retryAt, resolution.reason),
+                        TypedRuntimeOutcome.ReconciliationDeferred(
+                            resolution.retryAt,
+                            resolution.reason,
+                            successfulObservation = true,
+                        ),
                         "TYPED_RECONCILE_RETRY",
                     )
                 }
@@ -1072,11 +1177,64 @@ class UnifiedAutomationRunner @Autowired constructor(
 
     private fun convergenceActive(): Boolean = rollout?.active ?: (convergenceModule != null)
 
+    private fun completeLegacyReconciliationBudget(
+        accountId: Long,
+        execution: TypedRuntimeExecutionRight,
+        stored: StoredTypedAutomationAction,
+        actionDescriptor: AutomationActionDescriptor,
+        activeCheckpoint: TypedRuntimeCheckpoint,
+        observedAt: Instant,
+        reason: String,
+        successfulObservation: Boolean,
+        decisionCycleId: Long?,
+    ) {
+        val successfulObservationCount = activeCheckpoint.successfulObservationCount +
+            if (successfulObservation) 1 else 0
+        val firstPendingAt = activeCheckpoint.firstPendingAt ?: activeCheckpoint.submittedAt ?: observedAt
+        val sanitizedReason = reason.take(500)
+        val warning = "이전 요청 결과를 최대 5회 또는 2분 안에 확정하지 못해 해당 상태만 보류합니다. " +
+            "성공 관측 ${successfulObservationCount}회 · 마지막 사유: $sanitizedReason"
+        val evidence = AutomationActionEvidence.ResultUnobserved(observedAt, sanitizedReason)
+        convergenceSelectionFactory?.create(stored, activeCheckpoint.legacySuppressionEpoch)?.let { selection ->
+            convergenceModule?.holdUnresolved(
+                accountId,
+                selection,
+                evidence,
+                successfulObservationCount,
+                firstPendingAt,
+            )
+        }
+        observeShadow(
+            accountId,
+            stored.executionIdentity,
+            evidence,
+            LegacyConvergenceDecision.RESULT_UNOBSERVED,
+        )
+        decisionCycleId?.let { cycleId ->
+            decisionJournal?.appendActionResult(cycleId, actionTrace(
+                stored,
+                AutomationHistoryEventKind.SKIPPED,
+                TYPED_RECONCILIATION_BUDGET_EXHAUSTED,
+                warning,
+                descriptor = actionDescriptor,
+            ))
+        }
+        typedRuntime.complete(
+            execution,
+            TypedRuntimeOutcome.AmbiguousHandoff(
+                warning,
+                TYPED_RECONCILIATION_BUDGET_EXHAUSTED,
+                successfulObservationCount,
+            ),
+        )
+    }
+
     private fun cutoverLegacyReconciliation(
         accountId: Long,
         execution: TypedRuntimeExecutionRight,
         managed: ManagedAutomationAction,
         stored: StoredTypedAutomationAction,
+        activeCheckpoint: TypedRuntimeCheckpoint,
     ) {
         val convergence = convergenceModule
         val factory = convergenceSelectionFactory
@@ -1090,20 +1248,21 @@ class UnifiedAutomationRunner @Autowired constructor(
             )
             return
         }
-        val directive = when (val prepared = convergence.prepare(accountId, factory.create(stored))) {
+        val selection = factory.create(stored, activeCheckpoint.legacySuppressionEpoch)
+        val directive = when (val prepared = convergence.prepare(accountId, selection)) {
             is ConvergenceDirective.Submit -> {
                 val observation = try {
                     when (val resolution = managed.reconcile()) {
                         is AmbiguousActionResolution.Applied -> {
                             applyRecoveredExecution(accountId, resolution.execution)
                             evidenceInterpreter?.fromReconciliation(
-                                factory.create(stored),
+                                selection,
                                 resolution,
                                 now(),
                             ) ?: AutomationActionEvidence.StateAdvanced(now(), "advanced:${stored.executionIdentity}")
                         }
                         else -> evidenceInterpreter?.fromReconciliation(
-                            factory.create(stored),
+                            selection,
                             resolution,
                             now(),
                         ) ?: when (resolution) {
@@ -1436,6 +1595,8 @@ class UnifiedAutomationRunner @Autowired constructor(
     )
 
     private companion object {
+        const val TYPED_RECONCILIATION_BUDGET_EXHAUSTED = "TYPED_RECONCILIATION_BUDGET_EXHAUSTED"
+        const val RECONCILIATION_RETRY_SECONDS = 10L
         const val HOF_COOLDOWN_WAKE_REASON = "HOF_503_COOLDOWN"
         const val AUTOMATIC_RETRY_WAKE_REASON = "TYPED_AUTOMATIC_RETRY"
         const val RAID_BATTLE_RECOVERY_WAKE_REASON = "RAID_BATTLE_RECOVERY_STARTED"

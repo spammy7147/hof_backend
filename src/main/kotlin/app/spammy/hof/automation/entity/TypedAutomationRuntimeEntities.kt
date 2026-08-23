@@ -42,6 +42,10 @@ class TypedAutomationActionRunEntity(
     @Column(name = "action_fingerprint") val actionFingerprint: String,
     @Enumerated(EnumType.STRING) @Column(name = "status") var status: TypedAutomationActionStatus,
     @Column(name = "retry_attempt") var retryAttempt: Int = 0,
+    @Column(name = "reconciliation_observation_count", nullable = false)
+    var reconciliationObservationCount: Int = 0,
+    @Column(name = "reconciliation_first_pending_at")
+    var reconciliationFirstPendingAt: Instant? = null,
     @Column(name = "next_attempt_at") var nextAttemptAt: Instant? = null,
     @Column(name = "lease_token") var leaseToken: String,
     @Column(name = "last_error", columnDefinition = "text") var lastError: String? = null,

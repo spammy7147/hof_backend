@@ -6,6 +6,7 @@ import app.spammy.hof.automation.outbox.AutomationOutboxService
 import app.spammy.hof.common.time.TimeProvider
 import java.time.Duration
 import java.time.Instant
+import java.time.ZoneId
 import java.util.UUID
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
@@ -74,6 +75,8 @@ class TypedAutomationRuntimeService(
         val active = queryRepository.findActiveTypedAction(accountId)
         if (active?.status == TypedAutomationActionStatus.SUBMITTING) {
             active.status = TypedAutomationActionStatus.RECONCILING
+            active.reconciliationObservationCount = 0
+            active.reconciliationFirstPendingAt = active.submittedAt ?: now
             active.finishedAt = null
             active.lastError = "A submitted action lost its lease; verify its authoritative state."
             active.updatedAt = now
@@ -90,7 +93,7 @@ class TypedAutomationRuntimeService(
         active?.updatedAt = now
 
         val checkpoint = active?.let { row ->
-            val stored = try {
+            val decoded = try {
                 codec.verifyPersisted(row, accountId)
             } catch (_: RuntimeException) {
                 row.status = when (row.status) {
@@ -104,6 +107,12 @@ class TypedAutomationRuntimeService(
                     scheduleAutomaticRetry(state, AutomationStopReason.FATAL, row.lastError!!),
                 )
             }
+            val legacySuppressionEpoch = if (row.status == TypedAutomationActionStatus.RECONCILING) {
+                decoded.legacySuppressionEpoch(accountId, row)
+            } else {
+                null
+            }
+            val stored = decoded.withLegacySuppressionEpoch(legacySuppressionEpoch)
             TypedRuntimeCheckpoint(
                 storedAction = stored,
                 phase = when (row.status) {
@@ -113,6 +122,9 @@ class TypedAutomationRuntimeService(
                 },
                 submittedAt = row.submittedAt,
                 diagnostic = row.lastError,
+                successfulObservationCount = row.reconciliationObservationCount,
+                firstPendingAt = row.reconciliationFirstPendingAt,
+                legacySuppressionEpoch = legacySuppressionEpoch,
             )
         }
         return TypedRuntimeAcquisition.Acquired(
@@ -271,18 +283,13 @@ class TypedAutomationRuntimeService(
                 right.requireActionId(),
                 outcome.wakeReason,
             ).projection()
-            is TypedRuntimeOutcome.ReconciliationResubmit -> retryReconciledSubmission(
-                right.accountId,
-                right.leaseToken,
-                right.requireActionId(),
-                outcome.wakeReason,
-            ).projection()
             is TypedRuntimeOutcome.ReconciliationDeferred -> deferReconciliation(
                 right.accountId,
                 right.leaseToken,
                 right.requireActionId(),
                 outcome.retryAt,
                 outcome.reason,
+                outcome.successfulObservation,
             ).projection(outcome.retryAt)
             is TypedRuntimeOutcome.AmbiguousHandoff -> handoffAmbiguousAction(
                 right.accountId,
@@ -290,6 +297,7 @@ class TypedAutomationRuntimeService(
                 right.requireActionId(),
                 outcome.warning,
                 outcome.wakeReason,
+                outcome.successfulObservationCount,
             ).projection()
             is TypedRuntimeOutcome.ActionSuperseded -> supersedeAction(
                 right.accountId,
@@ -367,6 +375,8 @@ class TypedAutomationRuntimeService(
         val now = timeProvider.now()
         val diagnostic = sanitizeDiagnostic(message)
         action.status = TypedAutomationActionStatus.RECONCILING
+        action.reconciliationObservationCount = 0
+        action.reconciliationFirstPendingAt = now
         action.nextAttemptAt = null
         action.finishedAt = null
         action.lastError = diagnostic
@@ -387,6 +397,7 @@ class TypedAutomationRuntimeService(
         actionId: Long,
         warning: String,
         wakeReason: String,
+        successfulObservationCount: Int?,
     ): Boolean {
         val state = fencedState(accountId, token) ?: return false
         val action = queryRepository.lockTypedAction(actionId) ?: return false
@@ -401,6 +412,7 @@ class TypedAutomationRuntimeService(
         val now = timeProvider.now()
         val diagnostic = sanitizeDiagnostic(warning)
         action.status = TypedAutomationActionStatus.AMBIGUOUS
+        successfulObservationCount?.let { action.reconciliationObservationCount = it }
         action.nextAttemptAt = null
         action.finishedAt = now
         action.lastError = diagnostic
@@ -502,43 +514,13 @@ class TypedAutomationRuntimeService(
         return true
     }
 
-    private fun retryReconciledSubmission(
-        accountId: Long,
-        token: String,
-        actionId: Long,
-        reason: String,
-    ): Boolean {
-        val state = fencedState(accountId, token) ?: return false
-        val action = queryRepository.lockTypedAction(actionId) ?: return false
-        if (
-            action.account.id != accountId ||
-            action.leaseToken != token ||
-            action.status != TypedAutomationActionStatus.RECONCILING
-        ) return false
-        val now = timeProvider.now()
-        action.status = TypedAutomationActionStatus.PREPARED
-        action.retryAttempt += 1
-        action.nextAttemptAt = null
-        action.submittedAt = null
-        action.finishedAt = null
-        action.lastError = null
-        action.updatedAt = now
-        state.leaseToken = null
-        state.leaseUntil = null
-        state.nextAttemptAt = null
-        state.waitReason = null
-        state.lastError = null
-        state.updatedAt = now
-        outbox.enqueue(accountId, reason)
-        return true
-    }
-
     private fun deferReconciliation(
         accountId: Long,
         token: String,
         actionId: Long,
         retryAt: Instant,
         reason: String,
+        successfulObservation: Boolean,
     ): Boolean {
         val state = fencedState(accountId, token) ?: return false
         val action = queryRepository.lockTypedAction(actionId) ?: return false
@@ -550,6 +532,12 @@ class TypedAutomationRuntimeService(
         val now = timeProvider.now()
         val diagnostic = sanitizeDiagnostic(reason)
         action.retryAttempt += 1
+        if (action.reconciliationFirstPendingAt == null) {
+            action.reconciliationFirstPendingAt = now
+        }
+        if (successfulObservation) {
+            action.reconciliationObservationCount += 1
+        }
         action.nextAttemptAt = retryAt
         action.lastError = diagnostic
         action.updatedAt = now
@@ -654,6 +642,10 @@ class TypedAutomationRuntimeService(
             if (status == TypedAutomationActionStatus.SUBMITTING) {
                 status = TypedAutomationActionStatus.RECONCILING
                 submittedAt = submittedAt ?: timeProvider.now()
+            }
+            if (status == TypedAutomationActionStatus.RECONCILING && reconciliationFirstPendingAt == null) {
+                reconciliationObservationCount = 0
+                reconciliationFirstPendingAt = submittedAt ?: timeProvider.now()
             }
             retryAttempt = (retryAttempt + 1).coerceAtMost(MAX_RETRY_ATTEMPT)
             nextAttemptAt = retryAt
@@ -782,7 +774,53 @@ class TypedAutomationRuntimeService(
     private fun Boolean.projection(nextAttemptAt: Instant? = null): TypedRuntimeProjection =
         TypedRuntimeProjection(this, nextAttemptAt.takeIf { this })
 
+    private fun StoredTypedAutomationAction.legacySuppressionEpoch(
+        accountId: Long,
+        row: TypedAutomationActionRunEntity,
+    ): String? = when (val storedPayload = payload) {
+        is StoredTypedActionPayload.QuestAccept -> storedPayload.questCycle ?: queryRepository
+            .findQuestCycle(accountId, storedPayload.questKey)
+            ?.currentCycle
+            ?.toString()
+            ?: "0"
+        is StoredTypedActionPayload.QuestClaim -> storedPayload.questCycle ?: queryRepository
+            .findQuestCycle(accountId, storedPayload.questKey)
+            ?.currentCycle
+            ?.toString()
+            ?: "0"
+        is StoredTypedActionPayload.FishingTown -> storedPayload.progressDate?.toString()
+            ?: (row.submittedAt ?: row.createdAt)
+                .atZone(LEGACY_SUPPRESSION_ZONE)
+                .toLocalDate()
+                .toString()
+        else -> null
+    }
+
+    private fun StoredTypedAutomationAction.withLegacySuppressionEpoch(epoch: String?): StoredTypedAutomationAction {
+        if (epoch == null) return this
+        val enrichedPayload = when (val storedPayload = payload) {
+            is StoredTypedActionPayload.QuestAccept -> if (storedPayload.questCycle == null) {
+                storedPayload.copy(questCycle = epoch)
+            } else {
+                storedPayload
+            }
+            is StoredTypedActionPayload.QuestClaim -> if (storedPayload.questCycle == null) {
+                storedPayload.copy(questCycle = epoch)
+            } else {
+                storedPayload
+            }
+            is StoredTypedActionPayload.FishingTown -> if (storedPayload.progressDate == null) {
+                storedPayload.copy(progressDate = java.time.LocalDate.parse(epoch))
+            } else {
+                storedPayload
+            }
+            else -> storedPayload
+        }
+        return if (enrichedPayload === payload) this else copy(payload = enrichedPayload)
+    }
+
     companion object {
+        private val LEGACY_SUPPRESSION_ZONE = ZoneId.of("Asia/Seoul")
         private val LEASE_DURATION = Duration.ofMinutes(5)
         private val CONFIG_RECHECK = Duration.ofMinutes(5)
         private val RETRY_SECONDS = listOf(10L, 30L, 60L, 300L)

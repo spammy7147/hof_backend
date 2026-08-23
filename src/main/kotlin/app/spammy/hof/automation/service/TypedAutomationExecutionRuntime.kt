@@ -17,6 +17,9 @@ data class TypedRuntimeCheckpoint(
     val phase: TypedRuntimeCheckpointPhase,
     val submittedAt: Instant?,
     val diagnostic: String?,
+    val successfulObservationCount: Int = 0,
+    val firstPendingAt: Instant? = null,
+    val legacySuppressionEpoch: String? = null,
 )
 
 enum class TypedRuntimeCheckpointPhase {
@@ -72,11 +75,15 @@ sealed interface TypedRuntimeOutcome {
     data class SubmissionDeferred(val retryAt: Instant, val message: String) : TypedRuntimeOutcome
     data class SubmissionAmbiguous(val message: String) : TypedRuntimeOutcome
     data class ReconciliationApplied(val wakeReason: String) : TypedRuntimeOutcome
-    data class ReconciliationResubmit(val wakeReason: String) : TypedRuntimeOutcome
-    data class ReconciliationDeferred(val retryAt: Instant, val reason: String) : TypedRuntimeOutcome
+    data class ReconciliationDeferred(
+        val retryAt: Instant,
+        val reason: String,
+        val successfulObservation: Boolean = true,
+    ) : TypedRuntimeOutcome
     data class AmbiguousHandoff(
         val warning: String,
         val wakeReason: String,
+        val successfulObservationCount: Int? = null,
     ) : TypedRuntimeOutcome
     data class ActionSuperseded(
         val warning: String,

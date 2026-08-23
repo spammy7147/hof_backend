@@ -3,12 +3,16 @@ package app.spammy.hof.automation.convergence
 import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.automation.service.BattleAutomationActionSource
 import app.spammy.hof.automation.service.BattleMapAutomationAction
+import app.spammy.hof.automation.service.FishingTownAutomationAction
 import app.spammy.hof.automation.service.ResolvedAutomationParty
 import app.spammy.hof.automation.service.HomeQuestAutomationActionType
+import app.spammy.hof.automation.service.QuestAction
+import app.spammy.hof.automation.service.QuestPresetSelection
 import app.spammy.hof.automation.service.StoredTypedActionPayload
 import app.spammy.hof.automation.service.StoredTypedAutomationAction
 import app.spammy.hof.battle.dto.BattlePatternLoadRequest
 import app.spammy.hof.battle.dto.RunBattleRequest
+import app.spammy.hof.quest.model.QuestMissionType
 import app.spammy.hof.town.fishing.model.FishingAction
 import app.spammy.hof.town.fishing.model.FishingPrimaryAction
 import app.spammy.hof.town.raid.model.RaidAction
@@ -72,6 +76,99 @@ class StoredActionConvergenceSelectionFactoryTest {
 
         assertEquals(first.baselineFingerprint, replayCandidate.baselineFingerprint)
         assertNotEquals(first.baselineFingerprint, changed.baselineFingerprint)
+    }
+
+    @Test
+    fun `퀘스트 cycle이 바뀌면 과거 보류와 다른 fingerprint를 쓴다`() {
+        val request = RunBattleRequest(
+            categoryId = "dungeon",
+            mapCode = "map-1",
+            characterIds = listOf("character-1"),
+            patternLoads = listOf(BattlePatternLoadRequest("character-1", 0)),
+            battleCount = 1,
+        )
+        val payload = StoredTypedActionPayload.QuestBattle(
+            questKey = "quest-a",
+            questCycle = "4",
+            missionKey = "mission-a",
+            missionType = QuestMissionType.MONSTER_KILL,
+            categoryId = "dungeon",
+            mapCode = "map-1",
+            presetMode = PresetSelectionMode.PRIMARY,
+            presetId = 3L,
+            battleCount = 1,
+            battleRequest = request,
+            observedCurrent = 0,
+            observedRequired = 5,
+        )
+        val prepared = QuestAction.Battle(
+            questKey = "quest-a",
+            questCycle = "4",
+            missionKey = "mission-a",
+            missionType = QuestMissionType.MONSTER_KILL,
+            categoryId = "dungeon",
+            mapCode = "map-1",
+            mapName = "Map",
+            preset = QuestPresetSelection(PresetSelectionMode.PRIMARY, 3L),
+            missionCurrent = 0,
+            missionRequired = 5,
+        )
+
+        val storedSelection = factory.create(stored(payload))
+        val preview = factory.preview(12L, prepared)
+        val nextCycle = factory.create(stored(payload.copy(questCycle = "5")))
+
+        assertEquals(storedSelection.baselineFingerprint, preview.baselineFingerprint)
+        assertNotEquals(storedSelection.baselineFingerprint, nextCycle.baselineFingerprint)
+    }
+
+    @Test
+    fun `주기 필드가 없는 legacy 퀘스트와 낚시도 현재 주기에만 보류한다`() {
+        val legacyClaim = StoredTypedActionPayload.QuestClaim("quest-a", "claim-1")
+        val claimSelection = factory.create(stored(legacyClaim), legacySuppressionEpoch = "4")
+        val claimPreview = factory.preview(
+            12L,
+            QuestAction.Claim("quest-a", "claim-1", questCycle = "4"),
+        )
+        val nextClaimCycle = factory.preview(
+            12L,
+            QuestAction.Claim("quest-a", "claim-1", questCycle = "5"),
+        )
+        val date = LocalDate.parse("2026-08-23")
+        val legacyFishing = StoredTypedActionPayload.FishingTown(
+            FishingAction.START,
+            FishingPrimaryAction.START,
+            5,
+        )
+        val fishingSelection = factory.create(
+            stored(legacyFishing),
+            legacySuppressionEpoch = date.toString(),
+        )
+        val fishingPreview = factory.preview(
+            12L,
+            FishingTownAutomationAction(
+                7L,
+                FishingAction.START,
+                FishingPrimaryAction.START,
+                5,
+                date,
+            ),
+        )
+        val nextFishingDate = factory.preview(
+            12L,
+            FishingTownAutomationAction(
+                7L,
+                FishingAction.START,
+                FishingPrimaryAction.START,
+                5,
+                date.plusDays(1),
+            ),
+        )
+
+        assertEquals(claimSelection.baselineFingerprint, claimPreview.baselineFingerprint)
+        assertNotEquals(claimSelection.baselineFingerprint, nextClaimCycle.baselineFingerprint)
+        assertEquals(fishingSelection.baselineFingerprint, fishingPreview.baselineFingerprint)
+        assertNotEquals(fishingSelection.baselineFingerprint, nextFishingDate.baselineFingerprint)
     }
 
     @Test

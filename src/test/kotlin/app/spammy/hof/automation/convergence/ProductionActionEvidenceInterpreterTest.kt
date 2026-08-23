@@ -30,11 +30,11 @@ class ProductionActionEvidenceInterpreterTest {
     }
 
     @Test
-    fun `reconcile applied와 resubmit은 각각 applied와 not applied 증거가 된다`() {
+    fun `reconcile applied는 적용이고 resubmit은 동일 상태 관측이다`() {
         assertIs<AutomationActionEvidence.DirectApplied>(
             interpreter.fromReconciliation(selection, AmbiguousActionResolution.Applied(), NOW),
         )
-        assertIs<AutomationActionEvidence.DirectRejected>(
+        assertIs<AutomationActionEvidence.SameState>(
             interpreter.fromReconciliation(selection, AmbiguousActionResolution.Resubmit, NOW),
         )
     }

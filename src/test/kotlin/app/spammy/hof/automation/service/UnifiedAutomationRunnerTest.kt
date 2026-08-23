@@ -10,7 +10,9 @@ import app.spammy.hof.automation.convergence.AutomationConvergenceShadowEvaluato
 import app.spammy.hof.automation.convergence.AutomationIsolationScope
 import app.spammy.hof.automation.convergence.AutomationIsolationScopeKind
 import app.spammy.hof.automation.convergence.ConvergenceDirective
+import app.spammy.hof.automation.convergence.DefaultAutomationActionConvergenceModule
 import app.spammy.hof.automation.convergence.DefaultActionEvidencePolicies
+import app.spammy.hof.automation.convergence.InMemoryConvergenceStore
 import app.spammy.hof.automation.convergence.LegacyConvergenceDecision
 import app.spammy.hof.automation.convergence.ProductionActionEvidenceInterpreter
 import app.spammy.hof.automation.convergence.ProductionEvidenceShapes
@@ -293,7 +295,8 @@ class UnifiedAutomationRunnerTest {
     }
 
     @Test
-    fun `verified reconciliation checkpoint resubmits without blind execution`() {
+    fun `unchanged reconciliation waits without replaying the stored payload`() {
+        val observedAt = Instant.parse("2026-08-23T10:00:00Z")
         val stored = StoredTypedAutomationAction(
             12,
             "execution-1",
@@ -303,8 +306,10 @@ class UnifiedAutomationRunnerTest {
             TypedRuntimeCheckpoint(
                 stored,
                 TypedRuntimeCheckpointPhase.RECONCILING,
-                Instant.EPOCH,
+                observedAt.minusSeconds(30),
                 "unknown result",
+                successfulObservationCount = 1,
+                firstPendingAt = observedAt.minusSeconds(30),
             ),
         )
         Mockito.`when`(runtime.acquire(7)).thenReturn(TypedRuntimeAcquisition.Acquired(reconciling))
@@ -312,13 +317,250 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(managed.storedAction).thenReturn(stored)
         Mockito.`when`(managed.reconcile()).thenReturn(AmbiguousActionResolution.Resubmit)
 
-        runner.runOne(7)
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            timeProvider = TimeProvider { observedAt },
+        )
+
+        scoped.runOne(7)
 
         Mockito.verify(lifecycle).restoreVerified(stored, 7)
         Mockito.verify(managed).reconcile()
         Mockito.verify(managed, Mockito.never()).execute()
-        val outcome = assertIs<TypedRuntimeOutcome.ReconciliationResubmit>(capturedOutcome())
-        assertEquals("TYPED_RECONCILED_RESUBMIT", outcome.wakeReason)
+        val outcome = assertIs<TypedRuntimeOutcome.ReconciliationDeferred>(capturedOutcome())
+        assertEquals(observedAt.plusSeconds(10), outcome.retryAt)
+        assertEquals(true, outcome.successfulObservation)
+    }
+
+    @Test
+    fun `legacy reconciliation stops after the two minute observation budget`() {
+        val observedAt = Instant.parse("2026-08-23T10:00:00Z")
+        val stored = StoredTypedAutomationAction(
+            12,
+            "execution-budget",
+            StoredTypedActionPayload.QuestAccept("quest", "accept-no"),
+        )
+        val reconciling = executionRight(
+            TypedRuntimeCheckpoint(
+                stored,
+                TypedRuntimeCheckpointPhase.RECONCILING,
+                observedAt.minusSeconds(121),
+                "unknown result",
+            ),
+        )
+        Mockito.`when`(runtime.acquire(7)).thenReturn(TypedRuntimeAcquisition.Acquired(reconciling))
+        Mockito.`when`(lifecycle.restoreVerified(stored, 7)).thenReturn(managed)
+        Mockito.`when`(managed.storedAction).thenReturn(stored)
+        Mockito.`when`(managed.reconcile()).thenReturn(
+            AmbiguousActionResolution.VerifyLater(observedAt.plusSeconds(10), "still unchanged"),
+        )
+        val store = InMemoryConvergenceStore()
+        val factory = StoredActionConvergenceSelectionFactory()
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            convergenceModule = DefaultAutomationActionConvergenceModule(store, TimeProvider { observedAt }),
+            convergenceSelectionFactory = factory,
+            timeProvider = TimeProvider { observedAt },
+            rollout = AutomationConvergenceRollout(
+                AutomationConvergenceProperties(mode = AutomationConvergenceMode.SHADOW),
+            ),
+        )
+
+        scoped.runOne(7)
+
+        val outcome = assertIs<TypedRuntimeOutcome.AmbiguousHandoff>(capturedOutcome())
+        assertEquals("TYPED_RECONCILIATION_BUDGET_EXHAUSTED", outcome.wakeReason)
+        val selection = factory.create(stored)
+        assertEquals(
+            setOf(selection.baselineFingerprint),
+            store.findSuppressedBaselines(7L)[selection.scope],
+        )
+        Mockito.verify(managed, Mockito.never()).execute()
+    }
+
+    @Test
+    fun `legacy reconciliation network failures stop when the two minute time budget expires`() {
+        val observedAt = Instant.parse("2026-08-23T10:00:00Z")
+        val retryAt = observedAt.plusSeconds(10)
+        val stored = StoredTypedAutomationAction(
+            12,
+            "execution-network-budget",
+            StoredTypedActionPayload.QuestAccept("quest", "accept-no"),
+        )
+        val reconciling = executionRight(
+            TypedRuntimeCheckpoint(
+                storedAction = stored,
+                phase = TypedRuntimeCheckpointPhase.RECONCILING,
+                submittedAt = observedAt.minusSeconds(121),
+                diagnostic = "unknown result",
+                successfulObservationCount = 0,
+                firstPendingAt = observedAt.minusSeconds(121),
+            ),
+        )
+        Mockito.`when`(runtime.acquire(7)).thenReturn(TypedRuntimeAcquisition.Acquired(reconciling))
+        Mockito.`when`(lifecycle.restoreVerified(stored, 7)).thenReturn(managed)
+        Mockito.`when`(managed.storedAction).thenReturn(stored)
+        Mockito.`when`(managed.reconcile()).thenThrow(HofAutomationDeferredException(retryAt, 1))
+        val store = InMemoryConvergenceStore()
+        val factory = StoredActionConvergenceSelectionFactory()
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            convergenceModule = DefaultAutomationActionConvergenceModule(store, TimeProvider { observedAt }),
+            convergenceSelectionFactory = factory,
+            timeProvider = TimeProvider { observedAt },
+            rollout = AutomationConvergenceRollout(
+                AutomationConvergenceProperties(mode = AutomationConvergenceMode.SHADOW),
+            ),
+        )
+
+        scoped.runOne(7)
+
+        val outcome = assertIs<TypedRuntimeOutcome.AmbiguousHandoff>(capturedOutcome())
+        assertEquals("TYPED_RECONCILIATION_BUDGET_EXHAUSTED", outcome.wakeReason)
+        val selection = factory.create(stored)
+        assertEquals(
+            setOf(selection.baselineFingerprint),
+            store.findSuppressedBaselines(7L)[selection.scope],
+        )
+        Mockito.verify(managed, Mockito.never()).execute()
+    }
+
+    @Test
+    fun `legacy reconciliation generic network failures stop when the two minute time budget expires`() {
+        val observedAt = Instant.parse("2026-08-23T10:00:00Z")
+        val stored = StoredTypedAutomationAction(
+            12,
+            "execution-generic-network-budget",
+            StoredTypedActionPayload.QuestAccept("quest", "accept-no"),
+        )
+        val reconciling = executionRight(
+            TypedRuntimeCheckpoint(
+                storedAction = stored,
+                phase = TypedRuntimeCheckpointPhase.RECONCILING,
+                submittedAt = observedAt.minusSeconds(121),
+                diagnostic = "unknown result",
+                successfulObservationCount = 0,
+                firstPendingAt = observedAt.minusSeconds(121),
+            ),
+        )
+        Mockito.`when`(runtime.acquire(7)).thenReturn(TypedRuntimeAcquisition.Acquired(reconciling))
+        Mockito.`when`(lifecycle.restoreVerified(stored, 7)).thenReturn(managed)
+        Mockito.`when`(managed.storedAction).thenReturn(stored)
+        Mockito.`when`(managed.reconcile()).thenThrow(
+            AmbiguousAutomationSubmissionException("HOF request failed while reconciling"),
+        )
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            timeProvider = TimeProvider { observedAt },
+        )
+
+        scoped.runOne(7)
+
+        val outcome = assertIs<TypedRuntimeOutcome.AmbiguousHandoff>(capturedOutcome())
+        assertEquals("TYPED_RECONCILIATION_BUDGET_EXHAUSTED", outcome.wakeReason)
+        Mockito.verify(managed, Mockito.never()).execute()
+    }
+
+    @Test
+    fun `legacy reconciliation stops on the fifth successful observation`() {
+        val observedAt = Instant.parse("2026-08-23T10:00:00Z")
+        val stored = StoredTypedAutomationAction(
+            12,
+            "execution-observation-budget",
+            StoredTypedActionPayload.QuestAccept("quest", "accept-no"),
+        )
+        val reconciling = executionRight(
+            TypedRuntimeCheckpoint(
+                storedAction = stored,
+                phase = TypedRuntimeCheckpointPhase.RECONCILING,
+                submittedAt = observedAt.minusSeconds(30),
+                diagnostic = "unknown result",
+                successfulObservationCount = 4,
+                firstPendingAt = observedAt.minusSeconds(30),
+            ),
+        )
+        Mockito.`when`(runtime.acquire(7)).thenReturn(TypedRuntimeAcquisition.Acquired(reconciling))
+        Mockito.`when`(lifecycle.restoreVerified(stored, 7)).thenReturn(managed)
+        Mockito.`when`(managed.storedAction).thenReturn(stored)
+        Mockito.`when`(managed.reconcile()).thenReturn(
+            AmbiguousActionResolution.VerifyLater(observedAt.plusSeconds(10), "still unchanged"),
+        )
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            timeProvider = TimeProvider { observedAt },
+        )
+
+        scoped.runOne(7)
+
+        assertIs<TypedRuntimeOutcome.AmbiguousHandoff>(capturedOutcome())
+        Mockito.verify(managed, Mockito.never()).execute()
+    }
+
+    @Test
+    fun `legacy reconciliation defers a successful observation while budget remains`() {
+        val observedAt = Instant.parse("2026-08-23T10:00:00Z")
+        val retryAt = observedAt.plusSeconds(10)
+        val stored = StoredTypedAutomationAction(
+            12,
+            "execution-with-budget",
+            StoredTypedActionPayload.QuestAccept("quest", "accept-no"),
+        )
+        val reconciling = executionRight(
+            TypedRuntimeCheckpoint(
+                storedAction = stored,
+                phase = TypedRuntimeCheckpointPhase.RECONCILING,
+                submittedAt = observedAt.minusSeconds(30),
+                diagnostic = "unknown result",
+                successfulObservationCount = 3,
+                firstPendingAt = observedAt.minusSeconds(30),
+            ),
+        )
+        Mockito.`when`(runtime.acquire(7)).thenReturn(TypedRuntimeAcquisition.Acquired(reconciling))
+        Mockito.`when`(lifecycle.restoreVerified(stored, 7)).thenReturn(managed)
+        Mockito.`when`(managed.storedAction).thenReturn(stored)
+        Mockito.`when`(managed.reconcile()).thenReturn(
+            AmbiguousActionResolution.VerifyLater(retryAt, "still unchanged"),
+        )
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            timeProvider = TimeProvider { observedAt },
+        )
+
+        scoped.runOne(7)
+
+        val outcome = assertIs<TypedRuntimeOutcome.ReconciliationDeferred>(capturedOutcome())
+        assertEquals(retryAt, outcome.retryAt)
+        assertEquals(true, outcome.successfulObservation)
     }
 
     @Test
@@ -1144,21 +1386,26 @@ class UnifiedAutomationRunnerTest {
     }
 
     @Test
-    fun `active 전환은 legacy reconciling을 한 번 관측하고 payload 재제출 없이 새 수렴으로 넘긴다`() {
+    fun `active 전환은 epoch가 보완된 legacy 동일 상태를 pending으로 넘기고 재제출하지 않는다`() {
         val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
         val factory = StoredActionConvergenceSelectionFactory()
-        val selection = factory.create(defaultStored)
+        val runtimeEnrichedStored = defaultStored.copy(
+            payload = assertIs<StoredTypedActionPayload.QuestClaim>(defaultStored.payload)
+                .copy(questCycle = "4"),
+        )
+        val selection = factory.create(runtimeEnrichedStored, legacySuppressionEpoch = "4")
         val legacyExecution = executionRight(
             TypedRuntimeCheckpoint(
-                defaultStored,
+                runtimeEnrichedStored,
                 TypedRuntimeCheckpointPhase.RECONCILING,
                 Instant.EPOCH,
                 "legacy ambiguous",
+                legacySuppressionEpoch = "4",
             ),
         )
         val probeAt = Instant.parse("2026-07-25T00:00:10Z")
         Mockito.`when`(runtime.acquire(7)).thenReturn(TypedRuntimeAcquisition.Acquired(legacyExecution))
-        Mockito.`when`(lifecycle.restoreVerified(defaultStored, 7L)).thenReturn(managed)
+        Mockito.`when`(lifecycle.restoreVerified(runtimeEnrichedStored, 7L)).thenReturn(managed)
         Mockito.`when`(managed.reconcile()).thenReturn(AmbiguousActionResolution.Resubmit)
         Mockito.`when`(convergence.prepare(7L, selection)).thenReturn(ConvergenceDirective.Submit(101L))
         Mockito.`when`(convergence.record(Mockito.eq(101L), anyConvergenceEvidence())).thenReturn(
@@ -1176,6 +1423,7 @@ class UnifiedAutomationRunnerTest {
             rollout = AutomationConvergenceRollout(
                 AutomationConvergenceProperties(mode = AutomationConvergenceMode.ACTIVE),
             ),
+            evidenceInterpreter = productionEvidenceInterpreter,
         )
 
         scoped.runOne(7)

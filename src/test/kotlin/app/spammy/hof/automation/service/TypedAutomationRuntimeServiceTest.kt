@@ -4,6 +4,7 @@ import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.entity.AutomationWaitReason
+import app.spammy.hof.automation.entity.QuestAutomationCycleEntity
 import app.spammy.hof.automation.entity.TypedAutomationActionRunEntity
 import app.spammy.hof.automation.entity.TypedAutomationActionStatus
 import app.spammy.hof.automation.entity.TypedAutomationLifecycle
@@ -13,6 +14,7 @@ import app.spammy.hof.automation.repository.TypedAutomationActionRunCommandRepos
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import app.spammy.hof.common.time.TimeProvider
 import java.time.Instant
+import java.time.LocalDate
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -49,6 +51,68 @@ class TypedAutomationRuntimeServiceTest {
         assertEquals(fixture.stored, acquired.execution.checkpoint?.storedAction)
         assertEquals(TypedRuntimeCheckpointPhase.PREPARED, acquired.execution.checkpoint?.phase)
         assertTrue(acquired.execution::class.java.declaredFields.none { it.name == "row" })
+    }
+
+    @Test
+    fun `acquisition enriches a legacy quest suppression with the current cycle`() {
+        val state = state().apply { leaseToken = "old"; leaseUntil = now.minusSeconds(1) }
+        val fixture = action(TypedAutomationActionStatus.RECONCILING)
+        Mockito.`when`(query.findQuestCycle(7, "quest-1")).thenReturn(
+            QuestAutomationCycleEntity(31L, account, "quest-1", 4L),
+        )
+        stubActive(state, fixture.row)
+
+        val acquired = assertIs<TypedRuntimeAcquisition.Acquired>(service.acquire(7))
+
+        assertEquals("4", acquired.execution.checkpoint?.legacySuppressionEpoch)
+        assertEquals(
+            "4",
+            assertIs<StoredTypedActionPayload.QuestClaim>(
+                acquired.execution.checkpoint?.storedAction?.payload,
+            ).questCycle,
+        )
+    }
+
+    @Test
+    fun `acquisition enriches a legacy fishing suppression with its submitted Korea date`() {
+        now = Instant.parse("2026-08-23T00:10:00Z")
+        val state = state().apply { leaseToken = "old"; leaseUntil = now.minusSeconds(1) }
+        val entry = AutomationEntryEntity(15, account, AutomationType.FISHING, 0, true, now, now)
+        val stored = StoredTypedAutomationAction(
+            entry.id,
+            "legacy-fishing",
+            StoredTypedActionPayload.FishingTown(
+                app.spammy.hof.town.fishing.model.FishingAction.START,
+                app.spammy.hof.town.fishing.model.FishingPrimaryAction.START,
+                5,
+            ),
+        )
+        val encoded = codec.encode(stored)
+        val row = TypedAutomationActionRunEntity(
+            26,
+            account,
+            entry,
+            stored.executionIdentity,
+            stored.payload.kind(),
+            encoded.json,
+            encoded.fingerprint,
+            TypedAutomationActionStatus.RECONCILING,
+            leaseToken = "old",
+            createdAt = Instant.parse("2026-08-22T14:50:00Z"),
+            submittedAt = Instant.parse("2026-08-22T15:10:00Z"),
+            updatedAt = now,
+        )
+        stubActive(state, row)
+
+        val acquired = assertIs<TypedRuntimeAcquisition.Acquired>(service.acquire(7))
+
+        assertEquals(LocalDate.parse("2026-08-23").toString(), acquired.execution.checkpoint?.legacySuppressionEpoch)
+        assertEquals(
+            LocalDate.parse("2026-08-23"),
+            assertIs<StoredTypedActionPayload.FishingTown>(
+                acquired.execution.checkpoint?.storedAction?.payload,
+            ).progressDate,
+        )
     }
 
     @Test
@@ -190,10 +254,10 @@ class TypedAutomationRuntimeServiceTest {
     }
 
     @Test
-    fun `reconciliation can defer resubmit and succeed through domain outcomes`() {
+    fun `reconciliation deferral persists its successful observation budget`() {
         val state = state()
         val fixture = action(TypedAutomationActionStatus.RECONCILING)
-        var execution = acquire(state, fixture.row)
+        val execution = acquire(state, fixture.row)
         val retryAt = now.plusSeconds(10)
 
         assertTrue(
@@ -204,20 +268,17 @@ class TypedAutomationRuntimeServiceTest {
         )
         assertEquals(TypedAutomationActionStatus.RECONCILING, fixture.row.status)
         assertEquals(retryAt, state.nextAttemptAt)
+        assertEquals(1, fixture.row.reconciliationObservationCount)
+        assertEquals(now, fixture.row.reconciliationFirstPendingAt)
 
-        now = retryAt
-        execution = acquire(state, fixture.row)
-        assertTrue(
-            service.complete(
-                execution,
-                TypedRuntimeOutcome.ReconciliationResubmit("TYPED_RECONCILED_RESUBMIT"),
-            ).applied,
-        )
-        assertEquals(TypedAutomationActionStatus.PREPARED, fixture.row.status)
-        Mockito.verify(outbox).enqueue(7, "TYPED_RECONCILED_RESUBMIT")
+    }
 
-        fixture.row.status = TypedAutomationActionStatus.RECONCILING
-        execution = acquire(state, fixture.row)
+    @Test
+    fun `reconciliation applied closes the stored action as succeeded`() {
+        val state = state()
+        val fixture = action(TypedAutomationActionStatus.RECONCILING)
+        val execution = acquire(state, fixture.row)
+
         assertTrue(
             service.complete(
                 execution,
@@ -226,6 +287,29 @@ class TypedAutomationRuntimeServiceTest {
         )
         assertEquals(TypedAutomationActionStatus.SUCCEEDED, fixture.row.status)
         Mockito.verify(outbox).enqueue(7, "TYPED_ACTION_COMPLETED")
+    }
+
+    @Test
+    fun `network reconciliation deferral starts time budget without counting a successful observation`() {
+        val state = state()
+        val fixture = action(TypedAutomationActionStatus.RECONCILING)
+        val execution = acquire(state, fixture.row)
+        val retryAt = now.plusSeconds(10)
+
+        assertTrue(
+            service.complete(
+                execution,
+                TypedRuntimeOutcome.ReconciliationDeferred(
+                    retryAt,
+                    "HOF unavailable",
+                    successfulObservation = false,
+                ),
+            ).applied,
+        )
+
+        assertEquals(0, fixture.row.reconciliationObservationCount)
+        assertEquals(now, fixture.row.reconciliationFirstPendingAt)
+        assertEquals(retryAt, fixture.row.nextAttemptAt)
     }
 
     @Test
@@ -240,11 +324,13 @@ class TypedAutomationRuntimeServiceTest {
                 TypedRuntimeOutcome.AmbiguousHandoff(
                     "레이드 전투 결과 미확정",
                     "RAID_BATTLE_RECOVERY_STARTED",
+                    successfulObservationCount = 5,
                 ),
             ).applied,
         )
 
         assertEquals(TypedAutomationActionStatus.AMBIGUOUS, fixture.row.status)
+        assertEquals(5, fixture.row.reconciliationObservationCount)
         assertEquals("레이드 전투 결과 미확정", state.warningText)
         Mockito.verify(outbox).enqueue(7, "RAID_BATTLE_RECOVERY_STARTED")
     }
@@ -299,6 +385,33 @@ class TypedAutomationRuntimeServiceTest {
 
         assertEquals(TypedRuntimeCheckpointPhase.RECONCILING, execution.checkpoint?.phase)
         assertEquals(TypedAutomationActionStatus.RECONCILING, fixture.row.status)
+        assertEquals(now.minusSeconds(30), execution.checkpoint?.firstPendingAt)
+        assertEquals(now.minusSeconds(30), fixture.row.reconciliationFirstPendingAt)
+        assertEquals(0, execution.checkpoint?.successfulObservationCount)
+    }
+
+    @Test
+    fun `retryable failure starts reconciliation time budget at submission time`() {
+        val submittedAt = now
+        val state = state()
+        val fixture = action(TypedAutomationActionStatus.PREPARED)
+        val execution = acquire(state, fixture.row)
+        assertIs<TypedRuntimeSubmission.Started>(service.beginSubmission(execution))
+        now = submittedAt.plusSeconds(119)
+
+        assertTrue(
+            service.complete(
+                execution,
+                TypedRuntimeOutcome.RetryableFailure(
+                    AutomationStopReason.FATAL,
+                    "submission response was lost",
+                ),
+            ).applied,
+        )
+
+        assertEquals(TypedAutomationActionStatus.RECONCILING, fixture.row.status)
+        assertEquals(submittedAt, fixture.row.reconciliationFirstPendingAt)
+        assertEquals(0, fixture.row.reconciliationObservationCount)
     }
 
     @Test

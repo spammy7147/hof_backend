@@ -112,6 +112,41 @@ class AutomationActionConvergenceModuleTest {
     }
 
     @Test
+    fun `legacy 예산 종료는 전투를 result unobserved로 비전투를 held로 억제한다`() {
+        val quest = questSelection("legacy-quest-held")
+        assertIs<ConvergenceDirective.ContinueSelection>(
+            module.holdUnresolved(
+                7L,
+                quest,
+                AutomationActionEvidence.ResultUnobserved(clock.now(), "quest unresolved"),
+                successfulObservationCount = 5,
+                firstPendingAt = clock.now().minusSeconds(40),
+            ),
+        )
+        val questRecord = store.createOrGet(7L, quest, clock.now())
+        assertEquals(ActionConvergenceResult.HELD, questRecord.result)
+        assertEquals(5, questRecord.successfulObservationCount)
+        assertEquals(clock.now().minusSeconds(40), questRecord.firstPendingAt)
+
+        val battle = battleSelection("legacy-battle-unobserved")
+        assertIs<ConvergenceDirective.ContinueSelection>(
+            module.holdUnresolved(
+                7L,
+                battle,
+                AutomationActionEvidence.ResultUnobserved(clock.now(), "battle unresolved"),
+                successfulObservationCount = 3,
+                firstPendingAt = clock.now().minusSeconds(120),
+            ),
+        )
+        val battleRecord = store.createOrGet(7L, battle, clock.now())
+        assertEquals(ActionConvergenceResult.RESULT_UNOBSERVED, battleRecord.result)
+        assertEquals(
+            setOf(battle.baselineFingerprint),
+            store.findSuppressedBaselines(7L)[battle.scope],
+        )
+    }
+
+    @Test
     fun `제출 없는 권위 관측 gap은 다섯 번 뒤 held가 되고 runtime probe 대상이 아니다`() {
         val selection = questSelection("home-action-gap").copy(observationOnly = true)
         var directive: ConvergenceDirective = ConvergenceDirective.ContinueSelection

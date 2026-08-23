@@ -44,11 +44,13 @@ sealed interface StoredTypedActionPayload {
         val questKey: String,
         val actionNo: String,
         override val display: StoredActionDisplay? = null,
+        val questCycle: String? = null,
     ) : StoredTypedActionPayload
     data class QuestAccept(
         val questKey: String,
         val actionNo: String,
         override val display: StoredActionDisplay? = null,
+        val questCycle: String? = null,
     ) : StoredTypedActionPayload
     data class HomeQuest(
         val questId: String,
@@ -92,6 +94,7 @@ sealed interface StoredTypedActionPayload {
         val observedPrimaryAction: app.spammy.hof.town.fishing.model.FishingPrimaryAction,
         val observedRemainingCasts: Int? = null,
         override val display: StoredActionDisplay? = null,
+        val progressDate: LocalDate? = null,
     ) : StoredTypedActionPayload
     data class RaidTown(
         val action: app.spammy.hof.town.raid.model.RaidAction,

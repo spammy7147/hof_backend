@@ -8,6 +8,7 @@ import app.spammy.hof.town.fishing.model.FishingAction
 import app.spammy.hof.town.fishing.model.FishingPrimaryAction
 import org.springframework.stereotype.Service
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 import java.util.UUID
 
@@ -30,6 +31,7 @@ data class FishingAutomationPreset(
 data class FishingTownAutomationAction(
     val accountId: Long, val action: FishingAction,
     val observedPrimaryAction: FishingPrimaryAction, val observedRemainingCasts: Int?,
+    val progressDate: LocalDate? = null,
 ) : PreparedAutomationAction
 
 @Service
@@ -75,8 +77,20 @@ class FishingAutomationHandler : AutomationHandler<FishingAutomationSnapshot> {
             return HandlerEvaluation.Unavailable(next, "FISHING_DAILY_LIMIT", "오늘의 낚시 횟수를 모두 사용했습니다.")
         }
         return when (context.state.primaryAction) {
-            FishingPrimaryAction.START -> HandlerEvaluation.Runnable(FishingTownAutomationAction(context.accountId, FishingAction.START, context.state.primaryAction, context.state.remainingCasts))
-            FishingPrimaryAction.CATCH -> HandlerEvaluation.Runnable(FishingTownAutomationAction(context.accountId, FishingAction.CATCH, context.state.primaryAction, context.state.remainingCasts))
+            FishingPrimaryAction.START -> HandlerEvaluation.Runnable(FishingTownAutomationAction(
+                context.accountId,
+                FishingAction.START,
+                context.state.primaryAction,
+                context.state.remainingCasts,
+                context.now.atZone(SEOUL).toLocalDate(),
+            ))
+            FishingPrimaryAction.CATCH -> HandlerEvaluation.Runnable(FishingTownAutomationAction(
+                context.accountId,
+                FishingAction.CATCH,
+                context.state.primaryAction,
+                context.state.remainingCasts,
+                context.now.atZone(SEOUL).toLocalDate(),
+            ))
             FishingPrimaryAction.NONE -> retry(context, "FISHING_STATE_INCOMPLETE", "낚시 상태를 다시 확인합니다.")
         }
     }

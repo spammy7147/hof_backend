@@ -86,6 +86,18 @@ class StoredTypedAutomationActionCodecTest {
     }
 
     @Test
+    fun `legacy quest and fishing payloads decode without the new suppression epoch fields`() {
+        val questJson = """{"entryId":12,"executionIdentity":"legacy-quest","payload":{"kind":"QUEST_CLAIM","questKey":"quest","actionNo":"claim"}}"""
+        val fishingJson = """{"entryId":15,"executionIdentity":"legacy-fishing","payload":{"kind":"FISHING_TOWN","action":"START","observedPrimaryAction":"START","observedRemainingCasts":5}}"""
+
+        val quest = codec.decode(questJson).payload as StoredTypedActionPayload.QuestClaim
+        val fishing = codec.decode(fishingJson).payload as StoredTypedActionPayload.FishingTown
+
+        assertNull(quest.questCycle)
+        assertNull(fishing.progressDate)
+    }
+
+    @Test
     fun `legacy raid cycle abort defaults to a closed reason`() {
         val json = """{"entryId":12,"executionIdentity":"raid-abort","payload":{"kind":"RAID_CYCLE_ABORT","raidId":"RaidGoblin"}}"""
 

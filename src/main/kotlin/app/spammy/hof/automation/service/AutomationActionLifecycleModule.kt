@@ -196,6 +196,7 @@ class UnifiedAutomationActionLifecycleModule(
                         questKey = action.questKey,
                         actionNo = action.actionNo,
                         display = StoredActionDisplay(questName = action.questName),
+                        questCycle = action.questCycle,
                     ),
                 ),
             )
@@ -215,6 +216,7 @@ class UnifiedAutomationActionLifecycleModule(
                         questKey = action.questKey,
                         actionNo = action.actionNo,
                         display = StoredActionDisplay(questName = action.questName),
+                        questCycle = action.questCycle,
                     ),
                 ),
             )
@@ -879,6 +881,7 @@ class UnifiedAutomationActionLifecycleModule(
     ): TypedAutomationExecution.ActionCompleted = questActionCompleted(
         questKey = payload.questKey,
         actionNo = payload.actionNo,
+        questCycle = payload.questCycle,
         expectedState = QuestState.AVAILABLE,
         baselineAction = "accept",
         quests = quests,
@@ -890,6 +893,7 @@ class UnifiedAutomationActionLifecycleModule(
     ): TypedAutomationExecution.ActionCompleted = questActionCompleted(
         questKey = payload.questKey,
         actionNo = payload.actionNo,
+        questCycle = payload.questCycle,
         expectedState = QuestState.CLAIMABLE,
         baselineAction = "claim",
         quests = quests,
@@ -898,6 +902,7 @@ class UnifiedAutomationActionLifecycleModule(
     private fun questActionCompleted(
         questKey: String,
         actionNo: String,
+        questCycle: String?,
         expectedState: QuestState,
         baselineAction: String,
         quests: List<app.spammy.hof.quest.model.QuestSnapshot>,
@@ -911,7 +916,7 @@ class UnifiedAutomationActionLifecycleModule(
         return TypedAutomationExecution.ActionCompleted(
             observedState = QuestObservedState(
                 fingerprint = if (quest?.state == expectedState && quest.actionNo == actionNo) {
-                    ProductionEvidenceShapes.fingerprint("quest|$baselineAction|$questKey|$actionNo")
+                    ProductionEvidenceShapes.fingerprint("quest|$baselineAction|$questKey|$questCycle|$actionNo")
                 } else {
                     ProductionEvidenceShapes.fingerprint(snippet)
                 },
@@ -942,7 +947,8 @@ class UnifiedAutomationActionLifecycleModule(
             observedState = FishingObservedState(
                 fingerprint = if (unchanged) {
                     ProductionEvidenceShapes.fingerprint(
-                        "fishing|${payload.action}|${payload.observedPrimaryAction}|${payload.observedRemainingCasts}",
+                        "fishing|${payload.progressDate}|${payload.action}|" +
+                            "${payload.observedPrimaryAction}|${payload.observedRemainingCasts}",
                     )
                 } else {
                     ProductionEvidenceShapes.fingerprint(snippet)
@@ -1148,6 +1154,7 @@ class UnifiedAutomationActionLifecycleModule(
                     action = action.action,
                     observedPrimaryAction = action.observedPrimaryAction,
                     observedRemainingCasts = action.observedRemainingCasts,
+                    progressDate = action.progressDate,
                 ),
             ),
         )
@@ -1690,7 +1697,20 @@ class UnifiedAutomationActionLifecycleModule(
             .any { it != null && it <= 0 }
         val runnable = current.resolved && current.enabled && !exhausted &&
             current.keyCount != 0 && (current.cooldownRemainingSeconds ?: 0) <= 0
-        if (runnable && hasBaseline) return AmbiguousActionResolution.Resubmit
+        val comparableBaselineComplete = comparisons
+            .filter { (before, _) -> before != null }
+            .all { (before, after) -> after != null && after == before }
+        val comparableBaselineChanged = comparisons.any { (before, after) ->
+            before != null && after != null && after != before
+        }
+        if (runnable && hasBaseline && comparableBaselineComplete) {
+            return AmbiguousActionResolution.Resubmit
+        }
+        if (runnable && comparableBaselineChanged) {
+            return AmbiguousActionResolution.Superseded(
+                "Adventure map authoritative capacity changed from the stored baseline.",
+            )
+        }
         val next = current.cooldownRemainingSeconds
             ?.takeIf { it > 0 }
             ?.let { timeProvider.now().plusSeconds(it) }
