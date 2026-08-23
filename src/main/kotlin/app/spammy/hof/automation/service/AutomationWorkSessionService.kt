@@ -147,8 +147,8 @@ class AutomationWorkSessionService(
     override fun yieldForPriority(accountId: Long, sessionId: Long): Boolean {
         requireRunningRuntime(accountId)
         val session = requireSession(accountId, sessionId)
-        require(session.workType == AutomationWorkType.BATTLE_MAP) {
-            "Only a battle-map work session may yield for a higher priority target."
+        require(session.workType != AutomationWorkType.RAID) {
+            "An immediately runnable raid work session keeps priority until it waits or completes."
         }
         if (session.status != AutomationWorkStatus.RUNNING) return false
         session.status = AutomationWorkStatus.YIELDED_PRIORITY

@@ -715,6 +715,85 @@ class AutomationTargetSelectorTest {
     }
 
     @Test
+    fun `due higher priority raid reward preempts a running quest after its current action`() {
+        val lowerPriorityQuestEntry = AutomationEntryEntity(
+            10,
+            account,
+            AutomationType.QUEST,
+            4,
+            true,
+            now,
+            now,
+        )
+        val higherPriorityRaidEntry = AutomationEntryEntity(
+            13,
+            account,
+            AutomationType.RAID,
+            1,
+            true,
+            now,
+            now,
+        )
+        val runningQuest = session(
+            21,
+            lowerPriorityQuestEntry,
+            AutomationWorkType.QUEST,
+            "quest-1",
+            AutomationWorkStatus.RUNNING,
+        )
+        val dueRaid = session(
+            32,
+            higherPriorityRaidEntry,
+            AutomationWorkType.RAID,
+            "RaidGoblin",
+            AutomationWorkStatus.WAITING_COOLDOWN,
+            nextCheckAt = now,
+        )
+        val questSnapshot = questDecisionEntry()
+        val questAction = QuestAction.Battle(
+            questKey = "quest-1",
+            questCycle = "1",
+            missionKey = "mission",
+            missionType = app.spammy.hof.quest.model.QuestMissionType.MONSTER_KILL,
+            categoryId = "battle_map",
+            mapCode = "map",
+            mapName = "Map",
+            preset = QuestPresetSelection(app.spammy.hof.automation.entity.PresetSelectionMode.PRIMARY),
+        )
+        val runningSnapshot = questSnapshot.copy(
+            quest = requireNotNull(questSnapshot.quest).copy(
+                workSessionId = runningQuest.id,
+                workSessionRevision = runningQuest.revision,
+            ),
+        )
+        Mockito.`when`(work.findRunning(7)).thenReturn(runningQuest)
+        Mockito.`when`(work.findWaiting(7)).thenReturn(listOf(dueRaid))
+        Mockito.`when`(lifecycle.yieldForPriority(7, runningQuest.id)).thenReturn(true)
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(higherPriorityRaidEntry, lowerPriorityQuestEntry))
+        Mockito.`when`(loader.loadEntry(7, lowerPriorityQuestEntry.id, "quest-1")).thenReturn(questSnapshot)
+        questRules.returns(requireNotNull(runningSnapshot.quest), QuestDirective.Execute(questAction))
+        Mockito.`when`(defaultRaidModule.decideNext(7)).thenReturn(
+            RaidDirective.Execute(
+                RaidIntent.Town(
+                    higherPriorityRaidEntry.id,
+                    "RaidGoblin",
+                    "고블린",
+                    RaidIntentKind.REWARD,
+                    requestRaidId = "RaidGoblin",
+                ),
+            ),
+        )
+
+        val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
+
+        assertEquals(higherPriorityRaidEntry.id, selected.entryId)
+        Mockito.verify(lifecycle).yieldForPriority(7, runningQuest.id)
+        Mockito.verify(lifecycle).resumeForCheck(7, dueRaid.id)
+        Mockito.verify(defaultRaidModule).decideNext(7)
+        Mockito.verify(loader, Mockito.never()).loadEntry(7, lowerPriorityQuestEntry.id, "quest-1")
+    }
+
+    @Test
     fun `due raid recovery selects a new linked execution and keeps a distinct retransmission warning`() {
         val dueRaid = session(
             33, raidEntry, AutomationWorkType.RAID, "RaidGoblin",

@@ -48,24 +48,44 @@ class AutomationWorkSessionServiceTest {
     }
 
     @Test
-    fun `quest and adventure sessions cannot yield for priority`() {
+    fun `quest session yields for a higher priority due target and keeps its assignment`() {
+        val questEntry = AutomationEntryEntity(10, account, AutomationType.QUEST, 0, true, now, now)
         val session = AutomationWorkSessionEntity(
             id = 22,
             account = account,
-            entry = AutomationEntryEntity(10, account, AutomationType.QUEST, 0, true, now, now),
+            entry = questEntry,
             workType = AutomationWorkType.QUEST,
             targetKey = "quest-1",
             status = AutomationWorkStatus.RUNNING,
             configVersion = "config-v1",
+            confirmedCount = 2,
+            questCycle = "cycle-3",
+            missionKey = "mission-ajelad",
+            missionType = "MONSTER_KILL",
+            observedCurrent = 4,
+            observedRequired = 5,
             createdAt = now,
             updatedAt = now,
         )
         Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
         Mockito.`when`(queries.lockById(7, 22)).thenReturn(session)
+        Mockito.`when`(typed.findEntry(7, questEntry.id)).thenReturn(questEntry)
 
-        kotlin.test.assertFailsWith<IllegalArgumentException> {
-            service.yieldForPriority(7, 22)
-        }
+        assertEquals(true, service.yieldForPriority(7, 22))
+
+        assertEquals(AutomationWorkStatus.YIELDED_PRIORITY, session.status)
+        service.resumeForCheck(7, 22)
+
+        assertEquals(AutomationWorkStatus.RUNNING, session.status)
+        assertEquals("quest-1", session.targetKey)
+        assertEquals(2, session.confirmedCount)
+        assertEquals("cycle-3", session.questCycle)
+        assertEquals("mission-ajelad", session.missionKey)
+        assertEquals("MONSTER_KILL", session.missionType)
+        assertEquals(4, session.observedCurrent)
+        assertEquals(5, session.observedRequired)
+        assertEquals(null, session.nextCheckAt)
+        Mockito.verify(commands, Mockito.times(2)).save(session)
     }
 
     @Test

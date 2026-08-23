@@ -49,8 +49,29 @@ class AutomationTargetSelector(
 ) : AutomationDecisionSource {
 
     override fun select(accountId: Long): AutomationCoordination {
-        work.findRunning(accountId)?.let { return selectSession(accountId, it) }
+        work.findRunning(accountId)?.let { running ->
+            higherPriorityDueSession(accountId, running)?.let { due ->
+                if (lifecycle.yieldForPriority(accountId, running.id)) {
+                    lifecycle.resumeForCheck(accountId, due.id)
+                    return selectSession(accountId, due)
+                }
+            }
+            return selectSession(accountId, running)
+        }
         return selectConfigured(accountId)
+    }
+
+    private fun higherPriorityDueSession(
+        accountId: Long,
+        running: AutomationWorkSessionView,
+    ): AutomationWorkSessionView? {
+        if (running.workType == AutomationWorkType.RAID) return null
+        val now = timeProvider.now()
+        return work.findWaiting(accountId)
+            .asSequence()
+            .filter { it.entryPriority < running.entryPriority }
+            .filter { it.isDueForCheck(now) }
+            .minWithOrNull(compareBy(AutomationWorkSessionView::entryPriority, AutomationWorkSessionView::id))
     }
 
     private fun selectSession(
@@ -120,10 +141,7 @@ class AutomationTargetSelector(
             .forEach { entry ->
                 val waiting = waitsByEntry[entry.id].orEmpty()
                 val blockedUntil = waiting.mapNotNull { it.nextCheckAt }.minOrNull()
-                val hasDueTarget = waiting.any {
-                    it.status == app.spammy.hof.automation.entity.AutomationWorkStatus.YIELDED_PRIORITY ||
-                        it.nextCheckAt?.isAfter(now) == false
-                }
+                val hasDueTarget = waiting.any { it.isDueForCheck(now) }
                 if (waiting.isNotEmpty() && !hasDueTarget) {
                     waiting.mapNotNull(AutomationWorkSessionView::holdMessage).forEach { message ->
                         if (message !in warnings) warnings += message
@@ -131,10 +149,7 @@ class AutomationTargetSelector(
                     if (blockedUntil != null && (earliest == null || blockedUntil < earliest)) earliest = blockedUntil
                     if (entry.type != AutomationType.QUEST) return@forEach
                 }
-                waiting.firstOrNull {
-                    it.status == app.spammy.hof.automation.entity.AutomationWorkStatus.YIELDED_PRIORITY ||
-                        it.nextCheckAt?.isAfter(now) == false
-                }?.let { due ->
+                waiting.firstOrNull { it.isDueForCheck(now) }?.let { due ->
                     lifecycle.resumeForCheck(accountId, due.id)
                     return selectSession(accountId, due, warnings, trace)
                 }
@@ -220,6 +235,9 @@ class AutomationTargetSelector(
         return earliest?.let { AutomationCoordination.Unavailable(it, warnings, trace) }
             ?: AutomationCoordination.Idle(warnings, trace)
     }
+
+    private fun AutomationWorkSessionView.isDueForCheck(now: Instant): Boolean =
+        status == AutomationWorkStatus.YIELDED_PRIORITY || nextCheckAt?.isAfter(now) == false
 
     private fun coordinate(
         accountId: Long,
