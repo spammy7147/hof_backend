@@ -39,7 +39,7 @@ class RaidPubParser {
         if (forms.size != 1) return empty(normalizedResult)
         val form = forms.single()
         if (
-            form.select("a[href*=raidlog]").size != 1 ||
+            form.select("a[href*=raidlog]").isEmpty() ||
             !hasCompletePageTerminator(doc)
         ) return empty(normalizedResult)
         val submitControlCounts = form.children()

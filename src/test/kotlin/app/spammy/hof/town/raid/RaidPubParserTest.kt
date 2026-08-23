@@ -168,6 +168,20 @@ class RaidPubParserTest {
         assertTrue(page.raids.isEmpty())
     }
 
+    @Test fun `완전한 raidpub 페이지에 battle log 링크가 여러 개 있어도 상태를 관측한다`() {
+        val repeatedLogs = fixture().replace(
+            "<a href=\"?menu=raidlog\">Battle Log 전부표시</a>",
+            List(16) { index ->
+                "<a href=\"?menu=raidlog&page=$index\">Battle Log</a>"
+            }.joinToString(prefix = "<div>", postfix = "</div>"),
+        )
+
+        val page = parser.parse(repeatedLogs, URL, forms.parse(repeatedLogs, URL))
+
+        assertTrue(page.pageComplete)
+        assertEquals(3, page.raids.size)
+    }
+
     @Test fun `콜론형 header에서도 현재 사용자 이름을 찾아 참가 상태를 판별한다`() {
         val html = fixture().replace("《테스트 길드》현재사용자 Funds :", "현재사용자 Funds:")
         val page = parser.parse(html, URL, forms.parse(html, URL))
