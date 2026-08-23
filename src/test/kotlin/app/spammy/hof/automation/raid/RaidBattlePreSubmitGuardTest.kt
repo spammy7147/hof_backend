@@ -1,5 +1,6 @@
 package app.spammy.hof.automation.raid
 
+import app.spammy.hof.automation.config.RaidAutomationProperties
 import app.spammy.hof.automation.entity.RaidAutomationCycleStatus
 import app.spammy.hof.common.time.TimeProvider
 import java.time.Instant
@@ -29,6 +30,63 @@ class RaidBattlePreSubmitGuardTest {
 
         assertIs<RaidBattlePreSubmitResult.Changed>(
             guard.validate(7, "Raid001", "raid_hunt", "raid-map-1"),
+        )
+        Mockito.verifyNoInteractions(observations)
+    }
+
+    @Test
+    fun `fallback enforcement가 꺼지면 기존 로컬 게이트는 제출 직전 검사를 막지 않는다`() {
+        Mockito.`when`(store.load(7)).thenReturn(state(
+            gate = RaidBattleSafetyGate(
+                raidId = "Raid001",
+                categoryId = "raid_hunt",
+                mapCode = "raid-map-1",
+                executionIdentity = "battle-1",
+                startedAt = now.minusSeconds(30),
+                notBefore = now.plusSeconds(90),
+                source = RaidCooldownSource.LOCAL_FALLBACK,
+            ),
+        ))
+        Mockito.`when`(observations.read(7)).thenReturn(observation(
+            target = target(
+                battle = RaidObservedBattle("raid_hunt", "raid-map-1"),
+                availability = RaidBattleAvailability.RUNNABLE,
+            ),
+        ))
+        val disabledGuard = DefaultRaidBattlePreSubmitGuard(
+            store,
+            observations,
+            TimeProvider { now },
+            RaidAutomationProperties(fallbackEnforcementEnabled = false),
+        )
+
+        assertIs<RaidBattlePreSubmitResult.Ready>(
+            disabledGuard.validate(7, "Raid001", "raid_hunt", "raid-map-1"),
+        )
+    }
+
+    @Test
+    fun `fallback enforcement가 꺼져도 HOF 직접 게이트는 제출을 계속 막는다`() {
+        Mockito.`when`(store.load(7)).thenReturn(state(
+            gate = RaidBattleSafetyGate(
+                raidId = "Raid001",
+                categoryId = "raid_hunt",
+                mapCode = "raid-map-1",
+                executionIdentity = "battle-1",
+                startedAt = now.minusSeconds(30),
+                notBefore = now.plusSeconds(90),
+                source = RaidCooldownSource.HOF_DIRECT,
+            ),
+        ))
+        val disabledGuard = DefaultRaidBattlePreSubmitGuard(
+            store,
+            observations,
+            TimeProvider { now },
+            RaidAutomationProperties(fallbackEnforcementEnabled = false),
+        )
+
+        assertIs<RaidBattlePreSubmitResult.Changed>(
+            disabledGuard.validate(7, "Raid001", "raid_hunt", "raid-map-1"),
         )
         Mockito.verifyNoInteractions(observations)
     }

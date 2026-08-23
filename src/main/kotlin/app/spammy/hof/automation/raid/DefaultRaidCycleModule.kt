@@ -364,14 +364,12 @@ class DefaultRaidCycleModule(
                     return observeIncompleteRewardWindow(accountId, configuration, cycle)
                 }
                 RaidRewardWindowObservation.Absent -> {
-                    if (cycle.rewardRecovery != null) {
-                        store.clearRewardRecovery(accountId, cycle.raidId, timeProvider.now())
-                    }
                     return RaidDirective.Complete(
-                        outcome = RaidCycleOutcome(
-                            entryId = configuration.entryId,
+                        outcome = store.finish(
+                            accountId = accountId,
                             raidId = cycle.raidId,
-                            kind = RaidCycleOutcomeKind.SUPERSEDED_BY_OBSERVED_RAID,
+                            outcome = RaidCycleOutcomeKind.SUPERSEDED_BY_OBSERVED_RAID,
+                            now = timeProvider.now(),
                         ),
                         reasonCode = "RAID_REWARD_WINDOW_ABSENT_SUPERSEDED",
                         message = "보상 가능 창이 사라져 외부 상태 진전으로 현재 레이드 사이클을 종결합니다.",
@@ -1081,9 +1079,6 @@ class DefaultRaidCycleModule(
         gate: RaidBattleSafetyGate,
     ): RaidDirective? {
         val now = timeProvider.now()
-        if (gate.held) {
-            return safetyHeld(configuration, cycle, gate)
-        }
         val battle = observed.battle
         val hofSeconds = battle?.cooldownRemainingSeconds?.takeIf { it > 0 }
         if (observed.battleAvailability == RaidBattleAvailability.COOLDOWN && hofSeconds != null) {
@@ -1104,6 +1099,13 @@ class DefaultRaidCycleModule(
             )
             store.saveBattleSafetyGate(accountId, cycle.raidId, authoritative, now)
             return battleSafetyWait(configuration, cycle, authoritative, appliedRecovery)
+        }
+        if (!properties.enforces(gate)) {
+            store.clearBattleSafetyGate(accountId, cycle.raidId, now)
+            return null
+        }
+        if (gate.held) {
+            return safetyHeld(configuration, cycle, gate)
         }
         if (now.isBefore(gate.notBefore)) {
             return battleSafetyWait(configuration, cycle, gate)

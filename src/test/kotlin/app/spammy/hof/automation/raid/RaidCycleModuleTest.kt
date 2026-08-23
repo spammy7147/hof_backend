@@ -1,5 +1,6 @@
 package app.spammy.hof.automation.raid
 
+import app.spammy.hof.automation.config.RaidAutomationProperties
 import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.automation.entity.RaidAutomationCycleStatus
 import app.spammy.hof.automation.service.AutomationDiagnosticKind
@@ -1021,6 +1022,7 @@ class RaidCycleModuleTest {
 
         assertEquals(RaidCycleOutcomeKind.SUPERSEDED_BY_OBSERVED_RAID, complete.outcome.kind)
         assertEquals("RAID_REWARD_WINDOW_ABSENT_SUPERSEDED", complete.reasonCode)
+        assertEquals(null, store.state.openCycle)
     }
 
     @Test
@@ -1700,6 +1702,48 @@ class RaidCycleModuleTest {
 
         assertEquals(RaidWaitReason.BATTLE_COOLDOWN, wait.reason)
         assertEquals(now.plusSeconds(120), wait.at)
+    }
+
+    @Test
+    fun `fallback enforcement를 끄면 기존 로컬 게이트를 지우고 fresh runnable 전투를 허용한다`() {
+        val party = ResolvedAutomationParty(
+            listOf("character-1"),
+            listOf(BattlePatternLoadRequest("character-1", 1)),
+        )
+        val target = target("raid-a", 0, party)
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(
+                    1,
+                    7,
+                    target.raidId,
+                    target.name,
+                    RaidAutomationCycleStatus.IN_BATTLE,
+                    null,
+                    battleSafetyGate = RaidBattleSafetyGate(
+                        raidId = target.raidId,
+                        categoryId = "raid",
+                        mapCode = "raid001",
+                        executionIdentity = "execution-0",
+                        startedAt = now,
+                        notBefore = now.plusSeconds(120),
+                        source = RaidCooldownSource.LOCAL_FALLBACK,
+                    ),
+                ),
+            ),
+        )
+        val module = DefaultRaidCycleModule(
+            store,
+            RaidObservationReader {
+                inBattleObservation(target, RaidBattleAvailability.RUNNABLE, RaidObservedBattle("raid", "raid001"))
+            },
+            TimeProvider { now },
+            RaidAutomationProperties(fallbackEnforcementEnabled = false),
+        )
+
+        assertIs<RaidDirective.Execute>(module.decideNext(1))
+        assertEquals(null, store.state.openCycle?.battleSafetyGate)
     }
 
     @Test
