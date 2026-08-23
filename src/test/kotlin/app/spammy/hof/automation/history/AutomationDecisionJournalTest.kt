@@ -6,6 +6,7 @@ import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.raid.RaidCycleOutcome
 import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
+import app.spammy.hof.automation.raid.RaidCooldownSource
 import app.spammy.hof.automation.service.*
 import app.spammy.hof.common.time.TimeProvider
 import jakarta.persistence.EntityManager
@@ -39,6 +40,10 @@ class AutomationDecisionJournalTest {
             AutomationEvaluationTrace(
                 1, union.id, AutomationType.UNION, AutomationDecisionOutcome.WAITING, "UNION_COOLDOWN", "대기",
                 now.plusSeconds(60), "BATTLE", "union/0001", "도적 소탕", 99,
+                diagnosticKind = AutomationDiagnosticKind.RAID_LOCAL_SAFETY_GATE,
+                cooldownSource = RaidCooldownSource.LOCAL_FALLBACK,
+                impactScope = AutomationImpactScope.RAID_ONLY,
+                releaseCondition = "최신 상태 재확인",
             ),
         ))
 
@@ -56,6 +61,10 @@ class AutomationDecisionJournalTest {
             assertEquals("도적 소탕", targetName)
             assertEquals("BATTLE", actionKind)
             assertEquals(99, presetId)
+            assertEquals(AutomationDiagnosticKind.RAID_LOCAL_SAFETY_GATE, diagnosticKind)
+            assertEquals(RaidCooldownSource.LOCAL_FALLBACK, cooldownSource)
+            assertEquals(AutomationImpactScope.RAID_ONLY, impactScope)
+            assertEquals("최신 상태 재확인", releaseCondition)
         }
         assertNull(journal.page(second.id, AutomationHistoryQuery()).cycles.singleOrNull())
     }

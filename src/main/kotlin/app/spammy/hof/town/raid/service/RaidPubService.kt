@@ -3,6 +3,7 @@ package app.spammy.hof.town.raid.service
 import app.spammy.hof.battle.service.BattleMapService
 import app.spammy.hof.battle.service.CurrentBattleMapObservationStatus
 import app.spammy.hof.battle.model.BattleMapIdentityNormalizer
+import app.spammy.hof.external.parser.RaidCooldownAssociationStatus
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.town.common.model.TownActionRequest
@@ -20,6 +21,7 @@ class RaidPubService(
     private val locations: TownLocationResolver,
     private val parser: RaidPubParser,
     private val battleMaps: BattleMapService,
+    private val cooldownEvidence: RaidCooldownEvidenceRecorder = NoOpRaidCooldownEvidenceRecorder,
 ) {
     fun load(accountId: Long): RaidPubResponse {
         val snapshot = loadRaw(accountId)
@@ -109,6 +111,9 @@ class RaidPubService(
             .filter { it.resolved && (it.enabled || it.cooldownRemainingSeconds?.let { seconds -> seconds > 0 } == true) }
             .filter { it.mapCode != null }
         val joined = snapshot.raids.filter { it.playable && it.joined }
+        val evidenceCaseId = current.raidCooldown?.takeIf { it.incomplete }?.let { evidence ->
+            cooldownEvidence.record(accountId, evidence, joined.size)
+        }
         return snapshot.copy(
             raids = snapshot.raids.map { raid ->
                 if (!raid.playable || !raid.joined) return@map raid.copy(battleTarget = null)
@@ -120,13 +125,35 @@ class RaidPubService(
                 }.singleOrNull()
                 val observed = byCode ?: byName ?: available.singleOrNull()?.takeIf { joined.size == 1 }
                 raid.copy(battleTarget = observed?.mapCode?.let { mapCode ->
-                    RaidBattleTarget(mapCode = mapCode, cooldownRemainingSeconds = observed.cooldownRemainingSeconds)
+                    RaidBattleTarget(
+                        mapCode = mapCode,
+                        cooldownRemainingSeconds = observed.cooldownRemainingSeconds,
+                        cooldownSource = if (
+                            observed.cooldownRemainingSeconds?.let { it > 0 } == true &&
+                            current.raidCooldown?.status == RaidCooldownAssociationStatus.HOF_DIRECT
+                        ) {
+                            RaidCooldownObservationSource.HOF_DIRECT
+                        } else {
+                            null
+                        },
+                    )
                 })
             },
             battleObservationStatus = when (current.status) {
                 CurrentBattleMapObservationStatus.OBSERVED -> RaidBattleObservationStatus.OBSERVED
                 CurrentBattleMapObservationStatus.ABSENT -> RaidBattleObservationStatus.ABSENT
                 CurrentBattleMapObservationStatus.INCOMPLETE -> RaidBattleObservationStatus.INCOMPLETE
+            },
+            battleObservationEvidence = current.raidCooldown?.takeIf { it.incomplete }?.let { evidence ->
+                RaidBattleObservationEvidence(
+                    caseId = evidenceCaseId ?: evidence.responseShapeFingerprint.take(16),
+                    reasonCode = evidence.reasonCode,
+                    candidateSeconds = evidence.candidateSeconds,
+                    candidateCount = evidence.candidateCount,
+                    mapCount = evidence.mapCount,
+                    domFingerprint = evidence.domFingerprint,
+                    responseShapeFingerprint = evidence.responseShapeFingerprint,
+                )
             },
         )
     }

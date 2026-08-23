@@ -1,6 +1,9 @@
 package app.spammy.hof.automation.raid
 
 import app.spammy.hof.automation.entity.RaidAutomationCycleStatus
+import app.spammy.hof.automation.config.RaidAutomationProperties
+import app.spammy.hof.automation.service.AutomationDiagnosticKind
+import app.spammy.hof.automation.service.AutomationImpactScope
 import app.spammy.hof.common.time.TimeProvider
 import java.util.UUID
 import org.springframework.stereotype.Service
@@ -10,6 +13,7 @@ class DefaultRaidCycleModule(
     private val store: RaidCycleStore,
     private val observations: RaidObservationReader,
     private val timeProvider: TimeProvider,
+    private val properties: RaidAutomationProperties = RaidAutomationProperties(),
 ) : RaidCycleModule {
     override fun decideNext(accountId: Long): RaidDirective {
         val state = store.load(accountId)
@@ -44,6 +48,21 @@ class DefaultRaidCycleModule(
                 "레이드를 하나 이상 선택해 주세요.",
                 entryId = configuration.entryId,
             )
+        state.openCycle?.takeIf { cycle ->
+            cycle.status == RaidAutomationCycleStatus.REWARD_PENDING &&
+                cycle.nextCheckAt?.isAfter(timeProvider.now()) == true
+        }?.let { cycle ->
+            return RaidDirective.WaitUntil(
+                at = requireNotNull(cycle.nextCheckAt),
+                reason = RaidWaitReason.POST_REWARD_CHECK,
+                message = "레이드 보상 요청 거절 뒤 최신 보상 상태 재확인 시각까지 기다립니다.",
+                entryId = configuration.entryId,
+                raidId = cycle.raidId,
+                impactScope = AutomationImpactScope.RAID_ONLY,
+                releaseCondition = "마감 뒤 최신 보상 가능 상태 재확인",
+                reasonCode = "RAID_REWARD_REJECTION_RECHECK",
+            )
+        }
         state.openCycle?.battleRecovery?.takeIf { recovery ->
             recovery.nextCheckAt.isAfter(timeProvider.now())
         }?.let { recovery ->
@@ -53,6 +72,8 @@ class DefaultRaidCycleModule(
                 message = recoveryWarning(recovery, "다음 최신 레이드 상태 확인을 기다립니다."),
                 entryId = configuration.entryId,
                 raidId = recovery.raidId,
+                impactScope = AutomationImpactScope.RAID_ONLY,
+                releaseCondition = "최신 레이드 상태에서 전투 결과 재확인",
             )
         }
         val observation = observations.read(accountId)
@@ -69,6 +90,9 @@ class DefaultRaidCycleModule(
                 updated.nextCheckAt,
                 configuration.entryId,
                 recovery.raidId,
+                diagnosticKind = AutomationDiagnosticKind.RAID_COOLDOWN_OBSERVATION_AMBIGUOUS,
+                impactScope = AutomationImpactScope.RAID_ONLY,
+                releaseCondition = "최신 레이드 전투 가능 상태 재관측",
             )
         }
         val joined = observation.raids.filter(RaidObservedTarget::joined)
@@ -79,6 +103,9 @@ class DefaultRaidCycleModule(
                 recheckAt = timeProvider.now().plusSeconds(DEFAULT_RECHECK_SECONDS),
                 entryId = configuration.entryId,
                 raidId = target.raidId,
+                diagnosticKind = AutomationDiagnosticKind.RAID_COOLDOWN_OBSERVATION_AMBIGUOUS,
+                impactScope = AutomationImpactScope.RAID_ONLY,
+                releaseCondition = "단일 참가 레이드가 확인되면 새 판단",
             )
         }
         joined.singleOrNull()
@@ -305,6 +332,65 @@ class DefaultRaidCycleModule(
             )
         }
         if (cycle.status == RaidAutomationCycleStatus.REWARD_PENDING) {
+            cycle.rewardRecovery?.takeIf { it.held }?.let {
+                return RaidDirective.Hold(
+                    reason = RaidHoldReason.ACTION_UNAVAILABLE,
+                    message = "두 번째 보상 요청도 결과를 확정하지 못해 이 레이드 보상만 수동 확인으로 보류합니다.",
+                    entryId = configuration.entryId,
+                    raidId = cycle.raidId,
+                    reasonCode = "RAID_REWARD_RESULT_HELD",
+                    diagnosticKind = AutomationDiagnosticKind.RAID_REWARD_RESULT_HELD,
+                    impactScope = AutomationImpactScope.RAID_ONLY,
+                    releaseCondition = "수동 확인 또는 외부 상태 변경 뒤 새 판단",
+                )
+            }
+            when (val rewardWindow = observed.rewardWindow) {
+                is RaidRewardWindowObservation.Wait -> {
+                    val deadline = timeProvider.now().plusSeconds(rewardWindow.remainingSeconds.coerceAtLeast(1))
+                    store.transition(
+                        accountId = accountId,
+                        raidId = cycle.raidId,
+                        status = RaidAutomationCycleStatus.REWARD_PENDING,
+                        observedStatus = observed.statusText,
+                        nextCheckAt = deadline,
+                        now = timeProvider.now(),
+                    )
+                    return RaidDirective.WaitUntil(
+                        at = deadline,
+                        reason = RaidWaitReason.REWARD_CONFIRMATION,
+                        message = "HOF 보상 확인 가능 시각까지 이 레이드 보상만 기다립니다.",
+                        entryId = configuration.entryId,
+                        raidId = cycle.raidId,
+                        impactScope = AutomationImpactScope.RAID_ONLY,
+                        releaseCondition = "마감 뒤 최신 보상 가능 상태 재확인",
+                        reasonCode = "RAID_REWARD_CONFIRMATION_WAIT",
+                    )
+                }
+                is RaidRewardWindowObservation.Incomplete -> {
+                    return RaidDirective.Hold(
+                        reason = RaidHoldReason.ACTION_UNAVAILABLE,
+                        message = "보상 확인 가능 상태를 완전하게 관측하지 못해 POST 없이 다시 확인합니다.",
+                        recheckAt = timeProvider.now().plusSeconds(SAFETY_RECHECK_SECONDS),
+                        entryId = configuration.entryId,
+                        raidId = cycle.raidId,
+                        reasonCode = "RAID_REWARD_WINDOW_INCOMPLETE",
+                        diagnosticKind = AutomationDiagnosticKind.RAID_REWARD_RESULT_RECHECK,
+                        impactScope = AutomationImpactScope.RAID_ONLY,
+                        releaseCondition = "최신 보상 가능 상태를 완전하게 관측하면 새 판단",
+                    )
+                }
+                RaidRewardWindowObservation.Absent -> {
+                    return RaidDirective.Hold(
+                        reason = RaidHoldReason.ACTION_UNAVAILABLE,
+                        message = "최신 완료 레이드에서 보상 가능 창을 확인할 수 없습니다.",
+                        recheckAt = timeProvider.now().plusSeconds(DEFAULT_RECHECK_SECONDS),
+                        entryId = configuration.entryId,
+                        raidId = cycle.raidId,
+                        reasonCode = "RAID_REWARD_WINDOW_ABSENT",
+                    )
+                }
+                RaidRewardWindowObservation.Available -> Unit
+            }
             if (RaidIntentKind.REWARD in observation.globalActions) {
                 return RaidDirective.Execute(
                     RaidIntent.Town(
@@ -337,6 +423,15 @@ class DefaultRaidCycleModule(
             )
         }
         if (cycle.status == RaidAutomationCycleStatus.IN_BATTLE && observed.status == RaidObservedStatus.IN_BATTLE) {
+            if (cycle.battleSafetyVersion < CURRENT_RAID_BATTLE_SAFETY_VERSION) {
+                cycle = initializeDeploymentSafetyGate(accountId, cycle, observed)
+            }
+            cycle.battleSafetyGate?.let { gate ->
+                decideBattleSafetyGate(accountId, configuration, cycle, observed, observation.fresh, gate)?.let {
+                    return it
+                }
+                cycle = requireNotNull(store.load(accountId).openCycle)
+            }
             cycle.battleRecovery?.let { recovery ->
                 return decideBattleRecovery(accountId, configuration, cycle, observed, recovery)
             }
@@ -347,6 +442,9 @@ class DefaultRaidCycleModule(
                     recheckAt = timeProvider.now().plusSeconds(RECOVERY_RECHECK_SECONDS),
                     entryId = configuration.entryId,
                     raidId = cycle.raidId,
+                    diagnosticKind = AutomationDiagnosticKind.RAID_COOLDOWN_OBSERVATION_AMBIGUOUS,
+                    impactScope = AutomationImpactScope.RAID_ONLY,
+                    releaseCondition = "최신 레이드 전투 가능 상태를 완전하게 관측하면 새 판단",
                 )
             }
             if (observed.battleAvailability == RaidBattleAvailability.ABSENT) {
@@ -373,6 +471,9 @@ class DefaultRaidCycleModule(
                     message = "다음 레이드 전투 가능 시각까지 기다립니다.",
                     entryId = configuration.entryId,
                     raidId = cycle.raidId,
+                    cooldownSource = battle.cooldownSource ?: RaidCooldownSource.HOF_DIRECT,
+                    impactScope = AutomationImpactScope.RAID_ONLY,
+                    releaseCondition = "쿨타임 종료 뒤 최신 레이드 상태 재확인",
                 )
             }
             return battleDirective(accountId, configuration, cycle, battle)
@@ -487,9 +588,17 @@ class DefaultRaidCycleModule(
             )
         }
         if (observation == RaidResultObservation.BattleCompleted) {
+            val now = timeProvider.now()
             store.load(accountId).openCycle
-                ?.takeIf { cycle -> cycle.raidId == attempt.raidId && cycle.battleRecovery != null }
-                ?.let { cycle -> store.clearBattleRecovery(accountId, cycle.raidId, timeProvider.now()) }
+                ?.takeIf { cycle -> cycle.raidId == attempt.raidId }
+                ?.let { cycle ->
+                    createFallbackGate(attempt, attempt.finishedAt ?: now)?.let { gate ->
+                        store.saveBattleSafetyGate(accountId, cycle.raidId, gate, now)
+                    }
+                    if (cycle.battleRecovery != null) {
+                        store.clearBattleRecovery(accountId, cycle.raidId, now)
+                    }
+                }
             return RaidRecordResult.Recorded()
         }
         if (observation is RaidResultObservation.BattleAmbiguous) {
@@ -555,6 +664,9 @@ class DefaultRaidCycleModule(
             }
         }
         if (attempt.kind == RaidIntentKind.REWARD && rewardResultIsProven(page, attempt.raidId)) {
+            if (cycle.rewardRecovery != null) {
+                store.clearRewardRecovery(accountId, attempt.raidId, timeProvider.now())
+            }
             store.transition(
                 accountId = accountId,
                 raidId = attempt.raidId,
@@ -575,6 +687,15 @@ class DefaultRaidCycleModule(
             }
             return RaidRecordResult.Recorded()
         }
+        if (
+            attempt.kind == RaidIntentKind.REWARD &&
+            page.fresh &&
+            RaidIntentKind.REWARD in page.globalActions &&
+            page.raids.singleOrNull { it.id == attempt.raidId }?.rewardWindow ==
+                RaidRewardWindowObservation.Available
+        ) {
+            return recordAmbiguousReward(accountId, attempt, cycle, page.observedAt ?: timeProvider.now())
+        }
         if (attempt.kind == RaidIntentKind.REFRESH && postRewardStateIsProven(page, attempt.raidId)) {
             return RaidRecordResult.Recorded(
                 store.finish(
@@ -587,6 +708,17 @@ class DefaultRaidCycleModule(
             )
         }
         if (actionIsProvablyNotApplied(page, attempt)) {
+            if (attempt.kind == RaidIntentKind.REWARD) {
+                val now = timeProvider.now()
+                store.transition(
+                    accountId = accountId,
+                    raidId = attempt.raidId,
+                    status = RaidAutomationCycleStatus.REWARD_PENDING,
+                    observedStatus = page.raids.singleOrNull { it.id == attempt.raidId }?.statusText,
+                    nextCheckAt = now.plusSeconds(SAFETY_RECHECK_SECONDS),
+                    now = now,
+                )
+            }
             return RaidRecordResult.NotApplied("권위 상태에서 이전 레이드 요청이 적용되지 않은 것을 확인했습니다.")
         }
         return needsRecheck("레이드 실행 결과가 아직 적용을 증명하지 못했습니다.")
@@ -650,11 +782,68 @@ class DefaultRaidCycleModule(
             submittedFromRunnable = existing?.submittedFromRunnable == true || attempt.submittedFromRunnable,
             lastObservation = RaidBattleRecoveryObservation.RESULT_UNOBSERVED,
         )
+        createFallbackGate(attempt, now)?.let { gate ->
+            val existingGate = cycle.battleSafetyGate
+            if (existingGate == null || existingGate.notBefore.isBefore(gate.notBefore)) {
+                store.saveBattleSafetyGate(accountId, attempt.raidId, gate, now)
+            }
+        }
         store.saveBattleRecovery(accountId, attempt.raidId, recovery, now)
         return RaidRecordResult.BattleRecoveryStarted(
             recovery.nextCheckAt,
             recoveryWarning(recovery, observation.reason),
         )
+    }
+
+    private fun recordAmbiguousReward(
+        accountId: Long,
+        attempt: RaidAttempt,
+        cycle: RaidCycleSnapshot,
+        observedAt: java.time.Instant,
+    ): RaidRecordResult {
+        val executionIdentity = attempt.executionIdentity
+            ?: return needsRecheck("불명확한 레이드 보상 요청의 실행 식별자가 없습니다.")
+        val existing = cycle.rewardRecovery
+        if (existing?.held == true) {
+            return RaidRecordResult.RewardHeld("두 번째 불명확한 보상 요청 뒤 이 레이드 보상을 보류합니다.")
+        }
+        val current = if (existing == null || existing.executionIdentity != executionIdentity) {
+            RaidRewardRecovery(
+                executionIdentity = executionIdentity,
+                firstAmbiguousAt = observedAt,
+                successfulObservationCount = 1,
+                retryCount = existing?.retryCount ?: 0,
+            )
+        } else {
+            existing.copy(successfulObservationCount = existing.successfulObservationCount + 1)
+        }
+        val exhausted = current.successfulObservationCount >= MAX_REWARD_OBSERVATIONS ||
+            !observedAt.isBefore(current.firstAmbiguousAt.plusSeconds(MAX_REWARD_OBSERVATION_SECONDS))
+        if (!exhausted) {
+            store.saveRewardRecovery(accountId, cycle.raidId, current, observedAt)
+            return RaidRecordResult.NeedsRecheck(
+                observedAt.plusSeconds(SAFETY_RECHECK_SECONDS),
+                "보상 결과를 POST 재전송 없이 읽기 전용으로 확인합니다. " +
+                    "성공 관측 ${current.successfulObservationCount}/$MAX_REWARD_OBSERVATIONS",
+            )
+        }
+        return if (current.retryCount == 0) {
+            store.saveRewardRecovery(
+                accountId,
+                cycle.raidId,
+                current.copy(retryCount = 1),
+                observedAt,
+            )
+            RaidRecordResult.RewardRetryReady(
+                "첫 보상 요청을 종결하고 최신 완전 상태에서 새 실행 식별자로 한 번만 다시 시도합니다.",
+            )
+        } else {
+            val held = current.copy(held = true)
+            store.saveRewardRecovery(accountId, cycle.raidId, held, observedAt)
+            RaidRecordResult.RewardHeld(
+                "두 번째 보상 요청도 결과를 확정하지 못해 이 레이드 보상만 수동 확인으로 보류합니다.",
+            )
+        }
     }
 
     private fun decideBattleRecovery(
@@ -677,6 +866,9 @@ class DefaultRaidCycleModule(
                 updated.nextCheckAt,
                 configuration.entryId,
                 cycle.raidId,
+                diagnosticKind = AutomationDiagnosticKind.RAID_COOLDOWN_OBSERVATION_AMBIGUOUS,
+                impactScope = AutomationImpactScope.RAID_ONLY,
+                releaseCondition = "최신 레이드 전투 가능 상태를 완전하게 관측하면 새 판단",
             )
         }
         if (observed.battleAvailability == RaidBattleAvailability.ABSENT) {
@@ -691,6 +883,9 @@ class DefaultRaidCycleModule(
                 updated.nextCheckAt,
                 configuration.entryId,
                 cycle.raidId,
+                diagnosticKind = AutomationDiagnosticKind.RAID_COOLDOWN_OBSERVATION_AMBIGUOUS,
+                impactScope = AutomationImpactScope.RAID_ONLY,
+                releaseCondition = "최신 레이드 전투 세부 정보를 완전하게 관측하면 새 판단",
             )
         }
         val battle = observed.battle ?: run {
@@ -705,6 +900,9 @@ class DefaultRaidCycleModule(
                 updated.nextCheckAt,
                 configuration.entryId,
                 cycle.raidId,
+                diagnosticKind = AutomationDiagnosticKind.RAID_COOLDOWN_OBSERVATION_AMBIGUOUS,
+                impactScope = AutomationImpactScope.RAID_ONLY,
+                releaseCondition = "최신 레이드 전투 세부 정보를 완전하게 관측하면 새 판단",
             )
         }
         if (observed.battleAvailability == RaidBattleAvailability.COOLDOWN) {
@@ -724,15 +922,18 @@ class DefaultRaidCycleModule(
             }
             val seconds = battle.cooldownRemainingSeconds?.takeIf { it > 0 } ?: RECOVERY_RECHECK_SECONDS
             return RaidDirective.WaitUntil(
-                now.plusSeconds(seconds),
-                if (applied) RaidWaitReason.BATTLE_APPLIED_COOLDOWN else RaidWaitReason.BATTLE_COOLDOWN,
-                if (applied) {
+                at = now.plusSeconds(seconds),
+                reason = if (applied) RaidWaitReason.BATTLE_APPLIED_COOLDOWN else RaidWaitReason.BATTLE_COOLDOWN,
+                message = if (applied) {
                     "새 쿨타임으로 이전 레이드 전투 적용을 확인했습니다. 다음 전투 가능 시각까지 기다립니다."
                 } else {
                     recoveryWarning(recovery, "제출 전 관측이 없어 현재 쿨타임만으로 적용을 추정하지 않습니다.")
                 },
-                configuration.entryId,
-                cycle.raidId,
+                entryId = configuration.entryId,
+                raidId = cycle.raidId,
+                cooldownSource = battle.cooldownSource ?: RaidCooldownSource.HOF_DIRECT,
+                impactScope = AutomationImpactScope.RAID_ONLY,
+                releaseCondition = "쿨타임 종료 뒤 최신 레이드 상태 재확인",
             )
         }
         if (battle.categoryId != recovery.categoryId || battle.mapCode != recovery.mapCode) {
@@ -747,6 +948,189 @@ class DefaultRaidCycleModule(
         }
         return battleDirective(accountId, configuration, cycle, battle, recovery)
     }
+
+    private fun createFallbackGate(attempt: RaidAttempt, startedAt: java.time.Instant): RaidBattleSafetyGate? {
+        if (!properties.fallbackEnforcementEnabled || attempt.kind != RaidIntentKind.BATTLE) return null
+        val categoryId = attempt.categoryId ?: return null
+        val mapCode = attempt.mapCode ?: return null
+        return RaidBattleSafetyGate(
+            raidId = attempt.raidId,
+            categoryId = categoryId,
+            mapCode = mapCode,
+            executionIdentity = attempt.executionIdentity,
+            startedAt = startedAt,
+            notBefore = startedAt.plus(properties.fallbackCooldown),
+            source = RaidCooldownSource.LOCAL_FALLBACK,
+        )
+    }
+
+    private fun initializeDeploymentSafetyGate(
+        accountId: Long,
+        cycle: RaidCycleSnapshot,
+        observed: RaidObservedTarget,
+    ): RaidCycleSnapshot {
+        val now = timeProvider.now()
+        val battle = observed.battle
+        val hofSeconds = battle?.cooldownRemainingSeconds?.takeIf { it > 0 }
+        val gate = when {
+            hofSeconds != null -> RaidBattleSafetyGate(
+                raidId = cycle.raidId,
+                categoryId = battle.categoryId,
+                mapCode = battle.mapCode,
+                executionIdentity = null,
+                startedAt = now,
+                notBefore = now.plusSeconds(hofSeconds),
+                source = battle.cooldownSource ?: RaidCooldownSource.HOF_DIRECT,
+            )
+            properties.fallbackEnforcementEnabled -> RaidBattleSafetyGate(
+                raidId = cycle.raidId,
+                categoryId = battle?.categoryId,
+                mapCode = battle?.mapCode,
+                executionIdentity = null,
+                startedAt = now,
+                notBefore = now.plus(properties.fallbackCooldown),
+                source = RaidCooldownSource.DEPLOYMENT_FALLBACK,
+            )
+            else -> null
+        }
+        return if (gate == null) {
+            store.clearBattleSafetyGate(accountId, cycle.raidId, now)
+        } else {
+            store.saveBattleSafetyGate(accountId, cycle.raidId, gate, now)
+        }
+    }
+
+    private fun decideBattleSafetyGate(
+        accountId: Long,
+        configuration: RaidCycleConfiguration,
+        cycle: RaidCycleSnapshot,
+        observed: RaidObservedTarget,
+        fresh: Boolean,
+        gate: RaidBattleSafetyGate,
+    ): RaidDirective? {
+        val now = timeProvider.now()
+        if (gate.held) {
+            return safetyHeld(configuration, cycle, gate)
+        }
+        val battle = observed.battle
+        val hofSeconds = battle?.cooldownRemainingSeconds?.takeIf { it > 0 }
+        if (observed.battleAvailability == RaidBattleAvailability.COOLDOWN && hofSeconds != null) {
+            val appliedRecovery = cycle.battleRecovery?.let { recovery ->
+                recovery.submittedFromRunnable &&
+                    battle.categoryId == recovery.categoryId &&
+                    battle.mapCode == recovery.mapCode
+            } == true
+            if (appliedRecovery) {
+                store.clearBattleRecovery(accountId, cycle.raidId, now)
+            }
+            val authoritative = gate.copy(
+                categoryId = battle.categoryId,
+                mapCode = battle.mapCode,
+                notBefore = now.plusSeconds(hofSeconds),
+                source = battle.cooldownSource ?: RaidCooldownSource.HOF_DIRECT,
+                lastObservedAt = now,
+            )
+            store.saveBattleSafetyGate(accountId, cycle.raidId, authoritative, now)
+            return battleSafetyWait(configuration, cycle, authoritative, appliedRecovery)
+        }
+        if (now.isBefore(gate.notBefore)) {
+            return battleSafetyWait(configuration, cycle, gate)
+        }
+        if (!fresh) {
+            return RaidDirective.Hold(
+                reason = RaidHoldReason.BATTLE_OBSERVATION_INCOMPLETE,
+                message = "안전 게이트 만료 뒤 최신 레이드 관측을 기다립니다.",
+                recheckAt = now.plusSeconds(SAFETY_RECHECK_SECONDS),
+                entryId = configuration.entryId,
+                raidId = cycle.raidId,
+                reasonCode = "RAID_BATTLE_GATE_FRESH_OBSERVATION_REQUIRED",
+                diagnosticKind = AutomationDiagnosticKind.RAID_COOLDOWN_OBSERVATION_AMBIGUOUS,
+                impactScope = AutomationImpactScope.RAID_ONLY,
+                releaseCondition = "최신 레이드 전투 가능 상태 재관측",
+            )
+        }
+        if (observed.battleAvailability == RaidBattleAvailability.RUNNABLE && battle != null) {
+            store.clearBattleSafetyGate(accountId, cycle.raidId, now)
+            return null
+        }
+        if (observed.battleAvailability in setOf(
+                RaidBattleAvailability.INCOMPLETE,
+                RaidBattleAvailability.ABSENT,
+            )
+        ) {
+            val firstIncompleteAt = gate.firstIncompleteAt ?: gate.notBefore
+            val successfulObservations = gate.successfulIncompleteObservations + 1
+            val held = successfulObservations >= MAX_SAFETY_OBSERVATIONS ||
+                !now.isBefore(firstIncompleteAt.plusSeconds(MAX_SAFETY_OBSERVATION_SECONDS))
+            val updated = gate.copy(
+                firstIncompleteAt = firstIncompleteAt,
+                successfulIncompleteObservations = successfulObservations,
+                lastObservedAt = now,
+                evidenceCaseId = observed.battleEvidenceCaseId ?: gate.evidenceCaseId,
+                held = held,
+            )
+            store.saveBattleSafetyGate(accountId, cycle.raidId, updated, now)
+            return if (held) {
+                safetyHeld(configuration, cycle, updated)
+            } else {
+                RaidDirective.Hold(
+                    reason = RaidHoldReason.BATTLE_OBSERVATION_INCOMPLETE,
+                    message = "레이드 안전 게이트 해제를 위한 상태를 재확인합니다. " +
+                        "성공 관측 $successfulObservations/$MAX_SAFETY_OBSERVATIONS",
+                    recheckAt = now.plusSeconds(SAFETY_RECHECK_SECONDS),
+                    entryId = configuration.entryId,
+                    raidId = cycle.raidId,
+                    reasonCode = "RAID_BATTLE_GATE_OBSERVATION_INCOMPLETE",
+                    diagnosticKind = AutomationDiagnosticKind.RAID_COOLDOWN_OBSERVATION_AMBIGUOUS,
+                    impactScope = AutomationImpactScope.RAID_ONLY,
+                    releaseCondition = "최대 5회 또는 마감 후 2분까지 읽기 전용 재관측",
+                )
+            }
+        }
+        store.clearBattleSafetyGate(accountId, cycle.raidId, now)
+        return null
+    }
+
+    private fun battleSafetyWait(
+        configuration: RaidCycleConfiguration,
+        cycle: RaidCycleSnapshot,
+        gate: RaidBattleSafetyGate,
+        appliedRecovery: Boolean = false,
+    ) = RaidDirective.WaitUntil(
+        at = gate.notBefore,
+        reason = if (appliedRecovery) RaidWaitReason.BATTLE_APPLIED_COOLDOWN else RaidWaitReason.BATTLE_COOLDOWN,
+        message = if (appliedRecovery) {
+            "새 HOF 쿨타임으로 이전 레이드 전투 적용을 확인했습니다. 다음 전투 가능 시각까지 기다립니다."
+        } else when (gate.source) {
+            RaidCooldownSource.HOF_DIRECT -> "HOF가 제공한 다음 레이드 전투 가능 시각까지 기다립니다."
+            RaidCooldownSource.HOF_SINGLE_TARGET_INFERENCE ->
+                "현재 단일 레이드에 귀속한 HOF 전투 가능 시각까지 기다립니다."
+            RaidCooldownSource.LOCAL_FALLBACK,
+            RaidCooldownSource.DEPLOYMENT_FALLBACK ->
+                "HOF 쿨타임을 확정하지 못해 레이드 전용 안전 시간까지 기다립니다."
+        },
+        entryId = configuration.entryId,
+        raidId = cycle.raidId,
+        cooldownSource = gate.source,
+        impactScope = AutomationImpactScope.RAID_ONLY,
+        releaseCondition = "마감 뒤 최신 레이드 상태에서 실행 가능 여부 확인",
+        reasonCode = "RAID_BATTLE_SAFETY_GATE",
+    )
+
+    private fun safetyHeld(
+        configuration: RaidCycleConfiguration,
+        cycle: RaidCycleSnapshot,
+        gate: RaidBattleSafetyGate,
+    ) = RaidDirective.Hold(
+        reason = RaidHoldReason.BATTLE_OBSERVATION_INCOMPLETE,
+        message = "레이드 전투 가능 상태를 제한된 관측 예산 안에 확정하지 못해 이 레이드 전투만 보류합니다.",
+        entryId = configuration.entryId,
+        raidId = cycle.raidId,
+        reasonCode = "RAID_BATTLE_GATE_HELD_${gate.successfulIncompleteObservations}",
+        diagnosticKind = AutomationDiagnosticKind.RAID_COOLDOWN_OBSERVATION_HELD,
+        impactScope = AutomationImpactScope.RAID_ONLY,
+        releaseCondition = "외부 상태 변경 또는 수동 확인 뒤 새 판단",
+    )
 
     private fun battleDirective(
         accountId: Long,
@@ -896,6 +1280,11 @@ class DefaultRaidCycleModule(
     private companion object {
         const val DEFAULT_RECHECK_SECONDS = 30L
         const val RECOVERY_RECHECK_SECONDS = 300L
+        const val SAFETY_RECHECK_SECONDS = 10L
+        const val MAX_SAFETY_OBSERVATIONS = 5
+        const val MAX_SAFETY_OBSERVATION_SECONDS = 120L
+        const val MAX_REWARD_OBSERVATIONS = 5
+        const val MAX_REWARD_OBSERVATION_SECONDS = 120L
         const val MINIMUM_WAIT_SECONDS = 5
         val RESET_REQUIRED_STATUS = Regex("보상\\s*확인\\s*종료\\s*\\(\\s*리셋\\s*가능\\s*\\)")
         val REGISTRATION_STATUSES = setOf(

@@ -10,6 +10,8 @@ import app.spammy.hof.automation.entity.AutomationWorkType
 import app.spammy.hof.automation.entity.TypedAutomationActionRunEntity
 import app.spammy.hof.automation.raid.HofRaidObservationAdapter
 import app.spammy.hof.automation.raid.RaidAttempt
+import app.spammy.hof.automation.raid.RaidBattlePreSubmitGuard
+import app.spammy.hof.automation.raid.RaidBattlePreSubmitResult
 import app.spammy.hof.automation.raid.RaidCycleModule
 import app.spammy.hof.automation.raid.RaidCycleOutcome
 import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
@@ -143,6 +145,7 @@ class UnifiedAutomationActionLifecycleModule(
     private val executionSignals: AutomationExecutionSignals,
     private val sessionRecovery: HofSessionRecoveryExecutor,
     private val timeProvider: TimeProvider,
+    private val raidBattlePreSubmitGuard: RaidBattlePreSubmitGuard = RaidBattlePreSubmitGuard.AllowAll,
 ) : AutomationActionLifecycleModule {
     override fun describe(action: PreparedAutomationAction): AutomationActionDescriptor = when (action) {
         is HomeQuestAutomationAction -> descriptor(action.questId, action.questName, action.action)
@@ -654,6 +657,29 @@ class UnifiedAutomationActionLifecycleModule(
         val raidId = payload.sourceTargetKey ?: throw AutomationPreSubmitObservationIncompleteException(
             "레이드 전투 대상 식별자가 없어 최신 공유 상태를 확인할 수 없습니다.",
         )
+        if (raidBattlePreSubmitGuard === RaidBattlePreSubmitGuard.AllowAll) {
+            validateLegacyRaidBattleBeforeSubmission(accountId, raidId, payload)
+            return
+        }
+        when (val result = raidBattlePreSubmitGuard.validate(
+            accountId,
+            raidId,
+            payload.categoryId,
+            payload.mapCode,
+        )) {
+            RaidBattlePreSubmitResult.Ready -> Unit
+            is RaidBattlePreSubmitResult.Incomplete ->
+                throw AutomationPreSubmitObservationIncompleteException(result.message)
+            is RaidBattlePreSubmitResult.Changed ->
+                throw AutomationActionPreconditionChangedException(result.message)
+        }
+    }
+
+    private fun validateLegacyRaidBattleBeforeSubmission(
+        accountId: Long,
+        raidId: String,
+        payload: StoredTypedActionPayload.BattleMap,
+    ) {
         val latest = sessionRecovery.execute(accountId) { raidPubService.load(accountId) }
         if (latest.battleObservationStatus == RaidBattleObservationStatus.INCOMPLETE) {
             throw AutomationPreSubmitObservationIncompleteException(
@@ -766,9 +792,15 @@ class UnifiedAutomationActionLifecycleModule(
                 else -> false
             }
         } else if (payload.action == RaidAction.REWARD) {
+            if (payload.selectedAt == null) {
+                throw AutomationActionPreconditionChangedException(
+                    "배포 전 저장된 보상 payload는 재생하지 않고 최신 상태에서 새로 판단합니다.",
+                )
+            }
             val target = payload.targetRaidId?.let { id -> latest.raids.singleOrNull { it.id == id } }
             target != null && target.status == RaidStatus.COMPLETED &&
                 !isRaidResetRequiredStatus(target.statusText) && !latest.applyWait &&
+                target.rewardWindowStatus == app.spammy.hof.town.raid.model.RaidRewardWindowStatus.AVAILABLE &&
                 payload.action in latest.globalActions
         } else {
             payload.action in latest.globalActions
@@ -1143,6 +1175,7 @@ class UnifiedAutomationActionLifecycleModule(
                     action = action.action,
                     raidId = action.raidId,
                     targetRaidId = targetRaidId,
+                    selectedAt = timeProvider.now(),
                     display = StoredActionDisplay(
                         mapName = action.raidName,
                         missionLabel = action.observedStatus,
@@ -1514,7 +1547,19 @@ class UnifiedAutomationActionLifecycleModule(
                 val raidId = payload.sourceTargetKey ?: return null
                 recordRaidResult(
                     accountId,
-                    RaidAttempt(stored.entryId, RaidIntentKind.BATTLE, raidId, null),
+                    RaidAttempt(
+                        entryId = stored.entryId,
+                        kind = RaidIntentKind.BATTLE,
+                        raidId = raidId,
+                        requestRaidId = null,
+                        executionIdentity = stored.executionIdentity,
+                        categoryId = payload.categoryId,
+                        mapCode = payload.mapCode,
+                        recoveryChainId = payload.recoveryChainId,
+                        retransmissionCount = payload.raidRetransmissionCount,
+                        finishedAt = timeProvider.now(),
+                        submittedFromRunnable = payload.raidSubmittedFromRunnable,
+                    ),
                     RaidResultObservation.BattleCompleted,
                 )
             }
@@ -1782,7 +1827,10 @@ class UnifiedAutomationActionLifecycleModule(
         stored: StoredTypedAutomationAction,
         payload: StoredTypedActionPayload.RaidTown,
     ): AmbiguousActionResolution {
-        val attempt = payload.toRaidAttemptOrNull(stored.entryId)
+        val attempt = payload.toRaidAttemptOrNull(
+            stored.entryId,
+            stored.executionIdentity.takeIf { payload.action == RaidAction.REWARD },
+        )
             ?: return verifyLater("저장된 레이드 대상이 없어 결과를 안전하게 확인할 수 없습니다.")
         return reconcileRaidResult(
             accountId,
@@ -1826,6 +1874,8 @@ class UnifiedAutomationActionLifecycleModule(
         is RaidRecordResult.NotApplied -> throw AmbiguousAutomationSubmissionException(result.message)
         is RaidRecordResult.NeedsRecheck -> throw AmbiguousAutomationSubmissionException(result.message)
         is RaidRecordResult.BattleRecoveryStarted -> throw AmbiguousAutomationSubmissionException(result.message)
+        is RaidRecordResult.RewardRetryReady -> throw AmbiguousAutomationSubmissionException(result.message)
+        is RaidRecordResult.RewardHeld -> throw AmbiguousAutomationSubmissionException(result.message)
     }
 
     private fun reconcileRaidResult(
@@ -1842,20 +1892,38 @@ class UnifiedAutomationActionLifecycleModule(
                 result.completion?.let(TypedAutomationExecution::RaidCycleFinished) ?: defaultExecution,
             )
         }
-        is RaidRecordResult.NotApplied -> AmbiguousActionResolution.Resubmit
+        is RaidRecordResult.NotApplied -> if (attempt.kind == RaidIntentKind.REWARD) {
+            AmbiguousActionResolution.Superseded(result.message)
+        } else {
+            AmbiguousActionResolution.Resubmit
+        }
         is RaidRecordResult.NeedsRecheck -> AmbiguousActionResolution.VerifyLater(result.at, result.message)
         is RaidRecordResult.BattleRecoveryStarted ->
             AmbiguousActionResolution.HandedOff(result.at, result.message)
+        is RaidRecordResult.RewardRetryReady -> AmbiguousActionResolution.Superseded(result.message)
+        is RaidRecordResult.RewardHeld -> AmbiguousActionResolution.Superseded(result.message)
     }
 
-    private fun StoredTypedActionPayload.RaidTown.toRaidAttempt(entryId: Long): RaidAttempt {
-        return toRaidAttemptOrNull(entryId)
+    private fun StoredTypedActionPayload.RaidTown.toRaidAttempt(
+        entryId: Long,
+        executionIdentity: String? = null,
+    ): RaidAttempt {
+        return toRaidAttemptOrNull(entryId, executionIdentity)
             ?: throw AmbiguousAutomationSubmissionException("Stored raid action has no target raid id.")
     }
 
-    private fun StoredTypedActionPayload.RaidTown.toRaidAttemptOrNull(entryId: Long): RaidAttempt? =
+    private fun StoredTypedActionPayload.RaidTown.toRaidAttemptOrNull(
+        entryId: Long,
+        executionIdentity: String? = null,
+    ): RaidAttempt? =
         (targetRaidId ?: raidId)?.let { target ->
-            RaidAttempt(entryId, action.toRaidIntentKind(), target, raidId)
+            RaidAttempt(
+                entryId = entryId,
+                kind = action.toRaidIntentKind(),
+                raidId = target,
+                requestRaidId = raidId,
+                executionIdentity = executionIdentity,
+            )
         }
 
     private fun StoredTypedActionPayload.RaidCycleAbort.toRaidAttempt(entryId: Long) =

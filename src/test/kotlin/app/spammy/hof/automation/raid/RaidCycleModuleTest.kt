@@ -407,6 +407,7 @@ class RaidCycleModuleTest {
                     statusText = "보상 확인 시간",
                     joined = true,
                     actions = emptySet(),
+                    rewardWindow = RaidRewardWindowObservation.Available,
                 ),
             ),
             applied = true,
@@ -452,6 +453,7 @@ class RaidCycleModuleTest {
                     statusText = "보상 확인 시간",
                     joined = true,
                     actions = emptySet(),
+                    rewardWindow = RaidRewardWindowObservation.Available,
                 ),
             ),
             applied = true,
@@ -847,6 +849,7 @@ class RaidCycleModuleTest {
                     statusText = "보상 확인 시간",
                     joined = true,
                     actions = emptySet(),
+                    rewardWindow = RaidRewardWindowObservation.Available,
                 ),
             ),
             applied = false,
@@ -858,6 +861,162 @@ class RaidCycleModuleTest {
         val reward = assertIs<RaidIntent.Town>(assertIs<RaidDirective.Execute>(module.decideNext(1)).intent)
 
         assertEquals(RaidIntentKind.REWARD, reward.kind)
+    }
+
+    @Test
+    fun `보상 확인 시간이 남아 있으면 전역 보상 버튼보다 레이드 전용 대기가 우선한다`() {
+        val target = target("raid-auto", 0)
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(1, 7, target.raidId, target.name, RaidAutomationCycleStatus.REWARD_PENDING, null),
+            ),
+        )
+        val observation = RaidObservation(
+            raids = listOf(
+                RaidObservedTarget(
+                    id = target.raidId,
+                    name = target.name,
+                    playable = true,
+                    status = RaidObservedStatus.COMPLETED,
+                    statusText = "보상 확인 시간 (남은 시간 앞으로 0시간 30분 0초)",
+                    waitSeconds = 1_800,
+                    joined = true,
+                    actions = emptySet(),
+                    rewardWindow = RaidRewardWindowObservation.Wait(1_800),
+                ),
+            ),
+            applied = false,
+            registrationWait = false,
+            globalActions = setOf(RaidIntentKind.REWARD),
+        )
+        val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
+
+        val wait = assertIs<RaidDirective.WaitUntil>(module.decideNext(1))
+
+        assertEquals(RaidWaitReason.REWARD_CONFIRMATION, wait.reason)
+        assertEquals(now.plusSeconds(1_800), wait.at)
+        assertEquals(now.plusSeconds(1_800), store.state.openCycle?.nextCheckAt)
+    }
+
+    @Test
+    fun `불명확 보상은 읽기 전용 5회 뒤 새 identity 한 번만 허용하고 두 번째는 held한다`() {
+        val target = target("raid-auto", 0)
+        var current = now
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(1, 7, target.raidId, target.name, RaidAutomationCycleStatus.REWARD_PENDING, null),
+            ),
+        )
+        val available = RaidObservation(
+            raids = listOf(
+                RaidObservedTarget(
+                    id = target.raidId,
+                    name = target.name,
+                    playable = true,
+                    status = RaidObservedStatus.COMPLETED,
+                    statusText = "보상 확인 가능",
+                    joined = true,
+                    actions = emptySet(),
+                    rewardWindow = RaidRewardWindowObservation.Available,
+                ),
+            ),
+            applied = false,
+            registrationWait = false,
+            globalActions = setOf(RaidIntentKind.REWARD),
+            observedAt = current,
+        )
+        val module = DefaultRaidCycleModule(store, RaidObservationReader { available.copy(observedAt = current) }, TimeProvider { current })
+        fun attempt(identity: String) = RaidAttempt(
+            entryId = 7,
+            kind = RaidIntentKind.REWARD,
+            raidId = target.raidId,
+            requestRaidId = null,
+            executionIdentity = identity,
+        )
+
+        repeat(4) {
+            assertIs<RaidRecordResult.NeedsRecheck>(module.recordObservedResult(
+                1,
+                attempt("reward-1"),
+                RaidResultObservation.Page(available.copy(observedAt = current)),
+            ))
+            current = current.plusSeconds(10)
+        }
+        assertIs<RaidRecordResult.RewardRetryReady>(module.recordObservedResult(
+            1,
+            attempt("reward-1"),
+            RaidResultObservation.Page(available.copy(observedAt = current)),
+        ))
+        assertIs<RaidDirective.Execute>(module.decideNext(1))
+
+        current = current.plusSeconds(10)
+        repeat(4) {
+            assertIs<RaidRecordResult.NeedsRecheck>(module.recordObservedResult(
+                1,
+                attempt("reward-2"),
+                RaidResultObservation.Page(available.copy(observedAt = current)),
+            ))
+            current = current.plusSeconds(10)
+        }
+        assertIs<RaidRecordResult.RewardHeld>(module.recordObservedResult(
+            1,
+            attempt("reward-2"),
+            RaidResultObservation.Page(available.copy(observedAt = current)),
+        ))
+        val held = assertIs<RaidDirective.Hold>(module.decideNext(1))
+
+        assertEquals("RAID_REWARD_RESULT_HELD", held.reasonCode)
+        assertEquals(true, store.state.openCycle?.rewardRecovery?.held)
+        assertEquals(1, store.state.openCycle?.rewardRecovery?.retryCount)
+    }
+
+    @Test
+    fun `명시적으로 미적용된 보상 payload는 폐기하고 짧은 읽기 전용 대기 뒤 새 판단한다`() {
+        val target = target("raid-auto", 0)
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(1, 7, target.raidId, target.name, RaidAutomationCycleStatus.REWARD_PENDING, null),
+            ),
+        )
+        val rejected = RaidObservation(
+            raids = listOf(
+                RaidObservedTarget(
+                    id = target.raidId,
+                    name = target.name,
+                    playable = true,
+                    status = RaidObservedStatus.COMPLETED,
+                    statusText = "보상 상태 재확인 필요",
+                    joined = true,
+                    actions = emptySet(),
+                    rewardWindow = RaidRewardWindowObservation.Incomplete(),
+                ),
+            ),
+            applied = false,
+            registrationWait = false,
+            globalActions = setOf(RaidIntentKind.REWARD),
+            observedAt = now,
+            fresh = true,
+        )
+        val module = DefaultRaidCycleModule(
+            store,
+            RaidObservationReader { error("retry deadline 전에 GET하면 안 됩니다") },
+            TimeProvider { now },
+        )
+
+        val result = module.recordObservedResult(
+            1,
+            RaidAttempt(7, RaidIntentKind.REWARD, target.raidId, requestRaidId = null),
+            RaidResultObservation.Page(rejected),
+        )
+        val wait = assertIs<RaidDirective.WaitUntil>(module.decideNext(1))
+
+        assertIs<RaidRecordResult.NotApplied>(result)
+        assertEquals(RaidWaitReason.POST_REWARD_CHECK, wait.reason)
+        assertEquals(now.plusSeconds(10), wait.at)
+        assertEquals("RAID_REWARD_REJECTION_RECHECK", wait.reasonCode)
     }
 
     @Test
@@ -1371,6 +1530,222 @@ class RaidCycleModuleTest {
         assertEquals(null, store.state.openCycle)
     }
 
+    @Test
+    fun `정상 전투 종료 2초 뒤 같은 맵이 실행 가능해 보여도 로컬 안전 게이트가 재전투를 막는다`() {
+        val party = ResolvedAutomationParty(
+            listOf("character-1"),
+            listOf(BattlePatternLoadRequest("character-1", 1)),
+        )
+        val target = target("raid-a", 0, party)
+        var current = now
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(1, 7, target.raidId, target.name, RaidAutomationCycleStatus.IN_BATTLE, null),
+            ),
+        )
+        val module = DefaultRaidCycleModule(
+            store,
+            RaidObservationReader {
+                inBattleObservation(
+                    target,
+                    RaidBattleAvailability.RUNNABLE,
+                    RaidObservedBattle("raid", "raid001"),
+                )
+            },
+            TimeProvider { current },
+        )
+
+        module.recordObservedResult(
+            1,
+            RaidAttempt(
+                entryId = 7,
+                kind = RaidIntentKind.BATTLE,
+                raidId = target.raidId,
+                executionIdentity = "execution-0",
+                categoryId = "raid",
+                mapCode = "raid001",
+                submittedAt = current.minusSeconds(15),
+                submittedFromRunnable = true,
+            ),
+            RaidResultObservation.BattleCompleted,
+        )
+        current = current.plusSeconds(2)
+
+        val wait = assertIs<RaidDirective.WaitUntil>(module.decideNext(1))
+
+        assertEquals(RaidWaitReason.BATTLE_COOLDOWN, wait.reason)
+        assertEquals(now.plusSeconds(120), wait.at)
+    }
+
+    @Test
+    fun `HOF 직접 쿨타임은 활성 로컬 fallback deadline을 대체한다`() {
+        val party = ResolvedAutomationParty(
+            listOf("character-1"),
+            listOf(BattlePatternLoadRequest("character-1", 1)),
+        )
+        val target = target("raid-a", 0, party)
+        var current = now
+        var observation = inBattleObservation(
+            target,
+            RaidBattleAvailability.RUNNABLE,
+            RaidObservedBattle("raid", "raid001"),
+        )
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(1, 7, target.raidId, target.name, RaidAutomationCycleStatus.IN_BATTLE, null),
+            ),
+        )
+        val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { current })
+        module.recordObservedResult(
+            1,
+            RaidAttempt(
+                entryId = 7,
+                kind = RaidIntentKind.BATTLE,
+                raidId = target.raidId,
+                executionIdentity = "execution-0",
+                categoryId = "raid",
+                mapCode = "raid001",
+                finishedAt = current,
+            ),
+            RaidResultObservation.BattleCompleted,
+        )
+        current = current.plusSeconds(2)
+        observation = inBattleObservation(
+            target,
+            RaidBattleAvailability.COOLDOWN,
+            RaidObservedBattle("raid", "raid001", 90, RaidCooldownSource.HOF_DIRECT),
+        )
+
+        val wait = assertIs<RaidDirective.WaitUntil>(module.decideNext(1))
+
+        assertEquals(now.plusSeconds(92), wait.at)
+        assertEquals(RaidCooldownSource.HOF_DIRECT, wait.cooldownSource)
+        assertEquals(RaidCooldownSource.HOF_DIRECT, store.state.openCycle?.battleSafetyGate?.source)
+    }
+
+    @Test
+    fun `fallback 만료 뒤 fresh runnable 관측이 있어야 게이트를 해제하고 새 전투를 선택한다`() {
+        val party = ResolvedAutomationParty(
+            listOf("character-1"),
+            listOf(BattlePatternLoadRequest("character-1", 1)),
+        )
+        val target = target("raid-a", 0, party)
+        var current = now
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(1, 7, target.raidId, target.name, RaidAutomationCycleStatus.IN_BATTLE, null),
+            ),
+        )
+        val module = DefaultRaidCycleModule(
+            store,
+            RaidObservationReader {
+                inBattleObservation(target, RaidBattleAvailability.RUNNABLE, RaidObservedBattle("raid", "raid001"))
+            },
+            TimeProvider { current },
+        )
+        module.recordObservedResult(
+            1,
+            RaidAttempt(
+                entryId = 7,
+                kind = RaidIntentKind.BATTLE,
+                raidId = target.raidId,
+                executionIdentity = "execution-0",
+                categoryId = "raid",
+                mapCode = "raid001",
+                finishedAt = current,
+            ),
+            RaidResultObservation.BattleCompleted,
+        )
+
+        assertIs<RaidDirective.WaitUntil>(module.decideNext(1))
+        current = current.plusSeconds(120)
+        assertIs<RaidDirective.Execute>(module.decideNext(1))
+        assertEquals(null, store.state.openCycle?.battleSafetyGate)
+    }
+
+    @Test
+    fun `fallback 만료 뒤 불완전 권위 관측 5회면 이 레이드 전투만 held한다`() {
+        val target = target("raid-a", 0)
+        var current = now
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(
+                    1,
+                    7,
+                    target.raidId,
+                    target.name,
+                    RaidAutomationCycleStatus.IN_BATTLE,
+                    null,
+                    battleSafetyGate = RaidBattleSafetyGate(
+                        raidId = target.raidId,
+                        categoryId = "raid",
+                        mapCode = "raid001",
+                        executionIdentity = "execution-0",
+                        startedAt = now.minusSeconds(120),
+                        notBefore = now,
+                        source = RaidCooldownSource.LOCAL_FALLBACK,
+                    ),
+                ),
+            ),
+        )
+        val module = DefaultRaidCycleModule(
+            store,
+            RaidObservationReader {
+                inBattleObservation(target, RaidBattleAvailability.INCOMPLETE, null)
+            },
+            TimeProvider { current },
+        )
+
+        repeat(4) {
+            val hold = assertIs<RaidDirective.Hold>(module.decideNext(1))
+            assertEquals("RAID_BATTLE_GATE_OBSERVATION_INCOMPLETE", hold.reasonCode)
+            current = current.plusSeconds(10)
+        }
+        val held = assertIs<RaidDirective.Hold>(module.decideNext(1))
+
+        assertEquals("RAID_BATTLE_GATE_HELD_5", held.reasonCode)
+        assertEquals(true, store.state.openCycle?.battleSafetyGate?.held)
+    }
+
+    @Test
+    fun `배포 전 열린 전투 사이클 fallback 이관은 재판단마다 deadline을 연장하지 않는다`() {
+        val target = target("raid-a", 0)
+        var current = now
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(
+                    1,
+                    7,
+                    target.raidId,
+                    target.name,
+                    RaidAutomationCycleStatus.IN_BATTLE,
+                    null,
+                    battleSafetyVersion = 0,
+                ),
+            ),
+        )
+        val module = DefaultRaidCycleModule(
+            store,
+            RaidObservationReader {
+                inBattleObservation(target, RaidBattleAvailability.RUNNABLE, RaidObservedBattle("raid", "raid001"))
+            },
+            TimeProvider { current },
+        )
+
+        val first = assertIs<RaidDirective.WaitUntil>(module.decideNext(1))
+        current = current.plusSeconds(1)
+        val second = assertIs<RaidDirective.WaitUntil>(module.decideNext(1))
+
+        assertEquals(now.plusSeconds(120), first.at)
+        assertEquals(first.at, second.at)
+        assertEquals(RaidCooldownSource.DEPLOYMENT_FALLBACK, second.cooldownSource)
+    }
+
     private fun target(id: String, order: Int, party: ResolvedAutomationParty? = null) = RaidCycleTarget(
         raidId = id,
         name = id,
@@ -1498,6 +1873,46 @@ class RaidCycleModuleTest {
 
         override fun clearBattleRecovery(accountId: Long, raidId: String, now: Instant): RaidCycleSnapshot {
             val cycle = requireNotNull(state.openCycle).copy(battleRecovery = null)
+            state = state.copy(openCycle = cycle)
+            return cycle
+        }
+
+        override fun saveBattleSafetyGate(
+            accountId: Long,
+            raidId: String,
+            gate: RaidBattleSafetyGate,
+            now: Instant,
+        ): RaidCycleSnapshot {
+            val cycle = requireNotNull(state.openCycle).copy(
+                battleSafetyGate = gate,
+                battleSafetyVersion = CURRENT_RAID_BATTLE_SAFETY_VERSION,
+            )
+            state = state.copy(openCycle = cycle)
+            return cycle
+        }
+
+        override fun clearBattleSafetyGate(accountId: Long, raidId: String, now: Instant): RaidCycleSnapshot {
+            val cycle = requireNotNull(state.openCycle).copy(
+                battleSafetyGate = null,
+                battleSafetyVersion = CURRENT_RAID_BATTLE_SAFETY_VERSION,
+            )
+            state = state.copy(openCycle = cycle)
+            return cycle
+        }
+
+        override fun saveRewardRecovery(
+            accountId: Long,
+            raidId: String,
+            recovery: RaidRewardRecovery,
+            now: Instant,
+        ): RaidCycleSnapshot {
+            val cycle = requireNotNull(state.openCycle).copy(rewardRecovery = recovery)
+            state = state.copy(openCycle = cycle)
+            return cycle
+        }
+
+        override fun clearRewardRecovery(accountId: Long, raidId: String, now: Instant): RaidCycleSnapshot {
+            val cycle = requireNotNull(state.openCycle).copy(rewardRecovery = null)
             state = state.copy(openCycle = cycle)
             return cycle
         }

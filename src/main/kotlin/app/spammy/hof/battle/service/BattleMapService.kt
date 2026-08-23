@@ -12,6 +12,8 @@ import app.spammy.hof.external.model.HofBattleMap
 import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.external.client.HofAutomationDeferredException
 import app.spammy.hof.external.parser.BattleMapParser
+import app.spammy.hof.external.parser.RaidCooldownAssociationStatus
+import app.spammy.hof.external.parser.RaidCooldownPageObservation
 import app.spammy.hof.external.parser.LoginStateParser
 import java.io.IOException
 import org.slf4j.LoggerFactory
@@ -41,6 +43,7 @@ enum class CurrentBattleMapObservationStatus {
 data class CurrentBattleMapObservation(
     val status: CurrentBattleMapObservationStatus,
     val maps: List<BattleMapResponse>,
+    val raidCooldown: RaidCooldownPageObservation? = null,
 )
 
 @Service
@@ -104,9 +107,29 @@ class BattleMapService(
     ): CurrentBattleMapObservation {
         val snapshot = fetchMapSnapshot(accountId, categoryId, requireObservations = false, origin)
         if (snapshot.observations.isNotEmpty()) {
+            val raidCooldown = snapshot.takeIf { it.category == BattleCategoryId.RAID }
+                ?.let { battleMapParser.inspectRaidCooldown(it.responseBody, it.observations) }
+            if (raidCooldown?.incomplete == true) {
+                log.warn(
+                    "Raid cooldown observation incomplete accountId={} reasonCode={} candidateCount={} mapCount={} " +
+                        "domFingerprint={} responseShapeFingerprint={}",
+                    accountId,
+                    raidCooldown.reasonCode,
+                    raidCooldown.candidateCount,
+                    raidCooldown.mapCount,
+                    raidCooldown.domFingerprint,
+                    raidCooldown.responseShapeFingerprint,
+                )
+                return CurrentBattleMapObservation(
+                    CurrentBattleMapObservationStatus.INCOMPLETE,
+                    synchronizeCurrentSnapshot(snapshot),
+                    raidCooldown,
+                )
+            }
             return CurrentBattleMapObservation(
                 CurrentBattleMapObservationStatus.OBSERVED,
                 synchronizeCurrentSnapshot(snapshot),
+                raidCooldown,
             )
         }
         val authoritativeAbsence = when (snapshot.category) {

@@ -8,6 +8,28 @@ import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
+import java.util.HexFormat
+
+enum class RaidCooldownAssociationStatus {
+    NONE,
+    HOF_DIRECT,
+    AMBIGUOUS,
+    PARSE_FAILED,
+}
+
+data class RaidCooldownPageObservation(
+    val status: RaidCooldownAssociationStatus,
+    val candidateSeconds: List<Long>,
+    val mapCount: Int,
+    val candidateCount: Int,
+    val domFingerprint: String,
+    val responseShapeFingerprint: String,
+    val reasonCode: String,
+) {
+    val incomplete: Boolean
+        get() = status in setOf(RaidCooldownAssociationStatus.AMBIGUOUS, RaidCooldownAssociationStatus.PARSE_FAILED)
+}
 
 @Component
 /**
@@ -183,6 +205,51 @@ class BattleMapParser {
     /** 빈 결과를 파싱 실패가 아닌 정상적인 레이드 맵 부재로 확정할 수 있는 문구만 인정한다. */
     fun observesAuthoritativeRaidAbsence(html: String): Boolean =
         RAID_ABSENCE_PATTERN.containsMatchIn(HofHtmlParser.parse(html, HOF_BASE_URL).text())
+
+    /**
+     * 레이드 쿨타임 광고와 현재 parser가 맵에 직접 결합한 결과가 일치하는지만 판정한다.
+     * 실제 DOM fixture 전에는 바깥 wrapper의 타이머를 성공으로 추정하지 않고 AMBIGUOUS로 닫는다.
+     */
+    fun inspectRaidCooldown(
+        html: String,
+        maps: List<HofBattleMap>,
+    ): RaidCooldownPageObservation {
+        val document = HofHtmlParser.parse(html, HOF_BASE_URL)
+        val normalizedText = document.text().normalizedText()
+        val candidateSeconds = RAID_COOLDOWN_REMAINING_PATTERN.findAll(normalizedText)
+            .mapNotNull { match -> match.groupValues.getOrNull(1)?.toLongNumberOrNull() }
+            .filter { it > 0 }
+            .toList()
+        val markerPresent = RAID_COOLDOWN_MARKER_PATTERN.containsMatchIn(normalizedText)
+        val directlyParsed = maps.mapNotNull(HofBattleMap::cooldownRemainingSeconds).filter { it > 0 }
+        val status = when {
+            markerPresent && candidateSeconds.isEmpty() -> RaidCooldownAssociationStatus.PARSE_FAILED
+            candidateSeconds.isEmpty() -> RaidCooldownAssociationStatus.NONE
+            candidateSeconds.size == 1 && maps.size == 1 && directlyParsed == candidateSeconds ->
+                RaidCooldownAssociationStatus.HOF_DIRECT
+            else -> RaidCooldownAssociationStatus.AMBIGUOUS
+        }
+        val shape = "raidCooldown|marker=$markerPresent|candidates=${candidateSeconds.size}|" +
+            "maps=${maps.size}|direct=${directlyParsed.size}|forms=${document.select("form").size}"
+        val domShape = document.select("a[href*=raid_common=]").joinToString("|") { link ->
+            val parent = link.parent()
+            "${parent?.tagName() ?: "none"}:${parent?.childrenSize() ?: 0}:${link.tagName()}"
+        }
+        return RaidCooldownPageObservation(
+            status = status,
+            candidateSeconds = candidateSeconds,
+            mapCount = maps.size,
+            candidateCount = candidateSeconds.size,
+            domFingerprint = fingerprint(domShape),
+            responseShapeFingerprint = fingerprint(shape),
+            reasonCode = when (status) {
+                RaidCooldownAssociationStatus.NONE -> "RAID_COOLDOWN_NOT_ADVERTISED"
+                RaidCooldownAssociationStatus.HOF_DIRECT -> "RAID_COOLDOWN_HOF_DIRECT"
+                RaidCooldownAssociationStatus.AMBIGUOUS -> "RAID_COOLDOWN_ASSOCIATION_AMBIGUOUS"
+                RaidCooldownAssociationStatus.PARSE_FAILED -> "RAID_COOLDOWN_PARSE_FAILED"
+            },
+        )
+    }
 
     private fun coalesceMapLinks(
         candidateLinks: List<Element>,
@@ -499,6 +566,10 @@ class BattleMapParser {
     private fun decode(value: String): String =
         URLDecoder.decode(value, StandardCharsets.UTF_8)
 
+    private fun fingerprint(value: String): String = HexFormat.of().formatHex(
+        MessageDigest.getInstance("SHA-256").digest(value.toByteArray(StandardCharsets.UTF_8)),
+    )
+
     private companion object {
         const val HOF_BASE_URL = "http://sic.zerosic.com/ZeroHOF/index.php"
         const val MAP_GROUP_ID_PREFIX = "mapgroup"
@@ -519,6 +590,7 @@ class BattleMapParser {
         val COOLDOWN_REMAINING_PATTERN =
             Regex("""\(\s*((?:([\d,]+)\s*시간(?:\s*([\d,]+)\s*분)?)|([\d,]+)\s*분)\s*\)\s*남음""")
         val RAID_COOLDOWN_REMAINING_PATTERN = Regex("""(?:다음\s*전투까지\s*)?([\d,]+)\s*초\s*남음""")
+        val RAID_COOLDOWN_MARKER_PATTERN = Regex("""다음\s*전투까지|전투[^\r\n]{0,40}(?:초|분|시간)[^\r\n]{0,20}남음""")
         val COOLDOWN_ADVERTISEMENT_PATTERN = Regex("""\([^)]*(?:시간|분)[^)]*\)\s*남음|(?:다음\s*전투까지\s*)?[\d,]+\s*초\s*남음""")
         val TRAILING_COOLDOWN_STATE_PATTERN = Regex(
             """\s*\(\s*(?:(?:[\d,]+\s*시간(?:\s*[\d,]+\s*분)?)|(?:[\d,]+\s*분))\s*\)\s*남음(?:\s*\([^)]*(?:Time|타임)[^)]*\))?\s*$""",

@@ -278,6 +278,42 @@ class RaidAutomationCycleEntity(
     var battleRecoverySubmittedFromRunnable: Boolean? = null,
     @Enumerated(EnumType.STRING) @Column(name = "battle_recovery_last_observation", length = 32)
     var battleRecoveryLastObservation: RaidBattleRecoveryObservation? = null,
+    @Column(name = "battle_cooldown_not_before")
+    var battleCooldownNotBefore: Instant? = null,
+    @Enumerated(EnumType.STRING) @Column(name = "battle_cooldown_source", length = 40)
+    var battleCooldownSource: app.spammy.hof.automation.raid.RaidCooldownSource? = null,
+    @Column(name = "battle_cooldown_started_at")
+    var battleCooldownStartedAt: Instant? = null,
+    @Column(name = "battle_cooldown_raid_id", length = 200)
+    var battleCooldownRaidId: String? = null,
+    @Column(name = "battle_cooldown_category_id", length = 50)
+    var battleCooldownCategoryId: String? = null,
+    @Column(name = "battle_cooldown_map_code", length = 100)
+    var battleCooldownMapCode: String? = null,
+    @Column(name = "battle_cooldown_execution_identity", length = 128)
+    var battleCooldownExecutionIdentity: String? = null,
+    @Column(name = "battle_cooldown_first_incomplete_at")
+    var battleCooldownFirstIncompleteAt: Instant? = null,
+    @Column(name = "battle_cooldown_incomplete_observations")
+    var battleCooldownIncompleteObservations: Int? = null,
+    @Column(name = "battle_cooldown_last_observed_at")
+    var battleCooldownLastObservedAt: Instant? = null,
+    @Column(name = "battle_cooldown_evidence_case_id", length = 64)
+    var battleCooldownEvidenceCaseId: String? = null,
+    @Column(name = "battle_cooldown_held", nullable = false)
+    var battleCooldownHeld: Boolean = false,
+    @Column(name = "battle_safety_version", nullable = false)
+    var battleSafetyVersion: Int = app.spammy.hof.automation.raid.CURRENT_RAID_BATTLE_SAFETY_VERSION,
+    @Column(name = "reward_recovery_execution_identity", length = 128)
+    var rewardRecoveryExecutionIdentity: String? = null,
+    @Column(name = "reward_recovery_first_ambiguous_at")
+    var rewardRecoveryFirstAmbiguousAt: Instant? = null,
+    @Column(name = "reward_recovery_observation_count")
+    var rewardRecoveryObservationCount: Int? = null,
+    @Column(name = "reward_recovery_retry_count")
+    var rewardRecoveryRetryCount: Int? = null,
+    @Column(name = "reward_recovery_held", nullable = false)
+    var rewardRecoveryHeld: Boolean = false,
     @Column(name = "open_marker")
     var openMarker: Int? = 1,
     @Column(name = "started_at", nullable = false)
@@ -301,5 +337,28 @@ class RaidAutomationCycleEntity(
         battleRecoveryMapCode = null
         battleRecoverySubmittedFromRunnable = null
         battleRecoveryLastObservation = null
+    }
+
+    fun clearBattleSafetyGate() {
+        battleCooldownNotBefore = null
+        battleCooldownSource = null
+        battleCooldownStartedAt = null
+        battleCooldownRaidId = null
+        battleCooldownCategoryId = null
+        battleCooldownMapCode = null
+        battleCooldownExecutionIdentity = null
+        battleCooldownFirstIncompleteAt = null
+        battleCooldownIncompleteObservations = null
+        battleCooldownLastObservedAt = null
+        battleCooldownEvidenceCaseId = null
+        battleCooldownHeld = false
+    }
+
+    fun clearRewardRecovery() {
+        rewardRecoveryExecutionIdentity = null
+        rewardRecoveryFirstAmbiguousAt = null
+        rewardRecoveryObservationCount = null
+        rewardRecoveryRetryCount = null
+        rewardRecoveryHeld = false
     }
 }

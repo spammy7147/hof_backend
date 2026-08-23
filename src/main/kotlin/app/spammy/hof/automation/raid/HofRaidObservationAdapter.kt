@@ -6,6 +6,8 @@ import app.spammy.hof.town.raid.dto.RaidPubResponse
 import app.spammy.hof.town.raid.model.RaidAction
 import app.spammy.hof.town.raid.model.RaidBattleObservationStatus
 import app.spammy.hof.town.raid.model.RaidStatus
+import app.spammy.hof.town.raid.model.RaidRewardWindowStatus
+import app.spammy.hof.town.raid.model.RaidCooldownObservationSource
 import app.spammy.hof.town.raid.service.RaidPubService
 import org.springframework.stereotype.Component
 
@@ -38,15 +40,35 @@ class HofRaidObservationAdapter(
                         categoryId = target.categoryId,
                         mapCode = target.mapCode,
                         cooldownRemainingSeconds = target.cooldownRemainingSeconds,
+                        cooldownSource = when (target.cooldownSource) {
+                            RaidCooldownObservationSource.HOF_DIRECT -> RaidCooldownSource.HOF_DIRECT
+                            RaidCooldownObservationSource.HOF_SINGLE_TARGET_INFERENCE ->
+                                RaidCooldownSource.HOF_SINGLE_TARGET_INFERENCE
+                            null -> target.cooldownRemainingSeconds
+                                ?.takeIf { it > 0 }
+                                ?.let { RaidCooldownSource.HOF_DIRECT }
+                        },
                     )
                 },
                 battleAvailability = when {
+                    response.battleObservationStatus == RaidBattleObservationStatus.INCOMPLETE ->
+                        RaidBattleAvailability.INCOMPLETE
                     raid.battleTarget?.cooldownRemainingSeconds?.let { it > 0 } == true ->
                         RaidBattleAvailability.COOLDOWN
                     raid.battleTarget != null -> RaidBattleAvailability.RUNNABLE
                     response.battleObservationStatus == RaidBattleObservationStatus.ABSENT ->
                         RaidBattleAvailability.ABSENT
                     else -> RaidBattleAvailability.INCOMPLETE
+                },
+                battleEvidenceCaseId = response.battleObservationEvidence?.caseId,
+                rewardWindow = when (raid.rewardWindowStatus) {
+                    RaidRewardWindowStatus.AVAILABLE -> RaidRewardWindowObservation.Available
+                    RaidRewardWindowStatus.WAIT -> raid.rewardWaitSeconds
+                        ?.takeIf { it > 0 }
+                        ?.let { RaidRewardWindowObservation.Wait(it.toLong()) }
+                        ?: RaidRewardWindowObservation.Incomplete()
+                    RaidRewardWindowStatus.ABSENT -> RaidRewardWindowObservation.Absent
+                    RaidRewardWindowStatus.INCOMPLETE -> RaidRewardWindowObservation.Incomplete()
                 },
             )
         },

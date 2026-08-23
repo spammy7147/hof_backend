@@ -13,6 +13,8 @@ import app.spammy.hof.battle.service.CurrentBattleMapObservationStatus
 import app.spammy.hof.external.client.*
 import app.spammy.hof.external.model.*
 import app.spammy.hof.external.parser.LoginStateParser
+import app.spammy.hof.external.parser.RaidCooldownAssociationStatus
+import app.spammy.hof.external.parser.RaidCooldownPageObservation
 import app.spammy.hof.town.common.model.TownFeatureId
 import app.spammy.hof.town.common.parser.HofResultParser
 import app.spammy.hof.town.common.service.*
@@ -20,9 +22,12 @@ import app.spammy.hof.town.raid.dto.RaidPubActionRequest
 import app.spammy.hof.town.raid.model.RaidAction
 import app.spammy.hof.town.raid.model.RaidBattleObservationStatus
 import app.spammy.hof.town.raid.model.RaidStatus
+import app.spammy.hof.town.raid.model.RaidRewardWindowStatus
 import app.spammy.hof.town.raid.parser.RaidPubParser
 import app.spammy.hof.town.raid.service.RaidActionPreconditionChangedException
 import app.spammy.hof.town.raid.service.RaidPubService
+import app.spammy.hof.town.raid.service.NoOpRaidCooldownEvidenceRecorder
+import app.spammy.hof.town.raid.service.RaidCooldownEvidenceRecorder
 import java.time.Instant
 import kotlin.test.*
 import org.mockito.Mockito
@@ -95,6 +100,8 @@ class RaidPubParserTest {
 
         assertEquals(RaidStatus.COMPLETED, page.raids.first().status)
         assertEquals(1_603, page.raids.first().waitSeconds)
+        assertEquals(RaidRewardWindowStatus.WAIT, page.raids.first().rewardWindowStatus)
+        assertEquals(1_603, page.raids.first().rewardWaitSeconds)
         assertTrue(page.applyWait)
         assertEquals(10_786, page.applyWaitSeconds)
     }
@@ -362,6 +369,34 @@ class RaidPubParserTest {
         assertEquals(90, response.raids.first().battleTarget?.cooldownRemainingSeconds)
     }
 
+    @Test fun `모호한 raid 쿨타임 evidence case 식별자를 응답까지 보존한다`() {
+        var activeJoinedRaidCount = -1
+        val recorder = RaidCooldownEvidenceRecorder { _, _, activeCount ->
+            activeJoinedRaidCount = activeCount
+            "case-raid-cooldown"
+        }
+        val context = service(fixture(), cooldownEvidence = recorder)
+        Mockito.`when`(context.maps.observeCurrentlyAvailableMaps(7L, "raid"))
+            .thenReturn(CurrentBattleMapObservation(
+                CurrentBattleMapObservationStatus.INCOMPLETE,
+                listOf(observedMap("RaidGoblin")),
+                RaidCooldownPageObservation(
+                    status = RaidCooldownAssociationStatus.AMBIGUOUS,
+                    candidateSeconds = listOf(120),
+                    mapCount = 1,
+                    candidateCount = 1,
+                    domFingerprint = "d".repeat(64),
+                    responseShapeFingerprint = "r".repeat(64),
+                    reasonCode = "RAID_COOLDOWN_ASSOCIATION_AMBIGUOUS",
+                ),
+            ))
+
+        val response = context.service.load(7L)
+
+        assertEquals("case-raid-cooldown", response.battleObservationEvidence?.caseId)
+        assertEquals(1, activeJoinedRaidCount)
+    }
+
     @Test fun `다른 raid의 action을 요청하면 POST 없이 fail closed한다`() {
         val context = service(fixture())
         assertFailsWith<app.spammy.hof.common.error.ApiException> {
@@ -397,7 +432,10 @@ class RaidPubParserTest {
     private fun startableFixture() = fixture()
         .replace("현재 상태 : 418초 후 출발", "현재 상태 : 출발 가능")
         .replace("- [다른 사람]", "- [《테스트 길드》현재사용자]")
-    private fun service(vararg responses: String): Context {
+    private fun service(
+        vararg responses: String,
+        cooldownEvidence: RaidCooldownEvidenceRecorder = NoOpRaidCooldownEvidenceRecorder,
+    ): Context {
         val accounts = Mockito.mock(AccountQueryRepository::class.java)
         val cookies = Mockito.mock(CookieQueryRepository::class.java)
         val gateway = Mockito.mock(AccountHofGateway::class.java)
@@ -417,7 +455,7 @@ class RaidPubParserTest {
             *responses.drop(1).map { HofHttpResponse(200, URL, it, emptyMap()) }.toTypedArray(),
         )
         val executor = TownAuthenticatedExecutor(accounts, cookies, HofRequestFactory(), gateway, LoginStateParser(), forms, HofResultParser(), TownActionGuard(), app.spammy.hof.town.common.service.AccountHofMutationFence())
-        return Context(RaidPubService(executor, locations, parser, maps), gateway, maps)
+        return Context(RaidPubService(executor, locations, parser, maps, cooldownEvidence), gateway, maps)
     }
     private fun observedMap(code: String, name: String = code) = BattleMapResponse("raid", code, name, null, 0, 0, null, null, null, null, null, null, BattleMapKeyMode.UNKNOWN, null, null, false, true, true, null, "?raid_common=$code")
     private data class Context(val service: RaidPubService, val gateway: AccountHofGateway, val maps: BattleMapService) {

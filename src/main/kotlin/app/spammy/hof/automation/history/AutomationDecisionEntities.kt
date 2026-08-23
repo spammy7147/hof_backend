@@ -1,6 +1,9 @@
 package app.spammy.hof.automation.history
 
 import app.spammy.hof.automation.entity.AutomationType
+import app.spammy.hof.automation.raid.RaidCooldownSource
+import app.spammy.hof.automation.service.AutomationDiagnosticKind
+import app.spammy.hof.automation.service.AutomationImpactScope
 import jakarta.persistence.*
 import java.time.Instant
 
@@ -42,4 +45,11 @@ class AutomationDecisionEventEntity(
     @Column(name = "preset_name", length = 255) val presetName: String? = null,
     @Column(name = "next_run_at") val nextRunAt: Instant? = null,
     @Column(name = "occurred_at", nullable = false) val occurredAt: Instant,
+    @Enumerated(EnumType.STRING) @Column(name = "diagnostic_kind", length = 64)
+    val diagnosticKind: AutomationDiagnosticKind? = null,
+    @Enumerated(EnumType.STRING) @Column(name = "cooldown_source", length = 40)
+    val cooldownSource: RaidCooldownSource? = null,
+    @Enumerated(EnumType.STRING) @Column(name = "impact_scope", length = 64)
+    val impactScope: AutomationImpactScope? = null,
+    @Column(name = "release_condition", length = 255) val releaseCondition: String? = null,
 )

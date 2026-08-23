@@ -1122,6 +1122,34 @@ class AutomationActionLifecycleModuleTest {
     }
 
     @Test
+    fun `배포 전 저장된 보상 payload는 제출 직전 폐기하고 POST하지 않는다`() {
+        val codec = StoredTypedAutomationActionCodec(jacksonObjectMapper())
+        val legacy = StoredTypedAutomationAction(
+            entryId = 12L,
+            executionIdentity = "legacy-reward",
+            payload = StoredTypedActionPayload.RaidTown(
+                action = RaidAction.REWARD,
+                raidId = null,
+                targetRaidId = "RaidGoblin",
+                display = StoredActionDisplay(mapName = "고블린 레이드"),
+                selectedAt = null,
+            ),
+        )
+        val managed = assertNotNull(module.restore(actionRow(codec, legacy, 112L), 7L))
+
+        assertFailsWith<AutomationActionPreconditionChangedException> {
+            managed.validateBeforeSubmission()
+        }
+        Mockito.verify(raidPubService).load(7L)
+        Mockito.verify(raidPubService, Mockito.never()).actionForAutomation(
+            7L,
+            RaidPubActionRequest(RaidAction.REWARD, null),
+            "RaidGoblin",
+        )
+        Mockito.verifyNoInteractions(raidObservationAdapter, raidCycleModule)
+    }
+
+    @Test
     fun `낚시 START와 CATCH는 같은 일일 작업으로 저장하고 실행한다`() {
         listOf(FishingAction.START, FishingAction.CATCH).forEachIndexed { index, action ->
             val prepared = FishingTownAutomationAction(
@@ -1456,6 +1484,36 @@ class AutomationActionLifecycleModuleTest {
     }
 
     @Test
+    fun `미적용 보상 결과는 저장 payload 재전송이 아니라 fresh 판단으로 닫는다`() {
+        val observation = RaidObservation(emptyList(), false, false)
+        Mockito.`when`(raidObservationAdapter.read(7L)).thenReturn(observation)
+        val managed = assertNotNull(
+            module.prepare(
+                7L,
+                13L,
+                RaidTownAutomationAction(7L, RaidAction.REWARD, null, "RaidGoblin", "고블린 레이드"),
+            ),
+        )
+        Mockito.`when`(
+            raidCycleModule.recordObservedResult(
+                7L,
+                RaidAttempt(
+                    13L,
+                    RaidIntentKind.REWARD,
+                    "RaidGoblin",
+                    null,
+                    executionIdentity = managed.storedAction.executionIdentity,
+                ),
+                RaidResultObservation.Page(observation),
+            ),
+        ).thenReturn(RaidRecordResult.NotApplied("보상 요청이 적용되지 않았습니다."))
+
+        val resolution = assertIs<AmbiguousActionResolution.Superseded>(managed.reconcile())
+
+        assertEquals("보상 요청이 적용되지 않았습니다.", resolution.reason)
+    }
+
+    @Test
     fun `불명확한 레이드 전투는 공용 조정 대신 5분 복구 체인으로 인계한다`() {
         val retryAt = now.plusSeconds(300)
         val action = battleMapAction().copy(
@@ -1526,7 +1584,7 @@ class AutomationActionLifecycleModuleTest {
         Mockito.`when`(
             raidCycleModule.recordObservedResult(
                 7L,
-                RaidAttempt(13L, RaidIntentKind.BATTLE, "RaidGoblin", null),
+                completedRaidBattleAttempt(action),
                 RaidResultObservation.BattleCompleted,
             ),
         ).thenReturn(RaidRecordResult.Recorded())
@@ -1537,7 +1595,7 @@ class AutomationActionLifecycleModuleTest {
         assertIs<AmbiguousActionResolution.Applied>(managed.reconcile())
         Mockito.verify(raidCycleModule).recordObservedResult(
             7L,
-            RaidAttempt(13L, RaidIntentKind.BATTLE, "RaidGoblin", null),
+            completedRaidBattleAttempt(action),
             RaidResultObservation.BattleCompleted,
         )
         Mockito.verify(workOwnership).ensure(
@@ -1559,7 +1617,7 @@ class AutomationActionLifecycleModuleTest {
         Mockito.`when`(
             raidCycleModule.recordObservedResult(
                 7L,
-                RaidAttempt(13L, RaidIntentKind.BATTLE, "RaidGoblin", null),
+                completedRaidBattleAttempt(action),
                 RaidResultObservation.BattleCompleted,
             ),
         ).thenReturn(RaidRecordResult.Recorded())
@@ -1568,7 +1626,7 @@ class AutomationActionLifecycleModuleTest {
         assertTerminalBattle(managed.execute())
         Mockito.verify(raidCycleModule).recordObservedResult(
             7L,
-            RaidAttempt(13L, RaidIntentKind.BATTLE, "RaidGoblin", null),
+            completedRaidBattleAttempt(action),
             RaidResultObservation.BattleCompleted,
         )
         Mockito.verifyNoInteractions(battleHandler, unionProgress)
@@ -1749,6 +1807,20 @@ class AutomationActionLifecycleModuleTest {
             battleRequest().patternLoads,
         ),
         mapName = "슬라임 동굴",
+    )
+
+    private fun completedRaidBattleAttempt(action: BattleMapAutomationAction) = RaidAttempt(
+        entryId = 13L,
+        kind = RaidIntentKind.BATTLE,
+        raidId = "RaidGoblin",
+        requestRaidId = null,
+        executionIdentity = action.executionIdentity,
+        categoryId = action.categoryId,
+        mapCode = action.mapCode,
+        recoveryChainId = action.recoveryChainId,
+        retransmissionCount = action.raidRetransmissionCount,
+        finishedAt = now,
+        submittedFromRunnable = action.raidSubmittedFromRunnable,
     )
 
     private fun adventureAction() = AdventureMapAutomationAction(

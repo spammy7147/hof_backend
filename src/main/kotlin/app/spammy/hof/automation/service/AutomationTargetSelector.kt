@@ -11,6 +11,7 @@ import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
 import app.spammy.hof.automation.raid.RaidDirective
 import app.spammy.hof.automation.raid.RaidIntent
 import app.spammy.hof.automation.raid.RaidIntentKind
+import app.spammy.hof.automation.raid.RaidWaitReason
 import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.entity.AutomationWorkStatus
 import app.spammy.hof.automation.entity.AutomationWorkType
@@ -174,7 +175,7 @@ class AutomationTargetSelector(
                             if (earliest == null || directive.at < earliest) earliest = directive.at
                         }
                         is RaidDirective.Hold -> {
-                            warnings += directive.message
+                            if (directive.isUserWarning()) warnings += directive.message
                             trace += directive.toTrace(entry.id, trace.size)
                             directive.raidId?.let { raidId ->
                                 lifecycle.waitForRaid(
@@ -182,7 +183,7 @@ class AutomationTargetSelector(
                                     directive.entryId ?: entry.id,
                                     raidId,
                                     directive.recheckAt,
-                                    directive.message,
+                                    directive.message.takeIf { directive.isUserWarning() },
                                 )
                             }
                             directive.recheckAt?.let { at ->
@@ -376,11 +377,11 @@ class AutomationTargetSelector(
                 directive.entryId ?: session.entryId,
                 directive.raidId ?: session.targetKey,
                 directive.recheckAt,
-                directive.message,
+                directive.message.takeIf { directive.isUserWarning() },
             )
             selectConfigured(
                 accountId,
-                initialWarnings + directive.message,
+                initialWarnings + listOfNotNull(directive.message.takeIf { directive.isUserWarning() }),
                 initialTrace + directive.toTrace(session.entryId, initialTrace.size),
             )
         }
@@ -412,11 +413,15 @@ class AutomationTargetSelector(
             entryId,
             AutomationType.RAID,
             AutomationDecisionOutcome.WAITING,
-            reason.name,
+            reasonCode ?: reason.name,
             message,
             at,
             actionKind = "WAIT",
             targetKey = raidId,
+            diagnosticKind = waitDiagnosticKind(),
+            cooldownSource = cooldownSource,
+            impactScope = impactScope,
+            releaseCondition = releaseCondition,
         )
         is RaidDirective.Hold -> AutomationEvaluationTrace(
             sequence,
@@ -428,6 +433,9 @@ class AutomationTargetSelector(
             recheckAt,
             actionKind = "HOLD",
             targetKey = raidId,
+            diagnosticKind = diagnosticKind,
+            impactScope = impactScope,
+            releaseCondition = releaseCondition,
         )
         is RaidDirective.Complete -> AutomationEvaluationTrace(
             sequence,
@@ -443,6 +451,38 @@ class AutomationTargetSelector(
             targetKey = outcome.raidId,
         )
     }
+
+    private fun RaidDirective.WaitUntil.waitDiagnosticKind(): AutomationDiagnosticKind? = when (reason) {
+        RaidWaitReason.BATTLE_COOLDOWN,
+        RaidWaitReason.BATTLE_APPLIED_COOLDOWN -> when (cooldownSource) {
+            app.spammy.hof.automation.raid.RaidCooldownSource.HOF_DIRECT ->
+                AutomationDiagnosticKind.RAID_HOF_COOLDOWN
+            app.spammy.hof.automation.raid.RaidCooldownSource.HOF_SINGLE_TARGET_INFERENCE ->
+                AutomationDiagnosticKind.RAID_SINGLE_TARGET_TIMER
+            app.spammy.hof.automation.raid.RaidCooldownSource.LOCAL_FALLBACK ->
+                AutomationDiagnosticKind.RAID_LOCAL_SAFETY_GATE
+            app.spammy.hof.automation.raid.RaidCooldownSource.DEPLOYMENT_FALLBACK ->
+                AutomationDiagnosticKind.RAID_DEPLOYMENT_SAFETY_GATE
+            null -> AutomationDiagnosticKind.RAID_EXPLICIT_COOLDOWN_WAIT
+        }
+        RaidWaitReason.BATTLE_RECOVERY_RECHECK ->
+            AutomationDiagnosticKind.RAID_COOLDOWN_OBSERVATION_AMBIGUOUS
+        RaidWaitReason.REWARD_CONFIRMATION ->
+            AutomationDiagnosticKind.RAID_REWARD_CONFIRMATION_WAIT
+        RaidWaitReason.POST_REWARD_CHECK ->
+            AutomationDiagnosticKind.RAID_REWARD_RESULT_RECHECK
+        RaidWaitReason.REGISTRATION_COOLDOWN,
+        RaidWaitReason.WAITING_TO_START -> null
+    }
+
+    private fun RaidDirective.Hold.isUserWarning(): Boolean =
+        recheckAt == null ||
+            reason == app.spammy.hof.automation.raid.RaidHoldReason.MANUAL_RAID_ACTIVE ||
+            diagnosticKind in setOf(
+                AutomationDiagnosticKind.RAID_BATTLE_RESULT_UNKNOWN,
+                AutomationDiagnosticKind.RAID_COOLDOWN_OBSERVATION_HELD,
+                AutomationDiagnosticKind.RAID_REWARD_RESULT_HELD,
+            )
 
     private fun List<AutomationEvaluationTrace>.resequenced(offset: Int): List<AutomationEvaluationTrace> =
         mapIndexed { index, item -> item.copy(sequence = offset + index) }

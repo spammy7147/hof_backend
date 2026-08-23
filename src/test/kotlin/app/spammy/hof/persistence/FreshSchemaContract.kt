@@ -538,6 +538,19 @@ internal object FreshSchemaContract {
             optionalVarchar("battle_recovery_map_code", 100),
             optionalBoolean("battle_recovery_submitted_from_runnable"),
             optionalVarchar("battle_recovery_last_observation", 32),
+            optionalInstant("battle_cooldown_not_before"), optionalVarchar("battle_cooldown_source", 40),
+            optionalInstant("battle_cooldown_started_at"), optionalVarchar("battle_cooldown_raid_id", 200),
+            optionalVarchar("battle_cooldown_category_id", 50), optionalVarchar("battle_cooldown_map_code", 100),
+            optionalVarchar("battle_cooldown_execution_identity", 128),
+            optionalInstant("battle_cooldown_first_incomplete_at"),
+            optionalInteger("battle_cooldown_incomplete_observations"),
+            optionalInstant("battle_cooldown_last_observed_at"),
+            optionalVarchar("battle_cooldown_evidence_case_id", 64),
+            requiredBoolean("battle_cooldown_held"), requiredInteger("battle_safety_version"),
+            optionalVarchar("reward_recovery_execution_identity", 128),
+            optionalInstant("reward_recovery_first_ambiguous_at"),
+            optionalInteger("reward_recovery_observation_count"), optionalInteger("reward_recovery_retry_count"),
+            requiredBoolean("reward_recovery_held"),
             requiredInstant("started_at"), requiredInstant("updated_at"), optionalInstant("finished_at"), requiredBigint("version"),
         ),
         table(
@@ -552,6 +565,20 @@ internal object FreshSchemaContract {
             requiredVarchar("message", 1000), optionalVarchar("target_key", 255), optionalVarchar("target_name", 255),
             optionalVarchar("action_kind", 64), optionalBigint("preset_id"), optionalVarchar("preset_name", 255),
             optionalInstant("next_run_at"), requiredInstant("occurred_at"),
+            optionalVarchar("diagnostic_kind", 64), optionalVarchar("cooldown_source", 40),
+            optionalVarchar("impact_scope", 64), optionalVarchar("release_condition", 255),
+        ),
+        table(
+            "raid_cooldown_evidence_cases",
+            requiredVarchar("id", 64), requiredBigint("account_id"), requiredVarchar("association_mode", 40),
+            requiredVarchar("reason_code", 100), requiredVarchar("timer_shape", 40),
+            requiredVarchar("candidate_seconds", 255), requiredInteger("candidate_count"),
+            requiredInteger("map_count"), requiredInteger("active_joined_raid_count"),
+            requiredVarchar("dom_fingerprint", 64), requiredVarchar("response_shape_fingerprint", 64),
+            requiredVarchar("policy_version", 80), requiredVarchar("build_version", 80),
+            requiredInstant("first_observed_at"), requiredInstant("last_observed_at"),
+            requiredInteger("observation_count"), requiredInstant("expires_at"), requiredBigint("version"),
+            primaryKey = listOf("id"),
         ),
         table(
             "adventure_daily_refresh",
@@ -813,6 +840,11 @@ internal object FreshSchemaContract {
         key("automation_rotation_states", "uk_automation_rotation_states_entry", "automation_entry_id"),
         key("raid_automation_cycles", "uk_raid_automation_cycles_open", "account_id", "open_marker"),
         key("automation_decision_events", "uk_automation_decision_events_sequence", "decision_cycle_id", "sequence_no"),
+        key(
+            "raid_cooldown_evidence_cases",
+            "uk_raid_cooldown_evidence_shape",
+            "account_id", "association_mode", "reason_code", "dom_fingerprint", "response_shape_fingerprint",
+        ),
         key("adventure_daily_refresh", "uk_adventure_daily_refresh_account_date", "account_id", "refresh_date"),
         key(
             "adventure_daily_preflight_states", "uk_adventure_daily_preflight_states_account", "account_id",
@@ -972,6 +1004,12 @@ internal object FreshSchemaContract {
         fk("fk_automation_decision_cycles_entry", "automation_decision_cycles.selected_entry_id", "automation_entries.id", DeleteAction.SET_NULL),
         fk("fk_automation_decision_events_cycle", "automation_decision_events.decision_cycle_id", "automation_decision_cycles.id", DeleteAction.CASCADE),
         fk("fk_automation_decision_events_entry", "automation_decision_events.automation_entry_id", "automation_entries.id", DeleteAction.SET_NULL),
+        fk(
+            "fk_raid_cooldown_evidence_account",
+            "raid_cooldown_evidence_cases.account_id",
+            "hof_accounts.id",
+            DeleteAction.CASCADE,
+        ),
         fk(
             "fk_adventure_daily_refresh_account", "adventure_daily_refresh.account_id",
             "hof_accounts.id", DeleteAction.CASCADE,
@@ -1149,6 +1187,7 @@ internal object FreshSchemaContract {
         index("automation_decision_cycles", "idx_automation_decision_cycles_account_time", "account_id", "started_at", "id"),
         index("automation_decision_events", "idx_automation_decision_events_cycle_sequence", "decision_cycle_id", "sequence_no", "id"),
         index("automation_decision_events", "idx_automation_decision_events_filters", "automation_type", "event_kind", "decision_cycle_id"),
+        index("raid_cooldown_evidence_cases", "idx_raid_cooldown_evidence_expiry", "expires_at", "id"),
         index(
             "adventure_daily_refresh", "idx_adventure_daily_refresh_account_date",
             "account_id", "refresh_date", "id",
@@ -1509,7 +1548,50 @@ internal object FreshSchemaContract {
         check("raid_automation_cycles", "ck_raid_automation_cycles_status", "locate(',' || status || ',', ',PREPARING,REGISTERED_WAITING,IN_BATTLE,REWARD_PENDING,POST_REWARD_CHECK,COMPLETED,ABORTED_CLOSED,ABORTED_REGISTRATION_LOST,HANDED_OFF_MANUAL,SUPERSEDED_BY_OBSERVED_RAID,') > 0"),
         check("raid_automation_cycles", "ck_raid_automation_cycles_open", "(open_marker is null and finished_at is not null and locate(',' || status || ',', ',COMPLETED,ABORTED_CLOSED,ABORTED_REGISTRATION_LOST,HANDED_OFF_MANUAL,SUPERSEDED_BY_OBSERVED_RAID,') > 0) or (open_marker = 1 and finished_at is null and locate(',' || status || ',', ',PREPARING,REGISTERED_WAITING,IN_BATTLE,REWARD_PENDING,POST_REWARD_CHECK,') > 0)"),
         check("raid_automation_cycles", "ck_raid_battle_recovery_count", "battle_recovery_retransmission_count is null or battle_recovery_retransmission_count >= 0"),
+        check("raid_automation_cycles", "ck_raid_battle_cooldown_incomplete_count", "battle_cooldown_incomplete_observations is null or battle_cooldown_incomplete_observations >= 0"),
+        check("raid_automation_cycles", "ck_raid_battle_safety_version", "battle_safety_version >= 0"),
+        check("raid_automation_cycles", "ck_raid_reward_recovery_counts", "(reward_recovery_observation_count is null or reward_recovery_observation_count >= 0) and (reward_recovery_retry_count is null or reward_recovery_retry_count between 0 and 1)"),
         check("automation_decision_cycles", "ck_automation_decision_cycles_result", "locate(',' || result || ',', ',ACTION_SELECTED,WAITING,IDLE,FATAL,') > 0"),
+        check(
+            "automation_decision_events",
+            "ck_automation_decision_events_diagnostic_kind",
+            "diagnostic_kind is null or locate(',' || diagnostic_kind || ',', " +
+                "',RAID_HOF_COOLDOWN,RAID_SINGLE_TARGET_TIMER,RAID_LOCAL_SAFETY_GATE," +
+                "RAID_DEPLOYMENT_SAFETY_GATE,RAID_COOLDOWN_OBSERVATION_AMBIGUOUS,RAID_COOLDOWN_OBSERVATION_HELD," +
+                "RAID_EXPLICIT_COOLDOWN_WAIT,RAID_REWARD_CONFIRMATION_WAIT," +
+                "RAID_REWARD_RESULT_RECHECK,RAID_BATTLE_RESULT_UNKNOWN,RAID_REWARD_RESULT_HELD,') > 0",
+        ),
+        check(
+            "automation_decision_events",
+            "ck_automation_decision_events_cooldown_source",
+            "cooldown_source is null or locate(',' || cooldown_source || ',', " +
+                "',HOF_DIRECT,HOF_SINGLE_TARGET_INFERENCE,LOCAL_FALLBACK,DEPLOYMENT_FALLBACK,') > 0",
+        ),
+        check(
+            "automation_decision_events",
+            "ck_automation_decision_events_impact_scope",
+            "impact_scope is null or impact_scope = 'RAID_ONLY'",
+        ),
+        check(
+            "raid_cooldown_evidence_cases",
+            "ck_raid_cooldown_evidence_mode",
+            "locate(',' || association_mode || ',', ',NONE,HOF_DIRECT,AMBIGUOUS,PARSE_FAILED,') > 0",
+        ),
+        check(
+            "raid_cooldown_evidence_cases",
+            "ck_raid_cooldown_evidence_timer_shape",
+            "locate(',' || timer_shape || ',', ',MARKER_UNPARSEABLE,SINGLE_POSITIVE_SECONDS,MULTIPLE_POSITIVE_SECONDS,NO_PARSED_SECONDS,') > 0",
+        ),
+        check(
+            "raid_cooldown_evidence_cases",
+            "ck_raid_cooldown_evidence_counts",
+            "candidate_count >= 0 and map_count >= 0 and active_joined_raid_count >= 0 and observation_count > 0",
+        ),
+        check(
+            "raid_cooldown_evidence_cases",
+            "ck_raid_cooldown_evidence_fingerprints",
+            "char_length(dom_fingerprint) = 64 and char_length(response_shape_fingerprint) = 64",
+        ),
         check(
             "adventure_daily_preflight_states", "ck_adventure_daily_preflight_states_attempts",
             "failed_attempts >= 0",

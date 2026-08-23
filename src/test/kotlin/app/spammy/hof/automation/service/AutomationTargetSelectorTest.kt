@@ -21,6 +21,7 @@ import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.automation.raid.RaidCycleModule
 import app.spammy.hof.automation.raid.RaidCycleOutcome
 import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
+import app.spammy.hof.automation.raid.RaidCooldownSource
 import app.spammy.hof.automation.raid.RaidDirective
 import app.spammy.hof.automation.raid.RaidIntent
 import app.spammy.hof.automation.raid.RaidIntentKind
@@ -488,6 +489,10 @@ class AutomationTargetSelectorTest {
                 message = "레이드 전투 쿨다운",
                 entryId = raidEntry.id,
                 raidId = "RaidGoblin",
+                cooldownSource = RaidCooldownSource.LOCAL_FALLBACK,
+                impactScope = AutomationImpactScope.RAID_ONLY,
+                releaseCondition = "마감 뒤 최신 레이드 상태 재확인",
+                reasonCode = "RAID_BATTLE_SAFETY_GATE",
             ),
         )
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(raidEntry, battleEntry))
@@ -503,7 +508,11 @@ class AutomationTargetSelectorTest {
         assertEquals(2, selected.trace.size)
         assertEquals(AutomationType.RAID, selected.trace.first().type)
         assertEquals(AutomationDecisionOutcome.WAITING, selected.trace.first().outcome)
-        assertEquals(RaidWaitReason.BATTLE_COOLDOWN.name, selected.trace.first().reasonCode)
+        assertEquals("RAID_BATTLE_SAFETY_GATE", selected.trace.first().reasonCode)
+        assertEquals(AutomationDiagnosticKind.RAID_LOCAL_SAFETY_GATE, selected.trace.first().diagnosticKind)
+        assertEquals(RaidCooldownSource.LOCAL_FALLBACK, selected.trace.first().cooldownSource)
+        assertEquals(AutomationImpactScope.RAID_ONLY, selected.trace.first().impactScope)
+        assertEquals("마감 뒤 최신 레이드 상태 재확인", selected.trace.first().releaseCondition)
         assertEquals(AutomationDecisionOutcome.SELECTED, selected.trace.last().outcome)
         Mockito.verify(lifecycle).waitForCooldown(7, 30, retryAt)
         Mockito.verify(loader, Mockito.never()).loadEntry(7, 13, "RaidGoblin")
@@ -583,6 +592,42 @@ class AutomationTargetSelectorTest {
             null,
             "레이드 전투 프리셋 구성을 확인해 주세요.",
         )
+    }
+
+    @Test
+    fun `temporary incomplete raid observation is a normal scoped wait and not a user warning`() {
+        val retryAt = now.plusSeconds(10)
+        val battleSnapshot = battleDecisionEntry()
+        val battleAction = BattleMapAutomationAction(
+            accountId = 7,
+            progressDate = java.time.LocalDate.parse("2026-07-23"),
+            categoryId = "battle_map",
+            mapCode = "map-1",
+            presetMode = PresetSelectionMode.PRIMARY,
+            presetId = 3,
+            battleCount = 1,
+            executionIdentity = "battle-after-incomplete-raid-observation",
+        )
+        Mockito.`when`(work.findRunning(7)).thenReturn(null)
+        Mockito.`when`(work.findWaiting(7)).thenReturn(emptyList())
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(raidEntry, battleEntry))
+        Mockito.`when`(defaultRaidModule.decideNext(7)).thenReturn(
+            RaidDirective.Hold(
+                reason = RaidHoldReason.BATTLE_OBSERVATION_INCOMPLETE,
+                message = "레이드 전투 상태를 다시 확인합니다.",
+                recheckAt = retryAt,
+                entryId = raidEntry.id,
+                raidId = "RaidGoblin",
+            ),
+        )
+        Mockito.`when`(loader.loadEntry(7, battleEntry.id, null, null)).thenReturn(battleSnapshot)
+        battleRules.returns(requireNotNull(battleSnapshot.battle), HandlerEvaluation.Runnable(battleAction))
+
+        val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
+
+        assertEquals(emptyList(), selected.warnings)
+        assertEquals(AutomationDecisionOutcome.WAITING, selected.trace.first().outcome)
+        Mockito.verify(lifecycle).waitForRaid(7, raidEntry.id, "RaidGoblin", retryAt, null)
     }
 
     @Test

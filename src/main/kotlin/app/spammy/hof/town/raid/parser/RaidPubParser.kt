@@ -101,6 +101,8 @@ class RaidPubParser {
                 DEPART.find(status)?.groupValues?.get(1)?.boundedInt(MAX_WAIT_SECONDS)
                     ?: REWARD_WAIT.find(status)?.let(::boundedDurationSeconds)
             }
+            val rewardMatch = statusText?.let(REWARD_WAIT::find)
+            val rewardWait = rewardMatch?.let(::boundedDurationSeconds)
             val applicantsText = text.substringAfter("신청자", "")
             val applicants = APPLICANT.findAll(applicantsText).map { clean(it.groupValues[1]).take(MAX_TEXT) }
                 .filter(String::isNotBlank).distinct().take(MAX_APPLICANTS).toList()
@@ -127,6 +129,17 @@ class RaidPubParser {
                 actions = section.actionIds.keys.toSet(),
                 battleTarget = if (playable && joined && available) RaidBattleTarget(mapCode = code) else null,
                 actionIds = section.actionIds.toMap(),
+                rewardWindowStatus = when {
+                    status != RaidStatus.COMPLETED -> RaidRewardWindowStatus.ABSENT
+                    rewardMatch != null && rewardWait == null -> RaidRewardWindowStatus.INCOMPLETE
+                    rewardWait?.let { it > 0 } == true -> RaidRewardWindowStatus.WAIT
+                    rewardWait == 0 && RaidAction.REWARD in global -> RaidRewardWindowStatus.AVAILABLE
+                    REWARD_CONFIRMATION.containsMatchIn(statusText.orEmpty()) && RaidAction.REWARD in global ->
+                        RaidRewardWindowStatus.AVAILABLE
+                    REWARD_CONFIRMATION.containsMatchIn(statusText.orEmpty()) -> RaidRewardWindowStatus.INCOMPLETE
+                    else -> RaidRewardWindowStatus.ABSENT
+                },
+                rewardWaitSeconds = rewardWait,
             )
         }
         val applyWaiting = APPLY_WAIT_STATE.containsMatchIn(pageText)
@@ -191,6 +204,7 @@ class RaidPubParser {
         val values = match.groupValues.drop(1).map { value ->
             if (value.isBlank()) BigInteger.ZERO else value.toBigIntegerOrNull() ?: return null
         }
+        if (match.groupValues.drop(1).all(String::isBlank)) return null
         val total = values[0] * BigInteger.valueOf(3600) + values[1] * BigInteger.valueOf(60) + values[2]
         return total.takeIf { it >= BigInteger.ZERO && it <= BigInteger.valueOf(MAX_WAIT_SECONDS.toLong()) }?.toInt()
     }

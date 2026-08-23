@@ -3,6 +3,7 @@ package app.spammy.hof.automation.history
 import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.raid.RaidCycleOutcome
 import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
+import app.spammy.hof.automation.raid.RaidCooldownSource
 import app.spammy.hof.automation.service.*
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.party.entity.PartyPresetEntity
@@ -17,6 +18,10 @@ data class AutomationActionTrace(
     val targetKey: String? = null, val targetName: String? = null,
     val presetId: Long? = null, val presetName: String? = null,
     val nextRunAt: Instant? = null,
+    val diagnosticKind: AutomationDiagnosticKind? = null,
+    val cooldownSource: RaidCooldownSource? = null,
+    val impactScope: AutomationImpactScope? = null,
+    val releaseCondition: String? = null,
 )
 data class AutomationHistoryQuery(
     val beforeCycleId: Long? = null, val limit: Int = 20, val type: AutomationType? = null,
@@ -27,6 +32,8 @@ data class AutomationHistoryEvent(
     val kind: AutomationHistoryEventKind, val reasonCode: String, val message: String,
     val targetKey: String?, val targetName: String?, val actionKind: String?,
     val presetId: Long?, val presetName: String?, val nextRunAt: Instant?, val occurredAt: Instant,
+    val diagnosticKind: AutomationDiagnosticKind?, val cooldownSource: RaidCooldownSource?,
+    val impactScope: AutomationImpactScope?, val releaseCondition: String?,
 )
 data class AutomationHistoryCycle(
     val id: Long, val result: AutomationDecisionResult, val selectedEntryId: Long?,
@@ -92,6 +99,8 @@ class JpaAutomationDecisionJournal(
             }, reasonCode = item.reasonCode, message = item.message, nextRunAt = item.nextRunAt,
             actionKind = item.actionKind, targetKey = item.targetKey, targetName = item.targetName,
             presetId = item.presetId, presetName = presetName(accountId, item.presetId), occurredAt = now,
+            diagnosticKind = item.diagnosticKind, cooldownSource = item.cooldownSource,
+            impactScope = item.impactScope, releaseCondition = item.releaseCondition,
         ) })
         eventCommands.flush()
         return cycle.id
@@ -169,6 +178,7 @@ class JpaAutomationDecisionJournal(
         ).setParameter("cycleId", cycle.id).resultList.map { e -> AutomationHistoryEvent(
             e.id, e.sequence, e.entryId, e.type, e.kind, e.reasonCode, e.message, e.targetKey,
             e.targetName, e.actionKind, e.presetId, e.presetName, e.nextRunAt, e.occurredAt,
+            e.diagnosticKind, e.cooldownSource, e.impactScope, e.releaseCondition,
         ) }
         return AutomationHistoryCycle(cycle.id, cycle.result, cycle.selectedEntryId, cycle.startedAt, cycle.finishedAt, events)
     }
@@ -197,5 +207,9 @@ class JpaAutomationDecisionJournal(
         presetName = presetName ?: presetName(accountId, presetId),
         nextRunAt = nextRunAt,
         occurredAt = occurredAt,
+        diagnosticKind = diagnosticKind,
+        cooldownSource = cooldownSource,
+        impactScope = impactScope,
+        releaseCondition = releaseCondition,
     )
 }

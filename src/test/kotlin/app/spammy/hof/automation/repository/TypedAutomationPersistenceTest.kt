@@ -20,6 +20,9 @@ import app.spammy.hof.automation.entity.UnionAutomationMapEntity
 import app.spammy.hof.automation.raid.JpaRaidCycleStore
 import app.spammy.hof.automation.raid.RaidBattleRecovery
 import app.spammy.hof.automation.raid.RaidBattleRecoveryObservation
+import app.spammy.hof.automation.raid.RaidBattleSafetyGate
+import app.spammy.hof.automation.raid.RaidCooldownSource
+import app.spammy.hof.automation.raid.RaidRewardRecovery
 import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
 import app.spammy.hof.automation.raid.RaidCycleTarget
 import app.spammy.hof.automation.outbox.AutomationOutboxService
@@ -252,6 +255,88 @@ class TypedAutomationPersistenceTest {
         entityManager.flush()
         entityManager.clear()
         assertEquals(null, raidCycleStore.load(account.id).openCycle?.battleRecovery)
+    }
+
+    @Test
+    fun `레이드 전투 안전 게이트를 재시작 뒤에도 그대로 복원한다`() {
+        val now = Instant.parse("2026-08-23T00:00:00Z")
+        val account = newAccount("raid-battle-safety-gate", now)
+        val entry = entryRepository.save(newEntry(account, AutomationType.RAID, priority = 0, now))
+        raidTargetRepository.save(
+            RaidAutomationTargetEntity(
+                entry = entry,
+                raidId = "raid-a",
+                displayName = "레이드 A",
+                presetMode = PresetSelectionMode.PRIMARY,
+                executionOrder = 0,
+            ),
+        )
+        raidCycleStore.open(
+            account.id,
+            entry.id,
+            RaidCycleTarget("raid-a", "레이드 A", PresetSelectionMode.PRIMARY, null, 0, null),
+            now,
+            RaidAutomationCycleStatus.IN_BATTLE,
+        )
+        val expected = RaidBattleSafetyGate(
+            raidId = "raid-a",
+            categoryId = "raid",
+            mapCode = "raid001",
+            executionIdentity = "execution-1",
+            startedAt = now,
+            notBefore = now.plusSeconds(120),
+            source = RaidCooldownSource.LOCAL_FALLBACK,
+            firstIncompleteAt = now.plusSeconds(121),
+            successfulIncompleteObservations = 2,
+            lastObservedAt = now.plusSeconds(131),
+            evidenceCaseId = "case-1",
+        )
+        raidCycleStore.saveBattleSafetyGate(account.id, "raid-a", expected, now.plusSeconds(131))
+        entityManager.flush()
+        entityManager.clear()
+
+        val restored = raidCycleStore.load(account.id).openCycle
+        assertEquals(expected, restored?.battleSafetyGate)
+        assertEquals(1, restored?.battleSafetyVersion)
+
+        raidCycleStore.clearBattleSafetyGate(account.id, "raid-a", now.plusSeconds(132))
+        entityManager.flush()
+        entityManager.clear()
+        assertEquals(null, raidCycleStore.load(account.id).openCycle?.battleSafetyGate)
+    }
+
+    @Test
+    fun `레이드 보상 수렴 상한을 재시작 뒤에도 복원한다`() {
+        val now = Instant.parse("2026-08-23T01:00:00Z")
+        val account = newAccount("raid-reward-recovery", now)
+        val entry = entryRepository.save(newEntry(account, AutomationType.RAID, priority = 0, now))
+        raidTargetRepository.save(
+            RaidAutomationTargetEntity(
+                entry = entry,
+                raidId = "raid-a",
+                displayName = "레이드 A",
+                presetMode = PresetSelectionMode.PRIMARY,
+                executionOrder = 0,
+            ),
+        )
+        raidCycleStore.open(
+            account.id,
+            entry.id,
+            RaidCycleTarget("raid-a", "레이드 A", PresetSelectionMode.PRIMARY, null, 0, null),
+            now,
+            RaidAutomationCycleStatus.REWARD_PENDING,
+        )
+        val expected = RaidRewardRecovery("reward-2", now, 5, 1, held = true)
+        raidCycleStore.saveRewardRecovery(account.id, "raid-a", expected, now.plusSeconds(40))
+        entityManager.flush()
+        entityManager.clear()
+
+        assertEquals(expected, raidCycleStore.load(account.id).openCycle?.rewardRecovery)
+
+        raidCycleStore.clearRewardRecovery(account.id, "raid-a", now.plusSeconds(41))
+        entityManager.flush()
+        entityManager.clear()
+        assertEquals(null, raidCycleStore.load(account.id).openCycle?.rewardRecovery)
     }
 
     @Test

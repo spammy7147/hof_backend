@@ -157,6 +157,69 @@ class JpaRaidCycleStore(
     }
 
     @Transactional
+    override fun saveBattleSafetyGate(
+        accountId: Long,
+        raidId: String,
+        gate: RaidBattleSafetyGate,
+        now: Instant,
+    ): RaidCycleSnapshot {
+        query.lockAccount(accountId)
+        val cycle = requireOpenCycle(accountId, raidId)
+        cycle.battleCooldownNotBefore = gate.notBefore
+        cycle.battleCooldownSource = gate.source
+        cycle.battleCooldownStartedAt = gate.startedAt
+        cycle.battleCooldownRaidId = gate.raidId
+        cycle.battleCooldownCategoryId = gate.categoryId
+        cycle.battleCooldownMapCode = gate.mapCode
+        cycle.battleCooldownExecutionIdentity = gate.executionIdentity
+        cycle.battleCooldownFirstIncompleteAt = gate.firstIncompleteAt
+        cycle.battleCooldownIncompleteObservations = gate.successfulIncompleteObservations
+        cycle.battleCooldownLastObservedAt = gate.lastObservedAt
+        cycle.battleCooldownEvidenceCaseId = gate.evidenceCaseId
+        cycle.battleCooldownHeld = gate.held
+        cycle.battleSafetyVersion = CURRENT_RAID_BATTLE_SAFETY_VERSION
+        cycle.updatedAt = now
+        return cycles.save(cycle).toSnapshot()
+    }
+
+    @Transactional
+    override fun clearBattleSafetyGate(accountId: Long, raidId: String, now: Instant): RaidCycleSnapshot {
+        query.lockAccount(accountId)
+        val cycle = requireOpenCycle(accountId, raidId)
+        cycle.clearBattleSafetyGate()
+        cycle.battleSafetyVersion = CURRENT_RAID_BATTLE_SAFETY_VERSION
+        cycle.updatedAt = now
+        return cycles.save(cycle).toSnapshot()
+    }
+
+    @Transactional
+    override fun saveRewardRecovery(
+        accountId: Long,
+        raidId: String,
+        recovery: RaidRewardRecovery,
+        now: Instant,
+    ): RaidCycleSnapshot {
+        query.lockAccount(accountId)
+        val cycle = requireOpenCycle(accountId, raidId)
+        cycle.rewardRecoveryExecutionIdentity = recovery.executionIdentity
+        cycle.rewardRecoveryFirstAmbiguousAt = recovery.firstAmbiguousAt
+        cycle.rewardRecoveryObservationCount = recovery.successfulObservationCount
+        cycle.rewardRecoveryRetryCount = recovery.retryCount
+        cycle.rewardRecoveryHeld = recovery.held
+        cycle.updatedAt = now
+        return cycles.save(cycle).toSnapshot()
+    }
+
+    @Transactional
+    override fun clearRewardRecovery(accountId: Long, raidId: String, now: Instant): RaidCycleSnapshot {
+        query.lockAccount(accountId)
+        val cycle = requireOpenCycle(accountId, raidId)
+        cycle.clearRewardRecovery()
+        cycle.updatedAt = now
+        return cycles.save(cycle).toSnapshot()
+    }
+
+    @Transactional
     override fun finish(
         accountId: Long,
         raidId: String,
@@ -171,6 +234,8 @@ class JpaRaidCycleStore(
         cycle.openMarker = null
         cycle.nextCheckAt = null
         cycle.clearBattleRecovery()
+        cycle.clearBattleSafetyGate()
+        cycle.clearRewardRecovery()
         cycle.finishedAt = now
         cycle.updatedAt = now
         if (advanceRotation) advanceRotation(cycle, now)
@@ -208,6 +273,9 @@ class JpaRaidCycleStore(
         status = status,
         nextCheckAt = nextCheckAt,
         battleRecovery = toBattleRecoveryOrNull(),
+        battleSafetyGate = toBattleSafetyGateOrNull(),
+        battleSafetyVersion = battleSafetyVersion,
+        rewardRecovery = toRewardRecoveryOrNull(),
     )
 
     private fun RaidCycleOutcomeKind.toPersistedStatus(): RaidAutomationCycleStatus = when (this) {
@@ -238,5 +306,34 @@ internal fun RaidAutomationCycleEntity.toBattleRecoveryOrNull(): RaidBattleRecov
             nextCheckAt = requireNotNull(battleRecoveryNextCheckAt),
             submittedFromRunnable = requireNotNull(battleRecoverySubmittedFromRunnable),
             lastObservation = requireNotNull(battleRecoveryLastObservation),
+        )
+    }
+
+internal fun RaidAutomationCycleEntity.toBattleSafetyGateOrNull(): RaidBattleSafetyGate? =
+    battleCooldownNotBefore?.let { notBefore ->
+        RaidBattleSafetyGate(
+            raidId = requireNotNull(battleCooldownRaidId),
+            categoryId = battleCooldownCategoryId,
+            mapCode = battleCooldownMapCode,
+            executionIdentity = battleCooldownExecutionIdentity,
+            startedAt = requireNotNull(battleCooldownStartedAt),
+            notBefore = notBefore,
+            source = requireNotNull(battleCooldownSource),
+            firstIncompleteAt = battleCooldownFirstIncompleteAt,
+            successfulIncompleteObservations = battleCooldownIncompleteObservations ?: 0,
+            lastObservedAt = battleCooldownLastObservedAt,
+            evidenceCaseId = battleCooldownEvidenceCaseId,
+            held = battleCooldownHeld,
+        )
+    }
+
+internal fun RaidAutomationCycleEntity.toRewardRecoveryOrNull(): RaidRewardRecovery? =
+    rewardRecoveryExecutionIdentity?.let { executionIdentity ->
+        RaidRewardRecovery(
+            executionIdentity = executionIdentity,
+            firstAmbiguousAt = requireNotNull(rewardRecoveryFirstAmbiguousAt),
+            successfulObservationCount = requireNotNull(rewardRecoveryObservationCount),
+            retryCount = requireNotNull(rewardRecoveryRetryCount),
+            held = rewardRecoveryHeld,
         )
     }

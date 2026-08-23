@@ -38,6 +38,32 @@ interface RaidCycleStore {
         now: Instant,
     ): RaidCycleSnapshot
 
+    fun saveBattleSafetyGate(
+        accountId: Long,
+        raidId: String,
+        gate: RaidBattleSafetyGate,
+        now: Instant,
+    ): RaidCycleSnapshot
+
+    fun clearBattleSafetyGate(
+        accountId: Long,
+        raidId: String,
+        now: Instant,
+    ): RaidCycleSnapshot
+
+    fun saveRewardRecovery(
+        accountId: Long,
+        raidId: String,
+        recovery: RaidRewardRecovery,
+        now: Instant,
+    ): RaidCycleSnapshot
+
+    fun clearRewardRecovery(
+        accountId: Long,
+        raidId: String,
+        now: Instant,
+    ): RaidCycleSnapshot
+
     fun finish(
         accountId: Long,
         raidId: String,

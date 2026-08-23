@@ -8,6 +8,20 @@ enum class RaidStatus { RECRUITING, WAITING, READY, IN_BATTLE, COMPLETED, CLOSED
 
 enum class RaidBattleObservationStatus { OBSERVED, ABSENT, INCOMPLETE }
 
+enum class RaidRewardWindowStatus { AVAILABLE, WAIT, ABSENT, INCOMPLETE }
+
+enum class RaidCooldownObservationSource { HOF_DIRECT, HOF_SINGLE_TARGET_INFERENCE }
+
+data class RaidBattleObservationEvidence(
+    val caseId: String,
+    val reasonCode: String,
+    val candidateSeconds: List<Long>,
+    val candidateCount: Int,
+    val mapCount: Int,
+    val domFingerprint: String,
+    val responseShapeFingerprint: String,
+)
+
 fun isRaidResetRequiredStatus(statusText: String?): Boolean =
     statusText?.let { RESET_REQUIRED_STATUS.containsMatchIn(it) } == true
 
@@ -19,6 +33,7 @@ data class RaidBattleTarget(
     val categoryId: String = "raid",
     val mapCode: String,
     val cooldownRemainingSeconds: Long? = null,
+    val cooldownSource: RaidCooldownObservationSource? = null,
 )
 
 data class RaidPubRaid(
@@ -36,6 +51,8 @@ data class RaidPubRaid(
     val actions: Set<RaidAction>,
     val battleTarget: RaidBattleTarget?,
     internal val actionIds: Map<RaidAction, String>,
+    val rewardWindowStatus: RaidRewardWindowStatus = RaidRewardWindowStatus.ABSENT,
+    val rewardWaitSeconds: Int? = null,
 )
 
 data class RaidPubSnapshot(
@@ -49,4 +66,5 @@ data class RaidPubSnapshot(
     internal val globalActionIds: Map<RaidAction, String>,
     internal val observedRaidPubForm: Boolean,
     val battleObservationStatus: RaidBattleObservationStatus = RaidBattleObservationStatus.INCOMPLETE,
+    val battleObservationEvidence: RaidBattleObservationEvidence? = null,
 )

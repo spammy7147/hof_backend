@@ -683,6 +683,23 @@ class BattleMapServiceTest {
     }
 
     @Test
+    fun `레이드 바깥 wrapper 타이머는 맵이 있어도 관측 불완전으로 닫는다`() {
+        val account = savedAccount("battle-map-raid-wrapper-cooldown")
+        gateway.defaultBody = """
+            <section class="raid-wrapper">
+              <span>다음 전투까지 99초 남음</span>
+              <div><a href="index.php?raid_common=RaidGoblin">고블린 전투 마차</a></div>
+            </section>
+        """.trimIndent()
+
+        val observed = service.observeCurrentlyAvailableMaps(account.id, "raid")
+
+        assertEquals(CurrentBattleMapObservationStatus.INCOMPLETE, observed.status)
+        assertEquals("RAID_COOLDOWN_ASSOCIATION_AMBIGUOUS", observed.raidCooldown?.reasonCode)
+        assertEquals(listOf(99L), observed.raidCooldown?.candidateSeconds)
+    }
+
+    @Test
     fun `레이드 최신 맵 관측은 다른 맵 응답에 남은 과거 쿨타임 상태를 포함하지 않는다`() {
         val account = savedAccount("battle-map-raid-fresh-only")
         gateway.defaultBody = """

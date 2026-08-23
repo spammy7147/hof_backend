@@ -98,6 +98,7 @@ sealed interface StoredTypedActionPayload {
         val raidId: String? = null,
         val targetRaidId: String? = raidId,
         override val display: StoredActionDisplay? = null,
+        val selectedAt: Instant? = null,
     ) : StoredTypedActionPayload
     data class RaidCycleAbort(
         val raidId: String,

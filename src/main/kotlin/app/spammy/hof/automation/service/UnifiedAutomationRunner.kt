@@ -357,7 +357,22 @@ class UnifiedAutomationRunner @Autowired constructor(
             code: String,
             message: String,
             nextRunAt: Instant? = null,
-        ) = actionTrace(stored, kind, code, message, nextRunAt, actionDescriptor)
+            diagnosticKind: AutomationDiagnosticKind? = null,
+            cooldownSource: app.spammy.hof.automation.raid.RaidCooldownSource? = null,
+            impactScope: AutomationImpactScope? = null,
+            releaseCondition: String? = null,
+        ) = actionTrace(
+            stored,
+            kind,
+            code,
+            message,
+            nextRunAt,
+            actionDescriptor,
+            diagnosticKind,
+            cooldownSource,
+            impactScope,
+            releaseCondition,
+        )
         fun raidCycleTrace(outcome: app.spammy.hof.automation.raid.RaidCycleOutcome): AutomationActionTrace =
             outcome.toAutomationActionTrace().let { result ->
                 trace(
@@ -381,6 +396,9 @@ class UnifiedAutomationRunner @Autowired constructor(
                     "RAID_BATTLE_RECOVERY_STARTED",
                     "레이드 전투 결과가 불확실해 레이드 전용 복구로 인계했습니다. ${resolution.reason}",
                     resolution.retryAt,
+                    diagnosticKind = AutomationDiagnosticKind.RAID_BATTLE_RESULT_UNKNOWN,
+                    impactScope = AutomationImpactScope.RAID_ONLY,
+                    releaseCondition = "최신 레이드 상태 또는 쿨타임 관측으로 결과 재확인",
                 ))
             }
         }
@@ -839,6 +857,17 @@ class UnifiedAutomationRunner @Autowired constructor(
                         AutomationHistoryEventKind.ACTION_SUCCEEDED,
                         RAID_BATTLE_APPLIED_TERMINAL_RESULT,
                         "정확한 전투 단말 결과로 레이드 전투 적용을 확인하고 복구를 종료했습니다.",
+                    )
+                    is TypedAutomationExecution.SharedCooldown if
+                        (stored.payload as? StoredTypedActionPayload.BattleMap)?.source ==
+                            BattleAutomationActionSource.RAID_AUTOMATION -> trace(
+                        AutomationHistoryEventKind.ACTION_SUCCEEDED,
+                        wakeReason,
+                        "HOF가 명시한 쿨타임까지 레이드 전투만 기다립니다.",
+                        domainExecution.retryAt,
+                        diagnosticKind = AutomationDiagnosticKind.RAID_EXPLICIT_COOLDOWN_WAIT,
+                        impactScope = AutomationImpactScope.RAID_ONLY,
+                        releaseCondition = "HOF가 준 시각 뒤 최신 레이드 상태 재확인",
                     )
                     else -> trace(
                         AutomationHistoryEventKind.ACTION_SUCCEEDED,
@@ -1403,6 +1432,10 @@ class UnifiedAutomationRunner @Autowired constructor(
         message: String,
         nextRunAt: Instant? = null,
         descriptor: AutomationActionDescriptor,
+        diagnosticKind: AutomationDiagnosticKind? = null,
+        cooldownSource: app.spammy.hof.automation.raid.RaidCooldownSource? = null,
+        impactScope: AutomationImpactScope? = null,
+        releaseCondition: String? = null,
     ) = AutomationActionTrace(
         kind = kind,
         reasonCode = code,
@@ -1414,6 +1447,10 @@ class UnifiedAutomationRunner @Autowired constructor(
         targetName = descriptor.targetName,
         presetId = descriptor.presetId,
         nextRunAt = nextRunAt,
+        diagnosticKind = diagnosticKind,
+        cooldownSource = cooldownSource,
+        impactScope = impactScope,
+        releaseCondition = releaseCondition,
     )
 
     private companion object {

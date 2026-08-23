@@ -8,6 +8,7 @@ data class RaidBattleTargetResponse(
     val categoryId: String,
     val mapCode: String,
     val cooldownRemainingSeconds: Long? = null,
+    val cooldownSource: RaidCooldownObservationSource? = null,
 )
 data class RaidPubRaidResponse(
     val id: String,
@@ -23,6 +24,8 @@ data class RaidPubRaidResponse(
     val joined: Boolean,
     val actions: Set<RaidAction>,
     val battleTarget: RaidBattleTargetResponse?,
+    val rewardWindowStatus: RaidRewardWindowStatus = RaidRewardWindowStatus.ABSENT,
+    val rewardWaitSeconds: Int? = null,
 )
 data class RaidPubResponse(
     val raids: List<RaidPubRaidResponse>,
@@ -33,13 +36,18 @@ data class RaidPubResponse(
     val globalActions: Set<RaidAction>,
     val result: TownActionResultResponse?,
     val battleObservationStatus: RaidBattleObservationStatus = RaidBattleObservationStatus.INCOMPLETE,
+    val battleObservationEvidence: RaidBattleObservationEvidence? = null,
 ) {
     companion object {
         fun from(value: RaidPubSnapshot) = RaidPubResponse(
             raids = value.raids.map { raid -> RaidPubRaidResponse(
                 raid.id, raid.name, raid.playable, raid.difficulty, raid.maxPartySize, raid.rewardDamage,
                 raid.status, raid.statusText, raid.waitSeconds, raid.applicants, raid.joined, raid.actions,
-                raid.battleTarget?.let { RaidBattleTargetResponse(it.categoryId, it.mapCode, it.cooldownRemainingSeconds) },
+                raid.battleTarget?.let {
+                    RaidBattleTargetResponse(it.categoryId, it.mapCode, it.cooldownRemainingSeconds, it.cooldownSource)
+                },
+                raid.rewardWindowStatus,
+                raid.rewardWaitSeconds,
             ) },
             applied = value.applied,
             applyWait = value.applyWait,
@@ -48,6 +56,7 @@ data class RaidPubResponse(
             globalActions = value.globalActions,
             result = value.result?.let(TownActionResultResponse::from),
             battleObservationStatus = value.battleObservationStatus,
+            battleObservationEvidence = value.battleObservationEvidence,
         )
     }
 }

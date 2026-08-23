@@ -2,6 +2,7 @@ package app.spammy.hof.automation.service
 
 import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.convergence.ActionObservedState
+import app.spammy.hof.automation.raid.RaidCooldownSource
 import app.spammy.hof.automation.raid.RaidCycleOutcome
 import app.spammy.hof.quest.model.QuestSnapshot
 import java.time.Instant
@@ -36,6 +37,24 @@ enum class AutomationDecisionOutcome {
     FATAL,
 }
 
+enum class AutomationDiagnosticKind {
+    RAID_HOF_COOLDOWN,
+    RAID_SINGLE_TARGET_TIMER,
+    RAID_LOCAL_SAFETY_GATE,
+    RAID_DEPLOYMENT_SAFETY_GATE,
+    RAID_COOLDOWN_OBSERVATION_AMBIGUOUS,
+    RAID_COOLDOWN_OBSERVATION_HELD,
+    RAID_EXPLICIT_COOLDOWN_WAIT,
+    RAID_REWARD_CONFIRMATION_WAIT,
+    RAID_REWARD_RESULT_RECHECK,
+    RAID_BATTLE_RESULT_UNKNOWN,
+    RAID_REWARD_RESULT_HELD,
+}
+
+enum class AutomationImpactScope {
+    RAID_ONLY,
+}
+
 data class AutomationEvaluationTrace(
     val sequence: Int,
     val entryId: Long,
@@ -48,6 +67,10 @@ data class AutomationEvaluationTrace(
     val targetKey: String? = null,
     val targetName: String? = null,
     val presetId: Long? = null,
+    val diagnosticKind: AutomationDiagnosticKind? = null,
+    val cooldownSource: RaidCooldownSource? = null,
+    val impactScope: AutomationImpactScope? = null,
+    val releaseCondition: String? = null,
 )
 
 sealed interface AutomationCoordination {

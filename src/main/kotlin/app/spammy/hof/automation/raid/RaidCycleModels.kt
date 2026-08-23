@@ -3,6 +3,8 @@ package app.spammy.hof.automation.raid
 import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.automation.entity.RaidAutomationCycleStatus
 import app.spammy.hof.automation.service.ResolvedAutomationParty
+import app.spammy.hof.automation.service.AutomationDiagnosticKind
+import app.spammy.hof.automation.service.AutomationImpactScope
 import java.time.Instant
 
 enum class RaidIntentKind {
@@ -61,6 +63,7 @@ data class RaidAttempt(
     val recoveryChainId: String? = null,
     val retransmissionCount: Int = 0,
     val submittedAt: Instant? = null,
+    val finishedAt: Instant? = null,
     val submittedFromRunnable: Boolean = false,
 )
 
@@ -79,13 +82,30 @@ data class RaidObservedBattle(
     val categoryId: String,
     val mapCode: String,
     val cooldownRemainingSeconds: Long? = null,
+    val cooldownSource: RaidCooldownSource? = cooldownRemainingSeconds
+        ?.takeIf { it > 0 }
+        ?.let { RaidCooldownSource.HOF_DIRECT },
 )
+
+enum class RaidCooldownSource {
+    HOF_DIRECT,
+    HOF_SINGLE_TARGET_INFERENCE,
+    LOCAL_FALLBACK,
+    DEPLOYMENT_FALLBACK,
+}
 
 enum class RaidBattleAvailability {
     RUNNABLE,
     COOLDOWN,
     ABSENT,
     INCOMPLETE,
+}
+
+sealed interface RaidRewardWindowObservation {
+    data object Available : RaidRewardWindowObservation
+    data class Wait(val remainingSeconds: Long) : RaidRewardWindowObservation
+    data object Absent : RaidRewardWindowObservation
+    data class Incomplete(val evidenceCaseId: String? = null) : RaidRewardWindowObservation
 }
 
 data class RaidObservedTarget(
@@ -102,6 +122,15 @@ data class RaidObservedTarget(
         battle == null -> RaidBattleAvailability.INCOMPLETE
         battle.cooldownRemainingSeconds?.let { it > 0 } == true -> RaidBattleAvailability.COOLDOWN
         else -> RaidBattleAvailability.RUNNABLE
+    },
+    val battleEvidenceCaseId: String? = null,
+    val rewardWindow: RaidRewardWindowObservation = when {
+        status == RaidObservedStatus.COMPLETED && waitSeconds?.let { it > 0 } == true ->
+            RaidRewardWindowObservation.Wait(waitSeconds.toLong())
+        status == RaidObservedStatus.COMPLETED && RaidIntentKind.REWARD in actions ->
+            RaidRewardWindowObservation.Available
+        status == RaidObservedStatus.COMPLETED -> RaidRewardWindowObservation.Incomplete()
+        else -> RaidRewardWindowObservation.Absent
     },
 )
 
@@ -173,6 +202,10 @@ sealed interface RaidDirective {
         val message: String,
         val entryId: Long,
         val raidId: String,
+        val cooldownSource: RaidCooldownSource? = null,
+        val impactScope: AutomationImpactScope? = null,
+        val releaseCondition: String? = null,
+        val reasonCode: String? = null,
     ) : RaidDirective
     data class Hold(
         val reason: RaidHoldReason,
@@ -181,6 +214,9 @@ sealed interface RaidDirective {
         val entryId: Long? = null,
         val raidId: String? = null,
         val reasonCode: String? = null,
+        val diagnosticKind: AutomationDiagnosticKind? = null,
+        val impactScope: AutomationImpactScope? = null,
+        val releaseCondition: String? = null,
     ) : RaidDirective
     data class Complete(
         val outcome: RaidCycleOutcome,
@@ -194,6 +230,8 @@ sealed interface RaidRecordResult {
     data class NotApplied(val message: String) : RaidRecordResult
     data class NeedsRecheck(val at: Instant, val message: String) : RaidRecordResult
     data class BattleRecoveryStarted(val at: Instant, val message: String) : RaidRecordResult
+    data class RewardRetryReady(val message: String) : RaidRecordResult
+    data class RewardHeld(val message: String) : RaidRecordResult
 }
 
 data class RaidCycleTarget(
@@ -213,6 +251,34 @@ data class RaidCycleSnapshot(
     val status: RaidAutomationCycleStatus,
     val nextCheckAt: Instant?,
     val battleRecovery: RaidBattleRecovery? = null,
+    val battleSafetyGate: RaidBattleSafetyGate? = null,
+    val battleSafetyVersion: Int = CURRENT_RAID_BATTLE_SAFETY_VERSION,
+    val rewardRecovery: RaidRewardRecovery? = null,
+)
+
+const val CURRENT_RAID_BATTLE_SAFETY_VERSION = 1
+
+data class RaidBattleSafetyGate(
+    val raidId: String,
+    val categoryId: String?,
+    val mapCode: String?,
+    val executionIdentity: String?,
+    val startedAt: Instant,
+    val notBefore: Instant,
+    val source: RaidCooldownSource,
+    val firstIncompleteAt: Instant? = null,
+    val successfulIncompleteObservations: Int = 0,
+    val lastObservedAt: Instant? = null,
+    val evidenceCaseId: String? = null,
+    val held: Boolean = false,
+)
+
+data class RaidRewardRecovery(
+    val executionIdentity: String,
+    val firstAmbiguousAt: Instant,
+    val successfulObservationCount: Int,
+    val retryCount: Int,
+    val held: Boolean = false,
 )
 
 enum class RaidBattleRecoveryObservation {

@@ -72,6 +72,43 @@ class BattleMapParserTest {
 
         assertEquals("raid001", map.mapCode)
         assertEquals(99L, map.cooldownRemainingSeconds)
+        assertEquals(
+            RaidCooldownAssociationStatus.HOF_DIRECT,
+            parser.inspectRaidCooldown(html, listOf(map)).status,
+        )
+    }
+
+    @Test
+    fun `바깥 wrapper의 레이드 타이머는 실제 fixture 전까지 실행 가능으로 추정하지 않는다`() {
+        val html = """
+            <section class="raid-wrapper">
+              <span>다음 전투까지 99초 남음</span>
+              <div class="map-link"><a href="index.php?raid_common=raid001">Raid - 마을 시가지</a></div>
+            </section>
+        """.trimIndent()
+        val maps = parser.parse("raid", "raid_common", html)
+
+        val observation = parser.inspectRaidCooldown(html, maps)
+
+        assertEquals(null, maps.single().cooldownRemainingSeconds)
+        assertEquals(RaidCooldownAssociationStatus.AMBIGUOUS, observation.status)
+        assertEquals(listOf(99L), observation.candidateSeconds)
+        assertEquals(1, observation.mapCount)
+    }
+
+    @Test
+    fun `레이드 쿨타임 광고의 숫자를 파싱하지 못하면 incomplete 근거를 만든다`() {
+        val html = """
+            <div><span>다음 전투까지 알 수 없는 초 남음</span></div>
+            <div><a href="index.php?raid_common=raid001">Raid - 마을 시가지</a></div>
+        """.trimIndent()
+        val maps = parser.parse("raid", "raid_common", html)
+
+        val observation = parser.inspectRaidCooldown(html, maps)
+
+        assertEquals(RaidCooldownAssociationStatus.PARSE_FAILED, observation.status)
+        assertEquals("RAID_COOLDOWN_PARSE_FAILED", observation.reasonCode)
+        assertEquals(64, observation.responseShapeFingerprint.length)
     }
 
     @Test

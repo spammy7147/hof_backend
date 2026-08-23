@@ -23,6 +23,10 @@ class AutomationEvidenceRetentionScheduler(
             "delete from AutomationConvergenceShadowEvaluationEntity shadow where shadow.expiresAt <= :now",
         ).setParameter("now", now)
             .executeUpdate()
-        return evidenceCases + shadowEvaluations
+        val raidCooldownEvidence = entityManager.createQuery(
+            "delete from RaidCooldownEvidenceCaseEntity evidence where evidence.expiresAt <= :now",
+        ).setParameter("now", now)
+            .executeUpdate()
+        return evidenceCases + shadowEvaluations + raidCooldownEvidence
     }
 }
