@@ -79,9 +79,17 @@ class AutomationTargetSelector(
         session: AutomationWorkSessionView,
         initialWarnings: List<String> = emptyList(),
         initialTrace: List<AutomationEvaluationTrace> = emptyList(),
+        evaluatedSessionIds: Set<Long> = emptySet(),
     ): AutomationCoordination {
+        val nextEvaluatedSessionIds = evaluatedSessionIds + session.id
         if (session.workType == AutomationWorkType.RAID) {
-            return selectRaidSession(accountId, session, initialWarnings, initialTrace)
+            return selectRaidSession(
+                accountId,
+                session,
+                initialWarnings,
+                initialTrace,
+                nextEvaluatedSessionIds,
+            )
         }
         val entry = loader.loadEntry(accountId, session.entryId, session.targetKey)
             .withQuestWorkSession(session)
@@ -100,6 +108,7 @@ class AutomationTargetSelector(
                         accountId,
                         initialWarnings + result.warnings,
                         initialTrace + result.trace.resequenced(initialTrace.size),
+                        nextEvaluatedSessionIds,
                     )
                 }
             }
@@ -109,6 +118,7 @@ class AutomationTargetSelector(
                         accountId,
                         initialWarnings + result.warnings,
                         initialTrace + result.trace.resequenced(initialTrace.size),
+                        nextEvaluatedSessionIds,
                     )
                 }
                 result.workTransition?.let {
@@ -120,6 +130,7 @@ class AutomationTargetSelector(
                     accountId,
                     initialWarnings + result.warnings,
                     initialTrace + result.trace.resequenced(initialTrace.size),
+                    nextEvaluatedSessionIds,
                 )
             }
         }
@@ -129,6 +140,7 @@ class AutomationTargetSelector(
         accountId: Long,
         initialWarnings: List<String> = emptyList(),
         initialTrace: List<AutomationEvaluationTrace> = emptyList(),
+        evaluatedSessionIds: Set<Long> = emptySet(),
     ): AutomationCoordination {
         val warnings = initialWarnings.toMutableList()
         val trace = initialTrace.toMutableList()
@@ -141,17 +153,19 @@ class AutomationTargetSelector(
             .forEach { entry ->
                 val waiting = waitsByEntry[entry.id].orEmpty()
                 val blockedUntil = waiting.mapNotNull { it.nextCheckAt }.minOrNull()
-                val hasDueTarget = waiting.any { it.isDueForCheck(now) }
-                if (waiting.isNotEmpty() && !hasDueTarget) {
+                val due = waiting.firstOrNull {
+                    it.id !in evaluatedSessionIds && it.isDueForCheck(now)
+                }
+                if (waiting.isNotEmpty() && due == null) {
                     waiting.mapNotNull(AutomationWorkSessionView::holdMessage).forEach { message ->
                         if (message !in warnings) warnings += message
                     }
                     if (blockedUntil != null && (earliest == null || blockedUntil < earliest)) earliest = blockedUntil
                     if (entry.type != AutomationType.QUEST) return@forEach
                 }
-                waiting.firstOrNull { it.isDueForCheck(now) }?.let { due ->
+                due?.let {
                     lifecycle.resumeForCheck(accountId, due.id)
-                    return selectSession(accountId, due, warnings, trace)
+                    return selectSession(accountId, due, warnings, trace, evaluatedSessionIds)
                 }
                 if (entry.type == AutomationType.RAID) {
                     when (val directive = raidModule.decideNext(accountId)) {
@@ -364,6 +378,7 @@ class AutomationTargetSelector(
         session: AutomationWorkSessionView,
         initialWarnings: List<String>,
         initialTrace: List<AutomationEvaluationTrace>,
+        evaluatedSessionIds: Set<Long>,
     ): AutomationCoordination = when (val directive = raidModule.decideNext(accountId)) {
         is RaidDirective.Execute -> {
             val action = directive.intent.toPreparedAction(accountId)
@@ -379,6 +394,7 @@ class AutomationTargetSelector(
                         CONVERGENCE_BLOCKED_REASON,
                         CONVERGENCE_BLOCKED_MESSAGE,
                     ),
+                    evaluatedSessionIds,
                 )
             } else {
                 AutomationCoordination.Runnable(
@@ -395,6 +411,7 @@ class AutomationTargetSelector(
                 accountId,
                 initialWarnings,
                 initialTrace + directive.toTrace(session.entryId, initialTrace.size),
+                evaluatedSessionIds,
             )
         }
         is RaidDirective.Hold -> {
@@ -409,6 +426,7 @@ class AutomationTargetSelector(
                 accountId,
                 initialWarnings + listOfNotNull(directive.message.takeIf { directive.isUserWarning() }),
                 initialTrace + directive.toTrace(session.entryId, initialTrace.size),
+                evaluatedSessionIds,
             )
         }
         is RaidDirective.Complete -> {
@@ -417,6 +435,7 @@ class AutomationTargetSelector(
                 accountId,
                 initialWarnings,
                 initialTrace + directive.toTrace(session.entryId, initialTrace.size),
+                evaluatedSessionIds,
             )
         }
     }

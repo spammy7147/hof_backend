@@ -87,6 +87,7 @@ class FreshSchemaTest {
                 "36" to "add typed automation wait diagnostics",
                 "37" to "persist raid cooldown evidence",
                 "38" to "bound legacy action reconciliation",
+                "39" to "enforce single automation work owner",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -130,6 +131,7 @@ class FreshSchemaTest {
                 "V36__add_typed_automation_wait_diagnostics.sql",
                 "V37__persist_raid_cooldown_evidence.sql",
                 "V38__bound_legacy_action_reconciliation.sql",
+                "V39__enforce_single_automation_work_owner.sql",
                 "V3__add_automation_work_sessions.sql",
                 "V4__prepare_captcha_on_demand.sql",
                 "V5__track_character_detail_sync.sql",
@@ -152,6 +154,7 @@ class FreshSchemaTest {
             assertTrue(connection.columnExists("captcha_challenges", "preparation_version"))
             assertTrue(connection.columnExists("typed_automation_action_runs", "reconciliation_observation_count"))
             assertTrue(connection.columnExists("typed_automation_action_runs", "reconciliation_first_pending_at"))
+            assertTrue(connection.columnExists("automation_work_sessions", "running_slot"))
             assertTrue(connection.columnExists("characters", "detail_synced_at"))
             assertTrue(connection.tableExists("character_operation_jobs"))
             assertTrue(connection.columnExists("battle_maps", "shares_minute_cooldown"))

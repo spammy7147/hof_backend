@@ -424,7 +424,7 @@ internal object FreshSchemaContract {
             "automation_work_sessions",
             serialId(), requiredBigint("account_id"), requiredBigint("automation_entry_id"),
             requiredVarchar("work_type", 24), requiredVarchar("target_key", 255),
-            requiredVarchar("status", 24), requiredVarchar("config_version", 64),
+            requiredVarchar("status", 24), optionalInteger("running_slot"), requiredVarchar("config_version", 64),
             optionalInteger("target_count"), requiredInteger("confirmed_count"),
             optionalVarchar("quest_cycle", 64), optionalVarchar("mission_key", 255),
             optionalVarchar("mission_type", 32), optionalInteger("observed_current"),
@@ -1336,6 +1336,10 @@ internal object FreshSchemaContract {
             "automation_work_sessions", "ck_automation_work_finished",
             "(finished_at is not null and locate(',' || status || ',', ',COMPLETED,STOPPED,') > 0) or " +
                 "(finished_at is null and locate(',' || status || ',', ',COMPLETED,STOPPED,') = 0)",
+        ),
+        check(
+            "automation_work_sessions", "ck_automation_work_running_slot",
+            "(status = 'RUNNING' and running_slot = 1) or (status <> 'RUNNING' and running_slot is null)",
         ),
         check("typed_automation_runtime_states", "ck_typed_runtime_lifecycle", "locate(',' || lifecycle_status || ',', ',RUNNING,DRAINING,PAUSED,STOPPED,') > 0"),
         check("typed_automation_runtime_states", "ck_typed_runtime_stop", "(lifecycle_status = 'STOPPED' and stop_reason is not null) or (lifecycle_status <> 'STOPPED' and (stop_reason is null or stop_reason <> 'MANUAL_STOP'))"),

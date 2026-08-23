@@ -267,7 +267,7 @@ class TypedAutomationLifecycleBridge(
 
     private fun stopOpenWorkSessions(accountId: Long, now: java.time.Instant) {
         workSessions.lockOpen(accountId).forEach { session ->
-            session.status = AutomationWorkStatus.STOPPED
+            session.transitionTo(AutomationWorkStatus.STOPPED)
             session.nextCheckAt = null
             session.finishedAt = now
             session.updatedAt = now

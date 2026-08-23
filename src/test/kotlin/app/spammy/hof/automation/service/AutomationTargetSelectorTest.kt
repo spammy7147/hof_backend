@@ -239,6 +239,78 @@ class AutomationTargetSelectorTest {
     }
 
     @Test
+    fun `a decision cycle does not resume a convergence blocked work session twice`() {
+        val running = session(30, questEntry, AutomationWorkType.QUEST, "quest-1", AutomationWorkStatus.RUNNING)
+        val due = session(31, questEntry, AutomationWorkType.QUEST, "quest-2", AutomationWorkStatus.YIELDED_PRIORITY)
+        val yieldedRunning = session(
+            30,
+            questEntry,
+            AutomationWorkType.QUEST,
+            "quest-1",
+            AutomationWorkStatus.YIELDED_PRIORITY,
+        )
+        val questAction = QuestAction.Accept("quest-blocked", "accept-blocked")
+        val factory = StoredActionConvergenceSelectionFactory()
+        val preview = factory.preview(questEntry.id, questAction)
+        val battleAction = BattleMapAutomationAction(
+            accountId = 7L,
+            progressDate = java.time.LocalDate.parse("2026-07-23"),
+            categoryId = "battle_map",
+            mapCode = "map-1",
+            presetMode = PresetSelectionMode.PRIMARY,
+            presetId = 3L,
+            battleCount = 1,
+            executionIdentity = "after-blocked-work-sessions",
+        )
+        val guarded = AutomationTargetSelector(
+            typed = typed,
+            work = work,
+            loader = loader,
+            lifecycle = lifecycle,
+            timeProvider = TimeProvider { now },
+            raidModule = defaultRaidModule,
+            quest = fixedQuestRules(QuestDirective.Execute(questAction)),
+            battle = AutomationHandler { HandlerEvaluation.Runnable(battleAction) },
+            adventure = AutomationHandler { HandlerEvaluation.Skipped },
+            union = AutomationHandler { HandlerEvaluation.Skipped },
+            fishing = AutomationHandler { HandlerEvaluation.Skipped },
+            homeQuest = AutomationHandler { HandlerEvaluation.Skipped },
+            convergenceGuard = AutomationConvergenceSelectionGuard {
+                AutomationConvergenceSelectionConstraints(
+                    blockedScopes = emptySet(),
+                    battleGateActive = false,
+                    suppressedBaselines = mapOf(
+                        preview.scope to setOf(requireNotNull(preview.baselineFingerprint)),
+                    ),
+                )
+            },
+            convergenceSelectionFactory = factory,
+            convergenceRollout = AutomationConvergenceRollout(
+                AutomationConvergenceProperties(mode = AutomationConvergenceMode.SHADOW),
+            ),
+        )
+        Mockito.`when`(work.findRunning(7)).thenReturn(running)
+        Mockito.`when`(work.findWaiting(7)).thenReturn(
+            listOf(due),
+            listOf(due),
+            listOf(yieldedRunning),
+            emptyList(),
+        )
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(questEntry, battleEntry))
+        Mockito.`when`(loader.loadEntry(7, questEntry.id, "quest-1")).thenReturn(questDecisionEntry())
+        Mockito.`when`(loader.loadEntry(7, questEntry.id, "quest-2")).thenReturn(questDecisionEntry())
+        Mockito.`when`(loader.loadEntry(7, questEntry.id, null, null)).thenReturn(questDecisionEntry())
+        Mockito.`when`(loader.loadEntry(7, battleEntry.id, null, null)).thenReturn(battleDecisionEntry())
+
+        val selected = assertIs<AutomationCoordination.Runnable>(guarded.select(7L))
+
+        assertEquals(battleEntry.id, selected.entryId)
+        assertEquals(battleAction, selected.action)
+        Mockito.verify(lifecycle).resumeForCheck(7, due.id)
+        Mockito.verify(lifecycle, Mockito.never()).resumeForCheck(7, running.id)
+    }
+
+    @Test
     fun `자택 식별자 gap은 해당 scope만 pending으로 만들고 다음 entry를 계속 선택한다`() {
         val homeEntry = AutomationEntryEntity(15, account, AutomationType.HOME_QUEST, 0, true, now, now)
         val store = InMemoryConvergenceStore()

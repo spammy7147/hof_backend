@@ -48,9 +48,7 @@ class AutomationWorkSessionEntity(
     @Column(name = "target_key", nullable = false)
     var targetKey: String,
 
-    @Enumerated(EnumType.STRING)
-    @Column(name = "status", nullable = false)
-    var status: AutomationWorkStatus,
+    status: AutomationWorkStatus,
 
     @Column(name = "config_version", nullable = false)
     var configVersion: String,
@@ -103,4 +101,18 @@ class AutomationWorkSessionEntity(
     @Version
     @Column(name = "version")
     var version: Long? = null,
-)
+) {
+    @Enumerated(EnumType.STRING)
+    @Column(name = "status", nullable = false)
+    var status: AutomationWorkStatus = status
+        internal set
+
+    @Column(name = "running_slot")
+    var runningSlot: Int? = if (status == AutomationWorkStatus.RUNNING) 1 else null
+        internal set
+
+    fun transitionTo(newStatus: AutomationWorkStatus) {
+        status = newStatus
+        runningSlot = if (newStatus == AutomationWorkStatus.RUNNING) 1 else null
+    }
+}

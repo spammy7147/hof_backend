@@ -9,6 +9,7 @@ import app.spammy.hof.automation.repository.AutomationWorkSessionCommandReposito
 import app.spammy.hof.automation.repository.AutomationWorkSessionQueryRepository
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import app.spammy.hof.common.time.TimeProvider
+import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
@@ -59,12 +60,11 @@ class AutomationWorkSessionService(
                 session.status == AutomationWorkStatus.WAITING_COOLDOWN ||
                 session.status == AutomationWorkStatus.WAITING_RESOURCE,
         ) { "Only a parked work session may be resumed." }
-        session.status = AutomationWorkStatus.RUNNING
-        session.nextCheckAt = null
-        session.holdMessage = null
-        session.finishedAt = null
-        session.updatedAt = timeProvider.now()
-        commands.save(session)
+        val now = timeProvider.now()
+        val open = queries.lockOpen(accountId)
+        val transfer = releaseOwnership(open, session, now)
+        resumeAsOwner(session, now)
+        logOwnershipTransfer(accountId, transfer, session)
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -108,26 +108,30 @@ class AutomationWorkSessionService(
         val entry = typed.findEntry(accountId, entryId)
             ?: throw AutomationConfigurationException("Automation entry $entryId is missing.")
         val open = queries.lockOpen(accountId)
-        open.firstOrNull { it.status == AutomationWorkStatus.RUNNING }?.let { running ->
-            check(running.matches(entryId, spec)) {
-                "A different automation work session is already running for account $accountId."
-            }
-            running.alignRaidTarget(spec, entry.updatedAt.toString())?.let(commands::save)
-            return running
+        val selected = open.asReversed().firstOrNull {
+            it.status == AutomationWorkStatus.RUNNING && it.matches(entryId, spec)
+        } ?: open.firstOrNull {
+            it.status != AutomationWorkStatus.RUNNING && it.matches(entryId, spec)
         }
-        open.firstOrNull { it.matches(entryId, spec) }?.let { parked ->
-            require(parked.configVersion == entry.updatedAt.toString()) {
+        if (selected != null && selected.status != AutomationWorkStatus.RUNNING) {
+            require(selected.configVersion == entry.updatedAt.toString()) {
                 "A parked work session belongs to an older automation configuration."
             }
-            parked.status = AutomationWorkStatus.RUNNING
-            parked.nextCheckAt = null
-            parked.holdMessage = null
-            parked.updatedAt = timeProvider.now()
-            parked.alignRaidTarget(spec, entry.updatedAt.toString())
-            commands.save(parked)
-            return parked
         }
         val now = timeProvider.now()
+        if (selected != null) {
+            val transfer = releaseOwnership(open, selected, now)
+            if (selected.status == AutomationWorkStatus.RUNNING) {
+                selected.alignRaidTarget(spec, entry.updatedAt.toString())?.let(commands::save)
+                logOwnershipTransfer(accountId, transfer, selected)
+                return selected
+            }
+            resumeAsOwner(selected, now)
+            selected.alignRaidTarget(spec, entry.updatedAt.toString())
+            logOwnershipTransfer(accountId, transfer, selected)
+            return selected
+        }
+        val transfer = releaseOwnership(open, null, now)
         val session = AutomationWorkSessionEntity(
             account = entry.account,
             entry = entry,
@@ -140,6 +144,7 @@ class AutomationWorkSessionService(
             updatedAt = now,
         )
         commands.save(session)
+        logOwnershipTransfer(accountId, transfer, session)
         return session
     }
 
@@ -151,7 +156,7 @@ class AutomationWorkSessionService(
             "An immediately runnable raid work session keeps priority until it waits or completes."
         }
         if (session.status != AutomationWorkStatus.RUNNING) return false
-        session.status = AutomationWorkStatus.YIELDED_PRIORITY
+        session.transitionTo(AutomationWorkStatus.YIELDED_PRIORITY)
         session.nextCheckAt = null
         session.updatedAt = timeProvider.now()
         commands.save(session)
@@ -170,25 +175,25 @@ class AutomationWorkSessionService(
         val now = timeProvider.now()
         when (transition) {
             is AutomationWorkTransition.WaitForResource -> {
-                session.status = AutomationWorkStatus.WAITING_RESOURCE
+                session.transitionTo(AutomationWorkStatus.WAITING_RESOURCE)
                 session.materialName = transition.resourceName
                 session.materialMissing = transition.missingCount
                 session.nextCheckAt = reconciliationAt(accountId, now)
                 session.lastVerifiedAt = now
             }
             AutomationWorkTransition.WaitForUnknownCooldown -> {
-                session.status = AutomationWorkStatus.WAITING_COOLDOWN
+                session.transitionTo(AutomationWorkStatus.WAITING_COOLDOWN)
                 session.nextCheckAt = reconciliationAt(accountId, now)
                 session.lastVerifiedAt = now
             }
             is AutomationWorkTransition.WaitForConfiguration -> {
-                session.status = AutomationWorkStatus.WAITING_COOLDOWN
+                session.transitionTo(AutomationWorkStatus.WAITING_COOLDOWN)
                 session.nextCheckAt = reconciliationAt(accountId, now)
                 session.holdMessage = transition.message.take(MAX_HOLD_MESSAGE_LENGTH)
                 session.lastVerifiedAt = now
             }
             AutomationWorkTransition.Complete -> {
-                session.status = AutomationWorkStatus.COMPLETED
+                session.transitionTo(AutomationWorkStatus.COMPLETED)
                 session.nextCheckAt = null
                 session.holdMessage = null
                 session.finishedAt = now
@@ -203,7 +208,7 @@ class AutomationWorkSessionService(
         requireRunningRuntime(accountId)
         val session = requireSession(accountId, sessionId)
         require(session.status == AutomationWorkStatus.RUNNING)
-        session.status = AutomationWorkStatus.WAITING_COOLDOWN
+        session.transitionTo(AutomationWorkStatus.WAITING_COOLDOWN)
         session.nextCheckAt = nextCheckAt
         session.updatedAt = timeProvider.now()
         commands.save(session)
@@ -231,7 +236,7 @@ class AutomationWorkSessionService(
         if (session != null) {
             require(session.status in OPEN_SESSION_STATUSES)
             session.targetKey = raidId
-            session.status = AutomationWorkStatus.WAITING_COOLDOWN
+            session.transitionTo(AutomationWorkStatus.WAITING_COOLDOWN)
             session.configVersion = entry.updatedAt.toString()
             session.nextCheckAt = nextCheckAt
             session.holdMessage = holdMessage?.take(MAX_HOLD_MESSAGE_LENGTH)
@@ -287,7 +292,7 @@ class AutomationWorkSessionService(
                 it.targetKey == targetKey
         } ?: return
         val now = timeProvider.now()
-        session.status = AutomationWorkStatus.COMPLETED
+        session.transitionTo(AutomationWorkStatus.COMPLETED)
         session.nextCheckAt = null
         session.holdMessage = null
         session.finishedAt = now
@@ -311,7 +316,7 @@ class AutomationWorkSessionService(
                 it.targetKey == targetKey
         } ?: return
         val now = timeProvider.now()
-        session.status = AutomationWorkStatus.COMPLETED
+        session.transitionTo(AutomationWorkStatus.COMPLETED)
         session.nextCheckAt = null
         session.holdMessage = null
         session.finishedAt = now
@@ -328,7 +333,7 @@ class AutomationWorkSessionService(
                 it.workType == AutomationWorkType.RAID
         } ?: return
         val now = timeProvider.now()
-        session.status = AutomationWorkStatus.COMPLETED
+        session.transitionTo(AutomationWorkStatus.COMPLETED)
         session.nextCheckAt = null
         session.holdMessage = null
         session.finishedAt = now
@@ -347,7 +352,7 @@ class AutomationWorkSessionService(
         queries.lockOpen(accountId)
             .filter { it.entry.id == entryId && (wholeEntry || it.targetKey in targetKeys) }
             .forEach { session ->
-                session.status = AutomationWorkStatus.STOPPED
+                session.transitionTo(AutomationWorkStatus.STOPPED)
                 session.nextCheckAt = null
                 session.holdMessage = null
                 session.finishedAt = now
@@ -390,7 +395,71 @@ class AutomationWorkSessionService(
         return this
     }
 
+    private fun releaseOwnership(
+        open: List<AutomationWorkSessionEntity>,
+        target: AutomationWorkSessionEntity?,
+        now: java.time.Instant,
+    ): OwnershipTransfer {
+        val running = open.filter { it.status == AutomationWorkStatus.RUNNING }
+        val previous = running.filter { it !== target && it.id != target?.id }
+        if (previous.isNotEmpty()) {
+            previous.forEach { session ->
+                session.transitionTo(AutomationWorkStatus.YIELDED_PRIORITY)
+                session.nextCheckAt = null
+                session.updatedAt = now
+            }
+            commands.saveAll(previous)
+            commands.flush()
+        }
+        return OwnershipTransfer(
+            previous = previous,
+            duplicateRepair = running.size > 1,
+            ownershipChanged = previous.isNotEmpty() || target?.status != AutomationWorkStatus.RUNNING,
+        )
+    }
+
+    private fun resumeAsOwner(session: AutomationWorkSessionEntity, now: java.time.Instant) {
+        session.transitionTo(AutomationWorkStatus.RUNNING)
+        session.nextCheckAt = null
+        session.holdMessage = null
+        session.finishedAt = null
+        session.updatedAt = now
+        commands.save(session)
+    }
+
+    private fun logOwnershipTransfer(
+        accountId: Long,
+        transfer: OwnershipTransfer,
+        target: AutomationWorkSessionEntity,
+    ) {
+        if (!transfer.ownershipChanged) return
+        val message =
+            "Automation work ownership transferred accountId={} previousSessionIds={} targetSessionId={} " +
+                "targetEntryId={} targetWorkType={} targetKey={} duplicateRepair={}"
+        val arguments = arrayOf(
+            accountId,
+            transfer.previous.map { it.id },
+            target.id,
+            target.entry.id,
+            target.workType,
+            target.targetKey,
+            transfer.duplicateRepair,
+        )
+        if (transfer.duplicateRepair) {
+            log.warn(message, *arguments)
+        } else {
+            log.info(message, *arguments)
+        }
+    }
+
+    private data class OwnershipTransfer(
+        val previous: List<AutomationWorkSessionEntity>,
+        val duplicateRepair: Boolean,
+        val ownershipChanged: Boolean,
+    )
+
     private companion object {
+        val log = LoggerFactory.getLogger(AutomationWorkSessionService::class.java)
         const val MAX_HOLD_MESSAGE_LENGTH = 1000
         val OPEN_SESSION_STATUSES = setOf(
             AutomationWorkStatus.RUNNING,

@@ -34,6 +34,151 @@ class AutomationWorkSessionServiceTest {
     private val service = AutomationWorkSessionService(typed, queries, commands, TimeProvider { now })
 
     @Test
+    fun `preparing a different action transfers the sole running ownership`() {
+        val questEntry = AutomationEntryEntity(10, account, AutomationType.QUEST, 0, true, now, now)
+        val runningQuest = AutomationWorkSessionEntity(
+            id = 40,
+            account = account,
+            entry = questEntry,
+            workType = AutomationWorkType.QUEST,
+            targetKey = "quest-1",
+            status = AutomationWorkStatus.RUNNING,
+            configVersion = questEntry.updatedAt.toString(),
+            confirmedCount = 2,
+            questCycle = "cycle-3",
+            missionKey = "mission-ajelad",
+            observedCurrent = 4,
+            observedRequired = 5,
+            createdAt = now,
+            updatedAt = now,
+        )
+        Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
+        Mockito.`when`(typed.findEntry(7, entry.id)).thenReturn(entry)
+        Mockito.`when`(queries.lockOpen(7)).thenReturn(listOf(runningQuest))
+
+        service.ensure(
+            7,
+            entry.id,
+            AutomationWorkAssignment(
+                AutomationWorkType.BATTLE_MAP,
+                "battle_map/map-1",
+                targetCount = 1,
+            ),
+        )
+
+        assertEquals(AutomationWorkStatus.YIELDED_PRIORITY, runningQuest.status)
+        assertEquals(2, runningQuest.confirmedCount)
+        assertEquals("cycle-3", runningQuest.questCycle)
+        assertEquals("mission-ajelad", runningQuest.missionKey)
+        assertEquals(4, runningQuest.observedCurrent)
+        assertEquals(5, runningQuest.observedRequired)
+        val captor = ArgumentCaptor.forClass(AutomationWorkSessionEntity::class.java)
+        Mockito.verify(commands).save(
+            captor.capture() ?: AutomationWorkSessionEntity(
+                account = account,
+                entry = entry,
+                workType = AutomationWorkType.BATTLE_MAP,
+                targetKey = "capture-fallback",
+                status = AutomationWorkStatus.RUNNING,
+                configVersion = "capture-fallback",
+                createdAt = now,
+                updatedAt = now,
+            ),
+        )
+        val started = captor.value
+        assertEquals(AutomationWorkStatus.RUNNING, started.status)
+    }
+
+    @Test
+    fun `matching action repairs duplicate running sessions and keeps the latest selected owner`() {
+        val questEntry = AutomationEntryEntity(10, account, AutomationType.QUEST, 0, true, now, now)
+        val older = AutomationWorkSessionEntity(
+            id = 41,
+            account = account,
+            entry = questEntry,
+            workType = AutomationWorkType.QUEST,
+            targetKey = "quest-1",
+            status = AutomationWorkStatus.RUNNING,
+            configVersion = questEntry.updatedAt.toString(),
+            confirmedCount = 1,
+            questCycle = "older-cycle",
+            createdAt = now,
+            updatedAt = now,
+        )
+        val latest = AutomationWorkSessionEntity(
+            id = 42,
+            account = account,
+            entry = questEntry,
+            workType = AutomationWorkType.QUEST,
+            targetKey = "quest-1",
+            status = AutomationWorkStatus.RUNNING,
+            configVersion = questEntry.updatedAt.toString(),
+            confirmedCount = 4,
+            questCycle = "selected-cycle",
+            missionKey = "mission-selected",
+            observedCurrent = 3,
+            observedRequired = 5,
+            createdAt = now,
+            updatedAt = now,
+        )
+        Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
+        Mockito.`when`(typed.findEntry(7, questEntry.id)).thenReturn(questEntry)
+        Mockito.`when`(queries.lockOpen(7)).thenReturn(listOf(older, latest))
+
+        service.ensure(
+            7,
+            questEntry.id,
+            AutomationWorkAssignment(AutomationWorkType.QUEST, "quest-1"),
+        )
+
+        assertEquals(AutomationWorkStatus.YIELDED_PRIORITY, older.status)
+        assertEquals(AutomationWorkStatus.RUNNING, latest.status)
+        assertEquals(4, latest.confirmedCount)
+        assertEquals("selected-cycle", latest.questCycle)
+        assertEquals("mission-selected", latest.missionKey)
+        assertEquals(3, latest.observedCurrent)
+        assertEquals(5, latest.observedRequired)
+    }
+
+    @Test
+    fun `resuming a due session transfers ownership and preserves its progress`() {
+        val questEntry = AutomationEntryEntity(10, account, AutomationType.QUEST, 0, true, now, now)
+        val current = battleSession(status = AutomationWorkStatus.RUNNING, confirmedCount = 12)
+        val due = AutomationWorkSessionEntity(
+            id = 43,
+            account = account,
+            entry = questEntry,
+            workType = AutomationWorkType.QUEST,
+            targetKey = "quest-1",
+            status = AutomationWorkStatus.YIELDED_PRIORITY,
+            configVersion = questEntry.updatedAt.toString(),
+            confirmedCount = 2,
+            questCycle = "cycle-3",
+            missionKey = "mission-ajelad",
+            missionType = "MONSTER_KILL",
+            observedCurrent = 4,
+            observedRequired = 5,
+            createdAt = now,
+            updatedAt = now,
+        )
+        Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
+        Mockito.`when`(queries.lockById(7, due.id)).thenReturn(due)
+        Mockito.`when`(queries.lockOpen(7)).thenReturn(listOf(current, due))
+        Mockito.`when`(typed.findEntry(7, questEntry.id)).thenReturn(questEntry)
+
+        service.resumeForCheck(7, due.id)
+
+        assertEquals(AutomationWorkStatus.YIELDED_PRIORITY, current.status)
+        assertEquals(AutomationWorkStatus.RUNNING, due.status)
+        assertEquals(2, due.confirmedCount)
+        assertEquals("cycle-3", due.questCycle)
+        assertEquals("mission-ajelad", due.missionKey)
+        assertEquals("MONSTER_KILL", due.missionType)
+        assertEquals(4, due.observedCurrent)
+        assertEquals(5, due.observedRequired)
+    }
+
+    @Test
     fun `yielded battle session resumes with confirmed wins intact`() {
         val session = battleSession(status = AutomationWorkStatus.YIELDED_PRIORITY, confirmedCount = 12)
         Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
