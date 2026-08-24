@@ -153,10 +153,21 @@ class RaidPubParserTest {
     }
 
     @Test fun `POST HOF raidpub action이 아닌 form은 화면으로 관측하지 않는다`() {
-        val external = fixture().replace("method=\"post\" action=\"?menu=raidpub\"", "method=\"post\" action=\"https://evil.example/ZeroHOF/index.php?menu=raidpub\"")
+        val external = fixture().replace("method=\"post\" action=\"index.php\"", "method=\"post\" action=\"https://evil.example/ZeroHOF/index.php?menu=raidpub\"")
+        val wrongMenu = fixture().replace("method=\"post\" action=\"index.php\"", "method=\"post\" action=\"index.php?menu=store\"")
         val getForm = fixture().replace("method=\"post\"", "method=\"get\"")
         assertTrue(parser.parse(external, URL, forms.parse(external, URL)).raids.isEmpty())
+        assertTrue(parser.parse(wrongMenu, URL, forms.parse(wrongMenu, URL)).raids.isEmpty())
         assertTrue(parser.parse(getForm, URL, forms.parse(getForm, URL)).raids.isEmpty())
+    }
+
+    @Test fun `현재 페이지가 raidpub가 아니면 같은 HOF index POST도 화면으로 관측하지 않는다`() {
+        val nonRaidUrl = "http://sic.zerosic.com/ZeroHOF/index.php?menu=store"
+
+        val page = parser.parse(fixture(), nonRaidUrl, forms.parse(fixture(), nonRaidUrl))
+
+        assertFalse(page.pageComplete)
+        assertTrue(page.raids.isEmpty())
     }
 
     @Test fun `raidlog 종료 표식이 잘린 form-only 응답은 완전한 raidpub 페이지가 아니다`() {

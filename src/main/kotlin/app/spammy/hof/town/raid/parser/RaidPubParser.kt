@@ -8,6 +8,7 @@ import app.spammy.hof.town.raid.model.*
 import app.spammy.hof.external.model.HofHttpMethod
 import java.math.BigInteger
 import java.net.URI
+import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.jsoup.nodes.Node
 import org.jsoup.nodes.TextNode
@@ -23,6 +24,7 @@ class RaidPubParser {
         result: ParsedTownResult? = null,
         availableRaidCodes: Set<String> = emptySet(),
     ): RaidPubSnapshot {
+        val pageTerminatorComplete = hasCompletePageTerminator(Jsoup.parse(html, finalUrl))
         val doc = HofHtmlParser.parse(html, finalUrl)
         val normalizedResult = result?.let { parsed ->
             if (RESET_SUCCEEDED.containsMatchIn(clean(doc.text())) && RESET_SUCCESS_MESSAGE !in parsed.messages) {
@@ -31,16 +33,17 @@ class RaidPubParser {
                 parsed
             }
         }
+        if (!safeRaidPubPageUrl(finalUrl)) return empty(normalizedResult)
         val contents = doc.selectFirst("#contents") ?: return empty(normalizedResult)
         val forms = contents.select("form").filter { form ->
             form.attr("method").equals("post", true) &&
-                form.attr("action").contains("raidpub", true) && safeRaidPubUrl(resolve(finalUrl, form.attr("action")))
+                safeRaidPubActionUrl(resolve(finalUrl, form.attr("action")))
         }
         if (forms.size != 1) return empty(normalizedResult)
         val form = forms.single()
         if (
             form.select("a[href*=raidlog]").isEmpty() ||
-            !hasCompletePageTerminator(doc)
+            !pageTerminatorComplete
         ) return empty(normalizedResult)
         val submitControlCounts = form.children()
             .filter { it.tagName() in setOf("input", "button") && isSubmit(it) }
@@ -51,7 +54,7 @@ class RaidPubParser {
             .eachCount()
         val actionIds = page.forms.mapNotNull { parsed ->
             val submit = parsed.submitFields.singleOrNull() ?: return@mapNotNull null
-            if (parsed.method != HofHttpMethod.POST || !safeRaidPubUrl(parsed.actionUrl) ||
+            if (parsed.method != HofHttpMethod.POST || !safeRaidPubActionUrl(parsed.actionUrl) ||
                 parsed.hiddenFields.groupingBy { it.name }.eachCount().any { it.value > 1 }
             ) return@mapNotNull null
             if (submitControlCounts[submit.name to submit.value] != 1) return@mapNotNull null
@@ -214,11 +217,17 @@ class RaidPubParser {
         action.startsWith("?") -> pageUrl.substringBefore('#').substringBefore('?') + action
         else -> URI(pageUrl).resolve(action).toString()
     }
-    private fun safeRaidPubUrl(value: String): Boolean = runCatching {
+    private fun safeRaidPubPageUrl(value: String): Boolean = safeHofIndexUrl(value) { query ->
+        query.split('&').any { it.equals("menu=raidpub", true) }
+    }
+    private fun safeRaidPubActionUrl(value: String): Boolean = safeHofIndexUrl(value) { query ->
+        query.isBlank() || query.split('&').any { it.equals("menu=raidpub", true) }
+    }
+    private fun safeHofIndexUrl(value: String, acceptsQuery: (String) -> Boolean): Boolean = runCatching {
         val uri = URI(value).normalize()
         uri.scheme == "http" && uri.host.equals("sic.zerosic.com", true) && uri.port in setOf(-1, 80) &&
             uri.rawUserInfo == null && uri.rawFragment == null && uri.path == "/ZeroHOF/index.php" &&
-            uri.rawQuery.orEmpty().split('&').any { it.equals("menu=raidpub", true) }
+            acceptsQuery(uri.rawQuery.orEmpty())
     }.getOrDefault(false)
     private fun clean(value: String) = value.replace('\u00a0', ' ').replace(Regex("\\s+"), " ").trim()
     private fun String.boundedInt(max: Int) = replace(",", "").toLongOrNull()?.takeIf { it in 0..max.toLong() }?.toInt()
