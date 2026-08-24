@@ -274,6 +274,8 @@ class RaidCycleModuleTest {
 
         assertEquals(RaidWaitReason.WAITING_TO_START, wait.reason)
         assertEquals(now.plusSeconds(90), wait.at)
+        assertEquals(target.raidId, wait.authoritativeState?.raidId)
+        assertEquals(true, wait.authoritativeState?.baseline?.contains("READY"))
     }
 
     @Test

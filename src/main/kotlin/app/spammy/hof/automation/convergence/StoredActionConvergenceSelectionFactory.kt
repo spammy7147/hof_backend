@@ -1,8 +1,9 @@
 package app.spammy.hof.automation.convergence
 
+import app.spammy.hof.automation.service.AdventureMapAutomationAction
+import app.spammy.hof.automation.raid.RaidAuthoritativeState
 import app.spammy.hof.automation.service.BattleAutomationActionSource
 import app.spammy.hof.automation.service.BattleMapAutomationAction
-import app.spammy.hof.automation.service.AdventureMapAutomationAction
 import app.spammy.hof.automation.service.FishingTownAutomationAction
 import app.spammy.hof.automation.service.HomeQuestAutomationAction
 import app.spammy.hof.automation.service.HomeQuestAutomationActionType
@@ -21,6 +22,11 @@ import org.springframework.stereotype.Component
 
 @Component
 class StoredActionConvergenceSelectionFactory {
+    fun authoritativeRaidBaseline(state: RaidAuthoritativeState) = AuthoritativeConvergenceBaseline(
+        scope = scope(AutomationIsolationScopeKind.RAID_ENTRY, state.raidId),
+        fingerprint = fingerprint(state.baseline),
+    )
+
     fun create(
         stored: StoredTypedAutomationAction,
         legacySuppressionEpoch: String? = null,

@@ -50,6 +50,11 @@ data class AutomationIsolationScope(
     }
 }
 
+data class AuthoritativeConvergenceBaseline(
+    val scope: AutomationIsolationScope,
+    val fingerprint: String,
+)
+
 data class SelectedAutomationAction(
     val entryId: Long,
     val executionIdentity: String,

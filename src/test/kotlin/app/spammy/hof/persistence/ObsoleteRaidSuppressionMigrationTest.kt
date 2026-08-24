@@ -40,6 +40,8 @@ class ObsoleteRaidSuppressionMigrationTest {
                         "(101,1,10,'raid-still-current','RAID_REGISTER','RAID_ENTRY','Raid001','v1','baseline-b',false," +
                         "timestamp with time zone '2026-08-23 10:19:00+00',timestamp with time zone '2026-08-23 10:19:01+00')," +
                         "(102,1,11,'quest-held','QUEST_ACCEPT','QUEST_TARGET','quest-1','v1','baseline-c',false," +
+                        "timestamp with time zone '2026-08-23 09:59:00+00',timestamp with time zone '2026-08-23 09:59:01+00')," +
+                        "(103,1,10,'raid-battle-obsolete','RAID_BATTLE','RAID_ENTRY','Raid003','v1','baseline-d',false," +
                         "timestamp with time zone '2026-08-23 09:59:00+00',timestamp with time zone '2026-08-23 09:59:01+00')",
                 )
                 statement.executeUpdate(
@@ -52,6 +54,8 @@ class ObsoleteRaidSuppressionMigrationTest {
                         "(101,101,1,'RAID_ENTRY','Raid001','HELD',5,'PENDING_BUDGET_EXHAUSTED'," +
                         "timestamp with time zone '2026-08-23 10:20:00+00',timestamp with time zone '2026-08-23 10:20:00+00')," +
                         "(102,102,1,'QUEST_TARGET','quest-1','HELD',5,'PENDING_BUDGET_EXHAUSTED'," +
+                        "timestamp with time zone '2026-08-23 10:00:00+00',timestamp with time zone '2026-08-23 10:00:00+00')," +
+                        "(103,103,1,'RAID_ENTRY','Raid003','RESULT_UNOBSERVED',3,'RESULT_UNOBSERVED'," +
                         "timestamp with time zone '2026-08-23 10:00:00+00',timestamp with time zone '2026-08-23 10:00:00+00')",
                 )
                 statement.executeUpdate(
@@ -65,6 +69,13 @@ class ObsoleteRaidSuppressionMigrationTest {
                         "timestamp with time zone '2026-08-23 10:09:01+00'," +
                         "timestamp with time zone '2026-08-23 10:10:00+00'," +
                         "timestamp with time zone '2026-08-23 10:10:00+00')," +
+                        "(203,1,10,'later-raid-battle-success','BATTLE_MAP'," +
+                        "'{\"source\":\"RAID_AUTOMATION\",\"sourceTargetKey\":\"Raid003\"}'," +
+                        "'${"4".repeat(64)}','SUCCEEDED',0,'b'," +
+                        "timestamp with time zone '2026-08-23 10:14:00+00'," +
+                        "timestamp with time zone '2026-08-23 10:14:01+00'," +
+                        "timestamp with time zone '2026-08-23 10:15:00+00'," +
+                        "timestamp with time zone '2026-08-23 10:15:00+00')," +
                         "(202,1,10,'other-raid-success','RAID_TOWN','{\"targetRaidId\":\"Raid002\",\"raidId\":\"Raid002\"}'," +
                         "'${"3".repeat(64)}','SUCCEEDED',0,'o'," +
                         "timestamp with time zone '2026-08-23 10:29:00+00'," +
@@ -99,6 +110,12 @@ class ObsoleteRaidSuppressionMigrationTest {
                     rows.next()
                     assertEquals(102, rows.getLong("id"))
                     assertNull(rows.getTimestamp("suppression_released_at"))
+                    rows.next()
+                    assertEquals(103, rows.getLong("id"))
+                    assertEquals(
+                        Instant.parse("2026-08-23T10:15:00Z"),
+                        rows.getTimestamp("suppression_released_at").toInstant(),
+                    )
                 }
             }
         }

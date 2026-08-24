@@ -190,6 +190,16 @@ data class RaidCycleOutcome(
     val kind: RaidCycleOutcomeKind,
 )
 
+data class RaidAuthoritativeState(
+    val raidId: String,
+    val baseline: String,
+) {
+    init {
+        require(raidId.isNotBlank()) { "Raid authoritative state id must not be blank." }
+        require(baseline.isNotBlank()) { "Raid authoritative baseline must not be blank." }
+    }
+}
+
 sealed interface RaidDirective {
     data class Execute(
         val intent: RaidIntent,
@@ -207,6 +217,7 @@ sealed interface RaidDirective {
         val impactScope: AutomationImpactScope? = null,
         val releaseCondition: String? = null,
         val reasonCode: String? = null,
+        val authoritativeState: RaidAuthoritativeState? = null,
     ) : RaidDirective
     data class Hold(
         val reason: RaidHoldReason,
@@ -218,11 +229,13 @@ sealed interface RaidDirective {
         val diagnosticKind: AutomationDiagnosticKind? = null,
         val impactScope: AutomationImpactScope? = null,
         val releaseCondition: String? = null,
+        val authoritativeState: RaidAuthoritativeState? = null,
     ) : RaidDirective
     data class Complete(
         val outcome: RaidCycleOutcome,
         val reasonCode: String? = null,
         val message: String? = null,
+        val authoritativeState: RaidAuthoritativeState? = null,
     ) : RaidDirective
 }
 

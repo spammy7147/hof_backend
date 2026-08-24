@@ -16,6 +16,17 @@ class DefaultRaidCycleModule(
     private val properties: RaidAutomationProperties = RaidAutomationProperties(),
 ) : RaidCycleModule {
     override fun decideNext(accountId: Long): RaidDirective {
+        var authoritativeObservation: RaidObservation? = null
+        val directive = decideNext(accountId) { observation ->
+            if (observation.fresh) authoritativeObservation = observation
+        }
+        return directive.withAuthoritativeState(authoritativeObservation)
+    }
+
+    private fun decideNext(
+        accountId: Long,
+        observe: (RaidObservation) -> Unit,
+    ): RaidDirective {
         val state = store.load(accountId)
         val configuration = state.configuration
             ?: return RaidDirective.Hold(
@@ -77,6 +88,7 @@ class DefaultRaidCycleModule(
             )
         }
         val observation = observations.read(accountId)
+        observe(observation)
         state.openCycle?.battleRecovery?.takeIf { !observation.fresh }?.let { recovery ->
             val now = timeProvider.now()
             val updated = recovery.copy(
@@ -549,6 +561,61 @@ class DefaultRaidCycleModule(
             entryId = configuration.entryId,
             raidId = cycle.raidId,
         )
+    }
+
+    private fun RaidDirective.withAuthoritativeState(observation: RaidObservation?): RaidDirective {
+        if (observation == null) return this
+        return when (this) {
+            is RaidDirective.Execute -> this
+            is RaidDirective.WaitUntil -> copy(
+                authoritativeState = observation.authoritativeState(raidId),
+            )
+            is RaidDirective.Complete -> copy(
+                authoritativeState = observation.authoritativeState(outcome.raidId),
+            )
+            is RaidDirective.Hold -> if (
+                raidId != null && reason in AUTHORITATIVE_HOLD_REASONS
+            ) {
+                copy(authoritativeState = observation.authoritativeState(raidId))
+            } else {
+                this
+            }
+        }
+    }
+
+    private fun RaidObservation.authoritativeState(raidId: String): RaidAuthoritativeState {
+        val target = raids.singleOrNull { it.id == raidId }
+        val rewardWindow = when (val reward = target?.rewardWindow) {
+            RaidRewardWindowObservation.Available -> "AVAILABLE"
+            RaidRewardWindowObservation.Absent -> "ABSENT"
+            is RaidRewardWindowObservation.Wait -> "WAIT:${reward.remainingSeconds}"
+            is RaidRewardWindowObservation.Incomplete -> "INCOMPLETE"
+            null -> "TARGET_ABSENT"
+        }
+        val targetState = target?.let {
+            listOf(
+                it.status.name,
+                it.joined,
+                it.playable,
+                it.waitSeconds,
+                it.actions.map(RaidIntentKind::name).sorted().joinToString(","),
+                it.battleAvailability.name,
+                it.battle?.categoryId,
+                it.battle?.mapCode,
+                it.battle?.cooldownRemainingSeconds,
+                rewardWindow,
+            ).joinToString("|")
+        } ?: "TARGET_ABSENT"
+        val baseline = listOf(
+            "raid",
+            "observed",
+            raidId,
+            targetState,
+            registrationWait,
+            registrationWaitSeconds,
+            globalActions.map(RaidIntentKind::name).sorted().joinToString(","),
+        ).joinToString("|")
+        return RaidAuthoritativeState(raidId, baseline)
     }
 
     override fun recordObservedResult(
@@ -1365,6 +1432,13 @@ class DefaultRaidCycleModule(
         const val MAX_REWARD_OBSERVATIONS = 5
         const val MAX_REWARD_OBSERVATION_SECONDS = 120L
         const val MINIMUM_WAIT_SECONDS = 5
+        val AUTHORITATIVE_HOLD_REASONS = setOf(
+            RaidHoldReason.INVALID_PRESET,
+            RaidHoldReason.MANUAL_RAID_ACTIVE,
+            RaidHoldReason.TARGET_TEMPORARILY_MISSING,
+            RaidHoldReason.ACTION_UNAVAILABLE,
+            RaidHoldReason.BATTLE_TARGET_ABSENT,
+        )
         val RESET_REQUIRED_STATUS = Regex("보상\\s*확인\\s*종료\\s*\\(\\s*리셋\\s*가능\\s*\\)")
         val REGISTRATION_STATUSES = setOf(
             RaidObservedStatus.RECRUITING,

@@ -1,20 +1,21 @@
 package app.spammy.hof.automation.service
 
-import app.spammy.hof.automation.convergence.AutomationConvergenceSelectionGuard
-import app.spammy.hof.automation.convergence.AutomationConvergenceRollout
 import app.spammy.hof.automation.convergence.AutomationActionConvergenceModule
 import app.spammy.hof.automation.convergence.AutomationActionEvidence
+import app.spammy.hof.automation.convergence.AutomationConvergenceRollout
+import app.spammy.hof.automation.convergence.AutomationConvergenceSelectionGuard
+import app.spammy.hof.automation.convergence.AutomationIsolationScope
 import app.spammy.hof.automation.convergence.ConvergenceDirective
 import app.spammy.hof.automation.convergence.StoredActionConvergenceSelectionFactory
+import app.spammy.hof.automation.entity.AutomationType
+import app.spammy.hof.automation.entity.AutomationWorkStatus
+import app.spammy.hof.automation.entity.AutomationWorkType
 import app.spammy.hof.automation.raid.RaidCycleModule
 import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
 import app.spammy.hof.automation.raid.RaidDirective
 import app.spammy.hof.automation.raid.RaidIntent
 import app.spammy.hof.automation.raid.RaidIntentKind
 import app.spammy.hof.automation.raid.RaidWaitReason
-import app.spammy.hof.automation.entity.AutomationType
-import app.spammy.hof.automation.entity.AutomationWorkStatus
-import app.spammy.hof.automation.entity.AutomationWorkType
 import app.spammy.hof.automation.repository.AutomationWorkSessionQueryRepository
 import app.spammy.hof.automation.repository.AutomationWorkSessionView
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
@@ -208,7 +209,9 @@ class AutomationTargetSelector(
                     )
                 }
                 if (entry.type == AutomationType.RAID) {
-                    when (val directive = raidModule.decideNext(accountId)) {
+                    val directive = raidModule.decideNext(accountId)
+                    observeRaidAuthoritativeState(accountId, directive)
+                    when (directive) {
                         is RaidDirective.Execute -> {
                             val action = directive.intent.toPreparedAction(accountId)
                             val block = selectionBlock(accountId, entry.id, action)
@@ -418,21 +421,7 @@ class AutomationTargetSelector(
         val factory = convergenceSelectionFactory ?: return null
         val preview = factory.preview(entryId, action)
         preview.baselineFingerprint?.let { baselineFingerprint ->
-            val released = convergenceModule?.observeAuthoritativeBaseline(
-                accountId,
-                preview.scope,
-                baselineFingerprint,
-                timeProvider.now(),
-            ) ?: 0
-            if (released > 0) {
-                log.info(
-                    "Automation convergence suppression released accountId={} scopeKind={} scopeKey={} count={}",
-                    accountId,
-                    preview.scope.kind,
-                    preview.scope.key,
-                    released,
-                )
-            }
+            observeAuthoritativeBaseline(accountId, preview.scope, baselineFingerprint)
         }
         val constraints = guard.constraints(accountId)
         // Captcha gates and terminal legacy baseline suppression are safety controls, not policy rollout decisions.
@@ -452,6 +441,39 @@ class AutomationTargetSelector(
             SelectionBlock(CONVERGENCE_BLOCKED_REASON, CONVERGENCE_BLOCKED_MESSAGE)
         } else {
             null
+        }
+    }
+
+    private fun observeRaidAuthoritativeState(accountId: Long, directive: RaidDirective) {
+        val state = when (directive) {
+            is RaidDirective.Execute -> null
+            is RaidDirective.WaitUntil -> directive.authoritativeState
+            is RaidDirective.Hold -> directive.authoritativeState
+            is RaidDirective.Complete -> directive.authoritativeState
+        } ?: return
+        val baseline = convergenceSelectionFactory?.authoritativeRaidBaseline(state) ?: return
+        observeAuthoritativeBaseline(accountId, baseline.scope, baseline.fingerprint)
+    }
+
+    private fun observeAuthoritativeBaseline(
+        accountId: Long,
+        scope: AutomationIsolationScope,
+        baselineFingerprint: String,
+    ) {
+        val released = convergenceModule?.observeAuthoritativeBaseline(
+            accountId,
+            scope,
+            baselineFingerprint,
+            timeProvider.now(),
+        ) ?: 0
+        if (released > 0) {
+            log.info(
+                "Automation convergence suppression released accountId={} scopeKind={} scopeKey={} count={}",
+                accountId,
+                scope.kind,
+                scope.key,
+                released,
+            )
         }
     }
 
@@ -484,71 +506,75 @@ class AutomationTargetSelector(
         initialWarnings: List<String>,
         initialTrace: List<AutomationEvaluationTrace>,
         evaluatedSessionIds: Set<Long>,
-    ): AutomationCoordination = when (val directive = raidModule.decideNext(accountId)) {
-        is RaidDirective.Execute -> {
-            val action = directive.intent.toPreparedAction(accountId)
-            val block = selectionBlock(accountId, session.entryId, action)
-            if (block != null) {
-                lifecycle.waitForCooldown(
+    ): AutomationCoordination {
+        val directive = raidModule.decideNext(accountId)
+        observeRaidAuthoritativeState(accountId, directive)
+        return when (directive) {
+            is RaidDirective.Execute -> {
+                val action = directive.intent.toPreparedAction(accountId)
+                val block = selectionBlock(accountId, session.entryId, action)
+                if (block != null) {
+                    lifecycle.waitForCooldown(
+                        accountId,
+                        session.id,
+                        timeProvider.now().plusSeconds(SCOPE_SUPPRESSION_RECHECK_SECONDS),
+                    )
+                    selectConfigured(
+                        accountId,
+                        initialWarnings + block.message,
+                        initialTrace + AutomationEvaluationTrace(
+                            initialTrace.size,
+                            session.entryId,
+                            AutomationType.RAID,
+                            AutomationDecisionOutcome.WAITING,
+                            block.reasonCode,
+                            block.message,
+                            observedAt = timeProvider.now(),
+                        ),
+                        evaluatedSessionIds,
+                    )
+                } else {
+                    AutomationCoordination.Runnable(
+                        session.entryId,
+                        action,
+                        initialWarnings + listOfNotNull(directive.warning ?: directive.intent.recoveryWarning()),
+                        initialTrace + directive.toTrace(session.entryId, initialTrace.size),
+                    )
+                }
+            }
+            is RaidDirective.WaitUntil -> {
+                lifecycle.waitForCooldown(accountId, session.id, directive.at)
+                selectConfigured(
                     accountId,
-                    session.id,
-                    timeProvider.now().plusSeconds(SCOPE_SUPPRESSION_RECHECK_SECONDS),
+                    initialWarnings,
+                    initialTrace + directive.toTrace(session.entryId, initialTrace.size),
+                    evaluatedSessionIds,
+                )
+            }
+            is RaidDirective.Hold -> {
+                lifecycle.waitForRaid(
+                    accountId,
+                    directive.entryId ?: session.entryId,
+                    directive.raidId ?: session.targetKey,
+                    directive.recheckAt,
+                    directive.message.takeIf { directive.isUserWarning() },
                 )
                 selectConfigured(
                     accountId,
-                    initialWarnings + block.message,
-                    initialTrace + AutomationEvaluationTrace(
-                        initialTrace.size,
-                        session.entryId,
-                        AutomationType.RAID,
-                        AutomationDecisionOutcome.WAITING,
-                        block.reasonCode,
-                        block.message,
-                        observedAt = timeProvider.now(),
-                    ),
+                    initialWarnings + listOfNotNull(directive.message.takeIf { directive.isUserWarning() }),
+                    initialTrace + directive.toTrace(session.entryId, initialTrace.size),
                     evaluatedSessionIds,
                 )
-            } else {
-                AutomationCoordination.Runnable(
-                    session.entryId,
-                    action,
-                    initialWarnings + listOfNotNull(directive.warning ?: directive.intent.recoveryWarning()),
+            }
+            is RaidDirective.Complete -> {
+                lifecycle.applyTransition(accountId, session.id, AutomationWorkTransition.Complete)
+                selectConfigured(
+                    accountId,
+                    initialWarnings,
                     initialTrace + directive.toTrace(session.entryId, initialTrace.size),
+                    evaluatedSessionIds,
                 )
             }
-        }
-        is RaidDirective.WaitUntil -> {
-            lifecycle.waitForCooldown(accountId, session.id, directive.at)
-            selectConfigured(
-                accountId,
-                initialWarnings,
-                initialTrace + directive.toTrace(session.entryId, initialTrace.size),
-                evaluatedSessionIds,
-            )
-        }
-        is RaidDirective.Hold -> {
-            lifecycle.waitForRaid(
-                accountId,
-                directive.entryId ?: session.entryId,
-                directive.raidId ?: session.targetKey,
-                directive.recheckAt,
-                directive.message.takeIf { directive.isUserWarning() },
-            )
-            selectConfigured(
-                accountId,
-                initialWarnings + listOfNotNull(directive.message.takeIf { directive.isUserWarning() }),
-                initialTrace + directive.toTrace(session.entryId, initialTrace.size),
-                evaluatedSessionIds,
-            )
-        }
-        is RaidDirective.Complete -> {
-            lifecycle.applyTransition(accountId, session.id, AutomationWorkTransition.Complete)
-            selectConfigured(
-                accountId,
-                initialWarnings,
-                initialTrace + directive.toTrace(session.entryId, initialTrace.size),
-                evaluatedSessionIds,
-            )
         }
     }
 

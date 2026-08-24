@@ -24,6 +24,7 @@ import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.automation.raid.RaidCycleModule
 import app.spammy.hof.automation.raid.RaidCycleOutcome
 import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
+import app.spammy.hof.automation.raid.RaidAuthoritativeState
 import app.spammy.hof.automation.raid.RaidCooldownSource
 import app.spammy.hof.automation.raid.RaidDirective
 import app.spammy.hof.automation.raid.RaidIntent
@@ -42,6 +43,7 @@ import app.spammy.hof.quest.model.QuestSnapshot
 import app.spammy.hof.quest.model.QuestState
 import app.spammy.hof.town.fishing.dto.FishingResponse
 import app.spammy.hof.town.fishing.model.FishingPrimaryAction
+import app.spammy.hof.town.raid.model.RaidAction
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -307,6 +309,91 @@ class AutomationTargetSelectorTest {
             originalAction,
             assertIs<AutomationCoordination.Runnable>(guarded.select(7L)).action,
         )
+    }
+
+    @Test
+    fun `shadow raid selector는 완전한 비실행 상태 뒤 새 사이클 등록을 다시 선택한다`() {
+        val store = InMemoryConvergenceStore()
+        val convergence = DefaultAutomationActionConvergenceModule(store, TimeProvider { now })
+        val factory = StoredActionConvergenceSelectionFactory()
+        val raidModule = Mockito.mock(RaidCycleModule::class.java)
+        val registerAction = RaidTownAutomationAction(
+            accountId = 7L,
+            action = RaidAction.REGISTER,
+            raidId = "Raid001",
+            targetRaidId = "Raid001",
+            raidName = "고블린 전투 마차",
+            observedStatus = "파티 모집 중 (신청 안됨)",
+        )
+        val registerPreview = factory.preview(raidEntry.id, registerAction)
+        val heldSelection = SelectedAutomationAction(
+            entryId = raidEntry.id,
+            executionIdentity = "held-raid-registration",
+            actionKind = registerPreview.actionKind,
+            scope = registerPreview.scope,
+            policyVersion = StoredActionConvergenceSelectionFactory.POLICY_VERSION,
+            baselineFingerprint = requireNotNull(registerPreview.baselineFingerprint),
+        )
+        val heldAttempt = assertIs<ConvergenceDirective.Submit>(
+            convergence.prepare(7L, heldSelection),
+        ).attemptId
+        convergence.record(
+            heldAttempt,
+            AutomationActionEvidence.ResultUnobserved(now, "legacy budget exhausted"),
+        )
+        val retryAt = now.plusSeconds(120)
+        Mockito.`when`(raidModule.decideNext(7L)).thenReturn(
+            RaidDirective.WaitUntil(
+                at = retryAt,
+                reason = RaidWaitReason.WAITING_TO_START,
+                message = "레이드 출발 가능 시각까지 기다립니다.",
+                entryId = raidEntry.id,
+                raidId = "Raid001",
+                authoritativeState = RaidAuthoritativeState(
+                    raidId = "Raid001",
+                    baseline = "raid|observed|Raid001|WAITING|joined=true",
+                ),
+            ),
+            RaidDirective.Execute(
+                RaidIntent.Town(
+                    entryId = raidEntry.id,
+                    raidId = "Raid001",
+                    raidName = "고블린 전투 마차",
+                    kind = RaidIntentKind.REGISTER,
+                    observedStatus = "파티 모집 중 (신청 안됨)",
+                ),
+            ),
+        )
+        val guarded = AutomationTargetSelector(
+            typed = typed,
+            work = work,
+            loader = loader,
+            lifecycle = lifecycle,
+            timeProvider = TimeProvider { now },
+            raidModule = raidModule,
+            quest = fixedQuestRules(QuestDirective.Skip),
+            battle = AutomationHandler { HandlerEvaluation.Skipped },
+            adventure = AutomationHandler { HandlerEvaluation.Skipped },
+            union = AutomationHandler { HandlerEvaluation.Skipped },
+            fishing = AutomationHandler { HandlerEvaluation.Skipped },
+            homeQuest = AutomationHandler { HandlerEvaluation.Skipped },
+            convergenceModule = convergence,
+            convergenceGuard = StoreBackedAutomationConvergenceSelectionGuard(store),
+            convergenceSelectionFactory = factory,
+            convergenceRollout = AutomationConvergenceRollout(
+                AutomationConvergenceProperties(mode = AutomationConvergenceMode.SHADOW),
+            ),
+        )
+        Mockito.`when`(work.findRunning(7L)).thenReturn(null)
+        Mockito.`when`(work.findWaiting(7L)).thenReturn(emptyList())
+        Mockito.`when`(typed.findEntries(7L)).thenReturn(listOf(raidEntry))
+
+        assertIs<AutomationCoordination.Unavailable>(guarded.select(7L))
+        assertEquals(emptyMap(), store.findSuppressedBaselines(7L))
+
+        val selected = assertIs<AutomationCoordination.Runnable>(guarded.select(7L))
+
+        assertEquals(registerAction, selected.action)
     }
 
     @Test
