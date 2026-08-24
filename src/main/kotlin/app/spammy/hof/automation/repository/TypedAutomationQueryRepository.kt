@@ -164,6 +164,12 @@ class TypedAutomationQueryRepository(
         queryFactory.selectFrom(automationEntryEntity)
             .where(automationEntryEntity.account.id.eq(accountId), automationEntryEntity.id.eq(entryId)).fetchOne()
 
+    fun findEntryForUpdate(accountId: Long, entryId: Long): AutomationEntryEntity? =
+        queryFactory.selectFrom(automationEntryEntity)
+            .where(automationEntryEntity.account.id.eq(accountId), automationEntryEntity.id.eq(entryId))
+            .setLockMode(LockModeType.PESSIMISTIC_WRITE)
+            .fetchOne()
+
     fun findQuestSelections(entryId: Long): List<QuestAutomationSelectionEntity> =
         queryFactory.selectFrom(questAutomationSelectionEntity)
             .where(questAutomationSelectionEntity.entry.id.eq(entryId))
@@ -269,6 +275,23 @@ class TypedAutomationQueryRepository(
     fun findEntries(accountId: Long): List<AutomationEntryEntity> =
         queryFactory.selectFrom(automationEntryEntity)
             .where(automationEntryEntity.account.id.eq(accountId))
+            .orderBy(automationEntryEntity.priority.asc(), automationEntryEntity.id.asc())
+            .fetch()
+
+    fun findEnabledEntriesBefore(
+        accountId: Long,
+        priority: Int,
+        entryId: Long,
+    ): List<AutomationEntryEntity> =
+        queryFactory.selectFrom(automationEntryEntity)
+            .where(
+                automationEntryEntity.account.id.eq(accountId),
+                automationEntryEntity.enabled.isTrue,
+                automationEntryEntity.priority.lt(priority).or(
+                    automationEntryEntity.priority.eq(priority)
+                        .and(automationEntryEntity.id.lt(entryId)),
+                ),
+            )
             .orderBy(automationEntryEntity.priority.asc(), automationEntryEntity.id.asc())
             .fetch()
 

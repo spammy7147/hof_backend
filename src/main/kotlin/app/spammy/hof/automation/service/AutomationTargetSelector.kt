@@ -7,6 +7,7 @@ import app.spammy.hof.automation.convergence.AutomationConvergenceSelectionGuard
 import app.spammy.hof.automation.convergence.AutomationIsolationScope
 import app.spammy.hof.automation.convergence.ConvergenceDirective
 import app.spammy.hof.automation.convergence.StoredActionConvergenceSelectionFactory
+import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.entity.AutomationWorkStatus
 import app.spammy.hof.automation.entity.AutomationWorkType
@@ -53,12 +54,33 @@ class AutomationTargetSelector(
 ) : AutomationDecisionSource {
 
     override fun select(accountId: Long): AutomationCoordination {
+        val decisionScope = loader.beginDecision(accountId)
+        return try {
+            selectWithinDecision(accountId)
+        } finally {
+            decisionScope?.close()
+        }
+    }
+
+    private fun selectWithinDecision(accountId: Long): AutomationCoordination {
         work.findRunning(accountId)?.let { running ->
             higherPriorityDueSession(accountId, running)?.let { due ->
                 if (lifecycle.handoffForPriority(accountId, running.id, due.id)) {
                     recordDueSessionSafely(accountId, due)
                     return selectSession(accountId, reloadOwner(accountId, due))
                 }
+            }
+            val higherEntries = typed.findEnabledEntriesBefore(
+                accountId = accountId,
+                priority = running.entryPriority,
+                entryId = running.entryId,
+            )
+            if (higherEntries.isNotEmpty()) {
+                return selectConfigured(
+                    accountId = accountId,
+                    configuredEntries = higherEntries,
+                    fallbackSession = running,
+                )
             }
             return selectSession(accountId, running)
         }
@@ -85,6 +107,7 @@ class AutomationTargetSelector(
         initialTrace: List<AutomationEvaluationTrace> = emptyList(),
         evaluatedSessionIds: Set<Long> = emptySet(),
         staleRetried: Boolean = false,
+        evaluatedEntryIds: Set<Long> = emptySet(),
     ): AutomationCoordination {
         val nextEvaluatedSessionIds = evaluatedSessionIds + session.id
         if (session.workType == AutomationWorkType.RAID) {
@@ -94,6 +117,7 @@ class AutomationTargetSelector(
                 initialWarnings,
                 initialTrace,
                 nextEvaluatedSessionIds,
+                evaluatedEntryIds + session.entryId,
             )
         }
         val entry = loader.loadEntry(accountId, session.entryId, session.targetKey)
@@ -130,8 +154,12 @@ class AutomationTargetSelector(
                         initialTrace = initialTrace + contextual.trace.resequenced(initialTrace.size),
                         evaluatedSessionIds = evaluatedSessionIds,
                         staleRetried = true,
+                        evaluatedEntryIds = evaluatedEntryIds,
                     )
-                } else if (contextual.waitScope == AutomationWaitScope.HOLD_CURRENT_WORK) {
+                } else if (
+                    contextual.waitScope == AutomationWaitScope.HOLD_CURRENT_WORK &&
+                    session.workType !in setOf(AutomationWorkType.BATTLE_MAP, AutomationWorkType.ADVENTURE_MAP)
+                ) {
                     prefixed
                 } else {
                     lifecycle.waitForCooldown(accountId, session.id, contextual.nextRunAt)
@@ -140,6 +168,7 @@ class AutomationTargetSelector(
                         initialWarnings + contextual.warnings,
                         initialTrace + contextual.trace.resequenced(initialTrace.size),
                         nextEvaluatedSessionIds,
+                        evaluatedEntryIds = evaluatedEntryIds,
                     )
                 }
             }
@@ -155,6 +184,7 @@ class AutomationTargetSelector(
                         initialWarnings + result.warnings,
                         initialTrace + result.trace.resequenced(initialTrace.size),
                         nextEvaluatedSessionIds,
+                        evaluatedEntryIds = evaluatedEntryIds,
                     )
                 }
                 result.workTransition?.let {
@@ -167,6 +197,7 @@ class AutomationTargetSelector(
                     initialWarnings + result.warnings,
                     initialTrace + result.trace.resequenced(initialTrace.size),
                     nextEvaluatedSessionIds,
+                    evaluatedEntryIds = evaluatedEntryIds,
                 )
             }
         }
@@ -177,16 +208,22 @@ class AutomationTargetSelector(
         initialWarnings: List<String> = emptyList(),
         initialTrace: List<AutomationEvaluationTrace> = emptyList(),
         evaluatedSessionIds: Set<Long> = emptySet(),
+        configuredEntries: List<AutomationEntryEntity>? = null,
+        fallbackSession: AutomationWorkSessionView? = null,
+        evaluatedEntryIds: Set<Long> = emptySet(),
     ): AutomationCoordination {
         val warnings = initialWarnings.toMutableList()
         val trace = initialTrace.toMutableList()
+        val nextEvaluatedEntryIds = evaluatedEntryIds.toMutableSet()
         var earliest: Instant? = null
         val now = timeProvider.now()
         val waitsByEntry = work.findWaiting(accountId).groupBy { it.entryId }
-        typed.findEntries(accountId)
+        (configuredEntries ?: typed.findEntries(accountId))
             .asSequence()
             .filter { it.enabled }
+            .filter { it.id !in nextEvaluatedEntryIds }
             .forEach { entry ->
+                nextEvaluatedEntryIds += entry.id
                 val waiting = waitsByEntry[entry.id].orEmpty()
                 val blockedUntil = waiting.mapNotNull { it.nextCheckAt }.minOrNull()
                 val due = waiting.firstOrNull {
@@ -201,13 +238,25 @@ class AutomationTargetSelector(
                 }
                 due?.let {
                     recordDueSessionSafely(accountId, due)
-                    return selectSession(
+                    val resumed = selectSession(
                         accountId,
                         resumeFresh(accountId, due),
                         warnings,
                         trace,
                         evaluatedSessionIds,
+                        evaluatedEntryIds = nextEvaluatedEntryIds,
                     )
+                    if (fallbackSession == null || resumed !is AutomationCoordination.Unavailable) {
+                        return resumed
+                    }
+                    return selectSession(
+                        accountId,
+                        fallbackSession,
+                        resumed.warnings,
+                        resumed.trace,
+                        evaluatedSessionIds + due.id,
+                        evaluatedEntryIds = nextEvaluatedEntryIds,
+                    ).withEarlierRetry(earliest ?: resumed.nextRunAt)
                 }
                 if (entry.type == AutomationType.RAID) {
                     val directive = decideRaid(accountId)
@@ -291,9 +340,26 @@ class AutomationTargetSelector(
                     }
                 }
             }
+        fallbackSession?.let { session ->
+            return selectSession(
+                accountId,
+                session,
+                warnings,
+                trace,
+                evaluatedSessionIds,
+                evaluatedEntryIds = nextEvaluatedEntryIds,
+            ).withEarlierRetry(earliest)
+        }
         return earliest?.let { AutomationCoordination.Unavailable(it, warnings, trace) }
             ?: AutomationCoordination.Idle(warnings, trace)
     }
+
+    private fun AutomationCoordination.withEarlierRetry(earlier: Instant?): AutomationCoordination =
+        if (this is AutomationCoordination.Unavailable && earlier != null && earlier < nextRunAt) {
+            copy(nextRunAt = earlier)
+        } else {
+            this
+        }
 
     private fun AutomationWorkSessionView.isDueForCheck(now: Instant): Boolean =
         nextCheckAt?.isAfter(now) == false
@@ -507,6 +573,7 @@ class AutomationTargetSelector(
         initialWarnings: List<String>,
         initialTrace: List<AutomationEvaluationTrace>,
         evaluatedSessionIds: Set<Long>,
+        evaluatedEntryIds: Set<Long>,
     ): AutomationCoordination {
         val directive = decideRaid(accountId)
         return when (directive) {
@@ -532,6 +599,7 @@ class AutomationTargetSelector(
                             observedAt = timeProvider.now(),
                         ),
                         evaluatedSessionIds,
+                        evaluatedEntryIds = evaluatedEntryIds,
                     )
                 } else {
                     AutomationCoordination.Runnable(
@@ -549,6 +617,7 @@ class AutomationTargetSelector(
                     initialWarnings,
                     initialTrace + directive.toTrace(session.entryId, initialTrace.size),
                     evaluatedSessionIds,
+                    evaluatedEntryIds = evaluatedEntryIds,
                 )
             }
             is RaidDirective.Hold -> {
@@ -564,6 +633,7 @@ class AutomationTargetSelector(
                     initialWarnings + listOfNotNull(directive.message.takeIf { directive.isUserWarning() }),
                     initialTrace + directive.toTrace(session.entryId, initialTrace.size),
                     evaluatedSessionIds,
+                    evaluatedEntryIds = evaluatedEntryIds,
                 )
             }
             is RaidDirective.Complete -> {
@@ -573,6 +643,7 @@ class AutomationTargetSelector(
                     initialWarnings,
                     initialTrace + directive.toTrace(session.entryId, initialTrace.size),
                     evaluatedSessionIds,
+                    evaluatedEntryIds = evaluatedEntryIds,
                 )
             }
         }

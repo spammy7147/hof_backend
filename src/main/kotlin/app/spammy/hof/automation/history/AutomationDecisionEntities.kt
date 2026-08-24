@@ -34,6 +34,7 @@ class AutomationDecisionEventEntity(
     @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "decision_cycle_id", nullable = false) val cycle: AutomationDecisionCycleEntity,
     @Column(name = "sequence_no", nullable = false) val sequence: Int,
     @Column(name = "automation_entry_id") val entryId: Long? = null,
+    @Column(name = "entry_display_name", length = 100) val entryDisplayName: String? = null,
     @Enumerated(EnumType.STRING) @Column(name = "automation_type", length = 30) val type: AutomationType? = null,
     @Enumerated(EnumType.STRING) @Column(name = "event_kind", nullable = false, length = 32) val kind: AutomationHistoryEventKind,
     @Column(name = "reason_code", nullable = false, length = 100) val reasonCode: String,

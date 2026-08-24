@@ -94,7 +94,9 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
     fun `레이드 복구 재개는 저장 payload 대신 최신 상태를 즉시 읽도록 확인 시각을 당긴다`() {
         val accountId = seed("raid-recovery-resume")
         TransactionTemplate(transactionManager).executeWithoutResult {
-            entityManager.createNativeQuery("update automation_entries set automation_type = 'RAID' where account_id = ?1")
+            entityManager.createNativeQuery(
+                "update automation_entries set automation_type = 'RAID', singleton_type_marker = 'RAID' where account_id = ?1",
+            )
                 .setParameter(1, accountId).executeUpdate()
             entityManager.createNativeQuery(
                 "insert into raid_automation_cycles (account_id,automation_entry_id,raid_id,raid_name,status,open_marker,started_at,updated_at,version," +
@@ -249,7 +251,10 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
         val accountId = seed("raid-resume-fresh-check")
         TransactionTemplate(transactionManager).executeWithoutResult {
             val account = requireNotNull(entityManager.find(HofAccountEntity::class.java, accountId))
-            val entry = typedQuery.findEntries(accountId).single().also { it.type = AutomationType.RAID }
+            val entry = typedQuery.findEntries(accountId).single().also {
+                it.type = AutomationType.RAID
+                it.singletonTypeMarker = AutomationType.RAID
+            }
             workSessionCommands.save(
                 AutomationWorkSessionEntity(
                     account = account,
@@ -317,7 +322,9 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
     fun `manual stop immediately stops even when a raid cycle is open`() {
         val accountId = seed("raid-drain")
         TransactionTemplate(transactionManager).executeWithoutResult {
-            entityManager.createNativeQuery("update automation_entries set automation_type = 'RAID' where account_id = ?1")
+            entityManager.createNativeQuery(
+                "update automation_entries set automation_type = 'RAID', singleton_type_marker = 'RAID' where account_id = ?1",
+            )
                 .setParameter(1, accountId).executeUpdate()
             entityManager.createNativeQuery("update typed_automation_runtime_states set lifecycle_status = 'RUNNING', stop_reason = null, stop_action_id = null where account_id = ?1")
                 .setParameter(1, accountId).executeUpdate()

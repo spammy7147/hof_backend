@@ -477,6 +477,51 @@ class TypedLiveAutomationSnapshotLoaderTest {
         Mockito.verify(typed, Mockito.never()).findAdventureSettings(Mockito.anyLong())
     }
 
+    @Test
+    fun `decision scope refreshes a shared HOF category only once for multiple map groups`() {
+        val now = Instant.parse("2026-08-24T00:00:00Z")
+        val account = HofAccountEntity(7, "decision-cache", "encrypted", now)
+        val first = AutomationEntryEntity(11, account, AutomationType.BATTLE_MAP, 0, true, now, now)
+        val second = AutomationEntryEntity(12, account, AutomationType.BATTLE_MAP, 1, true, now, now)
+        val typed = Mockito.mock(TypedAutomationQueryRepository::class.java)
+        val mapQuery = Mockito.mock(BattleMapQueryRepository::class.java)
+        val mapService = Mockito.mock(BattleMapService::class.java)
+        val presets = Mockito.mock(PartyPresetQueryRepository::class.java)
+        val loader = TypedLiveAutomationSnapshotLoader(
+            Mockito.mock(QuestGatewayService::class.java),
+            typed,
+            mapQuery,
+            presets,
+            Mockito.mock(BattleMapIdentityResolver::class.java),
+            mapService,
+            TimeProvider { now },
+            HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
+            Mockito.mock(HofStatusSnapshotService::class.java),
+        )
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(first, second))
+        Mockito.`when`(typed.findBattleSettingsByEntryIds(listOf(11, 12))).thenReturn(
+            listOf(
+                BattleAutomationMapEntity(21, first, "battle_map", "map-a", 1, PresetSelectionMode.PRIMARY, null, 0),
+                BattleAutomationMapEntity(22, second, "battle_map", "map-b", 1, PresetSelectionMode.PRIMARY, null, 0),
+            ),
+        )
+        Mockito.`when`(presets.findAllByAccountId(7)).thenReturn(emptyList())
+        Mockito.`when`(presets.findMembersByPresetIds(emptyList())).thenReturn(emptyList())
+        Mockito.`when`(mapQuery.findAllStatesForExecution(7)).thenReturn(emptyList())
+
+        loader.beginDecision(7).use {
+            loader.loadEntry(7, first.id)
+            loader.loadEntry(7, second.id)
+            second.settingsRevision += 1
+            assertFailsWith<TypedAutomationConfigurationChangedException> {
+                loader.loadEntry(7, second.id)
+            }
+        }
+
+        Mockito.verify(mapService, Mockito.times(1))
+            .findMaps(7, "battle_map", HofRequestOrigin.AUTOMATION)
+    }
+
     private fun preset(id: Long, account: HofAccountEntity, name: String, now: Instant) = PartyPresetEntity(id, account, name, now, now)
     private fun eqOrigin(origin: HofRequestOrigin): HofRequestOrigin = Mockito.eq(origin) ?: origin
     private fun members(preset: PartyPresetEntity, prefix: String, account: HofAccountEntity, now: Instant) = (0..4).map { slot ->

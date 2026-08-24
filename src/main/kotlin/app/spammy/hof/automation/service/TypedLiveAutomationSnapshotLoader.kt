@@ -53,6 +53,16 @@ class TypedLiveAutomationSnapshotLoader(
     private val homeService: HomeService? = null,
 ) : TypedAutomationSnapshotLoader {
     private val readTransaction = transactionManager?.let { TransactionTemplate(it).apply { isReadOnly = true } }
+    private val activeDecision = ThreadLocal<DecisionObservationScope?>()
+
+    override fun beginDecision(accountId: Long): AutoCloseable {
+        check(activeDecision.get() == null) { "Typed automation decision scopes cannot be nested." }
+        val scope = DecisionObservationScope(accountId)
+        activeDecision.set(scope)
+        return AutoCloseable {
+            if (activeDecision.get() === scope) activeDecision.remove()
+        }
+    }
 
     override fun loadEntry(
         accountId: Long,
@@ -60,7 +70,11 @@ class TypedLiveAutomationSnapshotLoader(
         targetKey: String?,
         questOverride: List<QuestSnapshot>?,
     ): AutomationEntrySnapshot {
+        val decision = activeDecision.get()?.also {
+            check(it.accountId == accountId) { "Typed automation decision scope belongs to another account." }
+        }
         val before = inReadTransaction { materializeConfiguration(accountId) }
+        decision?.acceptConfiguration(before.version)
         val scopedBefore = before.scoped(entryId, targetKey)
         check(!TransactionSynchronizationManager.isActualTransactionActive()) {
             "Typed automation HTTP refresh must run without a transaction."
@@ -79,6 +93,7 @@ class TypedLiveAutomationSnapshotLoader(
         }
         val after = inReadTransaction { materializeConfiguration(accountId) }
         if (before.version != after.version) throw TypedAutomationConfigurationChangedException()
+        decision?.acceptConfiguration(after.version)
         return inReadTransaction {
             assembleEntries(accountId, after.scoped(entryId, targetKey), live).single()
         }
@@ -90,7 +105,12 @@ class TypedLiveAutomationSnapshotLoader(
         includeQuests: Boolean = true,
     ): LiveAutomationState = try {
         sessionRecovery.execute(accountId) {
-            config.categories.forEach { battleMapService.findMaps(accountId, it, HofRequestOrigin.AUTOMATION) }
+            config.categories.forEach { category ->
+                val decision = activeDecision.get()
+                if (decision == null || decision.observedCategories.add(category)) {
+                    battleMapService.findMaps(accountId, category, HofRequestOrigin.AUTOMATION)
+                }
+            }
             val questObservation = if (includeQuests) {
                 questGateway.loadObservation(accountId, HofRequestOrigin.AUTOMATION)
             } else {
@@ -181,7 +201,21 @@ class TypedLiveAutomationSnapshotLoader(
                 DetachedFishingMap(it.categoryId, it.mapCode, it.presetMode, it.partyPreset?.id)
             } else emptyList()
             val rotation = if (entry.type == AutomationType.UNION) typed.findRotationState(entry.id)?.currentTargetKey else null
-            DetachedEntry(entry.id, entry.type, entry.priority, entry.enabled, quest, homeQuests, battle, adventure, union, fishingMaps, rotation)
+            DetachedEntry(
+                entry.id,
+                entry.type,
+                entry.priority,
+                entry.enabled,
+                entry.displayName,
+                entry.settingsRevision,
+                quest,
+                homeQuests,
+                battle,
+                adventure,
+                union,
+                fishingMaps,
+                rotation,
+            )
         }
         val canonical = buildString {
             append("primary=").append(primary).append('|')
@@ -379,6 +413,7 @@ class TypedLiveAutomationSnapshotLoader(
     private data class DetachedConfiguration(val entries: List<DetachedEntry>, val primary: Long?, val availablePresetIds: Set<Long>, val parties: Map<Long, ResolvedAutomationParty>, val categories: List<String>, val version: String)
     private data class DetachedEntry(
         val id: Long, val type: AutomationType, val priority: Int, val enabled: Boolean,
+        val displayName: String?, val settingsRevision: Long,
         val quest: List<DetachedQuestSelection>, val homeQuests: List<DetachedHomeQuestSelection>,
         val battle: List<DetachedBattleSetting>, val adventure: List<DetachedAdventureSetting>,
         val union: List<DetachedUnionSetting>, val fishingMaps: List<DetachedFishingMap>, val rotationTarget: String?,
@@ -397,6 +432,17 @@ class TypedLiveAutomationSnapshotLoader(
         val fishing: FishingResponse?,
         val home: HomeResponse?,
     )
+
+    private class DecisionObservationScope(val accountId: Long) {
+        val observedCategories = mutableSetOf<String>()
+        private var configurationVersion: String? = null
+
+        fun acceptConfiguration(version: String) {
+            val expected = configurationVersion
+            if (expected != null && expected != version) throw TypedAutomationConfigurationChangedException()
+            configurationVersion = version
+        }
+    }
 
     private companion object {
         val log = LoggerFactory.getLogger(TypedLiveAutomationSnapshotLoader::class.java)

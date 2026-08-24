@@ -8,9 +8,11 @@ import app.spammy.hof.automation.dto.QuestMapSettingRequest
 import app.spammy.hof.automation.dto.QuestSelectionRequest
 import app.spammy.hof.automation.dto.ReorderAutomationEntriesRequest
 import app.spammy.hof.automation.dto.UpdateBattleMapAutomationRequest
+import app.spammy.hof.automation.dto.UpdateBattleMapGroupRequest
 import app.spammy.hof.automation.dto.UpdateFishingAutomationRequest
 import app.spammy.hof.automation.dto.FishingMapSettingRequest
 import app.spammy.hof.automation.dto.HomeQuestSelectionRequest
+import app.spammy.hof.automation.dto.MoveMapBetweenGroupsRequest
 import app.spammy.hof.automation.dto.UnionMapSettingRequest
 import app.spammy.hof.automation.dto.UpdateUnionAutomationRequest
 import app.spammy.hof.automation.dto.RaidTargetSettingRequest
@@ -231,6 +233,197 @@ class UnifiedAutomationServiceTest {
                 }.errorCode,
             )
         }
+    }
+
+    @Test
+    fun `battle and adventure map entries may be created more than once`() {
+        val firstBattle = entry(91L, AutomationType.BATTLE_MAP)
+        val secondBattle = entry(92L, AutomationType.BATTLE_MAP, priority = 1)
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID))
+            .thenReturn(listOf(firstBattle), listOf(firstBattle, secondBattle))
+        Mockito.`when`(entryRepository.save(anyEntry())).thenReturn(secondBattle)
+
+        val response = service.createEntry(ACCOUNT_ID, CreateAutomationEntryRequest(AutomationType.BATTLE_MAP))
+
+        assertEquals(listOf(91L, 92L), response.entries.map { it.id })
+        assertEquals(listOf(AutomationType.BATTLE_MAP, AutomationType.BATTLE_MAP), response.entries.map { it.type })
+    }
+
+    @Test
+    fun `entry id update changes only the selected battle map group`() {
+        val first = entry(91L, AutomationType.BATTLE_MAP).also {
+            it.displayName = "일반"
+            it.settingsRevision = 3
+        }
+        val second = entry(92L, AutomationType.BATTLE_MAP, priority = 1).also {
+            it.displayName = "이벤트"
+            it.settingsRevision = 7
+        }
+        Mockito.`when`(typedQuery.findEntry(ACCOUNT_ID, second.id)).thenReturn(second)
+        Mockito.`when`(typedQuery.findBattleSettings(second.id)).thenReturn(emptyList())
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(first, second))
+
+        val response = service.updateBattleMapGroup(
+            ACCOUNT_ID,
+            second.id,
+            UpdateBattleMapGroupRequest("7", " 보스 ", false, emptyList()),
+        )
+
+        assertEquals("일반", response.entries[0].displayName)
+        assertEquals("3", response.entries[0].settingsRevision)
+        assertEquals("보스", response.entries[1].displayName)
+        assertEquals("8", response.entries[1].settingsRevision)
+    }
+
+    @Test
+    fun `stale entry id save changes nothing and reports a conflict`() {
+        val group = entry(92L, AutomationType.BATTLE_MAP).also { it.settingsRevision = 7 }
+        Mockito.`when`(typedQuery.findEntry(ACCOUNT_ID, group.id)).thenReturn(group)
+
+        val error = assertFailsWith<ApiException> {
+            service.updateBattleMapGroup(
+                ACCOUNT_ID,
+                group.id,
+                UpdateBattleMapGroupRequest("6", "덮어쓸 이름", false, emptyList()),
+            )
+        }
+
+        assertEquals(ErrorCode.AUTOMATION_SETTINGS_CONFLICT, error.errorCode)
+        assertNull(group.displayName)
+        assertEquals(7, group.settingsRevision)
+        Mockito.verifyNoInteractions(battleSettingRepository)
+    }
+
+    @Test
+    fun `stale map move changes neither group`() {
+        val source = entry(91L, AutomationType.BATTLE_MAP).also { it.settingsRevision = 4 }
+        val target = entry(92L, AutomationType.BATTLE_MAP, priority = 1).also { it.settingsRevision = 8 }
+        Mockito.`when`(typedQuery.findEntry(ACCOUNT_ID, source.id)).thenReturn(source)
+        Mockito.`when`(typedQuery.findEntry(ACCOUNT_ID, target.id)).thenReturn(target)
+
+        val error = assertFailsWith<ApiException> {
+            service.moveMapBetweenGroups(
+                ACCOUNT_ID,
+                target.id,
+                MoveMapBetweenGroupsRequest(source.id, "3", "8", "battle_map", "map-1", 0),
+            )
+        }
+
+        assertEquals(ErrorCode.AUTOMATION_SETTINGS_CONFLICT, error.errorCode)
+        assertEquals(4, source.settingsRevision)
+        assertEquals(8, target.settingsRevision)
+        Mockito.verifyNoInteractions(battleSettingRepository)
+        Mockito.verifyNoInteractions(workLifecycle)
+    }
+
+    @Test
+    fun `legacy type update rejects ambiguous map groups as a conflict`() {
+        val first = entry(91L, AutomationType.BATTLE_MAP)
+        val second = entry(92L, AutomationType.BATTLE_MAP, priority = 1)
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(first, second))
+
+        val error = assertFailsWith<ApiException> {
+            service.updateBattleMaps(ACCOUNT_ID, UpdateBattleMapAutomationRequest(false, emptyList()))
+        }
+
+        assertEquals(ErrorCode.AUTOMATION_SETTINGS_CONFLICT, error.errorCode)
+        Mockito.verifyNoInteractions(battleSettingRepository)
+    }
+
+    @Test
+    fun `map group cannot be enabled empty or reuse a map from another group`() {
+        val first = entry(91L, AutomationType.BATTLE_MAP)
+        val second = entry(92L, AutomationType.BATTLE_MAP, priority = 1)
+        Mockito.`when`(typedQuery.findEntry(ACCOUNT_ID, second.id)).thenReturn(second)
+
+        assertEquals(
+            ErrorCode.INVALID_REQUEST,
+            assertFailsWith<ApiException> {
+                service.updateBattleMapGroup(
+                    ACCOUNT_ID,
+                    second.id,
+                    UpdateBattleMapGroupRequest("0", null, true, emptyList()),
+                )
+            }.errorCode,
+        )
+
+        val occupied = BattleAutomationMapEntity(
+            901L,
+            first,
+            "battle_map",
+            "map-1",
+            3,
+            PresetSelectionMode.PRIMARY,
+            null,
+            0,
+        )
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(first, second))
+        Mockito.`when`(typedQuery.findBattleSettingsByEntryIds(listOf(first.id, second.id)))
+            .thenReturn(listOf(occupied))
+
+        assertEquals(
+            ErrorCode.INVALID_REQUEST,
+            assertFailsWith<ApiException> {
+                service.updateBattleMapGroup(
+                    ACCOUNT_ID,
+                    second.id,
+                    UpdateBattleMapGroupRequest(
+                        "0",
+                        null,
+                        false,
+                        listOf(BattleMapSettingRequest("battle_map", "map-1", 3, PresetSelectionMode.PRIMARY, null, 0)),
+                    ),
+                )
+            }.errorCode,
+        )
+        Mockito.verifyNoInteractions(battleMapQueryRepository)
+    }
+
+    @Test
+    fun `moving a battle map updates both groups atomically and preserves map progress ownership`() {
+        val source = entry(91L, AutomationType.BATTLE_MAP, enabled = true).also { it.settingsRevision = 4 }
+        val target = entry(92L, AutomationType.BATTLE_MAP, priority = 1).also { it.settingsRevision = 8 }
+        val moved = BattleAutomationMapEntity(
+            901L,
+            source,
+            "battle_map",
+            "map-1",
+            3,
+            PresetSelectionMode.PRIMARY,
+            null,
+            0,
+        )
+        Mockito.`when`(typedQuery.findEntry(ACCOUNT_ID, source.id)).thenReturn(source)
+        Mockito.`when`(typedQuery.findEntry(ACCOUNT_ID, target.id)).thenReturn(target)
+        Mockito.`when`(typedQuery.findBattleSettings(source.id)).thenReturn(listOf(moved), emptyList())
+        Mockito.`when`(typedQuery.findBattleSettings(target.id)).thenReturn(emptyList(), listOf(moved))
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(source, target))
+
+        val response = service.moveMapBetweenGroups(
+            ACCOUNT_ID,
+            target.id,
+            MoveMapBetweenGroupsRequest(
+                sourceEntryId = source.id,
+                sourceSettingsRevision = "4",
+                targetSettingsRevision = "8",
+                categoryId = "battle_map",
+                mapCode = "map-1",
+                targetExecutionOrder = 0,
+            ),
+        )
+
+        assertEquals(target.id, moved.entry.id)
+        assertFalse(source.enabled)
+        assertEquals("5", response.entries.single { it.id == source.id }.settingsRevision)
+        assertEquals("9", response.entries.single { it.id == target.id }.settingsRevision)
+        assertEquals(emptyList(), response.entries.single { it.id == source.id }.battleMaps)
+        assertEquals(listOf("map-1"), response.entries.single { it.id == target.id }.battleMaps.map { it.mapCode })
+        Mockito.verify(workLifecycle).stopForConfigurationChange(
+            ACCOUNT_ID,
+            source.id,
+            setOf("battle_map/map-1"),
+            false,
+        )
     }
 
     @Test
@@ -474,7 +667,7 @@ class UnifiedAutomationServiceTest {
         service.updateAdventureMaps(
             ACCOUNT_ID,
             UpdateAdventureMapAutomationRequest(
-                enabled = true,
+                enabled = false,
                 maps = emptyList(),
             ),
         )
@@ -483,7 +676,7 @@ class UnifiedAutomationServiceTest {
             ACCOUNT_ID,
             adventureEntry.id,
             setOf("adventure_map/map-1"),
-            false,
+            true,
         )
     }
 
@@ -731,7 +924,7 @@ class UnifiedAutomationServiceTest {
         Mockito.`when`(typedQuery.findEntry(ACCOUNT_ID, battleEntry.id)).thenReturn(battleEntry)
         Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(emptyList())
 
-        service.deleteEntry(ACCOUNT_ID, battleEntry.id)
+        service.deleteEntry(ACCOUNT_ID, battleEntry.id, "0")
 
         Mockito.verify(workLifecycle).stopForConfigurationChange(
             ACCOUNT_ID,
@@ -739,6 +932,54 @@ class UnifiedAutomationServiceTest {
             emptySet(),
             true,
         )
+    }
+
+    @Test
+    fun `stale map group delete changes nothing`() {
+        val battleEntry = entry(92L, AutomationType.BATTLE_MAP).also { it.settingsRevision = 4 }
+        Mockito.`when`(typedQuery.findEntry(ACCOUNT_ID, battleEntry.id)).thenReturn(battleEntry)
+
+        val error = assertFailsWith<ApiException> {
+            service.deleteEntry(ACCOUNT_ID, battleEntry.id, "3")
+        }
+
+        assertEquals(ErrorCode.AUTOMATION_SETTINGS_CONFLICT, error.errorCode)
+        Mockito.verify(entryRepository, Mockito.never()).delete(battleEntry)
+        Mockito.verifyNoInteractions(workLifecycle)
+    }
+
+    @Test
+    fun `map group delete cancels only an unsubmitted prepared action`() {
+        val battleEntry = entry(92L, AutomationType.BATTLE_MAP)
+        val prepared = actionRow("BATTLE_MAP", "prepared-delete", battleEntry).also {
+            it.status = TypedAutomationActionStatus.PREPARED
+        }
+        Mockito.`when`(typedQuery.findEntry(ACCOUNT_ID, battleEntry.id)).thenReturn(battleEntry)
+        Mockito.`when`(typedQuery.findActiveTypedAction(ACCOUNT_ID)).thenReturn(prepared)
+        Mockito.`when`(typedQuery.lockTypedAction(prepared.id)).thenReturn(prepared)
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(emptyList())
+
+        service.deleteEntry(ACCOUNT_ID, battleEntry.id, "0")
+
+        assertEquals(TypedAutomationActionStatus.FAILED, prepared.status)
+        assertEquals(NOW, prepared.finishedAt)
+        Mockito.verify(entryRepository).delete(battleEntry)
+    }
+
+    @Test
+    fun `map group delete preserves a submitted action for convergence`() {
+        val battleEntry = entry(92L, AutomationType.BATTLE_MAP)
+        val submitted = actionRow("BATTLE_MAP", "submitted-delete", battleEntry)
+        Mockito.`when`(typedQuery.findEntry(ACCOUNT_ID, battleEntry.id)).thenReturn(battleEntry)
+        Mockito.`when`(typedQuery.findActiveTypedAction(ACCOUNT_ID)).thenReturn(submitted)
+        Mockito.`when`(typedQuery.lockTypedAction(submitted.id)).thenReturn(submitted)
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(emptyList())
+
+        service.deleteEntry(ACCOUNT_ID, battleEntry.id, "0")
+
+        assertEquals(TypedAutomationActionStatus.SUBMITTING, submitted.status)
+        assertNull(submitted.finishedAt)
+        Mockito.verify(entryRepository).delete(battleEntry)
     }
 
     @Test
@@ -802,6 +1043,7 @@ class UnifiedAutomationServiceTest {
             id = 502L,
             account = account,
             entry = null,
+            entryDisplayName = "최우선 모험",
             executionIdentity = "failed-adventure-action",
             actionKind = "ADVENTURE_MAP",
             payloadJson = "{}",
@@ -863,6 +1105,7 @@ class UnifiedAutomationServiceTest {
         assertEquals(AutomationType.ADVENTURE_MAP, response.runtime.currentAction?.source)
         assertEquals("ADVENTURE_MAP", response.runtime.currentAction?.kind)
         assertEquals("모험맵", response.runtime.currentAction?.actionLabel)
+        assertEquals("최우선 모험", response.runtime.currentAction?.entryDisplayName)
         assertEquals("모험의 숲", response.runtime.currentAction?.mapName)
         assertEquals(1, response.runtime.currentAction?.battleCount)
     }

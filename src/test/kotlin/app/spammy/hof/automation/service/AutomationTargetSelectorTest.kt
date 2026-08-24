@@ -131,6 +131,93 @@ class AutomationTargetSelectorTest {
     }
 
     @Test
+    fun `reordered higher entry is evaluated before the next action of an open lower work`() {
+        val action = QuestAction.Accept("quest-1", "accept-1")
+        val directSelector = AutomationTargetSelector(
+            typed = typed,
+            work = work,
+            loader = loader,
+            lifecycle = lifecycle,
+            timeProvider = TimeProvider { now },
+            raidModule = defaultRaidModule,
+            quest = fixedQuestRules(QuestDirective.Execute(action)),
+            battle = AutomationHandler { HandlerEvaluation.Skipped },
+            adventure = AutomationHandler { HandlerEvaluation.Skipped },
+            union = AutomationHandler { HandlerEvaluation.Skipped },
+            fishing = AutomationHandler { HandlerEvaluation.Skipped },
+            homeQuest = AutomationHandler { HandlerEvaluation.Skipped },
+        )
+        val running = session(
+            id = 91,
+            entry = battleEntry,
+            workType = AutomationWorkType.BATTLE_MAP,
+            targetKey = "battle_map/map-1",
+            status = AutomationWorkStatus.RUNNING,
+        )
+        Mockito.`when`(work.findRunning(7)).thenReturn(running)
+        Mockito.`when`(work.findWaiting(7)).thenReturn(emptyList())
+        Mockito.`when`(
+            typed.findEnabledEntriesBefore(7, battleEntry.priority, battleEntry.id),
+        ).thenReturn(listOf(questEntry))
+        Mockito.`when`(loader.loadEntry(7, questEntry.id, null, null)).thenReturn(questDecisionEntry())
+
+        val selected = assertIs<AutomationCoordination.Runnable>(directSelector.select(7))
+
+        assertEquals(questEntry.id, selected.entryId)
+        Mockito.verify(loader, Mockito.never()).loadEntry(7, battleEntry.id, running.targetKey, null)
+    }
+
+    @Test
+    fun `held map group parks its work and continues to a runnable lower entry`() {
+        val lowerQuest = AutomationEntryEntity(15, account, AutomationType.QUEST, 2, true, now, now)
+        val running = session(
+            id = 92,
+            entry = battleEntry,
+            workType = AutomationWorkType.BATTLE_MAP,
+            targetKey = "battle_map/map-1",
+            status = AutomationWorkStatus.RUNNING,
+        )
+        val parked = session(
+            id = running.id,
+            entry = battleEntry,
+            workType = AutomationWorkType.BATTLE_MAP,
+            targetKey = running.targetKey,
+            status = AutomationWorkStatus.WAITING_COOLDOWN,
+            nextCheckAt = now.plusSeconds(30),
+        )
+        val action = QuestAction.Accept("quest-1", "accept-1")
+        val directSelector = AutomationTargetSelector(
+            typed = typed,
+            work = work,
+            loader = loader,
+            lifecycle = lifecycle,
+            timeProvider = TimeProvider { now },
+            raidModule = defaultRaidModule,
+            quest = fixedQuestRules(QuestDirective.Execute(action)),
+            battle = AutomationHandler {
+                HandlerEvaluation.Unavailable(
+                    nextRunAt = now.plusSeconds(30),
+                    waitScope = AutomationWaitScope.HOLD_CURRENT_WORK,
+                )
+            },
+            adventure = AutomationHandler { HandlerEvaluation.Skipped },
+            union = AutomationHandler { HandlerEvaluation.Skipped },
+            fishing = AutomationHandler { HandlerEvaluation.Skipped },
+            homeQuest = AutomationHandler { HandlerEvaluation.Skipped },
+        )
+        Mockito.`when`(work.findRunning(7)).thenReturn(running)
+        Mockito.`when`(work.findWaiting(7)).thenReturn(listOf(parked))
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(battleEntry, lowerQuest))
+        Mockito.`when`(loader.loadEntry(7, battleEntry.id, running.targetKey, null)).thenReturn(battleDecisionEntry())
+        Mockito.`when`(loader.loadEntry(7, lowerQuest.id, null, null)).thenReturn(questDecisionEntry(lowerQuest.id))
+
+        val selected = assertIs<AutomationCoordination.Runnable>(directSelector.select(7))
+
+        assertEquals(lowerQuest.id, selected.entryId)
+        Mockito.verify(lifecycle).waitForCooldown(7, running.id, now.plusSeconds(30))
+    }
+
+    @Test
     fun `전투 gate가 열린 동안 전투 entry를 건너뛰고 비전투 퀘스트를 선택한다`() {
         val battleSnapshot = battleDecisionEntry()
         val questSnapshot = questDecisionEntry()

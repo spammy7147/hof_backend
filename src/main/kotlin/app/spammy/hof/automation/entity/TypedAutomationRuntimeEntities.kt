@@ -53,4 +53,5 @@ class TypedAutomationActionRunEntity(
     @Column(name = "submitted_at") var submittedAt: Instant? = null,
     @Column(name = "finished_at") var finishedAt: Instant? = null,
     @Column(name = "updated_at") var updatedAt: Instant,
+    @Column(name = "entry_display_name", length = 100) val entryDisplayName: String? = null,
 )

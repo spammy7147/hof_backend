@@ -418,7 +418,8 @@ internal object FreshSchemaContract {
             "automation_entries",
             serialId(), requiredBigint("account_id"), requiredVarchar("automation_type", 30),
             requiredInteger("priority"), requiredBoolean("enabled"), requiredInstant("created_at"),
-            requiredInstant("updated_at"),
+            requiredInstant("updated_at"), optionalVarchar("singleton_type_marker", 30),
+            optionalVarchar("display_name", 100), requiredBigint("settings_revision"),
         ),
         table(
             "automation_work_sessions",
@@ -475,6 +476,7 @@ internal object FreshSchemaContract {
             serialId(), requiredBigint("automation_entry_id"), requiredVarchar("category_id", 50),
             requiredVarchar("map_code", 100), requiredInteger("daily_target_count"),
             requiredVarchar("preset_mode", 20), optionalBigint("party_preset_id"), requiredInteger("execution_order"),
+            requiredBigint("account_id"),
         ),
         table(
             "battle_automation_daily_progress",
@@ -492,7 +494,7 @@ internal object FreshSchemaContract {
             "adventure_automation_maps",
             serialId(), requiredBigint("automation_entry_id"), requiredVarchar("category_id", 50),
             requiredVarchar("map_code", 100), requiredVarchar("preset_mode", 20),
-            optionalBigint("party_preset_id"), requiredInteger("execution_order"),
+            optionalBigint("party_preset_id"), requiredInteger("execution_order"), requiredBigint("account_id"),
         ),
         table(
             "union_automation_maps",
@@ -567,6 +569,7 @@ internal object FreshSchemaContract {
             optionalInstant("next_run_at"), requiredInstant("occurred_at"),
             optionalVarchar("diagnostic_kind", 64), optionalVarchar("cooldown_source", 40),
             optionalVarchar("impact_scope", 64), optionalVarchar("release_condition", 255),
+            optionalVarchar("entry_display_name", 100),
         ),
         table(
             "raid_cooldown_evidence_cases",
@@ -616,7 +619,7 @@ internal object FreshSchemaContract {
             optionalInstant("reconciliation_first_pending_at"), optionalInstant("next_attempt_at"),
             requiredVarchar("lease_token", 128),
             optionalText("last_error"), requiredInstant("created_at"), optionalInstant("submitted_at"),
-            optionalInstant("finished_at"), requiredInstant("updated_at"),
+            optionalInstant("finished_at"), requiredInstant("updated_at"), optionalVarchar("entry_display_name", 100),
         ),
         table(
             "automation_action_attempts",
@@ -793,7 +796,11 @@ internal object FreshSchemaContract {
         key("party_preset_members", "uk_party_preset_members_preset_slot", "preset_id", "slot_index"),
         key("party_presets", "uk_party_presets_account_primary_marker", "account_id", "primary_marker"),
         key("automation_outbox", "uk_automation_outbox_event_id", "event_id"),
-        key("automation_entries", "uk_automation_entries_account_type", "account_id", "automation_type"),
+        key(
+            "automation_entries", "uk_automation_entries_account_singleton",
+            "account_id", "singleton_type_marker",
+        ),
+        key("automation_entries", "uk_automation_entries_id_account", "id", "account_id"),
         key(
             "quest_automation_selections", "uk_quest_automation_selections_entry_quest",
             "automation_entry_id", "quest_code",
@@ -821,6 +828,10 @@ internal object FreshSchemaContract {
             "automation_entry_id", "category_id", "map_code",
         ),
         key(
+            "battle_automation_maps", "uk_battle_automation_maps_account_map",
+            "account_id", "category_id", "map_code",
+        ),
+        key(
             "battle_automation_daily_progress", "uk_battle_automation_daily_progress_identity",
             "account_id", "progress_date", "category_id", "map_code", "source",
         ),
@@ -835,6 +846,10 @@ internal object FreshSchemaContract {
         key(
             "adventure_automation_maps", "uk_adventure_automation_maps_entry_map",
             "automation_entry_id", "category_id", "map_code",
+        ),
+        key(
+            "adventure_automation_maps", "uk_adventure_automation_maps_account_map",
+            "account_id", "category_id", "map_code",
         ),
         key("union_automation_maps", "uk_union_automation_maps_target", "automation_entry_id", "category_id", "map_code"),
         key("raid_automation_targets", "uk_raid_automation_targets_target", "automation_entry_id", "raid_id"),
@@ -970,8 +985,14 @@ internal object FreshSchemaContract {
             "hof_accounts.id", DeleteAction.CASCADE,
         ),
         fk(
-            "fk_battle_automation_maps_entry", "battle_automation_maps.automation_entry_id",
-            "automation_entries.id", DeleteAction.CASCADE,
+            "fk_battle_automation_maps_entry_account",
+            "battle_automation_maps.account_id",
+            "automation_entries.account_id",
+            DeleteAction.CASCADE,
+        ),
+        fk(
+            "fk_battle_automation_maps_account", "battle_automation_maps.account_id",
+            "hof_accounts.id", DeleteAction.CASCADE,
         ),
         fk(
             "fk_battle_automation_maps_party_preset", "battle_automation_maps.party_preset_id",
@@ -986,8 +1007,14 @@ internal object FreshSchemaContract {
             "hof_accounts.id", DeleteAction.CASCADE,
         ),
         fk(
-            "fk_adventure_automation_maps_entry", "adventure_automation_maps.automation_entry_id",
-            "automation_entries.id", DeleteAction.CASCADE,
+            "fk_adventure_automation_maps_entry_account",
+            "adventure_automation_maps.account_id",
+            "automation_entries.account_id",
+            DeleteAction.CASCADE,
+        ),
+        fk(
+            "fk_adventure_automation_maps_account", "adventure_automation_maps.account_id",
+            "hof_accounts.id", DeleteAction.CASCADE,
         ),
         fk(
             "fk_adventure_automation_maps_party_preset", "adventure_automation_maps.party_preset_id",
@@ -1480,6 +1507,12 @@ internal object FreshSchemaContract {
             "locate(',' || automation_type || ',', ',QUEST,HOME_QUEST,BATTLE_MAP,ADVENTURE_MAP,RAID,UNION,FISHING,') > 0",
         ),
         check("automation_entries", "ck_automation_entries_priority", "priority >= 0"),
+        check(
+            "automation_entries", "ck_automation_entries_singleton_marker",
+            "case automation_type when 'BATTLE_MAP' then singleton_type_marker is null " +
+                "when 'ADVENTURE_MAP' then singleton_type_marker is null " +
+                "else singleton_type_marker is not null and singleton_type_marker = automation_type end",
+        ),
         check(
             "quest_automation_selections", "ck_quest_automation_selections_source_order", "source_order >= 0",
         ),

@@ -8,6 +8,9 @@ import app.spammy.hof.quest.model.QuestSnapshot
 import java.time.Instant
 
 interface TypedAutomationSnapshotLoader {
+    /** Opens a synchronous selection scope. Implementations may share lazy observations until it closes. */
+    fun beginDecision(accountId: Long): AutoCloseable? = null
+
     fun loadEntry(
         accountId: Long,
         entryId: Long,

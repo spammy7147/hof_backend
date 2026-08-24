@@ -2,9 +2,12 @@ package app.spammy.hof.automation.controller
 
 import app.spammy.hof.automation.dto.CreateAutomationEntryRequest
 import app.spammy.hof.automation.dto.ReorderAutomationEntriesRequest
+import app.spammy.hof.automation.dto.MoveMapBetweenGroupsRequest
 import app.spammy.hof.automation.dto.TypedAutomationAggregateResponse
 import app.spammy.hof.automation.dto.UpdateAdventureMapAutomationRequest
+import app.spammy.hof.automation.dto.UpdateAdventureMapGroupRequest
 import app.spammy.hof.automation.dto.UpdateBattleMapAutomationRequest
+import app.spammy.hof.automation.dto.UpdateBattleMapGroupRequest
 import app.spammy.hof.automation.dto.UpdateFishingAutomationRequest
 import app.spammy.hof.automation.dto.UpdateHomeQuestAutomationRequest
 import app.spammy.hof.automation.dto.UpdateUnionAutomationRequest
@@ -20,6 +23,7 @@ import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.PutMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RestController
 
 /** 인증된 계정의 사용자 구성형 통합 자동화 설정과 실행 상태를 노출한다. */
@@ -44,7 +48,8 @@ class UnifiedAutomationController(
     fun deleteEntry(
         @CurrentAccountId accountId: Long,
         @PathVariable entryId: Long,
-    ): TypedAutomationAggregateResponse = service.deleteEntry(accountId, entryId)
+        @RequestParam(required = false) settingsRevision: String?,
+    ): TypedAutomationAggregateResponse = service.deleteEntry(accountId, entryId, settingsRevision)
 
     /** 소유권을 검증한 모듈을 삭제하고 남은 우선순위를 정규화한다. */
     @PutMapping("/entries/order")
@@ -52,6 +57,13 @@ class UnifiedAutomationController(
         @CurrentAccountId accountId: Long,
         @Valid @RequestBody request: ReorderAutomationEntriesRequest,
     ): TypedAutomationAggregateResponse = service.reorderEntries(accountId, request)
+
+    @PostMapping("/entries/{targetEntryId}/maps/move")
+    fun moveMapBetweenGroups(
+        @CurrentAccountId accountId: Long,
+        @PathVariable targetEntryId: Long,
+        @Valid @RequestBody request: MoveMapBetweenGroupsRequest,
+    ): TypedAutomationAggregateResponse = service.moveMapBetweenGroups(accountId, targetEntryId, request)
 
     /** 앱의 드래그 결과를 전체 ID 순서로 받아 서버의 권위 있는 우선순위로 저장한다. */
     @PutMapping("/quest")
@@ -72,11 +84,25 @@ class UnifiedAutomationController(
         @Valid @RequestBody request: UpdateBattleMapAutomationRequest,
     ): TypedAutomationAggregateResponse = service.updateBattleMaps(accountId, request)
 
+    @PutMapping("/entries/{entryId}/battle-maps")
+    fun updateBattleMapGroup(
+        @CurrentAccountId accountId: Long,
+        @PathVariable entryId: Long,
+        @Valid @RequestBody request: UpdateBattleMapGroupRequest,
+    ): TypedAutomationAggregateResponse = service.updateBattleMapGroup(accountId, entryId, request)
+
     @PutMapping("/adventure-maps")
     fun updateAdventureMaps(
         @CurrentAccountId accountId: Long,
         @Valid @RequestBody request: UpdateAdventureMapAutomationRequest,
     ): TypedAutomationAggregateResponse = service.updateAdventureMaps(accountId, request)
+
+    @PutMapping("/entries/{entryId}/adventure-maps")
+    fun updateAdventureMapGroup(
+        @CurrentAccountId accountId: Long,
+        @PathVariable entryId: Long,
+        @Valid @RequestBody request: UpdateAdventureMapGroupRequest,
+    ): TypedAutomationAggregateResponse = service.updateAdventureMapGroup(accountId, entryId, request)
 
     @PutMapping("/fishing")
     fun updateFishing(

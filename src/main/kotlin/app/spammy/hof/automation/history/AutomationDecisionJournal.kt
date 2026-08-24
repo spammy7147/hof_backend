@@ -1,6 +1,8 @@
 package app.spammy.hof.automation.history
 
 import app.spammy.hof.automation.entity.AutomationType
+import app.spammy.hof.automation.entity.AutomationEntryEntity
+import app.spammy.hof.automation.entity.automationEntryDisplayNames
 import app.spammy.hof.automation.raid.RaidCycleOutcome
 import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
 import app.spammy.hof.automation.raid.RaidCooldownSource
@@ -32,6 +34,7 @@ data class AutomationHistoryQuery(
 )
 data class AutomationHistoryEvent(
     val id: Long, val sequence: Int, val entryId: Long?, val type: AutomationType?,
+    val entryDisplayName: String?,
     val kind: AutomationHistoryEventKind, val reasonCode: String, val message: String,
     val targetKey: String?, val targetName: String?, val actionKind: String?,
     val presetId: Long?, val presetName: String?, val nextRunAt: Instant?, val occurredAt: Instant,
@@ -83,6 +86,7 @@ class JpaAutomationDecisionJournal(
     @Transactional
     override fun appendDecision(accountId: Long, decision: AutomationCoordination): Long {
         val now = timeProvider.now()
+        val entryDisplayNames = entryDisplayNames(accountId)
         val cycle = AutomationDecisionCycleEntity(accountId = accountId, result = when (decision) {
             is AutomationCoordination.Runnable -> AutomationDecisionResult.ACTION_SELECTED
             is AutomationCoordination.Unavailable -> AutomationDecisionResult.WAITING
@@ -92,6 +96,7 @@ class JpaAutomationDecisionJournal(
         cycleCommands.save(cycle)
         eventCommands.saveAll(decision.trace.map { item -> AutomationDecisionEventEntity(
             cycle = cycle, sequence = item.sequence, entryId = item.entryId, type = item.type,
+            entryDisplayName = entryDisplayNames[item.entryId],
             kind = when (item.outcome) {
                 AutomationDecisionOutcome.SELECTED -> AutomationHistoryEventKind.SELECTED
                 AutomationDecisionOutcome.SKIPPED -> AutomationHistoryEventKind.SKIPPED
@@ -135,7 +140,15 @@ class JpaAutomationDecisionJournal(
             "select coalesce(max(e.sequence), -1) + 1 from AutomationDecisionEventEntity e where e.cycle.id = :cycleId",
             Int::class.javaObjectType,
         ).setParameter("cycleId", cycleId).singleResult.toInt()
-        eventCommands.save(result.toEntity(cycle, next, cycle.accountId, timeProvider.now()))
+        val entryDisplayName = entityManager.createQuery(
+            "select e.entryDisplayName from AutomationDecisionEventEntity e where e.cycle.id = :cycleId and e.entryId = :entryId and e.entryDisplayName is not null order by e.sequence asc",
+            String::class.java,
+        ).setParameter("cycleId", cycleId)
+            .setParameter("entryId", result.entryId ?: -1L)
+            .setMaxResults(1)
+            .resultList
+            .firstOrNull()
+        eventCommands.save(result.toEntity(cycle, next, cycle.accountId, timeProvider.now(), entryDisplayName))
         if (result.kind == AutomationHistoryEventKind.ACTION_SUCCEEDED) {
             afterCommitTelemetry { progressTelemetry?.recordTerminalAction(cycle.accountId, result.type) }
         }
@@ -185,7 +198,7 @@ class JpaAutomationDecisionJournal(
             "select e from AutomationDecisionEventEntity e where e.cycle.id = :cycleId order by e.sequence asc, e.id asc",
             AutomationDecisionEventEntity::class.java,
         ).setParameter("cycleId", cycle.id).resultList.map { e -> AutomationHistoryEvent(
-            e.id, e.sequence, e.entryId, e.type, e.kind, e.reasonCode, e.message, e.targetKey,
+            e.id, e.sequence, e.entryId, e.type, e.entryDisplayName, e.kind, e.reasonCode, e.message, e.targetKey,
             e.targetName, e.actionKind, e.presetId, e.presetName, e.nextRunAt, e.occurredAt,
             e.diagnosticKind, e.cooldownSource, e.impactScope, e.releaseCondition,
         ) }
@@ -201,10 +214,12 @@ class JpaAutomationDecisionJournal(
         sequence: Int,
         accountId: Long,
         occurredAt: Instant,
+        entryDisplayName: String? = null,
     ) = AutomationDecisionEventEntity(
         cycle = cycle,
         sequence = sequence,
         entryId = entryId,
+        entryDisplayName = entryDisplayName ?: entryDisplayNames(accountId)[entryId],
         type = type,
         kind = kind,
         reasonCode = reasonCode,
@@ -221,6 +236,14 @@ class JpaAutomationDecisionJournal(
         impactScope = impactScope,
         releaseCondition = releaseCondition,
     )
+
+    private fun entryDisplayNames(accountId: Long): Map<Long, String> {
+        val entries = entityManager.createQuery(
+            "select e from AutomationEntryEntity e where e.account.id = :accountId order by e.priority asc, e.id asc",
+            AutomationEntryEntity::class.java,
+        ).setParameter("accountId", accountId).resultList
+        return automationEntryDisplayNames(entries)
+    }
 
     private fun afterCommitTelemetry(action: () -> Unit) {
         if (progressTelemetry == null) return

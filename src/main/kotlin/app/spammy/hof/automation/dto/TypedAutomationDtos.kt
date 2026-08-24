@@ -15,7 +15,16 @@ import app.spammy.hof.status.dto.HofObservedStatusResponse
 data class CreateAutomationEntryRequest(val type: AutomationType)
 
 data class ReorderAutomationEntriesRequest(
-    @field:Size(max = 7) val entryIds: List<Long>,
+    @field:Size(max = 100) val entryIds: List<Long>,
+)
+
+data class MoveMapBetweenGroupsRequest(
+    val sourceEntryId: Long,
+    @field:NotBlank val sourceSettingsRevision: String,
+    @field:NotBlank val targetSettingsRevision: String,
+    @field:NotBlank @field:Size(max = 50) val categoryId: String,
+    @field:NotBlank @field:Size(max = 100) val mapCode: String,
+    @field:Min(0) val targetExecutionOrder: Int,
 )
 
 data class UpdateHomeQuestAutomationRequest(
@@ -77,6 +86,17 @@ data class UpdateBattleMapAutomationRequest(
         get() = maps.map { it.executionOrder }.let { it.size == it.toSet().size }
 }
 
+data class UpdateBattleMapGroupRequest(
+    @field:NotBlank val settingsRevision: String,
+    @field:Size(max = 100) val displayName: String?,
+    val enabled: Boolean,
+    @field:Valid @field:Size(max = 100) val maps: List<@Valid BattleMapSettingRequest>,
+) {
+    @get:AssertTrue(message = "전투 맵 실행 순서를 중복해서 사용할 수 없습니다.")
+    val hasUniqueExecutionOrders: Boolean
+        get() = maps.map { it.executionOrder }.let { it.size == it.toSet().size }
+}
+
 data class BattleMapSettingRequest(
     @field:NotBlank @field:Size(max = 50) val categoryId: String,
     @field:NotBlank @field:Size(max = 100) val mapCode: String,
@@ -87,6 +107,17 @@ data class BattleMapSettingRequest(
 )
 
 data class UpdateAdventureMapAutomationRequest(
+    val enabled: Boolean,
+    @field:Valid @field:Size(max = 100) val maps: List<@Valid AdventureMapSettingRequest>,
+) {
+    @get:AssertTrue(message = "모험맵 실행 순서를 중복해서 사용할 수 없습니다.")
+    val hasUniqueExecutionOrders: Boolean
+        get() = maps.map { it.executionOrder }.let { it.size == it.toSet().size }
+}
+
+data class UpdateAdventureMapGroupRequest(
+    @field:NotBlank val settingsRevision: String,
+    @field:Size(max = 100) val displayName: String?,
     val enabled: Boolean,
     @field:Valid @field:Size(max = 100) val maps: List<@Valid AdventureMapSettingRequest>,
 ) {
@@ -241,6 +272,8 @@ data class TypedAutomationEntryResponse(
     val fishingMaps: List<FishingMapSettingResponse> = emptyList(),
     val unionMaps: List<UnionMapSettingResponse> = emptyList(),
     val raidTargets: List<RaidTargetSettingResponse> = emptyList(),
+    val displayName: String? = null,
+    val settingsRevision: String = "0",
 )
 
 data class TypedAutomationRuntimeResponse(
@@ -258,6 +291,7 @@ data class TypedAutomationCurrentActionResponse(
     val source: AutomationType,
     val kind: String,
     val actionLabel: String,
+    val entryDisplayName: String? = null,
     val questName: String? = null,
     val missionLabel: String? = null,
     val missionCurrent: Int? = null,

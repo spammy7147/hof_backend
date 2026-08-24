@@ -5,6 +5,7 @@ import app.spammy.hof.account.repository.HofAccountRepository
 import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.AutomationRotationStateEntity
 import app.spammy.hof.automation.entity.AutomationType
+import app.spammy.hof.automation.entity.AdventureAutomationMapEntity
 import app.spammy.hof.automation.entity.BattleAutomationDailyProgressEntity
 import app.spammy.hof.automation.entity.BattleAutomationMapEntity
 import app.spammy.hof.automation.entity.PresetSelectionMode
@@ -30,15 +31,34 @@ import app.spammy.hof.automation.outbox.AutomationOutboxService
 import app.spammy.hof.automation.service.StoredTypedActionPayload
 import app.spammy.hof.automation.service.StoredTypedAutomationActionCodec
 import app.spammy.hof.automation.service.StoredTypedAutomationAction
+import app.spammy.hof.automation.service.AdventureMapAutomationSnapshot
+import app.spammy.hof.automation.service.AutomationCoordination
+import app.spammy.hof.automation.service.AutomationEntrySnapshot
+import app.spammy.hof.automation.service.AutomationHandler
+import app.spammy.hof.automation.service.AutomationTargetSelector
+import app.spammy.hof.automation.service.AutomationWorkLifecycle
+import app.spammy.hof.automation.service.BattleMapAutomationAction
+import app.spammy.hof.automation.service.BattleMapAutomationSetting
+import app.spammy.hof.automation.service.BattleMapAutomationSnapshot
+import app.spammy.hof.automation.service.BattleMapPresetSelection
+import app.spammy.hof.automation.service.FishingAutomationSnapshot
+import app.spammy.hof.automation.service.HandlerEvaluation
+import app.spammy.hof.automation.service.HomeQuestAutomationSnapshot
+import app.spammy.hof.automation.service.QuestWorkCycleModule
+import app.spammy.hof.automation.service.TypedAutomationSnapshotLoader
+import app.spammy.hof.automation.service.UnionAutomationSnapshot
 import app.spammy.hof.automation.service.TypedAutomationLifecycleBridge
 import app.spammy.hof.automation.service.TypedAutomationRuntimeService
 import app.spammy.hof.automation.service.TypedRuntimeAcquisition
 import app.spammy.hof.common.persistence.QueryDslConfig
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.automation.repository.AutomationWorkSessionQueryRepository
+import app.spammy.hof.automation.raid.RaidCycleModule
 import app.spammy.hof.party.repository.PartyPresetQueryRepository
 import jakarta.persistence.EntityManager
 import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneId
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -63,6 +83,7 @@ class TypedAutomationPersistenceTest {
     @Autowired private lateinit var accountRepository: HofAccountRepository
     @Autowired private lateinit var entryRepository: AutomationEntryCommandRepository
     @Autowired private lateinit var battleMapRepository: BattleAutomationMapCommandRepository
+    @Autowired private lateinit var adventureMapRepository: AdventureAutomationMapCommandRepository
     @Autowired private lateinit var battleProgressRepository: BattleAutomationDailyProgressCommandRepository
     @Autowired private lateinit var unionMapRepository: UnionAutomationMapCommandRepository
     @Autowired private lateinit var raidTargetRepository: RaidAutomationTargetCommandRepository
@@ -136,15 +157,206 @@ class TypedAutomationPersistenceTest {
     }
 
     @Test
-    fun rejectsDuplicateTypeForTheSameAccount() {
+    fun `map entries can repeat while singleton entries cannot`() {
         val now = Instant.parse("2026-07-15T00:00:00Z")
         val account = newAccount("typed-duplicate", now)
-        entryRepository.save(newEntry(account, AutomationType.QUEST, priority = 0, now))
+        entryRepository.save(newEntry(account, AutomationType.BATTLE_MAP, priority = 0, now))
+        entryRepository.save(newEntry(account, AutomationType.BATTLE_MAP, priority = 1, now))
+        entryRepository.save(newEntry(account, AutomationType.ADVENTURE_MAP, priority = 2, now))
+        entryRepository.save(newEntry(account, AutomationType.ADVENTURE_MAP, priority = 3, now))
+        entryRepository.save(newEntry(account, AutomationType.QUEST, priority = 4, now))
+        entryRepository.flush()
 
         assertFailsWith<DataIntegrityViolationException> {
-            entryRepository.save(newEntry(account, AutomationType.QUEST, priority = 1, now))
+            entryRepository.save(newEntry(account, AutomationType.QUEST, priority = 5, now))
             entryRepository.flush()
         }
+    }
+
+    @Test
+    fun `the same battle map cannot belong to two groups in one account`() {
+        val now = Instant.parse("2026-08-24T00:00:00Z")
+        val account = newAccount("typed-map-membership", now)
+        val first = entryRepository.save(newEntry(account, AutomationType.BATTLE_MAP, priority = 0, now))
+        val second = entryRepository.save(newEntry(account, AutomationType.BATTLE_MAP, priority = 1, now))
+        battleMapRepository.save(
+            BattleAutomationMapEntity(
+                entry = first,
+                categoryId = "battle_map",
+                mapCode = "map-1",
+                dailyTargetCount = 3,
+                presetMode = PresetSelectionMode.PRIMARY,
+                executionOrder = 0,
+            ),
+        )
+        battleMapRepository.flush()
+
+        assertFailsWith<DataIntegrityViolationException> {
+            battleMapRepository.save(
+                BattleAutomationMapEntity(
+                    entry = second,
+                    categoryId = "battle_map",
+                    mapCode = "map-1",
+                    dailyTargetCount = 5,
+                    presetMode = PresetSelectionMode.PRIMARY,
+                    executionOrder = 0,
+                ),
+            )
+            battleMapRepository.flush()
+        }
+    }
+
+    @Test
+    fun `H2 ordered map groups share fake HOF category observations and stop after the first runnable group`() {
+        val now = Instant.parse("2026-08-24T00:00:00Z")
+        val account = newAccount("typed-map-selection", now)
+        val first = entryRepository.save(newEntry(account, AutomationType.BATTLE_MAP, priority = 0, now))
+        val selectedEntry = entryRepository.save(newEntry(account, AutomationType.BATTLE_MAP, priority = 1, now))
+        val lower = entryRepository.save(newEntry(account, AutomationType.ADVENTURE_MAP, priority = 2, now))
+        battleMapRepository.saveAll(
+            listOf(
+                BattleAutomationMapEntity(
+                    entry = first,
+                    categoryId = "battle_map",
+                    mapCode = "not-runnable",
+                    dailyTargetCount = 1,
+                    presetMode = PresetSelectionMode.PRIMARY,
+                    executionOrder = 0,
+                ),
+                BattleAutomationMapEntity(
+                    entry = selectedEntry,
+                    categoryId = "battle_map",
+                    mapCode = "runnable",
+                    dailyTargetCount = 1,
+                    presetMode = PresetSelectionMode.PRIMARY,
+                    executionOrder = 0,
+                ),
+            ),
+        )
+        adventureMapRepository.save(
+            AdventureAutomationMapEntity(
+                entry = lower,
+                categoryId = "adventure_map",
+                mapCode = "lower-map",
+                presetMode = PresetSelectionMode.PRIMARY,
+                executionOrder = 0,
+            ),
+        )
+        entityManager.flush()
+        entityManager.clear()
+
+        val loader = object : TypedAutomationSnapshotLoader {
+            val categoryObservations = linkedMapOf<String, Int>()
+            private var observedInDecision = mutableSetOf<String>()
+
+            override fun beginDecision(accountId: Long): AutoCloseable {
+                observedInDecision = mutableSetOf()
+                return AutoCloseable { observedInDecision.clear() }
+            }
+
+            override fun loadEntry(
+                accountId: Long,
+                entryId: Long,
+                targetKey: String?,
+                questOverride: List<app.spammy.hof.quest.model.QuestSnapshot>?,
+            ): AutomationEntrySnapshot {
+                val entry = requireNotNull(queryRepository.findEntry(accountId, entryId))
+                return when (entry.type) {
+                    AutomationType.BATTLE_MAP -> {
+                        val rows = queryRepository.findBattleSettings(entryId)
+                        rows.map { it.categoryId }.distinct().forEach(::observe)
+                        AutomationEntrySnapshot(
+                            entry.id,
+                            entry.type,
+                            battle = BattleMapAutomationSnapshot(
+                                accountId = accountId,
+                                settings = rows.map { row ->
+                                    BattleMapAutomationSetting(
+                                        enabled = true,
+                                        categoryId = row.categoryId,
+                                        mapCode = row.mapCode,
+                                        dailyTargetCount = row.dailyTargetCount,
+                                        preset = BattleMapPresetSelection(row.presetMode, row.partyPreset?.id),
+                                        executionOrder = row.executionOrder,
+                                    )
+                                },
+                                mapStates = emptyList(),
+                                successfulRuns = emptyMap(),
+                                primaryPresetId = null,
+                                availablePresetIds = emptySet(),
+                                executionIdentity = "acceptance-$entryId",
+                                evaluationInstant = now,
+                            ),
+                        )
+                    }
+                    AutomationType.ADVENTURE_MAP -> {
+                        queryRepository.findAdventureSettings(entryId)
+                            .map { it.categoryId }
+                            .distinct()
+                            .forEach(::observe)
+                        AutomationEntrySnapshot(
+                            entry.id,
+                            entry.type,
+                            adventure = AdventureMapAutomationSnapshot(
+                                accountId,
+                                emptyList(),
+                                emptyList(),
+                                emptyMap(),
+                                emptyMap(),
+                                now,
+                            ),
+                        )
+                    }
+                    else -> error("Unexpected acceptance entry type ${entry.type}")
+                }
+            }
+
+            private fun observe(categoryId: String) {
+                if (observedInDecision.add(categoryId)) {
+                    categoryObservations[categoryId] = (categoryObservations[categoryId] ?: 0) + 1
+                }
+            }
+        }
+        val work = Mockito.mock(AutomationWorkSessionQueryRepository::class.java)
+        Mockito.`when`(work.findRunning(account.id)).thenReturn(null)
+        Mockito.`when`(work.findWaiting(account.id)).thenReturn(emptyList())
+        val selector = AutomationTargetSelector(
+            typed = queryRepository,
+            work = work,
+            loader = loader,
+            lifecycle = Mockito.mock(AutomationWorkLifecycle::class.java),
+            timeProvider = TimeProvider { now },
+            raidModule = Mockito.mock(RaidCycleModule::class.java),
+            quest = Mockito.mock(QuestWorkCycleModule::class.java),
+            battle = AutomationHandler { snapshot ->
+                val setting = snapshot.settings.single()
+                if (setting.mapCode == "runnable") {
+                    HandlerEvaluation.Runnable(
+                        BattleMapAutomationAction(
+                            accountId = account.id,
+                            progressDate = now.atZone(ZoneId.of("Asia/Seoul")).toLocalDate(),
+                            categoryId = setting.categoryId,
+                            mapCode = setting.mapCode,
+                            presetMode = PresetSelectionMode.PRIMARY,
+                            presetId = null,
+                            battleCount = 1,
+                            executionIdentity = snapshot.executionIdentity,
+                        ),
+                    )
+                } else {
+                    HandlerEvaluation.Skipped
+                }
+            },
+            adventure = AutomationHandler { HandlerEvaluation.Skipped },
+            union = AutomationHandler<UnionAutomationSnapshot> { HandlerEvaluation.Skipped },
+            fishing = AutomationHandler<FishingAutomationSnapshot> { HandlerEvaluation.Skipped },
+            homeQuest = AutomationHandler<HomeQuestAutomationSnapshot> { HandlerEvaluation.Skipped },
+        )
+
+        val result = assertIs<AutomationCoordination.Runnable>(selector.select(account.id))
+
+        assertEquals(selectedEntry.id, result.entryId)
+        assertEquals(mapOf("battle_map" to 1), loader.categoryObservations)
     }
 
     @Test

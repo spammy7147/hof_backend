@@ -101,6 +101,37 @@ class AutomationDecisionJournalTest {
     }
 
     @Test
+    fun `history snapshots the map group name used at decision time`() {
+        val account = account("history-map-group")
+        val group = entry(account, AutomationType.BATTLE_MAP, 0).also { it.displayName = "최우선 보스" }
+        entityManager.flush()
+        val journal = journal()
+
+        journal.appendDecision(
+            account.id,
+            AutomationCoordination.Idle(
+                emptyList(),
+                listOf(
+                    AutomationEvaluationTrace(
+                        0,
+                        group.id,
+                        AutomationType.BATTLE_MAP,
+                        AutomationDecisionOutcome.SKIPPED,
+                        "DAILY_LIMIT",
+                        "오늘 목표를 완료했습니다.",
+                    ),
+                ),
+            ),
+        )
+        group.displayName = "나중 이름"
+        entityManager.flush()
+        entityManager.clear()
+
+        val event = journal.page(account.id, AutomationHistoryQuery()).cycles.single().events.single()
+        assertEquals("최우선 보스", event.entryDisplayName)
+    }
+
+    @Test
     fun `stores a manual raid handoff as a stable cycle outcome`() {
         val account = account("history-raid-handoff")
         val raid = entry(account, AutomationType.RAID, 0)

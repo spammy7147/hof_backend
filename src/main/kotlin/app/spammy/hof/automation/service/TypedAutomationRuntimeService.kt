@@ -143,7 +143,10 @@ class TypedAutomationRuntimeService(
         if (right.checkpoint != null || right.actionId != null) return TypedRuntimePreparation.Ready(right)
         val existing = queryRepository.findActiveTypedAction(right.accountId)
         if (existing != null) return TypedRuntimePreparation.Invalidated
-        val entry = queryRepository.findEntry(right.accountId, action.entryId) ?: return TypedRuntimePreparation.Invalidated
+        val entry = (
+            queryRepository.findEntryForUpdate(right.accountId, action.entryId)
+                ?: queryRepository.findEntry(right.accountId, action.entryId)
+            ) ?: return TypedRuntimePreparation.Invalidated
         val encoded = codec.encode(action)
         val now = timeProvider.now()
         state.warningText = warnings.takeIf { it.isNotEmpty() }?.joinToString("\n") { sanitizeDiagnostic(it) }
@@ -152,6 +155,9 @@ class TypedAutomationRuntimeService(
             TypedAutomationActionRunEntity(
                 account = entry.account,
                 entry = entry,
+                entryDisplayName = automationEntryDisplayNames(
+                    queryRepository.findEntries(right.accountId),
+                )[entry.id],
                 executionIdentity = action.executionIdentity,
                 actionKind = action.payload.kind(),
                 payloadJson = encoded.json,

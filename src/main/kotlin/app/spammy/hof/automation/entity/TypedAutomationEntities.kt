@@ -20,6 +20,11 @@ import java.time.Instant
 
 enum class AutomationType { QUEST, HOME_QUEST, BATTLE_MAP, ADVENTURE_MAP, RAID, UNION, FISHING }
 
+fun AutomationType.singletonMarker(): AutomationType? = when (this) {
+    AutomationType.BATTLE_MAP, AutomationType.ADVENTURE_MAP -> null
+    else -> this
+}
+
 enum class PresetSelectionMode { PRIMARY, EXPLICIT }
 
 @Entity
@@ -39,6 +44,12 @@ class AutomationEntryEntity(
     var createdAt: Instant,
     @Column(name = "updated_at", nullable = false)
     var updatedAt: Instant,
+    @Enumerated(EnumType.STRING) @Column(name = "singleton_type_marker", length = 30)
+    var singletonTypeMarker: AutomationType? = type.singletonMarker(),
+    @Column(name = "display_name", length = 100)
+    var displayName: String? = null,
+    @Column(name = "settings_revision", nullable = false)
+    var settingsRevision: Long = 0,
 )
 
 @Entity
@@ -119,6 +130,8 @@ class BattleAutomationMapEntity(
     var partyPreset: PartyPresetEntity? = null,
     @Column(name = "execution_order", nullable = false)
     var executionOrder: Int,
+    @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "account_id", nullable = false)
+    var account: HofAccountEntity = entry.account,
 )
 
 @Entity
@@ -138,6 +151,8 @@ class AdventureAutomationMapEntity(
     var partyPreset: PartyPresetEntity? = null,
     @Column(name = "execution_order", nullable = false)
     var executionOrder: Int,
+    @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "account_id", nullable = false)
+    var account: HofAccountEntity = entry.account,
 )
 
 @Entity
