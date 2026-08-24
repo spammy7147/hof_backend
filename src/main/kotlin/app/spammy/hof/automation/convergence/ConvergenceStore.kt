@@ -12,6 +12,12 @@ interface ConvergenceStore {
     fun normalizeOrphans(accountId: Long, now: Instant): Int
     fun get(attemptId: Long): ActionConvergenceRecord?
     fun save(record: ActionConvergenceRecord)
+    fun releaseSupersededSuppressions(
+        accountId: Long,
+        scope: AutomationIsolationScope,
+        currentBaselineFingerprint: String,
+        releasedAt: Instant,
+    ): Int
     fun releaseSuppression(accountId: Long, attemptId: Long, releasedAt: Instant): Boolean
     fun activeBattleGate(accountId: Long): AccountBattleGate?
     fun openBattleGate(accountId: Long, challengeId: Long?, reason: String, now: Instant): AccountBattleGate
@@ -91,6 +97,24 @@ class InMemoryConvergenceStore : ConvergenceStore {
     @Synchronized
     override fun save(record: ActionConvergenceRecord) {
         records[record.attemptId] = record
+    }
+
+    @Synchronized
+    override fun releaseSupersededSuppressions(
+        accountId: Long,
+        scope: AutomationIsolationScope,
+        currentBaselineFingerprint: String,
+        releasedAt: Instant,
+    ): Int {
+        val superseded = records.values.filter {
+            it.accountId == accountId &&
+                it.selection.scope == scope &&
+                it.result in setOf(ActionConvergenceResult.HELD, ActionConvergenceResult.RESULT_UNOBSERVED) &&
+                it.selection.baselineFingerprint != currentBaselineFingerprint &&
+                (accountId to it.attemptId) !in releasedSuppressions
+        }
+        superseded.forEach { releasedSuppressions += accountId to it.attemptId }
+        return superseded.size
     }
 
     @Synchronized

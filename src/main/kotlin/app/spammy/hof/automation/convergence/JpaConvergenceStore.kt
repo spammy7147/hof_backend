@@ -197,6 +197,37 @@ class JpaConvergenceStore(
         entity.updatedAt = record.updatedAt
     }
 
+    override fun releaseSupersededSuppressions(
+        accountId: Long,
+        scope: AutomationIsolationScope,
+        currentBaselineFingerprint: String,
+        releasedAt: Instant,
+    ): Int {
+        val superseded = entityManager.createQuery(
+            """
+            select convergence from ActionConvergenceEntity convergence
+            join fetch convergence.attempt attempt
+            where convergence.accountId = :accountId
+              and convergence.scopeKind = :scopeKind
+              and convergence.scopeKey = :scopeKey
+              and convergence.result in :results
+              and convergence.suppressionReleasedAt is null
+              and attempt.baselineFingerprint <> :currentBaselineFingerprint
+            """.trimIndent(),
+            ActionConvergenceEntity::class.java,
+        ).setParameter("accountId", accountId)
+            .setParameter("scopeKind", scope.kind)
+            .setParameter("scopeKey", scope.key)
+            .setParameter(
+                "results",
+                setOf(ActionConvergenceResult.HELD, ActionConvergenceResult.RESULT_UNOBSERVED),
+            )
+            .setParameter("currentBaselineFingerprint", currentBaselineFingerprint)
+            .resultList
+        superseded.forEach { it.suppressionReleasedAt = releasedAt }
+        return superseded.size
+    }
+
     override fun releaseSuppression(accountId: Long, attemptId: Long, releasedAt: Instant): Boolean {
         val entity = findConvergence(attemptId)?.takeIf {
             it.accountId == accountId &&

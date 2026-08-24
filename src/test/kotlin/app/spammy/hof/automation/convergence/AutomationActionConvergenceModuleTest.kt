@@ -92,6 +92,42 @@ class AutomationActionConvergenceModuleTest {
     }
 
     @Test
+    fun `보류 뒤 다른 최신 상태를 관측하면 새 사이클의 같은 baseline도 다시 허용한다`() {
+        val held = questSelection("state-transition")
+        val record = store.createOrGet(7L, held, clock.now())
+        record.result = ActionConvergenceResult.HELD
+        record.finishedAt = clock.now()
+        store.save(record)
+
+        assertEquals(
+            0,
+            module.observeAuthoritativeBaseline(
+                7L,
+                held.scope,
+                held.baselineFingerprint,
+                clock.now(),
+            ),
+        )
+        assertIs<ConvergenceDirective.ContinueSelection>(
+            module.prepare(7L, held.copy(executionIdentity = "same-state-blocked")),
+        )
+
+        assertEquals(
+            1,
+            module.observeAuthoritativeBaseline(
+                7L,
+                held.scope,
+                "different-authoritative-baseline",
+                clock.now(),
+            ),
+        )
+
+        assertIs<ConvergenceDirective.Submit>(
+            module.prepare(7L, held.copy(executionIdentity = "new-cycle-same-state")),
+        )
+    }
+
+    @Test
     fun `네트워크 실패는 관측 횟수에서 제외하지만 이분 예산이 끝나면 보류한다`() {
         val attemptId = assertIs<ConvergenceDirective.Submit>(
             module.prepare(7L, questSelection("quest-network")),

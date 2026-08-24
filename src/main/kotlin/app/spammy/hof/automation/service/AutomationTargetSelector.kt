@@ -417,6 +417,23 @@ class AutomationTargetSelector(
         val guard = convergenceGuard ?: return null
         val factory = convergenceSelectionFactory ?: return null
         val preview = factory.preview(entryId, action)
+        preview.baselineFingerprint?.let { baselineFingerprint ->
+            val released = convergenceModule?.observeAuthoritativeBaseline(
+                accountId,
+                preview.scope,
+                baselineFingerprint,
+                timeProvider.now(),
+            ) ?: 0
+            if (released > 0) {
+                log.info(
+                    "Automation convergence suppression released accountId={} scopeKind={} scopeKey={} count={}",
+                    accountId,
+                    preview.scope.kind,
+                    preview.scope.key,
+                    released,
+                )
+            }
+        }
         val constraints = guard.constraints(accountId)
         // Captcha gates and terminal legacy baseline suppression are safety controls, not policy rollout decisions.
         if (constraints.battleGateActive && preview.actionKind.battle) {

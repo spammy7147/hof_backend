@@ -239,6 +239,77 @@ class AutomationTargetSelectorTest {
     }
 
     @Test
+    fun `shadow selector는 다른 최신 baseline을 본 뒤 새 사이클의 과거 baseline을 다시 선택한다`() {
+        val store = InMemoryConvergenceStore()
+        val convergence = DefaultAutomationActionConvergenceModule(store, TimeProvider { now })
+        val factory = StoredActionConvergenceSelectionFactory()
+        val originalAction = QuestAction.Accept("quest-1", "accept-1")
+        val changedAction = QuestAction.Accept("quest-1", "accept-2")
+        val originalPreview = factory.preview(questEntry.id, originalAction)
+        val heldSelection = SelectedAutomationAction(
+            entryId = questEntry.id,
+            executionIdentity = "held-before-state-transition",
+            actionKind = originalPreview.actionKind,
+            scope = originalPreview.scope,
+            policyVersion = StoredActionConvergenceSelectionFactory.POLICY_VERSION,
+            baselineFingerprint = requireNotNull(originalPreview.baselineFingerprint),
+        )
+        val heldAttempt = assertIs<ConvergenceDirective.Submit>(
+            convergence.prepare(7L, heldSelection),
+        ).attemptId
+        convergence.record(
+            heldAttempt,
+            AutomationActionEvidence.ResultUnobserved(now, "legacy budget exhausted"),
+        )
+        var currentAction = changedAction
+        val guarded = AutomationTargetSelector(
+            typed = typed,
+            work = work,
+            loader = loader,
+            lifecycle = lifecycle,
+            timeProvider = TimeProvider { now },
+            raidModule = defaultRaidModule,
+            quest = object : QuestWorkCycleModule {
+                override fun decideNext(snapshot: QuestAutomationSnapshot): QuestDirective =
+                    QuestDirective.Execute(currentAction)
+
+                override fun recordObservedResult(
+                    accountId: Long,
+                    attempt: QuestAttempt,
+                    observation: QuestResultObservation,
+                ): QuestRecordResult = error("not used")
+            },
+            battle = AutomationHandler { HandlerEvaluation.Skipped },
+            adventure = AutomationHandler { HandlerEvaluation.Skipped },
+            union = AutomationHandler { HandlerEvaluation.Skipped },
+            fishing = AutomationHandler { HandlerEvaluation.Skipped },
+            homeQuest = AutomationHandler { HandlerEvaluation.Skipped },
+            convergenceModule = convergence,
+            convergenceGuard = StoreBackedAutomationConvergenceSelectionGuard(store),
+            convergenceSelectionFactory = factory,
+            convergenceRollout = AutomationConvergenceRollout(
+                AutomationConvergenceProperties(mode = AutomationConvergenceMode.SHADOW),
+            ),
+        )
+        Mockito.`when`(work.findRunning(7)).thenReturn(null)
+        Mockito.`when`(work.findWaiting(7)).thenReturn(emptyList())
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(questEntry))
+        Mockito.`when`(loader.loadEntry(7, questEntry.id, null, null)).thenReturn(questDecisionEntry())
+
+        assertEquals(
+            changedAction,
+            assertIs<AutomationCoordination.Runnable>(guarded.select(7L)).action,
+        )
+
+        currentAction = originalAction
+
+        assertEquals(
+            originalAction,
+            assertIs<AutomationCoordination.Runnable>(guarded.select(7L)).action,
+        )
+    }
+
+    @Test
     fun `a decision cycle does not resume a convergence blocked work session twice`() {
         val running = session(30, questEntry, AutomationWorkType.QUEST, "quest-1", AutomationWorkStatus.RUNNING)
         val due = session(

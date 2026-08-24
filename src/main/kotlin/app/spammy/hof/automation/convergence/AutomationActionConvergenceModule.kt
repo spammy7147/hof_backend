@@ -33,6 +33,12 @@ interface AutomationActionConvergenceModule {
     ): ConvergenceDirective.BattleGateWait
     fun resumeDue(accountId: Long): ConvergenceDirective
     fun releaseBattleGate(accountId: Long, resolvedAt: Instant): Boolean
+    fun observeAuthoritativeBaseline(
+        accountId: Long,
+        scope: AutomationIsolationScope,
+        baselineFingerprint: String,
+        observedAt: Instant,
+    ): Int
     fun allowFreshDecision(accountId: Long, attemptId: Long, allowedAt: Instant): Boolean
 }
 
@@ -244,6 +250,18 @@ class DefaultAutomationActionConvergenceModule(
 
     override fun releaseBattleGate(accountId: Long, resolvedAt: Instant): Boolean =
         store.releaseBattleGate(accountId, resolvedAt)
+
+    override fun observeAuthoritativeBaseline(
+        accountId: Long,
+        scope: AutomationIsolationScope,
+        baselineFingerprint: String,
+        observedAt: Instant,
+    ): Int = store.releaseSupersededSuppressions(
+        accountId,
+        scope,
+        baselineFingerprint,
+        observedAt,
+    )
 
     override fun allowFreshDecision(accountId: Long, attemptId: Long, allowedAt: Instant): Boolean =
         store.releaseSuppression(accountId, attemptId, allowedAt)
