@@ -12,6 +12,7 @@ import app.spammy.hof.automation.entity.AutomationWorkStatus
 import app.spammy.hof.automation.entity.AutomationWorkType
 import app.spammy.hof.automation.raid.RaidCycleModule
 import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
+import app.spammy.hof.automation.raid.RaidDecision
 import app.spammy.hof.automation.raid.RaidDirective
 import app.spammy.hof.automation.raid.RaidIntent
 import app.spammy.hof.automation.raid.RaidIntentKind
@@ -209,8 +210,7 @@ class AutomationTargetSelector(
                     )
                 }
                 if (entry.type == AutomationType.RAID) {
-                    val directive = raidModule.decideNext(accountId)
-                    observeRaidAuthoritativeState(accountId, directive)
+                    val directive = decideRaid(accountId)
                     when (directive) {
                         is RaidDirective.Execute -> {
                             val action = directive.intent.toPreparedAction(accountId)
@@ -444,13 +444,14 @@ class AutomationTargetSelector(
         }
     }
 
-    private fun observeRaidAuthoritativeState(accountId: Long, directive: RaidDirective) {
-        val state = when (directive) {
-            is RaidDirective.Execute -> null
-            is RaidDirective.WaitUntil -> directive.authoritativeState
-            is RaidDirective.Hold -> directive.authoritativeState
-            is RaidDirective.Complete -> directive.authoritativeState
-        } ?: return
+    private fun decideRaid(accountId: Long): RaidDirective {
+        val decision = raidModule.decide(accountId)
+        observeRaidAuthoritativeState(accountId, decision)
+        return decision.directive
+    }
+
+    private fun observeRaidAuthoritativeState(accountId: Long, decision: RaidDecision) {
+        val state = decision.authoritativeState ?: return
         val baseline = convergenceSelectionFactory?.authoritativeRaidBaseline(state) ?: return
         observeAuthoritativeBaseline(accountId, baseline.scope, baseline.fingerprint)
     }
@@ -507,8 +508,7 @@ class AutomationTargetSelector(
         initialTrace: List<AutomationEvaluationTrace>,
         evaluatedSessionIds: Set<Long>,
     ): AutomationCoordination {
-        val directive = raidModule.decideNext(accountId)
-        observeRaidAuthoritativeState(accountId, directive)
+        val directive = decideRaid(accountId)
         return when (directive) {
             is RaidDirective.Execute -> {
                 val action = directive.intent.toPreparedAction(accountId)

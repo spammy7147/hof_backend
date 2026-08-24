@@ -35,6 +35,7 @@ import app.spammy.hof.automation.port.AutomationWakeupPort
 import app.spammy.hof.automation.raid.RaidCycleOutcome
 import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
 import app.spammy.hof.automation.raid.RaidCycleModule
+import app.spammy.hof.automation.raid.RaidDecision
 import app.spammy.hof.automation.raid.RaidDirective
 import app.spammy.hof.automation.raid.RaidIntent
 import app.spammy.hof.automation.raid.RaidIntentKind
@@ -286,7 +287,7 @@ class UnifiedAutomationRunnerTest {
             kind = RaidIntentKind.REGISTER,
         )
         val raidRules = Mockito.mock(RaidCycleModule::class.java)
-        Mockito.`when`(raidRules.decideNext(7L)).thenReturn(RaidDirective.Execute(raidIntent))
+        Mockito.`when`(raidRules.decide(7L)).thenReturn(RaidDecision(RaidDirective.Execute(raidIntent)))
         val convergenceFactory = StoredActionConvergenceSelectionFactory()
         val raidPrepared = RaidTownAutomationAction(
             accountId = 7L,

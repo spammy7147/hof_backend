@@ -25,6 +25,7 @@ import app.spammy.hof.automation.raid.RaidCycleModule
 import app.spammy.hof.automation.raid.RaidCycleOutcome
 import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
 import app.spammy.hof.automation.raid.RaidAuthoritativeState
+import app.spammy.hof.automation.raid.RaidDecision
 import app.spammy.hof.automation.raid.RaidCooldownSource
 import app.spammy.hof.automation.raid.RaidDirective
 import app.spammy.hof.automation.raid.RaidIntent
@@ -342,25 +343,32 @@ class AutomationTargetSelectorTest {
             AutomationActionEvidence.ResultUnobserved(now, "legacy budget exhausted"),
         )
         val retryAt = now.plusSeconds(120)
-        Mockito.`when`(raidModule.decideNext(7L)).thenReturn(
-            RaidDirective.WaitUntil(
-                at = retryAt,
-                reason = RaidWaitReason.WAITING_TO_START,
-                message = "레이드 출발 가능 시각까지 기다립니다.",
-                entryId = raidEntry.id,
-                raidId = "Raid001",
-                authoritativeState = RaidAuthoritativeState(
-                    raidId = "Raid001",
-                    baseline = "raid|observed|Raid001|WAITING|joined=true",
-                ),
-            ),
-            RaidDirective.Execute(
-                RaidIntent.Town(
+        Mockito.`when`(raidModule.decide(7L)).thenReturn(
+            RaidDecision(
+                directive = RaidDirective.WaitUntil(
+                    at = retryAt,
+                    reason = RaidWaitReason.WAITING_TO_START,
+                    message = "레이드 출발 가능 시각까지 기다립니다.",
                     entryId = raidEntry.id,
                     raidId = "Raid001",
-                    raidName = "고블린 전투 마차",
-                    kind = RaidIntentKind.REGISTER,
-                    observedStatus = "파티 모집 중 (신청 안됨)",
+                ),
+                authoritativeState = RaidAuthoritativeState(
+                    raidId = "Raid001",
+                    target = null,
+                    registrationWait = true,
+                    registrationWaitSeconds = 90,
+                    globalActions = emptySet(),
+                ),
+            ),
+            RaidDecision(
+                RaidDirective.Execute(
+                    RaidIntent.Town(
+                        entryId = raidEntry.id,
+                        raidId = "Raid001",
+                        raidName = "고블린 전투 마차",
+                        kind = RaidIntentKind.REGISTER,
+                        observedStatus = "파티 모집 중 (신청 안됨)",
+                    ),
                 ),
             ),
         )
@@ -943,8 +951,8 @@ class AutomationTargetSelectorTest {
             executionIdentity = "battle-after-raid-wait",
         )
         Mockito.`when`(work.findRunning(7)).thenReturn(runningRaid)
-        Mockito.`when`(raidModule.decideNext(7)).thenReturn(
-            RaidDirective.WaitUntil(
+        Mockito.`when`(raidModule.decide(7)).thenReturn(
+            RaidDecision(RaidDirective.WaitUntil(
                 at = retryAt,
                 reason = RaidWaitReason.BATTLE_COOLDOWN,
                 message = "레이드 전투 쿨다운",
@@ -954,7 +962,7 @@ class AutomationTargetSelectorTest {
                 impactScope = AutomationImpactScope.RAID_ONLY,
                 releaseCondition = "마감 뒤 최신 레이드 상태 재확인",
                 reasonCode = "RAID_BATTLE_SAFETY_GATE",
-            ),
+            )),
         )
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(raidEntry, battleEntry))
         Mockito.`when`(work.findWaiting(7)).thenReturn(listOf(
@@ -996,14 +1004,14 @@ class AutomationTargetSelectorTest {
         Mockito.`when`(work.findRunning(7)).thenReturn(null)
         Mockito.`when`(work.findWaiting(7)).thenReturn(emptyList())
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(raidEntry, battleEntry))
-        Mockito.`when`(defaultRaidModule.decideNext(7)).thenReturn(
-            RaidDirective.WaitUntil(
+        Mockito.`when`(defaultRaidModule.decide(7)).thenReturn(
+            RaidDecision(RaidDirective.WaitUntil(
                 at = retryAt,
                 reason = RaidWaitReason.REGISTRATION_COOLDOWN,
                 message = "레이드 등록 쿨타임",
                 entryId = raidEntry.id,
                 raidId = "RaidGoblin",
-            ),
+            )),
         )
         Mockito.`when`(loader.loadEntry(7, 11, null, null)).thenReturn(battleSnapshot)
         battleRules.returns(requireNotNull(battleSnapshot.battle), HandlerEvaluation.Runnable(battleAction))
@@ -1030,14 +1038,14 @@ class AutomationTargetSelectorTest {
         Mockito.`when`(work.findRunning(7)).thenReturn(null)
         Mockito.`when`(work.findWaiting(7)).thenReturn(emptyList())
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(raidEntry, battleEntry))
-        Mockito.`when`(defaultRaidModule.decideNext(7)).thenReturn(
-            RaidDirective.Hold(
+        Mockito.`when`(defaultRaidModule.decide(7)).thenReturn(
+            RaidDecision(RaidDirective.Hold(
                 reason = RaidHoldReason.INVALID_PRESET,
                 message = "레이드 전투 프리셋 구성을 확인해 주세요.",
                 entryId = raidEntry.id,
                 raidId = "RaidGoblin",
                 reasonCode = "RAID_BATTLE_RECOVERY_SUPERSEDED_BY_MAP",
-            ),
+            )),
         )
         Mockito.`when`(loader.loadEntry(7, 11, null, null)).thenReturn(battleSnapshot)
         battleRules.returns(requireNotNull(battleSnapshot.battle), HandlerEvaluation.Runnable(battleAction))
@@ -1072,14 +1080,14 @@ class AutomationTargetSelectorTest {
         Mockito.`when`(work.findRunning(7)).thenReturn(null)
         Mockito.`when`(work.findWaiting(7)).thenReturn(emptyList())
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(raidEntry, battleEntry))
-        Mockito.`when`(defaultRaidModule.decideNext(7)).thenReturn(
-            RaidDirective.Hold(
+        Mockito.`when`(defaultRaidModule.decide(7)).thenReturn(
+            RaidDecision(RaidDirective.Hold(
                 reason = RaidHoldReason.BATTLE_OBSERVATION_INCOMPLETE,
                 message = "레이드 전투 상태를 다시 확인합니다.",
                 recheckAt = retryAt,
                 entryId = raidEntry.id,
                 raidId = "RaidGoblin",
-            ),
+            )),
         )
         Mockito.`when`(loader.loadEntry(7, battleEntry.id, null, null)).thenReturn(battleSnapshot)
         battleRules.returns(requireNotNull(battleSnapshot.battle), HandlerEvaluation.Runnable(battleAction))
@@ -1132,10 +1140,10 @@ class AutomationTargetSelectorTest {
         Mockito.`when`(work.findRunning(7)).thenReturn(null)
         Mockito.`when`(work.findWaiting(7)).thenReturn(emptyList())
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(raidEntry))
-        Mockito.`when`(defaultRaidModule.decideNext(7)).thenReturn(
-            RaidDirective.Complete(
+        Mockito.`when`(defaultRaidModule.decide(7)).thenReturn(
+            RaidDecision(RaidDirective.Complete(
                 RaidCycleOutcome(raidEntry.id, "RaidGoblin", RaidCycleOutcomeKind.ABORTED_CLOSED),
-            ),
+            )),
         )
 
         val decision = assertIs<AutomationCoordination.Idle>(selector.select(7))
@@ -1158,10 +1166,10 @@ class AutomationTargetSelectorTest {
         )
         Mockito.`when`(work.findWaiting(7)).thenReturn(listOf(dueRaid))
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(raidEntry))
-        Mockito.`when`(raidModule.decideNext(7)).thenReturn(
-            RaidDirective.Execute(
+        Mockito.`when`(raidModule.decide(7)).thenReturn(
+            RaidDecision(RaidDirective.Execute(
                 RaidIntent.Town(13, "RaidGoblin", "고블린", RaidIntentKind.REFRESH, requestRaidId = null),
-            ),
+            )),
         )
 
         val selected = assertIs<AutomationCoordination.Runnable>(moduleSelector.select(7))
@@ -1171,7 +1179,7 @@ class AutomationTargetSelectorTest {
         assertNull(selected.trace.single().targetKey)
         assertEquals("레이드 자동화 단계를 실행합니다.", selected.trace.single().message)
         Mockito.verify(lifecycle).resumeForCheck(7, 32)
-        Mockito.verify(raidModule).decideNext(7)
+        Mockito.verify(raidModule).decide(7)
         Mockito.verify(loader, Mockito.never()).loadEntry(7, 13, "RaidGoblin")
     }
 
@@ -1238,8 +1246,8 @@ class AutomationTargetSelectorTest {
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(higherPriorityRaidEntry, lowerPriorityQuestEntry))
         Mockito.`when`(loader.loadEntry(7, lowerPriorityQuestEntry.id, "quest-1")).thenReturn(questSnapshot)
         questRules.returns(requireNotNull(runningSnapshot.quest), QuestDirective.Execute(questAction))
-        Mockito.`when`(defaultRaidModule.decideNext(7)).thenReturn(
-            RaidDirective.Execute(
+        Mockito.`when`(defaultRaidModule.decide(7)).thenReturn(
+            RaidDecision(RaidDirective.Execute(
                 RaidIntent.Town(
                     higherPriorityRaidEntry.id,
                     "RaidGoblin",
@@ -1247,7 +1255,7 @@ class AutomationTargetSelectorTest {
                     RaidIntentKind.REWARD,
                     requestRaidId = "RaidGoblin",
                 ),
-            ),
+            )),
         )
 
         val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
@@ -1255,7 +1263,7 @@ class AutomationTargetSelectorTest {
         assertEquals(higherPriorityRaidEntry.id, selected.entryId)
         Mockito.verify(lifecycle).handoffForPriority(7, runningQuest.id, dueRaid.id)
         Mockito.verify(lifecycle, Mockito.never()).resumeForCheck(7, dueRaid.id)
-        Mockito.verify(defaultRaidModule).decideNext(7)
+        Mockito.verify(defaultRaidModule).decide(7)
         Mockito.verify(loader, Mockito.never()).loadEntry(7, lowerPriorityQuestEntry.id, "quest-1")
     }
 
@@ -1273,8 +1281,8 @@ class AutomationTargetSelectorTest {
         Mockito.`when`(work.findRunning(7)).thenReturn(null, resumedRaid, resumedRaid)
         Mockito.`when`(work.findWaiting(7)).thenReturn(listOf(dueRaid))
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(raidEntry))
-        Mockito.`when`(defaultRaidModule.decideNext(7)).thenReturn(
-            RaidDirective.Execute(
+        Mockito.`when`(defaultRaidModule.decide(7)).thenReturn(
+            RaidDecision(RaidDirective.Execute(
                 RaidIntent.Battle(
                     entryId = raidEntry.id,
                     raidId = "RaidGoblin",
@@ -1287,7 +1295,7 @@ class AutomationTargetSelectorTest {
                     recoveryChainId = "chain-1",
                     retransmissionCount = 3,
                 ),
-            ),
+            )),
         )
 
         val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))

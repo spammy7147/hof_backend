@@ -270,12 +270,13 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
-        val wait = assertIs<RaidDirective.WaitUntil>(module.decideNext(1))
+        val decision = module.decide(1)
+        val wait = assertIs<RaidDirective.WaitUntil>(decision.directive)
 
         assertEquals(RaidWaitReason.WAITING_TO_START, wait.reason)
         assertEquals(now.plusSeconds(90), wait.at)
-        assertEquals(target.raidId, wait.authoritativeState?.raidId)
-        assertEquals(true, wait.authoritativeState?.baseline?.contains("READY"))
+        assertEquals(target.raidId, decision.authoritativeState?.raidId)
+        assertEquals(RaidObservedStatus.READY, decision.authoritativeState?.target?.status)
     }
 
     @Test
@@ -976,13 +977,17 @@ class RaidCycleModuleTest {
         )
 
         repeat(4) {
-            val recheck = assertIs<RaidDirective.Hold>(module.decideNext(1))
+            val decision = module.decide(1)
+            val recheck = assertIs<RaidDirective.Hold>(decision.directive)
             assertEquals(current.plusSeconds(10), recheck.recheckAt)
+            assertEquals(null, decision.authoritativeState)
             current = current.plusSeconds(10)
         }
-        val held = assertIs<RaidDirective.Hold>(module.decideNext(1))
+        val heldDecision = module.decide(1)
+        val held = assertIs<RaidDirective.Hold>(heldDecision.directive)
 
         assertEquals(null, held.recheckAt)
+        assertEquals(null, heldDecision.authoritativeState)
         assertEquals("RAID_REWARD_OBSERVATION_HELD", held.reasonCode)
         assertEquals(AutomationDiagnosticKind.RAID_REWARD_OBSERVATION_HELD, held.diagnosticKind)
         assertEquals(RaidRewardRecoveryKind.WINDOW_OBSERVATION, store.state.openCycle?.rewardRecovery?.kind)

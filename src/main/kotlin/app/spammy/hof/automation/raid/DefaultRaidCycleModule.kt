@@ -15,30 +15,21 @@ class DefaultRaidCycleModule(
     private val timeProvider: TimeProvider,
     private val properties: RaidAutomationProperties = RaidAutomationProperties(),
 ) : RaidCycleModule {
-    override fun decideNext(accountId: Long): RaidDirective {
-        var authoritativeObservation: RaidObservation? = null
-        val directive = decideNext(accountId) { observation ->
-            if (observation.fresh) authoritativeObservation = observation
-        }
-        return directive.withAuthoritativeState(authoritativeObservation)
-    }
+    override fun decideNext(accountId: Long): RaidDirective = decide(accountId).directive
 
-    private fun decideNext(
-        accountId: Long,
-        observe: (RaidObservation) -> Unit,
-    ): RaidDirective {
+    override fun decide(accountId: Long): RaidDecision {
         val state = store.load(accountId)
         val configuration = state.configuration
             ?: return RaidDirective.Hold(
                 RaidHoldReason.CONFIGURATION_MISSING,
                 "레이드 자동화 설정을 찾을 수 없습니다.",
-            )
+            ).asDecision()
         if (!configuration.enabled) {
             return RaidDirective.Hold(
                 RaidHoldReason.CONFIGURATION_MISSING,
                 "레이드 자동화가 비활성화되어 있습니다.",
                 entryId = configuration.entryId,
-            )
+            ).asDecision()
         }
         state.openCycle
             ?.takeIf { cycle -> configuration.targets.none { target -> target.raidId == cycle.raidId } }
@@ -50,7 +41,7 @@ class DefaultRaidCycleModule(
                         outcome = RaidCycleOutcomeKind.HANDED_OFF_MANUAL,
                         now = timeProvider.now(),
                     ),
-                )
+                ).asDecision()
             }
         val ordered = rotate(configuration.targets, configuration.currentTargetKey)
         val target = ordered.firstOrNull()
@@ -58,7 +49,7 @@ class DefaultRaidCycleModule(
                 RaidHoldReason.CONFIGURATION_MISSING,
                 "레이드를 하나 이상 선택해 주세요.",
                 entryId = configuration.entryId,
-            )
+            ).asDecision()
         state.openCycle?.takeIf { cycle ->
             cycle.status == RaidAutomationCycleStatus.REWARD_PENDING &&
                 cycle.nextCheckAt?.isAfter(timeProvider.now()) == true
@@ -72,7 +63,7 @@ class DefaultRaidCycleModule(
                 impactScope = AutomationImpactScope.RAID_ONLY,
                 releaseCondition = "마감 뒤 최신 보상 가능 상태 재확인",
                 reasonCode = "RAID_REWARD_REJECTION_RECHECK",
-            )
+            ).asDecision()
         }
         state.openCycle?.battleRecovery?.takeIf { recovery ->
             recovery.nextCheckAt.isAfter(timeProvider.now())
@@ -85,10 +76,23 @@ class DefaultRaidCycleModule(
                 raidId = recovery.raidId,
                 impactScope = AutomationImpactScope.RAID_ONLY,
                 releaseCondition = "최신 레이드 상태에서 전투 결과 재확인",
-            )
+            ).asDecision()
         }
         val observation = observations.read(accountId)
-        observe(observation)
+        val directive = decideFromObservation(accountId, state, configuration, target, observation)
+        val authoritativeState = observation
+            .takeIf(RaidObservation::fresh)
+            ?.let { directive.resolveAuthoritativeState(it) }
+        return RaidDecision(directive, authoritativeState)
+    }
+
+    private fun decideFromObservation(
+        accountId: Long,
+        state: RaidCycleAccountState,
+        configuration: RaidCycleConfiguration,
+        target: RaidCycleTarget,
+        observation: RaidObservation,
+    ): RaidDirective {
         state.openCycle?.battleRecovery?.takeIf { !observation.fresh }?.let { recovery ->
             val now = timeProvider.now()
             val updated = recovery.copy(
@@ -563,60 +567,62 @@ class DefaultRaidCycleModule(
         )
     }
 
-    private fun RaidDirective.withAuthoritativeState(observation: RaidObservation?): RaidDirective {
-        if (observation == null) return this
-        return when (this) {
-            is RaidDirective.Execute -> this
-            is RaidDirective.WaitUntil -> copy(
-                authoritativeState = observation.authoritativeState(raidId),
-            )
-            is RaidDirective.Complete -> copy(
-                authoritativeState = observation.authoritativeState(outcome.raidId),
-            )
-            is RaidDirective.Hold -> if (
-                raidId != null && reason in AUTHORITATIVE_HOLD_REASONS
-            ) {
-                copy(authoritativeState = observation.authoritativeState(raidId))
-            } else {
-                this
-            }
+    private fun RaidDirective.resolveAuthoritativeState(observation: RaidObservation): RaidAuthoritativeState? =
+        when (this) {
+            is RaidDirective.Execute -> null
+            is RaidDirective.WaitUntil -> observation.toAuthoritativeState(raidId)
+            is RaidDirective.Complete -> observation.toAuthoritativeState(outcome.raidId)
+            is RaidDirective.Hold -> raidId
+                ?.takeIf { reason in AUTHORITATIVE_HOLD_REASONS }
+                ?.let { observation.toAuthoritativeState(it) }
         }
-    }
 
-    private fun RaidObservation.authoritativeState(raidId: String): RaidAuthoritativeState {
+    private fun RaidObservation.toAuthoritativeState(raidId: String): RaidAuthoritativeState? {
         val target = raids.singleOrNull { it.id == raidId }
-        val rewardWindow = when (val reward = target?.rewardWindow) {
-            RaidRewardWindowObservation.Available -> "AVAILABLE"
-            RaidRewardWindowObservation.Absent -> "ABSENT"
-            is RaidRewardWindowObservation.Wait -> "WAIT:${reward.remainingSeconds}"
-            is RaidRewardWindowObservation.Incomplete -> "INCOMPLETE"
-            null -> "TARGET_ABSENT"
+        if (
+            target?.status in setOf(RaidObservedStatus.TESTING, RaidObservedStatus.UNKNOWN) ||
+            target?.rewardWindow is RaidRewardWindowObservation.Incomplete
+        ) {
+            return null
         }
         val targetState = target?.let {
-            listOf(
-                it.status.name,
-                it.joined,
-                it.playable,
-                it.waitSeconds,
-                it.actions.map(RaidIntentKind::name).sorted().joinToString(","),
-                it.battleAvailability.name,
-                it.battle?.categoryId,
-                it.battle?.mapCode,
-                it.battle?.cooldownRemainingSeconds,
-                rewardWindow,
-            ).joinToString("|")
-        } ?: "TARGET_ABSENT"
-        val baseline = listOf(
-            "raid",
-            "observed",
-            raidId,
-            targetState,
-            registrationWait,
-            registrationWaitSeconds,
-            globalActions.map(RaidIntentKind::name).sorted().joinToString(","),
-        ).joinToString("|")
-        return RaidAuthoritativeState(raidId, baseline)
+            RaidAuthoritativeTargetState(
+                status = it.status,
+                joined = it.joined,
+                playable = it.playable,
+                waitSeconds = it.waitSeconds,
+                actions = it.actions,
+                battleAvailability = it.battleAvailability,
+                battleCategoryId = it.battle?.categoryId,
+                battleMapCode = it.battle?.mapCode,
+                battleCooldownRemainingSeconds = it.battle?.cooldownRemainingSeconds,
+                rewardWindow = when (val reward = it.rewardWindow) {
+                    RaidRewardWindowObservation.Available -> RaidAuthoritativeRewardWindow(
+                        RaidAuthoritativeRewardWindowKind.AVAILABLE,
+                    )
+                    RaidRewardWindowObservation.Absent -> RaidAuthoritativeRewardWindow(
+                        RaidAuthoritativeRewardWindowKind.ABSENT,
+                    )
+                    is RaidRewardWindowObservation.Wait -> RaidAuthoritativeRewardWindow(
+                        RaidAuthoritativeRewardWindowKind.WAITING,
+                        reward.remainingSeconds,
+                    )
+                    is RaidRewardWindowObservation.Incomplete -> RaidAuthoritativeRewardWindow(
+                        RaidAuthoritativeRewardWindowKind.INCOMPLETE,
+                    )
+                },
+            )
+        }
+        return RaidAuthoritativeState(
+            raidId = raidId,
+            target = targetState,
+            registrationWait = registrationWait,
+            registrationWaitSeconds = registrationWaitSeconds,
+            globalActions = globalActions,
+        )
     }
+
+    private fun RaidDirective.asDecision() = RaidDecision(this)
 
     override fun recordObservedResult(
         accountId: Long,

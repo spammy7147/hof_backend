@@ -192,13 +192,45 @@ data class RaidCycleOutcome(
 
 data class RaidAuthoritativeState(
     val raidId: String,
-    val baseline: String,
+    val target: RaidAuthoritativeTargetState?,
+    val registrationWait: Boolean,
+    val registrationWaitSeconds: Int?,
+    val globalActions: Set<RaidIntentKind>,
 ) {
     init {
         require(raidId.isNotBlank()) { "Raid authoritative state id must not be blank." }
-        require(baseline.isNotBlank()) { "Raid authoritative baseline must not be blank." }
     }
 }
+
+data class RaidAuthoritativeTargetState(
+    val status: RaidObservedStatus,
+    val joined: Boolean,
+    val playable: Boolean,
+    val waitSeconds: Int?,
+    val actions: Set<RaidIntentKind>,
+    val battleAvailability: RaidBattleAvailability,
+    val battleCategoryId: String?,
+    val battleMapCode: String?,
+    val battleCooldownRemainingSeconds: Long?,
+    val rewardWindow: RaidAuthoritativeRewardWindow,
+)
+
+data class RaidAuthoritativeRewardWindow(
+    val kind: RaidAuthoritativeRewardWindowKind,
+    val remainingSeconds: Long? = null,
+)
+
+enum class RaidAuthoritativeRewardWindowKind {
+    AVAILABLE,
+    ABSENT,
+    WAITING,
+    INCOMPLETE,
+}
+
+data class RaidDecision(
+    val directive: RaidDirective,
+    val authoritativeState: RaidAuthoritativeState? = null,
+)
 
 sealed interface RaidDirective {
     data class Execute(
@@ -217,7 +249,6 @@ sealed interface RaidDirective {
         val impactScope: AutomationImpactScope? = null,
         val releaseCondition: String? = null,
         val reasonCode: String? = null,
-        val authoritativeState: RaidAuthoritativeState? = null,
     ) : RaidDirective
     data class Hold(
         val reason: RaidHoldReason,
@@ -229,13 +260,11 @@ sealed interface RaidDirective {
         val diagnosticKind: AutomationDiagnosticKind? = null,
         val impactScope: AutomationImpactScope? = null,
         val releaseCondition: String? = null,
-        val authoritativeState: RaidAuthoritativeState? = null,
     ) : RaidDirective
     data class Complete(
         val outcome: RaidCycleOutcome,
         val reasonCode: String? = null,
         val message: String? = null,
-        val authoritativeState: RaidAuthoritativeState? = null,
     ) : RaidDirective
 }
 

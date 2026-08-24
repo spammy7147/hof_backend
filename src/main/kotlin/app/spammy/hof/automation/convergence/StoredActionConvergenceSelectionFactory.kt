@@ -1,7 +1,8 @@
 package app.spammy.hof.automation.convergence
 
-import app.spammy.hof.automation.service.AdventureMapAutomationAction
 import app.spammy.hof.automation.raid.RaidAuthoritativeState
+import app.spammy.hof.automation.raid.RaidIntentKind
+import app.spammy.hof.automation.service.AdventureMapAutomationAction
 import app.spammy.hof.automation.service.BattleAutomationActionSource
 import app.spammy.hof.automation.service.BattleMapAutomationAction
 import app.spammy.hof.automation.service.FishingTownAutomationAction
@@ -24,7 +25,7 @@ import org.springframework.stereotype.Component
 class StoredActionConvergenceSelectionFactory {
     fun authoritativeRaidBaseline(state: RaidAuthoritativeState) = AuthoritativeConvergenceBaseline(
         scope = scope(AutomationIsolationScopeKind.RAID_ENTRY, state.raidId),
-        fingerprint = fingerprint(state.baseline),
+        fingerprint = fingerprint(canonicalRaidState(state)),
     )
 
     fun create(
@@ -309,6 +310,35 @@ class StoredActionConvergenceSelectionFactory {
     private fun fingerprint(value: String): String = HexFormat.of().formatHex(
         MessageDigest.getInstance("SHA-256").digest(value.toByteArray(StandardCharsets.UTF_8)),
     )
+
+    private fun canonicalRaidState(state: RaidAuthoritativeState): String {
+        val target = state.target
+        return encodeCanonicalFields(
+            "raid-authoritative-v1",
+            state.raidId,
+            target?.status?.name,
+            target?.joined?.toString(),
+            target?.playable?.toString(),
+            target?.waitSeconds?.toString(),
+            target?.actions?.map(RaidIntentKind::name)?.sorted()?.let(::encodeCanonicalFields),
+            target?.battleAvailability?.name,
+            target?.battleCategoryId,
+            target?.battleMapCode,
+            target?.battleCooldownRemainingSeconds?.toString(),
+            target?.rewardWindow?.kind?.name,
+            target?.rewardWindow?.remainingSeconds?.toString(),
+            state.registrationWait.toString(),
+            state.registrationWaitSeconds?.toString(),
+            encodeCanonicalFields(state.globalActions.map(RaidIntentKind::name).sorted()),
+        )
+    }
+
+    private fun encodeCanonicalFields(values: Iterable<String?>): String =
+        values.joinToString(separator = "") { value ->
+            value?.let { "${it.length}:$it" } ?: "-1:"
+        }
+
+    private fun encodeCanonicalFields(vararg values: String?): String = encodeCanonicalFields(values.asIterable())
 
     private data class Mapping(
         val actionKind: AutomationActionKind,
