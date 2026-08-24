@@ -15,8 +15,6 @@ class DefaultRaidCycleModule(
     private val timeProvider: TimeProvider,
     private val properties: RaidAutomationProperties = RaidAutomationProperties(),
 ) : RaidCycleModule {
-    override fun decideNext(accountId: Long): RaidDirective = decide(accountId).directive
-
     override fun decide(accountId: Long): RaidDecision {
         val state = store.load(accountId)
         val configuration = state.configuration
@@ -567,15 +565,23 @@ class DefaultRaidCycleModule(
         )
     }
 
-    private fun RaidDirective.resolveAuthoritativeState(observation: RaidObservation): RaidAuthoritativeState? =
-        when (this) {
+    private fun RaidDirective.resolveAuthoritativeState(observation: RaidObservation): RaidAuthoritativeState? {
+        val raidId = when (this) {
             is RaidDirective.Execute -> null
-            is RaidDirective.WaitUntil -> observation.toAuthoritativeState(raidId)
-            is RaidDirective.Complete -> observation.toAuthoritativeState(outcome.raidId)
-            is RaidDirective.Hold -> raidId
-                ?.takeIf { reason in AUTHORITATIVE_HOLD_REASONS }
-                ?.let { observation.toAuthoritativeState(it) }
+            is RaidDirective.WaitUntil -> raidId
+            is RaidDirective.Complete -> outcome.raidId
+            is RaidDirective.Hold -> raidId?.takeIf { reason in AUTHORITATIVE_HOLD_REASONS }
+        } ?: return null
+        val target = observation.raids.singleOrNull { it.id == raidId }
+        if (
+            this is RaidDirective.WaitUntil &&
+            reason in BATTLE_STATE_WAIT_REASONS &&
+            target?.battleAvailability == RaidBattleAvailability.INCOMPLETE
+        ) {
+            return null
         }
+        return observation.toAuthoritativeState(raidId)
+    }
 
     private fun RaidObservation.toAuthoritativeState(raidId: String): RaidAuthoritativeState? {
         val target = raids.singleOrNull { it.id == raidId }
@@ -1444,6 +1450,11 @@ class DefaultRaidCycleModule(
             RaidHoldReason.TARGET_TEMPORARILY_MISSING,
             RaidHoldReason.ACTION_UNAVAILABLE,
             RaidHoldReason.BATTLE_TARGET_ABSENT,
+        )
+        val BATTLE_STATE_WAIT_REASONS = setOf(
+            RaidWaitReason.BATTLE_COOLDOWN,
+            RaidWaitReason.BATTLE_APPLIED_COOLDOWN,
+            RaidWaitReason.BATTLE_RECOVERY_RECHECK,
         )
         val RESET_REQUIRED_STATUS = Regex("보상\\s*확인\\s*종료\\s*\\(\\s*리셋\\s*가능\\s*\\)")
         val REGISTRATION_STATUSES = setOf(

@@ -31,7 +31,7 @@ class RaidCycleModuleTest {
             TimeProvider { now },
         )
 
-        assertIs<RaidDirective.Hold>(module.decideNext(1))
+        assertIs<RaidDirective.Hold>(module.decide(1).directive)
         assertEquals(recovery.chainId, store.state.openCycle?.battleRecovery?.chainId)
     }
 
@@ -55,7 +55,7 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
-        val directive = assertIs<RaidDirective.Execute>(module.decideNext(1))
+        val directive = assertIs<RaidDirective.Execute>(module.decide(1).directive)
         val intent = assertIs<RaidIntent.Town>(directive.intent)
 
         assertEquals(RaidIntentKind.RESET, intent.kind)
@@ -90,7 +90,7 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
-        val intent = assertIs<RaidIntent.Town>(assertIs<RaidDirective.Execute>(module.decideNext(1)).intent)
+        val intent = assertIs<RaidIntent.Town>(assertIs<RaidDirective.Execute>(module.decide(1).directive).intent)
 
         assertEquals(RaidIntentKind.REGISTER, intent.kind)
         assertEquals("raid-a", intent.requestRaidId)
@@ -383,7 +383,7 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
-        val battle = assertIs<RaidIntent.Battle>(assertIs<RaidDirective.Execute>(module.decideNext(1)).intent)
+        val battle = assertIs<RaidIntent.Battle>(assertIs<RaidDirective.Execute>(module.decide(1).directive).intent)
 
         assertEquals("raid001", battle.mapCode)
         assertEquals(3, battle.presetId)
@@ -416,7 +416,7 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
-        val hold = assertIs<RaidDirective.Hold>(module.decideNext(1))
+        val hold = assertIs<RaidDirective.Hold>(module.decide(1).directive)
 
         assertEquals(RaidHoldReason.INVALID_PRESET, hold.reason)
         assertEquals(null, hold.recheckAt)
@@ -460,7 +460,7 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
-        val directive = assertIs<RaidDirective.Execute>(module.decideNext(1))
+        val directive = assertIs<RaidDirective.Execute>(module.decide(1).directive)
         val reward = assertIs<RaidIntent.Town>(directive.intent)
 
         assertEquals(RaidIntentKind.REWARD, reward.kind)
@@ -506,7 +506,7 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
-        val hold = assertIs<RaidDirective.Hold>(module.decideNext(1))
+        val hold = assertIs<RaidDirective.Hold>(module.decide(1).directive)
 
         assertEquals("RAID_BATTLE_APPLIED_COMPLETED", hold.reasonCode)
         assertEquals(true, hold.message.contains("적용을 확인"))
@@ -580,7 +580,7 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
-        val complete = assertIs<RaidDirective.Complete>(module.decideNext(1))
+        val complete = assertIs<RaidDirective.Complete>(module.decide(1).directive)
 
         assertEquals(RaidCycleOutcomeKind.COMPLETED, complete.outcome.kind)
         assertEquals(null, store.state.openCycle)
@@ -622,7 +622,7 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
-        val hold = assertIs<RaidDirective.Hold>(module.decideNext(1))
+        val hold = assertIs<RaidDirective.Hold>(module.decide(1).directive)
 
         assertEquals(RaidHoldReason.MANUAL_RAID_ACTIVE, hold.reason)
         assertEquals(now.plusSeconds(30), hold.recheckAt)
@@ -657,7 +657,7 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
-        val battle = assertIs<RaidIntent.Battle>(assertIs<RaidDirective.Execute>(module.decideNext(1)).intent)
+        val battle = assertIs<RaidIntent.Battle>(assertIs<RaidDirective.Execute>(module.decide(1).directive).intent)
 
         assertEquals("raid-auto", battle.raidId)
         assertEquals(RaidAutomationCycleStatus.IN_BATTLE, store.state.openCycle?.status)
@@ -689,7 +689,7 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
-        val complete = assertIs<RaidDirective.Complete>(module.decideNext(1))
+        val complete = assertIs<RaidDirective.Complete>(module.decide(1).directive)
 
         assertEquals(RaidCycleOutcomeKind.ABORTED_REGISTRATION_LOST, complete.outcome.kind)
         assertEquals(null, store.state.openCycle)
@@ -720,7 +720,7 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
-        val complete = assertIs<RaidDirective.Complete>(module.decideNext(1))
+        val complete = assertIs<RaidDirective.Complete>(module.decide(1).directive)
 
         assertEquals(RaidCycleOutcomeKind.ABORTED_CLOSED, complete.outcome.kind)
     }
@@ -740,7 +740,7 @@ class RaidCycleModuleTest {
             TimeProvider { now },
         )
 
-        val complete = assertIs<RaidDirective.Complete>(module.decideNext(1))
+        val complete = assertIs<RaidDirective.Complete>(module.decide(1).directive)
 
         assertEquals(RaidCycleOutcomeKind.HANDED_OFF_MANUAL, complete.outcome.kind)
         assertEquals(null, store.state.openCycle)
@@ -808,8 +808,8 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
-        val superseded = assertIs<RaidDirective.Complete>(module.decideNext(1))
-        val battle = assertIs<RaidIntent.Battle>(assertIs<RaidDirective.Execute>(module.decideNext(1)).intent)
+        val superseded = assertIs<RaidDirective.Complete>(module.decide(1).directive)
+        val battle = assertIs<RaidIntent.Battle>(assertIs<RaidDirective.Execute>(module.decide(1).directive).intent)
 
         assertEquals(RaidCycleOutcomeKind.SUPERSEDED_BY_OBSERVED_RAID, superseded.outcome.kind)
         assertEquals("raid-b", battle.raidId)
@@ -846,7 +846,7 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
-        val battle = assertIs<RaidIntent.Battle>(assertIs<RaidDirective.Execute>(module.decideNext(1)).intent)
+        val battle = assertIs<RaidIntent.Battle>(assertIs<RaidDirective.Execute>(module.decide(1).directive).intent)
 
         assertEquals("raid001", battle.mapCode)
         assertEquals(RaidAutomationCycleStatus.IN_BATTLE, store.state.openCycle?.status)
@@ -868,7 +868,7 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
-        val completed = assertIs<RaidDirective.Complete>(module.decideNext(1))
+        val completed = assertIs<RaidDirective.Complete>(module.decide(1).directive)
 
         assertEquals(RaidCycleOutcomeKind.COMPLETED, completed.outcome.kind)
         assertEquals(true, store.lastAdvanceRotation)
@@ -902,7 +902,7 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
-        val reward = assertIs<RaidIntent.Town>(assertIs<RaidDirective.Execute>(module.decideNext(1)).intent)
+        val reward = assertIs<RaidIntent.Town>(assertIs<RaidDirective.Execute>(module.decide(1).directive).intent)
 
         assertEquals(RaidIntentKind.REWARD, reward.kind)
     }
@@ -936,7 +936,7 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
-        val wait = assertIs<RaidDirective.WaitUntil>(module.decideNext(1))
+        val wait = assertIs<RaidDirective.WaitUntil>(module.decide(1).directive)
 
         assertEquals(RaidWaitReason.REWARD_CONFIRMATION, wait.reason)
         assertEquals(now.plusSeconds(1_800), wait.at)
@@ -1028,9 +1028,9 @@ class RaidCycleModuleTest {
             TimeProvider { now },
         )
 
-        assertIs<RaidDirective.Hold>(module.decideNext(1))
+        assertIs<RaidDirective.Hold>(module.decide(1).directive)
         rewardWindow = RaidRewardWindowObservation.Available
-        val execute = assertIs<RaidDirective.Execute>(module.decideNext(1))
+        val execute = assertIs<RaidDirective.Execute>(module.decide(1).directive)
 
         assertEquals(RaidIntentKind.REWARD, execute.intent.kind)
         assertEquals(null, store.state.openCycle?.rewardRecovery)
@@ -1064,7 +1064,7 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
-        val complete = assertIs<RaidDirective.Complete>(module.decideNext(1))
+        val complete = assertIs<RaidDirective.Complete>(module.decide(1).directive)
 
         assertEquals(RaidCycleOutcomeKind.SUPERSEDED_BY_OBSERVED_RAID, complete.outcome.kind)
         assertEquals("RAID_REWARD_WINDOW_ABSENT_SUPERSEDED", complete.reasonCode)
@@ -1121,7 +1121,7 @@ class RaidCycleModuleTest {
             attempt("reward-1"),
             RaidResultObservation.Page(available.copy(observedAt = current)),
         ))
-        assertIs<RaidDirective.Execute>(module.decideNext(1))
+        assertIs<RaidDirective.Execute>(module.decide(1).directive)
 
         current = current.plusSeconds(10)
         repeat(4) {
@@ -1137,7 +1137,7 @@ class RaidCycleModuleTest {
             attempt("reward-2"),
             RaidResultObservation.Page(available.copy(observedAt = current)),
         ))
-        val held = assertIs<RaidDirective.Hold>(module.decideNext(1))
+        val held = assertIs<RaidDirective.Hold>(module.decide(1).directive)
 
         assertEquals("RAID_REWARD_RESULT_HELD", held.reasonCode)
         assertEquals(true, store.state.openCycle?.rewardRecovery?.held)
@@ -1183,7 +1183,7 @@ class RaidCycleModuleTest {
             RaidAttempt(7, RaidIntentKind.REWARD, target.raidId, requestRaidId = null),
             RaidResultObservation.Page(rejected),
         )
-        val wait = assertIs<RaidDirective.WaitUntil>(module.decideNext(1))
+        val wait = assertIs<RaidDirective.WaitUntil>(module.decide(1).directive)
 
         assertIs<RaidRecordResult.NotApplied>(result)
         assertEquals(RaidWaitReason.POST_REWARD_CHECK, wait.reason)
@@ -1219,7 +1219,7 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
-        val complete = assertIs<RaidDirective.Complete>(module.decideNext(1))
+        val complete = assertIs<RaidDirective.Complete>(module.decide(1).directive)
 
         assertEquals(RaidCycleOutcomeKind.COMPLETED, complete.outcome.kind)
         assertEquals(null, store.state.openCycle)
@@ -1253,7 +1253,7 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
-        val refresh = assertIs<RaidIntent.Town>(assertIs<RaidDirective.Execute>(module.decideNext(1)).intent)
+        val refresh = assertIs<RaidIntent.Town>(assertIs<RaidDirective.Execute>(module.decide(1).directive).intent)
 
         assertEquals(RaidIntentKind.REFRESH, refresh.kind)
         assertEquals(null, refresh.requestRaidId)
@@ -1378,7 +1378,7 @@ class RaidCycleModuleTest {
             TimeProvider { now },
         )
 
-        val wait = assertIs<RaidDirective.WaitUntil>(module.decideNext(1))
+        val wait = assertIs<RaidDirective.WaitUntil>(module.decide(1).directive)
 
         assertEquals(RaidWaitReason.BATTLE_RECOVERY_RECHECK, wait.reason)
         assertEquals(now.plusSeconds(300), wait.at)
@@ -1401,7 +1401,7 @@ class RaidCycleModuleTest {
         ).copy(fresh = false)
         val module = DefaultRaidCycleModule(store, RaidObservationReader { stale }, TimeProvider { now })
 
-        val hold = assertIs<RaidDirective.Hold>(module.decideNext(1))
+        val hold = assertIs<RaidDirective.Hold>(module.decide(1).directive)
 
         assertEquals(RaidHoldReason.BATTLE_OBSERVATION_INCOMPLETE, hold.reason)
         assertEquals(now.plusSeconds(300), hold.recheckAt)
@@ -1422,7 +1422,7 @@ class RaidCycleModuleTest {
         val observation = inBattleObservation(target, RaidBattleAvailability.INCOMPLETE, battle = null)
         val module = DefaultRaidCycleModule(store, RaidObservationReader { reads += 1; observation }, TimeProvider { now })
 
-        val hold = assertIs<RaidDirective.Hold>(module.decideNext(1))
+        val hold = assertIs<RaidDirective.Hold>(module.decide(1).directive)
 
         assertEquals(1, reads)
         assertEquals(RaidHoldReason.BATTLE_OBSERVATION_INCOMPLETE, hold.reason)
@@ -1448,7 +1448,7 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
-        val directive = assertIs<RaidDirective.Execute>(module.decideNext(1))
+        val directive = assertIs<RaidDirective.Execute>(module.decide(1).directive)
         val battle = assertIs<RaidIntent.Battle>(directive.intent)
 
         assertEquals(44, battle.presetId)
@@ -1482,7 +1482,7 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
-        val directive = assertIs<RaidDirective.Execute>(module.decideNext(1))
+        val directive = assertIs<RaidDirective.Execute>(module.decide(1).directive)
 
         assertEquals("raid002", assertIs<RaidIntent.Battle>(directive.intent).mapCode)
         assertEquals("RAID_BATTLE_RECOVERY_SUPERSEDED_BY_MAP", directive.reasonCode)
@@ -1507,7 +1507,7 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
-        val hold = assertIs<RaidDirective.Hold>(module.decideNext(1))
+        val hold = assertIs<RaidDirective.Hold>(module.decide(1).directive)
 
         assertEquals(RaidHoldReason.INVALID_PRESET, hold.reason)
         assertEquals("RAID_BATTLE_RECOVERY_SUPERSEDED_BY_MAP", hold.reasonCode)
@@ -1542,7 +1542,7 @@ class RaidCycleModuleTest {
                 RaidResultObservation.BattleAmbiguous("결과 미관측"),
             ))
             current = current.plusSeconds(300)
-            val battle = assertIs<RaidIntent.Battle>(assertIs<RaidDirective.Execute>(module.decideNext(1)).intent)
+            val battle = assertIs<RaidIntent.Battle>(assertIs<RaidDirective.Execute>(module.decide(1).directive).intent)
             assertEquals(retryIndex + 1, battle.retransmissionCount)
             attempt = ambiguousBattleAttempt(
                 target.raidId,
@@ -1571,7 +1571,7 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
-        val wait = assertIs<RaidDirective.WaitUntil>(module.decideNext(1))
+        val wait = assertIs<RaidDirective.WaitUntil>(module.decide(1).directive)
 
         assertEquals(RaidWaitReason.BATTLE_COOLDOWN, wait.reason)
         assertEquals(true, wait.message.contains("외부 상태 변경"))
@@ -1595,7 +1595,7 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
-        val wait = assertIs<RaidDirective.WaitUntil>(module.decideNext(1))
+        val wait = assertIs<RaidDirective.WaitUntil>(module.decide(1).directive)
 
         assertEquals(RaidWaitReason.BATTLE_COOLDOWN, wait.reason)
         assertEquals(recovery.chainId, store.state.openCycle?.battleRecovery?.chainId)
@@ -1630,7 +1630,7 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { current })
 
-        val retransmission = assertIs<RaidIntent.Battle>(assertIs<RaidDirective.Execute>(module.decideNext(1)).intent)
+        val retransmission = assertIs<RaidIntent.Battle>(assertIs<RaidDirective.Execute>(module.decide(1).directive).intent)
         assertEquals(true, retransmission.submittedFromRunnable)
         assertIs<RaidRecordResult.BattleRecoveryStarted>(module.recordObservedResult(
             1,
@@ -1655,7 +1655,7 @@ class RaidCycleModuleTest {
             RaidObservedBattle("raid", "raid001", 90),
         )
 
-        val wait = assertIs<RaidDirective.WaitUntil>(module.decideNext(1))
+        val wait = assertIs<RaidDirective.WaitUntil>(module.decide(1).directive)
 
         assertEquals(RaidWaitReason.BATTLE_COOLDOWN, wait.reason)
         assertEquals(true, wait.message.contains("외부 상태 변경"))
@@ -1697,7 +1697,7 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
-        val complete = assertIs<RaidDirective.Complete>(module.decideNext(1))
+        val complete = assertIs<RaidDirective.Complete>(module.decide(1).directive)
 
         assertEquals(RaidCycleOutcomeKind.ABORTED_REGISTRATION_LOST, complete.outcome.kind)
         assertEquals("RAID_BATTLE_RECOVERY_SUPERSEDED", complete.reasonCode)
@@ -1746,10 +1746,50 @@ class RaidCycleModuleTest {
         )
         current = current.plusSeconds(2)
 
-        val wait = assertIs<RaidDirective.WaitUntil>(module.decideNext(1))
+        val wait = assertIs<RaidDirective.WaitUntil>(module.decide(1).directive)
 
         assertEquals(RaidWaitReason.BATTLE_COOLDOWN, wait.reason)
         assertEquals(now.plusSeconds(120), wait.at)
+    }
+
+    @Test
+    fun `활성 전투 안전 게이트의 불완전 관측은 권위 baseline으로 승격하지 않는다`() {
+        val target = target("raid-a", 0)
+        val gate = RaidBattleSafetyGate(
+            raidId = target.raidId,
+            categoryId = "raid",
+            mapCode = "raid001",
+            executionIdentity = "execution-0",
+            startedAt = now,
+            notBefore = now.plusSeconds(120),
+            source = RaidCooldownSource.LOCAL_FALLBACK,
+        )
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(
+                    1,
+                    7,
+                    target.raidId,
+                    target.name,
+                    RaidAutomationCycleStatus.IN_BATTLE,
+                    null,
+                    battleSafetyGate = gate,
+                ),
+            ),
+        )
+        val observation = inBattleObservation(target, RaidBattleAvailability.INCOMPLETE, battle = null)
+        val module = DefaultRaidCycleModule(
+            store,
+            RaidObservationReader { observation },
+            TimeProvider { now },
+        )
+
+        val decision = module.decide(1)
+        val wait = assertIs<RaidDirective.WaitUntil>(decision.directive)
+
+        assertEquals(RaidWaitReason.BATTLE_COOLDOWN, wait.reason)
+        assertEquals(null, decision.authoritativeState)
     }
 
     @Test
@@ -1790,7 +1830,7 @@ class RaidCycleModuleTest {
             RaidAutomationProperties(fallbackEnforcementEnabled = false),
         )
 
-        assertIs<RaidDirective.Execute>(module.decideNext(1))
+        assertIs<RaidDirective.Execute>(module.decide(1).directive)
         assertEquals(null, store.state.openCycle?.battleSafetyGate)
     }
 
@@ -1834,7 +1874,7 @@ class RaidCycleModuleTest {
             RaidObservedBattle("raid", "raid001", 90, RaidCooldownSource.HOF_DIRECT),
         )
 
-        val wait = assertIs<RaidDirective.WaitUntil>(module.decideNext(1))
+        val wait = assertIs<RaidDirective.WaitUntil>(module.decide(1).directive)
 
         assertEquals(now.plusSeconds(92), wait.at)
         assertEquals(RaidCooldownSource.HOF_DIRECT, wait.cooldownSource)
@@ -1876,9 +1916,9 @@ class RaidCycleModuleTest {
             RaidResultObservation.BattleCompleted,
         )
 
-        assertIs<RaidDirective.WaitUntil>(module.decideNext(1))
+        assertIs<RaidDirective.WaitUntil>(module.decide(1).directive)
         current = current.plusSeconds(120)
-        assertIs<RaidDirective.Execute>(module.decideNext(1))
+        assertIs<RaidDirective.Execute>(module.decide(1).directive)
         assertEquals(null, store.state.openCycle?.battleSafetyGate)
     }
 
@@ -1917,11 +1957,11 @@ class RaidCycleModuleTest {
         )
 
         repeat(4) {
-            val hold = assertIs<RaidDirective.Hold>(module.decideNext(1))
+            val hold = assertIs<RaidDirective.Hold>(module.decide(1).directive)
             assertEquals("RAID_BATTLE_GATE_OBSERVATION_INCOMPLETE", hold.reasonCode)
             current = current.plusSeconds(10)
         }
-        val held = assertIs<RaidDirective.Hold>(module.decideNext(1))
+        val held = assertIs<RaidDirective.Hold>(module.decide(1).directive)
 
         assertEquals("RAID_BATTLE_GATE_HELD_5", held.reasonCode)
         assertEquals(true, store.state.openCycle?.battleSafetyGate?.held)
@@ -1953,9 +1993,9 @@ class RaidCycleModuleTest {
             TimeProvider { current },
         )
 
-        val first = assertIs<RaidDirective.WaitUntil>(module.decideNext(1))
+        val first = assertIs<RaidDirective.WaitUntil>(module.decide(1).directive)
         current = current.plusSeconds(1)
-        val second = assertIs<RaidDirective.WaitUntil>(module.decideNext(1))
+        val second = assertIs<RaidDirective.WaitUntil>(module.decide(1).directive)
 
         assertEquals(now.plusSeconds(120), first.at)
         assertEquals(first.at, second.at)
