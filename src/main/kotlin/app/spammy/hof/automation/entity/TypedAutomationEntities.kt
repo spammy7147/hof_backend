@@ -242,6 +242,8 @@ class AutomationRotationStateEntity(
 
 enum class RaidAutomationCycleStatus {
     PREPARING,
+    REGISTRATION_REFRESH_REQUIRED,
+    REGISTRATION_COOLDOWN,
     REGISTERED_WAITING,
     IN_BATTLE,
     REWARD_PENDING,

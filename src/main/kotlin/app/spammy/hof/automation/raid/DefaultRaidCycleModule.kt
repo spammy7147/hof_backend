@@ -5,6 +5,7 @@ import app.spammy.hof.automation.config.RaidAutomationProperties
 import app.spammy.hof.automation.service.AutomationDiagnosticKind
 import app.spammy.hof.automation.service.AutomationImpactScope
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.town.raid.model.RaidRegistrationResultEvidence
 import java.util.UUID
 import org.springframework.stereotype.Service
 
@@ -61,6 +62,21 @@ class DefaultRaidCycleModule(
                 impactScope = AutomationImpactScope.RAID_ONLY,
                 releaseCondition = "마감 뒤 최신 보상 가능 상태 재확인",
                 reasonCode = "RAID_REWARD_REJECTION_RECHECK",
+            ).asDecision()
+        }
+        state.openCycle?.takeIf { cycle ->
+            cycle.status == RaidAutomationCycleStatus.REGISTRATION_COOLDOWN &&
+                cycle.nextCheckAt?.isAfter(timeProvider.now()) == true
+        }?.let { cycle ->
+            return RaidDirective.WaitUntil(
+                at = requireNotNull(cycle.nextCheckAt),
+                reason = RaidWaitReason.REGISTRATION_COOLDOWN,
+                message = "HOF가 확인한 레이드 등록 가능 시각까지 이 레이드 범위만 기다립니다.",
+                entryId = configuration.entryId,
+                raidId = cycle.raidId,
+                impactScope = AutomationImpactScope.RAID_ONLY,
+                releaseCondition = "등록 대기 종료 뒤 상태 갱신과 최신 레이드 상태 재확인",
+                reasonCode = "RAID_REGISTRATION_COOLDOWN",
             ).asDecision()
         }
         state.openCycle?.battleRecovery?.takeIf { recovery ->
@@ -195,6 +211,29 @@ class DefaultRaidCycleModule(
             return RaidDirective.Hold(
                 RaidHoldReason.UNKNOWN_OR_CONFLICTING_STATE,
                 "레이드 상태를 안전하게 판단할 수 없어 다시 확인합니다.",
+                recheckAt = timeProvider.now().plusSeconds(DEFAULT_RECHECK_SECONDS),
+                entryId = configuration.entryId,
+                raidId = cycle.raidId,
+            )
+        }
+        if (cycle.status in REGISTRATION_RECOVERY_STATUSES) {
+            if (RaidIntentKind.REFRESH in observation.globalActions) {
+                return RaidDirective.Execute(
+                    RaidIntent.Town(
+                        entryId = configuration.entryId,
+                        raidId = cycle.raidId,
+                        raidName = cycle.raidName,
+                        kind = RaidIntentKind.REFRESH,
+                        requestRaidId = null,
+                        observedStatus = observed.statusText,
+                    ),
+                    reasonCode = "RAID_REGISTRATION_STATUS_REFRESH",
+                    message = "기존 전투 또는 등록 대기 상태를 HOF에서 갱신합니다.",
+                )
+            }
+            return RaidDirective.Hold(
+                RaidHoldReason.ACTION_UNAVAILABLE,
+                "레이드 등록 상태 갱신 동작을 다시 확인합니다.",
                 recheckAt = timeProvider.now().plusSeconds(DEFAULT_RECHECK_SECONDS),
                 entryId = configuration.entryId,
                 raidId = cycle.raidId,
@@ -529,11 +568,7 @@ class DefaultRaidCycleModule(
         }
         if (observation.registrationWait) {
             return RaidDirective.WaitUntil(
-                at = timeProvider.now().plusSeconds(
-                    (observation.registrationWaitSeconds ?: DEFAULT_RECHECK_SECONDS.toInt())
-                        .coerceAtLeast(MINIMUM_WAIT_SECONDS)
-                        .toLong(),
-                ),
+                at = registrationRetryAt(timeProvider.now(), observation.registrationWaitSeconds),
                 reason = RaidWaitReason.REGISTRATION_COOLDOWN,
                 message = "레이드 등록 쿨타임을 기다립니다.",
                 entryId = configuration.entryId,
@@ -733,6 +768,52 @@ class DefaultRaidCycleModule(
                 )
                 return RaidRecordResult.Recorded()
             }
+            if (RaidRegistrationResultEvidence.hasStaleBattleConflict(page.resultMessages)) {
+                store.transition(
+                    accountId = accountId,
+                    raidId = attempt.raidId,
+                    status = RaidAutomationCycleStatus.REGISTRATION_REFRESH_REQUIRED,
+                    observedStatus = "REGISTRATION_CONFLICT",
+                    nextCheckAt = null,
+                    now = timeProvider.now(),
+                )
+                return RaidRecordResult.Recorded()
+            }
+            if (page.registrationWait) {
+                val now = timeProvider.now()
+                store.transition(
+                    accountId = accountId,
+                    raidId = attempt.raidId,
+                    status = RaidAutomationCycleStatus.REGISTRATION_COOLDOWN,
+                    observedStatus = "REGISTRATION_COOLDOWN",
+                    nextCheckAt = registrationRetryAt(now, page.registrationWaitSeconds),
+                    now = now,
+                )
+                return RaidRecordResult.Recorded()
+            }
+        }
+        if (
+            attempt.kind == RaidIntentKind.REFRESH &&
+            cycle.status in REGISTRATION_RECOVERY_STATUSES
+        ) {
+            val now = timeProvider.now()
+            store.transition(
+                accountId = accountId,
+                raidId = attempt.raidId,
+                status = if (page.registrationWait) {
+                    RaidAutomationCycleStatus.REGISTRATION_COOLDOWN
+                } else {
+                    RaidAutomationCycleStatus.PREPARING
+                },
+                observedStatus = if (page.registrationWait) "REGISTRATION_COOLDOWN" else "STATUS_REFRESHED",
+                nextCheckAt = if (page.registrationWait) {
+                    registrationRetryAt(now, page.registrationWaitSeconds)
+                } else {
+                    null
+                },
+                now = now,
+            )
+            return RaidRecordResult.Recorded()
         }
         if (attempt.kind == RaidIntentKind.START) {
             val target = page.raids.singleOrNull { it.id == attempt.raidId }
@@ -1420,6 +1501,15 @@ class DefaultRaidCycleModule(
         message,
     )
 
+    private fun registrationRetryAt(now: java.time.Instant, observedSeconds: Int?): java.time.Instant =
+        now.plusSeconds(
+            observedSeconds
+                ?.takeIf { it > 0 }
+                ?.coerceAtLeast(MINIMUM_WAIT_SECONDS)
+                ?.toLong()
+                ?: DEFAULT_RECHECK_SECONDS,
+        )
+
     private fun rotate(targets: List<RaidCycleTarget>, currentTargetKey: String?): List<RaidCycleTarget> {
         val ordered = targets.sortedWith(compareBy(RaidCycleTarget::executionOrder, RaidCycleTarget::raidId))
         val index = ordered.indexOfFirst { it.raidId == currentTargetKey }
@@ -1461,6 +1551,10 @@ class DefaultRaidCycleModule(
             RaidObservedStatus.RECRUITING,
             RaidObservedStatus.WAITING,
             RaidObservedStatus.READY,
+        )
+        val REGISTRATION_RECOVERY_STATUSES = setOf(
+            RaidAutomationCycleStatus.REGISTRATION_REFRESH_REQUIRED,
+            RaidAutomationCycleStatus.REGISTRATION_COOLDOWN,
         )
     }
 }

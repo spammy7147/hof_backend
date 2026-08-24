@@ -21,11 +21,11 @@ class HofResultParser {
         val items = roots.flatMap { root ->
             root.select(ITEM_SELECTORS).mapNotNull { item -> cleanText(item.text()).takeIf(String::isNotBlank) }
         }.distinct().take(MAX_ITEMS).map(::ParsedTownResultItem)
-        val messages = roots.mapNotNull { root ->
+        val messages = (roots.mapNotNull { root ->
             val copy = root.clone()
             copy.select(ITEM_SELECTORS).remove()
             cleanText(copy.text()).takeIf(String::isNotBlank)
-        }.distinct().take(MAX_MESSAGES)
+        }).distinct().take(MAX_MESSAGES)
 
         return ParsedTownResult(messages = messages, items = items)
     }

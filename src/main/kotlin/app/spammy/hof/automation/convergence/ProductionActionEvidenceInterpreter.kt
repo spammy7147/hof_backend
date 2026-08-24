@@ -34,6 +34,8 @@ class ProductionActionEvidenceInterpreter(
                     completeness = ObservationCompleteness.COMPLETE,
                     freshness = ObservationFreshness.FRESH,
                     state = execution.observedState,
+                    explicitRejected = execution.explicitRejected,
+                    rejectionReason = execution.rejectionReason,
                     actionSuccessMarker = execution.actionSuccessMarker,
                     responseShapeFingerprint = responseShapeFingerprint,
                     sanitizedSnippet = execution.sanitizedSnippet,

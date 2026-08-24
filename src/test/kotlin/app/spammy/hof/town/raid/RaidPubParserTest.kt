@@ -193,6 +193,17 @@ class RaidPubParserTest {
         assertEquals(3, page.raids.size)
     }
 
+    @Test fun `페이지 관측 상한 뒤의 신청 완료 문구는 applied 증거로 사용하지 않는다`() {
+        val oversized = fixture().replace(
+            "</form>\n</div>",
+            "</form><div>${"x".repeat(200_500)} 신청 완료</div></div>",
+        )
+
+        val page = parser.parse(oversized, URL, forms.parse(oversized, URL))
+
+        assertFalse(page.applied)
+    }
+
     @Test fun `콜론형 header에서도 현재 사용자 이름을 찾아 참가 상태를 판별한다`() {
         val html = fixture().replace("《테스트 길드》현재사용자 Funds :", "현재사용자 Funds:")
         val page = parser.parse(html, URL, forms.parse(html, URL))
@@ -217,6 +228,24 @@ class RaidPubParserTest {
             mapOf("nonce" to "raid-fresh", "register_goblin" to "등록한다"),
             context.requests().last().formEntries.associate { it.name to it.value },
         )
+    }
+
+    @Test fun `등록 POST의 기존 전투 충돌을 UNKNOWN이 아닌 명시적 실패로 반환한다`() {
+        val html = registerableFixture()
+        val rejected = html.replace(
+            "</body>",
+            "<p>이미 전투 중입니다. 퇴치/보상 확인/상태 갱신을 해주세요.</p></body>",
+        )
+        val context = service(html, rejected)
+
+        val response = context.service.action(7L, RaidPubActionRequest(RaidAction.REGISTER, "RaidGoblin"))
+
+        assertEquals("FAILURE", response.result?.status)
+        assertEquals(
+            listOf("이미 전투 중입니다. 퇴치/보상 확인/상태 갱신을 해주세요."),
+            response.result?.messages,
+        )
+        assertEquals(2, context.requests().size)
     }
 
     @Test fun `상태 갱신은 실제 submit을 실행하고 응답의 신청 쿨타임을 반환한다`() {

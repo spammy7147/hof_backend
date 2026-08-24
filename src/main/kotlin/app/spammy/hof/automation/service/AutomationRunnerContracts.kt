@@ -121,6 +121,8 @@ sealed interface TypedAutomationExecution {
         val responseShapeMaterial: String,
         val sanitizedSnippet: String,
         val actionSuccessMarker: Boolean = false,
+        val explicitRejected: Boolean = false,
+        val rejectionReason: String? = null,
         val raidOutcome: RaidCycleOutcome? = null,
     ) : TypedAutomationExecution
 

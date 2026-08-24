@@ -208,6 +208,153 @@ class RaidCycleModuleTest {
     }
 
     @Test
+    fun `REGISTER가 기존 전투 상태로 거절되면 저장 요청을 반복하지 않고 REFRESH를 선택한다`() {
+        val target = target("raid-a", 0)
+        val cleanPage = RaidObservation(
+            raids = listOf(
+                RaidObservedTarget(
+                    id = target.raidId,
+                    name = target.name,
+                    playable = true,
+                    status = RaidObservedStatus.RECRUITING,
+                    joined = false,
+                    actions = setOf(RaidIntentKind.REGISTER),
+                ),
+            ),
+            applied = false,
+            registrationWait = false,
+            globalActions = setOf(RaidIntentKind.REFRESH),
+        )
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(1, 7, target.raidId, target.name, RaidAutomationCycleStatus.PREPARING, null),
+            ),
+        )
+        val module = DefaultRaidCycleModule(store, RaidObservationReader { cleanPage }, TimeProvider { now })
+        val rejected = cleanPage.copy(
+            resultMessages = listOf("이미 전투 중입니다. 퇴치/보상 확인/상태 갱신을 해주세요."),
+        )
+
+        assertIs<RaidRecordResult.Recorded>(module.recordObservedResult(
+            1,
+            RaidAttempt(7, RaidIntentKind.REGISTER, target.raidId),
+            RaidResultObservation.Page(rejected),
+        ))
+        assertEquals(RaidAutomationCycleStatus.REGISTRATION_REFRESH_REQUIRED, store.state.openCycle?.status)
+
+        val refresh = assertIs<RaidIntent.Town>(
+            assertIs<RaidDirective.Execute>(module.decide(1).directive).intent,
+        )
+        assertEquals(RaidIntentKind.REFRESH, refresh.kind)
+
+        assertIs<RaidRecordResult.Recorded>(module.recordObservedResult(
+            1,
+            RaidAttempt(7, RaidIntentKind.REFRESH, target.raidId),
+            RaidResultObservation.Page(cleanPage),
+        ))
+        assertEquals(RaidAutomationCycleStatus.PREPARING, store.state.openCycle?.status)
+        val register = assertIs<RaidIntent.Town>(
+            assertIs<RaidDirective.Execute>(module.decide(1).directive).intent,
+        )
+        assertEquals(RaidIntentKind.REGISTER, register.kind)
+    }
+
+    @Test
+    fun `REGISTER 응답이 신청 대기를 밝히면 정확한 만료 시각까지 레이드 범위만 기다린다`() {
+        val target = target("raid-a", 0)
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(1, 7, target.raidId, target.name, RaidAutomationCycleStatus.PREPARING, null),
+            ),
+        )
+        val module = DefaultRaidCycleModule(
+            store,
+            RaidObservationReader { error("cooldown deadline must not GET") },
+            TimeProvider { now },
+        )
+        val cooldownSeconds = 10_765
+        val cooldown = RaidObservation(
+            raids = listOf(
+                RaidObservedTarget(
+                    id = target.raidId,
+                    name = target.name,
+                    playable = true,
+                    status = RaidObservedStatus.RECRUITING,
+                    joined = false,
+                    actions = setOf(RaidIntentKind.REGISTER),
+                ),
+            ),
+            applied = false,
+            registrationWait = true,
+            registrationWaitSeconds = cooldownSeconds,
+            resultMessages = listOf("현재 상태는 신청 대기입니다.(신청 가능 까지 2시간 59분 25초)"),
+        )
+
+        assertIs<RaidRecordResult.Recorded>(module.recordObservedResult(
+            1,
+            RaidAttempt(7, RaidIntentKind.REGISTER, target.raidId),
+            RaidResultObservation.Page(cooldown),
+        ))
+        assertEquals(RaidAutomationCycleStatus.REGISTRATION_COOLDOWN, store.state.openCycle?.status)
+        assertEquals(now.plusSeconds(cooldownSeconds.toLong()), store.state.openCycle?.nextCheckAt)
+
+        val wait = assertIs<RaidDirective.WaitUntil>(module.decide(1).directive)
+        assertEquals(RaidWaitReason.REGISTRATION_COOLDOWN, wait.reason)
+        assertEquals(now.plusSeconds(cooldownSeconds.toLong()), wait.at)
+    }
+
+    @Test
+    fun `비정상 등록 대기는 30초 fallback을 쓰고 짧은 정상 대기는 5초 안전 하한을 지킨다`() {
+        listOf<Pair<Int?, Long>>(null to 30L, 0 to 30L, 1 to 5L).forEach { (observedSeconds, expectedSeconds) ->
+            listOf(
+                RaidIntentKind.REGISTER to RaidAutomationCycleStatus.PREPARING,
+                RaidIntentKind.REFRESH to RaidAutomationCycleStatus.REGISTRATION_REFRESH_REQUIRED,
+            ).forEach { (intentKind, initialStatus) ->
+            val target = target("raid-a", 0)
+            val store = InMemoryRaidCycleStore(
+                RaidCycleAccountState(
+                    RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                    RaidCycleSnapshot(1, 7, target.raidId, target.name, initialStatus, null),
+                ),
+            )
+            val module = DefaultRaidCycleModule(
+                store,
+                RaidObservationReader { error("registration fallback must not GET") },
+                TimeProvider { now },
+            )
+            val cooldown = RaidObservation(
+                raids = listOf(
+                    RaidObservedTarget(
+                        id = target.raidId,
+                        name = target.name,
+                        playable = true,
+                        status = RaidObservedStatus.RECRUITING,
+                        joined = false,
+                        actions = setOf(RaidIntentKind.REGISTER),
+                    ),
+                ),
+                applied = false,
+                registrationWait = true,
+                registrationWaitSeconds = observedSeconds,
+            )
+
+            assertIs<RaidRecordResult.Recorded>(module.recordObservedResult(
+                1,
+                RaidAttempt(7, intentKind, target.raidId),
+                RaidResultObservation.Page(cooldown),
+            ))
+            assertEquals(
+                now.plusSeconds(expectedSeconds),
+                store.state.openCycle?.nextCheckAt,
+                "$intentKind/$observedSeconds",
+            )
+            }
+        }
+    }
+
+    @Test
     fun `REGISTER 응답이 이미 전투 상태면 추가 GET 없이 IN_BATTLE로 fast forward한다`() {
         val target = target("raid-a", 0)
         val store = InMemoryRaidCycleStore(

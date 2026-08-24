@@ -1,5 +1,6 @@
 package app.spammy.hof.automation.service
 
+import app.spammy.hof.automation.convergence.AutomationActionEvidence
 import app.spammy.hof.automation.convergence.FishingObservedState
 import app.spammy.hof.automation.convergence.HomeQuestObservedState
 import app.spammy.hof.automation.convergence.ProductionEvidenceShapes
@@ -41,6 +42,7 @@ import app.spammy.hof.town.raid.dto.RaidPubActionRequest
 import app.spammy.hof.town.raid.dto.RaidPubResponse
 import app.spammy.hof.town.raid.model.RaidAction
 import app.spammy.hof.town.raid.model.RaidBattleObservationStatus
+import app.spammy.hof.town.raid.model.RaidRegistrationResultEvidence
 import app.spammy.hof.town.raid.model.RaidStatus
 import app.spammy.hof.town.raid.model.isRaidRegistrationAvailable
 import app.spammy.hof.town.raid.model.isRaidResetRequiredStatus
@@ -87,6 +89,12 @@ interface ManagedAutomationAction {
 
     /** Policy가 직접 적용을 인정한 뒤에만 실행할 local domain projection 경계다. */
     fun applyPolicyAcceptedExecution(execution: TypedAutomationExecution): TypedAutomationExecution = execution
+
+    /** Policy가 미적용·대체로 닫은 직접 응답에 포함된 행동별 최신 상태만 local cycle에 반영한다. */
+    fun applyPolicyResolvedExecution(
+        execution: TypedAutomationExecution,
+        evidence: AutomationActionEvidence,
+    ) = Unit
 
     /** SHADOW/LEGACY에서 기존 direct-response 판정과 projection을 그대로 재현하는 경계다. */
     fun applyLegacyExecution(execution: TypedAutomationExecution): TypedAutomationExecution = execution
@@ -582,7 +590,7 @@ class UnifiedAutomationActionLifecycleModule(
                     return raidActionCompleted(payload, response, outcome = null)
                 }
 
-                override fun applyPolicyAcceptedExecution(execution: TypedAutomationExecution): TypedAutomationExecution {
+                private fun applyProjection(execution: TypedAutomationExecution): TypedAutomationExecution {
                     val response = requireNotNull(submittedResponse) {
                         "Raid response is missing from the accepted execution."
                     }
@@ -593,6 +601,26 @@ class UnifiedAutomationActionLifecycleModule(
                         RaidResultObservation.Page(raidObservationAdapter.from(response)),
                     )
                     return (execution as TypedAutomationExecution.ActionCompleted).copy(raidOutcome = completion)
+                }
+
+                override fun applyPolicyAcceptedExecution(execution: TypedAutomationExecution): TypedAutomationExecution =
+                    applyProjection(execution)
+
+                override fun applyPolicyResolvedExecution(
+                    execution: TypedAutomationExecution,
+                    evidence: AutomationActionEvidence,
+                ) {
+                    val response = submittedResponse ?: return
+                    val registrationRecovery = payload.action in setOf(RaidAction.REGISTER, RaidAction.REFRESH) &&
+                        (response.applyWait ||
+                            RaidRegistrationResultEvidence.hasStaleBattleConflict(response.result?.messages.orEmpty()))
+                    if (
+                        registrationRecovery &&
+                        (evidence is AutomationActionEvidence.DirectRejected ||
+                            evidence is AutomationActionEvidence.StateAdvanced)
+                    ) {
+                        applyProjection(execution)
+                    }
                 }
 
                 override fun applyLegacyExecution(execution: TypedAutomationExecution): TypedAutomationExecution =
@@ -1036,6 +1064,8 @@ class UnifiedAutomationActionLifecycleModule(
             ),
             sanitizedSnippet = snippet,
             actionSuccessMarker = response.result?.status == "SUCCESS",
+            explicitRejected = response.result?.status == "FAILURE",
+            rejectionReason = response.result?.status?.takeIf { it == "FAILURE" }?.let { "RAID_ACTION_REJECTED" },
             raidOutcome = outcome,
         )
     }
