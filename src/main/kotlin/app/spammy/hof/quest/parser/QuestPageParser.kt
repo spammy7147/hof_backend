@@ -45,16 +45,9 @@ class QuestPageParser {
             contents != null &&
             normalizedText.contains("퀘스트 목록") &&
             hasCompleteSections &&
-            hasCompletePageTerminator(document)
+            HofHtmlParser.hasCompletePageTerminator(html, finalUrl)
         return QuestPageObservation(parseDocument(document), complete)
     }
-
-    private fun hasCompletePageTerminator(document: org.jsoup.nodes.Document): Boolean =
-        document.select("h5").any { normalize(it.text()).contains("copy right", ignoreCase = true) } &&
-            document.select("h6").any { normalize(it.text()).contains("h.o.f korean ver", ignoreCase = true) } &&
-            document.select("img[src]").any { image ->
-                image.attr("src").substringBefore('?').substringAfterLast('/').equals("zerohof.gif", true)
-            }
 
     private fun completeSection(contents: Element, headingPattern: Regex): CompleteQuestSection? {
         val heading = contents.select("h1, h2, h3, h4, h5, h6").firstOrNull { candidate ->

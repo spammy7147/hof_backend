@@ -233,7 +233,7 @@ class BattleMapParser {
         if (statusCode !in 200..299 || !ADVENTURE_PAGE_URL_PATTERN.containsMatchIn(finalUrl)) return false
         val document = HofHtmlParser.parse(html, HOF_BASE_URL)
         val contents = document.selectFirst("#contents") ?: return false
-        if (!hasCompletePageTerminator(document)) return false
+        if (!HofHtmlParser.hasCompletePageTerminator(html, HOF_BASE_URL)) return false
 
         val queryPattern = Regex("""[?&]sp_common=([^&\"'#\s]+)""")
         val candidates = coalesceMapLinks(
@@ -248,7 +248,7 @@ class BattleMapParser {
             if (!relevant) {
                 // A new/unknown action link inside a map group could be a target this parser cannot see yet.
                 // Treating it as decoration would make a stored target look absent from an otherwise complete page.
-                if (group != null) return false
+                if (group != null && !isMapGroupDecoration(candidate.rawHref)) return false
                 return@forEach
             }
             val identity = candidate.mapCode?.let { "code:$it" } ?: run {
@@ -455,6 +455,9 @@ class BattleMapParser {
             .map { match -> match.groupValues[1] }
             .any(expectedQueryNames::contains)
 
+    /** 실제 sp_hunt map group에 있는 fragment-only anchor는 이동·제출 동작이 아닌 장식 경계다. */
+    private fun isMapGroupDecoration(rawHref: String): Boolean = rawHref.trim() == "#"
+
     private fun placeholderQueryNames(
         categoryId: String,
         queryName: String,
@@ -631,13 +634,6 @@ class BattleMapParser {
     private fun fingerprint(value: String): String = HexFormat.of().formatHex(
         MessageDigest.getInstance("SHA-256").digest(value.toByteArray(StandardCharsets.UTF_8)),
     )
-
-    private fun hasCompletePageTerminator(document: org.jsoup.nodes.Document): Boolean =
-        document.select("h5").any { it.text().normalizedText().contains("copy right", ignoreCase = true) } &&
-            document.select("h6").any { it.text().normalizedText().contains("h.o.f korean ver", ignoreCase = true) } &&
-            document.select("img[src]").any { image ->
-                image.attr("src").substringBefore('?').substringAfterLast('/').equals("zerohof.gif", true)
-            }
 
     private companion object {
         const val HOF_BASE_URL = "http://sic.zerosic.com/ZeroHOF/index.php"

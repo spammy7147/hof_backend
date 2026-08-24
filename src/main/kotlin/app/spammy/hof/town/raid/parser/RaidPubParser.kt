@@ -8,7 +8,6 @@ import app.spammy.hof.town.raid.model.*
 import app.spammy.hof.external.model.HofHttpMethod
 import java.math.BigInteger
 import java.net.URI
-import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.jsoup.nodes.Node
 import org.jsoup.nodes.TextNode
@@ -24,7 +23,7 @@ class RaidPubParser {
         result: ParsedTownResult? = null,
         availableRaidCodes: Set<String> = emptySet(),
     ): RaidPubSnapshot {
-        val pageTerminatorComplete = hasCompletePageTerminator(Jsoup.parse(html, finalUrl))
+        val pageTerminatorComplete = HofHtmlParser.hasCompletePageTerminator(html, finalUrl)
         val doc = HofHtmlParser.parse(html, finalUrl)
         val normalizedResult = result?.let { parsed ->
             if (RESET_SUCCEEDED.containsMatchIn(clean(doc.text())) && RESET_SUCCESS_MESSAGE !in parsed.messages) {
@@ -177,12 +176,6 @@ class RaidPubParser {
     }
 
     private fun empty(result: ParsedTownResult?) = RaidPubSnapshot(emptyList(), false, false, null, null, emptySet(), result, emptyMap(), false)
-    private fun hasCompletePageTerminator(document: org.jsoup.nodes.Document): Boolean =
-        document.select("h5").any { clean(it.text()).contains("copy right", ignoreCase = true) } &&
-            document.select("h6").any { clean(it.text()).contains("h.o.f korean ver", ignoreCase = true) } &&
-            document.select("img[src]").any { image ->
-                image.attr("src").substringBefore('?').substringAfterLast('/').equals("zerohof.gif", true)
-            }
     private fun nodeText(node: Node): String = when (node) { is TextNode -> node.text(); is Element -> node.text(); else -> "" }
     private fun isSubmit(element: Element): Boolean = when (element.tagName()) {
         "button" -> element.attr("type").lowercase().let { it.isBlank() || it == "submit" }

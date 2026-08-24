@@ -53,7 +53,7 @@ class QuestPageParserTest {
             statusCode = 500,
         )
         val truncated = parser.parseObservation(
-            completeHtml.substringBefore("<div class=\"hof-page-terminator\">"),
+            completeHtml.substringBefore("<div id=\"foot\""),
             "http://sic.zerosic.com/ZeroHOF/index.php?menu=quest",
         )
 

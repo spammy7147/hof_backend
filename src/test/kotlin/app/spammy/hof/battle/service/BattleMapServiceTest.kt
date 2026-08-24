@@ -935,9 +935,11 @@ class BattleMapServiceTest {
                   <a href="index.php?sp_common=shared02">Shared- 두 번째 맵</a>
                 </div>
               </div>
-              <h5>Copy Right sanitized fixture</h5>
-              <h6>H.O.F Korean Ver sanitized fixture</h6>
-              <img src="image/zerohof.gif">
+              <div id="foot">
+                <h5>Copy Right sanitized fixture</h5>
+                <h6>H.O.F Korean Ver sanitized fixture</h6>
+                <img src="image/zerohof.gif">
+              </div>
             </body></html>
         """.trimIndent()
 

@@ -40,11 +40,14 @@ class BattleMapParserTest {
                 <div id="mapgroup9">
                   <a href="index.php?sp_common=Conc001">Catacomb- 첫 번째 묘소</a>
                   <a href="index.php?sp_common=Conc002">Catacomb- 두 번째 묘소</a>
+                  <a href="#">장식 링크</a>
                 </div>
               </div>
-              <h5>Copy Right sanitized fixture</h5>
-              <h6>H.O.F Korean Ver sanitized fixture</h6>
-              <img src="image/zerohof.gif">
+              <div id="foot">
+                <h5>Copy Right sanitized fixture</h5>
+                <h6>H.O.F Korean Ver sanitized fixture</h6>
+                <img src="image/zerohof.gif">
+              </div>
             </body></html>
         """.trimIndent()
         val maps = parser.parse("adventure_map", "sp_common", html)
@@ -93,9 +96,11 @@ class BattleMapParserTest {
                   <a href="index.php?sp_hunt#"><img src="unknown.gif"></a>
                 </div>
               </div>
-              <h5>Copy Right sanitized fixture</h5>
-              <h6>H.O.F Korean Ver sanitized fixture</h6>
-              <img src="image/zerohof.gif">
+              <div id="foot">
+                <h5>Copy Right sanitized fixture</h5>
+                <h6>H.O.F Korean Ver sanitized fixture</h6>
+                <img src="image/zerohof.gif">
+              </div>
             </body></html>
         """.trimIndent()
         val maps = parser.parse("adventure_map", "sp_common", html)
