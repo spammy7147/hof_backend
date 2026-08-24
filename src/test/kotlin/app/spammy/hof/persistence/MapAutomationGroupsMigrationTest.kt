@@ -50,7 +50,7 @@ class MapAutomationGroupsMigrationTest {
             }
         }
 
-        configuration.target("43").load().migrate()
+        configuration.target("44").load().migrate()
 
         DriverManager.getConnection(url, "sa", "").use { connection ->
             connection.createStatement().use { statement ->
