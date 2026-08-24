@@ -90,6 +90,7 @@ class FreshSchemaTest {
                 "39" to "enforce single automation work owner",
                 "40" to "schedule legacy yielded automation work",
                 "41" to "release obsolete raid suppressions",
+                "42" to "allow raid registration recovery states",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -137,6 +138,7 @@ class FreshSchemaTest {
                 "V3__add_automation_work_sessions.sql",
                 "V40__schedule_legacy_yielded_automation_work.sql",
                 "V41__release_obsolete_raid_suppressions.sql",
+                "V42__allow_raid_registration_recovery_states.sql",
                 "V4__prepare_captcha_on_demand.sql",
                 "V5__track_character_detail_sync.sql",
                 "V6__learn_shared_battle_cooldowns.sql",

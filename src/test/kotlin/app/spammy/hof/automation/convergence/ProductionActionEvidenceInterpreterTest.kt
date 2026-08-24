@@ -89,6 +89,22 @@ class ProductionActionEvidenceInterpreterTest {
     }
 
     @Test
+    fun `구조가 완전한 명시적 거절 응답은 direct rejected 증거가 된다`() {
+        val evidence = assertIs<AutomationActionEvidence.DirectRejected>(
+            interpreter.fromExecution(
+                selection,
+                questClaimCompleted().copy(
+                    explicitRejected = true,
+                    rejectionReason = "QUEST_ACTION_REJECTED",
+                ),
+                NOW,
+            ),
+        )
+
+        assertEquals("QUEST_ACTION_REJECTED", evidence.reason)
+    }
+
+    @Test
     fun `레이드와 유니온 전투의 terminal direct response는 action kind와 무관하게 applied다`() {
         listOf(
             AutomationActionKind.RAID_BATTLE to AutomationIsolationScopeKind.RAID_ENTRY,

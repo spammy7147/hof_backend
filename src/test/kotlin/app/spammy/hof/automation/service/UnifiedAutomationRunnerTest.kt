@@ -1241,6 +1241,42 @@ class UnifiedAutomationRunnerTest {
     }
 
     @Test
+    fun `active에서 명시적 거절 응답은 미적용으로 닫으면서 행동별 상태 projection을 허용한다`() {
+        val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
+        val factory = StoredActionConvergenceSelectionFactory()
+        val selection = factory.create(defaultStored)
+        val rejected = questClaimExecution().copy(
+            explicitRejected = true,
+            rejectionReason = "QUEST_ACTION_REJECTED",
+        )
+        Mockito.`when`(convergence.resumeDue(7L)).thenReturn(ConvergenceDirective.ContinueSelection)
+        Mockito.`when`(decisions.select(7)).thenReturn(
+            AutomationCoordination.Runnable(12, QuestAction.Claim("quest", "claim"), emptyList()),
+        )
+        Mockito.`when`(convergence.prepare(7L, selection)).thenReturn(ConvergenceDirective.Submit(112L))
+        Mockito.`when`(convergence.record(Mockito.eq(112L), anyConvergenceEvidence()))
+            .thenReturn(ConvergenceDirective.ContinueSelection)
+        Mockito.`when`(managed.execute()).thenReturn(rejected)
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            convergenceModule = convergence,
+            convergenceSelectionFactory = factory,
+            evidenceInterpreter = productionEvidenceInterpreter,
+        )
+
+        scoped.runOne(7L)
+
+        val evidence = assertIs<AutomationActionEvidence.DirectRejected>(convergenceEvidence(convergence, 112L))
+        Mockito.verify(managed).applyPolicyResolvedExecution(rejected, evidence)
+        assertIs<TypedRuntimeOutcome.ActionSuperseded>(capturedOutcome())
+    }
+
+    @Test
     fun `prepared payload 저장 실패는 convergence attempt를 만들지 않는다`() {
         val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
         val factory = StoredActionConvergenceSelectionFactory()

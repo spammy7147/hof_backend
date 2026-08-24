@@ -55,7 +55,15 @@ data class RaidPubResponse(
             applyWaitSeconds = value.applyWaitSeconds,
             myStatus = value.myStatus,
             globalActions = value.globalActions,
-            result = value.result?.let(TownActionResultResponse::from),
+            result = value.result?.let { parsed ->
+                TownActionResultResponse.from(parsed).let { response ->
+                    if (RaidRegistrationResultEvidence.hasStaleBattleConflict(parsed.messages)) {
+                        response.copy(status = "FAILURE")
+                    } else {
+                        response
+                    }
+                }
+            },
             pageComplete = value.pageComplete,
             battleObservationStatus = value.battleObservationStatus,
             battleObservationEvidence = value.battleObservationEvidence,

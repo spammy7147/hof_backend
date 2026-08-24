@@ -25,12 +25,15 @@ class RaidPubParser {
     ): RaidPubSnapshot {
         val pageTerminatorComplete = HofHtmlParser.hasCompletePageTerminator(html, finalUrl)
         val doc = HofHtmlParser.parse(html, finalUrl)
-        val normalizedResult = result?.let { parsed ->
-            if (RESET_SUCCEEDED.containsMatchIn(clean(doc.text())) && RESET_SUCCESS_MESSAGE !in parsed.messages) {
-                parsed.copy(messages = (parsed.messages + RESET_SUCCESS_MESSAGE).distinct())
-            } else {
-                parsed
-            }
+        val pageText = clean(doc.text())
+        val additionalResultMessages = buildList {
+            if (RESET_SUCCEEDED.containsMatchIn(pageText)) add(RESET_SUCCESS_MESSAGE)
+            RaidRegistrationResultEvidence.findStaleBattleConflict(pageText)?.let { add(it) }
+        }
+        val normalizedResult = when {
+            result != null -> result.copy(messages = (result.messages + additionalResultMessages).distinct())
+            additionalResultMessages.isNotEmpty() -> ParsedTownResult(additionalResultMessages, emptyList())
+            else -> null
         }
         if (!safeRaidPubPageUrl(finalUrl)) return empty(normalizedResult)
         val contents = doc.selectFirst("#contents") ?: return empty(normalizedResult)
@@ -101,8 +104,8 @@ class RaidPubParser {
             sections.map(MutableRaid::code) != declaredCodes
         ) return empty(normalizedResult)
 
-        val pageText = clean(doc.text()).take(MAX_PAGE_TEXT)
-        val playerName = PLAYER_NAME.find(pageText)?.groupValues
+        val boundedPageText = pageText.take(MAX_PAGE_TEXT)
+        val playerName = PLAYER_NAME.find(boundedPageText)?.groupValues
             ?.drop(1)
             ?.firstOrNull(String::isNotBlank)
             ?.trim()
@@ -160,14 +163,14 @@ class RaidPubParser {
             )
         }
         if (raids.size != sections.size) return empty(normalizedResult)
-        val applyWaiting = APPLY_WAIT_STATE.containsMatchIn(pageText)
-        val applyWait = APPLY_WAIT.find(pageText)?.let(::boundedDurationSeconds)
+        val applyWaiting = APPLY_WAIT_STATE.containsMatchIn(boundedPageText)
+        val applyWait = APPLY_WAIT.find(boundedPageText)?.let(::boundedDurationSeconds)
         return RaidPubSnapshot(
             raids = raids,
-            applied = APPLIED.containsMatchIn(pageText),
+            applied = APPLIED.containsMatchIn(boundedPageText),
             applyWait = applyWaiting,
             applyWaitSeconds = applyWait,
-            myStatus = MY_STATUS.find(pageText)?.value?.take(MAX_TEXT),
+            myStatus = MY_STATUS.find(boundedPageText)?.value?.take(MAX_TEXT),
             globalActions = global.keys,
             result = normalizedResult,
             globalActionIds = global,

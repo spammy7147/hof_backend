@@ -11,9 +11,6 @@ import org.springframework.stereotype.Component
 class HofResultParser {
     fun parse(html: String): ParsedTownResult {
         val document = HofHtmlParser.parse(html)
-        val knownMessages = KNOWN_STATUS_MESSAGES.mapNotNull { pattern ->
-            pattern.find(document.text())?.value?.let(::cleanText)
-        }
         document.select("script, style, noscript, header, nav, footer, form").remove()
         document.select("body *")
             .filter { element -> EXCLUDED_TEXT.containsMatchIn(element.ownText()) }
@@ -28,7 +25,7 @@ class HofResultParser {
             val copy = root.clone()
             copy.select(ITEM_SELECTORS).remove()
             cleanText(copy.text()).takeIf(String::isNotBlank)
-        } + knownMessages).distinct().take(MAX_MESSAGES)
+        }).distinct().take(MAX_MESSAGES)
 
         return ParsedTownResult(messages = messages, items = items)
     }
@@ -70,11 +67,6 @@ class HofResultParser {
             RegexOption.IGNORE_CASE,
         )
         val AUCTION_PARTICIPANT_MARKER = Regex("판매자|입찰자|\\bseller\\b|\\bbidder\\b", RegexOption.IGNORE_CASE)
-        val KNOWN_STATUS_MESSAGES = listOf(
-            Regex(
-                "이미\\s*전투\\s*중입니다\\.?\\s*퇴치/보상\\s*확인/상태\\s*갱신을\\s*해주세요\\.?",
-            ),
-        )
         const val MAX_MESSAGE_LENGTH = 1_000
         const val MAX_MESSAGES = 20
         const val MAX_ITEMS = 100

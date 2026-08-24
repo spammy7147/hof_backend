@@ -1553,6 +1553,56 @@ class AutomationActionLifecycleModuleTest {
     }
 
     @Test
+    fun `active 수렴의 등록 충돌 거절도 레이드 복구 상태 projection을 기록한다`() {
+        val conflictMessage = "이미 전투 중입니다. 퇴치/보상 확인/상태 갱신을 해주세요."
+        val base = raidBattleResponse(status = RaidStatus.RECRUITING, targetPresent = false)
+        val response = base.copy(
+            raids = base.raids.map { it.copy(joined = false) },
+            result = app.spammy.hof.town.fishing.dto.TownActionResultResponse(
+                status = "FAILURE",
+                messages = listOf(conflictMessage),
+                items = emptyList(),
+            ),
+        )
+        val observation = RaidObservation(
+            raids = emptyList(),
+            applied = false,
+            registrationWait = false,
+            resultMessages = listOf(conflictMessage),
+        )
+        Mockito.`when`(
+            raidPubService.actionForAutomation(
+                7L,
+                RaidPubActionRequest(RaidAction.REGISTER, "RaidGoblin"),
+                "RaidGoblin",
+            ),
+        ).thenReturn(response)
+        Mockito.`when`(raidObservationAdapter.from(response)).thenReturn(observation)
+        Mockito.`when`(
+            raidCycleModule.recordObservedResult(
+                7L,
+                RaidAttempt(13L, RaidIntentKind.REGISTER, "RaidGoblin", "RaidGoblin"),
+                RaidResultObservation.Page(observation),
+            ),
+        ).thenReturn(RaidRecordResult.Recorded())
+        val managed = assertNotNull(module.prepare(
+            7L,
+            13L,
+            RaidTownAutomationAction(7L, RaidAction.REGISTER, "RaidGoblin", "RaidGoblin"),
+        ))
+
+        val execution = assertIs<TypedAutomationExecution.ActionCompleted>(managed.execute())
+        val evidence = assertIs<AutomationActionEvidence.DirectRejected>(policyEvidence(managed, execution))
+        managed.applyPolicyResolvedExecution(execution, evidence)
+
+        Mockito.verify(raidCycleModule).recordObservedResult(
+            7L,
+            RaidAttempt(13L, RaidIntentKind.REGISTER, "RaidGoblin", "RaidGoblin"),
+            RaidResultObservation.Page(observation),
+        )
+    }
+
+    @Test
     fun `잘린 raid action 응답은 보충 GET 뒤 HTTP 경계부터 durable applied까지 수렴한다`() {
         val fixture = checkNotNull(
             javaClass.classLoader.getResource("fixtures/town/raid/raidpub.html"),

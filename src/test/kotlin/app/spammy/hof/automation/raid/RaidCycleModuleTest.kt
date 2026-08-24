@@ -306,6 +306,55 @@ class RaidCycleModuleTest {
     }
 
     @Test
+    fun `비정상 등록 대기는 30초 fallback을 쓰고 짧은 정상 대기는 5초 안전 하한을 지킨다`() {
+        listOf<Pair<Int?, Long>>(null to 30L, 0 to 30L, 1 to 5L).forEach { (observedSeconds, expectedSeconds) ->
+            listOf(
+                RaidIntentKind.REGISTER to RaidAutomationCycleStatus.PREPARING,
+                RaidIntentKind.REFRESH to RaidAutomationCycleStatus.REGISTRATION_REFRESH_REQUIRED,
+            ).forEach { (intentKind, initialStatus) ->
+            val target = target("raid-a", 0)
+            val store = InMemoryRaidCycleStore(
+                RaidCycleAccountState(
+                    RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                    RaidCycleSnapshot(1, 7, target.raidId, target.name, initialStatus, null),
+                ),
+            )
+            val module = DefaultRaidCycleModule(
+                store,
+                RaidObservationReader { error("registration fallback must not GET") },
+                TimeProvider { now },
+            )
+            val cooldown = RaidObservation(
+                raids = listOf(
+                    RaidObservedTarget(
+                        id = target.raidId,
+                        name = target.name,
+                        playable = true,
+                        status = RaidObservedStatus.RECRUITING,
+                        joined = false,
+                        actions = setOf(RaidIntentKind.REGISTER),
+                    ),
+                ),
+                applied = false,
+                registrationWait = true,
+                registrationWaitSeconds = observedSeconds,
+            )
+
+            assertIs<RaidRecordResult.Recorded>(module.recordObservedResult(
+                1,
+                RaidAttempt(7, intentKind, target.raidId),
+                RaidResultObservation.Page(cooldown),
+            ))
+            assertEquals(
+                now.plusSeconds(expectedSeconds),
+                store.state.openCycle?.nextCheckAt,
+                "$intentKind/$observedSeconds",
+            )
+            }
+        }
+    }
+
+    @Test
     fun `REGISTER 응답이 이미 전투 상태면 추가 GET 없이 IN_BATTLE로 fast forward한다`() {
         val target = target("raid-a", 0)
         val store = InMemoryRaidCycleStore(

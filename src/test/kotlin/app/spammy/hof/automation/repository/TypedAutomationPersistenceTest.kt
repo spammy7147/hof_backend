@@ -341,6 +341,57 @@ class TypedAutomationPersistenceTest {
     }
 
     @Test
+    fun persistsRaidRegistrationRecoveryStatuses() {
+        val now = Instant.parse("2026-08-24T00:00:00Z")
+        val account = newAccount("raid-registration-recovery", now)
+        val entry = entryRepository.save(newEntry(account, AutomationType.RAID, priority = 0, now))
+        raidTargetRepository.save(
+            RaidAutomationTargetEntity(
+                entry = entry,
+                raidId = "raid-a",
+                displayName = "레이드 A",
+                presetMode = PresetSelectionMode.PRIMARY,
+                executionOrder = 0,
+            ),
+        )
+        raidCycleStore.open(
+            account.id,
+            entry.id,
+            RaidCycleTarget("raid-a", "레이드 A", PresetSelectionMode.PRIMARY, null, 0, null),
+            now,
+        )
+
+        raidCycleStore.transition(
+            account.id,
+            "raid-a",
+            RaidAutomationCycleStatus.REGISTRATION_REFRESH_REQUIRED,
+            "REGISTRATION_CONFLICT",
+            null,
+            now.plusSeconds(1),
+        )
+        entityManager.flush()
+        entityManager.clear()
+        assertEquals(
+            RaidAutomationCycleStatus.REGISTRATION_REFRESH_REQUIRED,
+            raidCycleStore.load(account.id).openCycle?.status,
+        )
+
+        val retryAt = now.plusSeconds(31)
+        raidCycleStore.transition(
+            account.id,
+            "raid-a",
+            RaidAutomationCycleStatus.REGISTRATION_COOLDOWN,
+            "REGISTRATION_COOLDOWN",
+            retryAt,
+            now.plusSeconds(2),
+        )
+        entityManager.flush()
+        entityManager.clear()
+        assertEquals(RaidAutomationCycleStatus.REGISTRATION_COOLDOWN, raidCycleStore.load(account.id).openCycle?.status)
+        assertEquals(retryAt, raidCycleStore.load(account.id).openCycle?.nextCheckAt)
+    }
+
+    @Test
     fun completesRaidCycleAndAdvancesRotationInOneStoreOperation() {
         val now = Instant.parse("2026-08-20T00:00:00Z")
         val account = newAccount("raid-cycle-complete", now)

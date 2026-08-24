@@ -862,6 +862,12 @@ class UnifiedAutomationRunner @Autowired constructor(
                     requireNotNull(convergenceAttemptId),
                     policyEvidence,
                 )
+                if (
+                    policyEvidence is AutomationActionEvidence.DirectRejected ||
+                    policyEvidence is AutomationActionEvidence.StateAdvanced
+                ) {
+                    managedAction.applyPolicyResolvedExecution(evidenceExecution, policyEvidence)
+                }
                 val warning = when (policyEvidence) {
                     is AutomationActionEvidence.DirectRejected ->
                         "직접 응답이 행동 미적용을 확인해 최신 상태로 다시 판단합니다."

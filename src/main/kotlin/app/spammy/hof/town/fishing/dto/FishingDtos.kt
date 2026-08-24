@@ -104,7 +104,7 @@ data class TownActionResultResponse(
         fun from(result: ParsedTownResult): TownActionResultResponse {
             val text = (result.messages + result.items.map { it.label }).joinToString(" ")
             val status = when {
-                Regex("실패|부족|없습니다|불가능|오류|이미\\s*전투\\s*중|신청\\s*대기").containsMatchIn(text) -> "FAILURE"
+                Regex("실패|부족|없습니다|불가능|오류").containsMatchIn(text) -> "FAILURE"
                 result.messages.isNotEmpty() || result.items.isNotEmpty() -> "SUCCESS"
                 else -> "UNKNOWN"
             }

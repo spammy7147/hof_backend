@@ -5,6 +5,7 @@ import app.spammy.hof.automation.config.RaidAutomationProperties
 import app.spammy.hof.automation.service.AutomationDiagnosticKind
 import app.spammy.hof.automation.service.AutomationImpactScope
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.town.raid.model.RaidRegistrationResultEvidence
 import java.util.UUID
 import org.springframework.stereotype.Service
 
@@ -215,12 +216,7 @@ class DefaultRaidCycleModule(
                 raidId = cycle.raidId,
             )
         }
-        if (
-            cycle.status in setOf(
-                RaidAutomationCycleStatus.REGISTRATION_REFRESH_REQUIRED,
-                RaidAutomationCycleStatus.REGISTRATION_COOLDOWN,
-            )
-        ) {
+        if (cycle.status in REGISTRATION_RECOVERY_STATUSES) {
             if (RaidIntentKind.REFRESH in observation.globalActions) {
                 return RaidDirective.Execute(
                     RaidIntent.Town(
@@ -572,11 +568,7 @@ class DefaultRaidCycleModule(
         }
         if (observation.registrationWait) {
             return RaidDirective.WaitUntil(
-                at = timeProvider.now().plusSeconds(
-                    (observation.registrationWaitSeconds ?: DEFAULT_RECHECK_SECONDS.toInt())
-                        .coerceAtLeast(MINIMUM_WAIT_SECONDS)
-                        .toLong(),
-                ),
+                at = registrationRetryAt(timeProvider.now(), observation.registrationWaitSeconds),
                 reason = RaidWaitReason.REGISTRATION_COOLDOWN,
                 message = "레이드 등록 쿨타임을 기다립니다.",
                 entryId = configuration.entryId,
@@ -776,7 +768,7 @@ class DefaultRaidCycleModule(
                 )
                 return RaidRecordResult.Recorded()
             }
-            if (page.resultMessages.any(ALREADY_IN_BATTLE_MESSAGE::containsMatchIn)) {
+            if (RaidRegistrationResultEvidence.hasStaleBattleConflict(page.resultMessages)) {
                 store.transition(
                     accountId = accountId,
                     raidId = attempt.raidId,
@@ -789,17 +781,12 @@ class DefaultRaidCycleModule(
             }
             if (page.registrationWait) {
                 val now = timeProvider.now()
-                val retryAt = now.plusSeconds(
-                    (page.registrationWaitSeconds ?: DEFAULT_RECHECK_SECONDS.toInt())
-                        .coerceAtLeast(MINIMUM_WAIT_SECONDS)
-                        .toLong(),
-                )
                 store.transition(
                     accountId = accountId,
                     raidId = attempt.raidId,
                     status = RaidAutomationCycleStatus.REGISTRATION_COOLDOWN,
                     observedStatus = "REGISTRATION_COOLDOWN",
-                    nextCheckAt = retryAt,
+                    nextCheckAt = registrationRetryAt(now, page.registrationWaitSeconds),
                     now = now,
                 )
                 return RaidRecordResult.Recorded()
@@ -807,18 +794,9 @@ class DefaultRaidCycleModule(
         }
         if (
             attempt.kind == RaidIntentKind.REFRESH &&
-            cycle.status in setOf(
-                RaidAutomationCycleStatus.REGISTRATION_REFRESH_REQUIRED,
-                RaidAutomationCycleStatus.REGISTRATION_COOLDOWN,
-            )
+            cycle.status in REGISTRATION_RECOVERY_STATUSES
         ) {
             val now = timeProvider.now()
-            val cooldownSeconds = if (page.registrationWait) {
-                (page.registrationWaitSeconds ?: DEFAULT_RECHECK_SECONDS.toInt())
-                    .coerceAtLeast(MINIMUM_WAIT_SECONDS)
-            } else {
-                null
-            }
             store.transition(
                 accountId = accountId,
                 raidId = attempt.raidId,
@@ -828,7 +806,11 @@ class DefaultRaidCycleModule(
                     RaidAutomationCycleStatus.PREPARING
                 },
                 observedStatus = if (page.registrationWait) "REGISTRATION_COOLDOWN" else "STATUS_REFRESHED",
-                nextCheckAt = cooldownSeconds?.let { now.plusSeconds(it.toLong()) },
+                nextCheckAt = if (page.registrationWait) {
+                    registrationRetryAt(now, page.registrationWaitSeconds)
+                } else {
+                    null
+                },
                 now = now,
             )
             return RaidRecordResult.Recorded()
@@ -1519,6 +1501,15 @@ class DefaultRaidCycleModule(
         message,
     )
 
+    private fun registrationRetryAt(now: java.time.Instant, observedSeconds: Int?): java.time.Instant =
+        now.plusSeconds(
+            observedSeconds
+                ?.takeIf { it > 0 }
+                ?.coerceAtLeast(MINIMUM_WAIT_SECONDS)
+                ?.toLong()
+                ?: DEFAULT_RECHECK_SECONDS,
+        )
+
     private fun rotate(targets: List<RaidCycleTarget>, currentTargetKey: String?): List<RaidCycleTarget> {
         val ordered = targets.sortedWith(compareBy(RaidCycleTarget::executionOrder, RaidCycleTarget::raidId))
         val index = ordered.indexOfFirst { it.raidId == currentTargetKey }
@@ -1535,7 +1526,6 @@ class DefaultRaidCycleModule(
     }
 
     private companion object {
-        val ALREADY_IN_BATTLE_MESSAGE = Regex("이미\\s*전투\\s*중입니다")
         const val DEFAULT_RECHECK_SECONDS = 30L
         const val RECOVERY_RECHECK_SECONDS = 300L
         const val SAFETY_RECHECK_SECONDS = 10L
@@ -1561,6 +1551,10 @@ class DefaultRaidCycleModule(
             RaidObservedStatus.RECRUITING,
             RaidObservedStatus.WAITING,
             RaidObservedStatus.READY,
+        )
+        val REGISTRATION_RECOVERY_STATUSES = setOf(
+            RaidAutomationCycleStatus.REGISTRATION_REFRESH_REQUIRED,
+            RaidAutomationCycleStatus.REGISTRATION_COOLDOWN,
         )
     }
 }

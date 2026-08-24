@@ -193,6 +193,17 @@ class RaidPubParserTest {
         assertEquals(3, page.raids.size)
     }
 
+    @Test fun `페이지 관측 상한 뒤의 신청 완료 문구는 applied 증거로 사용하지 않는다`() {
+        val oversized = fixture().replace(
+            "</form>\n</div>",
+            "</form><div>${"x".repeat(200_500)} 신청 완료</div></div>",
+        )
+
+        val page = parser.parse(oversized, URL, forms.parse(oversized, URL))
+
+        assertFalse(page.applied)
+    }
+
     @Test fun `콜론형 header에서도 현재 사용자 이름을 찾아 참가 상태를 판별한다`() {
         val html = fixture().replace("《테스트 길드》현재사용자 Funds :", "현재사용자 Funds:")
         val page = parser.parse(html, URL, forms.parse(html, URL))
