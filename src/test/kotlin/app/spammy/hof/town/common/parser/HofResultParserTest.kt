@@ -1,5 +1,6 @@
 package app.spammy.hof.town.common.parser
 
+import app.spammy.hof.town.fishing.dto.TownActionResultResponse
 import java.nio.charset.StandardCharsets
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -19,6 +20,24 @@ class HofResultParserTest {
         assertFalse(visible.contains("<html", ignoreCase = true))
         assertFalse(visible.contains("Copy Right", ignoreCase = true))
         assertFalse(visible.contains("Funds:", ignoreCase = true))
+    }
+
+    @Test
+    fun `레이드 전역 상태 충돌 문구를 명시적 실패로 보존한다`() {
+        val result = parser.parse(
+            """
+            <html><body>
+              <p>이미 전투 중입니다. 퇴치/보상 확인/상태 갱신을 해주세요.</p>
+              <form method="post"><input type="submit" value="파티에 등록한다"></form>
+            </body></html>
+            """.trimIndent(),
+        )
+
+        assertEquals(
+            listOf("이미 전투 중입니다. 퇴치/보상 확인/상태 갱신을 해주세요."),
+            result.messages,
+        )
+        assertEquals("FAILURE", TownActionResultResponse.from(result).status)
     }
 
     private fun fixture(path: String): String = requireNotNull(javaClass.classLoader.getResource(path))

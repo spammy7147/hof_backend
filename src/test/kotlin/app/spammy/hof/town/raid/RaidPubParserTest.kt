@@ -219,6 +219,24 @@ class RaidPubParserTest {
         )
     }
 
+    @Test fun `등록 POST의 기존 전투 충돌을 UNKNOWN이 아닌 명시적 실패로 반환한다`() {
+        val html = registerableFixture()
+        val rejected = html.replace(
+            "</body>",
+            "<p>이미 전투 중입니다. 퇴치/보상 확인/상태 갱신을 해주세요.</p></body>",
+        )
+        val context = service(html, rejected)
+
+        val response = context.service.action(7L, RaidPubActionRequest(RaidAction.REGISTER, "RaidGoblin"))
+
+        assertEquals("FAILURE", response.result?.status)
+        assertEquals(
+            listOf("이미 전투 중입니다. 퇴치/보상 확인/상태 갱신을 해주세요."),
+            response.result?.messages,
+        )
+        assertEquals(2, context.requests().size)
+    }
+
     @Test fun `상태 갱신은 실제 submit을 실행하고 응답의 신청 쿨타임을 반환한다`() {
         val withRefresh = fixture().replace(
             "<input type=\"submit\" name=\"reward_nonce\" value=\"보상 확인\">",
