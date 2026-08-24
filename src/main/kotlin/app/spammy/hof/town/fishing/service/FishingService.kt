@@ -4,6 +4,7 @@ import app.spammy.hof.battle.dto.BattleMapResponse
 import app.spammy.hof.battle.service.BattleMapService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
+import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.town.common.model.ParsedTownPage
 import app.spammy.hof.town.common.model.ParsedTownResult
 import app.spammy.hof.town.common.model.TownActionRequest
@@ -11,6 +12,7 @@ import app.spammy.hof.town.common.model.TownActionSelection
 import app.spammy.hof.town.common.model.TownFeatureId
 import app.spammy.hof.town.common.service.TownAuthenticatedExecutor
 import app.spammy.hof.town.common.service.TownLocationResolver
+import app.spammy.hof.town.common.service.TownObservedPageContinuation
 import app.spammy.hof.town.fishing.dto.FishingExchangeRequest
 import app.spammy.hof.town.fishing.dto.FishingExchangeResponse
 import app.spammy.hof.town.fishing.dto.FishingResponse
@@ -30,21 +32,104 @@ class FishingService(
     private val parser: FishingPageParser,
     private val battleMaps: BattleMapService,
 ) {
-    fun load(accountId: Long): FishingResponse {
+    fun load(
+        accountId: Long,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
+    ): FishingResponse {
         val url = locationResolver.resolve(TownFeatureId.FISHING).url
-        return executor.loadProjected(accountId, url) { html, finalUrl, page ->
-            FishingResponse.from(withObservedBattleTarget(accountId, parser.parse(html, finalUrl, page)))
+        return executor.loadProjected(accountId, url, origin) { html, finalUrl, page ->
+            FishingResponse.from(withObservedBattleTarget(accountId, parser.parse(html, finalUrl, page), origin))
         }
     }
 
-    fun act(accountId: Long, action: FishingAction): FishingResponse {
+    fun loadForAutomation(accountId: Long): FishingAutomationObservation {
+        val url = locationResolver.resolve(TownFeatureId.FISHING).url
+        val observed = executor.loadContinuableProjected(
+            accountId,
+            url,
+            HofRequestOrigin.AUTOMATION,
+        ) { html, finalUrl, page ->
+            val snapshot = parser.parse(html, finalUrl, page)
+            FishingResponse.from(
+                if (snapshot.primaryAction in setOf(FishingPrimaryAction.START, FishingPrimaryAction.CATCH)) {
+                    snapshot
+                } else {
+                    withObservedBattleTarget(accountId, snapshot, HofRequestOrigin.AUTOMATION)
+                },
+            )
+        }
+        return FishingAutomationObservation(observed.value, observed.continuation)
+    }
+
+    fun act(
+        accountId: Long,
+        action: FishingAction,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
+    ): FishingResponse {
         val url = locationResolver.resolve(TownFeatureId.FISHING).url
         return executor.executeProjected(
             accountId = accountId,
             pageUrl = url,
+            origin = origin,
             resolveAction = { html, finalUrl, page -> resolveFishingAction(html, finalUrl, page, action) },
         ) { html, finalUrl, result, page ->
-            FishingResponse.from(withObservedBattleTarget(accountId, parser.parse(html, finalUrl, page, result)))
+            FishingResponse.from(withObservedBattleTarget(accountId, parser.parse(html, finalUrl, page, result), origin))
+        }
+    }
+
+    fun executeOneCastForAutomation(
+        accountId: Long,
+        observation: FishingAutomationObservation? = null,
+        beforeCatchSubmission: (FishingResponse) -> Unit,
+    ): FishingOneCastRemoteResult {
+        val url = locationResolver.resolve(TownFeatureId.FISHING).url
+        var started: FishingResponse? = null
+        val caught = executor.executeObservedResponseTwoStepProjected(
+            accountId = accountId,
+            pageUrl = url,
+            requiredEntrySubmitField = "do",
+            requiredFinalSubmitField = "do",
+            origin = HofRequestOrigin.AUTOMATION,
+            observation = observation?.continuation,
+            entryAction = { html, finalUrl, page ->
+                resolveFishingAction(html, finalUrl, page, FishingAction.START)
+            },
+            observeEntryResponse = { html, finalUrl, result, page ->
+                started = FishingResponse.from(parser.parse(html, finalUrl, page, result))
+            },
+            finalAction = { html, finalUrl, page ->
+                resolveFishingActionOrNull(html, finalUrl, page, FishingAction.CATCH)
+            },
+            beforeFinalSubmission = {
+                beforeCatchSubmission(requireNotNull(started))
+            },
+        ) { html, finalUrl, result, page ->
+            FishingResponse.from(parser.parse(html, finalUrl, page, result))
+        }
+        val startResponse = requireNotNull(started) {
+            "Fishing START response was not observed after selecting a fishing cycle."
+        }
+        return caught?.let { FishingOneCastRemoteResult.Completed(startResponse, it) }
+            ?: FishingOneCastRemoteResult.WaitingForCatch(startResponse)
+    }
+
+    fun executeObservedActionForAutomation(
+        accountId: Long,
+        action: FishingAction,
+        observation: FishingAutomationObservation,
+    ): FishingResponse {
+        val url = locationResolver.resolve(TownFeatureId.FISHING).url
+        return executor.executeObservedProjected(
+            accountId = accountId,
+            pageUrl = url,
+            requiredSubmitField = "do",
+            origin = HofRequestOrigin.AUTOMATION,
+            observation = observation.continuation,
+            resolveAction = { html, finalUrl, page ->
+                resolveFishingAction(html, finalUrl, page, action)
+            },
+        ) { html, finalUrl, result, page ->
+            FishingResponse.from(parser.parse(html, finalUrl, page, result))
         }
     }
 
@@ -92,6 +177,18 @@ class FishingService(
         return TownActionRequest(actionId = actionId)
     }
 
+    private fun resolveFishingActionOrNull(
+        html: String,
+        finalUrl: String,
+        page: ParsedTownPage,
+        action: FishingAction,
+    ): TownActionRequest? {
+        val state = parser.parse(html, finalUrl, page)
+        if (state.blockedByBattle) return null
+        return state.availableActions.singleOrNull { it.action == action }
+            ?.let { TownActionRequest(actionId = it.actionId) }
+    }
+
     private fun resolveExchangeAction(
         html: String,
         finalUrl: String,
@@ -117,10 +214,14 @@ class FishingService(
      * 실서버는 낚시 전투가 발생해도 낚시 페이지에 경고나 전투 링크를 항상 표시하지 않는다.
      * 전투 탭의 이번 응답에서 실제로 관측된 `낚시` 그룹 맵을 권위 있는 차단 상태로 사용한다.
      */
-    private fun withObservedBattleTarget(accountId: Long, snapshot: FishingSnapshot): FishingSnapshot {
+    private fun withObservedBattleTarget(
+        accountId: Long,
+        snapshot: FishingSnapshot,
+        origin: HofRequestOrigin,
+    ): FishingSnapshot {
         if (snapshot.battleTarget != null) return snapshot
 
-        val observed = battleMaps.findCurrentlyObservedMaps(accountId, BATTLE_CATEGORY_ID)
+        val observed = battleMaps.findCurrentlyObservedMaps(accountId, BATTLE_CATEGORY_ID, origin)
             .filter { it.enabled && it.resolved && !it.mapCode.isNullOrBlank() }
             .filter(::isFishingBattleMap)
             .firstOrNull() ?: return snapshot
@@ -168,3 +269,19 @@ class FishingService(
         const val BATTLE_CATEGORY_ID = "battle_map"
     }
 }
+
+sealed interface FishingOneCastRemoteResult {
+    data class Completed(
+        val start: FishingResponse,
+        val catch: FishingResponse,
+    ) : FishingOneCastRemoteResult
+
+    data class WaitingForCatch(
+        val start: FishingResponse,
+    ) : FishingOneCastRemoteResult
+}
+
+class FishingAutomationObservation internal constructor(
+    val response: FishingResponse,
+    internal val continuation: TownObservedPageContinuation,
+)

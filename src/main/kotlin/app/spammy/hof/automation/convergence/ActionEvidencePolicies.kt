@@ -268,6 +268,12 @@ class DefaultActionEvidencePolicies : ActionEvidencePolicies {
     ): AutomationActionEvidence {
         val state = observed as? FishingObservedState ?: return incomplete(observation, "FISHING_STATE_EXPECTED")
         if (state.blockedByBattle) {
+            if (
+                observation.source == ActionEvidenceSource.DIRECT_RESPONSE &&
+                selection.actionKind == AutomationActionKind.FISHING_CATCH
+            ) {
+                return directApplied(observation, state)
+            }
             return stateAdvanced(observation, state)
         }
         val directApplied = observation.source == ActionEvidenceSource.DIRECT_RESPONSE && when (selection.actionKind) {

@@ -18,6 +18,17 @@ interface AutomationActionConvergenceModule {
         scope: AutomationIsolationScope,
         resolvedAt: Instant,
     ): Boolean
+    fun discardUnsubmitted(
+        accountId: Long,
+        selection: SelectedAutomationAction,
+        discardedAt: Instant,
+        reasonCode: String,
+    ): Boolean
+    fun retryUnsubmitted(
+        accountId: Long,
+        selection: SelectedAutomationAction,
+        retriedAt: Instant,
+    ): ConvergenceDirective
     fun holdUnresolved(
         accountId: Long,
         selection: SelectedAutomationAction,
@@ -194,6 +205,57 @@ class DefaultAutomationActionConvergenceModule(
             ),
         )
         return true
+    }
+
+    override fun discardUnsubmitted(
+        accountId: Long,
+        selection: SelectedAutomationAction,
+        discardedAt: Instant,
+        reasonCode: String,
+    ): Boolean {
+        val active = store.findActive(accountId, selection.scope)
+            ?.takeIf { record ->
+                record.selection.executionIdentity == selection.executionIdentity &&
+                    record.submittedAt == null
+            }
+            ?: return false
+        terminal(active, ActionConvergenceResult.NOT_APPLIED, reasonCode, discardedAt)
+        return true
+    }
+
+    override fun retryUnsubmitted(
+        accountId: Long,
+        selection: SelectedAutomationAction,
+        retriedAt: Instant,
+    ): ConvergenceDirective {
+        store.activeBattleGate(accountId)?.takeIf { selection.actionKind.battle }?.let { gate ->
+            return ConvergenceDirective.BattleGateWait(gate.openedAt, gate.reason)
+        }
+        if (
+            selection.baselineFingerprint in
+            store.findSuppressedBaselines(accountId)[selection.scope].orEmpty()
+        ) return ConvergenceDirective.ContinueSelection
+        store.findActive(accountId, selection.scope)?.let { active ->
+            return ConvergenceDirective.WaitUntil(
+                active.nextProbeAt ?: retriedAt.plus(PROBE_INTERVAL),
+                selection.scope,
+            )
+        }
+        val existing = store.createOrGet(accountId, selection, retriedAt)
+        if (
+            existing.selection.executionIdentity != selection.executionIdentity ||
+            existing.result != ActionConvergenceResult.NOT_APPLIED ||
+            existing.submittedAt != null
+        ) return ConvergenceDirective.ContinueSelection
+        existing.result = ActionConvergenceResult.PENDING
+        existing.successfulObservationCount = 0
+        existing.firstPendingAt = null
+        existing.nextProbeAt = null
+        existing.reasonCode = "UNSUBMITTED_RETRY_PREPARED"
+        existing.finishedAt = null
+        existing.updatedAt = retriedAt
+        store.save(existing)
+        return ConvergenceDirective.Submit(existing.attemptId)
     }
 
     override fun holdUnresolved(

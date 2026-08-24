@@ -20,6 +20,7 @@ data class TypedRuntimeCheckpoint(
     val successfulObservationCount: Int = 0,
     val firstPendingAt: Instant? = null,
     val legacySuppressionEpoch: String? = null,
+    val deferredSubmissionRetry: Boolean = false,
 )
 
 enum class TypedRuntimeCheckpointPhase {

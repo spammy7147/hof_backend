@@ -125,6 +125,11 @@ class TypedAutomationRuntimeService(
                 successfulObservationCount = row.reconciliationObservationCount,
                 firstPendingAt = row.reconciliationFirstPendingAt,
                 legacySuppressionEpoch = legacySuppressionEpoch,
+                deferredSubmissionRetry =
+                    row.status == TypedAutomationActionStatus.PREPARED &&
+                        row.submittedAt == null &&
+                        row.retryAttempt > 0 &&
+                        row.nextAttemptAt != null,
             )
         }
         return TypedRuntimeAcquisition.Acquired(
@@ -196,6 +201,57 @@ class TypedAutomationRuntimeService(
         action.submittedAt = now
         action.updatedAt = now
         return TypedRuntimeSubmission.Started(now)
+    }
+
+    /** START 직접 응답을 확인한 뒤 START 종결과 CATCH 준비를 같은 DB 전이로 보존한다. */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun advanceAppliedActionToPreparedFollowup(
+        execution: TypedRuntimeExecutionRight,
+        followup: StoredTypedAutomationAction,
+    ): TypedRuntimePreparation {
+        val right = execution.persistedRight()
+        val state = fencedState(right.accountId, right.leaseToken)
+            ?: return TypedRuntimePreparation.Invalidated
+        val actionId = right.actionId ?: return TypedRuntimePreparation.Invalidated
+        val current = queryRepository.lockTypedAction(actionId)
+            ?: return TypedRuntimePreparation.Invalidated
+        if (
+            current.account.id != right.accountId ||
+            current.leaseToken != right.leaseToken ||
+            current.status != TypedAutomationActionStatus.SUBMITTING ||
+            followup.entryId != current.entry?.id
+        ) return TypedRuntimePreparation.Invalidated
+        val entry = queryRepository.findEntry(right.accountId, followup.entryId)
+            ?: return TypedRuntimePreparation.Invalidated
+        val encoded = codec.encode(followup)
+        val now = timeProvider.now()
+        current.status = TypedAutomationActionStatus.SUCCEEDED
+        current.lastError = null
+        current.finishedAt = now
+        current.updatedAt = now
+        val saved = actionRepository.save(
+            TypedAutomationActionRunEntity(
+                account = entry.account,
+                entry = entry,
+                executionIdentity = followup.executionIdentity,
+                actionKind = followup.payload.kind(),
+                payloadJson = encoded.json,
+                actionFingerprint = encoded.fingerprint,
+                status = TypedAutomationActionStatus.PREPARED,
+                leaseToken = right.leaseToken,
+                createdAt = now,
+                updatedAt = now,
+            ),
+        )
+        state.updatedAt = now
+        return TypedRuntimePreparation.Ready(
+            PersistedTypedRuntimeExecutionRight(
+                right.accountId,
+                right.leaseToken,
+                saved.id,
+                TypedRuntimeCheckpoint(followup, TypedRuntimeCheckpointPhase.PREPARED, null, null),
+            ),
+        )
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)

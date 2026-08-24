@@ -19,6 +19,7 @@ import app.spammy.hof.quest.parser.QuestPageObservation
 import app.spammy.hof.quest.service.QuestGatewayService
 import app.spammy.hof.status.service.HofStatusSnapshotService
 import app.spammy.hof.town.fishing.dto.FishingResponse
+import app.spammy.hof.town.fishing.service.FishingAutomationObservation
 import app.spammy.hof.town.fishing.service.FishingService
 import app.spammy.hof.town.home.dto.HomeResponse
 import app.spammy.hof.town.home.model.HomeMode
@@ -51,16 +52,16 @@ class TypedLiveAutomationSnapshotLoader(
     transactionManager: PlatformTransactionManager? = null,
     private val fishingService: FishingService? = null,
     private val homeService: HomeService? = null,
-) : TypedAutomationSnapshotLoader {
+) : TypedAutomationSnapshotLoader, DecisionScopedTypedAutomationSnapshotLoader {
     private val readTransaction = transactionManager?.let { TransactionTemplate(it).apply { isReadOnly = true } }
-    private val activeDecision = ThreadLocal<DecisionObservationScope?>()
+    private val activeDecision = ThreadLocal<DecisionSnapshotLoader?>()
 
     override fun beginDecision(accountId: Long): AutoCloseable {
         check(activeDecision.get() == null) { "Typed automation decision scopes cannot be nested." }
-        val scope = DecisionObservationScope(accountId)
-        activeDecision.set(scope)
+        val decision = createDecision(accountId)
+        activeDecision.set(decision)
         return AutoCloseable {
-            if (activeDecision.get() === scope) activeDecision.remove()
+            if (activeDecision.get() === decision) activeDecision.remove()
         }
     }
 
@@ -70,57 +71,83 @@ class TypedLiveAutomationSnapshotLoader(
         targetKey: String?,
         questOverride: List<QuestSnapshot>?,
     ): AutomationEntrySnapshot {
-        val decision = activeDecision.get()?.also {
-            check(it.accountId == accountId) { "Typed automation decision scope belongs to another account." }
-        }
-        val before = inReadTransaction { materializeConfiguration(accountId) }
-        decision?.acceptConfiguration(before.version)
-        val scopedBefore = before.scoped(entryId, targetKey)
-        check(!TransactionSynchronizationManager.isActualTransactionActive()) {
-            "Typed automation HTTP refresh must run without a transaction."
-        }
-        val live = if (questOverride != null) {
-            refreshLiveState(accountId, scopedBefore, includeQuests = false).copy(
-                quests = questOverride,
-                questPageComplete = true,
-            )
-        } else {
-            refreshLiveState(
-                accountId,
-                scopedBefore,
-                includeQuests = scopedBefore.entries.single().type == AutomationType.QUEST,
-            )
-        }
-        val after = inReadTransaction { materializeConfiguration(accountId) }
-        if (before.version != after.version) throw TypedAutomationConfigurationChangedException()
-        decision?.acceptConfiguration(after.version)
-        return inReadTransaction {
-            assembleEntries(accountId, after.scoped(entryId, targetKey), live).single()
+        val active = activeDecision.get()
+        return (active ?: createDecision(accountId)).loadEntry(accountId, entryId, targetKey, questOverride)
+    }
+
+    override fun openDecision(accountId: Long): TypedAutomationSnapshotLoader = createDecision(accountId)
+
+    private fun createDecision(accountId: Long) = DecisionSnapshotLoader(
+        accountId = accountId,
+        before = inReadTransaction { materializeConfiguration(accountId) },
+    )
+
+    private inner class DecisionSnapshotLoader(
+        private val accountId: Long,
+        private val before: DetachedConfiguration,
+    ) : TypedAutomationSnapshotLoader {
+        private val cache = DecisionLiveStateCache()
+
+        override fun loadEntry(
+            accountId: Long,
+            entryId: Long,
+            targetKey: String?,
+            questOverride: List<QuestSnapshot>?,
+        ): AutomationEntrySnapshot {
+            require(accountId == this.accountId) { "A decision snapshot belongs to one account." }
+            val scopedBefore = before.scoped(entryId, targetKey)
+            check(!TransactionSynchronizationManager.isActualTransactionActive()) {
+                "Typed automation HTTP refresh must run without a transaction."
+            }
+            val live = if (questOverride != null) {
+                refreshLiveState(accountId, scopedBefore, cache, includeQuests = false).copy(
+                    quests = questOverride,
+                    questPageComplete = true,
+                )
+            } else {
+                refreshLiveState(
+                    accountId,
+                    scopedBefore,
+                    cache,
+                    includeQuests = scopedBefore.entries.single().type == AutomationType.QUEST,
+                )
+            }
+            val after = inReadTransaction { materializeConfiguration(accountId) }
+            if (before.version != after.version) throw TypedAutomationConfigurationChangedException()
+            return inReadTransaction {
+                assembleEntries(accountId, after.scoped(entryId, targetKey), live).single()
+            }
         }
     }
 
     private fun refreshLiveState(
         accountId: Long,
         config: DetachedConfiguration,
+        cache: DecisionLiveStateCache,
         includeQuests: Boolean = true,
     ): LiveAutomationState = try {
+        check(!TransactionSynchronizationManager.isActualTransactionActive()) {
+            "Typed automation HTTP refresh must run without a transaction."
+        }
         sessionRecovery.execute(accountId) {
-            config.categories.forEach { category ->
-                val decision = activeDecision.get()
-                if (decision == null || decision.observedCategories.add(category)) {
-                    battleMapService.findMaps(accountId, category, HofRequestOrigin.AUTOMATION)
-                }
+            config.categories.filter { it !in cache.refreshedCategories }.forEach { category ->
+                battleMapService.findMaps(accountId, category, HofRequestOrigin.AUTOMATION)
+                cache.refreshedCategories += category
             }
             val questObservation = if (includeQuests) {
-                questGateway.loadObservation(accountId, HofRequestOrigin.AUTOMATION)
+                cache.questObservation ?: questGateway.loadObservation(accountId, HofRequestOrigin.AUTOMATION).also {
+                    cache.questObservation = it
+                }
             } else {
                 QuestPageObservation(emptyList(), complete = true)
             }
+            val includesFishing = config.entries.any { it.enabled && it.type == AutomationType.FISHING }
+            val includesHome = config.entries.any { it.enabled && it.type == AutomationType.HOME_QUEST }
             LiveAutomationState(
                 questObservation.quests,
                 questObservation.complete,
-                if (config.entries.any { it.enabled && it.type == AutomationType.FISHING }) fishingService?.load(accountId) else null,
-                if (config.entries.any { it.enabled && it.type == AutomationType.HOME_QUEST }) homeService?.load(accountId, HomeMode.HOME) else null,
+                if (includesFishing) cache.loadFishing(accountId) else null,
+                if (includesHome) cache.loadHome(accountId) else null,
             )
         }
     } catch (error: Exception) {
@@ -134,6 +161,31 @@ class TypedLiveAutomationSnapshotLoader(
             throw SafeRetryableAutomationException("Transient live-state refresh failure.", error)
         }
         throw FatalAutomationException("Live-state refresh failed and cannot be retried safely.", error)
+    }
+
+    private inner class DecisionLiveStateCache {
+        val refreshedCategories = linkedSetOf<String>()
+        var questObservation: QuestPageObservation? = null
+        private var fishingLoaded = false
+        private var fishing: FishingAutomationObservation? = null
+        private var homeLoaded = false
+        private var home: HomeResponse? = null
+
+        fun loadFishing(accountId: Long): FishingAutomationObservation? {
+            if (!fishingLoaded) {
+                fishing = fishingService?.loadForAutomation(accountId)
+                fishingLoaded = true
+            }
+            return fishing
+        }
+
+        fun loadHome(accountId: Long): HomeResponse? {
+            if (!homeLoaded) {
+                home = homeService?.load(accountId, HomeMode.HOME, HofRequestOrigin.AUTOMATION)
+                homeLoaded = true
+            }
+            return home
+        }
     }
 
     private fun materializeConfiguration(accountId: Long): DetachedConfiguration {
@@ -232,7 +284,8 @@ class TypedLiveAutomationSnapshotLoader(
             AutomationType.ADVENTURE_MAP -> entry.adventure.map { it.categoryId }
             AutomationType.RAID -> emptyList()
             AutomationType.UNION -> entry.union.map { it.categoryId }
-            AutomationType.FISHING -> listOf("battle_map")
+            // 정상 START/CATCH에서는 낚시 응답만으로 완전하므로 방해 전투 map을 미리 읽지 않는다.
+            AutomationType.FISHING -> emptyList()
         } }.filter { it.isNotBlank() }.distinct()
         return DetachedConfiguration(entries, primary, validPresetIds, parties, categories, version)
     }
@@ -286,14 +339,15 @@ class TypedLiveAutomationSnapshotLoader(
                         setting.presetMode, resolved, setting.executionOrder, resolved?.let(config.parties::get))
                 }, states.map(::battleState), entry.rotationTarget, now,
             ))
-            AutomationType.FISHING -> AutomationEntrySnapshot(entry.id, entry.type, fishing = live.fishing?.let { state ->
+            AutomationType.FISHING -> AutomationEntrySnapshot(entry.id, entry.type, fishing = live.fishing?.let { observation ->
+                val state = observation.response
                 val primary = config.primary?.let { presetId ->
                     FishingAutomationPreset(PresetSelectionMode.PRIMARY, presetId, config.parties[presetId])
                 }
                 FishingAutomationSnapshot(accountId, state, entry.fishingMaps.map { setting ->
                     val resolved = resolvePreset(setting.presetMode, setting.presetId, config)
                     FishingAutomationMapSetting(setting.categoryId, setting.mapCode, setting.presetMode, resolved, resolved?.let(config.parties::get))
-                }, primary, now)
+                }, primary, now, observation)
             })
             AutomationType.RAID -> AutomationEntrySnapshot(entry.id, entry.type)
         } }
@@ -402,7 +456,7 @@ class TypedLiveAutomationSnapshotLoader(
             AutomationType.ADVENTURE_MAP -> entry.adventure.map { it.categoryId }
             AutomationType.RAID -> emptyList()
             AutomationType.UNION -> entry.union.map { it.categoryId }
-            AutomationType.FISHING -> listOf("battle_map")
+            AutomationType.FISHING -> emptyList()
         }
     }.filter(String::isNotBlank).distinct()
 
@@ -429,20 +483,9 @@ class TypedLiveAutomationSnapshotLoader(
     private data class LiveAutomationState(
         val quests: List<QuestSnapshot>,
         val questPageComplete: Boolean,
-        val fishing: FishingResponse?,
+        val fishing: FishingAutomationObservation?,
         val home: HomeResponse?,
     )
-
-    private class DecisionObservationScope(val accountId: Long) {
-        val observedCategories = mutableSetOf<String>()
-        private var configurationVersion: String? = null
-
-        fun acceptConfiguration(version: String) {
-            val expected = configurationVersion
-            if (expected != null && expected != version) throw TypedAutomationConfigurationChangedException()
-            configurationVersion = version
-        }
-    }
 
     private companion object {
         val log = LoggerFactory.getLogger(TypedLiveAutomationSnapshotLoader::class.java)

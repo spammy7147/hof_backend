@@ -18,6 +18,11 @@ sealed interface AmbiguousActionResolution {
         val reason: String,
     ) : AmbiguousActionResolution
 
+    /** 저장 POST는 닫고 해당 자동화 범위만 별도 관측/사용자 해제까지 보류한다. */
+    data class Held(
+        val reason: String,
+    ) : AmbiguousActionResolution
+
     data class HandedOff(
         val retryAt: Instant,
         val reason: String,

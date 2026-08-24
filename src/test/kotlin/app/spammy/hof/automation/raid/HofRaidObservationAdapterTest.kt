@@ -34,7 +34,8 @@ class HofRaidObservationAdapterTest {
             pageComplete = true,
             battleObservationStatus = RaidBattleObservationStatus.INCOMPLETE,
         )
-        Mockito.`when`(raidPubService.load(7L)).thenReturn(response)
+        Mockito.`when`(raidPubService.load(7L, app.spammy.hof.external.model.HofRequestOrigin.AUTOMATION))
+            .thenReturn(response)
         val adapter = HofRaidObservationAdapter(
             raidPubService,
             HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
@@ -47,7 +48,10 @@ class HofRaidObservationAdapterTest {
         assertEquals(now, observation.observedAt)
         assertEquals(true, observation.fresh)
 
-        Mockito.verify(raidPubService).load(7L)
+        Mockito.verify(raidPubService).load(
+            7L,
+            app.spammy.hof.external.model.HofRequestOrigin.AUTOMATION,
+        )
     }
 
     @Test

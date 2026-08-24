@@ -62,6 +62,7 @@ import app.spammy.hof.town.home.dto.HomeResponse
 import app.spammy.hof.town.home.model.HomeMode
 import app.spammy.hof.town.home.model.HomeQuestState
 import app.spammy.hof.town.home.service.HomeService
+import app.spammy.hof.town.fishing.dto.FishingBattleTargetResponse
 import app.spammy.hof.town.fishing.dto.FishingResponse
 import app.spammy.hof.town.fishing.model.FishingAction
 import app.spammy.hof.town.fishing.model.FishingOutcome
@@ -157,7 +158,7 @@ class AutomationActionLifecycleModuleTest {
             action = HomeQuestAutomationActionType.ACCEPT,
         )
 
-        Mockito.`when`(home.runHomeQuest(7L, "accept-action"))
+        Mockito.`when`(home.runHomeQuest(7L, "accept-action", HofRequestOrigin.AUTOMATION))
             .thenReturn(homeResponse(HomeQuestState.ACTIVE, null))
         val managed = assertNotNull(module.prepare(7L, 12L, prepared))
         val payload = assertIs<StoredTypedActionPayload.HomeQuest>(managed.storedAction.payload)
@@ -179,13 +180,13 @@ class AutomationActionLifecycleModuleTest {
 
         val execution = assertIs<TypedAutomationExecution.ActionCompleted>(managed.execute())
         managed.applyLegacyExecution(execution)
-        Mockito.verify(home, Mockito.times(1)).runHomeQuest(7L, "accept-action")
+        Mockito.verify(home, Mockito.times(1)).runHomeQuest(7L, "accept-action", HofRequestOrigin.AUTOMATION)
     }
 
     @Test
     fun `자택 adapter는 같은 상태 응답도 버리지 않고 policy가 미적용으로 판정한다`() {
         val managed = assertNotNull(module.prepare(7L, 12L, homeAction(HomeQuestAutomationActionType.ACCEPT)))
-        Mockito.`when`(home.runHomeQuest(7L, "action-1"))
+        Mockito.`when`(home.runHomeQuest(7L, "action-1", HofRequestOrigin.AUTOMATION))
             .thenReturn(homeResponse(HomeQuestState.AVAILABLE, "action-1"))
 
         val execution = assertIs<TypedAutomationExecution.ActionCompleted>(managed.execute())
@@ -200,7 +201,7 @@ class AutomationActionLifecycleModuleTest {
     fun `자택 adapter의 중복 target 실제 응답은 unknown shape evidence로 보존한다`() {
         val managed = assertNotNull(module.prepare(7L, 12L, homeAction(HomeQuestAutomationActionType.ACCEPT)))
         val response = homeResponse(HomeQuestState.AVAILABLE, "action-1")
-        Mockito.`when`(home.runHomeQuest(7L, "action-1")).thenReturn(
+        Mockito.`when`(home.runHomeQuest(7L, "action-1", HofRequestOrigin.AUTOMATION)).thenReturn(
             response.copy(quests = response.quests + response.quests.single().copy(name = "중복")),
         )
 
@@ -218,7 +219,7 @@ class AutomationActionLifecycleModuleTest {
         val managed = assertNotNull(module.prepare(7L, 12L, homeAction(HomeQuestAutomationActionType.ACCEPT)))
         Mockito.doThrow(ApiException(ErrorCode.INVALID_REQUEST, "현재 action을 찾지 못했습니다."))
             .`when`(home)
-            .runHomeQuest(7L, "action-1")
+            .runHomeQuest(7L, "action-1", HofRequestOrigin.AUTOMATION)
 
         assertFailsWith<AutomationActionPreconditionChangedException> { managed.execute() }
     }
@@ -226,7 +227,7 @@ class AutomationActionLifecycleModuleTest {
     @Test
     fun `권위 있는 자택 퀘스트 상태로 적용 재제출 재확인을 구분한다`() {
         val accept = assertNotNull(module.prepare(7L, 12L, homeAction(HomeQuestAutomationActionType.ACCEPT)))
-        Mockito.`when`(home.load(7L, HomeMode.HOME)).thenReturn(
+        Mockito.`when`(home.load(7L, HomeMode.HOME, HofRequestOrigin.AUTOMATION)).thenReturn(
             homeResponse(HomeQuestState.ACTIVE, null),
             homeResponse(HomeQuestState.AVAILABLE, "action-1"),
             homeResponse(HomeQuestState.AVAILABLE, "changed-action"),
@@ -238,10 +239,10 @@ class AutomationActionLifecycleModuleTest {
         assertEquals(now.plusSeconds(10), verifyLater.retryAt)
 
         val claim = assertNotNull(module.prepare(7L, 12L, homeAction(HomeQuestAutomationActionType.CLAIM)))
-        Mockito.`when`(home.load(7L, HomeMode.HOME)).thenReturn(
+        Mockito.`when`(home.load(7L, HomeMode.HOME, HofRequestOrigin.AUTOMATION)).thenReturn(
             HomeResponse(HomeMode.HOME, emptyList(), emptyList(), null, null),
         )
-        Mockito.`when`(home.runHomeQuest(7L, "action-1")).thenReturn(
+        Mockito.`when`(home.runHomeQuest(7L, "action-1", HofRequestOrigin.AUTOMATION)).thenReturn(
             HomeResponse(HomeMode.HOME, emptyList(), emptyList(), null, null),
         )
         assertIs<AmbiguousActionResolution.VerifyLater>(claim.reconcile())
@@ -252,7 +253,7 @@ class AutomationActionLifecycleModuleTest {
                 policyEvidence(claim, emptyClaimExecution),
             ).reason,
         )
-        Mockito.verify(home).runHomeQuest(7L, "action-1")
+        Mockito.verify(home).runHomeQuest(7L, "action-1", HofRequestOrigin.AUTOMATION)
     }
 
     @Test
@@ -277,10 +278,10 @@ class AutomationActionLifecycleModuleTest {
             module.prepare(7L, 12L, homeAction(HomeQuestAutomationActionType.ACCEPT)),
         )
         Mockito.doThrow(IllegalStateException("connection closed", IOException("connection closed")))
-            .`when`(home).runHomeQuest(7L, "action-1")
+            .`when`(home).runHomeQuest(7L, "action-1", HofRequestOrigin.AUTOMATION)
 
         assertFailsWith<AmbiguousAutomationSubmissionException> { managed.execute() }
-        Mockito.verify(home, Mockito.times(1)).runHomeQuest(7L, "action-1")
+        Mockito.verify(home, Mockito.times(1)).runHomeQuest(7L, "action-1", HofRequestOrigin.AUTOMATION)
     }
 
     @Test
@@ -907,7 +908,9 @@ class AutomationActionLifecycleModuleTest {
     @Test
     fun `모든 원격 행동 family는 공통 제출 직전 GET에서 바뀐 상태를 POST 없이 폐기한다`() {
         val homeManaged = assertNotNull(module.prepare(7L, 12L, homeAction(HomeQuestAutomationActionType.ACCEPT)))
-        Mockito.`when`(home.load(7L, HomeMode.HOME)).thenReturn(homeResponse(HomeQuestState.ACTIVE, null))
+        Mockito.`when`(
+            home.load(7L, HomeMode.HOME, HofRequestOrigin.AUTOMATION),
+        ).thenReturn(homeResponse(HomeQuestState.ACTIVE, null))
         assertFailsWith<AutomationActionPreconditionChangedException> {
             homeManaged.validateBeforeSubmission()
         }
@@ -929,7 +932,9 @@ class AutomationActionLifecycleModuleTest {
             FishingTownAutomationAction(7L, FishingAction.CATCH, FishingPrimaryAction.CATCH, 10),
         ))
         val changedFishing = fishingResponse(FishingPrimaryAction.START, 9, FishingOutcome.CAUGHT)
-        Mockito.`when`(fishingService.load(7L)).thenReturn(changedFishing)
+        Mockito.`when`(
+            fishingService.load(7L, HofRequestOrigin.AUTOMATION),
+        ).thenReturn(changedFishing)
         assertFailsWith<AutomationActionPreconditionChangedException> {
             fishingManaged.validateBeforeSubmission()
         }
@@ -939,7 +944,7 @@ class AutomationActionLifecycleModuleTest {
             13L,
             RaidTownAutomationAction(7L, RaidAction.REFRESH, null, "RaidGoblin"),
         ))
-        Mockito.`when`(raidPubService.load(7L)).thenReturn(
+        Mockito.`when`(raidPubService.load(7L, HofRequestOrigin.AUTOMATION)).thenReturn(
             RaidPubResponse(emptyList(), false, false, null, null, emptySet(), null, pageComplete = true),
         )
         assertFailsWith<AutomationActionPreconditionChangedException> {
@@ -1296,7 +1301,7 @@ class AutomationActionLifecycleModuleTest {
         assertFailsWith<AutomationActionPreconditionChangedException> {
             managed.validateBeforeSubmission()
         }
-        Mockito.verify(raidPubService).load(7L)
+        Mockito.verify(raidPubService).load(7L, HofRequestOrigin.AUTOMATION)
         Mockito.verify(raidPubService, Mockito.never()).actionForAutomation(
             7L,
             RaidPubActionRequest(RaidAction.REWARD, null),
@@ -1325,7 +1330,7 @@ class AutomationActionLifecycleModuleTest {
             } else {
                 fishingResponse(FishingPrimaryAction.START, 10 - index, FishingOutcome.CAUGHT)
             }
-            Mockito.`when`(fishingService.act(7L, action)).thenReturn(response)
+            Mockito.`when`(fishingService.act(7L, action, HofRequestOrigin.AUTOMATION)).thenReturn(response)
 
             assertEquals(AutomationType.FISHING, managed.descriptor.source)
             assertEquals(action.name, managed.descriptor.actionKind)
@@ -1333,13 +1338,14 @@ class AutomationActionLifecycleModuleTest {
             assertEquals(managed.descriptor, module.describe(prepared))
             val execution = assertIs<TypedAutomationExecution.ActionCompleted>(managed.execute())
             managed.applyLegacyExecution(execution)
-            Mockito.verify(fishingService).act(7L, action)
+            Mockito.verify(fishingService).act(7L, action, HofRequestOrigin.AUTOMATION)
         }
         Mockito.verify(workOwnership, Mockito.times(2)).ensure(
             7L,
             15L,
             AutomationWorkAssignment(AutomationWorkType.FISHING, "DAILY_FISHING"),
         )
+        Mockito.verify(workLifecycle).completeFishingCycle(7L, 15L)
     }
 
     @Test
@@ -1350,7 +1356,9 @@ class AutomationActionLifecycleModuleTest {
             FishingTownAutomationAction(7L, FishingAction.CATCH, FishingPrimaryAction.CATCH, 10),
         ))
         val unchanged = fishingResponse(FishingPrimaryAction.CATCH, 10, null)
-        Mockito.`when`(fishingService.act(7L, FishingAction.CATCH)).thenReturn(unchanged)
+        Mockito.`when`(
+            fishingService.act(7L, FishingAction.CATCH, HofRequestOrigin.AUTOMATION),
+        ).thenReturn(unchanged)
 
         val execution = assertIs<TypedAutomationExecution.ActionCompleted>(managed.execute())
 
@@ -1386,15 +1394,106 @@ class AutomationActionLifecycleModuleTest {
         val changedResponse = fishingResponse(FishingPrimaryAction.START, 9)
         val unknownResponse = fishingResponse(FishingPrimaryAction.CATCH, null)
         val unchangedResponse = fishingResponse(FishingPrimaryAction.CATCH, 10)
-        Mockito.`when`(fishingService.load(7L)).thenReturn(changedResponse, unknownResponse, unchangedResponse)
+        Mockito.`when`(
+            fishingService.load(7L, HofRequestOrigin.AUTOMATION),
+        ).thenReturn(changedResponse, unknownResponse, unchangedResponse)
 
         assertIs<AmbiguousActionResolution.Applied>(changed.reconcile())
-        assertIs<AmbiguousActionResolution.VerifyLater>(noBaseline.reconcile())
-        assertIs<AmbiguousActionResolution.VerifyLater>(unchanged.reconcile())
+        assertIs<AmbiguousActionResolution.Held>(noBaseline.reconcile())
+        assertIs<AmbiguousActionResolution.Held>(unchanged.reconcile())
+        Mockito.verify(workLifecycle).completeFishingCycle(7L, 15L)
+        Mockito.verify(workLifecycle, Mockito.times(2)).waitFishingCycle(
+            Mockito.eq(7L),
+            Mockito.eq(15L),
+            Mockito.isNull(),
+            Mockito.anyString(),
+        )
     }
 
     @Test
-    fun `낚시 방해 전투는 단말 결과만 확인하고 같은 낚시 작업을 유지한다`() {
+    fun `불명확한 낚시는 CATCH와 방해 전투를 이어가고 terminal에서만 작업을 닫는다`() {
+        fun managed(action: FishingAction, primary: FishingPrimaryAction, remaining: Int?) = assertNotNull(
+            module.prepare(
+                7L,
+                15L,
+                FishingTownAutomationAction(7L, action, primary, remaining),
+            ),
+        )
+        val startToCatch = managed(FishingAction.START, FishingPrimaryAction.START, 10)
+        val startToBattle = managed(FishingAction.START, FishingPrimaryAction.START, 10)
+        val startIndeterminate = managed(FishingAction.START, FishingPrimaryAction.START, 10)
+        val startEscaped = managed(FishingAction.START, FishingPrimaryAction.START, 10)
+        val catchCompleted = managed(FishingAction.CATCH, FishingPrimaryAction.CATCH, 9)
+        val catchState = fishingResponse(FishingPrimaryAction.CATCH, 10, FishingOutcome.STARTED)
+        val battleState = fishingResponse(FishingPrimaryAction.NONE, 10, blockedByBattle = true)
+        val indeterminateState = fishingResponse(FishingPrimaryAction.START, 10)
+        val escapedState = fishingResponse(FishingPrimaryAction.START, 10, FishingOutcome.ESCAPED)
+        val caughtState = fishingResponse(FishingPrimaryAction.START, 8, FishingOutcome.CAUGHT)
+        Mockito.`when`(fishingService.load(7L, HofRequestOrigin.AUTOMATION)).thenReturn(
+            catchState,
+            battleState,
+            indeterminateState,
+            escapedState,
+            caughtState,
+        )
+
+        assertIs<AmbiguousActionResolution.Applied>(startToCatch.reconcile())
+        assertIs<AmbiguousActionResolution.Applied>(startToBattle.reconcile())
+        assertIs<AmbiguousActionResolution.Held>(startIndeterminate.reconcile())
+        assertIs<AmbiguousActionResolution.Applied>(startEscaped.reconcile())
+        assertIs<AmbiguousActionResolution.Applied>(catchCompleted.reconcile())
+
+        Mockito.verify(workLifecycle, Mockito.times(2)).completeFishingCycle(7L, 15L)
+    }
+
+    @Test
+    fun `CATCH 직접 응답의 방해 전투는 같은 낚시 문맥의 프리셋으로 준비한다`() {
+        val request = battleRequest()
+        val party = ResolvedAutomationParty(request.characterIds, request.patternLoads)
+        val blocked = fishingResponse(FishingPrimaryAction.NONE, 9, blockedByBattle = true)
+        Mockito.`when`(blocked.battleTarget).thenReturn(
+            FishingBattleTargetResponse("battle_map", "fish-monster", "낚시터 괴물"),
+        )
+        val context = FishingAutomationSnapshot(
+            accountId = 7L,
+            state = fishingResponse(FishingPrimaryAction.START, 10),
+            maps = listOf(
+                FishingAutomationMapSetting(
+                    categoryId = "battle_map",
+                    mapCode = "fish-monster",
+                    presetMode = PresetSelectionMode.EXPLICIT,
+                    presetId = 301L,
+                    resolvedParty = party,
+                ),
+            ),
+            primaryPreset = null,
+            now = now,
+        )
+        val managed = assertIs<ManagedFishingAutomationAction>(
+            module.prepare(
+                7L,
+                15L,
+                FishingTownAutomationAction(
+                    accountId = 7L,
+                    action = FishingAction.CATCH,
+                    observedPrimaryAction = FishingPrimaryAction.CATCH,
+                    observedRemainingCasts = 10,
+                    cycleContext = context,
+                ),
+            ),
+        )
+
+        val battle = assertNotNull(managed.obstructionBattle(blocked))
+
+        assertEquals(BattleAutomationActionSource.FISHING_AUTOMATION, battle.source)
+        assertEquals("battle_map", battle.categoryId)
+        assertEquals("fish-monster", battle.mapCode)
+        assertEquals(301L, battle.presetId)
+        assertEquals(party, battle.resolvedParty)
+    }
+
+    @Test
+    fun `낚시 방해 전투가 끝나면 한 번 낚시 작업을 종료한다`() {
         val action = battleMapAction().copy(
             source = BattleAutomationActionSource.FISHING_AUTOMATION,
             executionIdentity = "fishing-battle-1",
@@ -1412,7 +1511,8 @@ class AutomationActionLifecycleModuleTest {
             15L,
             AutomationWorkAssignment(AutomationWorkType.FISHING, "DAILY_FISHING"),
         )
-        Mockito.verifyNoInteractions(battleHandler, workLifecycle, unionProgress)
+        Mockito.verify(workLifecycle).completeFishingCycle(7L, 15L)
+        Mockito.verifyNoInteractions(battleHandler, unionProgress)
     }
 
     @Test
@@ -1447,11 +1547,11 @@ class AutomationActionLifecycleModuleTest {
                 sourceTargetKey = "RaidGoblin",
             ),
         ))
-        Mockito.`when`(raidPubService.load(7L)).thenReturn(raidBattleResponse())
+        Mockito.`when`(raidPubService.load(7L, HofRequestOrigin.AUTOMATION)).thenReturn(raidBattleResponse())
 
         managed.validateBeforeSubmission()
 
-        Mockito.verify(raidPubService).load(7L)
+        Mockito.verify(raidPubService).load(7L, HofRequestOrigin.AUTOMATION)
         Mockito.verifyNoInteractions(battleRun)
     }
 
@@ -1465,7 +1565,7 @@ class AutomationActionLifecycleModuleTest {
                 sourceTargetKey = "RaidGoblin",
             ),
         ))
-        Mockito.`when`(raidPubService.load(7L)).thenReturn(
+        Mockito.`when`(raidPubService.load(7L, HofRequestOrigin.AUTOMATION)).thenReturn(
             raidBattleResponse(status = RaidStatus.COMPLETED, targetPresent = false),
         )
 
@@ -1486,7 +1586,7 @@ class AutomationActionLifecycleModuleTest {
                 sourceTargetKey = "RaidGoblin",
             ),
         ))
-        Mockito.`when`(raidPubService.load(7L)).thenReturn(
+        Mockito.`when`(raidPubService.load(7L, HofRequestOrigin.AUTOMATION)).thenReturn(
             raidBattleResponse(observationStatus = RaidBattleObservationStatus.INCOMPLETE),
         )
 
@@ -2298,12 +2398,13 @@ class AutomationActionLifecycleModuleTest {
         primaryAction: FishingPrimaryAction,
         remainingCasts: Int?,
         lastOutcome: FishingOutcome? = null,
+        blockedByBattle: Boolean = false,
     ) =
         Mockito.mock(FishingResponse::class.java).also { response ->
             Mockito.`when`(response.primaryAction).thenReturn(primaryAction)
             Mockito.`when`(response.remainingCasts).thenReturn(remainingCasts)
             Mockito.`when`(response.lastOutcome).thenReturn(lastOutcome)
-            Mockito.`when`(response.blockedByBattle).thenReturn(false)
+            Mockito.`when`(response.blockedByBattle).thenReturn(blockedByBattle)
         }
 
     private fun anyBattleAction(): BattleMapAutomationAction =

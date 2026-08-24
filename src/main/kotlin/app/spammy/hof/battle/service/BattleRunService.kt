@@ -17,6 +17,7 @@ import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.client.AccountHofGateway
+import app.spammy.hof.external.client.HofAutomationDeferredException
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.HofBattleType
 import app.spammy.hof.external.model.HofHttpResponse
@@ -25,6 +26,7 @@ import app.spammy.hof.external.parser.BattleResultParser
 import app.spammy.hof.external.parser.LoginStateParser
 import app.spammy.hof.external.parser.SharedBattleCooldownParser
 import app.spammy.hof.status.repository.HofStatusSnapshotQueryRepository
+import app.spammy.hof.town.common.service.AccountHofMutationFence
 import java.time.Instant
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
@@ -50,6 +52,7 @@ class BattleRunService(
     private val battleLogService: BattleLogService,
     private val captchaService: CaptchaService,
     private val sessionPatternLoadTracker: SessionPatternLoadTracker,
+    private val mutationFence: AccountHofMutationFence,
     private val timeProvider: TimeProvider,
 ) {
     private val log = LoggerFactory.getLogger(BattleRunService::class.java)
@@ -63,6 +66,14 @@ class BattleRunService(
         accountId: Long,
         request: RunBattleRequest,
         origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
+    ): BattleResultResponse = mutationFence.execute(accountId) {
+        runBattleFenced(accountId, request, origin)
+    }
+
+    private fun runBattleFenced(
+        accountId: Long,
+        request: RunBattleRequest,
+        origin: HofRequestOrigin,
     ): BattleResultResponse {
         check(!TransactionSynchronizationManager.isActualTransactionActive()) {
             "Battle HTTP submission must not run inside a database transaction."
@@ -122,11 +133,21 @@ class BattleRunService(
                     patternLoad.characterId,
                     patternLoad.slot,
                 )
-                val preloadResponse = gateway.execute(
-                    account.id,
-                    requestFactory.loadPattern(patternLoad.characterId, patternLoad.slot, origin),
-                    cookies,
-                )
+                val preloadResponse = try {
+                    gateway.execute(
+                        account.id,
+                        requestFactory.loadPattern(patternLoad.characterId, patternLoad.slot, origin),
+                        cookies,
+                    )
+                } catch (deferred: HofAutomationDeferredException) {
+                    throw HofAutomationDeferredException(
+                        retryAt = deferred.retryAt,
+                        consecutiveFailures = deferred.consecutiveFailures,
+                        requestAttempted = deferred.requestAttempted,
+                        actionSubmissionAttempted = false,
+                        reasonCode = BATTLE_PATTERN_PRELOAD_DEFERRED,
+                    )
+                }
                 ensureActiveSession(
                     response = preloadResponse,
                     message = "HOF 로그인 세션이 만료되어 패턴을 로드하지 못했습니다.",
@@ -295,6 +316,7 @@ class BattleRunService(
         }
 
     private companion object {
+        const val BATTLE_PATTERN_PRELOAD_DEFERRED = "BATTLE_PATTERN_PRELOAD_DEFERRED"
         const val SHARED_COOLDOWN_SCHEDULING_BUFFER_SECONDS = 2L
     }
 }

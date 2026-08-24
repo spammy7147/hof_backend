@@ -111,6 +111,25 @@ interface ManagedAutomationAction {
     ): AmbiguousActionResolution.HandedOff? = null
 }
 
+interface ManagedFishingAutomationAction : ManagedAutomationAction {
+    val cycleObservation: app.spammy.hof.town.fishing.service.FishingAutomationObservation?
+
+    fun executeObservedResponse(): FishingDirectExecution?
+
+    fun observeDirectResponse(
+        response: app.spammy.hof.town.fishing.dto.FishingResponse,
+    ): TypedAutomationExecution.ActionCompleted
+
+    fun obstructionBattle(
+        response: app.spammy.hof.town.fishing.dto.FishingResponse,
+    ): BattleMapAutomationAction?
+}
+
+data class FishingDirectExecution(
+    val response: app.spammy.hof.town.fishing.dto.FishingResponse,
+    val execution: TypedAutomationExecution.ActionCompleted,
+)
+
 data class AutomationActionDescriptor(
     val source: AutomationType,
     val storageKind: String,
@@ -363,7 +382,12 @@ class UnifiedAutomationActionLifecycleModule(
         return manage(expectedAccountId, stored)
     }
 
-    private fun manage(accountId: Long, stored: StoredTypedAutomationAction): ManagedAutomationAction {
+    private fun manage(
+        accountId: Long,
+        stored: StoredTypedAutomationAction,
+        fishingObservation: app.spammy.hof.town.fishing.service.FishingAutomationObservation? = null,
+        fishingContext: FishingAutomationSnapshot? = null,
+    ): ManagedAutomationAction {
         return when (val payload = stored.payload) {
             is StoredTypedActionPayload.HomeQuest -> object : ManagedAutomationAction {
                 override val storedAction = stored
@@ -374,7 +398,7 @@ class UnifiedAutomationActionLifecycleModule(
 
                 override fun execute(): TypedAutomationExecution {
                     val response = runMutation(accountId, "Home quest") {
-                        homeService.runHomeQuest(accountId, payload.actionId)
+                        homeService.runHomeQuest(accountId, payload.actionId, HofRequestOrigin.AUTOMATION)
                     }
                     submittedResponse = response
                     return homeActionCompleted(payload, response)
@@ -551,31 +575,68 @@ class UnifiedAutomationActionLifecycleModule(
 
                 override fun reconcile(): AmbiguousActionResolution = reconcileAdventure(accountId, stored, payload)
             }
-            is StoredTypedActionPayload.FishingTown -> object : ManagedAutomationAction {
+            is StoredTypedActionPayload.FishingTown -> object : ManagedFishingAutomationAction {
                 override val storedAction = stored
                 override val descriptor = payload.fishingDescriptor()
+                override val cycleObservation = fishingObservation
                 private var submittedResponse: app.spammy.hof.town.fishing.dto.FishingResponse? = null
 
-                override fun validateBeforeSubmission() = validateFishingBeforeSubmission(accountId, payload)
+                override fun validateBeforeSubmission() {
+                    if (cycleObservation == null) validateFishingBeforeSubmission(accountId, payload)
+                }
 
                 override fun execute(): TypedAutomationExecution {
+                    executeObservedResponse()?.let { return it.execution }
                     val response = runMutation(accountId, "Fishing") {
-                        fishingService.act(accountId, payload.action)
+                        fishingService.act(accountId, payload.action, HofRequestOrigin.AUTOMATION)
                     }
+                    return observeDirectResponse(response)
+                }
+
+                override fun executeObservedResponse(): FishingDirectExecution? {
+                    val observation = cycleObservation ?: return null
+                    val response = fishingService.executeObservedActionForAutomation(
+                        accountId,
+                        payload.action,
+                        observation,
+                    )
+                    return FishingDirectExecution(response, observeDirectResponse(response))
+                }
+
+                override fun observeDirectResponse(
+                    response: app.spammy.hof.town.fishing.dto.FishingResponse,
+                ): TypedAutomationExecution.ActionCompleted {
                     submittedResponse = response
                     return fishingActionCompleted(payload, response)
                 }
 
-                override fun applyLegacyExecution(execution: TypedAutomationExecution): TypedAutomationExecution {
+                private fun applyFishingExecution(execution: TypedAutomationExecution): TypedAutomationExecution {
                     val response = requireNotNull(submittedResponse) {
                         "Fishing response is missing from the legacy execution."
                     }
                     submittedResponse = null
                     requireFishingDirectApplied(payload, response)
+                    if (payload.action == FishingAction.CATCH && !response.blockedByBattle) {
+                        workLifecycle.completeFishingCycle(accountId, stored.entryId)
+                    }
                     return execution
                 }
 
-                override fun reconcile(): AmbiguousActionResolution = reconcileFishing(accountId, payload)
+                override fun applyPolicyAcceptedExecution(execution: TypedAutomationExecution) =
+                    applyFishingExecution(execution)
+
+                override fun applyLegacyExecution(execution: TypedAutomationExecution) =
+                    applyFishingExecution(execution)
+
+                override fun obstructionBattle(
+                    response: app.spammy.hof.town.fishing.dto.FishingResponse,
+                ): BattleMapAutomationAction? = fishingContext
+                    ?.copy(state = response, observation = null)
+                    ?.let(::fishingObstructionEvaluation)
+                    ?.let { it as? HandlerEvaluation.Runnable }
+                    ?.action as? BattleMapAutomationAction
+
+                override fun reconcile(): AmbiguousActionResolution = reconcileFishing(accountId, stored.entryId, payload)
             }
             is StoredTypedActionPayload.RaidTown -> object : ManagedAutomationAction {
                 override val storedAction = stored
@@ -711,7 +772,9 @@ class UnifiedAutomationActionLifecycleModule(
         raidId: String,
         payload: StoredTypedActionPayload.BattleMap,
     ) {
-        val latest = sessionRecovery.execute(accountId) { raidPubService.load(accountId) }
+        val latest = sessionRecovery.execute(accountId) {
+            raidPubService.load(accountId, HofRequestOrigin.AUTOMATION)
+        }
         if (latest.battleObservationStatus == RaidBattleObservationStatus.INCOMPLETE) {
             throw AutomationPreSubmitObservationIncompleteException(
                 "최신 레이드 화면에서 전투 상태를 완전하게 관측하지 못했습니다.",
@@ -737,7 +800,9 @@ class UnifiedAutomationActionLifecycleModule(
         accountId: Long,
         payload: StoredTypedActionPayload.HomeQuest,
     ) {
-        val latest = sessionRecovery.execute(accountId) { homeService.load(accountId, HomeMode.HOME) }
+        val latest = sessionRecovery.execute(accountId) {
+            homeService.load(accountId, HomeMode.HOME, HofRequestOrigin.AUTOMATION)
+        }
         val quest = latest.quests.singleOrNull { it.id == payload.questId }
             ?: throw AutomationActionPreconditionChangedException(
                 "최신 자택 상태에서 저장된 퀘스트가 사라졌습니다.",
@@ -799,7 +864,9 @@ class UnifiedAutomationActionLifecycleModule(
         accountId: Long,
         payload: StoredTypedActionPayload.FishingTown,
     ) {
-        val latest = sessionRecovery.execute(accountId) { fishingService.load(accountId) }
+        val latest = sessionRecovery.execute(accountId) {
+            fishingService.load(accountId, HofRequestOrigin.AUTOMATION)
+        }
         if (
             latest.primaryAction != payload.observedPrimaryAction ||
             payload.action !in latest.availableActions
@@ -814,7 +881,9 @@ class UnifiedAutomationActionLifecycleModule(
         accountId: Long,
         payload: StoredTypedActionPayload.RaidTown,
     ) {
-        val latest = sessionRecovery.execute(accountId) { raidPubService.load(accountId) }
+        val latest = sessionRecovery.execute(accountId) {
+            raidPubService.load(accountId, HofRequestOrigin.AUTOMATION)
+        }
         val targetActions = setOf(RaidAction.REGISTER, RaidAction.LEAVE, RaidAction.START, RaidAction.RESET)
         val runnable = if (payload.action in targetActions) {
             val raidId = payload.raidId ?: payload.targetRaidId
@@ -1208,6 +1277,8 @@ class UnifiedAutomationActionLifecycleModule(
                     progressDate = action.progressDate,
                 ),
             ),
+            action.observation,
+            action.cycleContext,
         )
     }
 
@@ -1268,7 +1339,7 @@ class UnifiedAutomationActionLifecycleModule(
         accountId: Long,
         payload: StoredTypedActionPayload.HomeQuest,
     ): AmbiguousActionResolution {
-        val latest = homeService.load(accountId, HomeMode.HOME)
+        val latest = homeService.load(accountId, HomeMode.HOME, HofRequestOrigin.AUTOMATION)
         if (latest.quests.isEmpty()) {
             return verifyLater("자택 퀘스트 영역이 비어 있어 실행 결과를 완전하게 확인할 수 없습니다.")
         }
@@ -1587,7 +1658,10 @@ class UnifiedAutomationActionLifecycleModule(
                 )
                 null
             }
-            BattleAutomationActionSource.FISHING_AUTOMATION -> null
+            BattleAutomationActionSource.FISHING_AUTOMATION -> {
+                workLifecycle.completeFishingCycle(accountId, stored.entryId)
+                null
+            }
             BattleAutomationActionSource.RAID_AUTOMATION -> {
                 val raidId = payload.sourceTargetKey ?: return null
                 recordRaidResult(
@@ -1838,16 +1912,36 @@ class UnifiedAutomationActionLifecycleModule(
 
     private fun reconcileFishing(
         accountId: Long,
+        entryId: Long,
         payload: StoredTypedActionPayload.FishingTown,
     ): AmbiguousActionResolution {
-        val latest = sessionRecovery.execute(accountId) { fishingService.load(accountId) }
+        val latest = sessionRecovery.execute(accountId) {
+            fishingService.load(accountId, HofRequestOrigin.AUTOMATION)
+        }
         val remainingDecreased = payload.observedRemainingCasts != null &&
             latest.remainingCasts != null &&
             latest.remainingCasts < payload.observedRemainingCasts
-        if (latest.primaryAction != payload.observedPrimaryAction || remainingDecreased) {
+        val terminal = !latest.blockedByBattle && (
+            latest.lastOutcome in setOf(FishingOutcome.CAUGHT, FishingOutcome.ESCAPED) ||
+                remainingDecreased && latest.primaryAction == FishingPrimaryAction.START ||
+                payload.action == FishingAction.CATCH && latest.primaryAction == FishingPrimaryAction.START
+            )
+        if (latest.primaryAction != payload.observedPrimaryAction || remainingDecreased || terminal) {
+            if (terminal) {
+                workLifecycle.completeFishingCycle(accountId, entryId)
+            } else {
+                workLifecycle.waitFishingCycle(
+                    accountId,
+                    entryId,
+                    timeProvider.now(),
+                    "낚시 상태가 바뀌어 현재 가능한 단계부터 다시 판단합니다.",
+                )
+            }
             return AmbiguousActionResolution.Applied()
         }
-        return verifyLater("낚시 실행 결과를 아직 확정할 수 없어 같은 동작을 다시 보내지 않습니다.")
+        val reason = "낚시 실행 결과를 확정할 수 없어 같은 동작을 다시 보내지 않고 낚시만 보류합니다."
+        workLifecycle.waitFishingCycle(accountId, entryId, nextCheckAt = null, holdMessage = reason)
+        return AmbiguousActionResolution.Held(reason)
     }
 
     private fun fishingDescriptor(action: FishingTownAutomationAction) = AutomationActionDescriptor(

@@ -3,6 +3,7 @@ package app.spammy.hof.town.home.service
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.model.HofFormField
+import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.town.common.model.TownActionRequest
 import app.spammy.hof.town.common.model.TownFeatureId
 import app.spammy.hof.town.common.service.TownAuthenticatedExecutor
@@ -18,15 +19,26 @@ class HomeService(
     private val locations: TownLocationResolver,
     private val parser: HomePageParser,
 ) {
-    fun load(accountId: Long, mode: HomeMode): HomeResponse {
+    fun load(
+        accountId: Long,
+        mode: HomeMode,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
+    ): HomeResponse {
         val url = url(mode)
-        return executor.loadProjected(accountId, url) { html, finalUrl, page -> HomeResponse.from(parser.parse(mode, html, finalUrl, page)) }
+        return executor.loadProjected(accountId, url, origin) { html, finalUrl, page -> HomeResponse.from(parser.parse(mode, html, finalUrl, page)) }
     }
 
-    fun runHomeQuest(accountId: Long, actionId: String): HomeResponse {
+    fun runHomeQuest(accountId: Long, actionId: String): HomeResponse =
+        runHomeQuest(accountId, actionId, HofRequestOrigin.INTERACTIVE)
+
+    fun runHomeQuest(
+        accountId: Long,
+        actionId: String,
+        origin: HofRequestOrigin,
+    ): HomeResponse {
         val url = url(HomeMode.HOME)
         return executor.executeObservedGetProjected(
-            accountId, url, setOf("action", "no"),
+            accountId, url, setOf("action", "no"), origin,
             resolveQuery = { html, finalUrl, page ->
                 val quest = parser.parse(HomeMode.HOME, html, finalUrl, page).quests.singleOrNull { it.actionId == actionId }
                     ?: invalid("현재 HOF에서 해당 자택 퀘스트 action을 찾지 못했습니다.")

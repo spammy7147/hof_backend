@@ -182,6 +182,82 @@ class AutomationDecisionJournalTest {
         assertEquals(RaidCycleOutcomeKind.COMPLETED.name, event.reasonCode)
     }
 
+    @Test
+    fun `선택된 낚시의 START CATCH 방해 전투는 상위 판단 단계 수를 늘리지 않고 실행 단계로 묶인다`() {
+        val account = account("history-fishing-cycle")
+        val home = entry(account, AutomationType.HOME_QUEST, 0)
+        val fishing = entry(account, AutomationType.FISHING, 1)
+        entityManager.flush()
+        val journal = journal()
+        val cycleId = journal.appendDecision(
+            account.id,
+            AutomationCoordination.Runnable(
+                fishing.id,
+                FishingTownAutomationAction(
+                    account.id,
+                    app.spammy.hof.town.fishing.model.FishingAction.START,
+                    app.spammy.hof.town.fishing.model.FishingPrimaryAction.START,
+                    18,
+                ),
+                emptyList(),
+                listOf(
+                    AutomationEvaluationTrace(
+                        0,
+                        home.id,
+                        AutomationType.HOME_QUEST,
+                        AutomationDecisionOutcome.SKIPPED,
+                        "HOME_IDLE",
+                        "실행할 자택 행동이 없습니다.",
+                    ),
+                    AutomationEvaluationTrace(
+                        1,
+                        fishing.id,
+                        AutomationType.FISHING,
+                        AutomationDecisionOutcome.SELECTED,
+                        "ACTION_SELECTED",
+                        "낚시를 선택했습니다.",
+                    ),
+                ),
+            ),
+        )
+        journal.appendActionResult(cycleId, AutomationActionTrace(
+            AutomationHistoryEventKind.ACTION_SUCCEEDED,
+            "FISHING_START_APPLIED",
+            "START 적용",
+            fishing.id,
+            AutomationType.FISHING,
+            actionKind = "START",
+        ))
+        journal.appendActionResult(cycleId, AutomationActionTrace(
+            AutomationHistoryEventKind.ACTION_SUCCEEDED,
+            "FISHING_CATCH_APPLIED",
+            "CATCH 적용",
+            fishing.id,
+            AutomationType.FISHING,
+            actionKind = "CATCH",
+        ))
+        journal.appendActionResult(cycleId, AutomationActionTrace(
+            AutomationHistoryEventKind.ACTION_SUCCEEDED,
+            "FISHING_OBSTRUCTION_BATTLE_APPLIED",
+            "방해 전투 적용",
+            fishing.id,
+            AutomationType.FISHING,
+            actionKind = "BATTLE",
+        ))
+        entityManager.flush()
+        entityManager.clear()
+
+        val cycle = journal.page(account.id, AutomationHistoryQuery()).cycles.single()
+
+        assertEquals(5, cycle.events.size)
+        assertEquals(2, cycle.topLevelStepCount)
+        assertEquals(listOf("HOME_IDLE", "ACTION_SELECTED"), cycle.steps.map { it.event.reasonCode })
+        assertEquals(
+            listOf("FISHING_START_APPLIED", "FISHING_CATCH_APPLIED", "FISHING_OBSTRUCTION_BATTLE_APPLIED"),
+            cycle.steps.last().executionEvents.map(AutomationHistoryEvent::reasonCode),
+        )
+    }
+
     private fun account(login: String) = accounts.save(HofAccountEntity(
         loginId = login, encryptedPassword = "encrypted", createdAt = now,
     ))

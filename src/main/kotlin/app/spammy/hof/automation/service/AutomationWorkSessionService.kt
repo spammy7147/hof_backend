@@ -35,6 +35,13 @@ interface AutomationWorkLifecycle {
     fun triggerRaidConfigurationCheck(accountId: Long)
     fun completeBattleMapAction(accountId: Long, entryId: Long, categoryId: String, mapCode: String)
     fun completeAdventureAction(accountId: Long, entryId: Long, categoryId: String, mapCode: String)
+    fun waitFishingCycle(
+        accountId: Long,
+        entryId: Long,
+        nextCheckAt: java.time.Instant?,
+        holdMessage: String,
+    )
+    fun completeFishingCycle(accountId: Long, entryId: Long)
     fun completeRaidCycle(accountId: Long, entryId: Long)
     fun stopForConfigurationChange(
         accountId: Long,
@@ -370,6 +377,52 @@ class AutomationWorkSessionService(
                 it.entry.id == entryId &&
                 it.workType == AutomationWorkType.ADVENTURE_MAP &&
                 it.targetKey == targetKey
+        } ?: return
+        val now = timeProvider.now()
+        session.transitionTo(AutomationWorkStatus.COMPLETED)
+        session.nextCheckAt = null
+        session.holdMessage = null
+        session.finishedAt = now
+        session.updatedAt = now
+        commands.save(session)
+        recordOwnershipTransferAfterCommit(AutomationOwnershipTransferReason.COMPLETE, false)
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    override fun waitFishingCycle(
+        accountId: Long,
+        entryId: Long,
+        nextCheckAt: java.time.Instant?,
+        holdMessage: String,
+    ) {
+        requireRunningRuntime(accountId)
+        val session = queries.lockOpen(accountId).singleOrNull {
+            it.status == AutomationWorkStatus.RUNNING &&
+                it.entry.id == entryId &&
+                it.workType == AutomationWorkType.FISHING &&
+                it.targetKey == FISHING_CYCLE_TARGET
+        } ?: return
+        val now = timeProvider.now()
+        session.transitionTo(
+            if (nextCheckAt == null) AutomationWorkStatus.WAITING_RESOURCE
+            else AutomationWorkStatus.WAITING_COOLDOWN,
+        )
+        session.nextCheckAt = nextCheckAt
+        session.holdMessage = holdMessage.take(MAX_HOLD_MESSAGE_LENGTH)
+        session.lastVerifiedAt = now
+        session.updatedAt = now
+        commands.save(session)
+        recordOwnershipTransferAfterCommit(AutomationOwnershipTransferReason.WAIT, false)
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    override fun completeFishingCycle(accountId: Long, entryId: Long) {
+        requireRunningRuntime(accountId)
+        val session = queries.lockOpen(accountId).singleOrNull {
+            it.status == AutomationWorkStatus.RUNNING &&
+                it.entry.id == entryId &&
+                it.workType == AutomationWorkType.FISHING &&
+                it.targetKey == FISHING_CYCLE_TARGET
         } ?: return
         val now = timeProvider.now()
         session.transitionTo(AutomationWorkStatus.COMPLETED)

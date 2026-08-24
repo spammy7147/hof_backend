@@ -36,6 +36,7 @@ import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.client.HofBinaryGateway
+import app.spammy.hof.external.client.HofAutomationDeferredException
 import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.client.testAccountHofGateway
@@ -49,11 +50,14 @@ import app.spammy.hof.external.parser.LoginStateParser
 import app.spammy.hof.external.parser.SharedBattleCooldownParser
 import app.spammy.hof.status.entity.HofStatusSnapshotEntity
 import app.spammy.hof.status.repository.HofStatusSnapshotQueryRepository
+import app.spammy.hof.town.common.service.AccountHofMutationFence
+import app.spammy.hof.town.common.service.AccountHofObservationInvalidatedException
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito
 import java.time.Instant
 import java.util.Base64
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -96,6 +100,7 @@ class BattleRunServiceTest {
     )
     private val gateway = FakeHofGateway()
     private val accountGateway = testAccountHofGateway(gateway, TimeProvider { now })
+    private val mutationFence = AccountHofMutationFence()
     private val binaryGateway = FakeHofBinaryGateway()
     private val captchaImageFileStore = FakeCaptchaImageFileStore()
     private val captchaService = CaptchaService(
@@ -127,6 +132,7 @@ class BattleRunServiceTest {
         battleLogService = battleLogService,
         captchaService = captchaService,
         sessionPatternLoadTracker = SessionPatternLoadTracker(),
+        mutationFence = mutationFence,
         timeProvider = TimeProvider { now },
     )
 
@@ -228,6 +234,7 @@ class BattleRunServiceTest {
                 characters.map { it.hofCharacterId },
             ),
         ).thenReturn(characters)
+        val beforeBattle = mutationFence.observe(1L) { Unit }
         val response = service.runBattle(
             accountId = 1L,
             request = RunBattleRequest(
@@ -239,6 +246,7 @@ class BattleRunServiceTest {
                 },
                 battleCount = 3,
             ),
+            origin = HofRequestOrigin.AUTOMATION,
         )
 
         assertEquals(HofBattleOutcome.VICTORY.name, response.outcome)
@@ -265,10 +273,14 @@ class BattleRunServiceTest {
             gateway.requests[5].formFields,
         )
         assertEquals(List(6) { mapOf("PHPSESSID" to "abc") }, gateway.cookies)
+        assertEquals(List(6) { HofRequestOrigin.AUTOMATION }, gateway.requests.map(HofRequest::origin))
         val savedLog = battleLogRepository.savedEntities.single()
         assertEquals("battle_map", savedLog.categoryIdSnapshot)
         assertEquals("snow22", savedLog.mapCodeSnapshot)
         assertEquals("VICTORY", savedLog.outcome)
+        assertFailsWith<AccountHofObservationInvalidatedException> {
+            mutationFence.executeObserved(1L, beforeBattle.revision) { Unit }
+        }
     }
 
     @Test
@@ -396,10 +408,12 @@ class BattleRunServiceTest {
         service.runBattle(
             1L,
             RunBattleRequest("battle_map", "snow22", characterIds, patternLoads),
+            HofRequestOrigin.AUTOMATION,
         )
         service.runBattle(
             1L,
             RunBattleRequest("battle_map", "second", characterIds, patternLoads),
+            HofRequestOrigin.AUTOMATION,
         )
 
         assertEquals(7, gateway.requests.size)
@@ -411,6 +425,104 @@ class BattleRunServiceTest {
             ),
             gateway.requests.filterNot { request -> request.url.contains("?char=") }.map { request -> request.url },
         )
+        assertTrue(gateway.requests.all { it.origin == HofRequestOrigin.AUTOMATION })
+    }
+
+    @Test
+    fun `pattern 503은 battle POST를 막고 성공한 pattern만 같은 cookie 재시도에서 생략한다`() {
+        val selected = characters.take(3)
+        val characterIds = selected.map(CharacterEntity::hofCharacterId)
+        val patternLoads = selected.mapIndexed { index, character ->
+            BattlePatternLoadRequest(character.hofCharacterId, index + 1)
+        }
+        Mockito.`when`(accountQueryRepository.findById(1L)).thenReturn(account)
+        Mockito.`when`(cookieQueryRepository.findValueMapByAccountId(1L))
+            .thenReturn(mapOf("PHPSESSID" to "abc"))
+        Mockito.`when`(
+            characterQueryRepository.findByAccountIdAndHofCharacterIds(1L, characterIds),
+        ).thenReturn(selected)
+        gateway.failPatternRequestNumber = 2
+
+        val deferred = assertFailsWith<HofAutomationDeferredException> {
+            service.runBattle(
+                1L,
+                RunBattleRequest("battle_map", "snow22", characterIds, patternLoads),
+                HofRequestOrigin.AUTOMATION,
+            )
+        }
+
+        assertTrue(deferred.requestAttempted)
+        assertFalse(deferred.actionSubmissionAttempted)
+        assertEquals("BATTLE_PATTERN_PRELOAD_DEFERRED", deferred.reasonCode)
+        assertEquals(2, gateway.requests.size)
+        assertTrue(gateway.requests.all { it.url.contains("?char=") })
+
+        gateway.failPatternRequestNumber = null
+        service.runBattle(
+            1L,
+            RunBattleRequest("battle_map", "snow22", characterIds, patternLoads),
+            HofRequestOrigin.AUTOMATION,
+        )
+
+        val patternCharacterIds = gateway.requests.filter { it.url.contains("?char=") }
+            .map { it.url.substringAfter("?char=") }
+        assertEquals(
+            listOf(characterIds[0], characterIds[1], characterIds[1], characterIds[2]),
+            patternCharacterIds,
+        )
+        assertEquals(1, gateway.requests.count { !it.url.contains("?char=") })
+        assertTrue(gateway.requests.all { it.origin == HofRequestOrigin.AUTOMATION })
+    }
+
+    @Test
+    fun `한 슬롯 변경은 pattern 하나만 보내고 cookie 변경은 파티 전체를 다시 로드한다`() {
+        val selected = characters.take(2)
+        val characterIds = selected.map(CharacterEntity::hofCharacterId)
+        val originalLoads = listOf(
+            BattlePatternLoadRequest(characterIds[0], 1),
+            BattlePatternLoadRequest(characterIds[1], 2),
+        )
+        val changedLoads = listOf(originalLoads[0], originalLoads[1].copy(slot = 3))
+        Mockito.`when`(accountQueryRepository.findById(1L)).thenReturn(account)
+        Mockito.`when`(cookieQueryRepository.findValueMapByAccountId(1L)).thenReturn(
+            mapOf("PHPSESSID" to "session-a"),
+            mapOf("PHPSESSID" to "session-a"),
+            mapOf("PHPSESSID" to "session-b"),
+        )
+        Mockito.`when`(
+            characterQueryRepository.findByAccountIdAndHofCharacterIds(1L, characterIds),
+        ).thenReturn(selected)
+        Mockito.`when`(
+            battleMapQueryRepository.findStateForExecution(1L, "battle_map", "second"),
+        ).thenReturn(battleMapState(mapCode = "second"))
+        Mockito.`when`(
+            battleMapQueryRepository.findStateForExecution(1L, "battle_map", "third"),
+        ).thenReturn(battleMapState(mapCode = "third"))
+
+        service.runBattle(
+            1L,
+            RunBattleRequest("battle_map", "snow22", characterIds, originalLoads),
+            HofRequestOrigin.AUTOMATION,
+        )
+        service.runBattle(
+            1L,
+            RunBattleRequest("battle_map", "second", characterIds, changedLoads),
+            HofRequestOrigin.AUTOMATION,
+        )
+        service.runBattle(
+            1L,
+            RunBattleRequest("battle_map", "third", characterIds, changedLoads),
+            HofRequestOrigin.AUTOMATION,
+        )
+
+        val patternRequests = gateway.requests.filter { it.url.contains("?char=") }
+        assertEquals(
+            listOf(characterIds[0], characterIds[1], characterIds[1], characterIds[0], characterIds[1]),
+            patternRequests.map { it.url.substringAfter("?char=") },
+        )
+        assertEquals(listOf("1", "2", "3", "1", "3"), patternRequests.map { it.formFields["patternno"] })
+        assertEquals(3, gateway.requests.count { !it.url.contains("?char=") })
+        assertTrue(gateway.requests.all { it.origin == HofRequestOrigin.AUTOMATION })
     }
 
     @Test
@@ -724,6 +836,8 @@ class BattleRunServiceTest {
         val cookies = mutableListOf<Map<String, String>>()
         var nextBattleBody: String? = null
         var policeBody: String? = null
+        var failPatternRequestNumber: Int? = null
+        private var patternRequestCount = 0
 
         override fun execute(
             accountId: Long,
@@ -732,6 +846,16 @@ class BattleRunServiceTest {
         ): HofHttpResponse {
             requests += request
             this.cookies += cookies
+            if (request.url.contains("?char=")) {
+                patternRequestCount += 1
+                if (patternRequestCount == failPatternRequestNumber) {
+                    throw HofAutomationDeferredException(
+                        Instant.parse("2026-07-08T00:00:05Z"),
+                        1,
+                        requestAttempted = true,
+                    )
+                }
+            }
             val body = if (request.url.contains("?char=")) {
                 """<div>Funds : $ 1 Time : 10/10</div>"""
             } else if (request.url.contains("menu=police")) {

@@ -6,6 +6,7 @@ import app.spammy.hof.battle.model.BattleMapIdentityNormalizer
 import app.spammy.hof.external.parser.RaidCooldownAssociationStatus
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
+import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.town.common.model.TownActionRequest
 import app.spammy.hof.town.common.model.TownFeatureId
 import app.spammy.hof.town.common.service.TownAuthenticatedExecutor
@@ -23,10 +24,12 @@ class RaidPubService(
     private val battleMaps: BattleMapService,
     private val cooldownEvidence: RaidCooldownEvidenceRecorder = NonPersistentRaidCooldownEvidenceRecorder,
 ) {
-    fun load(accountId: Long): RaidPubResponse {
-        val snapshot = loadRaw(accountId)
+    fun load(accountId: Long): RaidPubResponse = load(accountId, HofRequestOrigin.INTERACTIVE)
+
+    fun load(accountId: Long, origin: HofRequestOrigin): RaidPubResponse {
+        val snapshot = loadRaw(accountId, origin)
         rememberAutomationTargets(accountId, snapshot)
-        return RaidPubResponse.from(withBattleAvailability(accountId, snapshot))
+        return RaidPubResponse.from(withBattleAvailability(accountId, snapshot, origin))
     }
 
     fun action(accountId: Long, request: RaidPubActionRequest): RaidPubResponse =
@@ -42,6 +45,7 @@ class RaidPubService(
         request = request,
         reportPreconditionChange = true,
         expectedRaidId = expectedRaidId,
+        origin = HofRequestOrigin.AUTOMATION,
     )
 
     private fun action(
@@ -49,10 +53,12 @@ class RaidPubService(
         request: RaidPubActionRequest,
         reportPreconditionChange: Boolean,
         expectedRaidId: String? = null,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
     ): RaidPubResponse {
         val projected = executor.executeProjectedWithSingleFallbackGet(
             accountId = accountId,
             pageUrl = url(),
+            origin = origin,
             resolveAction = { html, finalUrl, page ->
                 val current = parser.parse(html, finalUrl, page)
                 val actionId = if (request.action in RAID_ACTIONS) {
@@ -95,10 +101,11 @@ class RaidPubService(
         ) { html, finalUrl, result, page -> parser.parse(html, finalUrl, page, result) }
         if (!projected.pageComplete) incompletePage()
         rememberAutomationTargets(accountId, projected)
-        return RaidPubResponse.from(withBattleAvailability(accountId, projected))
+        return RaidPubResponse.from(withBattleAvailability(accountId, projected, origin))
     }
 
-    private fun loadRaw(accountId: Long): RaidPubSnapshot = executor.loadProjected(accountId, url()) { html, finalUrl, page ->
+    private fun loadRaw(accountId: Long, origin: HofRequestOrigin): RaidPubSnapshot =
+        executor.loadProjected(accountId, url(), origin) { html, finalUrl, page ->
         val parsed = parser.parse(html, finalUrl, page)
         if (!parsed.pageComplete) incompletePage()
         parsed
@@ -109,9 +116,13 @@ class RaidPubService(
         "HOF 전투 정보실의 완전한 응답을 확인하지 못했습니다.",
     )
 
-    private fun withBattleAvailability(accountId: Long, snapshot: RaidPubSnapshot): RaidPubSnapshot {
+    private fun withBattleAvailability(
+        accountId: Long,
+        snapshot: RaidPubSnapshot,
+        origin: HofRequestOrigin,
+    ): RaidPubSnapshot {
         if (snapshot.raids.none { it.playable && it.joined }) return snapshot
-        val current = battleMaps.observeCurrentlyAvailableMaps(accountId, "raid")
+        val current = battleMaps.observeCurrentlyAvailableMaps(accountId, "raid", origin)
         val available = current.maps
             .filter { it.resolved && (it.enabled || it.cooldownRemainingSeconds?.let { seconds -> seconds > 0 } == true) }
             .filter { it.mapCode != null }

@@ -44,6 +44,15 @@ data class AutomationHistoryEvent(
 data class AutomationHistoryCycle(
     val id: Long, val result: AutomationDecisionResult, val selectedEntryId: Long?,
     val startedAt: Instant, val finishedAt: Instant, val events: List<AutomationHistoryEvent>,
+    val topLevelStepCount: Int = events.size,
+    val steps: List<AutomationHistoryStep> = events.mapIndexed { index, event ->
+        AutomationHistoryStep(index + 1, event)
+    },
+)
+data class AutomationHistoryStep(
+    val sequence: Int,
+    val event: AutomationHistoryEvent,
+    val executionEvents: List<AutomationHistoryEvent> = emptyList(),
 )
 data class AutomationHistoryPage(val cycles: List<AutomationHistoryCycle>, val nextCursor: Long?)
 
@@ -202,7 +211,52 @@ class JpaAutomationDecisionJournal(
             e.targetName, e.actionKind, e.presetId, e.presetName, e.nextRunAt, e.occurredAt,
             e.diagnosticKind, e.cooldownSource, e.impactScope, e.releaseCondition,
         ) }
-        return AutomationHistoryCycle(cycle.id, cycle.result, cycle.selectedEntryId, cycle.startedAt, cycle.finishedAt, events)
+        val steps = groupSteps(events, cycle.selectedEntryId)
+        return AutomationHistoryCycle(
+            cycle.id,
+            cycle.result,
+            cycle.selectedEntryId,
+            cycle.startedAt,
+            cycle.finishedAt,
+            events,
+            topLevelStepCount = steps.size,
+            steps = steps,
+        )
+    }
+
+    private fun groupSteps(
+        events: List<AutomationHistoryEvent>,
+        selectedEntryId: Long?,
+    ): List<AutomationHistoryStep> {
+        val selectedIndex = events.indexOfFirst { event ->
+            event.kind == AutomationHistoryEventKind.SELECTED &&
+                (selectedEntryId == null || event.entryId == selectedEntryId)
+        }
+        if (selectedIndex < 0) {
+            return events.mapIndexed { index, event -> AutomationHistoryStep(index + 1, event) }
+        }
+        val decisionEvents = events.take(selectedIndex + 1)
+        val executionEvents = events.drop(selectedIndex + 1)
+        val selectedEvent = decisionEvents.last()
+        val selectedChildren = executionEvents.filter { event ->
+            event.entryId == selectedEvent.entryId ||
+                event.entryId == null && event.type == selectedEvent.type
+        }
+        val standalone = executionEvents.filterNot(selectedChildren::contains)
+        return buildList {
+            decisionEvents.forEachIndexed { index, event ->
+                add(
+                    AutomationHistoryStep(
+                        sequence = index + 1,
+                        event = event,
+                        executionEvents = if (index == selectedIndex) selectedChildren else emptyList(),
+                    ),
+                )
+            }
+            standalone.forEach { event ->
+                add(AutomationHistoryStep(size + 1, event))
+            }
+        }
     }
 
     private fun presetName(accountId: Long, presetId: Long?): String? = presetId?.let {

@@ -2,6 +2,7 @@ package app.spammy.hof.automation.raid
 
 import app.spammy.hof.automation.service.HofSessionRecoveryExecutor
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.town.raid.dto.RaidPubResponse
 import app.spammy.hof.town.raid.model.RaidAction
 import app.spammy.hof.town.raid.model.RaidBattleObservationStatus
@@ -19,7 +20,7 @@ class HofRaidObservationAdapter(
 ) : RaidObservationReader {
     override fun read(accountId: Long): RaidObservation {
         val load = {
-            from(raidPubService.load(accountId))
+            from(raidPubService.load(accountId, HofRequestOrigin.AUTOMATION))
         }
         return sessionRecovery.execute(accountId, load)
     }

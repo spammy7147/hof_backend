@@ -19,6 +19,11 @@ interface TypedAutomationSnapshotLoader {
     ): AutomationEntrySnapshot
 }
 
+/** 한 판단 동안 성공적으로 읽은 HOF 페이지를 재사용하는 snapshot loader 경계다. */
+interface DecisionScopedTypedAutomationSnapshotLoader {
+    fun openDecision(accountId: Long): TypedAutomationSnapshotLoader
+}
+
 data class AutomationEntrySnapshot(
     val id: Long,
     val type: AutomationType,

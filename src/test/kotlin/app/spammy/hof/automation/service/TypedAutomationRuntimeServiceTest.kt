@@ -162,6 +162,39 @@ class TypedAutomationRuntimeServiceTest {
     }
 
     @Test
+    fun `START 성공과 CATCH 준비는 하나의 영속 전이로 바뀐다`() {
+        val state = state()
+        val start = action(TypedAutomationActionStatus.PREPARED)
+        val execution = acquire(state, start.row)
+        assertIs<TypedRuntimeSubmission.Started>(service.beginSubmission(execution))
+        val catch = StoredTypedAutomationAction(
+            entryId = start.entry.id,
+            executionIdentity = "catch-1",
+            payload = StoredTypedActionPayload.FishingTown(
+                app.spammy.hof.town.fishing.model.FishingAction.CATCH,
+                app.spammy.hof.town.fishing.model.FishingPrimaryAction.CATCH,
+                17,
+            ),
+        )
+        Mockito.`when`(query.findEntry(7, start.entry.id)).thenReturn(start.entry)
+        Mockito.`when`(actions.save(anyActionRow())).thenAnswer { it.arguments[0] }
+
+        val preparedCatch = assertIs<TypedRuntimePreparation.Ready>(
+            service.advanceAppliedActionToPreparedFollowup(execution, catch),
+        )
+        val catchRow = Mockito.mockingDetails(actions).invocations
+            .last { it.method.name == "save" }.arguments.single() as TypedAutomationActionRunEntity
+
+        assertEquals(TypedAutomationActionStatus.SUCCEEDED, start.row.status)
+        assertEquals(now, start.row.finishedAt)
+        assertEquals(TypedAutomationActionStatus.PREPARED, catchRow.status)
+        assertEquals("catch-1", preparedCatch.execution.checkpoint?.storedAction?.executionIdentity)
+        Mockito.`when`(query.lockTypedAction(catchRow.id)).thenReturn(catchRow)
+        assertIs<TypedRuntimeSubmission.Started>(service.beginSubmission(preparedCatch.execution))
+        assertEquals(TypedAutomationActionStatus.SUBMITTING, catchRow.status)
+    }
+
+    @Test
     fun `ambiguous submission moves checkpoint to reconciliation`() {
         val state = state()
         val fixture = action(TypedAutomationActionStatus.PREPARED)
@@ -228,6 +261,10 @@ class TypedAutomationRuntimeServiceTest {
         assertNull(fixture.row.submittedAt)
         assertEquals("password=[redacted] 503", state.lastError)
         assertEquals(AutomationWaitReason.HOF_CONNECTION, state.waitReason)
+
+        now = retryAt
+        val resumed = assertIs<TypedRuntimeAcquisition.Acquired>(service.acquire(7))
+        assertEquals(true, resumed.execution.checkpoint?.deferredSubmissionRetry)
     }
 
     @Test

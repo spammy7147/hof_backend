@@ -23,6 +23,68 @@ class AutomationActionConvergenceModuleTest {
     }
 
     @Test
+    fun `제출 전 안전 대기는 active 시도를 닫고 같은 identity 재시도에서 다시 연다`() {
+        val selection = questSelection("discard-before-submit")
+        val attemptId = assertIs<ConvergenceDirective.Submit>(module.prepare(7L, selection)).attemptId
+
+        assertEquals(
+            true,
+            module.discardUnsubmitted(
+                accountId = 7L,
+                selection = selection,
+                discardedAt = clock.now(),
+                reasonCode = "BATTLE_PATTERN_PRELOAD_DEFERRED",
+            ),
+        )
+
+        val discarded = requireNotNull(store.get(attemptId))
+        assertEquals(ActionConvergenceResult.NOT_APPLIED, discarded.result)
+        assertEquals("BATTLE_PATTERN_PRELOAD_DEFERRED", discarded.reasonCode)
+        assertEquals(null, store.findActive(7L, selection.scope))
+
+        assertEquals(
+            attemptId,
+            assertIs<ConvergenceDirective.Submit>(
+                module.retryUnsubmitted(7L, selection, clock.now()),
+            ).attemptId,
+        )
+        val retried = requireNotNull(store.get(attemptId))
+        assertEquals(ActionConvergenceResult.PENDING, retried.result)
+        assertEquals("UNSUBMITTED_RETRY_PREPARED", retried.reasonCode)
+        assertEquals(null, retried.finishedAt)
+    }
+
+    @Test
+    fun `제출된 시도나 다른 identity는 제출 전 폐기 대상으로 닫지 않는다`() {
+        val selection = questSelection("do-not-discard-submitted")
+        val attemptId = assertIs<ConvergenceDirective.Submit>(module.prepare(7L, selection)).attemptId
+        module.record(
+            attemptId,
+            AutomationActionEvidence.NetworkFailure(clock.now(), "submission response lost"),
+        )
+
+        assertEquals(
+            false,
+            module.discardUnsubmitted(
+                accountId = 7L,
+                selection = selection.copy(executionIdentity = "different-identity"),
+                discardedAt = clock.now(),
+                reasonCode = "MUST_NOT_CLOSE",
+            ),
+        )
+        assertEquals(
+            false,
+            module.discardUnsubmitted(
+                accountId = 7L,
+                selection = selection,
+                discardedAt = clock.now(),
+                reasonCode = "MUST_NOT_CLOSE",
+            ),
+        )
+        assertEquals(ActionConvergenceResult.PENDING, store.get(attemptId)?.result)
+    }
+
+    @Test
     fun `기존 null 결과 orphan은 pending으로 정규화하고 즉시 확인한다`() {
         val selection = questSelection("legacy-orphan")
         val orphan = store.createOrGet(7L, selection, clock.now())

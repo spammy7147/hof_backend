@@ -39,6 +39,64 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 class TypedLiveAutomationSnapshotLoaderTest {
     @Test
+    fun `normal fishing snapshot does not preload obstruction battle maps`() {
+        val now = Instant.parse("2026-08-24T00:00:00Z")
+        val account = HofAccountEntity(7, "fishing-snapshot", "encrypted", now)
+        val entry = AutomationEntryEntity(10, account, AutomationType.FISHING, 0, true, now, now)
+        val typed = Mockito.mock(TypedAutomationQueryRepository::class.java)
+        val mapQuery = Mockito.mock(BattleMapQueryRepository::class.java)
+        val mapService = Mockito.mock(BattleMapService::class.java)
+        val presets = Mockito.mock(PartyPresetQueryRepository::class.java)
+        val quest = Mockito.mock(QuestGatewayService::class.java)
+        val fishing = Mockito.mock(app.spammy.hof.town.fishing.service.FishingService::class.java)
+        val observation = Mockito.mock(
+            app.spammy.hof.town.fishing.service.FishingAutomationObservation::class.java,
+        )
+        val response = app.spammy.hof.town.fishing.dto.FishingResponse(
+            notice = null,
+            remainingCasts = 18,
+            waterStatus = null,
+            baitCount = null,
+            shiningBaitCount = null,
+            escapeSeconds = null,
+            combo = null,
+            locationName = "일반 낚시터",
+            primaryAction = app.spammy.hof.town.fishing.model.FishingPrimaryAction.START,
+            availableActions = setOf(app.spammy.hof.town.fishing.model.FishingAction.START),
+            lastOutcome = null,
+            blockedByBattle = false,
+            battleTarget = null,
+            catches = emptyList(),
+            result = null,
+        )
+        Mockito.`when`(observation.response).thenReturn(response)
+        Mockito.`when`(fishing.loadForAutomation(7L)).thenReturn(observation)
+        Mockito.`when`(typed.findEntries(7L)).thenReturn(listOf(entry))
+        Mockito.`when`(typed.findFishingMaps(entry.id)).thenReturn(emptyList())
+        Mockito.`when`(presets.findAllByAccountId(7L)).thenReturn(emptyList())
+        Mockito.`when`(presets.findMembersByPresetIds(emptyList())).thenReturn(emptyList())
+        Mockito.`when`(mapQuery.findAllStatesForExecution(7L)).thenReturn(emptyList())
+        val loader = TypedLiveAutomationSnapshotLoader(
+            quest,
+            typed,
+            mapQuery,
+            presets,
+            Mockito.mock(BattleMapIdentityResolver::class.java),
+            mapService,
+            TimeProvider { now },
+            HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
+            Mockito.mock(HofStatusSnapshotService::class.java),
+            fishingService = fishing,
+        )
+
+        val snapshot = loader.loadEntry(7L, entry.id)
+
+        assertEquals(app.spammy.hof.town.fishing.model.FishingPrimaryAction.START, snapshot.fishing?.state?.primaryAction)
+        Mockito.verify(fishing, Mockito.times(1)).loadForAutomation(7L)
+        Mockito.verifyNoInteractions(mapService)
+    }
+
+    @Test
     fun `quest entry probe preserves page completeness and refreshes only quest categories`() {
         val now = Instant.parse("2026-07-23T00:00:00Z")
         val account = HofAccountEntity(7, "scoped-probe", "encrypted", now)
@@ -441,6 +499,46 @@ class TypedLiveAutomationSnapshotLoaderTest {
         inOrder.verify(mapService).findMaps(7, "battle_map", HofRequestOrigin.AUTOMATION)
         inOrder.verify(mapService).findMaps(7, "adventure_map", HofRequestOrigin.AUTOMATION)
         Mockito.verifyNoMoreInteractions(mapService)
+    }
+
+    @Test
+    fun `한 판단에서 여러 항목이 공유하는 HOF 페이지는 한 번만 조회한다`() {
+        val now = Instant.parse("2026-08-24T00:00:00Z")
+        val account = HofAccountEntity(7, "one-decision", "encrypted", now)
+        val battleEntry = AutomationEntryEntity(11, account, AutomationType.BATTLE_MAP, 0, true, now, now)
+        val adventureEntry = AutomationEntryEntity(12, account, AutomationType.ADVENTURE_MAP, 1, true, now, now)
+        val typed = Mockito.mock(TypedAutomationQueryRepository::class.java)
+        val mapQuery = Mockito.mock(BattleMapQueryRepository::class.java)
+        val mapService = Mockito.mock(BattleMapService::class.java)
+        val presets = Mockito.mock(PartyPresetQueryRepository::class.java)
+        val loader = TypedLiveAutomationSnapshotLoader(
+            Mockito.mock(QuestGatewayService::class.java),
+            typed,
+            mapQuery,
+            presets,
+            Mockito.mock(BattleMapIdentityResolver::class.java),
+            mapService,
+            TimeProvider { now },
+            HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
+            Mockito.mock(HofStatusSnapshotService::class.java),
+        )
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(battleEntry, adventureEntry))
+        Mockito.`when`(typed.findBattleSettingsByEntryIds(listOf(11))).thenReturn(listOf(
+            BattleAutomationMapEntity(21, battleEntry, "battle_map", "battle", 1, PresetSelectionMode.PRIMARY, null, 0),
+        ))
+        Mockito.`when`(typed.findAdventureSettingsByEntryIds(listOf(12))).thenReturn(listOf(
+            AdventureAutomationMapEntity(22, adventureEntry, "battle_map", "adventure", PresetSelectionMode.PRIMARY, null, 0),
+        ))
+        Mockito.`when`(presets.findAllByAccountId(7)).thenReturn(emptyList())
+        Mockito.`when`(presets.findMembersByPresetIds(emptyList())).thenReturn(emptyList())
+        Mockito.`when`(mapQuery.findAllStatesForExecution(7)).thenReturn(emptyList())
+
+        val decision = loader.openDecision(7)
+        decision.loadEntry(7, battleEntry.id)
+        decision.loadEntry(7, adventureEntry.id)
+
+        Mockito.verify(mapService, Mockito.times(1))
+            .findMaps(7, "battle_map", HofRequestOrigin.AUTOMATION)
     }
 
     @Test

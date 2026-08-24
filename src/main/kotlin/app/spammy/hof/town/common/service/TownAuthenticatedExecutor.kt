@@ -81,6 +81,44 @@ class TownAuthenticatedExecutor(
         return projector(response.body, response.finalUrl, page)
     }
 
+    /** 같은 process의 바로 뒤 연속 행동이 이 GET의 form과 cookie chain을 한 번만 소비할 수 있게 한다. */
+    fun <T> loadContinuableProjected(
+        accountId: Long,
+        pageUrl: String,
+        origin: HofRequestOrigin,
+        projector: (html: String, finalUrl: String, page: ParsedTownPage) -> T,
+    ): TownProjectedObservation<T> {
+        val observed = mutationFence.observe(accountId) {
+            val context = authenticatedContext(accountId)
+            val response = executeAuthenticated(
+                context.account,
+                requestFactory.townPage(pageUrl, origin),
+                context.cookies,
+            )
+            val page = formParser.parse(response.body, response.finalUrl)
+            ContinuableProjection(
+                value = projector(response.body, response.finalUrl, page),
+                account = context.account,
+                cookies = context.cookies + response.setCookies,
+                html = response.body,
+                finalUrl = response.finalUrl,
+                page = page,
+            )
+        }
+        return TownProjectedObservation(
+            observed.value.value,
+            TownObservedPageContinuation(
+                account = observed.value.account,
+                pageUrl = pageUrl,
+                html = observed.value.html,
+                finalUrl = observed.value.finalUrl,
+                page = observed.value.page,
+                cookies = observed.value.cookies,
+                fenceRevision = observed.revision,
+            ),
+        )
+    }
+
     /** 위험 identity 명령 검증용 읽기다. 검증이 끝나기 전에 generic roster projection을 실행하지 않는다. */
     fun <T> loadProjectedWithoutCharacterRosterObservation(
         accountId: Long,
@@ -834,6 +872,135 @@ class TownAuthenticatedExecutor(
     }
 
     /**
+     * 첫 POST의 직접 응답에만 존재하는 다음 form을 추가 GET 없이 제출한다.
+     * 중간 응답 callback은 다음 form 검증 전 관측에, 최종 제출 callback은 guard 검증 뒤 영속 checkpoint에 쓴다.
+     */
+    fun <T> executeObservedResponseTwoStepProjected(
+        accountId: Long,
+        pageUrl: String,
+        requiredEntrySubmitField: String,
+        requiredFinalSubmitField: String,
+        origin: HofRequestOrigin,
+        observation: TownObservedPageContinuation? = null,
+        entryAction: (String, String, ParsedTownPage) -> TownActionRequest?,
+        observeEntryResponse: (
+            String,
+            String,
+            app.spammy.hof.town.common.model.ParsedTownResult,
+            ParsedTownPage,
+        ) -> Unit,
+        finalAction: (String, String, ParsedTownPage) -> TownActionRequest?,
+        beforeFinalSubmission: () -> Unit,
+        projector: (String, String, app.spammy.hof.town.common.model.ParsedTownResult, ParsedTownPage) -> T,
+    ): T? {
+        val sequence = sequence@{
+            require(requiredEntrySubmitField.isNotBlank() && requiredFinalSubmitField.isNotBlank())
+            val context = observation?.let { continued ->
+                require(continued.account.id == accountId && continued.pageUrl == pageUrl) {
+                    "Observed page continuation belongs to another command."
+                }
+                ContinuedObservedPage(
+                    continued.account,
+                    continued.cookies,
+                    continued.html,
+                    continued.finalUrl,
+                    continued.page,
+                )
+            } ?: authenticatedContext(accountId).let { authenticated ->
+                val main = executeAuthenticated(
+                    authenticated.account,
+                    requestFactory.townPage(pageUrl, origin),
+                    authenticated.cookies,
+                )
+                ContinuedObservedPage(
+                    authenticated.account,
+                    authenticated.cookies + main.setCookies,
+                    main.body,
+                    main.finalUrl,
+                    formParser.parse(main.body, main.finalUrl),
+                )
+            }
+            val requestedEntry = entryAction(context.html, context.finalUrl, context.page)
+                ?: return@sequence null
+            val guardedEntry = actionGuard.guard(context.page, requestedEntry)
+            if (guardedEntry.form.submitFields.singleOrNull()?.name != requiredEntrySubmitField) {
+                throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 1단계 작업 양식이 변경되었습니다.")
+            }
+            val entryResponse = executeAuthenticated(
+                context.account,
+                requestFactory.townForm(
+                    guardedEntry.form.method,
+                    guardedEntry.form.actionUrl,
+                    guardedEntry.formEntries,
+                    origin,
+                ),
+                context.cookies,
+            )
+            val entryResult = resultParser.parse(entryResponse.body)
+            val entryPage = formParser.parse(entryResponse.body, entryResponse.finalUrl)
+            observeEntryResponse(entryResponse.body, entryResponse.finalUrl, entryResult, entryPage)
+            val requestedFinal = finalAction(entryResponse.body, entryResponse.finalUrl, entryPage)
+                ?: return@sequence null
+            val guardedFinal = actionGuard.guard(entryPage, requestedFinal)
+            if (guardedFinal.form.submitFields.singleOrNull()?.name != requiredFinalSubmitField) {
+                throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 최종 작업 양식이 변경되었습니다.")
+            }
+            beforeFinalSubmission()
+            val finalResponse = executeAuthenticated(
+                context.account,
+                requestFactory.townForm(
+                    guardedFinal.form.method,
+                    guardedFinal.form.actionUrl,
+                    guardedFinal.formEntries,
+                    origin,
+                ),
+                context.cookies + entryResponse.setCookies,
+            )
+            val result = resultParser.parse(finalResponse.body)
+            val page = formParser.parse(finalResponse.body, finalResponse.finalUrl)
+            projector(finalResponse.body, finalResponse.finalUrl, result, page)
+        }
+        return if (observation != null) {
+            mutationFence.executeObserved(accountId, observation.fenceRevision, sequence)
+        } else {
+            withAccountActionFence(accountId, sequence)
+        }
+    }
+
+    /** 판단 GET의 form을 추가 GET 없이 한 번 제출하며, 중간 계정 mutation이 있으면 폐기한다. */
+    fun <T> executeObservedProjected(
+        accountId: Long,
+        pageUrl: String,
+        requiredSubmitField: String,
+        origin: HofRequestOrigin,
+        observation: TownObservedPageContinuation,
+        resolveAction: (String, String, ParsedTownPage) -> TownActionRequest,
+        projector: (String, String, app.spammy.hof.town.common.model.ParsedTownResult, ParsedTownPage) -> T,
+    ): T = mutationFence.executeObserved(accountId, observation.fenceRevision) {
+        require(observation.account.id == accountId && observation.pageUrl == pageUrl) {
+            "Observed page continuation belongs to another command."
+        }
+        val requested = resolveAction(observation.html, observation.finalUrl, observation.page)
+        val guarded = actionGuard.guard(observation.page, requested)
+        if (guarded.form.submitFields.singleOrNull()?.name != requiredSubmitField) {
+            throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 작업 양식이 변경되었습니다.")
+        }
+        val response = executeAuthenticated(
+            observation.account,
+            requestFactory.townForm(
+                guarded.form.method,
+                guarded.form.actionUrl,
+                guarded.formEntries,
+                origin,
+            ),
+            observation.cookies,
+        )
+        val result = resultParser.parse(response.body)
+        val page = formParser.parse(response.body, response.finalUrl)
+        projector(response.body, response.finalUrl, result, page)
+    }
+
+    /**
      * 최신 캐릭터 화면에 직접 item form이 있으면 한 번 제출하고, 없으면 같은 GET에서 확인한
      * reset 진입 form과 그 응답의 최종 form을 연속 제출한다. 두 경로 모두 같은 계정 fence와
      * cookie chain을 사용하며 최종 응답만 기능 module에 투영한다.
@@ -1307,6 +1474,23 @@ class TownAuthenticatedExecutor(
         val cookies: Map<String, String>,
     )
 
+    private data class ContinuedObservedPage(
+        val account: HofAccountEntity,
+        val cookies: Map<String, String>,
+        val html: String,
+        val finalUrl: String,
+        val page: ParsedTownPage,
+    )
+
+    private data class ContinuableProjection<T>(
+        val value: T,
+        val account: HofAccountEntity,
+        val cookies: Map<String, String>,
+        val html: String,
+        val finalUrl: String,
+        val page: ParsedTownPage,
+    )
+
     private data class ResolvedFormSequenceResult(
         val account: HofAccountEntity,
         val actionBody: String,
@@ -1335,4 +1519,19 @@ class TownAuthenticatedExecutor(
 class TownRequestContinuation internal constructor(
     internal val account: HofAccountEntity,
     internal val cookies: Map<String, String>,
+)
+
+data class TownProjectedObservation<T>(
+    val value: T,
+    val continuation: TownObservedPageContinuation,
+)
+
+class TownObservedPageContinuation internal constructor(
+    internal val account: HofAccountEntity,
+    internal val pageUrl: String,
+    internal val html: String,
+    internal val finalUrl: String,
+    internal val page: ParsedTownPage,
+    internal val cookies: Map<String, String>,
+    internal val fenceRevision: Long,
 )

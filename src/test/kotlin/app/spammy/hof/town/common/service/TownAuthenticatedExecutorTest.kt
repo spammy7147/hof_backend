@@ -13,6 +13,7 @@ import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
 import app.spammy.hof.external.model.HofFormField
+import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.external.parser.LoginStateParser
 import app.spammy.hof.town.common.model.TownActionRequest
 import app.spammy.hof.town.common.model.TownActionSelection
@@ -220,6 +221,33 @@ class TownAuthenticatedExecutorTest {
             releaseFirst.countDown()
             pool.shutdownNow()
         }
+    }
+
+    @Test
+    fun `continuation is discarded without POST when another account mutation follows its GET`() {
+        stubAccount()
+        val formHtml = "<form method='post'><button name='do' value='낚는다'>낚는다</button></form>"
+        Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies()))
+            .thenReturn(response(formHtml))
+        val observed = executor.loadContinuableProjected(
+            7L,
+            HOF_URL,
+            HofRequestOrigin.AUTOMATION,
+        ) { _, _, page -> page.forms.single().actionId }
+        executor.executeAccountSequence(7L) { Unit }
+
+        assertFailsWith<AccountHofObservationInvalidatedException> {
+            executor.executeObservedProjected(
+                accountId = 7L,
+                pageUrl = HOF_URL,
+                requiredSubmitField = "do",
+                origin = HofRequestOrigin.AUTOMATION,
+                observation = observed.continuation,
+                resolveAction = { _, _, _ -> TownActionRequest(observed.value) },
+            ) { _, _, _, _ -> Unit }
+        }
+
+        Mockito.verify(gateway, Mockito.times(1)).execute(Mockito.eq(7L), anyRequest(), anyCookies())
     }
 
     @Test

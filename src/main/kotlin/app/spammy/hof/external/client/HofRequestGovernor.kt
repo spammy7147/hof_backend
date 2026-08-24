@@ -19,7 +19,10 @@ import org.springframework.stereotype.Component
 class HofAutomationDeferredException(
     val retryAt: Instant,
     val consecutiveFailures: Int,
-) : RuntimeException("HOF automation requests are deferred until $retryAt")
+    val requestAttempted: Boolean = false,
+    val actionSubmissionAttempted: Boolean = requestAttempted,
+    val reasonCode: String? = null,
+) : RuntimeException(reasonCode ?: "HOF automation requests are deferred until $retryAt")
 
 class HofCaptchaRetryException : RuntimeException("HOF CAPTCHA request returned 503 and must be retried")
 
@@ -128,7 +131,7 @@ class HofRequestGovernor(
             state.cooldownUntil = retryAt
             // 503 재시도 시각은 일반 origin 간격보다 우선한다. 공유 cooldown이 정확한 재개 시각을 통제한다.
             state.setNextAllowedAt(origin, null)
-            throw unavailable(state, origin, retryAt)
+            throw unavailable(state, origin, retryAt, requestAttempted = true)
         } finally {
             releaseExecutionSlot(state)
         }
@@ -200,7 +203,9 @@ class HofRequestGovernor(
     private fun rejectDuringCooldown(state: AccountRequestState, origin: HofRequestOrigin) {
         if (origin == HofRequestOrigin.CAPTCHA) return
         val retryAt = state.cooldownUntil ?: return
-        if (timeProvider.now().isBefore(retryAt)) throw unavailable(state, origin, retryAt)
+        if (timeProvider.now().isBefore(retryAt)) {
+            throw unavailable(state, origin, retryAt, requestAttempted = false)
+        }
         state.cooldownUntil = null
     }
 
@@ -208,12 +213,14 @@ class HofRequestGovernor(
         state: AccountRequestState,
         origin: HofRequestOrigin,
         retryAt: Instant,
+        requestAttempted: Boolean,
     ): RuntimeException =
         when (origin) {
             HofRequestOrigin.CAPTCHA -> error("CAPTCHA 503 responses must be retried before reaching cooldown handling")
             HofRequestOrigin.AUTOMATION -> HofAutomationDeferredException(
                 retryAt = retryAt,
                 consecutiveFailures = state.consecutiveServiceUnavailable,
+                requestAttempted = requestAttempted,
             )
             HofRequestOrigin.INTERACTIVE -> ApiException(
                 ErrorCode.HOF_TEMPORARILY_UNAVAILABLE,

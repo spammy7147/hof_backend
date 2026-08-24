@@ -33,7 +33,7 @@ object ProductionEvidenceShapes {
         listOf("Completed", "BattleCompleted", "SharedCooldown", "RaidCycleFinished").forEach { result ->
             add(fingerprint(executionDiagnostic(actionKind, result)))
         }
-        listOf("Applied", "Resubmit", "VerifyLater", "HandedOff", "Superseded").forEach { result ->
+        listOf("Applied", "Resubmit", "VerifyLater", "Held", "HandedOff", "Superseded").forEach { result ->
             add(fingerprint(reconciliationDiagnostic(actionKind, result)))
         }
     }

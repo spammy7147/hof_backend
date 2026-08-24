@@ -146,12 +146,14 @@ class ActionEvidencePoliciesTest {
                 direct(FishingObservedState("escaped", FishingPrimaryAction.START, 3, FishingOutcome.ESCAPED, false)),
             ),
         )
-        assertIs<AutomationActionEvidence.StateAdvanced>(
+        val blocked = FishingObservedState("blocked", FishingPrimaryAction.NONE, 4, null, true)
+        assertIs<AutomationActionEvidence.DirectApplied>(
             policies.evaluate(
                 catch,
-                direct(FishingObservedState("blocked", FishingPrimaryAction.NONE, 4, null, true)),
+                direct(blocked),
             ),
         )
+        assertIs<AutomationActionEvidence.StateAdvanced>(policies.evaluate(catch, fresh(blocked)))
     }
 
     @Test

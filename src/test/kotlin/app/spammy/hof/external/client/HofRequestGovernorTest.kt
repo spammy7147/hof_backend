@@ -471,6 +471,7 @@ class HofRequestGovernorTest {
         }
         assertEquals(NOW.plusSeconds(1), first.retryAt)
         assertEquals(1, first.consecutiveFailures)
+        assertTrue(first.requestAttempted)
 
         val whileCoolingDown = assertFailsWith<HofAutomationDeferredException> {
             governor.execute(ACCOUNT_A, HofRequestOrigin.AUTOMATION) {
@@ -479,6 +480,7 @@ class HofRequestGovernorTest {
             }
         }
         assertEquals(first.retryAt, whileCoolingDown.retryAt)
+        assertFalse(whileCoolingDown.requestAttempted)
         assertEquals(1, outboundCalls)
 
         clock.current = first.retryAt

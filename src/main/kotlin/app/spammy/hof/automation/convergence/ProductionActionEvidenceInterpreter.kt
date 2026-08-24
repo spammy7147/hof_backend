@@ -135,6 +135,12 @@ class ProductionActionEvidenceInterpreter(
                 responseShapeFingerprint = diagnostics.fingerprint,
                 sanitizedSnippet = diagnostics.snippet,
             )
+            is AmbiguousActionResolution.Held -> AutomationActionEvidence.ResultUnobserved(
+                capturedAt = capturedAt,
+                reason = resolution.reason,
+                responseShapeFingerprint = diagnostics.fingerprint,
+                sanitizedSnippet = diagnostics.snippet,
+            )
             is AmbiguousActionResolution.HandedOff -> AutomationActionEvidence.IncompleteObservation(
                 capturedAt = capturedAt,
                 reason = resolution.reason,
