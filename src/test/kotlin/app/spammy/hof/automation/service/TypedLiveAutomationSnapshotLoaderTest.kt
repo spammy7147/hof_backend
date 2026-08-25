@@ -39,6 +39,59 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 class TypedLiveAutomationSnapshotLoaderTest {
     @Test
+    fun `home quest snapshot carries the latest observed Time budget`() {
+        val now = Instant.parse("2026-08-24T00:00:00Z")
+        val observedAt = now.minusSeconds(30)
+        val account = HofAccountEntity(7, "home-time-snapshot", "encrypted", now)
+        val entry = AutomationEntryEntity(10, account, AutomationType.HOME_QUEST, 0, true, now, now)
+        val selection = HomeQuestAutomationSelectionEntity(20, entry, "home-1", "home-1", true, 0)
+        val typed = Mockito.mock(TypedAutomationQueryRepository::class.java)
+        val mapQuery = Mockito.mock(BattleMapQueryRepository::class.java)
+        val presets = Mockito.mock(PartyPresetQueryRepository::class.java)
+        val status = Mockito.mock(HofStatusSnapshotService::class.java)
+        val home = Mockito.mock(app.spammy.hof.town.home.service.HomeService::class.java)
+        Mockito.`when`(typed.findEntries(7L)).thenReturn(listOf(entry))
+        Mockito.`when`(typed.findQuestSelectionsByEntryIds(emptyList())).thenReturn(emptyList())
+        Mockito.`when`(typed.findHomeQuestSelectionsByEntryIds(listOf(entry.id))).thenReturn(listOf(selection))
+        Mockito.`when`(typed.findQuestMaps(emptyList())).thenReturn(emptyList())
+        Mockito.`when`(typed.findBattleSettingsByEntryIds(emptyList())).thenReturn(emptyList())
+        Mockito.`when`(typed.findAdventureSettingsByEntryIds(emptyList())).thenReturn(emptyList())
+        Mockito.`when`(presets.findAllByAccountId(7L)).thenReturn(emptyList())
+        Mockito.`when`(presets.findMembersByPresetIds(emptyList())).thenReturn(emptyList())
+        Mockito.`when`(mapQuery.findAllStatesForExecution(7L)).thenReturn(emptyList())
+        Mockito.`when`(status.findLatest(7L)).thenReturn(
+            HofObservedStatusResponse("player", 1L, 4_001, 6_000, "Nothing", "Nothing", observedAt),
+        )
+        Mockito.`when`(home.load(
+            7L,
+            app.spammy.hof.town.home.model.HomeMode.HOME,
+            HofRequestOrigin.AUTOMATION,
+        )).thenReturn(app.spammy.hof.town.home.dto.HomeResponse(
+            mode = app.spammy.hof.town.home.model.HomeMode.HOME,
+            quests = emptyList(),
+            actions = emptyList(),
+            restStatus = null,
+            result = null,
+        ))
+        val loader = TypedLiveAutomationSnapshotLoader(
+            Mockito.mock(QuestGatewayService::class.java),
+            typed,
+            mapQuery,
+            presets,
+            Mockito.mock(BattleMapIdentityResolver::class.java),
+            Mockito.mock(BattleMapService::class.java),
+            TimeProvider { now },
+            HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
+            status,
+            homeService = home,
+        )
+
+        val snapshot = requireNotNull(loader.loadEntry(7L, entry.id).homeQuest)
+
+        assertEquals(AutomationTimeSnapshot(4_001, 6_000, observedAt), snapshot.timeSnapshot)
+    }
+
+    @Test
     fun `normal fishing snapshot does not preload obstruction battle maps`() {
         val now = Instant.parse("2026-08-24T00:00:00Z")
         val account = HofAccountEntity(7, "fishing-snapshot", "encrypted", now)

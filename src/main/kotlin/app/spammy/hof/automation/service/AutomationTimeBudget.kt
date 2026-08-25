@@ -27,6 +27,32 @@ data class AutomationTimeSnapshot(
     }
 }
 
+internal object TimeRewardClaimPolicy {
+    private val timeReward = Regex("""\bTime\s*\+\s*([\d,]+)\b""", RegexOption.IGNORE_CASE)
+
+    fun canReceive(
+        rewards: Iterable<String?>,
+        snapshot: AutomationTimeSnapshot?,
+        now: Instant,
+    ): Boolean {
+        var total = 0L
+        var containsTime = false
+        rewards.forEach { reward ->
+            reward ?: return@forEach
+            timeReward.findAll(reward).forEach { match ->
+                containsTime = true
+                val amount = match.groupValues[1].replace(",", "").toLongOrNull() ?: return false
+                if (amount > Long.MAX_VALUE - total) return false
+                total += amount
+            }
+        }
+        if (!containsTime) return true
+
+        val observed = snapshot ?: return false
+        return observed.estimateAt(now).toLong() + total <= observed.max.toLong()
+    }
+}
+
 sealed interface BattleTimeDecision {
     data class Run(
         val battleCount: Int,

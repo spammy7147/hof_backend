@@ -88,7 +88,7 @@ class QuestWorkCycleModuleTest {
     }
 
     @Test
-    fun availableQuestIsAcceptedBeforeClaimableQuest() {
+    fun claimableOpenQuestIsCompletedBeforeAcceptingANewQuest() {
         val result = handler.decideNext(snapshot(
             quests = listOf(
                 quest("available", QuestState.AVAILABLE, 1, immediate()),
@@ -97,7 +97,7 @@ class QuestWorkCycleModuleTest {
             selections = listOf(selection("available"), selection("claimable")),
         ))
 
-        assertEquals("available", assertIs<QuestAction.Accept>(assertIs<QuestDirective.Execute>(result).action).questKey)
+        assertEquals("claimable", assertIs<QuestAction.Claim>(assertIs<QuestDirective.Execute>(result).action).questKey)
     }
 
     @Test
@@ -151,6 +151,40 @@ class QuestWorkCycleModuleTest {
     }
 
     @Test
+    fun `unsafe Time claim stays open while a new acceptable quest can start`() {
+        val result = handler.decideNext(snapshot(
+            quests = listOf(
+                quest("unsafe", QuestState.CLAIMABLE, 0, immediate())
+                    .copy(rewards = listOf("Time +2,000")),
+                quest("acceptable", QuestState.AVAILABLE, 1, immediate()),
+            ),
+            selections = listOf(selection("unsafe"), selection("acceptable")),
+            timeCurrent = 4_001,
+        ))
+
+        assertEquals(
+            "acceptable",
+            assertIs<QuestAction.Accept>(assertIs<QuestDirective.Execute>(result).action).questKey,
+        )
+    }
+
+    @Test
+    fun `claimable quest missing an action does not hide a later runnable claim`() {
+        val result = handler.decideNext(snapshot(
+            quests = listOf(
+                quest("missing", QuestState.CLAIMABLE, 0, immediate()).copy(actionNo = null),
+                quest("runnable", QuestState.CLAIMABLE, 1, immediate()),
+            ),
+            selections = listOf(selection("missing"), selection("runnable")),
+        ))
+
+        assertEquals(
+            "runnable",
+            assertIs<QuestAction.Claim>(assertIs<QuestDirective.Execute>(result).action).questKey,
+        )
+    }
+
+    @Test
     fun `running item quest returns a normalized resource wait directive`() {
         val sessionId = 41L
         progress.runningWorkTargets[sessionId] = "q"
@@ -178,7 +212,7 @@ class QuestWorkCycleModuleTest {
     }
 
     @Test
-    fun `running repeat quest returns an unknown cooldown wait directive`() {
+    fun `running repeat quest completes its current cycle when the next acceptance is waiting`() {
         val sessionId = 42L
         progress.runningWorkTargets[sessionId] = "q"
         val waiting = quest("q", QuestState.UNAVAILABLE, 0)
@@ -190,7 +224,7 @@ class QuestWorkCycleModuleTest {
             workSessionId = sessionId,
         ))
 
-        assertIs<QuestDirective.WaitForUnknownCooldown>(result)
+        assertIs<QuestDirective.CompleteWork>(result)
     }
 
     @Test
@@ -261,7 +295,7 @@ class QuestWorkCycleModuleTest {
     }
 
     @Test
-    fun immediatelyCompletableAcceptBeatsCombat() {
+    fun activeCombatBeatsImmediatelyCompletableAccept() {
         val result = handler.decideNext(snapshot(
             quests = listOf(
                 quest("combat", QuestState.ACTIVE, 0, monster("kill")),
@@ -274,7 +308,7 @@ class QuestWorkCycleModuleTest {
             states = listOf(state("combat-map")),
         ))
 
-        assertEquals("turn-in", assertIs<QuestAction.Accept>(assertIs<QuestDirective.Execute>(result).action).questKey)
+        assertEquals("combat", assertIs<QuestAction.Battle>(assertIs<QuestDirective.Execute>(result).action).questKey)
     }
 
     @Test
@@ -465,7 +499,7 @@ class QuestWorkCycleModuleTest {
     }
 
     @Test
-    fun availableMapClearQuestIsAcceptedBeforeActiveCombat() {
+    fun activeCombatQuestIsProgressedBeforeAcceptingANewQuest() {
         val result = handler.decideNext(snapshot(
             quests = listOf(
                 quest("available-clear", QuestState.AVAILABLE, 0, mapClear("clear", "target")),
@@ -479,26 +513,26 @@ class QuestWorkCycleModuleTest {
         ))
 
         assertEquals(
-            "available-clear",
-            assertIs<QuestAction.Accept>(assertIs<QuestDirective.Execute>(result).action).questKey,
+            "active-combat",
+            assertIs<QuestAction.Battle>(assertIs<QuestDirective.Execute>(result).action).questKey,
         )
     }
 
     @Test
-    fun monsterPrecedesMapClearEvenWhenMapClearAppearsFirst() {
+    fun progressCandidatesUseQuestSourceOrderAcrossMissionTypes() {
         val result = handler.decideNext(snapshot(
             quests = listOf(
                 quest("clear", QuestState.ACTIVE, 0, mapClear("clear-mission", "clear target")),
                 quest("monster", QuestState.ACTIVE, 1, monster("kill")),
             ),
             selections = listOf(
-                selection("clear"),
+                selection("clear", maps = listOf(map("clear-mission", "clear-map", 0, manual = true))),
                 selection("monster", maps = listOf(map("kill", "monster-map", 0))),
             ),
             states = listOf(state("clear-map"), state("monster-map")),
         ))
 
-        assertEquals("monster", battle(result).questKey)
+        assertEquals("clear", battle(result).questKey)
     }
 
     @Test

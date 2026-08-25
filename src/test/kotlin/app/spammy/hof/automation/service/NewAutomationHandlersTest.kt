@@ -132,27 +132,26 @@ class NewAutomationHandlersTest {
     }
 
     @Test
-    fun `union resumes persisted rotation and waits on shared cooldown`() {
+    fun `union resumes persisted rotation and skips shared cooldown without a wait deadline`() {
         val settings = listOf(
             UnionAutomationSetting("union:a", "union", "a", PresetSelectionMode.EXPLICIT, 3, 0, party),
             UnionAutomationSetting("union:b", "union", "b", PresetSelectionMode.EXPLICIT, 3, 1, party),
         )
         val states = listOf(state("a", visible = false), state("b", cooldown = now.plusSeconds(60)))
-        val wait = UnionAutomationHandler().evaluate(UnionAutomationSnapshot(1, settings, states, "union:b", now))
-        assertEquals("UNION_SHARED_COOLDOWN", assertIs<HandlerEvaluation.Unavailable>(wait).reasonCode)
+        val skipped = UnionAutomationHandler().evaluate(UnionAutomationSnapshot(1, settings, states, "union:b", now))
+        assertEquals("UNION_SHARED_COOLDOWN", assertIs<HandlerEvaluation.SkippedReason>(skipped).reasonCode)
     }
 
     @Test
-    fun `configured union maps temporarily absent from the live page wait for respawn without a configuration warning`() {
+    fun `configured union maps temporarily absent from the live page are skipped without a union wait`() {
         val settings = listOf(UnionAutomationSetting("union:a", "union", "a", PresetSelectionMode.EXPLICIT, 3, 0, party))
 
-        val wait = assertIs<HandlerEvaluation.Unavailable>(
+        val skipped = assertIs<HandlerEvaluation.SkippedReason>(
             UnionAutomationHandler().evaluate(UnionAutomationSnapshot(1, settings, emptyList(), null, now)),
         )
 
-        assertEquals("UNION_MAP_RESPAWN_WAIT", wait.reasonCode)
-        assertEquals("유니온 맵 재생성을 기다립니다.", wait.message)
-        assertEquals(now.plusSeconds(300), wait.nextRunAt)
+        assertEquals("UNION_MAP_ABSENT", skipped.reasonCode)
+        assertEquals("현재 관측된 유니온 맵이 없어 건너뜁니다.", skipped.message)
     }
 
     private fun fishing(primary: FishingPrimaryAction, remaining: Int = 3) = FishingResponse(

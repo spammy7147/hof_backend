@@ -328,6 +328,7 @@ class TypedLiveAutomationSnapshotLoader(
                         home.quests,
                         entry.homeQuests.map { HomeQuestAutomationSelection(it.questId, it.questName, it.enabled, it.sourceOrder) },
                         now,
+                        timeSnapshot,
                     )
                 },
             )

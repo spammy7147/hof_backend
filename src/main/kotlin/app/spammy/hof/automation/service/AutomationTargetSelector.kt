@@ -94,7 +94,7 @@ class AutomationTargetSelector(
             )
         }
         val entry = snapshotLoader.loadEntry(accountId, session.entryId, session.targetKey)
-            .withQuestWorkSession(session)
+            .withWorkSession(session)
         return when (val result = coordinate(accountId, entry)) {
             is AutomationCoordination.Runnable -> {
                 result.withPrefix(initialWarnings, initialTrace)
@@ -202,39 +202,41 @@ class AutomationTargetSelector(
                         if (message !in warnings) warnings += message
                     }
                     if (blockedUntil != null && (earliest == null || blockedUntil < earliest)) earliest = blockedUntil
-                    if (entry.type != AutomationType.QUEST) return@forEach
+                    if (entry.type !in CANDIDATE_ARBITRATED_TYPES) return@forEach
                 }
-                due?.let {
-                    val activated = if (runningSession == null) {
-                        resumeFresh(accountId, due)
-                    } else if (lifecycle.handoffForPriority(accountId, runningSession.id, due.id)) {
-                        reloadOwner(accountId, due)
-                    } else {
-                        null
+                if (entry.type !in CANDIDATE_ARBITRATED_TYPES) {
+                    due?.let {
+                        val activated = if (runningSession == null) {
+                            resumeFresh(accountId, due)
+                        } else if (lifecycle.handoffForPriority(accountId, runningSession.id, due.id)) {
+                            reloadOwner(accountId, due)
+                        } else {
+                            null
+                        }
+                        if (activated == null) return@forEach
+                        recordDueSessionSafely(accountId, due)
+                        val resumed = selectSession(
+                            accountId,
+                            activated,
+                            warnings,
+                            trace,
+                            evaluatedSessionIds,
+                            evaluatedEntries.toSet(),
+                            snapshotLoader,
+                        )
+                        if (fallbackSession == null || resumed !is AutomationCoordination.Unavailable) {
+                            return resumed
+                        }
+                        return selectSession(
+                            accountId = accountId,
+                            session = fallbackSession,
+                            initialWarnings = resumed.warnings,
+                            initialTrace = resumed.trace,
+                            evaluatedSessionIds = evaluatedSessionIds + due.id,
+                            evaluatedEntryIds = evaluatedEntries.toSet(),
+                            snapshotLoader = snapshotLoader,
+                        ).withEarlierRetry(earliest ?: resumed.nextRunAt)
                     }
-                    if (activated == null) return@forEach
-                    recordDueSessionSafely(accountId, due)
-                    val resumed = selectSession(
-                        accountId,
-                        activated,
-                        warnings,
-                        trace,
-                        evaluatedSessionIds,
-                        evaluatedEntries.toSet(),
-                        snapshotLoader,
-                    )
-                    if (fallbackSession == null || resumed !is AutomationCoordination.Unavailable) {
-                        return resumed
-                    }
-                    return selectSession(
-                        accountId = accountId,
-                        session = fallbackSession,
-                        initialWarnings = resumed.warnings,
-                        initialTrace = resumed.trace,
-                        evaluatedSessionIds = evaluatedSessionIds + due.id,
-                        evaluatedEntryIds = evaluatedEntries.toSet(),
-                        snapshotLoader = snapshotLoader,
-                    ).withEarlierRetry(earliest ?: resumed.nextRunAt)
                 }
                 if (entry.type == AutomationType.RAID) {
                     val directive = decideRaid(accountId)
@@ -295,9 +297,7 @@ class AutomationTargetSelector(
                     }
                     return@forEach
                 }
-                val snapshot = snapshotLoader.loadEntry(accountId, entry.id).excludingWaitingQuests(
-                    waiting.map(AutomationWorkSessionView::targetKey).toSet(),
-                )
+                val snapshot = snapshotLoader.loadEntry(accountId, entry.id)
                 when (val result = coordinate(accountId, snapshot)) {
                     is AutomationCoordination.Runnable -> return result.copy(
                         warnings = warnings + result.warnings,
@@ -315,6 +315,9 @@ class AutomationTargetSelector(
                     is AutomationCoordination.Idle -> {
                         warnings += result.warnings
                         trace += result.trace.resequenced(trace.size)
+                        result.nextRunAt?.let { at ->
+                            if (earliest == null || at < earliest) earliest = at
+                        }
                     }
                     is AutomationCoordination.CycleBoundary -> return result.copy(
                         warnings = warnings + result.warnings,
@@ -794,27 +797,24 @@ class AutomationTargetSelector(
         RaidIntentKind.BATTLE -> error("Battle intents use the common battle action.")
     }
 
-    private fun AutomationEntrySnapshot.excludingWaitingQuests(
-        targetKeys: Set<String>,
-    ): AutomationEntrySnapshot {
-        if (type != AutomationType.QUEST || targetKeys.isEmpty()) return this
-        return copy(
-            quest = quest?.copy(
-                selections = quest.selections.filterNot { it.questKey in targetKeys },
-            ),
-        )
-    }
-
-    private fun AutomationEntrySnapshot.withQuestWorkSession(
+    private fun AutomationEntrySnapshot.withWorkSession(
         session: AutomationWorkSessionView,
     ): AutomationEntrySnapshot {
-        if (session.workType != AutomationWorkType.QUEST) return this
-        return copy(
-            quest = quest?.copy(
-                workSessionId = session.id,
-                workSessionRevision = session.revision,
-            ),
-        )
+        return when (session.workType) {
+            AutomationWorkType.QUEST -> copy(
+                quest = quest?.copy(
+                    workSessionId = session.id,
+                    workSessionRevision = session.revision,
+                ),
+            )
+            AutomationWorkType.HOME_QUEST -> copy(
+                homeQuest = homeQuest?.copy(
+                    workSessionId = session.id,
+                    workSessionRevision = session.revision,
+                ),
+            )
+            else -> this
+        }
     }
 
     private data class SelectionBlock(
@@ -833,6 +833,7 @@ class AutomationTargetSelector(
         const val QUEST_PROGRESS_STALE_REASON = "QUEST_PROGRESS_STALE"
         const val SCOPE_SUPPRESSION_RECHECK_SECONDS = 30L
         const val IDLE_HEARTBEAT_SECONDS = 5L * 60L
+        val CANDIDATE_ARBITRATED_TYPES = setOf(AutomationType.QUEST, AutomationType.HOME_QUEST)
     }
 }
 
@@ -847,7 +848,9 @@ private fun evaluateEntry(
     observationGap: ((HandlerEvaluation.ObservationGap) -> AutomationCoordination)? = null,
 ): AutomationCoordination {
     val evaluation = when (entry.type) {
-        AutomationType.QUEST -> entry.quest?.let { quest.decideNext(it).toEntryEvaluation() }
+        AutomationType.QUEST -> entry.quest?.let {
+            quest.decideNext(it).toEntryEvaluation(hasRunningWork = it.workSessionId != null)
+        }
         AutomationType.HOME_QUEST -> entry.homeQuest?.let(homeQuest::evaluate)
         AutomationType.BATTLE_MAP -> entry.battle?.let(battle::evaluate)
         AutomationType.ADVENTURE_MAP -> entry.adventure?.let(adventure::evaluate)
@@ -896,6 +899,23 @@ private fun evaluateEntry(
                 detail?.presetId,
             )
         }
+        is HandlerEvaluation.SkippedUntil -> AutomationEvaluationTrace(
+            0,
+            entry.id,
+            entry.type,
+            AutomationDecisionOutcome.SKIPPED,
+            evaluation.reasonCode,
+            evaluation.message,
+            evaluation.nextRunAt,
+        )
+        is HandlerEvaluation.SkippedReason -> AutomationEvaluationTrace(
+            0,
+            entry.id,
+            entry.type,
+            AutomationDecisionOutcome.SKIPPED,
+            evaluation.reasonCode,
+            evaluation.message,
+        )
         is HandlerEvaluation.WorkTransition -> AutomationEvaluationTrace(
             sequence = 0,
             entryId = entry.id,
@@ -955,6 +975,12 @@ private fun evaluateEntry(
             listOf(trace),
             evaluation.waitScope,
         )
+        is HandlerEvaluation.SkippedUntil -> AutomationCoordination.Idle(
+            warnings = emptyList(),
+            trace = listOf(trace),
+            nextRunAt = evaluation.nextRunAt,
+        )
+        is HandlerEvaluation.SkippedReason -> AutomationCoordination.Idle(emptyList(), listOf(trace))
         is HandlerEvaluation.WorkTransition -> AutomationCoordination.Idle(
             warnings = if (evaluation.transition is AutomationWorkTransition.WaitForConfiguration) {
                 listOf(evaluation.message)
@@ -975,9 +1001,13 @@ private fun evaluateEntry(
     }
 }
 
-private fun QuestDirective.toEntryEvaluation(): HandlerEvaluation = when (this) {
+private fun QuestDirective.toEntryEvaluation(hasRunningWork: Boolean): HandlerEvaluation = when (this) {
     is QuestDirective.Execute -> HandlerEvaluation.Runnable(action)
-    is QuestDirective.WaitUntil -> HandlerEvaluation.Unavailable(nextRunAt, reasonCode, message)
+    is QuestDirective.WaitUntil -> if (hasRunningWork) {
+        HandlerEvaluation.Unavailable(nextRunAt, reasonCode, message)
+    } else {
+        HandlerEvaluation.SkippedUntil(nextRunAt, reasonCode, message)
+    }
     is QuestDirective.Recheck -> HandlerEvaluation.Unavailable(
         at,
         reasonCode,

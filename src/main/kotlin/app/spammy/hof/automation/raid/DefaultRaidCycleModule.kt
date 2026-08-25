@@ -6,6 +6,7 @@ import app.spammy.hof.automation.service.AutomationDiagnosticKind
 import app.spammy.hof.automation.service.AutomationImpactScope
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.town.raid.model.RaidRegistrationResultEvidence
+import java.time.Instant
 import java.util.UUID
 import org.springframework.stereotype.Service
 
@@ -49,7 +50,20 @@ class DefaultRaidCycleModule(
                 "레이드를 하나 이상 선택해 주세요.",
                 entryId = configuration.entryId,
             ).asDecision()
-        state.openCycle?.takeIf { cycle ->
+        if (state.openCycle == null) {
+            return RaidDirective.Execute(
+                RaidIntent.Town(
+                    entryId = configuration.entryId,
+                    raidId = target.raidId,
+                    raidName = target.name,
+                    kind = RaidIntentKind.REFRESH,
+                    requestRaidId = null,
+                ),
+                reasonCode = "RAID_INITIAL_STATUS_REFRESH",
+                message = "레이드 행동 전에 최신 상태를 갱신합니다.",
+            ).asDecision()
+        }
+        state.openCycle.takeIf { cycle ->
             cycle.status == RaidAutomationCycleStatus.REWARD_PENDING &&
                 cycle.nextCheckAt?.isAfter(timeProvider.now()) == true
         }?.let { cycle ->
@@ -64,7 +78,7 @@ class DefaultRaidCycleModule(
                 reasonCode = "RAID_REWARD_REJECTION_RECHECK",
             ).asDecision()
         }
-        state.openCycle?.takeIf { cycle ->
+        state.openCycle.takeIf { cycle ->
             cycle.status == RaidAutomationCycleStatus.REGISTRATION_COOLDOWN &&
                 cycle.nextCheckAt?.isAfter(timeProvider.now()) == true
         }?.let { cycle ->
@@ -79,7 +93,37 @@ class DefaultRaidCycleModule(
                 reasonCode = "RAID_REGISTRATION_COOLDOWN",
             ).asDecision()
         }
-        state.openCycle?.battleRecovery?.takeIf { recovery ->
+        state.openCycle.takeIf { cycle ->
+            cycle.nextCheckAt?.isAfter(timeProvider.now()) == false
+        }?.let { cycle ->
+            return RaidDirective.Execute(
+                RaidIntent.Town(
+                    entryId = configuration.entryId,
+                    raidId = cycle.raidId,
+                    raidName = cycle.raidName,
+                    kind = RaidIntentKind.REFRESH,
+                    requestRaidId = null,
+                ),
+                reasonCode = "RAID_DUE_STATUS_REFRESH",
+                message = "레이드 재확인 시각이 되어 최신 상태를 먼저 갱신합니다.",
+            ).asDecision()
+        }
+        state.openCycle.takeIf { cycle ->
+            cycle.status == RaidAutomationCycleStatus.POST_REWARD_CHECK
+        }?.let { cycle ->
+            return RaidDirective.Execute(
+                RaidIntent.Town(
+                    entryId = configuration.entryId,
+                    raidId = cycle.raidId,
+                    raidName = cycle.raidName,
+                    kind = RaidIntentKind.REFRESH,
+                    requestRaidId = null,
+                ),
+                reasonCode = "RAID_POST_REWARD_STATUS_REFRESH",
+                message = "보상 수령을 확인한 뒤 레이드 쿨타임 상태를 갱신합니다.",
+            ).asDecision()
+        }
+        state.openCycle.battleRecovery?.takeIf { recovery ->
             recovery.nextCheckAt.isAfter(timeProvider.now())
         }?.let { recovery ->
             return RaidDirective.WaitUntil(
@@ -144,11 +188,7 @@ class DefaultRaidCycleModule(
                 return RaidDirective.Hold(
                     RaidHoldReason.MANUAL_RAID_ACTIVE,
                     "수동 레이드가 끝날 때까지 레이드 자동화만 보류합니다.",
-                    recheckAt = timeProvider.now().plusSeconds(
-                        (manual.waitSeconds ?: DEFAULT_RECHECK_SECONDS.toInt())
-                            .coerceAtLeast(MINIMUM_WAIT_SECONDS)
-                            .toLong(),
-                    ),
+                    recheckAt = timeProvider.now().plusSeconds(MANUAL_RAID_RECHECK_SECONDS),
                     entryId = configuration.entryId,
                     raidId = manual.id,
                 )
@@ -216,6 +256,33 @@ class DefaultRaidCycleModule(
                 raidId = cycle.raidId,
             )
         }
+        if (
+            !observed.joined &&
+            (
+                observed.status == RaidObservedStatus.IN_BATTLE ||
+                    (observed.status == RaidObservedStatus.COMPLETED && !requiresReset(observed))
+            )
+        ) {
+            val recoveryWasSuperseded = cycle.battleRecovery != null
+            return RaidDirective.Complete(
+                store.finish(
+                    accountId = accountId,
+                    raidId = cycle.raidId,
+                    outcome = RaidCycleOutcomeKind.ABORTED_REGISTRATION_LOST,
+                    now = timeProvider.now(),
+                ),
+                reasonCode = if (recoveryWasSuperseded) {
+                    "RAID_BATTLE_RECOVERY_SUPERSEDED"
+                } else {
+                    "RAID_EXTERNAL_OWNERSHIP_OBSERVED"
+                },
+                message = if (recoveryWasSuperseded) {
+                    "참가 해제 최신 상태가 진행 중이던 전투 복구를 대체했습니다."
+                } else {
+                    "현재 계정이 참가하지 않은 외부 레이드 단계라 자동 행동 없이 사이클을 종료합니다."
+                },
+            )
+        }
         if (cycle.status in REGISTRATION_RECOVERY_STATUSES) {
             if (RaidIntentKind.REFRESH in observation.globalActions) {
                 return RaidDirective.Execute(
@@ -234,37 +301,6 @@ class DefaultRaidCycleModule(
             return RaidDirective.Hold(
                 RaidHoldReason.ACTION_UNAVAILABLE,
                 "레이드 등록 상태 갱신 동작을 다시 확인합니다.",
-                recheckAt = timeProvider.now().plusSeconds(DEFAULT_RECHECK_SECONDS),
-                entryId = configuration.entryId,
-                raidId = cycle.raidId,
-            )
-        }
-        if (cycle.status == RaidAutomationCycleStatus.POST_REWARD_CHECK) {
-            if (
-                requiresReset(observed) ||
-                (RaidIntentKind.REWARD !in observation.globalActions && observation.registrationWait) ||
-                (!observed.joined && observed.status in REGISTRATION_STATUSES)
-            ) {
-                return completeCycle(accountId, cycle)
-            }
-            if (
-                RaidIntentKind.REWARD !in observation.globalActions &&
-                RaidIntentKind.REFRESH in observation.globalActions
-            ) {
-                return RaidDirective.Execute(
-                    RaidIntent.Town(
-                        entryId = configuration.entryId,
-                        raidId = cycle.raidId,
-                        raidName = cycle.raidName,
-                        kind = RaidIntentKind.REFRESH,
-                        requestRaidId = null,
-                        observedStatus = observed.statusText,
-                    ),
-                )
-            }
-            return RaidDirective.Hold(
-                RaidHoldReason.ACTION_UNAVAILABLE,
-                "보상 후 레이드 상태와 재등록 대기 정보를 다시 확인합니다.",
                 recheckAt = timeProvider.now().plusSeconds(DEFAULT_RECHECK_SECONDS),
                 entryId = configuration.entryId,
                 raidId = cycle.raidId,
@@ -386,30 +422,6 @@ class DefaultRaidCycleModule(
         }
         if (cycle.status == RaidAutomationCycleStatus.REWARD_PENDING) {
             when (val rewardWindow = observed.rewardWindow) {
-                is RaidRewardWindowObservation.Wait -> {
-                    if (cycle.rewardRecovery != null) {
-                        cycle = store.clearRewardRecovery(accountId, cycle.raidId, timeProvider.now())
-                    }
-                    val deadline = timeProvider.now().plusSeconds(rewardWindow.remainingSeconds.coerceAtLeast(1))
-                    store.transition(
-                        accountId = accountId,
-                        raidId = cycle.raidId,
-                        status = RaidAutomationCycleStatus.REWARD_PENDING,
-                        observedStatus = observed.statusText,
-                        nextCheckAt = deadline,
-                        now = timeProvider.now(),
-                    )
-                    return RaidDirective.WaitUntil(
-                        at = deadline,
-                        reason = RaidWaitReason.REWARD_CONFIRMATION,
-                        message = "HOF 보상 확인 가능 시각까지 이 레이드 보상만 기다립니다.",
-                        entryId = configuration.entryId,
-                        raidId = cycle.raidId,
-                        impactScope = AutomationImpactScope.RAID_ONLY,
-                        releaseCondition = "마감 뒤 최신 보상 가능 상태 재확인",
-                        reasonCode = "RAID_REWARD_CONFIRMATION_WAIT",
-                    )
-                }
                 is RaidRewardWindowObservation.Incomplete -> {
                     cycle.rewardRecovery?.takeIf { it.held }?.let { recovery ->
                         return rewardHeldDirective(configuration, cycle, recovery)
@@ -428,7 +440,9 @@ class DefaultRaidCycleModule(
                         message = "보상 가능 창이 사라져 외부 상태 진전으로 현재 레이드 사이클을 종결합니다.",
                     )
                 }
-                RaidRewardWindowObservation.Available -> {
+                RaidRewardWindowObservation.Available,
+                is RaidRewardWindowObservation.ClaimWindow,
+                -> {
                     cycle.rewardRecovery?.takeIf {
                         it.held && it.kind == RaidRewardRecoveryKind.ACTION_RESULT
                     }?.let { recovery ->
@@ -450,7 +464,10 @@ class DefaultRaidCycleModule(
                     }
                 }
             }
-            if (RaidIntentKind.REWARD in observation.globalActions) {
+            if (
+                observed.rewardWindow == RaidRewardWindowObservation.Available ||
+                observed.rewardWindow is RaidRewardWindowObservation.ClaimWindow
+            ) {
                 return RaidDirective.Execute(
                     RaidIntent.Town(
                         entryId = configuration.entryId,
@@ -644,8 +661,8 @@ class DefaultRaidCycleModule(
                     RaidRewardWindowObservation.Absent -> RaidAuthoritativeRewardWindow(
                         RaidAuthoritativeRewardWindowKind.ABSENT,
                     )
-                    is RaidRewardWindowObservation.Wait -> RaidAuthoritativeRewardWindow(
-                        RaidAuthoritativeRewardWindowKind.WAITING,
+                    is RaidRewardWindowObservation.ClaimWindow -> RaidAuthoritativeRewardWindow(
+                        RaidAuthoritativeRewardWindowKind.CLAIM_WINDOW,
                         reward.remainingSeconds,
                     )
                     is RaidRewardWindowObservation.Incomplete -> RaidAuthoritativeRewardWindow(
@@ -726,8 +743,12 @@ class DefaultRaidCycleModule(
         }
         val page = (observation as? RaidResultObservation.Page)?.value
             ?: return needsRecheck("레이드 화면 관측 결과가 필요합니다.")
-        val cycle = store.load(accountId).openCycle
-            ?: return needsRecheck("확정할 열린 레이드 사이클이 없습니다.")
+        val accountState = store.load(accountId)
+        val cycle = accountState.openCycle ?: if (attempt.kind == RaidIntentKind.REFRESH) {
+            return recordInitialRefresh(accountId, attempt, page, accountState)
+        } else {
+            return needsRecheck("확정할 열린 레이드 사이클이 없습니다.")
+        }
         if (cycle.raidId != attempt.raidId) {
             return needsRecheck("실행 대상과 열린 레이드 사이클이 일치하지 않습니다.")
         }
@@ -766,7 +787,15 @@ class DefaultRaidCycleModule(
                     },
                     now = timeProvider.now(),
                 )
-                return RaidRecordResult.Recorded()
+                return nextCheckAt?.takeIf { target.status in REGISTRATION_STATUSES }?.let { at ->
+                    RaidRecordResult.EntryWait(
+                        at,
+                        target.id,
+                        "레이드 출발 가능 시각 뒤 상태를 다시 갱신합니다.",
+                        reasonCode = "RAID_WAITING_TO_START",
+                        releaseCondition = "출발 가능 시각 뒤 상태 갱신",
+                    )
+                } ?: RaidRecordResult.Recorded()
             }
             if (RaidRegistrationResultEvidence.hasStaleBattleConflict(page.resultMessages)) {
                 store.transition(
@@ -781,39 +810,29 @@ class DefaultRaidCycleModule(
             }
             if (page.registrationWait) {
                 val now = timeProvider.now()
+                val at = registrationRetryAt(now, page.registrationWaitSeconds)
                 store.transition(
                     accountId = accountId,
                     raidId = attempt.raidId,
                     status = RaidAutomationCycleStatus.REGISTRATION_COOLDOWN,
                     observedStatus = "REGISTRATION_COOLDOWN",
-                    nextCheckAt = registrationRetryAt(now, page.registrationWaitSeconds),
+                    nextCheckAt = at,
                     now = now,
                 )
-                return RaidRecordResult.Recorded()
+                return RaidRecordResult.EntryWait(
+                    at,
+                    attempt.raidId,
+                    "레이드 전역 등록 쿨타임 종료 뒤 상태를 다시 갱신합니다.",
+                    reasonCode = "RAID_GLOBAL_REGISTRATION_COOLDOWN",
+                    releaseCondition = "전역 등록 쿨타임 종료 뒤 상태 갱신",
+                )
             }
         }
         if (
             attempt.kind == RaidIntentKind.REFRESH &&
-            cycle.status in REGISTRATION_RECOVERY_STATUSES
+            cycle.status != RaidAutomationCycleStatus.POST_REWARD_CHECK
         ) {
-            val now = timeProvider.now()
-            store.transition(
-                accountId = accountId,
-                raidId = attempt.raidId,
-                status = if (page.registrationWait) {
-                    RaidAutomationCycleStatus.REGISTRATION_COOLDOWN
-                } else {
-                    RaidAutomationCycleStatus.PREPARING
-                },
-                observedStatus = if (page.registrationWait) "REGISTRATION_COOLDOWN" else "STATUS_REFRESHED",
-                nextCheckAt = if (page.registrationWait) {
-                    registrationRetryAt(now, page.registrationWaitSeconds)
-                } else {
-                    null
-                },
-                now = now,
-            )
-            return RaidRecordResult.Recorded()
+            return recordOpenCycleRefresh(accountId, attempt, page, cycle)
         }
         if (attempt.kind == RaidIntentKind.START) {
             val target = page.raids.singleOrNull { it.id == attempt.raidId }
@@ -844,37 +863,67 @@ class DefaultRaidCycleModule(
                 nextCheckAt = null,
                 now = timeProvider.now(),
             )
-            if (page.registrationWait) {
-                val completion = store.finish(
-                    accountId = accountId,
-                    raidId = attempt.raidId,
-                    outcome = RaidCycleOutcomeKind.COMPLETED,
-                    now = timeProvider.now(),
-                    advanceRotation = true,
-                )
-                return RaidRecordResult.Recorded(completion)
-            }
             return RaidRecordResult.Recorded()
         }
         if (
             attempt.kind == RaidIntentKind.REWARD &&
             page.fresh &&
             RaidIntentKind.REWARD in page.globalActions &&
-            page.raids.singleOrNull { it.id == attempt.raidId }?.rewardWindow ==
-                RaidRewardWindowObservation.Available
+            page.raids.singleOrNull { it.id == attempt.raidId }?.rewardWindow?.let { rewardWindow ->
+                rewardWindow == RaidRewardWindowObservation.Available ||
+                    rewardWindow is RaidRewardWindowObservation.ClaimWindow
+            } == true
         ) {
             return recordAmbiguousReward(accountId, attempt, cycle, page.observedAt ?: timeProvider.now())
         }
-        if (attempt.kind == RaidIntentKind.REFRESH && postRewardStateIsProven(page, attempt.raidId)) {
-            return RaidRecordResult.Recorded(
-                store.finish(
-                    accountId = accountId,
-                    raidId = attempt.raidId,
-                    outcome = RaidCycleOutcomeKind.COMPLETED,
-                    now = timeProvider.now(),
-                    advanceRotation = true,
-                ),
+        if (
+            attempt.kind == RaidIntentKind.REFRESH &&
+            cycle.status == RaidAutomationCycleStatus.POST_REWARD_CHECK &&
+            page.fresh &&
+            (page.applied || page.actionSuccessMarker)
+        ) {
+            val now = timeProvider.now()
+            val completion = store.finish(
+                accountId = accountId,
+                raidId = attempt.raidId,
+                outcome = RaidCycleOutcomeKind.COMPLETED,
+                now = now,
+                advanceRotation = shouldAdvanceRotation(accountId, attempt.raidId),
             )
+            return if (page.registrationWait) {
+                RaidRecordResult.EntryWait(
+                    at = registrationRetryAt(now, page.registrationWaitSeconds),
+                    raidId = attempt.raidId,
+                    message = "레이드 전역 등록 쿨타임 종료 뒤 상태를 다시 갱신합니다.",
+                    completion = completion,
+                    reasonCode = "RAID_POST_REWARD_GLOBAL_COOLDOWN",
+                    releaseCondition = "보상 완료 뒤 전역 등록 쿨타임 종료",
+                )
+            } else {
+                RaidRecordResult.Recorded(completion)
+            }
+        }
+        if (attempt.kind == RaidIntentKind.REFRESH && postRewardStateIsProven(page, attempt.raidId)) {
+            val now = timeProvider.now()
+            val completion = store.finish(
+                accountId = accountId,
+                raidId = attempt.raidId,
+                outcome = RaidCycleOutcomeKind.COMPLETED,
+                now = now,
+                advanceRotation = shouldAdvanceRotation(accountId, attempt.raidId),
+            )
+            return if (page.registrationWait) {
+                RaidRecordResult.EntryWait(
+                    at = registrationRetryAt(now, page.registrationWaitSeconds),
+                    raidId = attempt.raidId,
+                    message = "레이드 전역 등록 쿨타임 종료 뒤 상태를 다시 갱신합니다.",
+                    completion = completion,
+                    reasonCode = "RAID_POST_REWARD_GLOBAL_COOLDOWN",
+                    releaseCondition = "보상 완료 뒤 전역 등록 쿨타임 종료",
+                )
+            } else {
+                RaidRecordResult.Recorded(completion)
+            }
         }
         if (actionIsProvablyNotApplied(page, attempt)) {
             if (attempt.kind == RaidIntentKind.REWARD) {
@@ -893,6 +942,213 @@ class DefaultRaidCycleModule(
         return needsRecheck("레이드 실행 결과가 아직 적용을 증명하지 못했습니다.")
     }
 
+    private fun recordInitialRefresh(
+        accountId: Long,
+        attempt: RaidAttempt,
+        page: RaidObservation,
+        state: RaidCycleAccountState,
+    ): RaidRecordResult {
+        val configuration = state.configuration
+            ?: return RaidRecordResult.EntrySkipped("레이드 자동화 설정을 찾을 수 없습니다.")
+        if (!page.fresh || (!page.applied && !page.actionSuccessMarker)) {
+            return needsRecheck("상태 갱신 직접 응답이 최신 적용 상태를 증명하지 못했습니다.")
+        }
+        val joined = page.raids.filter(RaidObservedTarget::joined)
+        if (joined.size > 1) {
+            return RaidRecordResult.EntryWait(
+                at = timeProvider.now().plusSeconds(MANUAL_RAID_RECHECK_SECONDS),
+                raidId = attempt.raidId,
+                message = "여러 레이드 참가 상태가 관측되어 자동 행동 없이 10분 뒤 다시 갱신합니다.",
+            )
+        }
+        joined.singleOrNull()
+            ?.takeIf { active -> configuration.targets.none { it.raidId == active.id } }
+            ?.let { manual ->
+                return RaidRecordResult.EntryWait(
+                    at = timeProvider.now().plusSeconds(MANUAL_RAID_RECHECK_SECONDS),
+                    raidId = manual.id,
+                    message = "설정 밖 수동 레이드는 건드리지 않고 10분 뒤 다시 확인합니다.",
+                    reasonCode = "RAID_MANUAL_UNCONFIGURED_ACTIVE",
+                    releaseCondition = "수동 레이드 종료 또는 자동화 설정 편입 뒤 상태 갱신",
+                )
+            }
+        if (page.registrationWait) {
+            return RaidRecordResult.EntryWait(
+                at = registrationRetryAt(timeProvider.now(), page.registrationWaitSeconds),
+                raidId = attempt.raidId,
+                message = "레이드 전역 등록 쿨타임 종료 뒤 상태를 다시 갱신합니다.",
+                reasonCode = "RAID_GLOBAL_REGISTRATION_COOLDOWN",
+                releaseCondition = "전역 등록 쿨타임 종료 뒤 상태 갱신",
+            )
+        }
+        val configuredJoined = joined.singleOrNull()?.takeIf { observed ->
+            configuration.targets.any { it.raidId == observed.id }
+        }
+        val selected = configuredJoined?.let { observed ->
+            configuration.targets.single { it.raidId == observed.id } to observed
+        } ?: configuration.targets.singleOrNull { it.raidId == attempt.raidId }?.let { target ->
+            page.raids.singleOrNull { it.id == target.raidId }?.let { target to it }
+        }
+        val (target, observed) = selected
+            ?: return RaidRecordResult.EntryWait(
+                at = timeProvider.now().plusSeconds(MANUAL_RAID_RECHECK_SECONDS),
+                raidId = attempt.raidId,
+                message = "설정된 레이드의 최신 상태를 확인하지 못해 10분 뒤 다시 갱신합니다.",
+            )
+        if (!observed.joined) {
+            if (observed.status == RaidObservedStatus.CLOSED) {
+                return RaidRecordResult.EntrySkipped("현재 순환 레이드가 닫혀 있어 이번 판단에서 건너뜁니다.")
+            }
+            if (observed.status in setOf(RaidObservedStatus.TESTING, RaidObservedStatus.UNKNOWN)) {
+                return RaidRecordResult.EntryWait(
+                    at = timeProvider.now().plusSeconds(DEFAULT_RECHECK_SECONDS),
+                    raidId = observed.id,
+                    message = "레이드 상태를 안전하게 판단할 수 없어 다시 갱신합니다.",
+                )
+            }
+            if (
+                !registrationIsRunnable(observed) &&
+                !requiresReset(observed) &&
+                observed.status in EXTERNAL_ACTIVE_STATUSES
+            ) {
+                val at = (observed.rewardWindow as? RaidRewardWindowObservation.ClaimWindow)
+                    ?.remainingSeconds
+                    ?.let { timeProvider.now().plusSeconds(it.coerceAtLeast(1)) }
+                    ?: timeProvider.now().plusSeconds(MANUAL_RAID_RECHECK_SECONDS)
+                return RaidRecordResult.EntryWait(
+                    at = at,
+                    raidId = observed.id,
+                    message = "다른 사용자가 진행 중인 설정 레이드는 자동 행동 없이 다시 확인합니다.",
+                    reasonCode = "RAID_EXTERNAL_CONFIGURED_ACTIVE",
+                    releaseCondition = "외부 전투 또는 보상 단계 종료 뒤 상태 갱신",
+                )
+            }
+            if (!registrationIsRunnable(observed) && !requiresReset(observed)) {
+                return RaidRecordResult.EntryWait(
+                    at = timeProvider.now().plusSeconds(MANUAL_RAID_RECHECK_SECONDS),
+                    raidId = observed.id,
+                    message = "현재 참가하거나 진전시킬 수 없는 레이드를 10분 뒤 다시 갱신합니다.",
+                )
+            }
+        }
+        val status = if (observed.joined) observed.toCycleStatus() else RaidAutomationCycleStatus.PREPARING
+        val nextCheckAt = observedCycleDeadline(observed)
+        store.open(
+            accountId = accountId,
+            entryId = configuration.entryId,
+            target = target,
+            now = timeProvider.now(),
+            status = status,
+            observedStatus = observed.statusText,
+            nextCheckAt = nextCheckAt,
+        )
+        return nextCheckAt?.let { at ->
+            RaidRecordResult.EntryWait(
+                at = at,
+                raidId = observed.id,
+                message = observedCycleWaitMessage(observed),
+                reasonCode = observedCycleWaitReason(observed),
+                releaseCondition = "관측된 레이드 시각 뒤 상태 갱신",
+            )
+        } ?: RaidRecordResult.Recorded()
+    }
+
+    private fun recordOpenCycleRefresh(
+        accountId: Long,
+        attempt: RaidAttempt,
+        page: RaidObservation,
+        cycle: RaidCycleSnapshot,
+    ): RaidRecordResult {
+        if (!page.fresh) return needsRecheck("상태 갱신 직접 응답이 완전하지 않아 다시 확인합니다.")
+        val now = timeProvider.now()
+        if (page.registrationWait) {
+            val at = registrationRetryAt(now, page.registrationWaitSeconds)
+            store.transition(
+                accountId,
+                attempt.raidId,
+                RaidAutomationCycleStatus.REGISTRATION_COOLDOWN,
+                "REGISTRATION_COOLDOWN",
+                at,
+                now,
+            )
+            return RaidRecordResult.EntryWait(
+                at,
+                attempt.raidId,
+                "레이드 전역 등록 쿨타임 종료 뒤 다시 갱신합니다.",
+                reasonCode = "RAID_GLOBAL_REGISTRATION_COOLDOWN",
+                releaseCondition = "전역 등록 쿨타임 종료 뒤 상태 갱신",
+            )
+        }
+        val target = page.raids.singleOrNull { it.id == attempt.raidId }
+            ?: run {
+                val at = now.plusSeconds(MANUAL_RAID_RECHECK_SECONDS)
+                store.transition(accountId, attempt.raidId, cycle.status, "TARGET_MISSING_AFTER_REFRESH", at, now)
+                return RaidRecordResult.EntryWait(at, attempt.raidId, "레이드 대상이 보이지 않아 10분 뒤 다시 갱신합니다.")
+            }
+        if (target.joined) {
+            val at = observedCycleDeadline(target)
+            store.transition(
+                accountId,
+                attempt.raidId,
+                target.toCycleStatus(),
+                target.statusText,
+                at,
+                now,
+            )
+            return at?.let {
+                RaidRecordResult.EntryWait(it, target.id, observedCycleWaitMessage(target))
+            } ?: RaidRecordResult.Recorded()
+        }
+        if (registrationIsRunnable(target) || requiresReset(target)) {
+            store.transition(
+                accountId,
+                attempt.raidId,
+                RaidAutomationCycleStatus.PREPARING,
+                target.statusText,
+                null,
+                now,
+            )
+            return RaidRecordResult.Recorded()
+        }
+        if (target.status in setOf(RaidObservedStatus.IN_BATTLE, RaidObservedStatus.COMPLETED, RaidObservedStatus.CLOSED)) {
+            return RaidRecordResult.Recorded(
+                store.finish(
+                    accountId,
+                    attempt.raidId,
+                    RaidCycleOutcomeKind.ABORTED_REGISTRATION_LOST,
+                    now,
+                ),
+            )
+        }
+        val at = now.plusSeconds(MANUAL_RAID_RECHECK_SECONDS)
+        store.transition(accountId, attempt.raidId, cycle.status, target.statusText, at, now)
+        return RaidRecordResult.EntryWait(at, target.id, "현재 레이드를 진전시킬 수 없어 10분 뒤 다시 갱신합니다.")
+    }
+
+    private fun observedCycleDeadline(target: RaidObservedTarget): Instant? = when {
+        target.status in REGISTRATION_STATUSES -> target.waitSeconds
+            ?.takeIf { it > 0 }
+            ?.let { timeProvider.now().plusSeconds(it.coerceAtLeast(MINIMUM_WAIT_SECONDS).toLong()) }
+        target.status == RaidObservedStatus.IN_BATTLE -> target.battle?.cooldownRemainingSeconds
+            ?.takeIf { it > 0 }
+            ?.let { timeProvider.now().plusSeconds(it) }
+        else -> null
+    }
+
+    private fun observedCycleWaitMessage(target: RaidObservedTarget): String =
+        if (target.status == RaidObservedStatus.IN_BATTLE) {
+            "개인 레이드 전투 쿨타임 종료 뒤 상태를 다시 갱신합니다."
+        } else {
+            "레이드 출발 가능 시각 뒤 상태를 다시 갱신합니다."
+        }
+
+    private fun observedCycleWaitReason(target: RaidObservedTarget): String =
+        if (target.status == RaidObservedStatus.IN_BATTLE) {
+            "RAID_PERSONAL_BATTLE_COOLDOWN"
+        } else {
+            "RAID_WAITING_TO_START"
+        }
+
     private fun completeCycle(accountId: Long, cycle: RaidCycleSnapshot): RaidDirective.Complete {
         val recoveryWasSuperseded = cycle.battleRecovery != null
         return RaidDirective.Complete(
@@ -901,7 +1157,7 @@ class DefaultRaidCycleModule(
             raidId = cycle.raidId,
             outcome = RaidCycleOutcomeKind.COMPLETED,
             now = timeProvider.now(),
-            advanceRotation = true,
+            advanceRotation = shouldAdvanceRotation(accountId, cycle.raidId),
             ),
             reasonCode = if (recoveryWasSuperseded) "RAID_BATTLE_RECOVERY_SUPERSEDED" else null,
             message = if (recoveryWasSuperseded) {
@@ -1519,6 +1775,14 @@ class DefaultRaidCycleModule(
     private fun requiresReset(target: RaidObservedTarget): Boolean =
         target.statusText?.let(RESET_REQUIRED_STATUS::containsMatchIn) == true
 
+    private fun registrationIsRunnable(target: RaidObservedTarget): Boolean =
+        target.playable &&
+            target.status in REGISTRATION_STATUSES &&
+            RaidIntentKind.REGISTER in target.actions
+
+    private fun shouldAdvanceRotation(accountId: Long, raidId: String): Boolean =
+        store.load(accountId).configuration?.currentTargetKey == raidId
+
     private fun RaidObservedTarget.toCycleStatus(): RaidAutomationCycleStatus = when (status) {
         RaidObservedStatus.IN_BATTLE -> RaidAutomationCycleStatus.IN_BATTLE
         RaidObservedStatus.COMPLETED -> RaidAutomationCycleStatus.REWARD_PENDING
@@ -1527,6 +1791,7 @@ class DefaultRaidCycleModule(
 
     private companion object {
         const val DEFAULT_RECHECK_SECONDS = 30L
+        const val MANUAL_RAID_RECHECK_SECONDS = 600L
         const val RECOVERY_RECHECK_SECONDS = 300L
         const val SAFETY_RECHECK_SECONDS = 10L
         const val MAX_SAFETY_OBSERVATIONS = 5
@@ -1537,6 +1802,7 @@ class DefaultRaidCycleModule(
         val AUTHORITATIVE_HOLD_REASONS = setOf(
             RaidHoldReason.INVALID_PRESET,
             RaidHoldReason.MANUAL_RAID_ACTIVE,
+            RaidHoldReason.EXTERNAL_RAID_ACTIVE,
             RaidHoldReason.TARGET_TEMPORARILY_MISSING,
             RaidHoldReason.ACTION_UNAVAILABLE,
             RaidHoldReason.BATTLE_TARGET_ABSENT,
@@ -1551,6 +1817,10 @@ class DefaultRaidCycleModule(
             RaidObservedStatus.RECRUITING,
             RaidObservedStatus.WAITING,
             RaidObservedStatus.READY,
+        )
+        val EXTERNAL_ACTIVE_STATUSES = REGISTRATION_STATUSES + setOf(
+            RaidObservedStatus.IN_BATTLE,
+            RaidObservedStatus.COMPLETED,
         )
         val REGISTRATION_RECOVERY_STATUSES = setOf(
             RaidAutomationCycleStatus.REGISTRATION_REFRESH_REQUIRED,

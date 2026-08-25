@@ -634,7 +634,7 @@ class DefaultQuestWorkCycleModule(
         val quest = snapshot.quests.singleOrNull { it.questKey == questKey }
             ?: return QuestDirective.CompleteWork
         if (quest.state == QuestState.UNAVAILABLE || quest.section == QuestSection.WAITING) {
-            return QuestDirective.WaitForUnknownCooldown
+            return QuestDirective.CompleteWork
         }
         val material = quest.missions.firstOrNull {
             it.type == QuestMissionType.ITEM_TURN_IN && !it.completable
@@ -685,28 +685,12 @@ class DefaultQuestWorkCycleModule(
             .filter { it.questKey in selections }
             .sortedBy(QuestSnapshot::sourceOrder)
 
-        candidates.firstOrNull { it.state == QuestState.AVAILABLE }?.let { quest ->
-            return quest.actionNo?.let {
-                QuestDirective.Execute(
-                    QuestAction.Accept(
-                        quest.questKey,
-                        it,
-                        quest.name,
-                        context.currentCycles[quest.questKey] ?: INITIAL_CYCLE,
-                    ),
-                )
-            }
-                ?: QuestDirective.Hold(
-                    "Quest ${quest.questKey} has no accept action.",
-                    "QUEST_ACCEPT_ACTION_MISSING",
-                )
-        }
-
-        candidates.firstOrNull {
+        var claimFallback: QuestDirective.Hold? = null
+        candidates.filter {
             it.state == QuestState.CLAIMABLE && it.canClaimWithoutWastingTime(context.timeSnapshot, context.now)
-        }?.let { quest ->
-            return quest.actionNo?.let {
-                QuestDirective.Execute(
+        }.forEach { quest ->
+            quest.actionNo?.let {
+                return QuestDirective.Execute(
                     QuestAction.Claim(
                         quest.questKey,
                         it,
@@ -715,15 +699,38 @@ class DefaultQuestWorkCycleModule(
                     ),
                 )
             }
-                ?: QuestDirective.Hold(
+            if (claimFallback == null) {
+                claimFallback = QuestDirective.Hold(
                     "Quest ${quest.questKey} has no claim action.",
                     "QUEST_CLAIM_ACTION_MISSING",
                 )
+            }
         }
 
-        evaluateCombat(candidates, selections, context, QuestMissionType.MONSTER_KILL)?.let { return it }
-        evaluateCombat(candidates, selections, context, QuestMissionType.MAP_CLEAR)?.let { return it }
-        return QuestDirective.Skip
+        val progressEvaluation = evaluateProgress(candidates, selections, context)
+        if (progressEvaluation is QuestDirective.Execute) return progressEvaluation
+
+        var acceptFallback: QuestDirective.Hold? = null
+        candidates.filter { it.state == QuestState.AVAILABLE }.forEach { quest ->
+            quest.actionNo?.let {
+                return QuestDirective.Execute(
+                    QuestAction.Accept(
+                        quest.questKey,
+                        it,
+                        quest.name,
+                        context.currentCycles[quest.questKey] ?: INITIAL_CYCLE,
+                    ),
+                )
+            }
+            if (acceptFallback == null) {
+                acceptFallback = QuestDirective.Hold(
+                    "Quest ${quest.questKey} has no accept action.",
+                    "QUEST_ACCEPT_ACTION_MISSING",
+                )
+            }
+        }
+
+        return claimFallback ?: progressEvaluation ?: acceptFallback ?: QuestDirective.Skip
     }
 
     override fun recordObservedResult(
@@ -856,17 +863,18 @@ class DefaultQuestWorkCycleModule(
         return QuestRecordResult.Recorded()
     }
 
-    private fun evaluateCombat(
+    private fun evaluateProgress(
         quests: List<QuestSnapshot>,
         selections: Map<String, QuestAutomationSelection>,
         context: QuestAutomationSnapshot,
-        missionType: QuestMissionType,
     ): QuestDirective? {
         val evaluations = mutableListOf<QuestDirective>()
         quests.filter { it.state == QuestState.ACTIVE }.forEach { quest ->
-            quest.missions.filter { it.type == missionType && !it.completable }.forEach { mission ->
+            quest.missions.filter {
+                it.type in setOf(QuestMissionType.MONSTER_KILL, QuestMissionType.MAP_CLEAR) && !it.completable
+            }.forEach { mission ->
                 val selection = selections.getValue(quest.questKey)
-                val result = when (missionType) {
+                val result = when (mission.type) {
                     QuestMissionType.MONSTER_KILL -> monsterAction(quest, mission, selection, context)
                     QuestMissionType.MAP_CLEAR -> mapClearAction(quest, mission, selection, context)
                     else -> null
@@ -1122,22 +1130,7 @@ class DefaultQuestWorkCycleModule(
     private fun QuestSnapshot.canClaimWithoutWastingTime(
         timeSnapshot: AutomationTimeSnapshot?,
         now: Instant,
-    ): Boolean {
-        var totalTimeReward = 0L
-        var hasTimeReward = false
-        rewards.forEach { reward ->
-            TIME_REWARD.findAll(reward).forEach { match ->
-                hasTimeReward = true
-                val amount = match.groupValues[1].replace(",", "").toLongOrNull() ?: return false
-                if (amount > Long.MAX_VALUE - totalTimeReward) return false
-                totalTimeReward += amount
-            }
-        }
-        if (!hasTimeReward) return true
-
-        val snapshot = timeSnapshot ?: return false
-        return snapshot.estimateAt(now).toLong() + totalTimeReward <= snapshot.max.toLong()
-    }
+    ): Boolean = TimeRewardClaimPolicy.canReceive(rewards, timeSnapshot, now)
 
     private fun QuestAutomationMapSelection.hasValidPreset(): Boolean =
         when (preset.mode) {
@@ -1151,6 +1144,5 @@ class DefaultQuestWorkCycleModule(
         const val ADVENTURE_MAP_CATEGORY = "adventure_map"
         const val STALE_RECHECK_DELAY_SECONDS = 10L
         const val INCOMPLETE_PAGE_RECHECK_DELAY_SECONDS = 10L
-        val TIME_REWARD = Regex("""\bTime\s*\+\s*([\d,]+)\b""", RegexOption.IGNORE_CASE)
     }
 }

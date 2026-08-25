@@ -64,9 +64,9 @@ class HofRaidObservationAdapter(
                 battleEvidenceCaseId = response.battleObservationEvidence?.caseId,
                 rewardWindow = when (raid.rewardWindowStatus) {
                     RaidRewardWindowStatus.AVAILABLE -> RaidRewardWindowObservation.Available
-                    RaidRewardWindowStatus.WAIT -> raid.rewardWaitSeconds
+                    RaidRewardWindowStatus.CLAIM_WINDOW -> raid.rewardWaitSeconds
                         ?.takeIf { it > 0 }
-                        ?.let { RaidRewardWindowObservation.Wait(it.toLong()) }
+                        ?.let { RaidRewardWindowObservation.ClaimWindow(it.toLong()) }
                         ?: RaidRewardWindowObservation.Incomplete()
                     RaidRewardWindowStatus.ABSENT -> RaidRewardWindowObservation.Absent
                     RaidRewardWindowStatus.INCOMPLETE -> RaidRewardWindowObservation.Incomplete()

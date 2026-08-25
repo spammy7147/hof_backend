@@ -8,7 +8,7 @@ enum class RaidStatus { RECRUITING, WAITING, READY, IN_BATTLE, COMPLETED, CLOSED
 
 enum class RaidBattleObservationStatus { OBSERVED, ABSENT, INCOMPLETE }
 
-enum class RaidRewardWindowStatus { AVAILABLE, WAIT, ABSENT, INCOMPLETE }
+enum class RaidRewardWindowStatus { AVAILABLE, CLAIM_WINDOW, ABSENT, INCOMPLETE }
 
 enum class RaidCooldownObservationSource { HOF_DIRECT, HOF_SINGLE_TARGET_INFERENCE }
 

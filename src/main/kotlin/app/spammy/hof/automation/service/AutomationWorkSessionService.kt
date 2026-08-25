@@ -42,6 +42,7 @@ interface AutomationWorkLifecycle {
         holdMessage: String,
     )
     fun completeFishingCycle(accountId: Long, entryId: Long)
+    fun completeUnionCycle(accountId: Long, entryId: Long)
     fun completeRaidCycle(accountId: Long, entryId: Long)
     fun stopForConfigurationChange(
         accountId: Long,
@@ -423,6 +424,24 @@ class AutomationWorkSessionService(
                 it.entry.id == entryId &&
                 it.workType == AutomationWorkType.FISHING &&
                 it.targetKey == FISHING_CYCLE_TARGET
+        } ?: return
+        val now = timeProvider.now()
+        session.transitionTo(AutomationWorkStatus.COMPLETED)
+        session.nextCheckAt = null
+        session.holdMessage = null
+        session.finishedAt = now
+        session.updatedAt = now
+        commands.save(session)
+        recordOwnershipTransferAfterCommit(AutomationOwnershipTransferReason.COMPLETE, false)
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    override fun completeUnionCycle(accountId: Long, entryId: Long) {
+        requireRunningRuntime(accountId)
+        val session = queries.lockOpen(accountId).singleOrNull {
+            it.status == AutomationWorkStatus.RUNNING &&
+                it.entry.id == entryId &&
+                it.workType == AutomationWorkType.UNION
         } ?: return
         val now = timeProvider.now()
         session.transitionTo(AutomationWorkStatus.COMPLETED)

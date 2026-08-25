@@ -20,6 +20,15 @@ sealed interface HandlerEvaluation {
         const val reasonCode: String = "NOT_RUNNABLE"
         const val message: String = "현재 실행할 행동이 없습니다."
     }
+    data class SkippedReason(
+        val reasonCode: String,
+        val message: String,
+    ) : HandlerEvaluation
+    data class SkippedUntil(
+        val nextRunAt: Instant,
+        val reasonCode: String,
+        val message: String,
+    ) : HandlerEvaluation
     data class Unavailable(
         val nextRunAt: Instant,
         val reasonCode: String = "COOLDOWN",

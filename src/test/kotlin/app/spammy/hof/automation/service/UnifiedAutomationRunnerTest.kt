@@ -245,7 +245,7 @@ class UnifiedAutomationRunnerTest {
     }
 
     @Test
-    fun `낚시 CATCH 응답의 방해 전투는 새 판단 없이 같은 사이클에서 즉시 실행한다`() {
+    fun `낚시 CATCH 응답의 방해 전투는 같은 사이클에서 준비하지 않고 새 판단으로 넘긴다`() {
         val cycleExecutor = Mockito.mock(FishingCycleExecutor::class.java)
         val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
         val startManaged = Mockito.mock(ManagedFishingAutomationAction::class.java)
@@ -360,11 +360,11 @@ class UnifiedAutomationRunnerTest {
         scoped.runOne(7L)
 
         Mockito.verify(decisions, Mockito.times(1)).select(7L)
-        Mockito.verify(runtime, Mockito.times(2))
+        Mockito.verify(runtime, Mockito.times(1))
             .advanceAppliedActionToPreparedFollowup(anyExecution(), anyStoredAction())
-        Mockito.verify(lifecycle).prepare(7L, 15L, battleAction)
-        Mockito.verify(battleManaged).execute()
-        Mockito.verify(convergence, Mockito.times(3)).prepare(Mockito.eq(7L), anyConvergenceSelection())
+        Mockito.verify(lifecycle, Mockito.never()).prepare(7L, 15L, battleAction)
+        Mockito.verifyNoInteractions(battleManaged)
+        Mockito.verify(convergence, Mockito.times(2)).prepare(Mockito.eq(7L), anyConvergenceSelection())
         val projectionOrder = Mockito.inOrder(startManaged, catchManaged, convergence)
         projectionOrder.verify(startManaged).applyPolicyAcceptedExecution(anyTypedExecution())
         projectionOrder.verify(convergence).record(Mockito.eq(201L), anyConvergenceEvidence())
@@ -1945,6 +1945,69 @@ class UnifiedAutomationRunnerTest {
         assertEquals("RaidGoblin", result.targetKey)
         assertEquals("고블린", result.targetName)
         assertTrue(result.message.startsWith("레이드 전투 · RaidGoblin · "))
+    }
+
+    @Test
+    fun `raid entry wait records owner classification deadline scope and release condition`() {
+        val journal = Mockito.mock(AutomationDecisionJournal::class.java)
+        val action = legacyBattleAction()
+        val stored = raidStoredAction()
+        val prepared = executionRight(
+            TypedRuntimeCheckpoint(stored, TypedRuntimeCheckpointPhase.PREPARED, null, null),
+        )
+        val retryAt = Instant.parse("2026-07-24T00:10:00Z")
+        val descriptor = AutomationActionDescriptor(
+            source = AutomationType.RAID,
+            storageKind = "RAID_TOWN",
+            actionKind = "REFRESH",
+            actionLabel = "레이드 상태 갱신",
+            context = "레이드 상태 갱신 · 자동화 대상",
+            targetKey = "RaidAuto",
+            targetName = "자동화 대상",
+        )
+        Mockito.`when`(decisions.select(7)).thenReturn(
+            AutomationCoordination.Runnable(12, action, emptyList()),
+        )
+        Mockito.`when`(lifecycle.describe(action)).thenReturn(descriptor)
+        Mockito.`when`(managed.descriptor).thenReturn(descriptor)
+        Mockito.`when`(managed.storedAction).thenReturn(stored)
+        Mockito.`when`(runtime.persistPrepared(anyExecution(), anyStoredAction(), anyWarnings()))
+            .thenReturn(TypedRuntimePreparation.Ready(prepared))
+        Mockito.`when`(runtime.beginSubmission(prepared))
+            .thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
+        Mockito.`when`(managed.execute()).thenReturn(
+            TypedAutomationExecution.RaidWaiting(
+                retryAt = retryAt,
+                raidId = "RaidManual",
+                reasonCode = "RAID_MANUAL_UNCONFIGURED_ACTIVE",
+                message = "설정 밖 수동 레이드를 기다립니다.",
+                releaseCondition = "수동 레이드 종료 뒤 상태 갱신",
+            ),
+        )
+        Mockito.`when`(journal.appendDecision(Mockito.eq(7L), anyCoordination())).thenReturn(41L)
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            journal,
+        )
+
+        scoped.runOne(7)
+
+        val outcome = assertIs<TypedRuntimeOutcome.ActionSucceeded>(capturedOutcome())
+        assertEquals("TYPED_RAID_WAITING", outcome.wakeReason)
+        val traceCaptor = ArgumentCaptor.forClass(AutomationActionTrace::class.java)
+        Mockito.verify(journal, Mockito.times(2)).appendActionResult(Mockito.eq(41L), captureTrace(traceCaptor))
+        val result = traceCaptor.allValues.last()
+        assertEquals(AutomationHistoryEventKind.WAITING, result.kind)
+        assertEquals("RAID_MANUAL_UNCONFIGURED_ACTIVE", result.reasonCode)
+        assertEquals("RaidManual", result.targetKey)
+        assertEquals(retryAt, result.nextRunAt)
+        assertEquals(AutomationImpactScope.RAID_ONLY, result.impactScope)
+        assertEquals("수동 레이드 종료 뒤 상태 갱신", result.releaseCondition)
     }
 
     @Test

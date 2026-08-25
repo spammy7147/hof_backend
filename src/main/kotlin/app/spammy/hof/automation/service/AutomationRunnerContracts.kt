@@ -120,6 +120,7 @@ sealed interface AutomationCoordination {
         override val warnings: List<String>,
         override val trace: List<AutomationEvaluationTrace> = emptyList(),
         val workTransition: AutomationWorkTransition? = null,
+        val nextRunAt: Instant? = null,
     ) : AutomationCoordination
 }
 
@@ -135,6 +136,7 @@ sealed interface TypedAutomationExecution {
         val explicitRejected: Boolean = false,
         val rejectionReason: String? = null,
         val raidOutcome: RaidCycleOutcome? = null,
+        val raidWait: RaidWaiting? = null,
     ) : TypedAutomationExecution
 
     data class BattleCompleted(
@@ -152,6 +154,15 @@ sealed interface TypedAutomationExecution {
 
     data class RaidCycleFinished(
         val outcome: RaidCycleOutcome,
+    ) : TypedAutomationExecution
+
+    data class RaidWaiting(
+        val retryAt: Instant,
+        val raidId: String,
+        val reasonCode: String,
+        val message: String,
+        val releaseCondition: String,
+        val completedCycle: RaidCycleOutcome? = null,
     ) : TypedAutomationExecution
 }
 

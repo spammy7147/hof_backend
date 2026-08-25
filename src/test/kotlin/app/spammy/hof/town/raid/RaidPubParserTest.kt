@@ -101,7 +101,7 @@ class RaidPubParserTest {
 
         assertEquals(RaidStatus.COMPLETED, page.raids.first().status)
         assertEquals(1_603, page.raids.first().waitSeconds)
-        assertEquals(RaidRewardWindowStatus.WAIT, page.raids.first().rewardWindowStatus)
+        assertEquals(RaidRewardWindowStatus.CLAIM_WINDOW, page.raids.first().rewardWindowStatus)
         assertEquals(1_603, page.raids.first().rewardWaitSeconds)
         assertTrue(page.applyWait)
         assertEquals(10_786, page.applyWaitSeconds)

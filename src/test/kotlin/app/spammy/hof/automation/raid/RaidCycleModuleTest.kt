@@ -36,7 +36,7 @@ class RaidCycleModuleTest {
     }
 
     @Test
-    fun `새 사이클은 현재 순환 대상만 준비하고 그 대상에 필요한 RESET 한 행동만 반환한다`() {
+    fun `새 레이드 판단은 현재 순환 대상의 상태 갱신만 먼저 반환하고 사이클을 열지 않는다`() {
         val current = target("raid-b", 1)
         val other = target("raid-a", 0)
         val store = InMemoryRaidCycleStore(
@@ -45,27 +45,23 @@ class RaidCycleModuleTest {
                 null,
             ),
         )
-        val observation = RaidObservation(
-            raids = listOf(
-                observed(other, resetRequired = true),
-                observed(current, resetRequired = true),
-            ),
-            applied = false,
-            registrationWait = false,
+        val module = DefaultRaidCycleModule(
+            store,
+            RaidObservationReader { error("상태 갱신 전 GET으로 gameplay를 추정하면 안 됩니다") },
+            TimeProvider { now },
         )
-        val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
         val directive = assertIs<RaidDirective.Execute>(module.decide(1).directive)
         val intent = assertIs<RaidIntent.Town>(directive.intent)
 
-        assertEquals(RaidIntentKind.RESET, intent.kind)
+        assertEquals(RaidIntentKind.REFRESH, intent.kind)
         assertEquals("raid-b", intent.raidId)
-        assertEquals(RaidAutomationCycleStatus.PREPARING, store.state.openCycle?.status)
-        assertEquals("raid-b", store.state.openCycle?.raidId)
+        assertEquals(null, intent.requestRaidId)
+        assertEquals(null, store.state.openCycle)
     }
 
     @Test
-    fun `준비 대상이 등록 가능하면 RESET 없이 REGISTER 한 행동을 반환한다`() {
+    fun `상태 갱신 직접 응답이 등록 가능하면 사이클을 연 뒤 다음 판단에서 REGISTER한다`() {
         val target = target("raid-a", 0)
         val store = InMemoryRaidCycleStore(
             RaidCycleAccountState(
@@ -85,11 +81,19 @@ class RaidCycleModuleTest {
                     actions = setOf(RaidIntentKind.REGISTER),
                 ),
             ),
-            applied = false,
+            applied = true,
             registrationWait = false,
+            fresh = true,
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
+        val refresh = assertIs<RaidIntent.Town>(assertIs<RaidDirective.Execute>(module.decide(1).directive).intent)
+        assertEquals(RaidIntentKind.REFRESH, refresh.kind)
+        assertIs<RaidRecordResult.Recorded>(module.recordObservedResult(
+            1,
+            RaidAttempt(7, RaidIntentKind.REFRESH, target.raidId, requestRaidId = null),
+            RaidResultObservation.Page(observation),
+        ))
         val intent = assertIs<RaidIntent.Town>(assertIs<RaidDirective.Execute>(module.decide(1).directive).intent)
 
         assertEquals(RaidIntentKind.REGISTER, intent.kind)
@@ -167,7 +171,7 @@ class RaidCycleModuleTest {
             RaidResultObservation.Page(registered),
         )
 
-        assertIs<RaidRecordResult.Recorded>(result)
+        assertIs<RaidRecordResult.EntryWait>(result)
         assertEquals(RaidAutomationCycleStatus.REGISTERED_WAITING, store.state.openCycle?.status)
         assertEquals(now.plusSeconds(120), store.state.openCycle?.nextCheckAt)
     }
@@ -292,7 +296,7 @@ class RaidCycleModuleTest {
             resultMessages = listOf("현재 상태는 신청 대기입니다.(신청 가능 까지 2시간 59분 25초)"),
         )
 
-        assertIs<RaidRecordResult.Recorded>(module.recordObservedResult(
+        assertIs<RaidRecordResult.EntryWait>(module.recordObservedResult(
             1,
             RaidAttempt(7, RaidIntentKind.REGISTER, target.raidId),
             RaidResultObservation.Page(cooldown),
@@ -303,6 +307,89 @@ class RaidCycleModuleTest {
         val wait = assertIs<RaidDirective.WaitUntil>(module.decide(1).directive)
         assertEquals(RaidWaitReason.REGISTRATION_COOLDOWN, wait.reason)
         assertEquals(now.plusSeconds(cooldownSeconds.toLong()), wait.at)
+    }
+
+    @Test
+    fun `등록 쿨타임이 만료된 parked 레이드는 GET 판단 전에 상태 갱신부터 실행한다`() {
+        val target = target("raid-a", 0)
+        val deadline = now.plusSeconds(20)
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(
+                    1,
+                    7,
+                    target.raidId,
+                    target.name,
+                    RaidAutomationCycleStatus.REGISTRATION_COOLDOWN,
+                    deadline,
+                ),
+            ),
+        )
+        val module = DefaultRaidCycleModule(
+            store,
+            RaidObservationReader { error("parked due 상태는 REFRESH 직접 응답 전에 GET하지 않습니다") },
+            TimeProvider { deadline },
+        )
+
+        val refresh = assertIs<RaidIntent.Town>(assertIs<RaidDirective.Execute>(module.decide(1).directive).intent)
+
+        assertEquals(RaidIntentKind.REFRESH, refresh.kind)
+        assertEquals(null, refresh.requestRaidId)
+    }
+
+    @Test
+    fun `개인 전투 쿨타임은 작업권을 놓고 만료 시 다시 상태 갱신한 뒤 전투한다`() {
+        val party = ResolvedAutomationParty(listOf("character-1"), listOf(BattlePatternLoadRequest("character-1", 1)))
+        val target = target("raid-a", 0, party)
+        var current = now
+        var latest = inBattleObservation(
+            target,
+            RaidBattleAvailability.COOLDOWN,
+            RaidObservedBattle("raid", "raid001", 20, RaidCooldownSource.HOF_DIRECT),
+        ).copy(applied = true)
+        var reads = 0
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                null,
+            ),
+        )
+        val module = DefaultRaidCycleModule(
+            store,
+            RaidObservationReader { reads += 1; latest },
+            TimeProvider { current },
+        )
+
+        val initialRefresh = assertIs<RaidIntent.Town>(assertIs<RaidDirective.Execute>(module.decide(1).directive).intent)
+        val initialWait = assertIs<RaidRecordResult.EntryWait>(module.recordObservedResult(
+            1,
+            RaidAttempt(7, RaidIntentKind.REFRESH, initialRefresh.raidId, requestRaidId = null),
+            RaidResultObservation.Page(latest),
+        ))
+        assertEquals(now.plusSeconds(20), initialWait.at)
+        assertEquals(initialWait.at, store.state.openCycle?.nextCheckAt)
+
+        current = initialWait.at
+        val dueRefresh = assertIs<RaidIntent.Town>(assertIs<RaidDirective.Execute>(module.decide(1).directive).intent)
+        assertEquals(RaidIntentKind.REFRESH, dueRefresh.kind)
+        assertEquals(0, reads)
+
+        latest = inBattleObservation(
+            target,
+            RaidBattleAvailability.RUNNABLE,
+            RaidObservedBattle("raid", "raid001"),
+        ).copy(applied = true)
+        assertIs<RaidRecordResult.Recorded>(module.recordObservedResult(
+            1,
+            RaidAttempt(7, RaidIntentKind.REFRESH, dueRefresh.raidId, requestRaidId = null),
+            RaidResultObservation.Page(latest),
+        ))
+        assertEquals(null, store.state.openCycle?.nextCheckAt)
+
+        val battle = assertIs<RaidIntent.Battle>(assertIs<RaidDirective.Execute>(module.decide(1).directive).intent)
+        assertEquals("raid001", battle.mapCode)
+        assertEquals(1, reads)
     }
 
     @Test
@@ -340,7 +427,7 @@ class RaidCycleModuleTest {
                 registrationWaitSeconds = observedSeconds,
             )
 
-            assertIs<RaidRecordResult.Recorded>(module.recordObservedResult(
+            assertIs<RaidRecordResult.EntryWait>(module.recordObservedResult(
                 1,
                 RaidAttempt(7, intentKind, target.raidId),
                 RaidResultObservation.Page(cooldown),
@@ -618,7 +705,7 @@ class RaidCycleModuleTest {
     }
 
     @Test
-    fun `완료 상태가 복구를 끝냈지만 보상 동작이 아직 없으면 적용 확인 사유로 기다린다`() {
+    fun `완료 상태가 전투 복구를 끝내면 전역 버튼과 무관하게 즉시 보상을 선택한다`() {
         val target = target("raid-a", 0)
         val store = InMemoryRaidCycleStore(
             RaidCycleAccountState(
@@ -653,15 +740,15 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
-        val hold = assertIs<RaidDirective.Hold>(module.decide(1).directive)
+        val reward = assertIs<RaidDirective.Execute>(module.decide(1).directive)
 
-        assertEquals("RAID_BATTLE_APPLIED_COMPLETED", hold.reasonCode)
-        assertEquals(true, hold.message.contains("적용을 확인"))
+        assertEquals(RaidIntentKind.REWARD, reward.intent.kind)
+        assertEquals("RAID_BATTLE_APPLIED_COMPLETED", reward.reasonCode)
         assertEquals(null, store.state.openCycle?.battleRecovery)
     }
 
     @Test
-    fun `REWARD POST 응답이 보상 소멸과 재등록 대기를 함께 보여주면 추가 GET 없이 완료한다`() {
+    fun `REWARD POST가 보상을 증명해도 상태 갱신을 한 번 거쳐 쿨타임을 기록한다`() {
         val target = target("raid-a", 0)
         val store = InMemoryRaidCycleStore(
             RaidCycleAccountState(
@@ -694,13 +781,23 @@ class RaidCycleModuleTest {
             RaidResultObservation.Page(afterReward),
         ))
 
-        assertEquals(RaidCycleOutcomeKind.COMPLETED, recorded.completion?.kind)
+        assertEquals(null, recorded.completion)
+        assertEquals(RaidAutomationCycleStatus.POST_REWARD_CHECK, store.state.openCycle?.status)
+        val refresh = assertIs<RaidIntent.Town>(assertIs<RaidDirective.Execute>(module.decide(1).directive).intent)
+        assertEquals(RaidIntentKind.REFRESH, refresh.kind)
+        val wait = assertIs<RaidRecordResult.EntryWait>(module.recordObservedResult(
+            1,
+            RaidAttempt(7, RaidIntentKind.REFRESH, target.raidId, requestRaidId = null),
+            RaidResultObservation.Page(afterReward),
+        ))
+        assertEquals(RaidCycleOutcomeKind.COMPLETED, wait.completion?.kind)
+        assertEquals(now.plusSeconds(10_000), wait.at)
         assertEquals(null, store.state.openCycle)
         assertEquals(true, store.lastAdvanceRotation)
     }
 
     @Test
-    fun `보상 응답에 정보가 부족하면 다음 최신 GET에서 재등록 대기를 확인하고 완료한다`() {
+    fun `보상 확인 단계는 GET 추정 없이 상태 갱신 직접 응답으로 쿨타임을 기록한다`() {
         val target = target("raid-a", 0)
         val store = InMemoryRaidCycleStore(
             RaidCycleAccountState(
@@ -725,17 +822,23 @@ class RaidCycleModuleTest {
             registrationWaitSeconds = 9_000,
             globalActions = emptySet(),
         )
-        val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
+        val module = DefaultRaidCycleModule(store, RaidObservationReader { error("보상 뒤 REFRESH 전에 GET하지 않습니다") }, TimeProvider { now })
 
-        val complete = assertIs<RaidDirective.Complete>(module.decide(1).directive)
+        val refresh = assertIs<RaidIntent.Town>(assertIs<RaidDirective.Execute>(module.decide(1).directive).intent)
+        val wait = assertIs<RaidRecordResult.EntryWait>(module.recordObservedResult(
+            1,
+            RaidAttempt(7, RaidIntentKind.REFRESH, refresh.raidId, requestRaidId = null),
+            RaidResultObservation.Page(observation),
+        ))
 
-        assertEquals(RaidCycleOutcomeKind.COMPLETED, complete.outcome.kind)
+        assertEquals(RaidCycleOutcomeKind.COMPLETED, wait.completion?.kind)
+        assertEquals(now.plusSeconds(9_000), wait.at)
         assertEquals(null, store.state.openCycle)
         assertEquals(true, store.lastAdvanceRotation)
     }
 
     @Test
-    fun `설정 밖 수동 레이드가 진행 중이면 레이드만 30초 보류하고 새 사이클을 열지 않는다`() {
+    fun `설정 밖 수동 레이드가 진행 중이면 레이드만 10분 보류하고 새 사이클을 열지 않는다`() {
         val target = target("raid-auto", 0)
         val store = InMemoryRaidCycleStore(
             RaidCycleAccountState(
@@ -769,11 +872,129 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
-        val hold = assertIs<RaidDirective.Hold>(module.decide(1).directive)
+        val refresh = assertIs<RaidIntent.Town>(assertIs<RaidDirective.Execute>(module.decide(1).directive).intent)
+        val wait = assertIs<RaidRecordResult.EntryWait>(module.recordObservedResult(
+            1,
+            RaidAttempt(7, RaidIntentKind.REFRESH, refresh.raidId, requestRaidId = null),
+            RaidResultObservation.Page(observation.copy(applied = true)),
+        ))
 
-        assertEquals(RaidHoldReason.MANUAL_RAID_ACTIVE, hold.reason)
-        assertEquals(now.plusSeconds(30), hold.recheckAt)
+        assertEquals(now.plusSeconds(600), wait.at)
+        assertEquals("raid-manual", wait.raidId)
         assertEquals(null, store.state.openCycle)
+    }
+
+    @Test
+    fun `설정된 외부 레이드가 전투 중이면 gameplay 없이 10분 뒤 재확인한다`() {
+        val target = target("raid-auto", 0)
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                null,
+            ),
+        )
+        val observation = RaidObservation(
+            raids = listOf(
+                RaidObservedTarget(
+                    id = target.raidId,
+                    name = target.name,
+                    playable = false,
+                    status = RaidObservedStatus.IN_BATTLE,
+                    statusText = "전투 중",
+                    joined = false,
+                    actions = emptySet(),
+                    battle = RaidObservedBattle("raid", "raid001"),
+                ),
+            ),
+            applied = true,
+            registrationWait = false,
+        )
+        val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
+
+        val refresh = assertIs<RaidIntent.Town>(assertIs<RaidDirective.Execute>(module.decide(1).directive).intent)
+        val wait = assertIs<RaidRecordResult.EntryWait>(module.recordObservedResult(
+            1,
+            RaidAttempt(7, RaidIntentKind.REFRESH, refresh.raidId, requestRaidId = null),
+            RaidResultObservation.Page(observation),
+        ))
+
+        assertEquals(now.plusSeconds(600), wait.at)
+        assertEquals(null, store.state.openCycle)
+    }
+
+    @Test
+    fun `설정된 외부 레이드의 보상 창은 보상하지 않고 표시된 종료 시각에 재확인한다`() {
+        val target = target("raid-auto", 0)
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                null,
+            ),
+        )
+        val observation = RaidObservation(
+            raids = listOf(
+                RaidObservedTarget(
+                    id = target.raidId,
+                    name = target.name,
+                    playable = false,
+                    status = RaidObservedStatus.COMPLETED,
+                    statusText = "보상 확인 시간",
+                    waitSeconds = 1_800,
+                    joined = false,
+                    actions = emptySet(),
+                    rewardWindow = RaidRewardWindowObservation.ClaimWindow(1_800),
+                ),
+            ),
+            applied = true,
+            registrationWait = false,
+            globalActions = setOf(RaidIntentKind.REWARD),
+        )
+        val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
+
+        val refresh = assertIs<RaidIntent.Town>(assertIs<RaidDirective.Execute>(module.decide(1).directive).intent)
+        val wait = assertIs<RaidRecordResult.EntryWait>(module.recordObservedResult(
+            1,
+            RaidAttempt(7, RaidIntentKind.REFRESH, refresh.raidId, requestRaidId = null),
+            RaidResultObservation.Page(observation),
+        ))
+
+        assertEquals(now.plusSeconds(1_800), wait.at)
+        assertEquals(null, store.state.openCycle)
+    }
+
+    @Test
+    fun `상태 갱신 뒤 참가권을 잃은 열린 사이클은 외부 보상 버튼을 누르지 않고 종료한다`() {
+        val target = target("raid-auto", 0)
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                RaidCycleSnapshot(1, 7, target.raidId, target.name, RaidAutomationCycleStatus.PREPARING, null),
+            ),
+        )
+        val observation = RaidObservation(
+            raids = listOf(
+                RaidObservedTarget(
+                    id = target.raidId,
+                    name = target.name,
+                    playable = false,
+                    status = RaidObservedStatus.COMPLETED,
+                    statusText = "보상 확인 시간",
+                    waitSeconds = 1_800,
+                    joined = false,
+                    actions = emptySet(),
+                    rewardWindow = RaidRewardWindowObservation.ClaimWindow(1_800),
+                ),
+            ),
+            applied = true,
+            registrationWait = false,
+            globalActions = setOf(RaidIntentKind.REWARD),
+        )
+        val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
+
+        val complete = assertIs<RaidDirective.Complete>(module.decide(1).directive)
+
+        assertEquals(RaidCycleOutcomeKind.ABORTED_REGISTRATION_LOST, complete.outcome.kind)
+        assertEquals(false, store.lastAdvanceRotation)
     }
 
     @Test
@@ -804,6 +1025,13 @@ class RaidCycleModuleTest {
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
+        val refresh = assertIs<RaidIntent.Town>(assertIs<RaidDirective.Execute>(module.decide(1).directive).intent)
+        assertEquals(RaidIntentKind.REFRESH, refresh.kind)
+        assertIs<RaidRecordResult.Recorded>(module.recordObservedResult(
+            1,
+            RaidAttempt(7, RaidIntentKind.REFRESH, target.raidId, requestRaidId = null),
+            RaidResultObservation.Page(observation),
+        ))
         val battle = assertIs<RaidIntent.Battle>(assertIs<RaidDirective.Execute>(module.decide(1).directive).intent)
 
         assertEquals("raid-auto", battle.raidId)
@@ -956,6 +1184,13 @@ class RaidCycleModuleTest {
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
         val superseded = assertIs<RaidDirective.Complete>(module.decide(1).directive)
+        val refresh = assertIs<RaidIntent.Town>(assertIs<RaidDirective.Execute>(module.decide(1).directive).intent)
+        assertEquals(RaidIntentKind.REFRESH, refresh.kind)
+        assertIs<RaidRecordResult.Recorded>(module.recordObservedResult(
+            1,
+            RaidAttempt(7, RaidIntentKind.REFRESH, observedActive.raidId, requestRaidId = null),
+            RaidResultObservation.Page(observation),
+        ))
         val battle = assertIs<RaidIntent.Battle>(assertIs<RaidDirective.Execute>(module.decide(1).directive).intent)
 
         assertEquals(RaidCycleOutcomeKind.SUPERSEDED_BY_OBSERVED_RAID, superseded.outcome.kind)
@@ -1055,7 +1290,7 @@ class RaidCycleModuleTest {
     }
 
     @Test
-    fun `보상 확인 시간이 남아 있으면 전역 보상 버튼보다 레이드 전용 대기가 우선한다`() {
+    fun `자동화 소유 레이드의 보상 수령 가능 창은 남은 시간이 양수여도 즉시 보상을 선택한다`() {
         val target = target("raid-auto", 0)
         val store = InMemoryRaidCycleStore(
             RaidCycleAccountState(
@@ -1074,20 +1309,20 @@ class RaidCycleModuleTest {
                     waitSeconds = 1_800,
                     joined = true,
                     actions = emptySet(),
-                    rewardWindow = RaidRewardWindowObservation.Wait(1_800),
+                    rewardWindow = RaidRewardWindowObservation.ClaimWindow(1_800),
                 ),
             ),
             applied = false,
             registrationWait = false,
-            globalActions = setOf(RaidIntentKind.REWARD),
+            globalActions = emptySet(),
         )
         val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
 
-        val wait = assertIs<RaidDirective.WaitUntil>(module.decide(1).directive)
+        val reward = assertIs<RaidIntent.Town>(assertIs<RaidDirective.Execute>(module.decide(1).directive).intent)
 
-        assertEquals(RaidWaitReason.REWARD_CONFIRMATION, wait.reason)
-        assertEquals(now.plusSeconds(1_800), wait.at)
-        assertEquals(now.plusSeconds(1_800), store.state.openCycle?.nextCheckAt)
+        assertEquals(RaidIntentKind.REWARD, reward.kind)
+        assertEquals(target.raidId, reward.raidId)
+        assertEquals(null, store.state.openCycle?.nextCheckAt)
     }
 
     @Test
@@ -1407,7 +1642,7 @@ class RaidCycleModuleTest {
     }
 
     @Test
-    fun `REFRESH POST의 성공 표시만 있고 재등록 대기가 없으면 사이클을 닫지 않는다`() {
+    fun `보상 증명 뒤 REFRESH가 성공하면 재등록 대기가 없어도 사이클을 완료한다`() {
         val target = target("raid-auto", 0)
         val store = InMemoryRaidCycleStore(
             RaidCycleAccountState(
@@ -1433,14 +1668,60 @@ class RaidCycleModuleTest {
             globalActions = emptySet(),
         )
 
-        assertIs<RaidRecordResult.NeedsRecheck>(module.recordObservedResult(
+        val recorded = assertIs<RaidRecordResult.Recorded>(module.recordObservedResult(
             1,
             RaidAttempt(7, RaidIntentKind.REFRESH, target.raidId, null),
             RaidResultObservation.Page(refreshed),
         ))
 
-        assertEquals(RaidAutomationCycleStatus.POST_REWARD_CHECK, store.state.openCycle?.status)
-        assertEquals(null, store.lastAdvanceRotation)
+        assertEquals(RaidCycleOutcomeKind.COMPLETED, recorded.completion?.kind)
+        assertEquals(null, store.state.openCycle)
+        assertEquals(true, store.lastAdvanceRotation)
+    }
+
+    @Test
+    fun `현재 순환 대상이 아닌 설정 레이드를 편입해 완료하면 기존 순환 위치를 유지한다`() {
+        val currentTarget = target("raid-a", 0)
+        val adoptedTarget = target("raid-b", 1)
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(currentTarget, adoptedTarget), currentTarget.raidId),
+                RaidCycleSnapshot(
+                    1,
+                    7,
+                    adoptedTarget.raidId,
+                    adoptedTarget.name,
+                    RaidAutomationCycleStatus.POST_REWARD_CHECK,
+                    null,
+                ),
+            ),
+        )
+        val module = DefaultRaidCycleModule(store, RaidObservationReader { error("GET should not be used") }, TimeProvider { now })
+        val refreshed = RaidObservation(
+            raids = listOf(
+                RaidObservedTarget(
+                    id = adoptedTarget.raidId,
+                    name = adoptedTarget.name,
+                    playable = true,
+                    status = RaidObservedStatus.COMPLETED,
+                    statusText = "보상 확인 시간",
+                    joined = true,
+                    actions = emptySet(),
+                ),
+            ),
+            applied = true,
+            registrationWait = false,
+            globalActions = emptySet(),
+        )
+
+        val recorded = assertIs<RaidRecordResult.Recorded>(module.recordObservedResult(
+            1,
+            RaidAttempt(7, RaidIntentKind.REFRESH, adoptedTarget.raidId, null),
+            RaidResultObservation.Page(refreshed),
+        ))
+
+        assertEquals(RaidCycleOutcomeKind.COMPLETED, recorded.completion?.kind)
+        assertEquals(false, store.lastAdvanceRotation)
     }
 
     @Test
@@ -1461,13 +1742,14 @@ class RaidCycleModuleTest {
             globalActions = emptySet(),
         )
 
-        val recorded = assertIs<RaidRecordResult.Recorded>(module.recordObservedResult(
+        val recorded = assertIs<RaidRecordResult.EntryWait>(module.recordObservedResult(
             1,
             RaidAttempt(7, RaidIntentKind.REFRESH, target.raidId, null),
             RaidResultObservation.Page(refreshed),
         ))
 
         assertEquals(RaidCycleOutcomeKind.COMPLETED, recorded.completion?.kind)
+        assertEquals(now.plusSeconds(10_000), recorded.at)
         assertEquals(true, store.lastAdvanceRotation)
     }
 

@@ -412,6 +412,18 @@ class UnifiedAutomationRunner @Autowired constructor(
                     result.nextRunAt,
                 )
             }
+        fun raidWaitTrace(wait: TypedAutomationExecution.RaidWaiting): AutomationActionTrace = trace(
+            kind = if (wait.completedCycle == null) {
+                AutomationHistoryEventKind.WAITING
+            } else {
+                AutomationHistoryEventKind.CYCLE_COMPLETED
+            },
+            code = wait.reasonCode,
+            message = wait.message,
+            nextRunAt = wait.retryAt,
+            impactScope = AutomationImpactScope.RAID_ONLY,
+            releaseCondition = wait.releaseCondition,
+        ).copy(targetKey = wait.raidId)
         fun finishRaidBattleHandoff(resolution: AmbiguousActionResolution.HandedOff) {
             typedRuntime.complete(
                 execution,
@@ -690,6 +702,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                     decisionCycleId?.let { cycleId ->
                         val resultTrace = when (val recovered = resolution.execution) {
                             is TypedAutomationExecution.RaidCycleFinished -> raidCycleTrace(recovered.outcome)
+                            is TypedAutomationExecution.RaidWaiting -> raidWaitTrace(recovered)
                             else -> trace(
                                 AutomationHistoryEventKind.ACTION_SUCCEEDED,
                                 "AMBIGUOUS_RESULT_APPLIED",
@@ -1077,6 +1090,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                     "TYPED_SHARED_COOLDOWN_SKIPPED"
                 }
                 is TypedAutomationExecution.RaidCycleFinished -> "TYPED_RAID_CYCLE_FINISHED"
+                is TypedAutomationExecution.RaidWaiting -> "TYPED_RAID_WAITING"
             }
             val finalWarnings = if (
                 domainExecution is TypedAutomationExecution.BattleCompleted &&
@@ -1116,6 +1130,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             decisionCycleId?.let { cycleId ->
                 val resultTrace = when (domainExecution) {
                     is TypedAutomationExecution.RaidCycleFinished -> raidCycleTrace(domainExecution.outcome)
+                    is TypedAutomationExecution.RaidWaiting -> raidWaitTrace(domainExecution)
                     is TypedAutomationExecution.BattleCompleted if recoveryAppliedByTerminalResult -> trace(
                         AutomationHistoryEventKind.ACTION_SUCCEEDED,
                         RAID_BATTLE_APPLIED_TERMINAL_RESULT,
@@ -1422,21 +1437,6 @@ class UnifiedAutomationRunner @Autowired constructor(
                     LegacyConvergenceDecision.APPLIED,
                 )
             }
-            if (continueFishingObstruction(
-                    accountId,
-                    execution,
-                    managed,
-                    direct.response,
-                    decisionCycleId,
-                    selectedWarnings,
-                ) {
-                    append(
-                        AutomationHistoryEventKind.ACTION_SUCCEEDED,
-                        "FISHING_CATCH_APPLIED",
-                        "낚시 CATCH 적용을 확인하고 방해 전투를 준비했습니다.",
-                    )
-                }
-            ) return
             typedRuntime.complete(
                 execution,
                 TypedRuntimeOutcome.ActionSucceeded("TYPED_FISHING_CYCLE_COMPLETED", selectedWarnings),
@@ -1503,45 +1503,6 @@ class UnifiedAutomationRunner @Autowired constructor(
                 "낚시 CATCH 결과가 불확실해 같은 POST를 다시 보내지 않고 최신 상태를 확인합니다.",
             )
         }
-    }
-
-    private fun continueFishingObstruction(
-        accountId: Long,
-        execution: TypedRuntimeExecutionRight,
-        fishing: ManagedFishingAutomationAction,
-        response: app.spammy.hof.town.fishing.dto.FishingResponse,
-        decisionCycleId: Long?,
-        selectedWarnings: List<String>?,
-        onPrepared: () -> Unit,
-    ): Boolean {
-        val action = fishing.obstructionBattle(response) ?: return false
-        val managed = try {
-            actionLifecycleModule.prepare(accountId, fishing.storedAction.entryId, action)
-        } catch (error: RuntimeException) {
-            log.warn(
-                "Fishing obstruction preparation failed accountId={} errorType={}",
-                accountId,
-                error.javaClass.name,
-            )
-            return false
-        }
-        val preparation = typedRuntime.advanceAppliedActionToPreparedFollowup(execution, managed.storedAction)
-        if (preparation !is TypedRuntimePreparation.Ready) {
-            typedRuntime.complete(
-                execution,
-                TypedRuntimeOutcome.SubmissionAmbiguous("CATCH 적용 뒤 방해 전투 준비 상태를 저장하지 못했습니다."),
-            )
-            return true
-        }
-        onPrepared()
-        runAcquired(
-            accountId = accountId,
-            initialExecution = preparation.execution,
-            continuedDecisionCycleId = decisionCycleId,
-            continuedWarnings = selectedWarnings,
-            continuedPreparedFollowup = true,
-        )
-        return true
     }
 
     private fun runFishingCycle(
@@ -1719,26 +1680,6 @@ class UnifiedAutomationRunner @Autowired constructor(
                     catch: FishingCycleStepEvidence,
                 ) {
                     acceptStep(activeManaged, activeStored, activeSelection, activeAttemptId, catch.response)
-                    if (continueFishingObstruction(
-                            accountId,
-                            execution,
-                            startManaged,
-                            catch.response,
-                            decisionCycleId,
-                            selectedWarnings,
-                        ) {
-                            append(
-                                activeStored,
-                                activeManaged,
-                                AutomationHistoryEventKind.ACTION_SUCCEEDED,
-                                "FISHING_CATCH_APPLIED",
-                                "낚시 CATCH 적용을 확인하고 방해 전투를 준비했습니다.",
-                            )
-                        }
-                    ) {
-                        handled = true
-                        return
-                    }
                     typedRuntime.complete(
                         execution,
                         TypedRuntimeOutcome.ActionSucceeded("TYPED_FISHING_CYCLE_COMPLETED", selectedWarnings),
@@ -2215,6 +2156,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                     if (recovered !== execution) applyRecoveredExecution(accountId, recovered)
                 }
             is TypedAutomationExecution.RaidCycleFinished -> Unit
+            is TypedAutomationExecution.RaidWaiting -> Unit
             is TypedAutomationExecution.BattleCompleted -> sharedBattleCooldowns.applyAfterSuccessfulBattle(
                 accountId,
                 execution.categoryId,
@@ -2233,11 +2175,13 @@ class UnifiedAutomationRunner @Autowired constructor(
         when (execution) {
             is TypedAutomationExecution.SharedCooldown -> "TYPED_SHARED_COOLDOWN_SKIPPED"
             is TypedAutomationExecution.RaidCycleFinished -> "TYPED_RAID_CYCLE_FINISHED"
+            is TypedAutomationExecution.RaidWaiting -> "TYPED_RAID_WAITING"
             else -> "TYPED_ACTION_COMPLETED"
         }
 
     private fun TypedAutomationExecution.runtimeDomainExecution(): TypedAutomationExecution = when (this) {
-        is TypedAutomationExecution.ActionCompleted -> raidOutcome?.let(TypedAutomationExecution::RaidCycleFinished)
+        is TypedAutomationExecution.ActionCompleted -> raidWait
+            ?: raidOutcome?.let(TypedAutomationExecution::RaidCycleFinished)
             ?: TypedAutomationExecution.Completed
         is TypedAutomationExecution.BattleCompleted -> raidOutcome?.let(TypedAutomationExecution::RaidCycleFinished)
             ?: this

@@ -152,7 +152,7 @@ class RaidPubParser {
                 rewardWindowStatus = when {
                     status != RaidStatus.COMPLETED -> RaidRewardWindowStatus.ABSENT
                     rewardMatch != null && rewardWait == null -> RaidRewardWindowStatus.INCOMPLETE
-                    rewardWait?.let { it > 0 } == true -> RaidRewardWindowStatus.WAIT
+                    rewardWait?.let { it > 0 } == true -> RaidRewardWindowStatus.CLAIM_WINDOW
                     rewardWait == 0 && RaidAction.REWARD in global -> RaidRewardWindowStatus.AVAILABLE
                     REWARD_CONFIRMATION.containsMatchIn(statusText.orEmpty()) && RaidAction.REWARD in global ->
                         RaidRewardWindowStatus.AVAILABLE

@@ -103,7 +103,7 @@ enum class RaidBattleAvailability {
 
 sealed interface RaidRewardWindowObservation {
     data object Available : RaidRewardWindowObservation
-    data class Wait(val remainingSeconds: Long) : RaidRewardWindowObservation
+    data class ClaimWindow(val remainingSeconds: Long) : RaidRewardWindowObservation
     data object Absent : RaidRewardWindowObservation
     data class Incomplete(val evidenceCaseId: String? = null) : RaidRewardWindowObservation
 }
@@ -126,7 +126,7 @@ data class RaidObservedTarget(
     val battleEvidenceCaseId: String? = null,
     val rewardWindow: RaidRewardWindowObservation = when {
         status == RaidObservedStatus.COMPLETED && waitSeconds?.let { it > 0 } == true ->
-            RaidRewardWindowObservation.Wait(waitSeconds.toLong())
+            RaidRewardWindowObservation.ClaimWindow(waitSeconds.toLong())
         status == RaidObservedStatus.COMPLETED && RaidIntentKind.REWARD in actions ->
             RaidRewardWindowObservation.Available
         status == RaidObservedStatus.COMPLETED -> RaidRewardWindowObservation.Incomplete()
@@ -169,6 +169,7 @@ enum class RaidHoldReason {
     CONFIGURATION_MISSING,
     INVALID_PRESET,
     MANUAL_RAID_ACTIVE,
+    EXTERNAL_RAID_ACTIVE,
     TARGET_TEMPORARILY_MISSING,
     UNKNOWN_OR_CONFLICTING_STATE,
     ACTION_UNAVAILABLE,
@@ -223,7 +224,7 @@ data class RaidAuthoritativeRewardWindow(
 enum class RaidAuthoritativeRewardWindowKind {
     AVAILABLE,
     ABSENT,
-    WAITING,
+    CLAIM_WINDOW,
     INCOMPLETE,
 }
 
@@ -270,6 +271,15 @@ sealed interface RaidDirective {
 
 sealed interface RaidRecordResult {
     data class Recorded(val completion: RaidCycleOutcome? = null) : RaidRecordResult
+    data class EntryWait(
+        val at: Instant,
+        val raidId: String,
+        val message: String,
+        val completion: RaidCycleOutcome? = null,
+        val reasonCode: String = "RAID_ENTRY_WAIT",
+        val releaseCondition: String = "예약 시각 뒤 최신 레이드 상태 재확인",
+    ) : RaidRecordResult
+    data class EntrySkipped(val message: String) : RaidRecordResult
     data class NotApplied(val message: String) : RaidRecordResult
     data class NeedsRecheck(val at: Instant, val message: String) : RaidRecordResult
     data class BattleRecoveryStarted(val at: Instant, val message: String) : RaidRecordResult

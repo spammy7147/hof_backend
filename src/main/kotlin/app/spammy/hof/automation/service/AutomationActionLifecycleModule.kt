@@ -616,7 +616,7 @@ class UnifiedAutomationActionLifecycleModule(
                     }
                     submittedResponse = null
                     requireFishingDirectApplied(payload, response)
-                    if (payload.action == FishingAction.CATCH && !response.blockedByBattle) {
+                    if (payload.action == FishingAction.CATCH) {
                         workLifecycle.completeFishingCycle(accountId, stored.entryId)
                     }
                     return execution
@@ -656,12 +656,15 @@ class UnifiedAutomationActionLifecycleModule(
                         "Raid response is missing from the accepted execution."
                     }
                     submittedResponse = null
-                    val completion = recordRaidResult(
+                    val projection = recordRaidResult(
                         accountId,
                         payload.toRaidAttempt(stored.entryId),
                         RaidResultObservation.Page(raidObservationAdapter.from(response)),
                     )
-                    return (execution as TypedAutomationExecution.ActionCompleted).copy(raidOutcome = completion)
+                    return (execution as TypedAutomationExecution.ActionCompleted).copy(
+                        raidOutcome = projection.completion,
+                        raidWait = projection.waiting,
+                    )
                 }
 
                 override fun applyPolicyAcceptedExecution(execution: TypedAutomationExecution): TypedAutomationExecution =
@@ -904,9 +907,11 @@ class UnifiedAutomationActionLifecycleModule(
             }
             val target = payload.targetRaidId?.let { id -> latest.raids.singleOrNull { it.id == id } }
             target != null && target.status == RaidStatus.COMPLETED &&
-                !isRaidResetRequiredStatus(target.statusText) && !latest.applyWait &&
-                target.rewardWindowStatus == app.spammy.hof.town.raid.model.RaidRewardWindowStatus.AVAILABLE &&
-                payload.action in latest.globalActions
+                target.joined && !isRaidResetRequiredStatus(target.statusText) && !latest.applyWait &&
+                target.rewardWindowStatus in setOf(
+                    app.spammy.hof.town.raid.model.RaidRewardWindowStatus.AVAILABLE,
+                    app.spammy.hof.town.raid.model.RaidRewardWindowStatus.CLAIM_WINDOW,
+                )
         } else {
             payload.action in latest.globalActions
         }
@@ -1656,6 +1661,7 @@ class UnifiedAutomationActionLifecycleModule(
                     payload.categoryId,
                     payload.mapCode,
                 )
+                workLifecycle.completeUnionCycle(accountId, stored.entryId)
                 null
             }
             BattleAutomationActionSource.FISHING_AUTOMATION -> {
@@ -1680,7 +1686,7 @@ class UnifiedAutomationActionLifecycleModule(
                         submittedFromRunnable = payload.raidSubmittedFromRunnable,
                     ),
                     RaidResultObservation.BattleCompleted,
-                )
+                ).completion
             }
             else -> error("Unsupported managed battle-map source ${payload.source}.")
         }
@@ -2019,12 +2025,13 @@ class UnifiedAutomationActionLifecycleModule(
         stored: StoredTypedAutomationAction,
         payload: StoredTypedActionPayload.RaidCycleAbort,
     ): TypedAutomationExecution {
-        val completion = recordRaidResult(
+        val projection = recordRaidResult(
             accountId,
             payload.toRaidAttempt(stored.entryId),
             payload.toObservation(),
         )
-        return completion?.let(TypedAutomationExecution::RaidCycleFinished)
+        return projection.waiting
+            ?: projection.completion?.let(TypedAutomationExecution::RaidCycleFinished)
             ?: TypedAutomationExecution.Completed
     }
 
@@ -2042,9 +2049,22 @@ class UnifiedAutomationActionLifecycleModule(
         accountId: Long,
         attempt: RaidAttempt,
         observation: RaidResultObservation,
-    ): RaidCycleOutcome? = when (val result = raidCycleModule.recordObservedResult(accountId, attempt, observation)) {
-        is RaidRecordResult.Recorded -> result.completion?.also {
+    ): RaidRecordProjection = when (val result = raidCycleModule.recordObservedResult(accountId, attempt, observation)) {
+        is RaidRecordResult.Recorded -> RaidRecordProjection(
+            completion = result.completion?.also {
+                workLifecycle.completeRaidCycle(accountId, attempt.entryId)
+            },
+        )
+        is RaidRecordResult.EntryWait -> {
+            workLifecycle.waitForRaid(accountId, attempt.entryId, result.raidId, result.at, result.message)
+            RaidRecordProjection(
+                completion = result.completion,
+                waiting = result.toExecution(),
+            )
+        }
+        is RaidRecordResult.EntrySkipped -> {
             workLifecycle.completeRaidCycle(accountId, attempt.entryId)
+            RaidRecordProjection()
         }
         is RaidRecordResult.NotApplied -> throw AmbiguousAutomationSubmissionException(result.message)
         is RaidRecordResult.NeedsRecheck -> throw AmbiguousAutomationSubmissionException(result.message)
@@ -2067,6 +2087,14 @@ class UnifiedAutomationActionLifecycleModule(
                 result.completion?.let(TypedAutomationExecution::RaidCycleFinished) ?: defaultExecution,
             )
         }
+        is RaidRecordResult.EntryWait -> {
+            workLifecycle.waitForRaid(accountId, attempt.entryId, result.raidId, result.at, result.message)
+            AmbiguousActionResolution.Applied(result.toExecution())
+        }
+        is RaidRecordResult.EntrySkipped -> {
+            workLifecycle.completeRaidCycle(accountId, attempt.entryId)
+            AmbiguousActionResolution.Applied(defaultExecution)
+        }
         is RaidRecordResult.NotApplied -> if (attempt.kind == RaidIntentKind.REWARD) {
             AmbiguousActionResolution.Superseded(result.message)
         } else {
@@ -2078,6 +2106,20 @@ class UnifiedAutomationActionLifecycleModule(
         is RaidRecordResult.RewardRetryReady -> AmbiguousActionResolution.Superseded(result.message)
         is RaidRecordResult.RewardHeld -> AmbiguousActionResolution.Superseded(result.message)
     }
+
+    private fun RaidRecordResult.EntryWait.toExecution() = TypedAutomationExecution.RaidWaiting(
+        retryAt = at,
+        raidId = raidId,
+        reasonCode = reasonCode,
+        message = message,
+        releaseCondition = releaseCondition,
+        completedCycle = completion,
+    )
+
+    private data class RaidRecordProjection(
+        val completion: RaidCycleOutcome? = null,
+        val waiting: TypedAutomationExecution.RaidWaiting? = null,
+    )
 
     private fun StoredTypedActionPayload.RaidTown.toRaidAttempt(
         entryId: Long,

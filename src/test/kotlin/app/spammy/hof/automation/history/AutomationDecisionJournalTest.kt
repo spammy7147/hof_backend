@@ -183,13 +183,13 @@ class AutomationDecisionJournalTest {
     }
 
     @Test
-    fun `선택된 낚시의 START CATCH 방해 전투는 상위 판단 단계 수를 늘리지 않고 실행 단계로 묶인다`() {
+    fun `낚시 START CATCH와 방해 전투는 서로 다른 전역 판단 사이클에 기록된다`() {
         val account = account("history-fishing-cycle")
         val home = entry(account, AutomationType.HOME_QUEST, 0)
         val fishing = entry(account, AutomationType.FISHING, 1)
         entityManager.flush()
         val journal = journal()
-        val cycleId = journal.appendDecision(
+        val castCycleId = journal.appendDecision(
             account.id,
             AutomationCoordination.Runnable(
                 fishing.id,
@@ -220,7 +220,7 @@ class AutomationDecisionJournalTest {
                 ),
             ),
         )
-        journal.appendActionResult(cycleId, AutomationActionTrace(
+        journal.appendActionResult(castCycleId, AutomationActionTrace(
             AutomationHistoryEventKind.ACTION_SUCCEEDED,
             "FISHING_START_APPLIED",
             "START 적용",
@@ -228,7 +228,7 @@ class AutomationDecisionJournalTest {
             AutomationType.FISHING,
             actionKind = "START",
         ))
-        journal.appendActionResult(cycleId, AutomationActionTrace(
+        journal.appendActionResult(castCycleId, AutomationActionTrace(
             AutomationHistoryEventKind.ACTION_SUCCEEDED,
             "FISHING_CATCH_APPLIED",
             "CATCH 적용",
@@ -236,7 +236,43 @@ class AutomationDecisionJournalTest {
             AutomationType.FISHING,
             actionKind = "CATCH",
         ))
-        journal.appendActionResult(cycleId, AutomationActionTrace(
+        val battleCycleId = journal.appendDecision(
+            account.id,
+            AutomationCoordination.Runnable(
+                fishing.id,
+                BattleMapAutomationAction(
+                    accountId = account.id,
+                    progressDate = java.time.LocalDate.parse("2026-08-12"),
+                    categoryId = "battle_map",
+                    mapCode = "fish-monster",
+                    presetMode = app.spammy.hof.automation.entity.PresetSelectionMode.PRIMARY,
+                    presetId = 1,
+                    battleCount = 1,
+                    executionIdentity = "fishing-battle-1",
+                    source = BattleAutomationActionSource.FISHING_AUTOMATION,
+                ),
+                emptyList(),
+                listOf(
+                    AutomationEvaluationTrace(
+                        0,
+                        home.id,
+                        AutomationType.HOME_QUEST,
+                        AutomationDecisionOutcome.SKIPPED,
+                        "HOME_IDLE",
+                        "실행할 자택 행동이 없습니다.",
+                    ),
+                    AutomationEvaluationTrace(
+                        1,
+                        fishing.id,
+                        AutomationType.FISHING,
+                        AutomationDecisionOutcome.SELECTED,
+                        "ACTION_SELECTED",
+                        "낚시 방해 전투를 선택했습니다.",
+                    ),
+                ),
+            ),
+        )
+        journal.appendActionResult(battleCycleId, AutomationActionTrace(
             AutomationHistoryEventKind.ACTION_SUCCEEDED,
             "FISHING_OBSTRUCTION_BATTLE_APPLIED",
             "방해 전투 적용",
@@ -247,14 +283,19 @@ class AutomationDecisionJournalTest {
         entityManager.flush()
         entityManager.clear()
 
-        val cycle = journal.page(account.id, AutomationHistoryQuery()).cycles.single()
+        val cycles = journal.page(account.id, AutomationHistoryQuery()).cycles.sortedBy(AutomationHistoryCycle::id)
 
-        assertEquals(5, cycle.events.size)
-        assertEquals(2, cycle.topLevelStepCount)
-        assertEquals(listOf("HOME_IDLE", "ACTION_SELECTED"), cycle.steps.map { it.event.reasonCode })
+        assertEquals(2, cycles.size)
+        assertEquals(listOf(2, 2), cycles.map(AutomationHistoryCycle::topLevelStepCount))
+        assertEquals(listOf("HOME_IDLE", "ACTION_SELECTED"), cycles[0].steps.map { it.event.reasonCode })
         assertEquals(
-            listOf("FISHING_START_APPLIED", "FISHING_CATCH_APPLIED", "FISHING_OBSTRUCTION_BATTLE_APPLIED"),
-            cycle.steps.last().executionEvents.map(AutomationHistoryEvent::reasonCode),
+            listOf("FISHING_START_APPLIED", "FISHING_CATCH_APPLIED"),
+            cycles[0].steps.last().executionEvents.map(AutomationHistoryEvent::reasonCode),
+        )
+        assertEquals(listOf("HOME_IDLE", "ACTION_SELECTED"), cycles[1].steps.map { it.event.reasonCode })
+        assertEquals(
+            listOf("FISHING_OBSTRUCTION_BATTLE_APPLIED"),
+            cycles[1].steps.last().executionEvents.map(AutomationHistoryEvent::reasonCode),
         )
     }
 
