@@ -260,6 +260,7 @@ class TypedLiveAutomationSnapshotLoader(
                 entry.enabled,
                 entry.displayName,
                 entry.settingsRevision,
+                entry.minimumRemainingTime,
                 quest,
                 homeQuests,
                 battle,
@@ -403,7 +404,19 @@ class TypedLiveAutomationSnapshotLoader(
             val key = BattleMapProgressIdentity(setting.categoryId, setting.mapCode)
             key to (progressRows[key]?.successfulRuns ?: 0)
         }
-        return BattleMapAutomationSnapshot(accountId, settings, states.map(::battleState), progress, config.primary, config.availablePresetIds, UUID.randomUUID().toString(), now, config.parties, timeSnapshot)
+        return BattleMapAutomationSnapshot(
+            accountId = accountId,
+            settings = settings,
+            mapStates = states.map(::battleState),
+            successfulRuns = progress,
+            primaryPresetId = config.primary,
+            availablePresetIds = config.availablePresetIds,
+            executionIdentity = UUID.randomUUID().toString(),
+            evaluationInstant = now,
+            resolvedParties = config.parties,
+            timeSnapshot = timeSnapshot,
+            minimumRemainingTime = entry.minimumRemainingTime,
+        )
     }
 
     private fun adventureSnapshot(accountId: Long, entry: DetachedEntry, states: List<AccountBattleMapStateEntity>, config: DetachedConfiguration, now: Instant, timeSnapshot: AutomationTimeSnapshot?): AdventureMapAutomationSnapshot {
@@ -468,6 +481,7 @@ class TypedLiveAutomationSnapshotLoader(
     private data class DetachedEntry(
         val id: Long, val type: AutomationType, val priority: Int, val enabled: Boolean,
         val displayName: String?, val settingsRevision: Long,
+        val minimumRemainingTime: Int?,
         val quest: List<DetachedQuestSelection>, val homeQuests: List<DetachedHomeQuestSelection>,
         val battle: List<DetachedBattleSetting>, val adventure: List<DetachedAdventureSetting>,
         val union: List<DetachedUnionSetting>, val fishingMaps: List<DetachedFishingMap>, val rotationTarget: String?,

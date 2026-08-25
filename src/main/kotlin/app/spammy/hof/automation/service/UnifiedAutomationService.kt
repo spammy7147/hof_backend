@@ -449,7 +449,14 @@ class UnifiedAutomationService(
     fun updateBattleMaps(accountId: Long, request: UpdateBattleMapAutomationRequest): TypedAutomationAggregateResponse {
         lockTypedAccount(accountId)
         val entry = requireTypedEntry(accountId, AutomationType.BATTLE_MAP)
-        return replaceBattleMaps(accountId, entry, entry.displayName, request.enabled, request.maps)
+        return replaceBattleMaps(
+            accountId,
+            entry,
+            entry.displayName,
+            request.enabled,
+            request.maps,
+            request.minimumRemainingTime,
+        )
     }
 
     @Transactional
@@ -467,6 +474,7 @@ class UnifiedAutomationService(
             normalizeDisplayName(request.displayName),
             request.enabled,
             request.maps,
+            request.minimumRemainingTime,
         )
     }
 
@@ -476,9 +484,13 @@ class UnifiedAutomationService(
         displayName: String?,
         enabled: Boolean,
         maps: List<BattleMapSettingRequest>,
+        minimumRemainingTime: Int?,
     ): TypedAutomationAggregateResponse {
         if (maps.size > MAX_SETTING_ITEMS) invalid("전투 맵 설정은 최대 100개까지 저장할 수 있습니다.")
         if (enabled && maps.isEmpty()) invalid("맵이 없는 묶음은 활성화할 수 없습니다.")
+        if (minimumRemainingTime != null && minimumRemainingTime !in 1..MAX_BATTLE_MINIMUM_REMAINING_TIME) {
+            invalid("최소 잔여 Time은 1 이상 ${MAX_BATTLE_MINIMUM_REMAINING_TIME} 이하여야 합니다.")
+        }
         val normalized = maps.map { map ->
             if (map.dailyTargetCount <= 0) invalid("일일 목표 횟수는 1 이상이어야 합니다.")
             if (map.executionOrder < 0) invalid("전투 맵 실행 순서는 0 이상이어야 합니다.")
@@ -530,7 +542,7 @@ class UnifiedAutomationService(
             accountId,
             entry.id,
             changedKeys(oldConfig, newConfig),
-            wholeEntry = entry.enabled && !enabled,
+            wholeEntry = (entry.enabled && !enabled) || entry.minimumRemainingTime != minimumRemainingTime,
         )
         if (old.isNotEmpty()) {
             typedBattleMapRepository.deleteAll(old)
@@ -549,6 +561,7 @@ class UnifiedAutomationService(
                 ),
             )
         }
+        entry.minimumRemainingTime = minimumRemainingTime
         updateTypedEntry(entry, enabled, displayName)
         enqueueSettingsWake(accountId)
         return buildTypedAggregate(accountId)
@@ -885,6 +898,7 @@ class UnifiedAutomationService(
             canLoadPattern = { it.patternSlot?.canLoad == true },
         ).keys
         val primaryPresetId = presets.singleOrNull { it.isPrimary }?.id
+        val hofStatus = hofStatusSnapshots.findLatest(accountId)
         val responses = entries.map { entry ->
             val quests = if (entry.type == AutomationType.QUEST) {
                 typedAutomationQueryRepository.findQuestSelections(entry.id)
@@ -937,7 +951,20 @@ class UnifiedAutomationService(
                 .findMapsByCategoryIdAndMapCodePairs(fishingMaps.map { it.categoryId to it.mapCode }.toSet())
                 .associateBy { it.categoryId to it.mapCode }
             val warnings = (
-                typedWarnings(entry, quests, homeQuests, questMaps, battle, adventure, fishingMaps, union, raid, primaryPresetId, validPresetIds) +
+                typedWarnings(
+                    entry,
+                    quests,
+                    homeQuests,
+                    questMaps,
+                    battle,
+                    adventure,
+                    fishingMaps,
+                    union,
+                    raid,
+                    primaryPresetId,
+                    validPresetIds,
+                    hofStatus?.timeMax,
+                ) +
                     holdWarningsByEntry[entry.id].orEmpty()
                 ).distinct()
             TypedAutomationEntryResponse(
@@ -1016,6 +1043,7 @@ class UnifiedAutomationService(
                 },
                 displayName = entry.displayName,
                 settingsRevision = entry.settingsRevision.toString(),
+                minimumRemainingTime = entry.minimumRemainingTime,
             )
         }
         val runtime = typedAutomationQueryRepository.findRuntimeState(accountId)
@@ -1039,7 +1067,7 @@ class UnifiedAutomationService(
         val configWarnings = responses.flatMap(TypedAutomationEntryResponse::warnings)
         return TypedAutomationAggregateResponse(
             entries = responses,
-            hofStatus = hofStatusSnapshots.findLatest(accountId),
+            hofStatus = hofStatus,
             runtime = TypedAutomationRuntimeResponse(
                 lifecycle = runtime?.lifecycleStatus ?: TypedAutomationLifecycle.STOPPED,
                 stopReason = runtime?.stopReason,
@@ -1092,6 +1120,7 @@ class UnifiedAutomationService(
         raid: List<RaidAutomationTargetEntity>,
         primaryPresetId: Long?,
         validPresetIds: Set<Long>,
+        timeMax: Int?,
     ): List<String> {
         if (!entry.enabled) return emptyList()
         val warnings = linkedSetOf<String>()
@@ -1115,6 +1144,13 @@ class UnifiedAutomationService(
             }
             AutomationType.BATTLE_MAP -> {
                 if (battle.isEmpty()) warnings += "전투 맵 설정이 없습니다."
+                if (
+                    entry.minimumRemainingTime != null &&
+                    timeMax != null &&
+                    entry.minimumRemainingTime!!.toLong() + BATTLE_MAP_SINGLE_RUN_TIME > timeMax.toLong()
+                ) {
+                    warnings += "현재 최대 Time으로는 설정한 최소 잔여 Time을 남기고 전투할 수 없습니다."
+                }
                 battle.forEach { map ->
                     presetWarning(
                         map.presetMode,
@@ -1415,6 +1451,7 @@ class UnifiedAutomationService(
         const val MAX_RAID_ID_LENGTH = 200
         const val MAX_SETTING_ITEMS = 100
         const val MAX_AUTOMATION_ENTRIES = 100
+        const val BATTLE_MAP_SINGLE_RUN_TIME = 100L
         const val FISHING_TARGET_KEY = "fishing"
         const val FISHING_BATTLE_CATEGORY = "battle_map"
         const val UNION_CATEGORY = "union"

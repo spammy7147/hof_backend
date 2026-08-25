@@ -66,6 +66,7 @@ data class BattleMapAutomationSnapshot(
     val evaluationInstant: Instant,
     val resolvedParties: Map<Long, ResolvedAutomationParty> = emptyMap(),
     val timeSnapshot: AutomationTimeSnapshot? = null,
+    val minimumRemainingTime: Int? = null,
 )
 
 enum class BattleAutomationActionSource {
@@ -324,6 +325,7 @@ class BattleMapAutomationHandler(
                     targetRemaining = remaining,
                     supportsThreeBattles = state.supportsThreeBattles,
                     hasCapacityForThree = state.hasCapacityForThree(),
+                    minimumRemainingTime = context.minimumRemainingTime,
                 )) {
                     is BattleTimeDecision.Wait -> {
                         waits += time.nextRunAt

@@ -32,16 +32,17 @@ class BattleMapAutomationHandlerTest {
     }
 
     @Test
-    fun `battle map waits through 1500 TIME and chooses rounds above the reserve`() {
+    fun `battle map preserves the configured minimum remaining TIME after each batch`() {
         val now = Instant.parse("2026-07-15T00:00:00Z")
-        val at1500 = handler.evaluate(snapshot(
+        val belowOneBattle = handler.evaluate(snapshot(
             listOf(setting("map", 10)),
             emptyMap(),
             listOf(state("map", supportsThree = true)),
             now,
-            timeCurrent = 1500,
+            timeCurrent = 1599,
+            minimumRemainingTime = 1500,
         ))
-        assertEquals(now.plusMillis(1_600), assertIs<HandlerEvaluation.Unavailable>(at1500).nextRunAt)
+        assertEquals(now.plusMillis(1_600), assertIs<HandlerEvaluation.Unavailable>(belowOneBattle).nextRunAt)
 
         fun actionAt(time: Int) = assertIs<BattleMapAutomationAction>(
             assertIs<HandlerEvaluation.Runnable>(handler.evaluate(snapshot(
@@ -50,9 +51,12 @@ class BattleMapAutomationHandlerTest {
                 listOf(state("map", supportsThree = true)),
                 now,
                 timeCurrent = time,
+                minimumRemainingTime = 1500,
             ))).action,
         )
-        assertEquals(3, actionAt(1501).battleCount)
+        assertEquals(1, actionAt(1600).battleCount)
+        assertEquals(1, actionAt(1799).battleCount)
+        assertEquals(3, actionAt(1800).battleCount)
     }
 
     @Test
@@ -400,6 +404,7 @@ class BattleMapAutomationHandlerTest {
         states: List<BattleMapRunnableState>,
         evaluationInstant: Instant = Instant.parse("2026-07-15T00:00:00Z"),
         timeCurrent: Int = 6000,
+        minimumRemainingTime: Int? = null,
     ) = BattleMapAutomationSnapshot(
         accountId = 7,
         settings = settings,
@@ -410,6 +415,7 @@ class BattleMapAutomationHandlerTest {
         executionIdentity = "execution-1",
         evaluationInstant = evaluationInstant,
         timeSnapshot = AutomationTimeSnapshot(timeCurrent, 6000, evaluationInstant),
+        minimumRemainingTime = minimumRemainingTime,
     )
 
     private fun setting(

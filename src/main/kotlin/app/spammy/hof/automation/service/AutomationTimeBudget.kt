@@ -53,17 +53,35 @@ class BattleTimePolicy(
         targetRemaining: Int,
         supportsThreeBattles: Boolean,
         hasCapacityForThree: Boolean,
-    ): BattleTimeDecision = forCombat(
-        snapshot = snapshot,
-        now = now,
-        targetRemaining = targetRemaining,
-        supportsThreeBattles = supportsThreeBattles,
-        hasCapacityForThree = hasCapacityForThree,
-        minimumExecutionTime = BATTLE_MAP_MINIMUM_EXECUTION_TIME,
-        unreachableRetryAt = snapshot
-            ?.takeIf { it.max < BATTLE_MAP_MINIMUM_EXECUTION_TIME }
-            ?.let { now.plus(sessionProperties.reconciliationInterval) },
-    )
+        minimumRemainingTime: Int? = null,
+    ): BattleTimeDecision {
+        require(minimumRemainingTime == null || minimumRemainingTime >= 0)
+        val reserve = minimumRemainingTime ?: 0
+        val oneBattleRequired = totalRequiredTime(reserve, BATTLE_TIME_PER_ROUND)
+        val estimated = snapshot?.estimateAt(now)
+            ?: return missingObservation(now, oneBattleRequired)
+
+        val canRunThree =
+            targetRemaining >= THREE_BATTLE_COUNT &&
+                supportsThreeBattles &&
+                hasCapacityForThree
+        val threeBattlesRequired = totalRequiredTime(reserve, THREE_BATTLE_TIME)
+        if (canRunThree && estimated >= threeBattlesRequired) {
+            return BattleTimeDecision.Run(THREE_BATTLE_COUNT, estimated, THREE_BATTLE_TIME)
+        }
+        if (estimated >= oneBattleRequired) {
+            return BattleTimeDecision.Run(1, estimated, BATTLE_TIME_PER_ROUND)
+        }
+        return BattleTimeDecision.Wait(
+            nextRunAt = if (snapshot.max < oneBattleRequired) {
+                now.plus(sessionProperties.reconciliationInterval)
+            } else {
+                recoveryAt(now, oneBattleRequired - estimated)
+            },
+            estimatedTime = estimated,
+            requiredTime = oneBattleRequired,
+        )
+    }
 
     fun forQuestCombat(
         snapshot: AutomationTimeSnapshot?,
@@ -158,9 +176,11 @@ class BattleTimePolicy(
     private fun recoveryAt(now: Instant, deficit: Int): Instant =
         now.plusMillis(deficit.toLong() * AutomationTimeSnapshot.TIME_RECOVERY_INTERVAL_MILLIS)
 
+    private fun totalRequiredTime(reserve: Int, battleCost: Int): Int =
+        (reserve.toLong() + battleCost).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+
     private companion object {
         const val BATTLE_TIME_PER_ROUND = 100
-        const val BATTLE_MAP_MINIMUM_EXECUTION_TIME = 1501
         const val THREE_BATTLE_COUNT = 3
         const val THREE_BATTLE_TIME = 300
         const val MISSING_OBSERVATION_RETRY_SECONDS = 10L

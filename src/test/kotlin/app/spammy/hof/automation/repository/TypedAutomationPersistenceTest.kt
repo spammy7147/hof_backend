@@ -107,12 +107,15 @@ class TypedAutomationPersistenceTest {
                 newEntry(account, AutomationType.RAID, priority = 30, now),
                 newEntry(account, AutomationType.ADVENTURE_MAP, priority = 20, now),
                 newEntry(account, AutomationType.QUEST, priority = 0, now),
-                newEntry(account, AutomationType.BATTLE_MAP, priority = 10, now),
+                newEntry(account, AutomationType.BATTLE_MAP, priority = 10, now).also {
+                    it.minimumRemainingTime = 1500
+                },
             ),
         )
         entityManager.flush()
         entityManager.clear()
 
+        val entries = queryRepository.findEntries(account.id)
         assertEquals(
             listOf(
                 AutomationType.QUEST,
@@ -122,8 +125,10 @@ class TypedAutomationPersistenceTest {
                 AutomationType.UNION,
                 AutomationType.FISHING,
             ),
-            queryRepository.findEntries(account.id).map(AutomationEntryEntity::type),
+            entries.map(AutomationEntryEntity::type),
         )
+        assertEquals(1500, entries.single { it.type == AutomationType.BATTLE_MAP }.minimumRemainingTime)
+        assertEquals(null, entries.single { it.type == AutomationType.ADVENTURE_MAP }.minimumRemainingTime)
     }
 
     @Test

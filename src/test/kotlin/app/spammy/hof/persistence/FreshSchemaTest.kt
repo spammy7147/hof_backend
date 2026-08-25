@@ -94,6 +94,7 @@ class FreshSchemaTest {
                 "43" to "allow multiple map automation entries",
                 "44" to "own map groups by account",
                 "45" to "snapshot automation entry names",
+                "46" to "add battle map minimum remaining time",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -145,6 +146,7 @@ class FreshSchemaTest {
                 "V43__allow_multiple_map_automation_entries.sql",
                 "V44__own_map_groups_by_account.sql",
                 "V45__snapshot_automation_entry_names.sql",
+                "V46__add_battle_map_minimum_remaining_time.sql",
                 "V4__prepare_captcha_on_demand.sql",
                 "V5__track_character_detail_sync.sql",
                 "V6__learn_shared_battle_cooldowns.sql",

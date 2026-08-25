@@ -21,17 +21,25 @@ class AutomationTimeBudgetTest {
     }
 
     @Test
-    fun `battle map preserves 1500 TIME and chooses one or three only above the reserve`() {
+    fun `battle map without a minimum remaining TIME only requires the battle cost`() {
+        assertIs<BattleTimeDecision.Wait>(policy.forBattleMap(time(99), NOW, 10, true, true))
+        assertEquals(1, run(policy.forBattleMap(time(100), NOW, 10, true, true)).battleCount)
+        assertEquals(1, run(policy.forBattleMap(time(299), NOW, 10, true, true)).battleCount)
+        assertEquals(3, run(policy.forBattleMap(time(300), NOW, 10, true, true)).battleCount)
+    }
+
+    @Test
+    fun `battle map preserves the configured minimum remaining TIME after battle cost`() {
         assertEquals(
-            NOW.plusMillis(1_600),
+            NOW.plusSeconds(160),
             assertIs<BattleTimeDecision.Wait>(
-                policy.forBattleMap(time(1500), NOW, 10, true, true),
+                policy.forBattleMap(time(1500), NOW, 10, true, true, minimumRemainingTime = 1500),
             ).nextRunAt,
         )
-        assertEquals(3, run(policy.forBattleMap(time(1501), NOW, 10, true, true)).battleCount)
-        assertEquals(1, run(policy.forBattleMap(time(1501), NOW, 2, true, true)).battleCount)
-        assertEquals(1, run(policy.forBattleMap(time(1501), NOW, 10, false, true)).battleCount)
-        assertEquals(1, run(policy.forBattleMap(time(1501), NOW, 10, true, false)).battleCount)
+        assertEquals(1, run(policy.forBattleMap(time(1600), NOW, 10, true, true, minimumRemainingTime = 1500)).battleCount)
+        assertEquals(1, run(policy.forBattleMap(time(1799), NOW, 10, true, true, minimumRemainingTime = 1500)).battleCount)
+        assertEquals(3, run(policy.forBattleMap(time(1800), NOW, 10, true, true, minimumRemainingTime = 1500)).battleCount)
+        assertEquals(1, run(policy.forBattleMap(time(1800), NOW, 2, true, true, minimumRemainingTime = 1500)).battleCount)
     }
 
     @Test
@@ -43,11 +51,11 @@ class AutomationTimeBudgetTest {
     }
 
     @Test
-    fun `battle map with maximum TIME at the reserve uses the reconciliation interval`() {
-        val constrained = AutomationTimeSnapshot(current = 1500, max = 1500, observedAt = NOW)
+    fun `battle map whose maximum TIME cannot cover reserve and one battle uses the reconciliation interval`() {
+        val constrained = AutomationTimeSnapshot(current = 1599, max = 1599, observedAt = NOW)
 
         val waiting = assertIs<BattleTimeDecision.Wait>(
-            policy.forBattleMap(constrained, NOW, 10, true, true),
+            policy.forBattleMap(constrained, NOW, 10, true, true, minimumRemainingTime = 1500),
         )
 
         assertEquals(NOW.plus(Duration.ofMinutes(30)), waiting.nextRunAt)

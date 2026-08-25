@@ -271,9 +271,11 @@ class TypedLiveAutomationSnapshotLoaderTest {
         val firstAction = assertIs<BattleMapAutomationAction>(
             assertIs<HandlerEvaluation.Runnable>(battleHandler.evaluate(firstBattle)).action,
         )
-        val secondEvaluation = assertIs<HandlerEvaluation.Unavailable>(battleHandler.evaluate(secondBattle))
+        val secondAction = assertIs<BattleMapAutomationAction>(
+            assertIs<HandlerEvaluation.Runnable>(battleHandler.evaluate(secondBattle)).action,
+        )
         assertEquals(3, firstAction.battleCount)
-        assertEquals(now.plusMillis(1_600), secondEvaluation.nextRunAt)
+        assertEquals(3, secondAction.battleCount)
         assertEquals(101, firstBattle.primaryPresetId); assertEquals(102, secondBattle.primaryPresetId)
         assertNotEquals(firstBattle.executionIdentity, secondBattle.executionIdentity)
         assertTrue(firstBattle.executionIdentity.isNotBlank() && firstBattle.executionIdentity.length <= 128)
@@ -340,7 +342,9 @@ class TypedLiveAutomationSnapshotLoaderTest {
     fun `category change during blocking GET rejects mixed snapshot and next load refreshes new category without transaction`() {
         val now = Instant.parse("2026-07-16T00:00:00Z")
         val account = HofAccountEntity(7, "login-category", "encrypted", now)
-        val entry = AutomationEntryEntity(11, account, AutomationType.BATTLE_MAP, 0, true, now, now)
+        val entry = AutomationEntryEntity(11, account, AutomationType.BATTLE_MAP, 0, true, now, now).also {
+            it.minimumRemainingTime = 900
+        }
         val typed = Mockito.mock(TypedAutomationQueryRepository::class.java)
         val mapQuery = Mockito.mock(BattleMapQueryRepository::class.java)
         val mapService = Mockito.mock(BattleMapService::class.java)
@@ -374,6 +378,7 @@ class TypedLiveAutomationSnapshotLoaderTest {
         val refreshed = loader.loadEntry(7, entry.id)
 
         assertEquals("category-b", requireNotNull(refreshed.battle).settings.single().categoryId)
+        assertEquals(900, requireNotNull(refreshed.battle).minimumRemainingTime)
         Mockito.verify(mapService).findMaps(7, "category-a", HofRequestOrigin.AUTOMATION)
         Mockito.verify(mapService).findMaps(7, "category-b", HofRequestOrigin.AUTOMATION)
         database.connection.use { it.createStatement().execute("shutdown") }

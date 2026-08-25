@@ -6,11 +6,14 @@ import app.spammy.hof.automation.entity.PresetSelectionMode
 import app.spammy.hof.automation.entity.TypedAutomationLifecycle
 import jakarta.validation.Valid
 import jakarta.validation.constraints.AssertTrue
+import jakarta.validation.constraints.Max
 import jakarta.validation.constraints.Min
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Positive
 import jakarta.validation.constraints.Size
 import app.spammy.hof.status.dto.HofObservedStatusResponse
+
+const val MAX_BATTLE_MINIMUM_REMAINING_TIME = 2_147_483_347
 
 data class CreateAutomationEntryRequest(val type: AutomationType)
 
@@ -80,6 +83,8 @@ data class QuestMapSettingRequest(
 data class UpdateBattleMapAutomationRequest(
     val enabled: Boolean,
     @field:Valid @field:Size(max = 100) val maps: List<@Valid BattleMapSettingRequest>,
+    @field:Positive @field:Max(MAX_BATTLE_MINIMUM_REMAINING_TIME.toLong())
+    val minimumRemainingTime: Int? = null,
 ) {
     @get:AssertTrue(message = "전투 맵 실행 순서를 중복해서 사용할 수 없습니다.")
     val hasUniqueExecutionOrders: Boolean
@@ -91,6 +96,8 @@ data class UpdateBattleMapGroupRequest(
     @field:Size(max = 100) val displayName: String?,
     val enabled: Boolean,
     @field:Valid @field:Size(max = 100) val maps: List<@Valid BattleMapSettingRequest>,
+    @field:Positive @field:Max(MAX_BATTLE_MINIMUM_REMAINING_TIME.toLong())
+    val minimumRemainingTime: Int? = null,
 ) {
     @get:AssertTrue(message = "전투 맵 실행 순서를 중복해서 사용할 수 없습니다.")
     val hasUniqueExecutionOrders: Boolean
@@ -274,6 +281,7 @@ data class TypedAutomationEntryResponse(
     val raidTargets: List<RaidTargetSettingResponse> = emptyList(),
     val displayName: String? = null,
     val settingsRevision: String = "0",
+    val minimumRemainingTime: Int? = null,
 )
 
 data class TypedAutomationRuntimeResponse(

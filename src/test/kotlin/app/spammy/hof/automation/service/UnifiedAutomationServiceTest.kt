@@ -266,13 +266,33 @@ class UnifiedAutomationServiceTest {
         val response = service.updateBattleMapGroup(
             ACCOUNT_ID,
             second.id,
-            UpdateBattleMapGroupRequest("7", " 보스 ", false, emptyList()),
+            UpdateBattleMapGroupRequest("7", " 보스 ", false, emptyList(), minimumRemainingTime = 1200),
         )
 
         assertEquals("일반", response.entries[0].displayName)
         assertEquals("3", response.entries[0].settingsRevision)
         assertEquals("보스", response.entries[1].displayName)
         assertEquals("8", response.entries[1].settingsRevision)
+        assertNull(response.entries[0].minimumRemainingTime)
+        assertEquals(1200, response.entries[1].minimumRemainingTime)
+        assertEquals(1200, second.minimumRemainingTime)
+    }
+
+    @Test
+    fun `battle map group rejects a non-positive minimum remaining TIME`() {
+        val group = entry(92L, AutomationType.BATTLE_MAP).also { it.settingsRevision = 7 }
+        Mockito.`when`(typedQuery.findEntry(ACCOUNT_ID, group.id)).thenReturn(group)
+
+        val error = assertFailsWith<ApiException> {
+            service.updateBattleMapGroup(
+                ACCOUNT_ID,
+                group.id,
+                UpdateBattleMapGroupRequest("7", null, false, emptyList(), minimumRemainingTime = 0),
+            )
+        }
+
+        assertEquals(ErrorCode.INVALID_REQUEST, error.errorCode)
+        assertNull(group.minimumRemainingTime)
     }
 
     @Test
@@ -1280,6 +1300,25 @@ class UnifiedAutomationServiceTest {
         assertTrue(response.entries.first().ready)
         assertFalse(response.entries.last().ready)
         assertEquals(listOf("전투 맵 설정이 없습니다."), response.runtime.warnings)
+    }
+
+    @Test
+    fun `enabled battle map warns when maximum TIME cannot cover reserve and one battle`() {
+        val battle = entry(92L, AutomationType.BATTLE_MAP, enabled = true).also {
+            it.minimumRemainingTime = 5950
+        }
+        Mockito.`when`(accountQueryRepository.findById(ACCOUNT_ID)).thenReturn(account())
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(battle))
+        Mockito.`when`(statusSnapshots.findLatest(ACCOUNT_ID)).thenReturn(observedStatus(6000))
+
+        val response = service.getTyped(ACCOUNT_ID)
+
+        assertEquals(5950, response.entries.single().minimumRemainingTime)
+        assertTrue(
+            response.entries.single().warnings.contains(
+                "현재 최대 Time으로는 설정한 최소 잔여 Time을 남기고 전투할 수 없습니다.",
+            ),
+        )
     }
 
     @Test

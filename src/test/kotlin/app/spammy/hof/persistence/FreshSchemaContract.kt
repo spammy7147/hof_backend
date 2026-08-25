@@ -420,6 +420,7 @@ internal object FreshSchemaContract {
             requiredInteger("priority"), requiredBoolean("enabled"), requiredInstant("created_at"),
             requiredInstant("updated_at"), optionalVarchar("singleton_type_marker", 30),
             optionalVarchar("display_name", 100), requiredBigint("settings_revision"),
+            optionalInteger("minimum_remaining_time"),
         ),
         table(
             "automation_work_sessions",
@@ -1512,6 +1513,11 @@ internal object FreshSchemaContract {
             "case automation_type when 'BATTLE_MAP' then singleton_type_marker is null " +
                 "when 'ADVENTURE_MAP' then singleton_type_marker is null " +
                 "else singleton_type_marker is not null and singleton_type_marker = automation_type end",
+        ),
+        check(
+            "automation_entries", "ck_automation_entries_minimum_remaining_time",
+            "minimum_remaining_time is null or automation_type = 'BATTLE_MAP' " +
+                "and minimum_remaining_time between 1 and 2147483347",
         ),
         check(
             "quest_automation_selections", "ck_quest_automation_selections_source_order", "source_order >= 0",

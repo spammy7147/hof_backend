@@ -50,6 +50,8 @@ class AutomationEntryEntity(
     var displayName: String? = null,
     @Column(name = "settings_revision", nullable = false)
     var settingsRevision: Long = 0,
+    @Column(name = "minimum_remaining_time")
+    var minimumRemainingTime: Int? = null,
 )
 
 @Entity
