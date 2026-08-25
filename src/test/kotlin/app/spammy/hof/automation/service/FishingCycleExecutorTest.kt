@@ -83,8 +83,8 @@ class FishingCycleExecutorTest {
             .map { it.arguments[1] as HofRequest to (it.arguments[2] as Map<*, *>) }
         assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.POST, HofHttpMethod.POST), invocations.map { it.first.method })
         assertEquals(listOf(HofRequestOrigin.AUTOMATION, HofRequestOrigin.AUTOMATION, HofRequestOrigin.AUTOMATION), invocations.map { it.first.origin })
-        assertEquals("낚시를 시작한다", invocations[1].first.formFields["do"])
-        assertEquals("낚는다", invocations[2].first.formFields["do"])
+        assertEquals("낚시를 시작한다", invocations[1].first.formFields["FStart"])
+        assertEquals("낚는다", invocations[2].first.formFields["FCatch"])
         assertEquals(mapOf("PHPSESSID" to "session"), invocations[0].second)
         assertEquals(mapOf("PHPSESSID" to "session", "phase" to "observed"), invocations[1].second)
         assertEquals(
@@ -197,7 +197,7 @@ class FishingCycleExecutorTest {
         val invocations = Mockito.mockingDetails(gateway).invocations
             .map { it.arguments[1] as HofRequest to (it.arguments[2] as Map<*, *>) }
         assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.POST), invocations.map { it.first.method })
-        assertEquals("낚는다", invocations[1].first.formFields["do"])
+        assertEquals("낚는다", invocations[1].first.formFields["FCatch"])
         assertEquals("waiting", invocations[1].second["phase"])
         Mockito.verifyNoInteractions(battleMaps)
     }

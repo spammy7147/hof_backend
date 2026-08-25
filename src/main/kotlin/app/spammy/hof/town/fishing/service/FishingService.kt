@@ -87,19 +87,19 @@ class FishingService(
         val caught = executor.executeObservedResponseTwoStepProjected(
             accountId = accountId,
             pageUrl = url,
-            requiredEntrySubmitField = "do",
-            requiredFinalSubmitField = "do",
             origin = HofRequestOrigin.AUTOMATION,
             observation = observation?.continuation,
             entryAction = { html, finalUrl, page ->
                 resolveFishingAction(html, finalUrl, page, FishingAction.START)
             },
+            expectedEntryForm = { form -> parser.actionFor(form) == FishingAction.START },
             observeEntryResponse = { html, finalUrl, result, page ->
                 started = FishingResponse.from(parser.parse(html, finalUrl, page, result))
             },
             finalAction = { html, finalUrl, page ->
                 resolveFishingActionOrNull(html, finalUrl, page, FishingAction.CATCH)
             },
+            expectedFinalForm = { form -> parser.actionFor(form) == FishingAction.CATCH },
             beforeFinalSubmission = {
                 beforeCatchSubmission(requireNotNull(started))
             },
@@ -122,12 +122,12 @@ class FishingService(
         return executor.executeObservedProjected(
             accountId = accountId,
             pageUrl = url,
-            requiredSubmitField = "do",
             origin = HofRequestOrigin.AUTOMATION,
             observation = observation.continuation,
             resolveAction = { html, finalUrl, page ->
                 resolveFishingAction(html, finalUrl, page, action)
             },
+            expectedForm = { form -> parser.actionFor(form) == action },
         ) { html, finalUrl, result, page ->
             FishingResponse.from(parser.parse(html, finalUrl, page, result))
         }

@@ -1945,9 +1945,7 @@ class UnifiedAutomationActionLifecycleModule(
             }
             return AmbiguousActionResolution.Applied()
         }
-        val reason = "낚시 실행 결과를 확정할 수 없어 같은 동작을 다시 보내지 않고 낚시만 보류합니다."
-        workLifecycle.waitFishingCycle(accountId, entryId, nextCheckAt = null, holdMessage = reason)
-        return AmbiguousActionResolution.Held(reason)
+        return AmbiguousActionResolution.Resubmit
     }
 
     private fun fishingDescriptor(action: FishingTownAutomationAction) = AutomationActionDescriptor(

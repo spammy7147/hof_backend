@@ -57,6 +57,7 @@ import app.spammy.hof.town.fishing.model.FishingAction
 import app.spammy.hof.town.fishing.model.FishingOutcome
 import app.spammy.hof.town.fishing.model.FishingPrimaryAction
 import app.spammy.hof.town.common.service.AccountHofObservationInvalidatedException
+import app.spammy.hof.town.common.service.ObservedTownActionPreconditionChangedException
 import java.time.Instant
 import java.time.LocalDate
 import kotlin.test.Test
@@ -705,6 +706,42 @@ class UnifiedAutomationRunnerTest {
 
         Mockito.verify(cycleExecutor, Mockito.times(1)).executeOneCast(anyFishingCommand(), anyFishingTransitions())
         assertIs<TypedRuntimeOutcome.SubmissionAmbiguous>(capturedOutcome())
+        Mockito.verify(runtime, Mockito.never()).advanceAppliedActionToPreparedFollowup(anyExecution(), anyStoredAction())
+    }
+
+    @Test
+    fun `낚시 START form 불일치는 결과 불명이 아니라 새 판단으로 넘긴다`() {
+        val cycleExecutor = Mockito.mock(FishingCycleExecutor::class.java)
+        val startManaged = Mockito.mock(ManagedFishingAutomationAction::class.java)
+        val startStored = fishingStartStored()
+        val startPrepared = executionRight(
+            TypedRuntimeCheckpoint(startStored, TypedRuntimeCheckpointPhase.PREPARED, null, null),
+        )
+        val action = fishingStartAction()
+        Mockito.`when`(decisions.select(7L)).thenReturn(AutomationCoordination.Runnable(15L, action, emptyList()))
+        Mockito.`when`(lifecycle.describe(action)).thenReturn(fishingDescriptor("START"))
+        Mockito.`when`(lifecycle.prepare(7L, 15L, action)).thenReturn(startManaged)
+        Mockito.`when`(startManaged.storedAction).thenReturn(startStored)
+        Mockito.`when`(startManaged.descriptor).thenReturn(fishingDescriptor("START"))
+        Mockito.`when`(runtime.persistPrepared(freshExecution, startStored, emptyList()))
+            .thenReturn(TypedRuntimePreparation.Ready(startPrepared))
+        Mockito.`when`(runtime.beginSubmission(startPrepared)).thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
+        Mockito.`when`(cycleExecutor.executeOneCast(anyFishingCommand(), anyFishingTransitions()))
+            .thenThrow(ObservedTownActionPreconditionChangedException("낚시 START form 변경"))
+        val scoped = UnifiedAutomationRunner(
+            preflight,
+            runtime,
+            decisions,
+            wakeup,
+            sharedCooldowns,
+            lifecycle,
+            fishingCycleExecutor = cycleExecutor,
+        )
+
+        scoped.runOne(7L)
+
+        assertIs<TypedRuntimeOutcome.ActionSuperseded>(capturedOutcome())
+        Mockito.verify(cycleExecutor).executeOneCast(anyFishingCommand(), anyFishingTransitions())
         Mockito.verify(runtime, Mockito.never()).advanceAppliedActionToPreparedFollowup(anyExecution(), anyStoredAction())
     }
 

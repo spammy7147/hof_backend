@@ -240,10 +240,36 @@ class TownAuthenticatedExecutorTest {
             executor.executeObservedProjected(
                 accountId = 7L,
                 pageUrl = HOF_URL,
-                requiredSubmitField = "do",
                 origin = HofRequestOrigin.AUTOMATION,
                 observation = observed.continuation,
                 resolveAction = { _, _, _ -> TownActionRequest(observed.value) },
+                expectedForm = { true },
+            ) { _, _, _, _ -> Unit }
+        }
+
+        Mockito.verify(gateway, Mockito.times(1)).execute(Mockito.eq(7L), anyRequest(), anyCookies())
+    }
+
+    @Test
+    fun `observed semantic form mismatch is a precondition change before POST`() {
+        stubAccount()
+        val formHtml = "<form method='post'><button name='FStart' value='낚시를 시작한다'>낚시를 시작한다</button></form>"
+        Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies()))
+            .thenReturn(response(formHtml))
+        val observed = executor.loadContinuableProjected(
+            7L,
+            HOF_URL,
+            HofRequestOrigin.AUTOMATION,
+        ) { _, _, page -> page.forms.single().actionId }
+
+        assertFailsWith<ObservedTownActionPreconditionChangedException> {
+            executor.executeObservedProjected(
+                accountId = 7L,
+                pageUrl = HOF_URL,
+                origin = HofRequestOrigin.AUTOMATION,
+                observation = observed.continuation,
+                resolveAction = { _, _, _ -> TownActionRequest(observed.value) },
+                expectedForm = { false },
             ) { _, _, _, _ -> Unit }
         }
 

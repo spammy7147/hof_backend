@@ -878,11 +878,10 @@ class TownAuthenticatedExecutor(
     fun <T> executeObservedResponseTwoStepProjected(
         accountId: Long,
         pageUrl: String,
-        requiredEntrySubmitField: String,
-        requiredFinalSubmitField: String,
         origin: HofRequestOrigin,
         observation: TownObservedPageContinuation? = null,
         entryAction: (String, String, ParsedTownPage) -> TownActionRequest?,
+        expectedEntryForm: (ParsedTownForm) -> Boolean,
         observeEntryResponse: (
             String,
             String,
@@ -890,11 +889,11 @@ class TownAuthenticatedExecutor(
             ParsedTownPage,
         ) -> Unit,
         finalAction: (String, String, ParsedTownPage) -> TownActionRequest?,
+        expectedFinalForm: (ParsedTownForm) -> Boolean,
         beforeFinalSubmission: () -> Unit,
         projector: (String, String, app.spammy.hof.town.common.model.ParsedTownResult, ParsedTownPage) -> T,
     ): T? {
         val sequence = sequence@{
-            require(requiredEntrySubmitField.isNotBlank() && requiredFinalSubmitField.isNotBlank())
             val context = observation?.let { continued ->
                 require(continued.account.id == accountId && continued.pageUrl == pageUrl) {
                     "Observed page continuation belongs to another command."
@@ -920,11 +919,24 @@ class TownAuthenticatedExecutor(
                     formParser.parse(main.body, main.finalUrl),
                 )
             }
-            val requestedEntry = entryAction(context.html, context.finalUrl, context.page)
-                ?: return@sequence null
-            val guardedEntry = actionGuard.guard(context.page, requestedEntry)
-            if (guardedEntry.form.submitFields.singleOrNull()?.name != requiredEntrySubmitField) {
-                throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 1단계 작업 양식이 변경되었습니다.")
+            val requestedEntry = try {
+                entryAction(context.html, context.finalUrl, context.page)
+            } catch (error: ApiException) {
+                throw ObservedTownActionPreconditionChangedException(
+                    "현재 HOF 1단계 작업을 더 이상 실행할 수 없습니다.",
+                    error,
+                )
+            } ?: return@sequence null
+            val guardedEntry = try {
+                actionGuard.guard(context.page, requestedEntry)
+            } catch (error: ApiException) {
+                throw ObservedTownActionPreconditionChangedException(
+                    "현재 HOF 1단계 작업 양식이 변경되었습니다.",
+                    error,
+                )
+            }
+            if (!expectedEntryForm(guardedEntry.form)) {
+                throw ObservedTownActionPreconditionChangedException("현재 HOF 1단계 작업 양식이 변경되었습니다.")
             }
             val entryResponse = executeAuthenticated(
                 context.account,
@@ -939,11 +951,24 @@ class TownAuthenticatedExecutor(
             val entryResult = resultParser.parse(entryResponse.body)
             val entryPage = formParser.parse(entryResponse.body, entryResponse.finalUrl)
             observeEntryResponse(entryResponse.body, entryResponse.finalUrl, entryResult, entryPage)
-            val requestedFinal = finalAction(entryResponse.body, entryResponse.finalUrl, entryPage)
-                ?: return@sequence null
-            val guardedFinal = actionGuard.guard(entryPage, requestedFinal)
-            if (guardedFinal.form.submitFields.singleOrNull()?.name != requiredFinalSubmitField) {
-                throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 최종 작업 양식이 변경되었습니다.")
+            val requestedFinal = try {
+                finalAction(entryResponse.body, entryResponse.finalUrl, entryPage)
+            } catch (error: ApiException) {
+                throw ObservedTownActionPreconditionChangedException(
+                    "현재 HOF 최종 작업을 더 이상 실행할 수 없습니다.",
+                    error,
+                )
+            } ?: return@sequence null
+            val guardedFinal = try {
+                actionGuard.guard(entryPage, requestedFinal)
+            } catch (error: ApiException) {
+                throw ObservedTownActionPreconditionChangedException(
+                    "현재 HOF 최종 작업 양식이 변경되었습니다.",
+                    error,
+                )
+            }
+            if (!expectedFinalForm(guardedFinal.form)) {
+                throw ObservedTownActionPreconditionChangedException("현재 HOF 최종 작업 양식이 변경되었습니다.")
             }
             beforeFinalSubmission()
             val finalResponse = executeAuthenticated(
@@ -971,19 +996,30 @@ class TownAuthenticatedExecutor(
     fun <T> executeObservedProjected(
         accountId: Long,
         pageUrl: String,
-        requiredSubmitField: String,
         origin: HofRequestOrigin,
         observation: TownObservedPageContinuation,
         resolveAction: (String, String, ParsedTownPage) -> TownActionRequest,
+        expectedForm: (ParsedTownForm) -> Boolean,
         projector: (String, String, app.spammy.hof.town.common.model.ParsedTownResult, ParsedTownPage) -> T,
     ): T = mutationFence.executeObserved(accountId, observation.fenceRevision) {
         require(observation.account.id == accountId && observation.pageUrl == pageUrl) {
             "Observed page continuation belongs to another command."
         }
-        val requested = resolveAction(observation.html, observation.finalUrl, observation.page)
-        val guarded = actionGuard.guard(observation.page, requested)
-        if (guarded.form.submitFields.singleOrNull()?.name != requiredSubmitField) {
-            throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 작업 양식이 변경되었습니다.")
+        val requested = try {
+            resolveAction(observation.html, observation.finalUrl, observation.page)
+        } catch (error: ApiException) {
+            throw ObservedTownActionPreconditionChangedException(
+                "현재 HOF 작업을 더 이상 실행할 수 없습니다.",
+                error,
+            )
+        }
+        val guarded = try {
+            actionGuard.guard(observation.page, requested)
+        } catch (error: ApiException) {
+            throw ObservedTownActionPreconditionChangedException("현재 HOF 작업 양식이 변경되었습니다.", error)
+        }
+        if (!expectedForm(guarded.form)) {
+            throw ObservedTownActionPreconditionChangedException("현재 HOF 작업 양식이 변경되었습니다.")
         }
         val response = executeAuthenticated(
             observation.account,
@@ -1535,3 +1571,8 @@ class TownObservedPageContinuation internal constructor(
     internal val cookies: Map<String, String>,
     internal val fenceRevision: Long,
 )
+
+class ObservedTownActionPreconditionChangedException(
+    message: String,
+    cause: Throwable? = null,
+) : RuntimeException(message, cause)

@@ -1388,7 +1388,7 @@ class AutomationActionLifecycleModuleTest {
     }
 
     @Test
-    fun `불명확한 낚시는 권위 상태 변화만 적용하고 관측 기준이 없으면 재확인한다`() {
+    fun `불명확한 낚시는 권위 상태 변화만 적용하고 같은 상태는 공통 관측 예산으로 넘긴다`() {
         val changed = assertNotNull(
             module.prepare(
                 7L,
@@ -1418,14 +1418,11 @@ class AutomationActionLifecycleModuleTest {
         ).thenReturn(changedResponse, unknownResponse, unchangedResponse)
 
         assertIs<AmbiguousActionResolution.Applied>(changed.reconcile())
-        assertIs<AmbiguousActionResolution.Held>(noBaseline.reconcile())
-        assertIs<AmbiguousActionResolution.Held>(unchanged.reconcile())
+        assertIs<AmbiguousActionResolution.Resubmit>(noBaseline.reconcile())
+        assertIs<AmbiguousActionResolution.Resubmit>(unchanged.reconcile())
         Mockito.verify(workLifecycle).completeFishingCycle(7L, 15L)
-        Mockito.verify(workLifecycle, Mockito.times(2)).waitFishingCycle(
-            Mockito.eq(7L),
-            Mockito.eq(15L),
-            Mockito.isNull(),
-            Mockito.anyString(),
+        Mockito.verify(workLifecycle, Mockito.never()).waitFishingCycle(
+            Mockito.eq(7L), Mockito.eq(15L), Mockito.isNull(), Mockito.anyString(),
         )
     }
 
@@ -1458,7 +1455,7 @@ class AutomationActionLifecycleModuleTest {
 
         assertIs<AmbiguousActionResolution.Applied>(startToCatch.reconcile())
         assertIs<AmbiguousActionResolution.Applied>(startToBattle.reconcile())
-        assertIs<AmbiguousActionResolution.Held>(startIndeterminate.reconcile())
+        assertIs<AmbiguousActionResolution.Resubmit>(startIndeterminate.reconcile())
         assertIs<AmbiguousActionResolution.Applied>(startEscaped.reconcile())
         assertIs<AmbiguousActionResolution.Applied>(catchCompleted.reconcile())
 

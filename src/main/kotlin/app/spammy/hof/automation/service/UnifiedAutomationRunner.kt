@@ -20,6 +20,7 @@ import app.spammy.hof.external.client.HofAutomationDeferredException
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.town.fishing.model.FishingAction
 import app.spammy.hof.town.common.service.AccountHofObservationInvalidatedException
+import app.spammy.hof.town.common.service.ObservedTownActionPreconditionChangedException
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Service
@@ -2140,6 +2141,15 @@ class UnifiedAutomationRunner @Autowired constructor(
                     AutomationActionPreconditionChangedException(
                         invalidated.message ?: "관측 뒤 계정 상태가 변경되었습니다.",
                         invalidated,
+                    )
+                }
+            ?: generateSequence(this) { it.cause }
+                .filterIsInstance<ObservedTownActionPreconditionChangedException>()
+                .firstOrNull()
+                ?.let { changed ->
+                    AutomationActionPreconditionChangedException(
+                        changed.message ?: "관측한 작업 양식이 변경되었습니다.",
+                        changed,
                     )
                 }
 
