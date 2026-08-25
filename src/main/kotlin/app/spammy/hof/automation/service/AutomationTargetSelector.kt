@@ -58,49 +58,10 @@ class AutomationTargetSelector(
             ?.openDecision(accountId)
             ?: loader
         val runningSession = work.findRunning(accountId)
-        if (runningSession?.workType == AutomationWorkType.FISHING) {
+        if (runningSession != null) {
             return selectSession(
                 accountId = accountId,
                 session = runningSession,
-                snapshotLoader = decisionLoader,
-            )
-        }
-        runningSession?.let { running ->
-            val configuredEntries = typed.findEntries(accountId).orEmpty()
-            if (configuredEntries.isNotEmpty()) {
-                return selectConfigured(
-                    accountId = accountId,
-                    configuredEntries = configuredEntries,
-                    runningSession = running,
-                    snapshotLoader = decisionLoader,
-                )
-            }
-            higherPriorityDueSession(accountId, running)?.let { due ->
-                if (lifecycle.handoffForPriority(accountId, running.id, due.id)) {
-                    recordDueSessionSafely(accountId, due)
-                    return selectSession(
-                        accountId = accountId,
-                        session = reloadOwner(accountId, due),
-                        snapshotLoader = decisionLoader,
-                    )
-                }
-            }
-            val higherEntries = typed.findEnabledEntriesBefore(
-                accountId = accountId,
-                priority = running.entryPriority,
-                entryId = running.entryId,
-            )
-            if (higherEntries.isNotEmpty()) {
-                return selectConfigured(
-                    accountId = accountId,
-                    configuredEntries = higherEntries,
-                    fallbackSession = running,
-                    snapshotLoader = decisionLoader,
-                )
-            }
-            return selectSession(
-                accountId = accountId,
-                session = running,
                 snapshotLoader = decisionLoader,
             )
         }
@@ -108,19 +69,6 @@ class AutomationTargetSelector(
             accountId = accountId,
             snapshotLoader = decisionLoader,
         )
-    }
-
-    private fun higherPriorityDueSession(
-        accountId: Long,
-        running: AutomationWorkSessionView,
-    ): AutomationWorkSessionView? {
-        if (running.workType == AutomationWorkType.RAID) return null
-        val now = timeProvider.now()
-        return work.findWaiting(accountId)
-            .asSequence()
-            .filter { it.entryPriority < running.entryPriority }
-            .filter { it.isDueForCheck(now) }
-            .minWithOrNull(compareBy(AutomationWorkSessionView::entryPriority, AutomationWorkSessionView::id))
     }
 
     private fun selectSession(
@@ -174,13 +122,9 @@ class AutomationTargetSelector(
                     prefixed
                 } else {
                     lifecycle.waitForCooldown(accountId, session.id, contextual.nextRunAt)
-                    selectConfigured(
-                        accountId,
-                        initialWarnings + contextual.warnings,
-                        initialTrace + contextual.trace.resequenced(initialTrace.size),
-                        nextEvaluatedSessionIds,
-                        nextEvaluatedEntryIds,
-                        snapshotLoader = snapshotLoader,
+                    AutomationCoordination.CycleBoundary(
+                        warnings = prefixed.warnings,
+                        trace = prefixed.trace,
                     )
                 }
             }
@@ -191,29 +135,26 @@ class AutomationTargetSelector(
                         session.id,
                         timeProvider.now().plusSeconds(SCOPE_SUPPRESSION_RECHECK_SECONDS),
                     )
-                    return selectConfigured(
-                        accountId,
-                        initialWarnings + result.warnings,
-                        initialTrace + result.trace.resequenced(initialTrace.size),
-                        nextEvaluatedSessionIds,
-                        nextEvaluatedEntryIds,
-                        snapshotLoader = snapshotLoader,
+                    val prefixed = result.withPrefix(initialWarnings, initialTrace)
+                    return AutomationCoordination.CycleBoundary(
+                        warnings = prefixed.warnings,
+                        trace = prefixed.trace,
                     )
                 }
                 result.workTransition?.let {
                     lifecycle.applyTransition(accountId, session.id, it)
                 } ?: if (session.workType != AutomationWorkType.QUEST) {
                     lifecycle.applyTransition(accountId, session.id, AutomationWorkTransition.Complete)
-                } else Unit
-                selectConfigured(
-                    accountId,
-                    initialWarnings + result.warnings,
-                    initialTrace + result.trace.resequenced(initialTrace.size),
-                    nextEvaluatedSessionIds,
-                    nextEvaluatedEntryIds,
-                    snapshotLoader = snapshotLoader,
+                } else {
+                    lifecycle.yieldForPriority(accountId, session.id)
+                }
+                val prefixed = result.withPrefix(initialWarnings, initialTrace)
+                AutomationCoordination.CycleBoundary(
+                    warnings = prefixed.warnings,
+                    trace = prefixed.trace,
                 )
             }
+            is AutomationCoordination.CycleBoundary -> result.withPrefix(initialWarnings, initialTrace)
         }
     }
 
@@ -375,6 +316,10 @@ class AutomationTargetSelector(
                         warnings += result.warnings
                         trace += result.trace.resequenced(trace.size)
                     }
+                    is AutomationCoordination.CycleBoundary -> return result.copy(
+                        warnings = warnings + result.warnings,
+                        trace = trace + result.trace.resequenced(trace.size),
+                    )
                 }
             }
         fallbackSession?.let { session ->
@@ -399,8 +344,9 @@ class AutomationTargetSelector(
                 snapshotLoader,
             )
         }
-        return earliest?.let { AutomationCoordination.Unavailable(it, warnings, trace) }
-            ?: AutomationCoordination.Idle(warnings, trace)
+        val idleHeartbeatAt = now.plusSeconds(IDLE_HEARTBEAT_SECONDS)
+        val nextDecisionAt = earliest?.takeIf { it < idleHeartbeatAt } ?: idleHeartbeatAt
+        return AutomationCoordination.Unavailable(nextDecisionAt, warnings, trace)
     }
 
     private fun AutomationCoordination.withEarlierRetry(earlier: Instant?): AutomationCoordination =
@@ -636,10 +582,9 @@ class AutomationTargetSelector(
                         session.id,
                         timeProvider.now().plusSeconds(SCOPE_SUPPRESSION_RECHECK_SECONDS),
                     )
-                    selectConfigured(
-                        accountId,
-                        initialWarnings + block.message,
-                        initialTrace + AutomationEvaluationTrace(
+                    AutomationCoordination.CycleBoundary(
+                        warnings = initialWarnings + block.message,
+                        trace = initialTrace + AutomationEvaluationTrace(
                             initialTrace.size,
                             session.entryId,
                             AutomationType.RAID,
@@ -648,9 +593,6 @@ class AutomationTargetSelector(
                             block.message,
                             observedAt = timeProvider.now(),
                         ),
-                        evaluatedSessionIds,
-                        evaluatedEntryIds,
-                        snapshotLoader = snapshotLoader,
                     )
                 } else {
                     AutomationCoordination.Runnable(
@@ -663,13 +605,9 @@ class AutomationTargetSelector(
             }
             is RaidDirective.WaitUntil -> {
                 lifecycle.waitForCooldown(accountId, session.id, directive.at)
-                selectConfigured(
-                    accountId,
-                    initialWarnings,
-                    initialTrace + directive.toTrace(session.entryId, initialTrace.size),
-                    evaluatedSessionIds,
-                    evaluatedEntryIds,
-                    snapshotLoader = snapshotLoader,
+                AutomationCoordination.CycleBoundary(
+                    warnings = initialWarnings,
+                    trace = initialTrace + directive.toTrace(session.entryId, initialTrace.size),
                 )
             }
             is RaidDirective.Hold -> {
@@ -680,24 +618,16 @@ class AutomationTargetSelector(
                     directive.recheckAt,
                     directive.message.takeIf { directive.isUserWarning() },
                 )
-                selectConfigured(
-                    accountId,
-                    initialWarnings + listOfNotNull(directive.message.takeIf { directive.isUserWarning() }),
-                    initialTrace + directive.toTrace(session.entryId, initialTrace.size),
-                    evaluatedSessionIds,
-                    evaluatedEntryIds,
-                    snapshotLoader = snapshotLoader,
+                AutomationCoordination.CycleBoundary(
+                    warnings = initialWarnings + listOfNotNull(directive.message.takeIf { directive.isUserWarning() }),
+                    trace = initialTrace + directive.toTrace(session.entryId, initialTrace.size),
                 )
             }
             is RaidDirective.Complete -> {
                 lifecycle.applyTransition(accountId, session.id, AutomationWorkTransition.Complete)
-                selectConfigured(
-                    accountId,
-                    initialWarnings,
-                    initialTrace + directive.toTrace(session.entryId, initialTrace.size),
-                    evaluatedSessionIds,
-                    evaluatedEntryIds,
-                    snapshotLoader = snapshotLoader,
+                AutomationCoordination.CycleBoundary(
+                    warnings = initialWarnings,
+                    trace = initialTrace + directive.toTrace(session.entryId, initialTrace.size),
                 )
             }
         }
@@ -812,6 +742,10 @@ class AutomationTargetSelector(
             warnings = warnings + this.warnings,
             trace = trace + this.trace.resequenced(trace.size),
         )
+        is AutomationCoordination.CycleBoundary -> copy(
+            warnings = warnings + this.warnings,
+            trace = trace + this.trace.resequenced(trace.size),
+        )
         is AutomationCoordination.Idle -> copy(
             warnings = warnings + this.warnings,
             trace = trace + this.trace.resequenced(trace.size),
@@ -898,6 +832,7 @@ class AutomationTargetSelector(
         const val OBSERVATION_GAP_HELD_REASON = "OBSERVATION_GAP_HELD"
         const val QUEST_PROGRESS_STALE_REASON = "QUEST_PROGRESS_STALE"
         const val SCOPE_SUPPRESSION_RECHECK_SECONDS = 30L
+        const val IDLE_HEARTBEAT_SECONDS = 5L * 60L
     }
 }
 

@@ -304,6 +304,13 @@ class UnifiedAutomationRunner @Autowired constructor(
                     )
                     return
                 }
+                is AutomationCoordination.CycleBoundary -> {
+                    typedRuntime.complete(
+                        execution,
+                        TypedRuntimeOutcome.SelectionChanged(WORK_CYCLE_BOUNDARY_WAKE_REASON),
+                    )
+                    return
+                }
                 is AutomationCoordination.Idle -> {
                     if (fallbackConvergenceProbe != null) {
                         runConvergenceProbe(accountId, execution, fallbackConvergenceProbe)
@@ -2297,6 +2304,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             "FISHING_OBSERVATION_LOST_BEFORE_SUBMISSION"
         const val TYPED_CONVERGENCE_PROBE_REASON = "TYPED_CONVERGENCE_PROBE"
         const val TYPED_BATTLE_GATE_WAKE_REASON = "TYPED_BATTLE_GATE_OPENED"
+        const val WORK_CYCLE_BOUNDARY_WAKE_REASON = "WORK_CYCLE_BOUNDARY"
         const val ACTION_SUPERSEDED_REASON = "ACTION_SUPERSEDED_BY_FRESH_STATE"
         const val POST_KILL_SWITCH_WAKE_REASON = "AUTOMATION_POST_KILL_SWITCH"
         const val POST_KILL_SWITCH_RECHECK_SECONDS = 30L

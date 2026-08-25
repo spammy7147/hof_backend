@@ -110,6 +110,12 @@ sealed interface AutomationCoordination {
         val waitScope: AutomationWaitScope = AutomationWaitScope.RELEASE_OTHER_AUTOMATIONS,
     ) : AutomationCoordination
 
+    /** 현재 작업 사이클이 완료되거나 양보되어 새 판단 주기가 필요한 경계다. */
+    data class CycleBoundary(
+        override val warnings: List<String>,
+        override val trace: List<AutomationEvaluationTrace> = emptyList(),
+    ) : AutomationCoordination
+
     data class Idle(
         override val warnings: List<String>,
         override val trace: List<AutomationEvaluationTrace> = emptyList(),

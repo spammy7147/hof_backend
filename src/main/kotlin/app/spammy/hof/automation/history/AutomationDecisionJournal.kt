@@ -99,6 +99,7 @@ class JpaAutomationDecisionJournal(
         val cycle = AutomationDecisionCycleEntity(accountId = accountId, result = when (decision) {
             is AutomationCoordination.Runnable -> AutomationDecisionResult.ACTION_SELECTED
             is AutomationCoordination.Unavailable -> AutomationDecisionResult.WAITING
+            is AutomationCoordination.CycleBoundary -> AutomationDecisionResult.IDLE
             is AutomationCoordination.Idle -> AutomationDecisionResult.IDLE
             is AutomationCoordination.Fatal -> AutomationDecisionResult.FATAL
         }, selectedEntryId = (decision as? AutomationCoordination.Runnable)?.entryId, startedAt = now, finishedAt = now)

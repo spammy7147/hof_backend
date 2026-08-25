@@ -799,7 +799,7 @@ class UnifiedAutomationRunnerTest {
     }
 
     @Test
-    fun `실제 selector와 상태형 work handoff를 통과해 blocked raid와 quest를 건너뛰고 adventure를 실행한다`() {
+    fun `실제 selector는 실행 중 quest가 작업 경계에 도달하기 전에 높은 raid로 건너뛰지 않는다`() {
         val observedAt = Instant.parse("2026-08-24T00:00:00Z")
         var currentTime = observedAt
         val account = HofAccountEntity(7L, "runner-progress", "encrypted", observedAt)
@@ -986,21 +986,14 @@ class UnifiedAutomationRunnerTest {
 
         scoped.runOne(7L)
 
-        Mockito.verify(workLifecycle).handoffForPriority(7L, 31L, 32L)
-        Mockito.verify(workLifecycle).waitForCooldown(7L, 32L, observedAt.plusSeconds(30))
-        Mockito.verify(lifecycle).prepare(7L, adventureEntry.id, adventureAction)
-        Mockito.verify(managed).execute()
-        assertEquals(AutomationWorkStatus.YIELDED_PRIORITY, sessions.getValue(31L).status)
-        assertEquals(AutomationWorkStatus.WAITING_COOLDOWN, sessions.getValue(32L).status)
-
-        currentTime = observedAt.plusSeconds(10)
-        scoped.runOne(7L)
-
-        Mockito.verify(workLifecycle).resumeForCheck(7L, 31L)
+        Mockito.verify(workLifecycle, Mockito.never()).handoffForPriority(7L, 31L, 32L)
+        Mockito.verify(workLifecycle, Mockito.never()).waitForCooldown(7L, 32L, observedAt.plusSeconds(30))
         Mockito.verify(lifecycle).prepare(7L, questEntry.id, resumedQuestAction)
-        Mockito.verify(managed, Mockito.times(2)).execute()
-        assertTrue(9L in evaluatedQuestRevisions)
-        assertTrue(8L !in evaluatedQuestRevisions)
+        Mockito.verify(lifecycle, Mockito.never()).prepare(7L, adventureEntry.id, adventureAction)
+        Mockito.verify(managed).execute()
+        assertEquals(AutomationWorkStatus.RUNNING, sessions.getValue(31L).status)
+        assertEquals(AutomationWorkStatus.WAITING_COOLDOWN, sessions.getValue(32L).status)
+        assertTrue(7L in evaluatedQuestRevisions)
     }
 
     @Test
@@ -1720,6 +1713,23 @@ class UnifiedAutomationRunnerTest {
         val outcome = assertIs<TypedRuntimeOutcome.SelectionChanged>(capturedOutcome())
         assertEquals("TYPED_CONFIG_RELOAD", outcome.wakeReason)
         Mockito.verifyNoInteractions(wakeup)
+        Mockito.verify(managed, Mockito.never()).execute()
+    }
+
+    @Test
+    fun `work cycle boundary releases the decision and immediately wakes a fresh global scan`() {
+        Mockito.`when`(decisions.select(7)).thenReturn(
+            AutomationCoordination.CycleBoundary(
+                warnings = listOf("cycle parked"),
+                trace = emptyList(),
+            ),
+        )
+
+        runner.runOne(7)
+
+        val outcome = assertIs<TypedRuntimeOutcome.SelectionChanged>(capturedOutcome())
+        assertEquals("WORK_CYCLE_BOUNDARY", outcome.wakeReason)
+        Mockito.verify(lifecycle, Mockito.never()).prepare(Mockito.anyLong(), Mockito.anyLong(), anyPreparedAction())
         Mockito.verify(managed, Mockito.never()).execute()
     }
 

@@ -162,6 +162,23 @@ class TypedAutomationRuntimeServiceTest {
     }
 
     @Test
+    fun `work cycle boundary clears the lease and queues a fresh decision atomically`() {
+        val state = state()
+        val execution = acquire(state, null)
+        Mockito.`when`(query.findRuntimeState(7)).thenReturn(state)
+
+        val projection = service.complete(
+            execution,
+            TypedRuntimeOutcome.SelectionChanged("WORK_CYCLE_BOUNDARY"),
+        )
+
+        assertTrue(projection.applied)
+        assertNull(state.leaseToken)
+        assertNull(state.nextAttemptAt)
+        Mockito.verify(outbox).enqueue(7, "WORK_CYCLE_BOUNDARY")
+    }
+
+    @Test
     fun `START 성공과 CATCH 준비는 하나의 영속 전이로 바뀐다`() {
         val state = state()
         val start = action(TypedAutomationActionStatus.PREPARED)

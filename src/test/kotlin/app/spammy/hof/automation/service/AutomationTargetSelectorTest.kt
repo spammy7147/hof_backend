@@ -131,8 +131,7 @@ class AutomationTargetSelectorTest {
     }
 
     @Test
-    fun `reordered higher entry is evaluated before the next action of an open lower work`() {
-        val action = QuestAction.Accept("quest-1", "accept-1")
+    fun `open lower work keeps ownership before a reordered higher entry`() {
         val directSelector = AutomationTargetSelector(
             typed = typed,
             work = work,
@@ -140,7 +139,7 @@ class AutomationTargetSelectorTest {
             lifecycle = lifecycle,
             timeProvider = TimeProvider { now },
             raidModule = defaultRaidModule,
-            quest = fixedQuestRules(QuestDirective.Execute(action)),
+            quest = fixedQuestRules(QuestDirective.Execute(QuestAction.Accept("quest-1", "accept-1"))),
             battle = AutomationHandler { HandlerEvaluation.Skipped },
             adventure = AutomationHandler { HandlerEvaluation.Skipped },
             union = AutomationHandler { HandlerEvaluation.Skipped },
@@ -159,16 +158,63 @@ class AutomationTargetSelectorTest {
         Mockito.`when`(
             typed.findEnabledEntriesBefore(7, battleEntry.priority, battleEntry.id),
         ).thenReturn(listOf(questEntry))
+        Mockito.`when`(loader.loadEntry(7, battleEntry.id, running.targetKey, null)).thenReturn(battleDecisionEntry())
+        Mockito.`when`(loader.loadEntry(7, questEntry.id, null, null)).thenReturn(questDecisionEntry())
+
+        val boundary = assertIs<AutomationCoordination.CycleBoundary>(directSelector.select(7))
+
+        assertEquals(listOf(battleEntry.id), boundary.trace.map(AutomationEvaluationTrace::entryId))
+        Mockito.verify(loader, Mockito.never()).loadEntry(7, questEntry.id, null, null)
+    }
+
+    @Test
+    fun `running work cycle keeps ownership while its next action is immediately runnable`() {
+        val running = session(
+            id = 91,
+            entry = battleEntry,
+            workType = AutomationWorkType.BATTLE_MAP,
+            targetKey = "battle_map/map-1",
+            status = AutomationWorkStatus.RUNNING,
+        )
+        val runningSnapshot = battleDecisionEntry()
+        val runningAction = BattleMapAutomationAction(
+            accountId = 7,
+            progressDate = java.time.LocalDate.parse("2026-07-23"),
+            categoryId = "battle_map",
+            mapCode = "map-1",
+            presetMode = PresetSelectionMode.PRIMARY,
+            presetId = 3,
+            battleCount = 1,
+            executionIdentity = "running-cycle-action",
+        )
+        val directSelector = AutomationTargetSelector(
+            typed = typed,
+            work = work,
+            loader = loader,
+            lifecycle = lifecycle,
+            timeProvider = TimeProvider { now },
+            raidModule = defaultRaidModule,
+            quest = fixedQuestRules(QuestDirective.Execute(QuestAction.Accept("quest-1", "accept-1"))),
+            battle = AutomationHandler { HandlerEvaluation.Runnable(runningAction) },
+            adventure = AutomationHandler { HandlerEvaluation.Skipped },
+            union = AutomationHandler { HandlerEvaluation.Skipped },
+            fishing = AutomationHandler { HandlerEvaluation.Skipped },
+            homeQuest = AutomationHandler { HandlerEvaluation.Skipped },
+        )
+        Mockito.`when`(work.findRunning(7)).thenReturn(running)
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(questEntry, battleEntry))
+        Mockito.`when`(loader.loadEntry(7, battleEntry.id, running.targetKey, null)).thenReturn(runningSnapshot)
         Mockito.`when`(loader.loadEntry(7, questEntry.id, null, null)).thenReturn(questDecisionEntry())
 
         val selected = assertIs<AutomationCoordination.Runnable>(directSelector.select(7))
 
-        assertEquals(questEntry.id, selected.entryId)
-        Mockito.verify(loader, Mockito.never()).loadEntry(7, battleEntry.id, running.targetKey, null)
+        assertEquals(battleEntry.id, selected.entryId)
+        assertEquals(runningAction, selected.action)
+        Mockito.verify(loader, Mockito.never()).loadEntry(7, questEntry.id, null, null)
     }
 
     @Test
-    fun `held map group parks its work and continues to a runnable lower entry`() {
+    fun `held map group parks its work and ends the current decision`() {
         val lowerQuest = AutomationEntryEntity(15, account, AutomationType.QUEST, 2, true, now, now)
         val running = session(
             id = 92,
@@ -211,10 +257,52 @@ class AutomationTargetSelectorTest {
         Mockito.`when`(loader.loadEntry(7, battleEntry.id, running.targetKey, null)).thenReturn(battleDecisionEntry())
         Mockito.`when`(loader.loadEntry(7, lowerQuest.id, null, null)).thenReturn(questDecisionEntry(lowerQuest.id))
 
-        val selected = assertIs<AutomationCoordination.Runnable>(directSelector.select(7))
+        val boundary = assertIs<AutomationCoordination.CycleBoundary>(directSelector.select(7))
 
-        assertEquals(lowerQuest.id, selected.entryId)
+        assertEquals(listOf(battleEntry.id), boundary.trace.map(AutomationEvaluationTrace::entryId))
         Mockito.verify(lifecycle).waitForCooldown(7, running.id, now.plusSeconds(30))
+        Mockito.verify(loader, Mockito.never()).loadEntry(7, lowerQuest.id, null, null)
+    }
+
+    @Test
+    fun `yielding a running work cycle ends the current decision before lower entries`() {
+        val lowerQuest = AutomationEntryEntity(15, account, AutomationType.QUEST, 2, true, now, now)
+        val running = session(
+            id = 92,
+            entry = battleEntry,
+            workType = AutomationWorkType.BATTLE_MAP,
+            targetKey = "battle_map/map-1",
+            status = AutomationWorkStatus.RUNNING,
+        )
+        val directSelector = AutomationTargetSelector(
+            typed = typed,
+            work = work,
+            loader = loader,
+            lifecycle = lifecycle,
+            timeProvider = TimeProvider { now },
+            raidModule = defaultRaidModule,
+            quest = fixedQuestRules(QuestDirective.Execute(QuestAction.Accept("quest-1", "accept-1"))),
+            battle = AutomationHandler {
+                HandlerEvaluation.Unavailable(
+                    nextRunAt = now.plusSeconds(30),
+                    waitScope = AutomationWaitScope.RELEASE_OTHER_AUTOMATIONS,
+                )
+            },
+            adventure = AutomationHandler { HandlerEvaluation.Skipped },
+            union = AutomationHandler { HandlerEvaluation.Skipped },
+            fishing = AutomationHandler { HandlerEvaluation.Skipped },
+            homeQuest = AutomationHandler { HandlerEvaluation.Skipped },
+        )
+        Mockito.`when`(work.findRunning(7)).thenReturn(running)
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(battleEntry, lowerQuest))
+        Mockito.`when`(loader.loadEntry(7, battleEntry.id, running.targetKey, null)).thenReturn(battleDecisionEntry())
+        Mockito.`when`(loader.loadEntry(7, lowerQuest.id, null, null)).thenReturn(questDecisionEntry(lowerQuest.id))
+
+        val boundary = assertIs<AutomationCoordination.CycleBoundary>(directSelector.select(7))
+
+        assertEquals(listOf(battleEntry.id), boundary.trace.map(AutomationEvaluationTrace::entryId))
+        Mockito.verify(lifecycle).waitForCooldown(7, running.id, now.plusSeconds(30))
+        Mockito.verify(loader, Mockito.never()).loadEntry(7, lowerQuest.id, null, null)
     }
 
     @Test
@@ -492,7 +580,7 @@ class AutomationTargetSelectorTest {
     }
 
     @Test
-    fun `a decision cycle evaluates only one work session from the same configured entry`() {
+    fun `a blocked running work session ends the decision before another session is resumed`() {
         val running = session(30, questEntry, AutomationWorkType.QUEST, "quest-1", AutomationWorkStatus.RUNNING)
         val due = session(
             31,
@@ -565,12 +653,12 @@ class AutomationTargetSelectorTest {
         Mockito.`when`(loader.loadEntry(7, questEntry.id, null, null)).thenReturn(questDecisionEntry())
         Mockito.`when`(loader.loadEntry(7, battleEntry.id, null, null)).thenReturn(battleDecisionEntry())
 
-        val selected = assertIs<AutomationCoordination.Runnable>(guarded.select(7L))
+        val boundary = assertIs<AutomationCoordination.CycleBoundary>(guarded.select(7L))
 
-        assertEquals(battleEntry.id, selected.entryId)
-        assertEquals(battleAction, selected.action)
+        assertEquals(listOf(questEntry.id), boundary.trace.map(AutomationEvaluationTrace::entryId))
         Mockito.verify(lifecycle, Mockito.never()).resumeForCheck(7, due.id)
         Mockito.verify(lifecycle, Mockito.never()).resumeForCheck(7, running.id)
+        Mockito.verify(loader, Mockito.never()).loadEntry(7, battleEntry.id, null, null)
     }
 
     @Test
@@ -764,7 +852,28 @@ class AutomationTargetSelectorTest {
     }
 
     @Test
-    fun `하나의 판단 주기는 대기 작업을 거쳐도 각 설정 항목을 한 번만 평가한다`() {
+    fun `all skipped entries schedule a fresh global decision in five minutes`() {
+        val battleSnapshot = battleDecisionEntry()
+        val adventureSnapshot = adventureDecisionEntry()
+        Mockito.`when`(work.findRunning(7)).thenReturn(null)
+        Mockito.`when`(work.findWaiting(7)).thenReturn(emptyList())
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(battleEntry, adventureEntry))
+        Mockito.`when`(loader.loadEntry(7, battleEntry.id, null, null)).thenReturn(battleSnapshot)
+        Mockito.`when`(loader.loadEntry(7, adventureEntry.id, null, null)).thenReturn(adventureSnapshot)
+        battleRules.returns(requireNotNull(battleSnapshot.battle), HandlerEvaluation.Skipped)
+        adventureRules.returns(requireNotNull(adventureSnapshot.adventure), HandlerEvaluation.Skipped)
+
+        val idleHeartbeat = assertIs<AutomationCoordination.Unavailable>(selector.select(7))
+
+        assertEquals(now.plusSeconds(300), idleHeartbeat.nextRunAt)
+        assertEquals(
+            listOf(AutomationDecisionOutcome.SKIPPED, AutomationDecisionOutcome.SKIPPED),
+            idleHeartbeat.trace.map(AutomationEvaluationTrace::outcome),
+        )
+    }
+
+    @Test
+    fun `대기 작업을 재개하면 현재 판단을 끝내고 낮은 항목은 새 판단으로 넘긴다`() {
         val home = AutomationEntryEntity(101, account, AutomationType.HOME_QUEST, 0, true, now, now)
         val raid = AutomationEntryEntity(102, account, AutomationType.RAID, 1, true, now, now)
         val unionEntry = AutomationEntryEntity(103, account, AutomationType.UNION, 2, true, now, now)
@@ -857,25 +966,22 @@ class AutomationTargetSelectorTest {
             HandlerEvaluation.Runnable(adventureAction),
         )
 
-        val selected = assertIs<AutomationCoordination.Runnable>(onePassSelector.select(7))
+        val boundary = assertIs<AutomationCoordination.CycleBoundary>(onePassSelector.select(7))
 
-        assertEquals(adventure.id, selected.entryId)
         assertEquals(
-            listOf(home.id, raid.id, unionEntry.id, fishingEntry.id, quest.id, adventure.id),
-            selected.trace.map(AutomationEvaluationTrace::entryId),
+            listOf(home.id, raid.id),
+            boundary.trace.map(AutomationEvaluationTrace::entryId),
         )
-        assertEquals(selected.trace.map(AutomationEvaluationTrace::entryId).distinct(), selected.trace.map(AutomationEvaluationTrace::entryId))
         Mockito.verify(loader, Mockito.times(1)).loadEntry(7, home.id, null, null)
-        Mockito.verify(loader, Mockito.times(1)).loadEntry(7, unionEntry.id, null, null)
-        Mockito.verify(loader, Mockito.times(1)).loadEntry(7, fishingEntry.id, null, null)
-        Mockito.verify(loader, Mockito.times(1)).loadEntry(7, quest.id, dueQuest.targetKey, null)
-        Mockito.verify(loader, Mockito.never()).loadEntry(7, quest.id, null, null)
-        Mockito.verify(loader, Mockito.times(1)).loadEntry(7, adventure.id, null, null)
+        Mockito.verify(loader, Mockito.never()).loadEntry(7, unionEntry.id, null, null)
+        Mockito.verify(loader, Mockito.never()).loadEntry(7, fishingEntry.id, null, null)
+        Mockito.verify(loader, Mockito.never()).loadEntry(7, quest.id, dueQuest.targetKey, null)
+        Mockito.verify(loader, Mockito.never()).loadEntry(7, adventure.id, null, null)
         Mockito.verify(loader, Mockito.never()).loadEntry(7, battle.id, null, null)
     }
 
     @Test
-    fun `실행 중 작업도 설정 우선순위 위치에서 한 번만 평가한다`() {
+    fun `실행 중 작업은 설정 우선순위를 재평가하지 않고 먼저 진전시킨다`() {
         val home = AutomationEntryEntity(101, account, AutomationType.HOME_QUEST, 0, true, now, now)
         val runningQuestEntry = AutomationEntryEntity(105, account, AutomationType.QUEST, 4, true, now, now)
         val runningQuest = session(
@@ -908,8 +1014,8 @@ class AutomationTargetSelectorTest {
 
         assertEquals(runningQuestEntry.id, selected.entryId)
         assertEquals(action, selected.action)
-        assertEquals(listOf(home.id, runningQuestEntry.id), selected.trace.map(AutomationEvaluationTrace::entryId))
-        Mockito.verify(loader, Mockito.times(1)).loadEntry(7, home.id, null, null)
+        assertEquals(listOf(runningQuestEntry.id), selected.trace.map(AutomationEvaluationTrace::entryId))
+        Mockito.verify(loader, Mockito.never()).loadEntry(7, home.id, null, null)
         Mockito.verify(loader, Mockito.times(1)).loadEntry(7, runningQuestEntry.id, runningQuest.targetKey, null)
     }
 
@@ -932,7 +1038,7 @@ class AutomationTargetSelectorTest {
     }
 
     @Test
-    fun `stale running quest is evaluated once before parking and selecting a lower entry`() {
+    fun `stale running quest is parked and ends the current decision`() {
         val running = session(40, questEntry, AutomationWorkType.QUEST, "quest-1", AutomationWorkStatus.RUNNING)
         val questSnapshot = questDecisionEntry()
         val runningSnapshot = questSnapshot.copy(
@@ -963,14 +1069,13 @@ class AutomationTargetSelectorTest {
         )
         battleRules.returns(requireNotNull(battleSnapshot.battle), HandlerEvaluation.Runnable(battleAction))
 
-        val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
+        val boundary = assertIs<AutomationCoordination.CycleBoundary>(selector.select(7))
 
-        assertEquals(battleEntry.id, selected.entryId)
-        assertEquals(battleAction, selected.action)
         Mockito.verify(lifecycle).waitForCooldown(7, running.id, now.plusSeconds(10))
-        assertEquals(listOf(questEntry.id, battleEntry.id), selected.trace.map(AutomationEvaluationTrace::entryId))
+        assertEquals(listOf(questEntry.id), boundary.trace.map(AutomationEvaluationTrace::entryId))
         assertEquals(1, questRules.evaluated.size)
         Mockito.verify(loader, Mockito.times(1)).loadEntry(7, questEntry.id, "quest-1", null)
+        Mockito.verify(loader, Mockito.never()).loadEntry(7, battleEntry.id, null, null)
     }
 
     @Test
@@ -990,7 +1095,7 @@ class AutomationTargetSelectorTest {
             QuestDirective.Recheck(now.plusSeconds(10), "QUEST_PROGRESS_STALE", "recheck"),
         )
 
-        val selected = assertIs<AutomationCoordination.Idle>(selector.select(7))
+        val selected = assertIs<AutomationCoordination.CycleBoundary>(selector.select(7))
 
         assertEquals(listOf(questEntry.id), selected.trace.map(AutomationEvaluationTrace::entryId))
         assertEquals(listOf(0L), questRules.evaluated.map { it.workSessionRevision })
@@ -1159,7 +1264,7 @@ class AutomationTargetSelectorTest {
     }
 
     @Test
-    fun `raid cooldown parks its cycle and releases the next automation entry`() {
+    fun `raid cooldown parks its cycle and ends the current decision`() {
         val runningRaid = session(30, raidEntry, AutomationWorkType.RAID, "RaidGoblin", AutomationWorkStatus.RUNNING)
         val retryAt = now.plusSeconds(120)
         val raidModule = Mockito.mock(RaidCycleModule::class.java)
@@ -1196,20 +1301,19 @@ class AutomationTargetSelectorTest {
         Mockito.`when`(loader.loadEntry(7, 11, null, null)).thenReturn(battleSnapshot)
         battleRules.returns(requireNotNull(battleSnapshot.battle), HandlerEvaluation.Runnable(battleAction))
 
-        val selected = assertIs<AutomationCoordination.Runnable>(moduleSelector.select(7))
+        val boundary = assertIs<AutomationCoordination.CycleBoundary>(moduleSelector.select(7))
 
-        assertEquals(11, selected.entryId)
-        assertEquals(2, selected.trace.size)
-        assertEquals(AutomationType.RAID, selected.trace.first().type)
-        assertEquals(AutomationDecisionOutcome.WAITING, selected.trace.first().outcome)
-        assertEquals("RAID_BATTLE_SAFETY_GATE", selected.trace.first().reasonCode)
-        assertEquals(AutomationDiagnosticKind.RAID_LOCAL_SAFETY_GATE, selected.trace.first().diagnosticKind)
-        assertEquals(RaidCooldownSource.LOCAL_FALLBACK, selected.trace.first().cooldownSource)
-        assertEquals(AutomationImpactScope.RAID_ONLY, selected.trace.first().impactScope)
-        assertEquals("마감 뒤 최신 레이드 상태 재확인", selected.trace.first().releaseCondition)
-        assertEquals(AutomationDecisionOutcome.SELECTED, selected.trace.last().outcome)
+        assertEquals(1, boundary.trace.size)
+        assertEquals(AutomationType.RAID, boundary.trace.single().type)
+        assertEquals(AutomationDecisionOutcome.WAITING, boundary.trace.single().outcome)
+        assertEquals("RAID_BATTLE_SAFETY_GATE", boundary.trace.single().reasonCode)
+        assertEquals(AutomationDiagnosticKind.RAID_LOCAL_SAFETY_GATE, boundary.trace.single().diagnosticKind)
+        assertEquals(RaidCooldownSource.LOCAL_FALLBACK, boundary.trace.single().cooldownSource)
+        assertEquals(AutomationImpactScope.RAID_ONLY, boundary.trace.single().impactScope)
+        assertEquals("마감 뒤 최신 레이드 상태 재확인", boundary.trace.single().releaseCondition)
         Mockito.verify(lifecycle).waitForCooldown(7, 30, retryAt)
         Mockito.verify(loader, Mockito.never()).loadEntry(7, 13, "RaidGoblin")
+        Mockito.verify(loader, Mockito.never()).loadEntry(7, battleEntry.id, null, null)
     }
 
     @Test
@@ -1371,8 +1475,9 @@ class AutomationTargetSelectorTest {
             )),
         )
 
-        val decision = assertIs<AutomationCoordination.Idle>(selector.select(7))
+        val decision = assertIs<AutomationCoordination.Unavailable>(selector.select(7))
 
+        assertEquals(now.plusSeconds(300), decision.nextRunAt)
         assertEquals(AutomationDecisionOutcome.CYCLE_ABORTED, decision.trace.single().outcome)
         assertEquals(RaidCycleOutcomeKind.ABORTED_CLOSED.name, decision.trace.single().reasonCode)
     }
@@ -1409,7 +1514,7 @@ class AutomationTargetSelectorTest {
     }
 
     @Test
-    fun `due higher priority raid reward preempts a running quest after its current action`() {
+    fun `due higher priority raid reward waits until the running quest reaches a boundary`() {
         val lowerPriorityQuestEntry = AutomationEntryEntity(
             10,
             account,
@@ -1485,11 +1590,12 @@ class AutomationTargetSelectorTest {
 
         val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
 
-        assertEquals(higherPriorityRaidEntry.id, selected.entryId)
-        Mockito.verify(lifecycle).handoffForPriority(7, runningQuest.id, dueRaid.id)
+        assertEquals(lowerPriorityQuestEntry.id, selected.entryId)
+        assertEquals(questAction, selected.action)
+        Mockito.verify(lifecycle, Mockito.never()).handoffForPriority(7, runningQuest.id, dueRaid.id)
         Mockito.verify(lifecycle, Mockito.never()).resumeForCheck(7, dueRaid.id)
-        Mockito.verify(defaultRaidModule).decide(7)
-        Mockito.verify(loader, Mockito.never()).loadEntry(7, lowerPriorityQuestEntry.id, "quest-1")
+        Mockito.verifyNoInteractions(defaultRaidModule)
+        Mockito.verify(loader).loadEntry(7, lowerPriorityQuestEntry.id, "quest-1")
     }
 
     @Test
@@ -1568,7 +1674,7 @@ class AutomationTargetSelectorTest {
 
         assertEquals("quest-1", (selected.action as QuestAction.Battle).questKey)
         assertEquals(listOf(questEntry.id), selected.trace.map(AutomationEvaluationTrace::entryId))
-        Mockito.verify(typed, Mockito.times(1)).findEntries(7)
+        Mockito.verify(typed, Mockito.never()).findEntries(7)
         Mockito.verify(loader).loadEntry(7, 10, "quest-1")
     }
 
@@ -1615,7 +1721,7 @@ class AutomationTargetSelectorTest {
         )
         Mockito.`when`(typed.findEntries(7)).thenReturn(emptyList())
 
-        assertIs<AutomationCoordination.Idle>(selector.select(7))
+        assertIs<AutomationCoordination.CycleBoundary>(selector.select(7))
 
         Mockito.verify(lifecycle).applyTransition(
             7,
@@ -1832,7 +1938,7 @@ class AutomationTargetSelectorTest {
             QuestDirective.WaitUntil(retryAt, "COOLDOWN", "wait"),
         )
 
-        val selected = assertIs<AutomationCoordination.Idle>(selector.select(7))
+        val selected = assertIs<AutomationCoordination.CycleBoundary>(selector.select(7))
 
         assertEquals(listOf(questEntry.id), selected.trace.map(AutomationEvaluationTrace::entryId))
         Mockito.verify(lifecycle).waitForCooldown(7, running.id, retryAt)
@@ -1840,7 +1946,7 @@ class AutomationTargetSelectorTest {
     }
 
     @Test
-    fun `running quest configuration hold is parked before selecting another automation`() {
+    fun `running quest configuration hold is parked before a fresh automation decision`() {
         val running = session(31, questEntry, AutomationWorkType.QUEST, "quest-1", AutomationWorkStatus.RUNNING)
         val parked = session(
             31,
@@ -1899,11 +2005,11 @@ class AutomationTargetSelectorTest {
         Mockito.`when`(loader.loadEntry(7, 11, null, null)).thenReturn(battleSnapshot)
         battleRules.returns(requireNotNull(battleSnapshot.battle), HandlerEvaluation.Runnable(battleAction))
 
-        val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
+        val boundary = assertIs<AutomationCoordination.CycleBoundary>(selector.select(7))
 
-        assertEquals(11, selected.entryId)
-        assertEquals(listOf("bad preset"), selected.warnings)
+        assertEquals(listOf("bad preset"), boundary.warnings)
         Mockito.verify(lifecycle).applyTransition(7, running.id, transition)
+        Mockito.verify(loader, Mockito.never()).loadEntry(7, battleEntry.id, null, null)
     }
 
     @Test
@@ -2002,7 +2108,7 @@ class AutomationTargetSelectorTest {
         Mockito.`when`(work.findWaiting(7)).thenReturn(emptyList())
         Mockito.`when`(typed.findEntries(7)).thenReturn(emptyList())
 
-        assertIs<AutomationCoordination.Idle>(selector.select(7))
+        assertIs<AutomationCoordination.CycleBoundary>(selector.select(7))
 
         Mockito.verify(lifecycle).applyTransition(
             7,
