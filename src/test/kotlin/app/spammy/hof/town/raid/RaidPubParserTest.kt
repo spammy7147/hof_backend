@@ -135,6 +135,20 @@ class RaidPubParserTest {
         assertTrue(page.result?.messages.orEmpty().contains("전투가 신청 가능 상태로 바뀌었습니다."))
     }
 
+    @Test fun `등록 성공 문구의 완료는 모집 중 레이드를 보상 단계로 오인하지 않는다`() {
+        val html = registerableFixture()
+            .replace("[다른 신청자]", "[《테스트 길드》현재사용자]")
+            .replace(
+                "현재 상태 : 파티 모집 중 (신청 안됨)",
+                "현재 상태 : 파티 모집 중 (신청 안됨) 전투 신청이 완료되었습니다.",
+            )
+
+        val page = parser.parse(html, URL, forms.parse(html, URL))
+
+        assertEquals(RaidStatus.RECRUITING, page.raids.first().status)
+        assertTrue(page.raids.first().joined)
+    }
+
     @Test fun `같은 submit control이 중복 관측되면 action을 노출하지 않는다`() {
         val duplicate = "<input type=\"submit\" name=\"register_goblin\" value=\"등록한다\">"
         val html = fixture().replace(duplicate, duplicate + duplicate)

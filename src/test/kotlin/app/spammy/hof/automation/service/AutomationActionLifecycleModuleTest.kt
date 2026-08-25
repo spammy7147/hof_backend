@@ -64,6 +64,7 @@ import app.spammy.hof.town.home.model.HomeQuestState
 import app.spammy.hof.town.home.service.HomeService
 import app.spammy.hof.town.fishing.dto.FishingBattleTargetResponse
 import app.spammy.hof.town.fishing.dto.FishingResponse
+import app.spammy.hof.town.fishing.dto.TownActionResultResponse
 import app.spammy.hof.town.fishing.model.FishingAction
 import app.spammy.hof.town.fishing.model.FishingOutcome
 import app.spammy.hof.town.fishing.model.FishingPrimaryAction
@@ -1350,6 +1351,27 @@ class AutomationActionLifecycleModuleTest {
     }
 
     @Test
+    fun `낚시 START 직접 응답은 공통 결과가 UNKNOWN이어도 CATCH 사후 상태로 적용한다`() {
+        val managed = assertNotNull(module.prepare(
+            7L,
+            15L,
+            FishingTownAutomationAction(7L, FishingAction.START, FishingPrimaryAction.START, 10),
+        ))
+        val started = fishingResponse(
+            FishingPrimaryAction.CATCH,
+            10,
+            resultStatus = "UNKNOWN",
+        )
+        Mockito.`when`(
+            fishingService.act(7L, FishingAction.START, HofRequestOrigin.AUTOMATION),
+        ).thenReturn(started)
+
+        val execution = assertIs<TypedAutomationExecution.ActionCompleted>(managed.execute())
+
+        assertIs<AutomationActionEvidence.DirectApplied>(policyEvidence(managed, execution))
+    }
+
+    @Test
     fun `CATCH 직접 응답에 방해 전투가 생겨도 낚시 cast 사이클은 즉시 완료한다`() {
         val managed = assertNotNull(module.prepare(
             7L,
@@ -2473,12 +2495,16 @@ class AutomationActionLifecycleModuleTest {
         remainingCasts: Int?,
         lastOutcome: FishingOutcome? = null,
         blockedByBattle: Boolean = false,
+        resultStatus: String? = null,
     ) =
         Mockito.mock(FishingResponse::class.java).also { response ->
             Mockito.`when`(response.primaryAction).thenReturn(primaryAction)
             Mockito.`when`(response.remainingCasts).thenReturn(remainingCasts)
             Mockito.`when`(response.lastOutcome).thenReturn(lastOutcome)
             Mockito.`when`(response.blockedByBattle).thenReturn(blockedByBattle)
+            Mockito.`when`(response.result).thenReturn(
+                resultStatus?.let { TownActionResultResponse(it, emptyList(), emptyList()) },
+            )
         }
 
     private fun anyBattleAction(): BattleMapAutomationAction =

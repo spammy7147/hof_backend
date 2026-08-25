@@ -1056,6 +1056,7 @@ class UnifiedAutomationActionLifecycleModule(
         val unchanged = response.primaryAction == payload.observedPrimaryAction &&
             response.remainingCasts == payload.observedRemainingCasts &&
             response.lastOutcome == null && !response.blockedByBattle
+        val actionPoststateComplete = fishingActionPoststateApplied(payload.action, response)
         return TypedAutomationExecution.ActionCompleted(
             observedState = FishingObservedState(
                 fingerprint = if (unchanged) {
@@ -1074,7 +1075,7 @@ class UnifiedAutomationActionLifecycleModule(
             responseShapeMaterial = responseShapeMaterial(
                 ProductionEvidenceShapes.FISHING_RESPONSE,
                 structurallyKnown = payload.action in setOf(FishingAction.START, FishingAction.CATCH) &&
-                    knownTownResultStatus(response.result?.status),
+                    (knownTownResultStatus(response.result?.status) || actionPoststateComplete),
             ),
             sanitizedSnippet = snippet,
         )
@@ -1084,20 +1085,24 @@ class UnifiedAutomationActionLifecycleModule(
         payload: StoredTypedActionPayload.FishingTown,
         response: app.spammy.hof.town.fishing.dto.FishingResponse,
     ) {
-        val applied = when (payload.action) {
-            FishingAction.START -> response.primaryAction == FishingPrimaryAction.CATCH ||
-                response.lastOutcome == FishingOutcome.STARTED
-            FishingAction.CATCH -> response.lastOutcome in setOf(
-                FishingOutcome.CAUGHT,
-                FishingOutcome.ESCAPED,
-            ) || response.primaryAction == FishingPrimaryAction.START || response.blockedByBattle
-            else -> false
-        }
-        if (!applied) {
+        if (!fishingActionPoststateApplied(payload.action, response)) {
             throw AmbiguousAutomationSubmissionException(
                 "Fishing direct response did not prove the action-specific poststate.",
             )
         }
+    }
+
+    private fun fishingActionPoststateApplied(
+        action: FishingAction,
+        response: app.spammy.hof.town.fishing.dto.FishingResponse,
+    ): Boolean = when (action) {
+        FishingAction.START -> response.primaryAction == FishingPrimaryAction.CATCH ||
+            response.lastOutcome == FishingOutcome.STARTED
+        FishingAction.CATCH -> response.lastOutcome in setOf(
+            FishingOutcome.CAUGHT,
+            FishingOutcome.ESCAPED,
+        ) || response.primaryAction == FishingPrimaryAction.START || response.blockedByBattle
+        else -> false
     }
 
     private fun raidActionCompleted(

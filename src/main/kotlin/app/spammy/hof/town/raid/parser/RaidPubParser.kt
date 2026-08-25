@@ -200,11 +200,11 @@ class RaidPubParser {
         text == null -> RaidStatus.UNKNOWN
         isRaidResetRequiredStatus(text) -> RaidStatus.COMPLETED
         REWARD_CONFIRMATION.containsMatchIn(text) -> RaidStatus.COMPLETED
-        COMPLETED.containsMatchIn(text) -> RaidStatus.COMPLETED
         IN_BATTLE.containsMatchIn(text) -> RaidStatus.IN_BATTLE
         DEPART.containsMatchIn(text) -> RaidStatus.WAITING
         READY.containsMatchIn(text) -> RaidStatus.READY
         RECRUITING.containsMatchIn(text) -> RaidStatus.RECRUITING
+        COMPLETED.containsMatchIn(text) -> RaidStatus.COMPLETED
         CLOSED.containsMatchIn(text) -> RaidStatus.CLOSED
         else -> RaidStatus.UNKNOWN
     }
