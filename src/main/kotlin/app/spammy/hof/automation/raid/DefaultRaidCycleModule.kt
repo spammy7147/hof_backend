@@ -950,8 +950,8 @@ class DefaultRaidCycleModule(
     ): RaidRecordResult {
         val configuration = state.configuration
             ?: return RaidRecordResult.EntrySkipped("레이드 자동화 설정을 찾을 수 없습니다.")
-        if (!page.fresh || (!page.applied && !page.actionSuccessMarker)) {
-            return needsRecheck("상태 갱신 직접 응답이 최신 적용 상태를 증명하지 못했습니다.")
+        if (!page.fresh) {
+            return needsRecheck("상태 갱신 직접 응답이 완전하지 않아 다시 확인합니다.")
         }
         val joined = page.raids.filter(RaidObservedTarget::joined)
         if (joined.size > 1) {

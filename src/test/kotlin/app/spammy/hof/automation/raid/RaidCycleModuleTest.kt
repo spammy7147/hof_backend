@@ -81,7 +81,7 @@ class RaidCycleModuleTest {
                     actions = setOf(RaidIntentKind.REGISTER),
                 ),
             ),
-            applied = true,
+            applied = false,
             registrationWait = false,
             fresh = true,
         )
@@ -99,6 +99,48 @@ class RaidCycleModuleTest {
         assertEquals(RaidIntentKind.REGISTER, intent.kind)
         assertEquals("raid-a", intent.requestRaidId)
         assertEquals(RaidAutomationCycleStatus.PREPARING, store.state.openCycle?.status)
+    }
+
+    @Test
+    fun `미참가 상태 갱신 응답이 전역 등록 쿨다운이면 성공 표식 없이 종료 시각을 기록한다`() {
+        val target = target("raid-a", 0)
+        val store = InMemoryRaidCycleStore(
+            RaidCycleAccountState(
+                RaidCycleConfiguration(7, true, listOf(target), target.raidId),
+                null,
+            ),
+        )
+        val cooldownSeconds = 6_027
+        val observation = RaidObservation(
+            raids = listOf(
+                RaidObservedTarget(
+                    id = target.raidId,
+                    name = target.name,
+                    playable = true,
+                    status = RaidObservedStatus.COMPLETED,
+                    statusText = "보상 확인 시간",
+                    joined = false,
+                    actions = emptySet(),
+                ),
+            ),
+            applied = false,
+            registrationWait = true,
+            registrationWaitSeconds = cooldownSeconds,
+            fresh = true,
+            actionSuccessMarker = false,
+        )
+        val module = DefaultRaidCycleModule(store, RaidObservationReader { observation }, TimeProvider { now })
+
+        val refresh = assertIs<RaidIntent.Town>(assertIs<RaidDirective.Execute>(module.decide(1).directive).intent)
+        val wait = assertIs<RaidRecordResult.EntryWait>(module.recordObservedResult(
+            1,
+            RaidAttempt(7, RaidIntentKind.REFRESH, refresh.raidId, requestRaidId = null),
+            RaidResultObservation.Page(observation),
+        ))
+
+        assertEquals(now.plusSeconds(cooldownSeconds.toLong()), wait.at)
+        assertEquals("RAID_GLOBAL_REGISTRATION_COOLDOWN", wait.reasonCode)
+        assertEquals(null, store.state.openCycle)
     }
 
     @Test
