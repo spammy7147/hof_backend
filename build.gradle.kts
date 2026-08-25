@@ -70,7 +70,8 @@ allOpen {
 
 tasks.withType<Test> {
 	useJUnitPlatform()
-	// Bound unique Spring test contexts so the default 512 MB test worker does not retain the entire suite graph.
+	// Keep the complete Spring suite within the 4 GB Jenkins agent while avoiding the default 512 MB test OOM.
+	maxHeapSize = "1g"
 	systemProperty("spring.test.context.cache.maxSize", "8")
 }
 
