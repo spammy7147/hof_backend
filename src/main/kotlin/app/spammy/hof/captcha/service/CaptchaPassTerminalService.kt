@@ -1,7 +1,6 @@
 package app.spammy.hof.captcha.service
 
 import app.spammy.hof.account.repository.AccountQueryRepository
-import app.spammy.hof.push.service.PushOutboxService
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 
@@ -10,13 +9,13 @@ import org.springframework.transaction.annotation.Transactional
 class CaptchaPassTerminalService(
     private val accounts: AccountQueryRepository,
     private val maintenance: CaptchaPassMaintenanceService,
-    private val pushOutbox: PushOutboxService,
+    private val notifications: CaptchaNotificationGateway,
 ) {
     @Transactional
     fun finishManualRequired(accountId: Long, token: String, challengeId: Long) {
         val account = accounts.findById(accountId) ?: return
         if (maintenance.finishManualRequired(accountId, token, challengeId)) {
-            pushOutbox.enqueueCaptchaRequired(account, challengeId, "pass-manual-$token")
+            notifications.captchaRequired(account, challengeId, "pass-manual-$token")
         }
     }
 
@@ -24,7 +23,7 @@ class CaptchaPassTerminalService(
     fun finishLoginRequired(accountId: Long, token: String) {
         val account = accounts.findById(accountId) ?: return
         if (maintenance.finishLoginRequired(accountId, token)) {
-            pushOutbox.enqueueLoginRequired(account, "pass-login-$token")
+            notifications.loginRequired(account, "pass-login-$token")
         }
     }
 }

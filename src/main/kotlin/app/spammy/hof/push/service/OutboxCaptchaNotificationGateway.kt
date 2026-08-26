@@ -10,7 +10,15 @@ import org.springframework.stereotype.Component
 class OutboxCaptchaNotificationGateway(
     private val pushOutboxService: PushOutboxService,
 ) : CaptchaNotificationGateway {
-    override fun captchaRequired(account: HofAccountEntity, challengeId: Long) {
-        pushOutboxService.enqueueCaptchaRequired(account, challengeId)
+    override fun captchaRequired(account: HofAccountEntity, challengeId: Long, eventId: String?) {
+        if (eventId == null) {
+            pushOutboxService.enqueueCaptchaRequired(account, challengeId)
+        } else {
+            pushOutboxService.enqueueCaptchaRequired(account, challengeId, eventId)
+        }
+    }
+
+    override fun loginRequired(account: HofAccountEntity, eventId: String) {
+        pushOutboxService.enqueueLoginRequired(account, eventId)
     }
 }
