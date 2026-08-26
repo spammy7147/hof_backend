@@ -1,7 +1,9 @@
 package app.spammy.hof.auth.service
 
+import com.zaxxer.hikari.HikariDataSource
 import java.sql.Connection
 import java.util.concurrent.Executor
+import java.util.concurrent.Semaphore
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import javax.sql.DataSource
 import kotlin.concurrent.read
@@ -33,6 +35,13 @@ interface AccountExecutionLock {
 class PostgreSqlAdvisoryAccountExecutionLock(
     private val dataSource: DataSource,
 ) : AccountExecutionLock {
+    private val connectionPermits = Semaphore(resolveConnectionPermitCount(dataSource), true)
+    private val postgres by lazy {
+        dataSource.connection.use { connection ->
+            connection.metaData.databaseProductName.equals(POSTGRESQL, ignoreCase = true)
+        }
+    }
+
     override fun executeShared(accountId: Long, action: Runnable) {
         execute(accountId, shared = true, action)
     }
@@ -42,36 +51,59 @@ class PostgreSqlAdvisoryAccountExecutionLock(
     }
 
     private fun execute(accountId: Long, shared: Boolean, action: Runnable) {
-        dataSource.connection.use { connection ->
-            if (!connection.metaData.databaseProductName.equals(POSTGRESQL, ignoreCase = true)) {
-                fallback(accountId, shared, action)
-                return
-            }
-            val lockKey = accountId xor LOCK_NAMESPACE
-            executeLockFunction(connection, if (shared) LOCK_SHARED_SQL else LOCK_EXCLUSIVE_SQL, lockKey)
-            var actionFailure: Throwable? = null
-            try {
-                action.run()
-            } catch (error: Throwable) {
-                actionFailure = error
-                throw error
-            } finally {
+        if (!postgres) {
+            fallback(accountId, shared, action)
+            return
+        }
+        acquireConnectionPermit()
+        try {
+            dataSource.connection.use { connection ->
+                val lockKey = accountId xor LOCK_NAMESPACE
                 try {
-                    val released = executeLockFunction(
-                        connection,
-                        if (shared) UNLOCK_SHARED_SQL else UNLOCK_EXCLUSIVE_SQL,
-                        lockKey,
-                        returnsBoolean = true,
-                    )
-                    check(released) { "PostgreSQL account execution advisory lock was not held." }
-                } catch (unlockError: Throwable) {
-                    runCatching { connection.abort(DIRECT_EXECUTOR) }
-                        .onFailure(unlockError::addSuppressed)
-                    if (actionFailure == null) throw unlockError
-                    actionFailure.addSuppressed(unlockError)
+                    executeLockFunction(connection, if (shared) LOCK_SHARED_SQL else LOCK_EXCLUSIVE_SQL, lockKey)
+                } catch (lockError: Throwable) {
+                    abortConnection(connection, lockError)
+                    throw lockError
+                }
+                var actionFailure: Throwable? = null
+                try {
+                    action.run()
+                } catch (error: Throwable) {
+                    actionFailure = error
+                    throw error
+                } finally {
+                    try {
+                        val released = executeLockFunction(
+                            connection,
+                            if (shared) UNLOCK_SHARED_SQL else UNLOCK_EXCLUSIVE_SQL,
+                            lockKey,
+                            returnsBoolean = true,
+                        )
+                        check(released) { "PostgreSQL account execution advisory lock was not held." }
+                    } catch (unlockError: Throwable) {
+                        abortConnection(connection, unlockError)
+                        if (actionFailure == null) throw unlockError
+                        actionFailure.addSuppressed(unlockError)
+                    }
                 }
             }
+        } finally {
+            connectionPermits.release()
         }
+    }
+
+    private fun acquireConnectionPermit() {
+        try {
+            connectionPermits.acquire()
+        } catch (error: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw IllegalStateException("Interrupted while waiting for an account execution lock connection.", error)
+        }
+    }
+
+    private fun abortConnection(connection: Connection, failure: Throwable) {
+        runCatching { connection.abort(DIRECT_EXECUTOR) }
+            .onFailure(failure::addSuppressed)
     }
 
     private fun executeLockFunction(
@@ -101,6 +133,29 @@ class PostgreSqlAdvisoryAccountExecutionLock(
         const val UNLOCK_EXCLUSIVE_SQL = "select pg_advisory_unlock(?)"
         val FALLBACK_LOCKS = Array(64) { ReentrantReadWriteLock(true) }
         val DIRECT_EXECUTOR = Executor(Runnable::run)
+
+        fun resolveConnectionPermitCount(dataSource: DataSource): Int {
+            val configuredPoolSize = runCatching {
+                when {
+                    dataSource is HikariDataSource -> dataSource.maximumPoolSize
+                    dataSource.isWrapperFor(HikariDataSource::class.java) ->
+                        dataSource.unwrap(HikariDataSource::class.java).maximumPoolSize
+                    else -> UNKNOWN_POOL_SAFE_SIZE
+                }
+            }.getOrDefault(UNKNOWN_POOL_SAFE_SIZE)
+            val maximumPoolSize = configuredPoolSize.takeIf { it > 0 } ?: HIKARI_DEFAULT_POOL_SIZE
+            require(maximumPoolSize >= MINIMUM_POOL_SIZE) {
+                "Account execution advisory locks require a database pool of at least $MINIMUM_POOL_SIZE connections."
+            }
+            return ((maximumPoolSize - RESERVED_CONNECTIONS) / CONNECTIONS_PER_GATE)
+                .coerceAtLeast(1)
+        }
+
+        const val MINIMUM_POOL_SIZE = 2
+        const val HIKARI_DEFAULT_POOL_SIZE = 10
+        const val UNKNOWN_POOL_SAFE_SIZE = 2
+        const val RESERVED_CONNECTIONS = 1
+        const val CONNECTIONS_PER_GATE = 2
     }
 }
 
