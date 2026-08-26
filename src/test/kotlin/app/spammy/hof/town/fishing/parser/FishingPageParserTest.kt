@@ -41,6 +41,14 @@ class FishingPageParserTest {
     }
 
     @Test
+    fun `START 직접 응답에 CATCH form이 아직 없어도 시작 적용으로 읽는다`() {
+        val html = fixture("waiting-no-catch.html")
+        val waiting = parser.parse(html, url, forms.parse(html, url), results.parse(html))
+
+        assertEquals(FishingOutcome.STARTED, waiting.lastOutcome)
+    }
+
+    @Test
     fun `물고기 도망은 정상 outcome이다`() {
         val html = fixture("escaped.html")
         val escaped = parser.parse(html, url, forms.parse(html, url), results.parse(html))

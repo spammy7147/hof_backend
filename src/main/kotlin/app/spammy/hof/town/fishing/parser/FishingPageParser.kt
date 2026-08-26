@@ -56,6 +56,7 @@ class FishingPageParser(
         val outcome = if (result != null) when {
             ESCAPED.containsMatchIn(resultText) -> FishingOutcome.ESCAPED
             CAUGHT.containsMatchIn(resultText) -> FishingOutcome.CAUGHT
+            STARTED.containsMatchIn(text) -> FishingOutcome.STARTED
             result.messages.isNotEmpty() || result.items.isNotEmpty() -> FishingOutcome.INFORMATIONAL
             else -> FishingOutcome.INFORMATIONAL
         } else if (STARTED.containsMatchIn(text)) FishingOutcome.STARTED else null
