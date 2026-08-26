@@ -248,7 +248,7 @@ class CaptchaServicePersistenceTest {
     }
 
     @Test
-    fun concurrentDetectionSerializesOnAccountAndKeepsOneDetectedChallenge() {
+    fun proactiveAndReactiveDetectionRaceSerializesOnAccountAndKeepsOneDetectedChallenge() {
         val account = savedAccountWithCookie("captcha-service-concurrent-detect")
         val start = CountDownLatch(1)
         val executor = Executors.newFixedThreadPool(2)
@@ -256,11 +256,25 @@ class CaptchaServicePersistenceTest {
             val futures = listOf(
                 executor.submit<CaptchaChallengeResponse> {
                     start.await()
-                    assertNotNull(service.detectAndRecord(account, captchaHtml("token_a", "a"), POLICE_URL))
+                    assertNotNull(
+                        service.detectAndRecord(
+                            account,
+                            captchaHtml("token_a", "a"),
+                            POLICE_URL,
+                            notifyAutomation = false,
+                        ),
+                    )
                 },
                 executor.submit<CaptchaChallengeResponse> {
                     start.await()
-                    assertNotNull(service.detectAndRecord(account, captchaHtml("token_b", "b"), POLICE_URL))
+                    assertNotNull(
+                        service.detectAndRecord(
+                            account,
+                            captchaHtml("token_b", "b"),
+                            POLICE_URL,
+                            notifyAutomation = true,
+                        ),
+                    )
                 },
             )
 

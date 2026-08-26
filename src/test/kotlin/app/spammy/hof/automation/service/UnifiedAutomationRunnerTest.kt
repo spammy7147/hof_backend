@@ -48,6 +48,7 @@ import app.spammy.hof.battle.dto.BattlePatternLoadRequest
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.auth.service.AccountExecutionSubmissionGate
 import app.spammy.hof.external.client.HofAutomationDeferredException
 import app.spammy.hof.quest.model.QuestState
 import app.spammy.hof.town.raid.model.RaidAction
@@ -74,6 +75,7 @@ class UnifiedAutomationRunnerTest {
     private val wakeup = Mockito.mock(AutomationWakeupPort::class.java)
     private val sharedCooldowns = Mockito.mock(SharedBattleCooldownService::class.java)
     private val lifecycle = Mockito.mock(AutomationActionLifecycleModule::class.java)
+    private val submissionGate = Mockito.mock(AccountExecutionSubmissionGate::class.java)
     private val managed = Mockito.mock(ManagedAutomationAction::class.java)
     private val freshExecution = executionRight()
     private val defaultStored = defaultStoredAction()
@@ -88,9 +90,15 @@ class UnifiedAutomationRunnerTest {
         wakeup,
         sharedCooldowns,
         lifecycle,
+        submissionGate,
     )
 
     init {
+        Mockito.`when`(submissionGate.executeIfAuthorized(Mockito.anyLong(), anyRunnable()))
+            .thenAnswer { invocation ->
+                (invocation.arguments[1] as Runnable).run()
+                true
+            }
         Mockito.`when`(runtime.isRunning(7)).thenReturn(true)
         Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
         Mockito.`when`(runtime.acquire(7)).thenReturn(TypedRuntimeAcquisition.Acquired(freshExecution))
@@ -139,6 +147,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             journal,
         )
 
@@ -153,6 +162,23 @@ class UnifiedAutomationRunnerTest {
         Mockito.verify(journal, Mockito.times(2)).appendActionResult(Mockito.eq(41L), captureTrace(traceCaptor))
         assertTrue(traceCaptor.allValues.all { it.actionKind == "QUEST_CLAIM" })
         assertTrue(traceCaptor.allValues.all { it.message.startsWith("퀘스트 보상 수령 · quest") })
+    }
+
+    @Test
+    fun `logout authorization boundary discards a prepared action without starting its remote submission`() {
+        Mockito.`when`(decisions.select(7)).thenReturn(
+            AutomationCoordination.Runnable(12, legacyBattleAction(), emptyList()),
+        )
+        Mockito.`when`(
+            submissionGate.executeIfAuthorized(Mockito.eq(7L), anyRunnable()),
+        ).thenReturn(false)
+
+        runner.runOne(7)
+
+        Mockito.verify(runtime).beginSubmission(preparedExecution)
+        Mockito.verify(managed, Mockito.never()).execute()
+        val outcome = assertIs<TypedRuntimeOutcome.SubmissionDeferred>(capturedOutcome())
+        assertTrue(outcome.message.contains("로그아웃"))
     }
 
     @Test
@@ -231,6 +257,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             fishingCycleExecutor = cycleExecutor,
         )
 
@@ -349,6 +376,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             convergenceModule = convergence,
             convergenceSelectionFactory = StoredActionConvergenceSelectionFactory(),
             evidenceInterpreter = productionEvidenceInterpreter,
@@ -419,6 +447,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
         )
 
         scoped.runOne(7L)
@@ -481,6 +510,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             convergenceModule = convergence,
             convergenceSelectionFactory = StoredActionConvergenceSelectionFactory(),
             timeProvider = TimeProvider { Instant.EPOCH },
@@ -518,6 +548,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             convergenceModule = convergence,
             convergenceSelectionFactory = convergenceFactory,
             timeProvider = TimeProvider { Instant.EPOCH },
@@ -561,6 +592,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             fishingCycleExecutor = cycleExecutor,
         )
 
@@ -608,6 +640,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
         )
 
         scoped.runOne(7L)
@@ -657,6 +690,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             convergenceModule = convergence,
             convergenceSelectionFactory = StoredActionConvergenceSelectionFactory(),
             rollout = AutomationConvergenceRollout(
@@ -698,6 +732,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             timeProvider = TimeProvider { Instant.EPOCH.plusSeconds(1) },
             fishingCycleExecutor = cycleExecutor,
         )
@@ -735,6 +770,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             fishingCycleExecutor = cycleExecutor,
         )
 
@@ -776,6 +812,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             convergenceModule = convergence,
             convergenceSelectionFactory = convergenceFactory,
             timeProvider = TimeProvider { Instant.EPOCH },
@@ -824,6 +861,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             timeProvider = TimeProvider { Instant.EPOCH.plusSeconds(1) },
             fishingCycleExecutor = cycleExecutor,
         )
@@ -1019,6 +1057,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
         )
 
         scoped.runOne(7L)
@@ -1059,6 +1098,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             convergenceModule = convergence,
             convergenceSelectionFactory = factory,
             rollout = AutomationConvergenceRollout(
@@ -1102,6 +1142,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             convergenceModule = convergence,
             convergenceSelectionFactory = StoredActionConvergenceSelectionFactory(),
             rollout = AutomationConvergenceRollout(
@@ -1226,6 +1267,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             timeProvider = TimeProvider { observedAt },
         )
 
@@ -1270,6 +1312,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             convergenceModule = DefaultAutomationActionConvergenceModule(store, TimeProvider { observedAt }),
             convergenceSelectionFactory = factory,
             timeProvider = TimeProvider { observedAt },
@@ -1322,6 +1365,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             convergenceModule = DefaultAutomationActionConvergenceModule(store, TimeProvider { observedAt }),
             convergenceSelectionFactory = factory,
             timeProvider = TimeProvider { observedAt },
@@ -1373,6 +1417,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             timeProvider = TimeProvider { observedAt },
         )
 
@@ -1414,6 +1459,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             timeProvider = TimeProvider { observedAt },
         )
 
@@ -1455,6 +1501,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             timeProvider = TimeProvider { observedAt },
         )
 
@@ -1574,6 +1621,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             convergenceModule = convergence,
             convergenceSelectionFactory = factory,
             evidenceInterpreter = productionEvidenceInterpreter,
@@ -1696,6 +1744,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             convergenceModule = convergence,
             convergenceSelectionFactory = factory,
             timeProvider = TimeProvider { Instant.EPOCH },
@@ -1878,6 +1927,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             rollout = rollout,
             timeProvider = app.spammy.hof.common.time.TimeProvider { Instant.EPOCH },
         )
@@ -1916,6 +1966,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             journal,
         )
 
@@ -1970,6 +2021,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             journal,
         )
 
@@ -2029,6 +2081,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             journal,
         )
 
@@ -2067,6 +2120,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             convergenceModule = convergence,
             convergenceSelectionFactory = factory,
             evidenceInterpreter = productionEvidenceInterpreter,
@@ -2101,6 +2155,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             convergenceModule = convergence,
             convergenceSelectionFactory = factory,
             evidenceInterpreter = productionEvidenceInterpreter,
@@ -2137,6 +2192,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             convergenceModule = convergence,
             convergenceSelectionFactory = factory,
             evidenceInterpreter = productionEvidenceInterpreter,
@@ -2166,6 +2222,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             convergenceModule = convergence,
             convergenceSelectionFactory = factory,
         )
@@ -2196,6 +2253,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             convergenceModule = convergence,
             convergenceSelectionFactory = factory,
         )
@@ -2229,6 +2287,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             convergenceModule = convergence,
             convergenceSelectionFactory = factory,
         )
@@ -2261,6 +2320,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             convergenceModule = convergence,
             convergenceSelectionFactory = factory,
         )
@@ -2295,6 +2355,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             convergenceModule = convergence,
             convergenceSelectionFactory = factory,
         )
@@ -2334,6 +2395,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             convergenceModule = convergence,
             convergenceSelectionFactory = factory,
         )
@@ -2387,6 +2449,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             convergenceModule = convergence,
             convergenceSelectionFactory = factory,
         )
@@ -2426,6 +2489,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             convergenceModule = convergence,
             convergenceSelectionFactory = StoredActionConvergenceSelectionFactory(),
             storedConvergenceActionLoader = loader,
@@ -2471,6 +2535,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             convergenceModule = convergence,
             convergenceSelectionFactory = factory,
             evidenceInterpreter = productionEvidenceInterpreter,
@@ -2510,6 +2575,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             convergenceModule = convergence,
             convergenceSelectionFactory = StoredActionConvergenceSelectionFactory(),
             storedConvergenceActionLoader = loader,
@@ -2558,6 +2624,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             convergenceModule = convergence,
             convergenceSelectionFactory = factory,
             rollout = AutomationConvergenceRollout(
@@ -2605,6 +2672,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             convergenceModule = convergence,
             convergenceSelectionFactory = factory,
         )
@@ -2644,6 +2712,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             convergenceModule = convergence,
             convergenceSelectionFactory = factory,
             timeProvider = TimeProvider { Instant.EPOCH },
@@ -2695,6 +2764,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             convergenceModule = convergence,
             convergenceSelectionFactory = factory,
             timeProvider = TimeProvider { Instant.EPOCH },
@@ -2744,6 +2814,7 @@ class UnifiedAutomationRunnerTest {
             wakeup,
             sharedCooldowns,
             lifecycle,
+            submissionGate,
             convergenceModule = convergence,
             convergenceSelectionFactory = factory,
         )
@@ -2769,6 +2840,7 @@ class UnifiedAutomationRunnerTest {
         wakeup,
         sharedCooldowns,
         lifecycle,
+        submissionGate,
         convergenceModule = Mockito.mock(AutomationActionConvergenceModule::class.java),
         convergenceSelectionFactory = StoredActionConvergenceSelectionFactory(),
         rollout = AutomationConvergenceRollout(
@@ -2925,6 +2997,8 @@ class UnifiedAutomationRunnerTest {
 
     private fun anyExecution(): TypedRuntimeExecutionRight =
         Mockito.any(TypedRuntimeExecutionRight::class.java) ?: freshExecution
+
+    private fun anyRunnable(): Runnable = Mockito.any(Runnable::class.java) ?: Runnable {}
 
     private fun anyOutcome(): TypedRuntimeOutcome =
         Mockito.any(TypedRuntimeOutcome::class.java) ?: TypedRuntimeOutcome.Idle

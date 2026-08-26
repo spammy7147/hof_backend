@@ -16,6 +16,7 @@ import app.spammy.hof.automation.history.*
 import app.spammy.hof.automation.port.AutomationWakeupPort
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
+import app.spammy.hof.auth.service.AccountExecutionSubmissionGate
 import app.spammy.hof.external.client.HofAutomationDeferredException
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.town.fishing.model.FishingAction
@@ -36,6 +37,7 @@ class UnifiedAutomationRunner @Autowired constructor(
     private val wakeupPort: AutomationWakeupPort,
     private val sharedBattleCooldowns: SharedBattleCooldownService,
     private val actionLifecycleModule: AutomationActionLifecycleModule,
+    private val submissionGate: AccountExecutionSubmissionGate,
     private val decisionJournal: AutomationDecisionJournal? = null,
     private val convergenceModule: AutomationActionConvergenceModule? = null,
     private val convergenceSelectionFactory: StoredActionConvergenceSelectionFactory? = null,
@@ -1016,7 +1018,11 @@ class UnifiedAutomationRunner @Autowired constructor(
                     trace(AutomationHistoryEventKind.ACTION_STARTED, "ACTION_STARTED", "자동화 행동을 시작했습니다."),
                 )
             }
-            val evidenceExecution = managedAction.execute()
+            val authorizedExecution = executeAuthorized(accountId) { managedAction.execute() }
+            if (!authorizedExecution.authorized) {
+                return discardUnauthorizedSubmission(accountId, execution, convergenceAttemptId)
+            }
+            val evidenceExecution = requireNotNull(authorizedExecution.value)
             appliedEvidence = evidenceSelection?.let { selection ->
                 evidenceInterpreter?.fromExecution(selection, evidenceExecution, now())
                     ?: AutomationActionEvidence.IncompleteObservation(
@@ -1438,7 +1444,11 @@ class UnifiedAutomationRunner @Autowired constructor(
         }
         try {
             append(AutomationHistoryEventKind.ACTION_STARTED, "ACTION_STARTED", "낚시 CATCH를 시작했습니다.")
-            val direct = managed.executeObservedResponse()
+            val authorizedExecution = executeAuthorized(accountId) { managed.executeObservedResponse() }
+            if (!authorizedExecution.authorized) {
+                return discardUnauthorizedSubmission(accountId, execution, attemptId)
+            }
+            val direct = authorizedExecution.value
                 ?: throw AutomationActionPreconditionChangedException("재사용할 최신 CATCH 관측이 없습니다.")
             val evidence = selection?.let { selected ->
                 evidenceInterpreter?.fromExecution(selected, direct.execution, now())
@@ -1664,7 +1674,8 @@ class UnifiedAutomationRunner @Autowired constructor(
                 return
             }
             append(startStored, startManaged, AutomationHistoryEventKind.ACTION_STARTED, "ACTION_STARTED", "낚시 START를 시작했습니다.")
-            cycleExecutor.executeOneCast(command, object : FishingCycleTransitions {
+            val submitted = executeAuthorized(accountId) {
+                cycleExecutor.executeOneCast(command, object : FishingCycleTransitions {
                 override fun startAppliedAndCatchPrepared(
                     command: FishingCycleCommand,
                     start: FishingCycleStepEvidence,
@@ -1750,7 +1761,12 @@ class UnifiedAutomationRunner @Autowired constructor(
                     )
                     handled = true
                 }
-            })
+                })
+            }
+            if (!submitted.authorized) {
+                discardUnauthorizedSubmission(accountId, execution, activeAttemptId)
+                return
+            }
             check(handled) { "Fishing cycle finished without a durable terminal transition." }
         } catch (_: FishingCycleFlowStopped) {
             return
@@ -1816,6 +1832,33 @@ class UnifiedAutomationRunner @Autowired constructor(
                 "낚시 요청 결과가 불확실해 같은 POST를 다시 보내지 않고 최신 상태를 확인합니다.",
             )
         }
+    }
+
+    private fun <T> executeAuthorized(accountId: Long, submission: () -> T): AuthorizedExecution<T> {
+        var result: Any? = SUBMISSION_NOT_EXECUTED
+        val authorized = submissionGate.executeIfAuthorized(accountId, Runnable { result = submission() })
+        if (!authorized) return AuthorizedExecution(false, null)
+        check(result !== SUBMISSION_NOT_EXECUTED) { "Authorized submission did not execute." }
+        @Suppress("UNCHECKED_CAST")
+        return AuthorizedExecution(true, result as T)
+    }
+
+    private fun discardUnauthorizedSubmission(
+        accountId: Long,
+        execution: TypedRuntimeExecutionRight,
+        convergenceAttemptId: Long?,
+    ) {
+        convergenceAttemptId?.let { attemptId ->
+            convergenceModule?.record(
+                attemptId,
+                AutomationActionEvidence.DirectRejected(now(), AUTHORIZATION_ENDED_REASON),
+            )
+        }
+        typedRuntime.complete(
+            execution,
+            TypedRuntimeOutcome.SubmissionDeferred(now(), "로그아웃되어 제출하지 않은 자동화 행동을 폐기했습니다."),
+        )
+        log.info("Discarded unsubmitted typed action after authentication ended accountId={}", accountId)
     }
 
     private class FishingCycleFlowStopped : RuntimeException()
@@ -2294,6 +2337,8 @@ class UnifiedAutomationRunner @Autowired constructor(
     )
 
     private companion object {
+        val SUBMISSION_NOT_EXECUTED = Any()
+        const val AUTHORIZATION_ENDED_REASON = "AUTHORIZATION_ENDED_BEFORE_SUBMISSION"
         const val TYPED_RECONCILIATION_BUDGET_EXHAUSTED = "TYPED_RECONCILIATION_BUDGET_EXHAUSTED"
         const val RECONCILIATION_RETRY_SECONDS = 10L
         const val HOF_COOLDOWN_WAKE_REASON = "HOF_503_COOLDOWN"
@@ -2311,4 +2356,9 @@ class UnifiedAutomationRunner @Autowired constructor(
         const val POST_KILL_SWITCH_WAKE_REASON = "AUTOMATION_POST_KILL_SWITCH"
         const val POST_KILL_SWITCH_RECHECK_SECONDS = 30L
     }
+
+    private data class AuthorizedExecution<T>(
+        val authorized: Boolean,
+        val value: T?,
+    )
 }

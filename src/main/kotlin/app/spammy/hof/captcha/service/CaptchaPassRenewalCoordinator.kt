@@ -103,10 +103,17 @@ class CaptchaPassRenewalCoordinator(
             return
         }
 
-        when (solver.solve(accountId, challenge.id) { maintenance.authorizeSubmission(accountId, claim.token) }) {
-            CaptchaAutoSolveOutcome.MANUAL_INPUT_REQUIRED -> {
-                terminal.finishManualRequired(accountId, claim.token, challenge.id)
-            }
+        when (
+            solver.solve(
+                accountId = accountId,
+                challengeId = challenge.id,
+                authorizeSubmission = { maintenance.authorizeSubmission(accountId, claim.token) },
+                manualInputRequired = { attemptCount ->
+                    terminal.finishManualRequired(accountId, claim.token, challenge.id, attemptCount)
+                },
+            )
+        ) {
+            CaptchaAutoSolveOutcome.MANUAL_INPUT_REQUIRED -> Unit
             CaptchaAutoSolveOutcome.SOLVED,
             CaptchaAutoSolveOutcome.NO_PENDING_CHALLENGE,
             -> {

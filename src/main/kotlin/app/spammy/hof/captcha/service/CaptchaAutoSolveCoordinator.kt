@@ -32,6 +32,9 @@ class CaptchaAutoSolveCoordinator(
                 accountId,
                 challengeId,
                 authorizeSubmission = { executionAuthorization?.isExecutionAllowed(accountId) != false },
+                manualInputRequired = { attemptCount ->
+                    captchaService.markManualInputRequired(accountId, challengeId, attemptCount)
+                },
                 propagateInfrastructureFailure = false,
             )
         }
@@ -41,6 +44,14 @@ class CaptchaAutoSolveCoordinator(
         accountId: Long,
         challengeId: Long,
         authorizeSubmission: (() -> Boolean)?,
+    ): CaptchaAutoSolveOutcome = solve(accountId, challengeId, authorizeSubmission, null)
+
+    /** 선제 갱신 terminal callback은 유지보수 상태와 수동 challenge 안내를 한 commit으로 묶는다. */
+    fun solve(
+        accountId: Long,
+        challengeId: Long,
+        authorizeSubmission: (() -> Boolean)?,
+        manualInputRequired: ((Int) -> Unit)?,
     ): CaptchaAutoSolveOutcome =
         accountLock(accountId).withLock {
             solveLocked(
@@ -50,6 +61,9 @@ class CaptchaAutoSolveCoordinator(
                     executionAuthorization?.isExecutionAllowed(accountId) != false &&
                         requireNotNull(authorizeSubmission).invoke()
                 },
+                manualInputRequired = manualInputRequired ?: { attemptCount ->
+                    captchaService.markManualInputRequired(accountId, challengeId, attemptCount)
+                },
                 propagateInfrastructureFailure = true,
             )
         }
@@ -58,6 +72,7 @@ class CaptchaAutoSolveCoordinator(
         accountId: Long,
         challengeId: Long,
         authorizeSubmission: () -> Boolean,
+        manualInputRequired: (Int) -> Unit,
         propagateInfrastructureFailure: Boolean,
     ): CaptchaAutoSolveOutcome {
         if (!properties.enabled) return CaptchaAutoSolveOutcome.MANUAL_INPUT_REQUIRED
@@ -87,7 +102,7 @@ class CaptchaAutoSolveCoordinator(
                         error.javaClass.name,
                     )
                     if (consecutiveOcrFailureCount >= properties.maxOcrFailures) {
-                        captchaService.markManualInputRequired(accountId, challengeId, automaticAttemptCount = 0)
+                        manualInputRequired(0)
                         return CaptchaAutoSolveOutcome.MANUAL_INPUT_REQUIRED
                     }
                     waitBeforeOcrRetry()
@@ -102,7 +117,7 @@ class CaptchaAutoSolveCoordinator(
                         consecutiveOcrFailureCount,
                     )
                     if (consecutiveOcrFailureCount >= properties.maxOcrFailures) {
-                        captchaService.markManualInputRequired(accountId, challengeId, automaticAttemptCount = 0)
+                        manualInputRequired(0)
                         return CaptchaAutoSolveOutcome.MANUAL_INPUT_REQUIRED
                     }
                     captchaService.invalidateCurrentPreparation(accountId)
@@ -147,11 +162,11 @@ class CaptchaAutoSolveCoordinator(
                 error.javaClass.name,
                 error.message,
             )
-            captchaService.markManualInputRequired(accountId, challengeId, automaticAttemptCount = 0)
+            manualInputRequired(0)
             return CaptchaAutoSolveOutcome.MANUAL_INPUT_REQUIRED
         }
 
-        captchaService.markManualInputRequired(accountId, challengeId, properties.maxAttempts)
+        manualInputRequired(properties.maxAttempts)
         return CaptchaAutoSolveOutcome.MANUAL_INPUT_REQUIRED
     }
 

@@ -9,12 +9,19 @@ import org.springframework.transaction.annotation.Transactional
 class CaptchaPassTerminalService(
     private val accounts: AccountQueryRepository,
     private val maintenance: CaptchaPassMaintenanceService,
+    private val captcha: CaptchaService,
     private val notifications: CaptchaNotificationGateway,
 ) {
     @Transactional
-    fun finishManualRequired(accountId: Long, token: String, challengeId: Long) {
+    fun finishManualRequired(
+        accountId: Long,
+        token: String,
+        challengeId: Long,
+        automaticAttemptCount: Int = 0,
+    ) {
         val account = accounts.findById(accountId) ?: return
         if (maintenance.finishManualRequired(accountId, token, challengeId)) {
+            captcha.markManualInputRequired(accountId, challengeId, automaticAttemptCount)
             notifications.captchaRequired(account, challengeId, "pass-manual-$token")
         }
     }

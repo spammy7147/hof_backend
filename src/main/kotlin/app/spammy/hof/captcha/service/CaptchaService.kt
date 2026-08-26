@@ -311,7 +311,7 @@ class CaptchaService(
     }
 
     /** 자동 인식을 끝내지 못한 active challenge에 수동 입력 안내를 남긴다. */
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    @Transactional
     fun markManualInputRequired(
         accountId: Long,
         challengeId: Long,

@@ -117,7 +117,7 @@ class CaptchaPassRenewalCoordinatorTest {
 
         coordinator.runDue(ACCOUNT_ID)
 
-        Mockito.verify(terminal).finishManualRequired(ACCOUNT_ID, CLAIM.token, CHALLENGE_ID)
+        Mockito.verify(terminal).finishManualRequired(ACCOUNT_ID, CLAIM.token, CHALLENGE_ID, 3)
     }
 
     @Test
@@ -142,6 +142,7 @@ class CaptchaPassRenewalCoordinatorTest {
         }.`when`(solver).solve(
             Mockito.eq(ACCOUNT_ID),
             Mockito.eq(CHALLENGE_ID),
+            Mockito.any(),
             Mockito.any(),
         )
 
@@ -191,6 +192,7 @@ class CaptchaPassRenewalCoordinatorTest {
                 Mockito.eq(ACCOUNT_ID),
                 Mockito.eq(CHALLENGE_ID),
                 Mockito.any(),
+                Mockito.any(),
             )
 
         coordinator.runDue(ACCOUNT_ID)
@@ -235,6 +237,7 @@ class CaptchaPassRenewalCoordinatorTest {
                 Mockito.eq(ACCOUNT_ID),
                 Mockito.eq(CHALLENGE_ID),
                 Mockito.any(),
+                Mockito.any(),
             )
 
         coordinator.runDue(ACCOUNT_ID)
@@ -260,9 +263,15 @@ class CaptchaPassRenewalCoordinatorTest {
         )
 
     private fun stubSolve(outcome: CaptchaAutoSolveOutcome) {
-        Mockito.doReturn(outcome).`when`(solver).solve(
+        Mockito.doAnswer { invocation ->
+            if (outcome == CaptchaAutoSolveOutcome.MANUAL_INPUT_REQUIRED) {
+                invocation.getArgument<(Int) -> Unit>(3).invoke(3)
+            }
+            outcome
+        }.`when`(solver).solve(
             Mockito.eq(ACCOUNT_ID),
             Mockito.eq(CHALLENGE_ID),
+            Mockito.any(),
             Mockito.any(),
         )
     }
