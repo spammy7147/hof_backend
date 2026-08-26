@@ -254,6 +254,29 @@ class CaptchaAutoSolveCoordinatorTest {
         )
     }
 
+    @Test
+    fun `distributed gate owns session authorization without opening it again inside CAPTCHA transaction`() {
+        val authorization = Mockito.mock(AccountExecutionAuthorizationReader::class.java)
+        val gate = Mockito.mock(AccountExecutionSubmissionGate::class.java)
+        Mockito.`when`(gate.executeIfAuthorized(Mockito.eq(1L), anyRunnable())).thenAnswer { invocation ->
+            invocation.getArgument<Runnable>(1).run()
+            true
+        }
+        val guarded = CaptchaAutoSolveCoordinator(captchaService, recognizer, properties, authorization, gate)
+        val ready = challenge(status = "READY", version = 1)
+        val answered = challenge(status = "ANSWERED", version = 1)
+        val image = CaptchaImageResponse("image/png", byteArrayOf(1))
+        Mockito.`when`(captchaService.findCurrent(1L)).thenReturn(ready)
+        Mockito.`when`(captchaService.loadImage(1L, 7L, 1)).thenReturn(image)
+        Mockito.`when`(recognizer.recognize(image)).thenReturn(recognition("AB12"))
+        stubSubmission(recognition("AB12"), 1, answered)
+
+        val outcome = guarded.solve(1L, 7L)
+
+        assertEquals(CaptchaAutoSolveOutcome.SOLVED, outcome)
+        Mockito.verifyNoInteractions(authorization)
+    }
+
     private fun recognition(text: String) = CaptchaRecognition(text, "2.1.1")
 
     private fun stubSubmission(

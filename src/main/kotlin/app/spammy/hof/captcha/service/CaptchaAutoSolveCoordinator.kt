@@ -33,7 +33,7 @@ class CaptchaAutoSolveCoordinator(
             solveLocked(
                 accountId,
                 challengeId,
-                authorizeSubmission = { executionAuthorization?.isExecutionAllowed(accountId) != false },
+                authorizeSubmission = { hasActiveSessionWithoutSubmissionGate(accountId) },
                 manualInputRequired = { attemptCount ->
                     captchaService.markManualInputRequired(accountId, challengeId, attemptCount)
                 },
@@ -60,7 +60,7 @@ class CaptchaAutoSolveCoordinator(
                 accountId,
                 challengeId,
                 authorizeSubmission = {
-                    executionAuthorization?.isExecutionAllowed(accountId) != false &&
+                    hasActiveSessionWithoutSubmissionGate(accountId) &&
                         requireNotNull(authorizeSubmission).invoke()
                 },
                 manualInputRequired = manualInputRequired ?: { attemptCount ->
@@ -170,7 +170,11 @@ class CaptchaAutoSolveCoordinator(
 
         manualInputRequired(properties.maxAttempts)
         return CaptchaAutoSolveOutcome.MANUAL_INPUT_REQUIRED
-    }
+        }
+
+    /** 분산 gate가 있으면 shared lock 안의 사전 검사가 권위이며 제출 transaction 안에서 새 connection을 열지 않는다. */
+    private fun hasActiveSessionWithoutSubmissionGate(accountId: Long): Boolean =
+        submissionGate != null || executionAuthorization?.isExecutionAllowed(accountId) != false
 
     /** 앱 세션 로그아웃과 실제 CAPTCHA POST를 분산 shared/exclusive lock으로 직렬화한다. */
     private fun submitAutomaticAnswer(
