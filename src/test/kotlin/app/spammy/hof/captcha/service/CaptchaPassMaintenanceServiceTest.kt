@@ -6,8 +6,12 @@ import app.spammy.hof.account.repository.HofAccountRepository
 import app.spammy.hof.captcha.repository.CaptchaPassMaintenanceQueryRepository
 import app.spammy.hof.captcha.repository.CaptchaChallengeRepository
 import app.spammy.hof.captcha.entity.CaptchaChallengeEntity
+import app.spammy.hof.captcha.config.CaptchaAutoSolveProperties
+import app.spammy.hof.captcha.dto.CaptchaChallengeResponse
+import app.spammy.hof.captcha.dto.CaptchaPassMaintenanceLastResult
 import app.spammy.hof.common.persistence.QueryDslConfig
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.external.client.HofRequestFactory
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -23,6 +27,7 @@ import org.springframework.test.context.ActiveProfiles
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import org.junit.jupiter.api.BeforeEach
+import org.mockito.Mockito
 
 @DataJpaTest
 @ActiveProfiles("test")
@@ -37,6 +42,7 @@ import org.junit.jupiter.api.BeforeEach
 )
 class CaptchaPassMaintenanceServiceTest {
     @Autowired private lateinit var accounts: HofAccountRepository
+    @Autowired private lateinit var accountQueries: AccountQueryRepository
     @Autowired private lateinit var service: CaptchaPassMaintenanceService
     @Autowired private lateinit var challenges: CaptchaChallengeRepository
     @Autowired private lateinit var clock: TestClock
@@ -64,6 +70,90 @@ class CaptchaPassMaintenanceServiceTest {
         assertEquals(1_569, actual.remainingSeconds)
         assertEquals(RESPONSE_OBSERVED_AT.plusSeconds(1_569), actual.validUntil)
         assertEquals(REQUEST_STARTED_AT, actual.observedAt)
+    }
+
+    @Test
+    fun `due maintenance traces required observation OCR success fresh countdown and next schedule`() {
+        val account = account("pass-full-tracer")
+        val refresher = Mockito.mock(CaptchaPassStatusRefresher::class.java)
+        val captcha = Mockito.mock(CaptchaService::class.java)
+        val solver = Mockito.mock(CaptchaAutoSolveCoordinator::class.java)
+        val terminal = Mockito.mock(CaptchaPassTerminalService::class.java)
+        val challenge = CaptchaChallengeResponse(
+            id = 91L,
+            accountId = account.id,
+            status = "DETECTED",
+            prompt = CaptchaChallengeParser.VIGILANTE_PASS_PROMPT,
+            imageUrl = null,
+            sourceUrl = HofRequestFactory().home().url,
+            preparationVersion = 0,
+            createdAt = RESPONSE_OBSERVED_AT.toString(),
+            answeredAt = null,
+        )
+        service.setEnabled(account.id, true)
+        Mockito.doAnswer {
+            service.observe(
+                account.id,
+                CaptchaPassRenewalCoordinator.REQUIRED_PASS_HTML,
+                REQUEST_STARTED_AT.plusSeconds(2),
+                RESPONSE_OBSERVED_AT.plusSeconds(2),
+            )
+            null
+        }.`when`(refresher).refresh(account.id)
+        Mockito.`when`(
+            captcha.detectAndRecord(
+                anyAccount(account),
+                Mockito.eq(CaptchaPassRenewalCoordinator.REQUIRED_PASS_HTML) ?: CaptchaPassRenewalCoordinator.REQUIRED_PASS_HTML,
+                Mockito.eq(HofRequestFactory().home().url) ?: HofRequestFactory().home().url,
+                Mockito.eq(false),
+            ),
+        ).thenReturn(challenge)
+        Mockito.doAnswer { invocation ->
+            val authorize = invocation.getArgument<() -> Boolean>(2)
+            assertTrue(authorize())
+            clock.current = RESPONSE_OBSERVED_AT.plusSeconds(3)
+            service.observe(
+                account.id,
+                "<div id='menu'>Top | 0:30:00 | 전투</div>",
+                REQUEST_STARTED_AT.plusSeconds(3),
+                RESPONSE_OBSERVED_AT.plusSeconds(3),
+            )
+            CaptchaAutoSolveOutcome.SOLVED
+        }.`when`(solver).solve(
+            Mockito.eq(account.id),
+            Mockito.eq(challenge.id),
+            anyAuthorization(),
+            anyManualHandoff(),
+        )
+        val coordinator = CaptchaPassRenewalCoordinator(
+            maintenance = service,
+            refresher = refresher,
+            accounts = accountQueries,
+            captcha = captcha,
+            solver = solver,
+            autoSolveProperties = CaptchaAutoSolveProperties(
+                enabled = true,
+                baseUrl = "https://ocr.example.com",
+                token = "x".repeat(32),
+            ),
+            requestFactory = HofRequestFactory(),
+            terminal = terminal,
+        )
+
+        coordinator.runDue(account.id)
+
+        val completed = service.get(account.id)
+        assertEquals("VALID", completed.passState)
+        assertEquals(CaptchaPassMaintenanceLastResult.RENEWED, completed.lastResult)
+        assertEquals(RESPONSE_OBSERVED_AT.plusSeconds(1_803), completed.validUntil)
+        assertEquals(RESPONSE_OBSERVED_AT.plusSeconds(1_804), completed.nextRefreshAt)
+        Mockito.verify(refresher).refresh(account.id)
+        Mockito.verify(solver).solve(
+            Mockito.eq(account.id),
+            Mockito.eq(challenge.id),
+            anyAuthorization(),
+            anyManualHandoff(),
+        )
     }
 
     @Test
@@ -308,6 +398,13 @@ class CaptchaPassMaintenanceServiceTest {
     private fun account(loginId: String): HofAccountEntity = accounts.save(
         HofAccountEntity(loginId = loginId, encryptedPassword = "encrypted", createdAt = REQUEST_STARTED_AT),
     )
+
+    private fun anyAuthorization(): () -> Boolean = Mockito.any() ?: { false }
+
+    private fun anyManualHandoff(): (Int) -> Unit = Mockito.any() ?: {}
+
+    private fun anyAccount(fallback: HofAccountEntity): HofAccountEntity =
+        Mockito.any(HofAccountEntity::class.java) ?: fallback
 
     private companion object {
         val REQUEST_STARTED_AT: Instant = Instant.parse("2026-08-26T10:00:00Z")
