@@ -34,7 +34,7 @@ class CaptchaAutomationHook(
         afterCommit {
             deliverTypedResumeSafely(challenge.account.id)
             if (confirmPass && challenge.challengeKind == KIND_VIGILANTE_PASS) {
-                passCompletion.confirmAfterAnswer(challenge.account.id)
+                deliverPassCompletionSafely(challenge.account.id)
             }
         }
     }
@@ -60,6 +60,19 @@ class CaptchaAutomationHook(
         } catch (exception: Exception) {
             log.warn(
                 "Typed captcha automation resume failed accountId={} errorType={}",
+                accountId,
+                exception.javaClass.name,
+            )
+        }
+    }
+
+    /** 답안은 이미 commit됐으므로 후속 상태 확인 실패를 제출 실패로 되돌려 보고하지 않는다. */
+    private fun deliverPassCompletionSafely(accountId: Long) {
+        try {
+            passCompletion.confirmAfterAnswer(accountId)
+        } catch (exception: Exception) {
+            log.warn(
+                "Pass confirmation after captcha answer failed accountId={} errorType={}",
                 accountId,
                 exception.javaClass.name,
             )

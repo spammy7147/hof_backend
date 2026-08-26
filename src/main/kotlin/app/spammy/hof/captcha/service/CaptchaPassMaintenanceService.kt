@@ -322,7 +322,7 @@ class CaptchaPassMaintenanceService(
     }
 
     /** 수동 답안은 성공했지만 사후 상태 GET이 실패했을 때 다음 실행도 반드시 상태 조회부터 시작하게 한다. */
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun scheduleConfirmationRetry(accountId: Long, reason: String) {
         val now = timeProvider.now()
         val account = accounts.findByIdForUpdate(accountId) ?: return

@@ -91,6 +91,18 @@ class CaptchaAutomationHookTest {
     }
 
     @Test
+    fun `pass confirmation failure after commit does not turn the answered captcha into a failure`() {
+        val challenge = challenge().also { it.challengeKind = KIND_VIGILANTE_PASS }
+        Mockito.doThrow(IllegalStateException("confirmation failed"))
+            .`when`(passCompletion)
+            .confirmAfterAnswer(7L)
+
+        hook.answered(challenge)
+
+        Mockito.verify(passCompletion).confirmAfterAnswer(7L)
+    }
+
+    @Test
     fun `an already observed external pass closes the gate without a duplicate status GET`() {
         val challenge = challenge().also { it.challengeKind = KIND_VIGILANTE_PASS }
 
