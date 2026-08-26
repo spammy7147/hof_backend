@@ -1,6 +1,7 @@
 package app.spammy.hof.captcha.service
 
 import app.spammy.hof.auth.service.AccountExecutionAuthorizationReader
+import app.spammy.hof.auth.service.AccountExecutionSubmissionGate
 import app.spammy.hof.captcha.config.CaptchaAutoSolveProperties
 import app.spammy.hof.captcha.dto.CaptchaChallengeResponse
 import app.spammy.hof.external.client.HofCaptchaRetryException
@@ -22,6 +23,7 @@ class CaptchaAutoSolveCoordinator(
     private val recognizer: CaptchaImageRecognizer,
     private val properties: CaptchaAutoSolveProperties,
     private val executionAuthorization: AccountExecutionAuthorizationReader? = null,
+    private val submissionGate: AccountExecutionSubmissionGate? = null,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
     private val accountLocks = Array(LOCK_STRIPES) { ReentrantLock() }
@@ -136,13 +138,13 @@ class CaptchaAutoSolveCoordinator(
                 )
                 while (true) {
                     try {
-                        challenge = captchaService.submitAutomaticAnswer(
-                            accountId = accountId,
-                            challengeId = challengeId,
-                            recognition = recognition,
-                            preparationVersion = challenge.preparationVersion,
-                            authorizeSubmission = authorizeSubmission,
-                        )
+                        challenge = submitAutomaticAnswer(
+                            accountId,
+                            challengeId,
+                            recognition,
+                            challenge.preparationVersion,
+                            authorizeSubmission,
+                        ) ?: return CaptchaAutoSolveOutcome.CANCELLED
                         break
                     } catch (_: CaptchaSubmissionAuthorizationCancelledException) {
                         return CaptchaAutoSolveOutcome.CANCELLED
@@ -168,6 +170,34 @@ class CaptchaAutoSolveCoordinator(
 
         manualInputRequired(properties.maxAttempts)
         return CaptchaAutoSolveOutcome.MANUAL_INPUT_REQUIRED
+    }
+
+    /** 앱 세션 로그아웃과 실제 CAPTCHA POST를 분산 shared/exclusive lock으로 직렬화한다. */
+    private fun submitAutomaticAnswer(
+        accountId: Long,
+        challengeId: Long,
+        recognition: CaptchaRecognition,
+        preparationVersion: Int,
+        authorizeSubmission: () -> Boolean,
+    ): CaptchaChallengeResponse? {
+        val gate = submissionGate ?: return captchaService.submitAutomaticAnswer(
+            accountId,
+            challengeId,
+            recognition,
+            preparationVersion,
+            authorizeSubmission,
+        )
+        var response: CaptchaChallengeResponse? = null
+        val authorized = gate.executeIfAuthorized(accountId, Runnable {
+            response = captchaService.submitAutomaticAnswer(
+                accountId,
+                challengeId,
+                recognition,
+                preparationVersion,
+                authorizeSubmission,
+            )
+        })
+        return if (authorized) requireNotNull(response) else null
     }
 
     private fun prepareIfRequired(

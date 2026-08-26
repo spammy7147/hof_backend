@@ -2,6 +2,7 @@ package app.spammy.hof.captcha.controller
 
 import app.spammy.hof.account.service.HofAccountService
 import app.spammy.hof.account.service.HofSessionRecoveryService
+import app.spammy.hof.auth.service.AccountExecutionSubmissionGate
 import app.spammy.hof.captcha.dto.CaptchaChallengeResponse
 import app.spammy.hof.captcha.dto.SubmitCaptchaAnswerRequest
 import app.spammy.hof.captcha.service.CaptchaAutoSolveCoordinator
@@ -114,6 +115,25 @@ class CaptchaControllerTest {
     }
 
     @Test
+    fun submitAnswerStopsBeforeTheCaptchaTransactionWhenDistributedGateObservesLogout() {
+        val gate = Mockito.mock(AccountExecutionSubmissionGate::class.java)
+        val guarded = CaptchaController(
+            captchaService,
+            HofSessionRecoveryService(accountService),
+            autoSolveCoordinator,
+            gate,
+        )
+
+        val error = assertFailsWith<ApiException> {
+            guarded.submitAnswer(1L, 7L, SubmitCaptchaAnswerRequest("AB12", 3))
+        }
+
+        assertEquals(ErrorCode.AUTH_TOKEN_INVALID, error.errorCode)
+        Mockito.verify(gate).executeIfAuthorized(Mockito.eq(1L), anyRunnable())
+        Mockito.verify(captchaService, Mockito.never()).submitAnswer(1L, 7L, "AB12", 3)
+    }
+
+    @Test
     fun submitAnswerInvalidatesConsumedPreparationAndRethrowsOriginalControlSignal() {
         val signal = ApiException(ErrorCode.HOF_TEMPORARILY_UNAVAILABLE, "retry later")
         val requestCookies = mapOf("PHPSESSID" to "initial")
@@ -177,4 +197,6 @@ class CaptchaControllerTest {
         createdAt = Instant.parse("2026-07-23T00:00:00Z").toString(),
         answeredAt = null,
     )
+
+    private fun anyRunnable(): Runnable = Mockito.any(Runnable::class.java) ?: Runnable {}
 }

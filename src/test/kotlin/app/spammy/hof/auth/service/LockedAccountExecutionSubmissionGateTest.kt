@@ -3,14 +3,17 @@ package app.spammy.hof.auth.service
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.concurrent.read
+import kotlin.concurrent.write
 import org.mockito.Mockito
 
 class LockedAccountExecutionSubmissionGateTest {
     private val authorization = Mockito.mock(AccountExecutionAuthorizationReader::class.java)
-    private val service = LockedAccountExecutionSubmissionGate(authorization)
+    private val service = LockedAccountExecutionSubmissionGate(authorization, InMemoryAccountExecutionLock())
 
     @Test
     fun `runs the remote submission only while the locked account still has an active app session`() {
@@ -62,5 +65,13 @@ class LockedAccountExecutionSubmissionGateTest {
         } finally {
             executor.shutdownNow()
         }
+    }
+
+    private class InMemoryAccountExecutionLock : AccountExecutionLock {
+        private val lock = ReentrantReadWriteLock(true)
+
+        override fun executeShared(accountId: Long, action: Runnable) = lock.read { action.run() }
+
+        override fun executeExclusive(accountId: Long, action: Runnable) = lock.write { action.run() }
     }
 }

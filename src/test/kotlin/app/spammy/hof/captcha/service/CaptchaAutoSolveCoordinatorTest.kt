@@ -3,6 +3,7 @@ package app.spammy.hof.captcha.service
 import app.spammy.hof.captcha.config.CaptchaAutoSolveProperties
 import app.spammy.hof.captcha.dto.CaptchaChallengeResponse
 import app.spammy.hof.auth.service.AccountExecutionAuthorizationReader
+import app.spammy.hof.auth.service.AccountExecutionSubmissionGate
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.client.HofCaptchaRetryException
@@ -234,6 +235,25 @@ class CaptchaAutoSolveCoordinatorTest {
         )
     }
 
+    @Test
+    fun `distributed submission gate rejects automatic answer before the CAPTCHA transaction starts`() {
+        val gate = Mockito.mock(AccountExecutionSubmissionGate::class.java)
+        val guarded = CaptchaAutoSolveCoordinator(captchaService, recognizer, properties, null, gate)
+        val ready = challenge(status = "READY", version = 1)
+        val image = CaptchaImageResponse("image/png", byteArrayOf(1))
+        Mockito.`when`(captchaService.findCurrent(1L)).thenReturn(ready)
+        Mockito.`when`(captchaService.loadImage(1L, 7L, 1)).thenReturn(image)
+        Mockito.`when`(recognizer.recognize(image)).thenReturn(recognition("AB12"))
+
+        val outcome = guarded.solve(1L, 7L)
+
+        assertEquals(CaptchaAutoSolveOutcome.CANCELLED, outcome)
+        Mockito.verify(gate).executeIfAuthorized(Mockito.eq(1L), anyRunnable())
+        Mockito.verify(captchaService, Mockito.never()).submitAutomaticAnswer(
+            Mockito.eq(1L), Mockito.eq(7L), eqRecognition(recognition("AB12")), Mockito.eq(1), anyAuthorization(),
+        )
+    }
+
     private fun recognition(text: String) = CaptchaRecognition(text, "2.1.1")
 
     private fun stubSubmission(
@@ -266,6 +286,8 @@ class CaptchaAutoSolveCoordinatorTest {
     private fun anyAuthorization(): () -> Boolean = Mockito.any<() -> Boolean>() ?: { true }
 
     private fun eqRecognition(value: CaptchaRecognition): CaptchaRecognition = Mockito.eq(value) ?: value
+
+    private fun anyRunnable(): Runnable = Mockito.any(Runnable::class.java) ?: Runnable {}
 
     private fun challenge(
         id: Long = 7L,

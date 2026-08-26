@@ -1,6 +1,7 @@
 package app.spammy.hof.captcha.controller
 
 import app.spammy.hof.account.service.HofSessionRecoveryService
+import app.spammy.hof.auth.service.AccountExecutionSubmissionGate
 import app.spammy.hof.captcha.dto.CaptchaChallengeResponse
 import app.spammy.hof.captcha.dto.SubmitCaptchaAnswerRequest
 import app.spammy.hof.captcha.service.CaptchaAutoSolveCoordinator
@@ -31,6 +32,7 @@ class CaptchaController(
     private val captchaService: CaptchaService,
     private val sessionRecoveryService: HofSessionRecoveryService,
     private val autoSolveCoordinator: CaptchaAutoSolveCoordinator,
+    private val submissionGate: AccountExecutionSubmissionGate? = null,
 ) {
     private val log = LoggerFactory.getLogger(CaptchaController::class.java)
 
@@ -99,41 +101,53 @@ class CaptchaController(
         @RequestBody request: SubmitCaptchaAnswerRequest,
     ): CaptchaChallengeResponse {
         val response = retryCaptcha503 {
-            try {
-                captchaService.submitAnswer(
-                    accountId = accountId,
-                    challengeId = challengeId,
-                    answer = request.answer,
-                    preparationVersion = request.preparationVersion,
-                )
-            } catch (error: CaptchaPreparationConsumedException) {
-                val controlSignal = error.controlSignal
+            executeAuthorized(accountId) {
                 try {
-                    captchaService.recoverConsumedPreparation(
+                    captchaService.submitAnswer(
                         accountId = accountId,
                         challengeId = challengeId,
-                        consumedPreparationVersion = request.preparationVersion,
-                        requestCookies = error.requestCookies,
-                        responseSetCookies = error.responseSetCookies,
+                        answer = request.answer,
+                        preparationVersion = request.preparationVersion,
                     )
-                } catch (cleanupError: Throwable) {
-                    log.error(
-                        "Consumed CAPTCHA preparation cleanup failed accountId={} cleanupErrorType={} cleanupMessage={}",
-                        accountId,
-                        cleanupError.javaClass.simpleName,
-                        cleanupError.message,
-                    )
-                    controlSignal.addSuppressed(cleanupError)
+                } catch (error: CaptchaPreparationConsumedException) {
+                    val controlSignal = error.controlSignal
+                    try {
+                        captchaService.recoverConsumedPreparation(
+                            accountId = accountId,
+                            challengeId = challengeId,
+                            consumedPreparationVersion = request.preparationVersion,
+                            requestCookies = error.requestCookies,
+                            responseSetCookies = error.responseSetCookies,
+                        )
+                    } catch (cleanupError: Throwable) {
+                        log.error(
+                            "Consumed CAPTCHA preparation cleanup failed accountId={} cleanupErrorType={} cleanupMessage={}",
+                            accountId,
+                            cleanupError.javaClass.simpleName,
+                            cleanupError.message,
+                        )
+                        controlSignal.addSuppressed(cleanupError)
+                    }
+                    throw controlSignal
+                } catch (error: ApiException) {
+                    if (error.errorCode == ErrorCode.HOF_SESSION_EXPIRED) {
+                        runCatching { captchaService.invalidateCurrentPreparation(accountId) }
+                    }
+                    throw error
                 }
-                throw controlSignal
-            } catch (error: ApiException) {
-                if (error.errorCode == ErrorCode.HOF_SESSION_EXPIRED) {
-                    runCatching { captchaService.invalidateCurrentPreparation(accountId) }
-                }
-                throw error
             }
         }
         return response
+    }
+
+    private fun <T> executeAuthorized(accountId: Long, action: () -> T): T {
+        val gate = submissionGate ?: return action()
+        var result: Any? = SUBMISSION_NOT_EXECUTED
+        val authorized = gate.executeIfAuthorized(accountId, Runnable { result = action() })
+        if (!authorized) throw ApiException(ErrorCode.AUTH_TOKEN_INVALID, "로그아웃되어 캡차 제출을 중단했습니다.")
+        check(result !== SUBMISSION_NOT_EXECUTED) { "Authorized CAPTCHA submission did not execute." }
+        @Suppress("UNCHECKED_CAST")
+        return result as T
     }
 
     private fun <T> retryCaptcha503(action: () -> T): T {
@@ -144,5 +158,9 @@ class CaptchaController(
                 // 다음 호출은 CAPTCHA 전용 500ms 간격을 적용받으며, 이전 transaction의 DB lock은 이미 해제됐다.
             }
         }
+    }
+
+    private companion object {
+        val SUBMISSION_NOT_EXECUTED = Any()
     }
 }

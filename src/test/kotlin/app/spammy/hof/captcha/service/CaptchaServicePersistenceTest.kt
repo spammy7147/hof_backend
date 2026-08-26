@@ -2,18 +2,32 @@ package app.spammy.hof.captcha.service
 
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.entity.HofCookieEntity
+import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.CookieQueryRepository
 import app.spammy.hof.account.repository.HofAccountRepository
 import app.spammy.hof.account.repository.HofCookieRepository
 import app.spammy.hof.account.service.HofAccountService
 import app.spammy.hof.account.service.HofCookieCipher
 import app.spammy.hof.account.service.HofSessionRecoveryService
+import app.spammy.hof.battle.dto.RunBattleRequest
+import app.spammy.hof.battle.entity.AccountBattleMapStateEntity
+import app.spammy.hof.battle.entity.BattleMapEntity
+import app.spammy.hof.battle.model.BattleMapKeyMode
+import app.spammy.hof.battle.repository.BattleMapQueryRepository
+import app.spammy.hof.battle.service.BattleLogService
+import app.spammy.hof.battle.service.BattleRunService
+import app.spammy.hof.captcha.config.CaptchaAutoSolveProperties
+import app.spammy.hof.captcha.dto.CaptchaPassMaintenanceLastResult
 import app.spammy.hof.captcha.controller.CaptchaController
 import app.spammy.hof.captcha.dto.CaptchaChallengeResponse
 import app.spammy.hof.captcha.dto.SubmitCaptchaAnswerRequest
 import app.spammy.hof.captcha.entity.CaptchaChallengeEntity
 import app.spammy.hof.captcha.repository.CaptchaChallengeRepository
 import app.spammy.hof.captcha.repository.CaptchaQueryRepository
+import app.spammy.hof.captcha.repository.CaptchaPassMaintenanceQueryRepository
+import app.spammy.hof.character.entity.CharacterEntity
+import app.spammy.hof.character.repository.CharacterQueryRepository
+import app.spammy.hof.character.service.SessionPatternLoadTracker
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.persistence.QueryDslConfig
@@ -27,14 +41,20 @@ import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
 import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.external.parser.LoginStateParser
+import app.spammy.hof.external.parser.BattleResultParser
+import app.spammy.hof.external.parser.SharedBattleCooldownParser
+import app.spammy.hof.status.repository.HofStatusSnapshotQueryRepository
 import app.spammy.hof.status.service.HofStatusSnapshotService
+import app.spammy.hof.town.common.service.AccountHofMutationFence
 import java.time.Instant
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.CyclicBarrier
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -63,12 +83,15 @@ import org.springframework.transaction.support.TransactionTemplate
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 @Import(
     QueryDslConfig::class,
+    AccountQueryRepository::class,
     CookieQueryRepository::class,
     CaptchaQueryRepository::class,
+    CaptchaPassMaintenanceQueryRepository::class,
     CaptchaChallengeParser::class,
     LoginStateParser::class,
     CaptchaImageManager::class,
     CaptchaService::class,
+    CaptchaPassMaintenanceService::class,
     CaptchaServicePersistenceTest.BoundaryConfig::class,
 )
 class CaptchaServicePersistenceTest {
@@ -77,6 +100,9 @@ class CaptchaServicePersistenceTest {
 
     @Autowired
     private lateinit var cookieRepository: HofCookieRepository
+
+    @Autowired
+    private lateinit var accountQueries: AccountQueryRepository
 
     @Autowired
     private lateinit var cookieQueryRepository: CookieQueryRepository
@@ -94,7 +120,13 @@ class CaptchaServicePersistenceTest {
     private lateinit var service: CaptchaService
 
     @Autowired
+    private lateinit var passMaintenance: CaptchaPassMaintenanceService
+
+    @Autowired
     private lateinit var gateway: FakeHofGateway
+
+    @Autowired
+    private lateinit var accountGateway: AccountHofGateway
 
     @Autowired
     private lateinit var imageStore: FakeCaptchaImageFileStore
@@ -303,6 +335,154 @@ class CaptchaServicePersistenceTest {
             assertEquals(1, gateway.requests.count { request -> request.method == HofHttpMethod.POST })
             assertNull(service.findCurrent(account.id))
         } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun actualDueCoordinatorAndBattleRunRaceConvergesOnOnePreparationVersionAndCaptchaPost() {
+        val account = savedAccountWithCookie("captcha-service-due-battle-race")
+        val character = CharacterEntity(
+            account = account,
+            hofCharacterId = "1683198503393759",
+            name = "경합 캐릭터",
+            job = "Social Knight",
+            updatedAt = NOW,
+        )
+        val battleMaps = Mockito.mock(BattleMapQueryRepository::class.java)
+        val characters = Mockito.mock(CharacterQueryRepository::class.java)
+        val status = Mockito.mock(HofStatusSnapshotQueryRepository::class.java)
+        Mockito.`when`(
+            battleMaps.findStateForExecution(account.id, "battle_map", "snow22"),
+        ).thenReturn(battleMapState(account))
+        Mockito.`when`(
+            characters.findByAccountIdAndHofCharacterIds(account.id, listOf(character.hofCharacterId)),
+        ).thenReturn(listOf(character))
+        val battle = BattleRunService(
+            accountQueryRepository = accountQueries,
+            cookieQueryRepository = cookieQueryRepository,
+            characterQueryRepository = characters,
+            battleMapQueryRepository = battleMaps,
+            hofStatusSnapshotQueryRepository = status,
+            requestFactory = app.spammy.hof.external.client.HofRequestFactory(),
+            gateway = accountGateway,
+            loginStateParser = LoginStateParser(),
+            sharedBattleCooldownParser = SharedBattleCooldownParser(),
+            battleResultParser = BattleResultParser(),
+            battleLogService = Mockito.mock(BattleLogService::class.java),
+            captchaService = service,
+            sessionPatternLoadTracker = SessionPatternLoadTracker(),
+            mutationFence = AccountHofMutationFence(),
+            timeProvider = TimeProvider { NOW },
+        )
+
+        passMaintenance.setEnabled(account.id, true)
+        val detectionStart = CyclicBarrier(2)
+        val battleFinished = CountDownLatch(1)
+        val preparedVersion = AtomicInteger()
+        val refresher = Mockito.mock(CaptchaPassStatusRefresher::class.java)
+        Mockito.doAnswer {
+            passMaintenance.observe(
+                account.id,
+                CaptchaPassRenewalCoordinator.REQUIRED_PASS_HTML,
+                NOW,
+                NOW,
+            )
+            detectionStart.await(5, TimeUnit.SECONDS)
+            null
+        }.`when`(refresher).refresh(account.id)
+        gateway.handler = { request ->
+            when {
+                request.url.contains("common=snow22") -> {
+                    detectionStart.await(5, TimeUnit.SECONDS)
+                    HofHttpResponse(200, request.url, vigilantCaptchaHtml(), emptyMap())
+                }
+                request.method == HofHttpMethod.GET ->
+                    HofHttpResponse(200, POLICE_URL, captchaHtml("fresh_token", "fresh"), emptyMap())
+                else -> HofHttpResponse(
+                    200,
+                    POLICE_URL,
+                    "<html><body>통행증이 발급되었습니다.</body></html>",
+                    emptyMap(),
+                )
+            }
+        }
+        val solver = Mockito.mock(CaptchaAutoSolveCoordinator::class.java)
+        Mockito.doAnswer { invocation ->
+            assertTrue(battleFinished.await(5, TimeUnit.SECONDS))
+            assertEquals(1L, queryRepository.countActiveByAccountId(account.id))
+            val challenge = assertNotNull(service.findCurrent(account.id))
+            val prepared = service.prepareCurrent(account.id)
+            preparedVersion.set(prepared.preparationVersion)
+            val authorize = invocation.getArgument<() -> Boolean>(2)
+            val answered = service.submitAutomaticAnswer(
+                account.id,
+                challenge.id,
+                CaptchaRecognition("correct", "race-test"),
+                prepared.preparationVersion,
+                authorize,
+            )
+            assertEquals("ANSWERED", answered.status)
+            passMaintenance.observe(
+                account.id,
+                "<div id='menu'>Top | 0:30:00 | 전투</div>",
+                NOW.plusSeconds(1),
+                NOW.plusSeconds(1),
+            )
+            CaptchaAutoSolveOutcome.SOLVED
+        }.`when`(solver).solve(
+            Mockito.eq(account.id),
+            Mockito.anyLong(),
+            anyAuthorization(),
+            anyManualHandoff(),
+        )
+        val coordinator = CaptchaPassRenewalCoordinator(
+            maintenance = passMaintenance,
+            refresher = refresher,
+            accounts = accountQueries,
+            captcha = service,
+            solver = solver,
+            autoSolveProperties = CaptchaAutoSolveProperties(
+                enabled = true,
+                baseUrl = "https://ocr.example.com",
+                token = "x".repeat(32),
+            ),
+            requestFactory = app.spammy.hof.external.client.HofRequestFactory(),
+            terminal = Mockito.mock(CaptchaPassTerminalService::class.java),
+        )
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            val due = executor.submit { coordinator.runDue(account.id) }
+            val battleResult = executor.submit<Result<Unit>> {
+                try {
+                    runCatching {
+                        battle.runBattle(
+                            account.id,
+                            RunBattleRequest("battle_map", "snow22", listOf(character.hofCharacterId)),
+                            HofRequestOrigin.AUTOMATION,
+                        )
+                    }.map { Unit }
+                } finally {
+                    battleFinished.countDown()
+                }
+            }
+
+            val battleFailure = assertNotNull(battleResult.get(10, TimeUnit.SECONDS).exceptionOrNull())
+            assertTrue(battleFailure is ApiException)
+            assertEquals(ErrorCode.CAPTCHA_REQUIRED, battleFailure.errorCode)
+            due.get(10, TimeUnit.SECONDS)
+
+            assertEquals(1, preparedVersion.get())
+            assertEquals(
+                1,
+                gateway.requests.count { request ->
+                    request.method == HofHttpMethod.POST && request.url.contains("menu=police")
+                },
+            )
+            assertNull(service.findCurrent(account.id))
+            assertEquals(CaptchaPassMaintenanceLastResult.RENEWED, passMaintenance.get(account.id).lastResult)
+        } finally {
+            battleFinished.countDown()
             executor.shutdownNow()
         }
     }
@@ -690,6 +870,40 @@ class CaptchaServicePersistenceTest {
                 preparationVersion = 1,
             ),
         )
+
+    private fun battleMapState(account: HofAccountEntity): AccountBattleMapStateEntity =
+        AccountBattleMapStateEntity(
+            account = account,
+            battleMap = BattleMapEntity(
+                id = 100L,
+                categoryId = "battle_map",
+                mapCode = "snow22",
+                name = "Frosty Mountain",
+                normalizedName = "frosty mountain",
+                enabled = true,
+                createdAt = NOW,
+                updatedAt = NOW,
+            ),
+            keyMode = BattleMapKeyMode.UNKNOWN,
+            supportsThreeBattles = true,
+            rawHref = "index.php?common=snow22",
+            visible = true,
+            lastSeenAt = NOW,
+        )
+
+    private fun vigilantCaptchaHtml(): String =
+        """
+            <html><body>
+              <div id="menu"><font color="red">통행증</font></div>
+              <div id="menu2">Funds : ${'$'} 1 Time : 10/10</div>
+              <font color="red">자경단</font>
+              <p>자경단에서 통행증을 발급받아주세요.</p>
+            </body></html>
+        """.trimIndent()
+
+    private fun anyAuthorization(): () -> Boolean = Mockito.any() ?: { false }
+
+    private fun anyManualHandoff(): (Int) -> Unit = Mockito.any() ?: {}
 
     private fun captchaHtml(
         tokenName: String,
