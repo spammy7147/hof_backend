@@ -1429,6 +1429,7 @@ class UnifiedAutomationActionLifecycleModule(
                         is QuestRecordResult.Recorded -> appliedQuestBattle(payload)
                         is QuestRecordResult.NotApplied -> verifyLater(result.message)
                         is QuestRecordResult.NeedsRecheck -> verifyLater(result.message)
+                        is QuestRecordResult.FreshDecision -> AmbiguousActionResolution.FreshDecision(result.message)
                     }
                 }
             }
@@ -1444,6 +1445,7 @@ class UnifiedAutomationActionLifecycleModule(
                     is QuestRecordResult.Recorded -> appliedQuestBattle(payload)
                     is QuestRecordResult.NotApplied -> verifyLater(result.message)
                     is QuestRecordResult.NeedsRecheck -> verifyLater(result.message)
+                    is QuestRecordResult.FreshDecision -> AmbiguousActionResolution.FreshDecision(result.message)
                 }
             }
         }
@@ -2394,6 +2396,7 @@ class UnifiedAutomationActionLifecycleModule(
         is QuestRecordResult.Recorded -> AmbiguousActionResolution.Applied()
         is QuestRecordResult.NotApplied -> AmbiguousActionResolution.Resubmit
         is QuestRecordResult.NeedsRecheck -> verifyLater(message)
+        is QuestRecordResult.FreshDecision -> AmbiguousActionResolution.FreshDecision(message)
     }
 
     private fun requireRecordedQuestResult(result: QuestRecordResult) {
@@ -2401,6 +2404,7 @@ class UnifiedAutomationActionLifecycleModule(
         val message = when (result) {
             is QuestRecordResult.NotApplied -> result.message
             is QuestRecordResult.NeedsRecheck -> result.message
+            is QuestRecordResult.FreshDecision -> result.message
             is QuestRecordResult.Recorded -> error("unreachable")
         }
         throw AmbiguousAutomationSubmissionException(

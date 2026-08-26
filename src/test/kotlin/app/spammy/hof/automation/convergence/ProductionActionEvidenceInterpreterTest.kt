@@ -40,6 +40,20 @@ class ProductionActionEvidenceInterpreterTest {
     }
 
     @Test
+    fun `퀘스트 진행도 기준 새 판단은 이전 결과를 귀속하지 않는 증거다`() {
+        val evidence = assertIs<AutomationActionEvidence.ResultUnobservedFreshDecision>(
+            interpreter.fromReconciliation(
+                selection,
+                AmbiguousActionResolution.FreshDecision("latest quest progress is authoritative"),
+                NOW,
+            ),
+        )
+
+        assertEquals("latest quest progress is authoritative", evidence.reason)
+        assertEquals(64, evidence.responseShapeFingerprint?.length)
+    }
+
+    @Test
     fun `공유 cooldown은 행동 성공이 아니라 최신 상태 변경이다`() {
         assertIs<AutomationActionEvidence.StateAdvanced>(
             interpreter.fromExecution(

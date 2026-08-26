@@ -73,6 +73,7 @@ class JpaEvidenceCaseRecorder(
         is AutomationActionEvidence.IncompleteObservation -> "INCOMPLETE_OBSERVATION"
         is AutomationActionEvidence.NetworkFailure -> "NETWORK_FAILURE"
         is AutomationActionEvidence.ResultUnobserved -> "RESULT_UNOBSERVED"
+        is AutomationActionEvidence.ResultUnobservedFreshDecision -> "RESULT_UNOBSERVED_FRESH_DECISION"
         is AutomationActionEvidence.BattleGateRequired -> "BATTLE_GATE"
     }
 
@@ -80,6 +81,7 @@ class JpaEvidenceCaseRecorder(
         is AutomationActionEvidence.IncompleteObservation,
         is AutomationActionEvidence.NetworkFailure,
         is AutomationActionEvidence.ResultUnobserved,
+        is AutomationActionEvidence.ResultUnobservedFreshDecision,
         -> ObservationCompleteness.INCOMPLETE.name
         else -> ObservationCompleteness.COMPLETE.name
     }
@@ -87,6 +89,7 @@ class JpaEvidenceCaseRecorder(
     private fun AutomationActionEvidence.freshnessName(): String? = when (this) {
         is AutomationActionEvidence.NetworkFailure,
         is AutomationActionEvidence.ResultUnobserved,
+        is AutomationActionEvidence.ResultUnobservedFreshDecision,
         -> null
         else -> ObservationFreshness.FRESH.name
     }
@@ -108,6 +111,8 @@ class JpaEvidenceCaseRecorder(
             "evidence=IncompleteObservation;authoritative=$authoritative"
         is AutomationActionEvidence.NetworkFailure -> "evidence=NetworkFailure"
         is AutomationActionEvidence.ResultUnobserved -> "evidence=ResultUnobserved"
+        is AutomationActionEvidence.ResultUnobservedFreshDecision ->
+            "evidence=ResultUnobservedFreshDecision"
         is AutomationActionEvidence.BattleGateRequired ->
             "evidence=BattleGateRequired;challengePresent=${challengeId != null}"
     }

@@ -138,6 +138,8 @@ class JpaAutomationConvergenceStatusReader(
         "PENDING_BUDGET_EXHAUSTED" -> "최대 5회 또는 2분의 자동 관측 예산 안에 결과를 확정하지 못했습니다."
         "ORPHAN_RESULT_RECONCILED" -> "이전 실행의 누락된 결과 상태를 복구해 다시 확인하고 있습니다."
         "RESULT_UNOBSERVED" -> "행동 결과를 권위 있게 식별하지 못해 자동 재제출을 막았습니다."
+        "RESULT_UNOBSERVED_FRESH_DECISION" ->
+            "이전 행동 결과는 귀속하지 않고 최신 퀘스트 진행도에서 새 행동을 판단했습니다."
         "BATTLE_GATE_REQUIRED" -> "전투에 캡차 확인이 필요해 전투 범위만 보류했습니다."
         "AUTHORITATIVE_STATE_ADVANCED" -> "외부 상태가 이미 바뀌어 저장된 행동을 새로 제출하지 않았습니다."
         "DIRECT_RESPONSE_APPLIED" -> "행동별 성공 조건을 만족하는 결과를 확인했습니다."

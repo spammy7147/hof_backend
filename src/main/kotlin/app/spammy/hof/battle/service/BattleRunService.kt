@@ -19,6 +19,7 @@ import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.client.AccountHofGateway
 import app.spammy.hof.external.client.HofAutomationDeferredException
 import app.spammy.hof.external.client.HofRequestFactory
+import app.spammy.hof.external.model.HofBattleOutcome
 import app.spammy.hof.external.model.HofBattleType
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequestOrigin
@@ -27,7 +28,10 @@ import app.spammy.hof.external.parser.LoginStateParser
 import app.spammy.hof.external.parser.SharedBattleCooldownParser
 import app.spammy.hof.status.repository.HofStatusSnapshotQueryRepository
 import app.spammy.hof.town.common.service.AccountHofMutationFence
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import java.time.Instant
+import java.util.HexFormat
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.springframework.transaction.support.TransactionSynchronizationManager
@@ -207,6 +211,26 @@ class BattleRunService(
             baseUrl = battleResponse.finalUrl,
         )
         val result = results.first()
+        val unknownDiagnostics = results
+            .takeIf { rounds -> rounds.any { it.outcome == HofBattleOutcome.UNKNOWN } }
+            ?.let {
+                UnknownBattleResponseDiagnostics(
+                    fingerprint = fingerprint(battleResponse.body),
+                    snippet = "BattleHttpResponse|status=${battleResponse.statusCode}" +
+                        "|bodyLength=${battleResponse.body.length}|rounds=${results.size}" +
+                        "|outcomes=${results.joinToString(",") { parsed -> parsed.outcome.name }}",
+                )
+            }
+        unknownDiagnostics?.let { diagnostics ->
+            log.warn(
+                "Battle response parsed as UNKNOWN accountId={} categoryId={} mapCode={} status={} responseFingerprint={}",
+                account.id,
+                category.value,
+                mapCode,
+                battleResponse.statusCode,
+                diagnostics.fingerprint,
+            )
+        }
         log.info(
             "Battle run complete accountId={} categoryId={} mapCode={} status={} rounds={} outcome={} title={}",
             account.id,
@@ -226,7 +250,12 @@ class BattleRunService(
             )
         }
 
-        return BattleResultResponse.from(result = result, rounds = results)
+        return BattleResultResponse.from(
+            result = result,
+            rounds = results,
+            responseShapeFingerprint = unknownDiagnostics?.fingerprint,
+            sanitizedResponseSnippet = unknownDiagnostics?.snippet,
+        )
     }
 
     /**
@@ -302,6 +331,15 @@ class BattleRunService(
             throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, message)
         }
     }
+
+    private fun fingerprint(body: String): String = HexFormat.of().formatHex(
+        MessageDigest.getInstance("SHA-256").digest(body.toByteArray(StandardCharsets.UTF_8)),
+    )
+
+    private data class UnknownBattleResponseDiagnostics(
+        val fingerprint: String,
+        val snippet: String,
+    )
 
     /**
      * 앱 카테고리 ID를 HOF 전투 요청 타입으로 변환한다.

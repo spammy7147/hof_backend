@@ -131,6 +131,14 @@ sealed interface AutomationActionEvidence {
         override val sanitizedSnippet: String? = null,
     ) : AutomationActionEvidence
 
+    /** 이전 결과는 미관측으로 닫되 최신 완전 목표 상태가 새 선택을 안전하게 허용한다. */
+    data class ResultUnobservedFreshDecision(
+        override val capturedAt: Instant,
+        val reason: String,
+        override val responseShapeFingerprint: String? = null,
+        override val sanitizedSnippet: String? = null,
+    ) : AutomationActionEvidence
+
     data class BattleGateRequired(
         override val capturedAt: Instant,
         val challengeId: Long?,

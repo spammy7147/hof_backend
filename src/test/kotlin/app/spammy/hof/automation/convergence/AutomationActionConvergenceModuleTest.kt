@@ -245,6 +245,30 @@ class AutomationActionConvergenceModuleTest {
     }
 
     @Test
+    fun `완전한 퀘스트 진행도로 결과 미관측을 닫으면 같은 baseline의 새 판단을 즉시 허용한다`() {
+        val selection = questSelection("quest-progress-fresh-decision")
+        val attemptId = assertIs<ConvergenceDirective.Submit>(module.prepare(7L, selection)).attemptId
+
+        assertIs<ConvergenceDirective.ContinueSelection>(
+            module.record(
+                attemptId,
+                AutomationActionEvidence.ResultUnobservedFreshDecision(
+                    capturedAt = clock.now(),
+                    reason = "QUEST_PROGRESS_AUTHORITATIVE",
+                    responseShapeFingerprint = "a".repeat(64),
+                ),
+            ),
+        )
+
+        assertEquals(ActionConvergenceResult.RESULT_UNOBSERVED, store.get(attemptId)?.result)
+        assertEquals("RESULT_UNOBSERVED_FRESH_DECISION", store.get(attemptId)?.reasonCode)
+        assertEquals(emptySet(), store.findSuppressedBaselines(7L)[selection.scope].orEmpty())
+        assertIs<ConvergenceDirective.Submit>(
+            module.prepare(7L, selection.copy(executionIdentity = "fresh-execution")),
+        )
+    }
+
+    @Test
     fun `제출 없는 권위 관측 gap은 다섯 번 뒤 held가 되고 runtime probe 대상이 아니다`() {
         val selection = questSelection("home-action-gap").copy(observationOnly = true)
         var directive: ConvergenceDirective = ConvergenceDirective.ContinueSelection

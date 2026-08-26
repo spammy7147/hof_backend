@@ -647,6 +647,7 @@ class AutomationActionLifecycleModuleTest {
             BattleOutcomeReconciliation.Proven(evidence),
             BattleOutcomeReconciliation.Unproven("terminal proof missing"),
             BattleOutcomeReconciliation.Proven(evidence.copy(mapCode = "other-map")),
+            BattleOutcomeReconciliation.Unproven("terminal proof still missing"),
         )
         val fallbackPage = listOf(activeQuest(progress = 3))
         Mockito.`when`(questGateway.loadObservation(7L, HofRequestOrigin.AUTOMATION)).thenReturn(
@@ -701,6 +702,12 @@ class AutomationActionLifecycleModuleTest {
         )
         val verifyLater = assertIs<AmbiguousActionResolution.VerifyLater>(managed.reconcile())
         assertEquals(now.plusSeconds(10), verifyLater.retryAt)
+
+        Mockito.`when`(
+            questWorkCycle.recordObservedResult(Mockito.eq(7L), anyQuestAttempt(), anyQuestObservation()),
+        ).thenReturn(QuestRecordResult.FreshDecision("latest quest progress is authoritative"))
+        val freshDecision = assertIs<AmbiguousActionResolution.FreshDecision>(managed.reconcile())
+        assertEquals("latest quest progress is authoritative", freshDecision.reason)
     }
 
     @Test
@@ -715,8 +722,13 @@ class AutomationActionLifecycleModuleTest {
         Mockito.`when`(battleOutcome.reloadRecentAuthoritativeEvidence(anyBattleAction()))
             .thenReturn(BattleOutcomeReconciliation.Unproven("terminal proof missing"))
 
-        assertFailsWith<AmbiguousAutomationSubmissionException> { managed.execute() }
+        Mockito.`when`(result.responseShapeFingerprint).thenReturn("f".repeat(64))
+        Mockito.`when`(result.sanitizedResponseSnippet).thenReturn("BattleHttpResponse|status=200|rounds=1")
 
+        val error = assertFailsWith<AmbiguousAutomationSubmissionException> { managed.execute() }
+
+        assertEquals("f".repeat(64), error.responseShapeFingerprint)
+        assertEquals("BattleHttpResponse|status=200|rounds=1", error.sanitizedSnippet)
         Mockito.verifyNoInteractions(questWorkCycle, executionSignals)
     }
 

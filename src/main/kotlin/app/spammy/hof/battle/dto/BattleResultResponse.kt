@@ -3,6 +3,7 @@ package app.spammy.hof.battle.dto
 import app.spammy.hof.external.model.HofBattleLoot
 import app.spammy.hof.external.model.HofBattleResult
 import app.spammy.hof.external.model.HofBattleSide
+import com.fasterxml.jackson.annotation.JsonIgnore
 
 /**
  * 전투 실행 직후 앱으로 내려주는 전체 전투 결과 응답 DTO다.
@@ -21,6 +22,12 @@ data class BattleResultResponse(
     val ally: BattleSideResponse,
     val rawLogUrl: String?,
     val rounds: List<BattleRoundResponse> = emptyList(),
+    /** UNKNOWN 응답의 진단용 SHA-256이다. API 응답에는 노출하지 않는다. */
+    @get:JsonIgnore
+    val responseShapeFingerprint: String? = null,
+    /** 원문과 식별자를 제외한 UNKNOWN 응답 구조 요약이다. */
+    @get:JsonIgnore
+    val sanitizedResponseSnippet: String? = null,
 ) {
     companion object {
         /**
@@ -29,6 +36,8 @@ data class BattleResultResponse(
         fun from(
             result: HofBattleResult,
             rounds: List<HofBattleResult> = listOf(result),
+            responseShapeFingerprint: String? = null,
+            sanitizedResponseSnippet: String? = null,
         ): BattleResultResponse =
             BattleResultResponse(
                 outcome = result.outcome.name,
@@ -42,6 +51,8 @@ data class BattleResultResponse(
                 ally = BattleSideResponse.from(result.allySide),
                 rawLogUrl = result.rawLogUrl,
                 rounds = rounds.map(BattleRoundResponse::from),
+                responseShapeFingerprint = responseShapeFingerprint,
+                sanitizedResponseSnippet = sanitizedResponseSnippet,
             )
     }
 }

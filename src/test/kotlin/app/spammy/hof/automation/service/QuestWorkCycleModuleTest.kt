@@ -1053,10 +1053,42 @@ class QuestWorkCycleModuleTest {
         )
         assertEquals(listOf(action to 2), progress.results)
 
-        assertIs<QuestRecordResult.NeedsRecheck>(
+        listOf(QuestMissionType.MONSTER_KILL, QuestMissionType.MAP_CLEAR).forEach { missionType ->
+            assertIs<QuestRecordResult.FreshDecision>(
+                handler.recordObservedResult(
+                    ACCOUNT_ID,
+                    attempt.copy(
+                        resultIdentity = "unchanged-${missionType.name}",
+                        action = action.copy(missionType = missionType),
+                    ),
+                    QuestResultObservation.Page(
+                        listOf(
+                            quest(
+                                "q",
+                                QuestState.ACTIVE,
+                                0,
+                                QuestMission(
+                                    "kill",
+                                    missionType,
+                                    "monster",
+                                    QuestProgress(2, 8),
+                                    false,
+                                ),
+                            ),
+                        ),
+                        complete = true,
+                    ),
+                ),
+            )
+        }
+
+        assertIs<QuestRecordResult.FreshDecision>(
             handler.recordObservedResult(
                 ACCOUNT_ID,
-                attempt.copy(resultIdentity = "unchanged"),
+                attempt.copy(
+                    resultIdentity = "advanced-beyond-stored-batch",
+                    action = action.copy(missionType = QuestMissionType.MAP_CLEAR),
+                ),
                 QuestResultObservation.Page(
                     listOf(
                         quest(
@@ -1065,9 +1097,9 @@ class QuestWorkCycleModuleTest {
                             0,
                             QuestMission(
                                 "kill",
-                                QuestMissionType.MONSTER_KILL,
-                                "monster",
-                                QuestProgress(2, 8),
+                                QuestMissionType.MAP_CLEAR,
+                                "map",
+                                QuestProgress(7, 8),
                                 false,
                             ),
                         ),
@@ -1076,6 +1108,7 @@ class QuestWorkCycleModuleTest {
                 ),
             ),
         )
+        assertEquals(listOf(action to 2), progress.results)
     }
 
     @Test

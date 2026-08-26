@@ -181,7 +181,13 @@ class DefaultAutomationConvergenceShadowEvaluator(
         LegacyConvergenceDecision.RESUBMIT -> "DIRECT_RESPONSE_REJECTED"
         LegacyConvergenceDecision.SUPERSEDED -> "AUTHORITATIVE_STATE_ADVANCED"
         LegacyConvergenceDecision.HELD -> "PENDING_BUDGET_EXHAUSTED"
-        LegacyConvergenceDecision.RESULT_UNOBSERVED -> "RESULT_UNOBSERVED"
+        LegacyConvergenceDecision.RESULT_UNOBSERVED -> if (
+            evidence is AutomationActionEvidence.ResultUnobservedFreshDecision
+        ) {
+            "RESULT_UNOBSERVED_FRESH_DECISION"
+        } else {
+            "RESULT_UNOBSERVED"
+        }
     }
 
     private fun LegacyConvergenceDecision.expectedCompleteness(actual: String): String = when (this) {
@@ -198,7 +204,10 @@ class DefaultAutomationConvergenceShadowEvaluator(
         LegacyConvergenceDecision.RESUBMIT -> setOf("DirectRejected")
         LegacyConvergenceDecision.SUPERSEDED -> setOf("StateAdvanced")
         LegacyConvergenceDecision.HELD -> setOf("BattleGateRequired", "IncompleteObservation")
-        LegacyConvergenceDecision.RESULT_UNOBSERVED -> setOf("ResultUnobserved")
+        LegacyConvergenceDecision.RESULT_UNOBSERVED -> setOf(
+            "ResultUnobserved",
+            "ResultUnobservedFreshDecision",
+        )
     }
 
     private fun AutomationActionEvidence.completeness(): String = when (this) {
@@ -206,6 +215,7 @@ class DefaultAutomationConvergenceShadowEvaluator(
             if (authoritative) "AUTHORITATIVE_IDENTITY_INCOMPLETE" else "INCOMPLETE"
         is AutomationActionEvidence.NetworkFailure -> "NETWORK_FAILURE"
         is AutomationActionEvidence.ResultUnobserved -> "UNOBSERVED"
+        is AutomationActionEvidence.ResultUnobservedFreshDecision -> "UNOBSERVED_FRESH_DECISION"
         is AutomationActionEvidence.BattleGateRequired -> "BATTLE_GATE"
         else -> "COMPLETE"
     }
@@ -218,6 +228,7 @@ class DefaultAutomationConvergenceShadowEvaluator(
         is AutomationActionEvidence.IncompleteObservation -> "IncompleteObservation|authoritative=$authoritative"
         is AutomationActionEvidence.NetworkFailure -> "NetworkFailure"
         is AutomationActionEvidence.ResultUnobserved -> "ResultUnobserved"
+        is AutomationActionEvidence.ResultUnobservedFreshDecision -> "ResultUnobservedFreshDecision"
         is AutomationActionEvidence.BattleGateRequired -> "BattleGateRequired"
     }
 

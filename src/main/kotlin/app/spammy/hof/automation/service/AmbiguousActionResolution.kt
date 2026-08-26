@@ -13,6 +13,11 @@ sealed interface AmbiguousActionResolution {
         val reason: String,
     ) : AmbiguousActionResolution
 
+    /** 이전 제출의 결과는 귀속하지 않고, 완전한 최신 목표 상태에서 새 행동을 고른다. */
+    data class FreshDecision(
+        val reason: String,
+    ) : AmbiguousActionResolution
+
     data class VerifyLater(
         val retryAt: Instant,
         val reason: String,

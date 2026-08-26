@@ -117,6 +117,18 @@ class DefaultAutomationActionConvergenceModule(
                 "RESULT_UNOBSERVED",
                 evidence.capturedAt,
             )
+            is AutomationActionEvidence.ResultUnobservedFreshDecision -> {
+                terminal(
+                    record,
+                    ActionConvergenceResult.RESULT_UNOBSERVED,
+                    "RESULT_UNOBSERVED_FRESH_DECISION",
+                    evidence.capturedAt,
+                )
+                check(store.releaseSuppression(record.accountId, record.attemptId, evidence.capturedAt)) {
+                    "Fresh-decision convergence suppression must be releasable."
+                }
+                ConvergenceDirective.ContinueSelection
+            }
             is AutomationActionEvidence.BattleGateRequired -> {
                 terminal(
                     record,
@@ -377,6 +389,7 @@ class DefaultAutomationActionConvergenceModule(
         is AutomationActionEvidence.IncompleteObservation -> "OBSERVATION_INCOMPLETE"
         is AutomationActionEvidence.NetworkFailure -> "OBSERVATION_NETWORK_FAILURE"
         is AutomationActionEvidence.ResultUnobserved -> "RESULT_UNOBSERVED"
+        is AutomationActionEvidence.ResultUnobservedFreshDecision -> "RESULT_UNOBSERVED_FRESH_DECISION"
         is AutomationActionEvidence.BattleGateRequired -> "BATTLE_GATE_REQUIRED"
     }
 

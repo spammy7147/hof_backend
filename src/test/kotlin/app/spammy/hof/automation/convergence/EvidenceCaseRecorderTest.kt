@@ -53,7 +53,12 @@ class EvidenceCaseRecorderTest {
 
         recorder.record(
             attempt,
-            AutomationActionEvidence.SameState(now, "state-a"),
+            AutomationActionEvidence.SameState(
+                now,
+                "state-a",
+                responseShapeFingerprint = "c".repeat(64),
+                sanitizedSnippet = "BattleHttpResponse|status=200|rounds=1|outcomes=UNKNOWN",
+            ),
             "AUTHORITATIVE_STATE_UNCHANGED",
         )
         entityManager.flush()
@@ -66,8 +71,11 @@ class EvidenceCaseRecorderTest {
         assertEquals(1, cases.size)
         assertEquals("state-a", cases.single().stateFingerprint)
         assertEquals(now.plusSeconds(30L * 24 * 60 * 60), cases.single().expiresAt)
-        assertEquals("evidence=SameState", cases.single().sanitizedSnippet)
-        assertEquals(64, cases.single().responseShapeFingerprint?.length)
+        assertEquals(
+            "BattleHttpResponse|status=200|rounds=1|outcomes=UNKNOWN",
+            cases.single().sanitizedSnippet,
+        )
+        assertEquals("c".repeat(64), cases.single().responseShapeFingerprint)
         assertFalse(cases.single().sanitizedSnippet.orEmpty().contains("execution-evidence"))
     }
 }

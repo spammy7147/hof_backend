@@ -2320,7 +2320,13 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(convergence.record(Mockito.eq(99L), anyConvergenceEvidence())).thenReturn(
             ConvergenceDirective.WaitUntil(probeAt, selection.scope),
         )
-        Mockito.doThrow(AmbiguousAutomationSubmissionException("result unknown")).`when`(managed).execute()
+        Mockito.doThrow(
+            AmbiguousAutomationSubmissionException(
+                "result unknown",
+                responseShapeFingerprint = "b".repeat(64),
+                sanitizedSnippet = "BattleHttpResponse|status=200|rounds=1|outcomes=UNKNOWN",
+            ),
+        ).`when`(managed).execute()
         val scoped = UnifiedAutomationRunner(
             preflight,
             runtime,
@@ -2334,7 +2340,11 @@ class UnifiedAutomationRunnerTest {
 
         scoped.runOne(7)
 
-        assertIs<AutomationActionEvidence.IncompleteObservation>(convergenceEvidence(convergence, 99L))
+        val evidence = assertIs<AutomationActionEvidence.IncompleteObservation>(
+            convergenceEvidence(convergence, 99L),
+        )
+        assertEquals("b".repeat(64), evidence.responseShapeFingerprint)
+        assertEquals("BattleHttpResponse|status=200|rounds=1|outcomes=UNKNOWN", evidence.sanitizedSnippet)
         assertIs<TypedRuntimeOutcome.AmbiguousHandoff>(capturedOutcome())
         Mockito.verify(wakeup).schedule(7L, probeAt, "TYPED_CONVERGENCE_PROBE")
     }

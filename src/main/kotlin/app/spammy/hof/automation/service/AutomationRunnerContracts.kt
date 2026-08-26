@@ -168,7 +168,12 @@ sealed interface TypedAutomationExecution {
 
 class SafeRetryableAutomationException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
 class FatalAutomationException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
-class AmbiguousAutomationSubmissionException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
+class AmbiguousAutomationSubmissionException(
+    message: String,
+    cause: Throwable? = null,
+    val responseShapeFingerprint: String? = null,
+    val sanitizedSnippet: String? = null,
+) : RuntimeException(message, cause)
 class AutomationActionPreconditionChangedException(
     message: String,
     cause: Throwable? = null,

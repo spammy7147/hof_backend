@@ -148,6 +148,12 @@ class ProductionActionEvidenceInterpreter(
                 responseShapeFingerprint = diagnostics.fingerprint,
                 sanitizedSnippet = diagnostics.snippet,
             )
+            is AmbiguousActionResolution.FreshDecision -> AutomationActionEvidence.ResultUnobservedFreshDecision(
+                capturedAt = capturedAt,
+                reason = resolution.reason,
+                responseShapeFingerprint = diagnostics.fingerprint,
+                sanitizedSnippet = diagnostics.snippet,
+            )
             is AmbiguousActionResolution.Superseded -> AutomationActionEvidence.StateAdvanced(
                 capturedAt,
                 "lifecycle:superseded:${selection.actionKind.name}",

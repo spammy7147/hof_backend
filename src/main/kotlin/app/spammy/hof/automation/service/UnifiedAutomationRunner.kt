@@ -781,6 +781,32 @@ class UnifiedAutomationRunner @Autowired constructor(
                         TypedRuntimeOutcome.ActionSuperseded(resolution.reason, ACTION_SUPERSEDED_REASON),
                     )
                 }
+                is AmbiguousActionResolution.FreshDecision -> {
+                    val evidence = AutomationActionEvidence.ResultUnobservedFreshDecision(
+                        capturedAt = now(),
+                        reason = resolution.reason,
+                    )
+                    observeShadow(
+                        accountId,
+                        stored.executionIdentity,
+                        evidence,
+                        LegacyConvergenceDecision.RESULT_UNOBSERVED,
+                    )
+                    decisionCycleId?.let { cycleId ->
+                        decisionJournal?.appendActionResult(cycleId, trace(
+                            AutomationHistoryEventKind.SKIPPED,
+                            QUEST_PROGRESS_FRESH_DECISION,
+                            resolution.reason,
+                        ))
+                    }
+                    typedRuntime.complete(
+                        execution,
+                        TypedRuntimeOutcome.ActionSuperseded(
+                            resolution.reason,
+                            QUEST_PROGRESS_FRESH_DECISION,
+                        ),
+                    )
+                }
                 is AmbiguousActionResolution.VerifyLater -> {
                     val observedAt = now()
                     val firstPendingAt = activeCheckpoint.firstPendingAt ?: activeCheckpoint.submittedAt ?: observedAt
@@ -1027,6 +1053,8 @@ class UnifiedAutomationRunner @Autowired constructor(
                         "직접 응답 확인에 실패해 같은 행동을 다시 보내지 않고 결과를 재확인합니다."
                     is AutomationActionEvidence.ResultUnobserved ->
                         "직접 응답에서 행동 결과를 관측하지 못해 자동 재제출을 보류합니다."
+                    is AutomationActionEvidence.ResultUnobservedFreshDecision ->
+                        "이전 결과는 귀속하지 않고 최신 퀘스트 진행도에서 새 행동을 판단합니다."
                     is AutomationActionEvidence.BattleGateRequired ->
                         "전투 캡차 해결 전에는 전투 행동을 성공으로 처리하지 않습니다."
                     is AutomationActionEvidence.DirectApplied -> error("Handled above")
@@ -1277,6 +1305,8 @@ class UnifiedAutomationRunner @Autowired constructor(
                     val evidence = AutomationActionEvidence.IncompleteObservation(
                         capturedAt = now(),
                         reason = handedOff.reason,
+                        responseShapeFingerprint = ambiguous.responseShapeFingerprint,
+                        sanitizedSnippet = ambiguous.sanitizedSnippet,
                     )
                     val directive = convergenceAttemptId?.let { attemptId ->
                         convergenceModule?.record(attemptId, evidence)
@@ -1297,6 +1327,8 @@ class UnifiedAutomationRunner @Autowired constructor(
                         AutomationActionEvidence.IncompleteObservation(
                             capturedAt = now(),
                             reason = ambiguous.message ?: "SUBMISSION_RESULT_UNKNOWN",
+                            responseShapeFingerprint = ambiguous.responseShapeFingerprint,
+                            sanitizedSnippet = ambiguous.sanitizedSnippet,
                         ),
                     )
                     if (directive != null) {
@@ -1314,7 +1346,12 @@ class UnifiedAutomationRunner @Autowired constructor(
                 observeShadow(
                     accountId,
                     stored.executionIdentity,
-                    appliedEvidence ?: AutomationActionEvidence.IncompleteObservation(now(), message),
+                    appliedEvidence ?: AutomationActionEvidence.IncompleteObservation(
+                        now(),
+                        message,
+                        responseShapeFingerprint = ambiguous.responseShapeFingerprint,
+                        sanitizedSnippet = ambiguous.sanitizedSnippet,
+                    ),
                     LegacyConvergenceDecision.RECONCILING,
                 )
                 decisionCycleId?.let { cycleId -> runCatching {
@@ -1909,6 +1946,11 @@ class UnifiedAutomationRunner @Autowired constructor(
                                 now(),
                                 "superseded:${stored.executionIdentity}",
                             )
+                            is AmbiguousActionResolution.FreshDecision ->
+                                AutomationActionEvidence.ResultUnobservedFreshDecision(
+                                    now(),
+                                    resolution.reason,
+                                )
                             is AmbiguousActionResolution.Applied -> error("Handled above")
                         }
                     }
@@ -2016,6 +2058,11 @@ class UnifiedAutomationRunner @Autowired constructor(
                         now(),
                         "superseded:${directive.executionIdentity}",
                     )
+                    is AmbiguousActionResolution.FreshDecision ->
+                        AutomationActionEvidence.ResultUnobservedFreshDecision(
+                            now(),
+                            resolution.reason,
+                        )
                     is AmbiguousActionResolution.Applied -> error("Handled above")
                 }
             }
@@ -2260,6 +2307,7 @@ class UnifiedAutomationRunner @Autowired constructor(
         const val TYPED_BATTLE_GATE_WAKE_REASON = "TYPED_BATTLE_GATE_OPENED"
         const val WORK_CYCLE_BOUNDARY_WAKE_REASON = "WORK_CYCLE_BOUNDARY"
         const val ACTION_SUPERSEDED_REASON = "ACTION_SUPERSEDED_BY_FRESH_STATE"
+        const val QUEST_PROGRESS_FRESH_DECISION = "QUEST_PROGRESS_FRESH_DECISION"
         const val POST_KILL_SWITCH_WAKE_REASON = "AUTOMATION_POST_KILL_SWITCH"
         const val POST_KILL_SWITCH_RECHECK_SECONDS = 30L
     }

@@ -846,12 +846,17 @@ class DefaultQuestWorkCycleModule(
             )
         val advancement = observed - baseline
         if (advancement !in 1..action.battleCount) {
+            if (
+                advancement >= 0 &&
+                action.missionType in setOf(QuestMissionType.MONSTER_KILL, QuestMissionType.MAP_CLEAR)
+            ) {
+                return QuestRecordResult.FreshDecision(
+                    "Latest complete quest progress is authoritative; the previous battle result " +
+                        "will remain unattributed and a fresh action will be selected.",
+                )
+            }
             return QuestRecordResult.NeedsRecheck(
-                if (advancement == 0) {
-                    "Quest battle may have completed without mission progress; it will not be resent."
-                } else {
-                    "Quest mission progress does not safely bind the stored battle batch."
-                },
+                "Quest mission progress does not safely bind the stored battle batch.",
             )
         }
         progressStore.recordBattleResult(

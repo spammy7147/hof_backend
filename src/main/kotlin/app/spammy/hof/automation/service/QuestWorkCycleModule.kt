@@ -81,6 +81,8 @@ sealed interface QuestRecordResult {
     data class Recorded(val questCycle: String? = null) : QuestRecordResult
     data class NotApplied(val message: String) : QuestRecordResult
     data class NeedsRecheck(val message: String) : QuestRecordResult
+    /** 이전 전투 결과를 귀속하지 않아도 최신 퀘스트 진행도에서 다음 행동을 판단할 수 있다. */
+    data class FreshDecision(val message: String) : QuestRecordResult
 }
 
 sealed interface QuestProgressReconciliation {

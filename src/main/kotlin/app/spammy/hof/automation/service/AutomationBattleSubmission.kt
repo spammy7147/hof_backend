@@ -111,9 +111,13 @@ class AutomationBattleSubmission(
                 ?.let { TerminalProof(it.resultIdentity, it.outcomes) }
                 ?: throw AmbiguousAutomationSubmissionException(
                     "Reloaded battle evidence did not bind the submitted action.",
+                    responseShapeFingerprint = response.responseShapeFingerprint,
+                    sanitizedSnippet = response.sanitizedResponseSnippet,
                 )
             is BattleOutcomeReconciliation.Unproven -> throw AmbiguousAutomationSubmissionException(
                 "Battle response did not prove every requested terminal round.",
+                responseShapeFingerprint = response.responseShapeFingerprint,
+                sanitizedSnippet = response.sanitizedResponseSnippet,
             )
         }
     }

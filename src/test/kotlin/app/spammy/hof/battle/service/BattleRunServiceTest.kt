@@ -60,6 +60,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class BattleRunServiceTest {
@@ -301,6 +302,24 @@ class BattleRunServiceTest {
         val response = service.runBattle(1L, runRequest())
 
         assertEquals(HofBattleOutcome.VICTORY.name, response.outcome)
+    }
+
+    @Test
+    fun `UNKNOWN 전투 응답은 원문 없이 안정적인 화면 fingerprint를 남긴다`() {
+        prepareRunnableBattle()
+        gateway.nextBattleBody = """
+            <html><body>
+              <div id="menu2">Funds : ${'$'} 1 Time : 10/10</div>
+              <main>temporary upstream page</main>
+            </body></html>
+        """.trimIndent()
+
+        val response = service.runBattle(1L, runRequest(), HofRequestOrigin.AUTOMATION)
+
+        assertEquals(HofBattleOutcome.UNKNOWN.name, response.outcome)
+        assertEquals(64, assertNotNull(response.responseShapeFingerprint).length)
+        assertTrue(assertNotNull(response.sanitizedResponseSnippet).contains("status=200"))
+        assertFalse(assertNotNull(response.sanitizedResponseSnippet).contains("temporary upstream page"))
     }
 
     @Test
