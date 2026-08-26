@@ -50,6 +50,13 @@ select
           and rt.revoked_at is null
     ) then false else true end,
     'UNKNOWN',
-    null,
+    case when exists (
+        select 1
+        from refresh_tokens rt
+        where rt.account_id = hof_accounts.id
+          and rt.expires_at > current_timestamp
+          and rt.rotated_at is null
+          and rt.revoked_at is null
+    ) then current_timestamp + (mod(id, 300) * interval '1' second) else null end,
     current_timestamp
 from hof_accounts;
