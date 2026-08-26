@@ -13,6 +13,7 @@ import app.spammy.hof.external.parser.LoginStateParser
 import app.spammy.hof.status.dto.HofStatusResponse
 import app.spammy.hof.character.repository.CharacterQueryRepository
 import app.spammy.hof.external.parser.CharacterRosterParser
+import app.spammy.hof.external.model.HofRequestOrigin
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -38,7 +39,10 @@ class HofStatusService(
      * 저장된 HOF 쿠키로 홈 페이지를 호출하고 플레이어명, Funds, Time, Work, Auction을 파싱한다.
      */
     @Transactional(readOnly = true)
-    fun fetch(accountId: Long): HofStatusResponse {
+    fun fetch(
+        accountId: Long,
+        origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
+    ): HofStatusResponse {
         val account = accountQueryRepository.findById(accountId)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
         val cookies = cookieQueryRepository.findValueMapByAccountId(account.id)
@@ -48,7 +52,7 @@ class HofStatusService(
         }
 
         log.info("HOF status requested accountId={} cookieNames={}", account.id, cookies.keys.sorted())
-        val response = gateway.execute(account.id, requestFactory.home(), cookies)
+        val response = gateway.execute(account.id, requestFactory.home(origin), cookies)
         val loginState = loginStateParser.parse(response.body)
         if (!loginState.isLoggedIn) {
             log.warn("HOF status rejected accountId={} reason=session-expired status={}", account.id, response.statusCode)

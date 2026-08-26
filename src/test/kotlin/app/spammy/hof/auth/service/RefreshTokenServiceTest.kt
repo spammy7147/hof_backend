@@ -1,6 +1,7 @@
 package app.spammy.hof.auth.service
 
 import app.spammy.hof.account.entity.HofAccountEntity
+import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.auth.config.AuthProperties
 import app.spammy.hof.auth.entity.RefreshTokenEntity
 import app.spammy.hof.auth.repository.RefreshTokenQueryRepository
@@ -22,6 +23,8 @@ class RefreshTokenServiceTest {
     private val repository = Mockito.mock(RefreshTokenRepository::class.java)
     private val queryRepository = Mockito.mock(RefreshTokenQueryRepository::class.java)
     private val rateLimiter = Mockito.mock(AuthRateLimiter::class.java)
+    private val accounts = Mockito.mock(AccountQueryRepository::class.java)
+    private val accountLifecycle = Mockito.mock(AccountAuthenticationLifecycleService::class.java)
     private var now = CREATED_AT
     private val service = RefreshTokenService(
         repository = repository,
@@ -29,7 +32,13 @@ class RefreshTokenServiceTest {
         rateLimiter = rateLimiter,
         properties = properties(),
         timeProvider = TimeProvider { now },
+        accounts = accounts,
+        accountLifecycle = accountLifecycle,
     )
+
+    init {
+        Mockito.`when`(accounts.findByIdForUpdate(ACCOUNT.id)).thenReturn(ACCOUNT)
+    }
 
     @Test
     fun issuesOpaqueTokenAndStoresOnlyItsHashWithThirtyDayExpiry() {
@@ -47,6 +56,7 @@ class RefreshTokenServiceTest {
         assertEquals(captor.value.expiresAt, issued.expiresAt)
         assertNull(captor.value.rotatedAt)
         assertNull(captor.value.revokedAt)
+        Mockito.verify(accountLifecycle).activate(ACCOUNT.id, newLoginFamily = true)
     }
 
     @Test
@@ -63,6 +73,7 @@ class RefreshTokenServiceTest {
         assertEquals(now.plus(Duration.ofDays(30)), rotated.expiresAt)
         assertNotEquals(TOKEN, rotated.value)
         Mockito.verify(rateLimiter).checkRefresh(FAMILY_ID, ACCOUNT.id)
+        Mockito.verify(accountLifecycle).activate(ACCOUNT.id, newLoginFamily = false)
     }
 
     @Test
@@ -135,6 +146,7 @@ class RefreshTokenServiceTest {
 
         assertEquals(CREATED_AT, submitted.revokedAt)
         assertEquals(CREATED_AT, sibling.revokedAt)
+        Mockito.verify(accountLifecycle).suspendIfNoActiveSessions(ACCOUNT.id)
     }
 
     private fun token(

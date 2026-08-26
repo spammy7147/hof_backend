@@ -17,13 +17,20 @@ class PushOutboxService(
     private val timeProvider: TimeProvider,
 ) {
     @Transactional
-    fun enqueueCaptchaRequired(account: HofAccountEntity, challengeId: Long) {
-        enqueue(account, PushRequestEvent(UUID.randomUUID().toString(), account.id, "CAPTCHA_REQUIRED", challengeId))
+    fun enqueueCaptchaRequired(
+        account: HofAccountEntity,
+        challengeId: Long,
+        eventId: String = UUID.randomUUID().toString(),
+    ) {
+        enqueue(account, PushRequestEvent(eventId, account.id, "CAPTCHA_REQUIRED", challengeId))
     }
 
     @Transactional
-    fun enqueueLoginRequired(account: HofAccountEntity) {
-        enqueue(account, PushRequestEvent(UUID.randomUUID().toString(), account.id, "LOGIN_REQUIRED"))
+    fun enqueueLoginRequired(
+        account: HofAccountEntity,
+        eventId: String = UUID.randomUUID().toString(),
+    ) {
+        enqueue(account, PushRequestEvent(eventId, account.id, "LOGIN_REQUIRED"))
     }
 
     private fun enqueue(account: HofAccountEntity, event: PushRequestEvent) {

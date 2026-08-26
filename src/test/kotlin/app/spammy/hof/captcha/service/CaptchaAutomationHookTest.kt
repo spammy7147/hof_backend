@@ -4,6 +4,7 @@ import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.automation.service.TypedAutomationRuntimeService
 import app.spammy.hof.automation.service.TypedCaptchaAutomationResumeService
 import app.spammy.hof.captcha.entity.CaptchaChallengeEntity
+import app.spammy.hof.captcha.entity.CaptchaChallengeEntity.Companion.KIND_VIGILANTE_PASS
 import java.time.Instant
 import kotlin.test.Test
 import org.mockito.Mockito
@@ -14,10 +15,12 @@ class CaptchaAutomationHookTest {
     private val typedRuntime = Mockito.mock(TypedAutomationRuntimeService::class.java)
     private val typedResume = Mockito.mock(TypedCaptchaAutomationResumeService::class.java)
     private val eventPublisher = Mockito.mock(ApplicationEventPublisher::class.java)
+    private val passCompletion = Mockito.mock(CaptchaPassCompletionService::class.java)
     private val hook = CaptchaAutomationHook(
         typedRuntime,
         typedResume,
         eventPublisher,
+        passCompletion,
     )
 
     @Test
@@ -72,6 +75,29 @@ class CaptchaAutomationHookTest {
         hook.answered(challenge)
 
         Mockito.verify(typedResume).resumeAfterCaptcha(7L)
+        Mockito.verifyNoInteractions(passCompletion)
+    }
+
+    @Test
+    fun `every answered pass path confirms a fresh countdown after commit`() {
+        val challenge = challenge().also {
+            it.prompt = CaptchaChallengeParser.VIGILANTE_PASS_PROMPT
+            it.challengeKind = KIND_VIGILANTE_PASS
+        }
+
+        hook.answered(challenge)
+
+        Mockito.verify(passCompletion).confirmAfterAnswer(7L)
+    }
+
+    @Test
+    fun `an already observed external pass closes the gate without a duplicate status GET`() {
+        val challenge = challenge().also { it.challengeKind = KIND_VIGILANTE_PASS }
+
+        hook.answered(challenge, confirmPass = false)
+
+        Mockito.verify(typedResume).resumeAfterCaptcha(7L)
+        Mockito.verifyNoInteractions(passCompletion)
     }
 
     @Test

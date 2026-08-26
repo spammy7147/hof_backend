@@ -20,6 +20,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.test.assertFalse
 import org.mockito.Mockito
 import tools.jackson.module.kotlin.jacksonObjectMapper
 
@@ -39,6 +40,20 @@ class TypedAutomationRuntimeServiceTest {
         outbox,
     )
     private val account = HofAccountEntity(7, "login", "encrypted", now)
+
+    @Test
+    fun `authentication suspension still lets an in-flight draining action reach reconciliation`() {
+        val draining = state().apply {
+            lifecycleStatus = TypedAutomationLifecycle.DRAINING
+            authSuspended = true
+        }
+        Mockito.`when`(query.findRuntimeState(7)).thenReturn(draining)
+
+        assertTrue(service.isRunning(7))
+
+        draining.lifecycleStatus = TypedAutomationLifecycle.PAUSED
+        assertFalse(service.isRunning(7))
+    }
 
     @Test
     fun `acquisition exposes a verified checkpoint without lease or persistence row`() {
@@ -212,6 +227,53 @@ class TypedAutomationRuntimeServiceTest {
     }
 
     @Test
+    fun `logout after fishing START convergence does not prepare or submit a new CATCH`() {
+        val state = state()
+        val start = action(TypedAutomationActionStatus.PREPARED)
+        val execution = acquire(state, start.row)
+        assertIs<TypedRuntimeSubmission.Started>(service.beginSubmission(execution))
+        state.lifecycleStatus = TypedAutomationLifecycle.DRAINING
+        state.requestedLifecycle = TypedAutomationLifecycle.PAUSED
+        state.authSuspended = true
+        state.resumeAfterAuth = true
+        val catch = StoredTypedAutomationAction(
+            entryId = start.entry.id,
+            executionIdentity = "catch-after-logout",
+            payload = StoredTypedActionPayload.FishingTown(
+                app.spammy.hof.town.fishing.model.FishingAction.CATCH,
+                app.spammy.hof.town.fishing.model.FishingPrimaryAction.CATCH,
+                17,
+            ),
+        )
+
+        assertIs<TypedRuntimePreparation.Invalidated>(
+            service.advanceAppliedActionToPreparedFollowup(execution, catch),
+        )
+
+        assertEquals(TypedAutomationActionStatus.SUCCEEDED, start.row.status)
+        assertEquals(TypedAutomationLifecycle.PAUSED, state.lifecycleStatus)
+        assertTrue(state.authSuspended)
+        assertNull(state.leaseToken)
+        Mockito.verify(actions, Mockito.never()).save(anyActionRow())
+    }
+
+    @Test
+    fun `a prepared action cannot cross the durable authentication drain fence`() {
+        val state = state()
+        val fixture = action(TypedAutomationActionStatus.PREPARED)
+        val execution = acquire(state, fixture.row)
+        state.lifecycleStatus = TypedAutomationLifecycle.DRAINING
+        state.requestedLifecycle = TypedAutomationLifecycle.PAUSED
+        state.authSuspended = true
+
+        assertIs<TypedRuntimeSubmission.Invalidated>(service.beginSubmission(execution))
+
+        assertEquals(TypedAutomationActionStatus.FAILED, fixture.row.status)
+        assertEquals(TypedAutomationLifecycle.PAUSED, state.lifecycleStatus)
+        assertNull(state.leaseToken)
+    }
+
+    @Test
     fun `ambiguous submission moves checkpoint to reconciliation`() {
         val state = state()
         val fixture = action(TypedAutomationActionStatus.PREPARED)
@@ -282,6 +344,32 @@ class TypedAutomationRuntimeServiceTest {
         now = retryAt
         val resumed = assertIs<TypedRuntimeAcquisition.Acquired>(service.acquire(7))
         assertEquals(true, resumed.execution.checkpoint?.deferredSubmissionRetry)
+    }
+
+    @Test
+    fun `logout discards a deferred action that never reached HOF and completes the drain`() {
+        val retryAt = now.plusSeconds(30)
+        val state = state()
+        val fixture = action(TypedAutomationActionStatus.PREPARED)
+        val execution = acquire(state, fixture.row)
+        assertIs<TypedRuntimeSubmission.Started>(service.beginSubmission(execution))
+        state.lifecycleStatus = TypedAutomationLifecycle.DRAINING
+        state.requestedLifecycle = TypedAutomationLifecycle.PAUSED
+        state.authSuspended = true
+        state.resumeAfterAuth = true
+
+        val projection = service.complete(
+            execution,
+            TypedRuntimeOutcome.SubmissionDeferred(retryAt, "not submitted"),
+        )
+
+        assertTrue(projection.applied)
+        assertEquals(TypedAutomationActionStatus.FAILED, fixture.row.status)
+        assertNull(fixture.row.submittedAt)
+        assertEquals(TypedAutomationLifecycle.PAUSED, state.lifecycleStatus)
+        assertTrue(state.authSuspended)
+        assertNull(state.nextAttemptAt)
+        assertNull(state.leaseToken)
     }
 
     @Test
@@ -496,13 +584,12 @@ class TypedAutomationRuntimeServiceTest {
 
     @Test
     fun `finishing current action completes requested pause without another wake`() {
-        val state = state().apply {
-            lifecycleStatus = TypedAutomationLifecycle.DRAINING
-            requestedLifecycle = TypedAutomationLifecycle.PAUSED
-        }
+        val state = state()
         val fixture = action(TypedAutomationActionStatus.PREPARED)
         val execution = acquire(state, fixture.row)
         assertIs<TypedRuntimeSubmission.Started>(service.beginSubmission(execution))
+        state.lifecycleStatus = TypedAutomationLifecycle.DRAINING
+        state.requestedLifecycle = TypedAutomationLifecycle.PAUSED
 
         assertTrue(
             service.complete(

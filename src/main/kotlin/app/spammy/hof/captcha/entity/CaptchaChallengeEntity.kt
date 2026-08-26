@@ -36,6 +36,10 @@ class CaptchaChallengeEntity(
     @Column(name = "prompt", nullable = false, columnDefinition = "text")
     var prompt: String,
 
+    /** 사용자 안내문과 독립적으로 통행증 challenge를 식별하는 영속 분류다. */
+    @Column(name = "challenge_kind", nullable = false, length = 20)
+    var challengeKind: String = KIND_CAPTCHA,
+
     @Column(name = "image_url", columnDefinition = "text")
     var imageUrl: String?,
 
@@ -62,4 +66,9 @@ class CaptchaChallengeEntity(
 
     @Column(name = "preparation_version", nullable = false)
     var preparationVersion: Int = 0,
-)
+) {
+    companion object {
+        const val KIND_CAPTCHA = "CAPTCHA"
+        const val KIND_VIGILANTE_PASS = "VIGILANTE_PASS"
+    }
+}

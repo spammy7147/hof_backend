@@ -30,7 +30,10 @@ class TypedAutomationRuntimeService(
 ) {
     @Transactional(readOnly = true, propagation = Propagation.REQUIRES_NEW)
     fun isRunning(accountId: Long): Boolean =
-        queryRepository.findRuntimeState(accountId)?.lifecycleStatus in setOf(TypedAutomationLifecycle.RUNNING, TypedAutomationLifecycle.DRAINING)
+        queryRepository.findRuntimeState(accountId)?.let { state ->
+            state.lifecycleStatus == TypedAutomationLifecycle.DRAINING ||
+                (!state.authSuspended && state.lifecycleStatus == TypedAutomationLifecycle.RUNNING)
+        } == true
 
     @Transactional(readOnly = true, propagation = Propagation.REQUIRES_NEW)
     fun isCompletingCurrentAction(accountId: Long): Boolean =
@@ -68,11 +71,23 @@ class TypedAutomationRuntimeService(
         if (state.lifecycleStatus !in setOf(TypedAutomationLifecycle.RUNNING, TypedAutomationLifecycle.DRAINING)) {
             return TypedRuntimeAcquisition.Inactive
         }
+        val active = queryRepository.findActiveTypedAction(accountId)
+        if (
+            state.authSuspended &&
+            !(
+                state.lifecycleStatus == TypedAutomationLifecycle.DRAINING &&
+                    active?.status in setOf(
+                        TypedAutomationActionStatus.SUBMITTING,
+                        TypedAutomationActionStatus.RECONCILING,
+                    )
+            )
+        ) {
+            return TypedRuntimeAcquisition.Inactive
+        }
         val now = timeProvider.now()
         if (state.nextAttemptAt?.isAfter(now) == true || state.leaseUntil?.isAfter(now) == true) {
             return TypedRuntimeAcquisition.Busy
         }
-        val active = queryRepository.findActiveTypedAction(accountId)
         if (active?.status == TypedAutomationActionStatus.SUBMITTING) {
             active.status = TypedAutomationActionStatus.RECONCILING
             active.reconciliationObservationCount = 0
@@ -186,7 +201,7 @@ class TypedAutomationRuntimeService(
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun beginSubmission(execution: TypedRuntimeExecutionRight): TypedRuntimeSubmission {
         val right = execution.persistedRight()
-        fencedState(right.accountId, right.leaseToken) ?: return TypedRuntimeSubmission.Invalidated
+        val state = fencedState(right.accountId, right.leaseToken) ?: return TypedRuntimeSubmission.Invalidated
         val actionId = right.actionId ?: return TypedRuntimeSubmission.Invalidated
         val action = queryRepository.lockTypedAction(actionId) ?: return TypedRuntimeSubmission.Invalidated
         if (
@@ -195,6 +210,10 @@ class TypedAutomationRuntimeService(
             action.status != TypedAutomationActionStatus.PREPARED
         ) return TypedRuntimeSubmission.Invalidated
         val now = timeProvider.now()
+        if (blocksNewSubmission(state)) {
+            discardPreparedForLifecycle(state, action, now)
+            return TypedRuntimeSubmission.Invalidated
+        }
         action.status = TypedAutomationActionStatus.SUBMITTING
         action.nextAttemptAt = null
         action.lastError = null
@@ -221,10 +240,23 @@ class TypedAutomationRuntimeService(
             current.status != TypedAutomationActionStatus.SUBMITTING ||
             followup.entryId != current.entry?.id
         ) return TypedRuntimePreparation.Invalidated
+        val now = timeProvider.now()
+        if (blocksNewSubmission(state)) {
+            current.status = TypedAutomationActionStatus.SUCCEEDED
+            current.lastError = null
+            current.finishedAt = now
+            current.updatedAt = now
+            state.leaseToken = null
+            state.leaseUntil = null
+            state.nextAttemptAt = null
+            state.waitReason = null
+            state.updatedAt = now
+            completeRequestedLifecycle(state, now)
+            return TypedRuntimePreparation.Invalidated
+        }
         val entry = queryRepository.findEntry(right.accountId, followup.entryId)
             ?: return TypedRuntimePreparation.Invalidated
         val encoded = codec.encode(followup)
-        val now = timeProvider.now()
         current.status = TypedAutomationActionStatus.SUCCEEDED
         current.lastError = null
         current.finishedAt = now
@@ -404,6 +436,22 @@ class TypedAutomationRuntimeService(
 
         val now = timeProvider.now()
         val diagnostic = sanitizeDiagnostic(message)
+        if (blocksNewSubmission(state)) {
+            action.status = TypedAutomationActionStatus.FAILED
+            action.nextAttemptAt = null
+            action.submittedAt = null
+            action.finishedAt = now
+            action.lastError = diagnostic
+            action.updatedAt = now
+            state.nextAttemptAt = null
+            state.waitReason = null
+            state.leaseToken = null
+            state.leaseUntil = null
+            state.lastError = null
+            state.updatedAt = now
+            completeRequestedLifecycle(state, now)
+            return true
+        }
         action.status = TypedAutomationActionStatus.PREPARED
         action.retryAttempt += 1
         action.nextAttemptAt = retryAt
@@ -752,7 +800,16 @@ class TypedAutomationRuntimeService(
     private fun completeRequestedLifecycle(state: TypedAutomationRuntimeStateEntity, now: Instant): Boolean {
         val requested = state.requestedLifecycle ?: return false
         if (state.lifecycleStatus != TypedAutomationLifecycle.DRAINING) return false
-        state.lifecycleStatus = requested
+        state.lifecycleStatus = if (
+            requested == TypedAutomationLifecycle.PAUSED &&
+            state.resumeAfterAuth &&
+            !state.authSuspended
+        ) {
+            state.resumeAfterAuth = false
+            TypedAutomationLifecycle.RUNNING
+        } else {
+            requested
+        }
         state.requestedLifecycle = null
         state.nextAttemptAt = null
         state.waitReason = null
@@ -763,6 +820,29 @@ class TypedAutomationRuntimeService(
         }
         state.updatedAt = now
         return true
+    }
+
+    private fun blocksNewSubmission(state: TypedAutomationRuntimeStateEntity): Boolean =
+        state.authSuspended ||
+            state.lifecycleStatus != TypedAutomationLifecycle.RUNNING ||
+            state.requestedLifecycle != null
+
+    private fun discardPreparedForLifecycle(
+        state: TypedAutomationRuntimeStateEntity,
+        action: TypedAutomationActionRunEntity,
+        now: Instant,
+    ) {
+        action.status = TypedAutomationActionStatus.FAILED
+        action.nextAttemptAt = null
+        action.finishedAt = now
+        action.lastError = "인증 또는 사용자 수명주기 전환 전에 제출되지 않은 행동을 폐기했습니다."
+        action.updatedAt = now
+        state.nextAttemptAt = null
+        state.waitReason = null
+        state.leaseToken = null
+        state.leaseUntil = null
+        state.updatedAt = now
+        completeRequestedLifecycle(state, now)
     }
 
     private fun recordWarnings(accountId: Long, token: String, warnings: List<String>): Boolean {

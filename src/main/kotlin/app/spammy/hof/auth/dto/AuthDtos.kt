@@ -24,6 +24,8 @@ data class RefreshRequest(
 /** 로그아웃도 플랫폼별 refresh token 전달 방식을 동일하게 사용한다. */
 data class LogoutRequest(
     val refreshToken: String? = null,
+    val pushTargetId: Long? = null,
+    val pushInstallationId: String? = null,
 )
 
 /**

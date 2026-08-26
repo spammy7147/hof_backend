@@ -1,6 +1,7 @@
 package app.spammy.hof.auth.service
 
 import app.spammy.hof.account.entity.HofAccountEntity
+import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.auth.config.AuthProperties
 import app.spammy.hof.auth.entity.RefreshTokenEntity
 import app.spammy.hof.auth.repository.RefreshTokenQueryRepository
@@ -29,13 +30,20 @@ class RefreshTokenService(
     private val rateLimiter: AuthRateLimiter,
     private val properties: AuthProperties,
     private val timeProvider: TimeProvider,
+    private val accounts: AccountQueryRepository,
+    private val accountLifecycle: AccountAuthenticationLifecycleService,
 ) {
     private val secureRandom = SecureRandom()
 
     /** 새로운 로그인 패밀리를 시작하고 DB에는 원문이 아닌 SHA-256 해시만 저장한다. */
     @Transactional
-    fun issue(account: HofAccountEntity, clientType: String): IssuedRefreshToken =
-        issue(account, clientType, UUID.randomUUID().toString(), timeProvider.now())
+    fun issue(account: HofAccountEntity, clientType: String): IssuedRefreshToken {
+        val lockedAccount = accounts.findByIdForUpdate(account.id)
+            ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
+        val issued = issue(lockedAccount, clientType, UUID.randomUUID().toString(), timeProvider.now())
+        accountLifecycle.activate(lockedAccount.id, newLoginFamily = true)
+        return issued
+    }
 
     /**
      * 유효한 토큰을 한 번만 사용 처리하고 같은 패밀리의 새 토큰을 발급한다.
@@ -66,16 +74,22 @@ class RefreshTokenService(
         }
 
         rateLimiter.checkRefresh(token.familyId, token.account.id)
+        val lockedAccount = accounts.findByIdForUpdate(token.account.id)
+            ?: throw invalidToken()
         token.rotatedAt = now
-        return issue(token.account, token.clientType, token.familyId, now)
+        val issued = issue(lockedAccount, token.clientType, token.familyId, now)
+        accountLifecycle.activate(lockedAccount.id, newLoginFamily = false)
+        return issued
     }
 
     /** 제출된 토큰이 존재하면 해당 로그인 패밀리를 모두 폐기하며, 이미 없는 토큰은 멱등 성공한다. */
     @Transactional
-    fun logout(rawToken: String?) {
-        if (rawToken.isNullOrBlank()) return
-        val token = queryRepository.findByTokenHashForUpdate(hash(rawToken)) ?: return
+    fun logout(rawToken: String?): Long? {
+        if (rawToken.isNullOrBlank()) return null
+        val token = queryRepository.findByTokenHashForUpdate(hash(rawToken)) ?: return null
         revokeFamily(token.familyId, timeProvider.now())
+        accountLifecycle.suspendIfNoActiveSessions(token.account.id)
+        return token.account.id
     }
 
     private fun issue(

@@ -57,7 +57,11 @@ class AuthController(
         @CookieValue(name = REFRESH_COOKIE, required = false) cookieToken: String?,
         servletRequest: HttpServletRequest,
     ): ResponseEntity<Void> {
-        authService.logout(request?.refreshToken ?: cookieToken)
+        authService.logout(
+            request?.refreshToken ?: cookieToken,
+            request?.pushTargetId,
+            request?.pushInstallationId,
+        )
         val builder = ResponseEntity.noContent().cacheControl(CacheControl.noStore())
         if (cookieToken != null || servletRequest.getHeader(HttpHeaders.COOKIE) != null) {
             builder.header(HttpHeaders.SET_COOKIE, expiredCookie().toString())

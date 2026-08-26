@@ -57,6 +57,14 @@ class DevicePushTargetService(
         target.lastSeenAt = timeProvider.now()
     }
 
+    /** 앱 재시작 뒤 메모리 target ID가 없어도 SecureStore의 안정적인 설치 ID로 현재 기기만 끈다. */
+    @Transactional
+    fun deactivateByInstallation(accountId: Long, installationId: String) {
+        val target = queryRepository.findOwnedByInstallation(accountId, installationId.trim()) ?: return
+        target.active = false
+        target.lastSeenAt = timeProvider.now()
+    }
+
     @Transactional
     fun deactivate(target: DevicePushTargetEntity) {
         target.active = false

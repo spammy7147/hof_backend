@@ -203,6 +203,12 @@ internal object FreshSchemaContract {
             optionalInstant("revoked_at"),
         ),
         table(
+            "account_auth_execution_states",
+            requiredBigint("account_id"), requiredBoolean("suspended"), optionalInstant("suspended_at"),
+            requiredInstant("updated_at"), optionalBigint("version"),
+            primaryKey = listOf("account_id"),
+        ),
+        table(
             "app_releases",
             serialId(), requiredVarchar("platform", 20), requiredBigint("version_code"),
             requiredVarchar("version_name", 100), requiredVarchar("file_name"), requiredBigint("file_size"),
@@ -607,7 +613,8 @@ internal object FreshSchemaContract {
             requiredInteger("retry_attempt"), optionalInstant("next_attempt_at"), optionalVarchar("wait_reason", 30),
             optionalVarchar("lease_token", 128),
             optionalInstant("lease_until"), optionalBigint("stop_action_id"), optionalText("warning_text"), optionalText("last_error"),
-            optionalVarchar("requested_lifecycle", 20),
+            optionalVarchar("requested_lifecycle", 20), requiredBoolean("auth_suspended"),
+            requiredBoolean("resume_after_auth"),
             requiredInstant("created_at"), requiredInstant("updated_at"), requiredBigint("version"),
             primaryKey = listOf("account_id"),
         ),
@@ -705,10 +712,21 @@ internal object FreshSchemaContract {
         table(
             "captcha_challenges",
             serialId(), requiredBigint("account_id"), requiredVarchar("status"), requiredText("prompt"),
+            requiredVarchar("challenge_kind", 20),
             optionalText("image_url"), requiredText("source_url"), optionalText("answer"),
             requiredInstant("created_at"), optionalInstant("answered_at"), optionalText("submit_url"),
             requiredVarchar("submit_method", 10), requiredVarchar("answer_field_name", 100),
             requiredInteger("preparation_version"),
+        ),
+        table(
+            "captcha_pass_maintenance",
+            serialId(), requiredBigint("account_id"), requiredBoolean("enabled"),
+            requiredBoolean("auth_suspended"), requiredVarchar("pass_state", 20),
+            optionalInteger("remaining_seconds"), optionalInstant("valid_until"), optionalInstant("observed_at"),
+            optionalInstant("next_refresh_at"), optionalInstant("last_attempt_at"), optionalVarchar("last_result", 40),
+            requiredInteger("retry_count"), optionalVarchar("lease_token", 100), optionalInstant("lease_until"),
+            optionalVarchar("run_phase", 20), optionalBigint("manual_challenge_id"),
+            optionalVarchar("notification_key", 100), requiredInstant("updated_at"),
         ),
         table(
             "captcha_form_fields",
@@ -750,6 +768,7 @@ internal object FreshSchemaContract {
         key("latest_hof_status", "uk_latest_hof_status_account", "account_id"),
         key("hof_cookies", "uk_hof_cookies_account_name", "account_id", "name"),
         key("refresh_tokens", "uk_refresh_tokens_token_hash", "token_hash"),
+        key("captcha_pass_maintenance", "uk_captcha_pass_maintenance_account", "account_id"),
         key("characters", "uk_characters_account_current_hof_character", "account_id", "current_hof_character_id"),
         key("characters", "uk_characters_id_account", "id", "account_id"),
         key(
@@ -1070,6 +1089,18 @@ internal object FreshSchemaContract {
         ),
         fk("fk_battle_log_loots_log", "battle_log_loots.battle_log_id", "battle_logs.id", DeleteAction.CASCADE),
         fk("fk_captcha_challenges_account", "captcha_challenges.account_id", "hof_accounts.id", DeleteAction.CASCADE),
+        fk(
+            "fk_captcha_pass_maintenance_account", "captcha_pass_maintenance.account_id",
+            "hof_accounts.id", DeleteAction.CASCADE,
+        ),
+        fk(
+            "fk_captcha_pass_maintenance_challenge", "captcha_pass_maintenance.manual_challenge_id",
+            "captcha_challenges.id", DeleteAction.SET_NULL,
+        ),
+        fk(
+            "fk_account_auth_execution_states_account", "account_auth_execution_states.account_id",
+            "hof_accounts.id", DeleteAction.CASCADE,
+        ),
         fk("fk_typed_runtime_account", "typed_automation_runtime_states.account_id", "hof_accounts.id", DeleteAction.CASCADE),
         fk("fk_typed_runtime_stop_action", "typed_automation_runtime_states.stop_action_id", "typed_automation_action_runs.id", DeleteAction.SET_NULL),
         fk("fk_typed_action_account", "typed_automation_action_runs.account_id", "hof_accounts.id", DeleteAction.CASCADE),
@@ -1099,6 +1130,10 @@ internal object FreshSchemaContract {
         index("hof_cookies", "idx_hof_cookies_account_updated", "account_id", "updated_at", "id"),
         index("refresh_tokens", "idx_refresh_tokens_family_created", "family_id", "created_at", "id"),
         index("refresh_tokens", "idx_refresh_tokens_account_active", "account_id", "revoked_at", "expires_at", "id"),
+        index(
+            "account_auth_execution_states", "idx_account_auth_execution_active",
+            "suspended", "account_id",
+        ),
         index("characters", "idx_characters_account_name", "account_id", "name", "id"),
         index("characters", "idx_characters_account_detail_synced", "account_id", "detail_synced_at", "id"),
         index(
@@ -1252,6 +1287,10 @@ internal object FreshSchemaContract {
             "captcha_challenges", "idx_captcha_challenges_account_status_created",
             "account_id", "status", "created_at", "id",
         ),
+        index(
+            "captcha_pass_maintenance", "idx_captcha_pass_maintenance_due",
+            "enabled", "next_refresh_at", "lease_until", "account_id",
+        ),
         index("captcha_form_fields", "idx_captcha_form_fields_challenge_order", "challenge_id", "field_order", "id"),
         index("typed_automation_action_runs", "idx_typed_action_account_status", "account_id", "status", "updated_at", "id"),
         index(
@@ -1379,6 +1418,11 @@ internal object FreshSchemaContract {
         ),
         check("typed_automation_runtime_states", "ck_typed_runtime_lease", "(lease_token is null and lease_until is null) or (lease_token is not null and lease_until is not null)"),
         check("typed_automation_runtime_states", "ck_typed_runtime_stop_action", "lifecycle_status = 'STOPPED' or stop_action_id is null"),
+        check(
+            "captcha_pass_maintenance", "ck_captcha_pass_maintenance_remaining",
+            "remaining_seconds is null or remaining_seconds >= 0",
+        ),
+        check("captcha_pass_maintenance", "ck_captcha_pass_maintenance_retry", "retry_count >= 0"),
         check("typed_automation_action_runs", "ck_typed_action_status", "locate(',' || status || ',', ',PREPARED,SUBMITTING,RECONCILING,SUCCEEDED,FAILED,AMBIGUOUS,') > 0"),
         check("typed_automation_action_runs", "ck_typed_action_retry", "retry_attempt >= 0"),
         check("typed_automation_action_runs", "ck_typed_action_fingerprint", "char_length(action_fingerprint) = 64"),
@@ -1667,6 +1711,11 @@ internal object FreshSchemaContract {
             "captcha_challenges",
             "ck_captcha_challenges_preparation_version",
             "preparation_version >= 0",
+        ),
+        check(
+            "captcha_challenges",
+            "ck_captcha_challenges_kind",
+            "locate(',' || challenge_kind || ',', ',CAPTCHA,VIGILANTE_PASS,') > 0",
         ),
         check("captcha_form_fields", "ck_captcha_form_fields_order", "field_order >= 0"),
     )

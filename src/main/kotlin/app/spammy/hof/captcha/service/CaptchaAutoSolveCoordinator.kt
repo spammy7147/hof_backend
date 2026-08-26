@@ -1,15 +1,19 @@
 package app.spammy.hof.captcha.service
 
+import app.spammy.hof.auth.service.AccountExecutionAuthorizationReader
 import app.spammy.hof.captcha.config.CaptchaAutoSolveProperties
 import app.spammy.hof.captcha.dto.CaptchaChallengeResponse
 import app.spammy.hof.external.client.HofCaptchaRetryException
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 enum class CaptchaAutoSolveOutcome {
     SOLVED,
     MANUAL_INPUT_REQUIRED,
     NO_PENDING_CHALLENGE,
+    CANCELLED,
 }
 
 @Service
@@ -17,10 +21,45 @@ class CaptchaAutoSolveCoordinator(
     private val captchaService: CaptchaService,
     private val recognizer: CaptchaImageRecognizer,
     private val properties: CaptchaAutoSolveProperties,
+    private val executionAuthorization: AccountExecutionAuthorizationReader? = null,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
+    private val accountLocks = Array(LOCK_STRIPES) { ReentrantLock() }
 
-    fun solve(accountId: Long, challengeId: Long): CaptchaAutoSolveOutcome {
+    fun solve(accountId: Long, challengeId: Long): CaptchaAutoSolveOutcome =
+        accountLock(accountId).withLock {
+            solveLocked(
+                accountId,
+                challengeId,
+                authorizeSubmission = { executionAuthorization?.isExecutionAllowed(accountId) != false },
+                propagateInfrastructureFailure = false,
+            )
+        }
+
+    /** 선제 갱신은 실제 HOF 답안 POST 직전에 영속 실행 권한을 다시 확인한다. */
+    fun solve(
+        accountId: Long,
+        challengeId: Long,
+        authorizeSubmission: (() -> Boolean)?,
+    ): CaptchaAutoSolveOutcome =
+        accountLock(accountId).withLock {
+            solveLocked(
+                accountId,
+                challengeId,
+                authorizeSubmission = {
+                    executionAuthorization?.isExecutionAllowed(accountId) != false &&
+                        requireNotNull(authorizeSubmission).invoke()
+                },
+                propagateInfrastructureFailure = true,
+            )
+        }
+
+    private fun solveLocked(
+        accountId: Long,
+        challengeId: Long,
+        authorizeSubmission: () -> Boolean,
+        propagateInfrastructureFailure: Boolean,
+    ): CaptchaAutoSolveOutcome {
         if (!properties.enabled) return CaptchaAutoSolveOutcome.MANUAL_INPUT_REQUIRED
 
         var challenge = captchaService.findCurrent(accountId)
@@ -80,18 +119,27 @@ class CaptchaAutoSolveCoordinator(
                     challengeId,
                     hofFailureCount + 1,
                 )
-                challenge = retryCaptcha503 {
-                    captchaService.submitAutomaticAnswer(
-                        accountId = accountId,
-                        challengeId = challengeId,
-                        recognition = recognition,
-                        preparationVersion = challenge.preparationVersion,
-                    )
+                while (true) {
+                    try {
+                        challenge = captchaService.submitAutomaticAnswer(
+                            accountId = accountId,
+                            challengeId = challengeId,
+                            recognition = recognition,
+                            preparationVersion = challenge.preparationVersion,
+                            authorizeSubmission = authorizeSubmission,
+                        )
+                        break
+                    } catch (_: CaptchaSubmissionAuthorizationCancelledException) {
+                        return CaptchaAutoSolveOutcome.CANCELLED
+                    } catch (_: HofCaptchaRetryException) {
+                        // Governor가 다음 CAPTCHA 호출에 전용 간격을 적용한 뒤 권한부터 다시 확인한다.
+                    }
                 }
                 if (challenge.status == STATUS_ANSWERED) return CaptchaAutoSolveOutcome.SOLVED
                 hofFailureCount += 1
             }
         } catch (error: Exception) {
+            if (propagateInfrastructureFailure) throw error
             log.warn(
                 "CAPTCHA automatic solve failed accountId={} challengeId={} errorType={} message={}",
                 accountId,
@@ -133,7 +181,11 @@ class CaptchaAutoSolveCoordinator(
         }
     }
 
+    private fun accountLock(accountId: Long): ReentrantLock =
+        accountLocks[Math.floorMod(accountId.hashCode(), accountLocks.size)]
+
     private companion object {
+        const val LOCK_STRIPES = 64
         const val STATUS_DETECTED = "DETECTED"
         const val STATUS_ANSWERED = "ANSWERED"
     }

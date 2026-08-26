@@ -10,6 +10,8 @@ import app.spammy.hof.account.service.HofCookieCipher
 import app.spammy.hof.captcha.dto.CaptchaChallengeResponse
 import app.spammy.hof.captcha.entity.CaptchaChallengeEntity
 import app.spammy.hof.captcha.entity.CaptchaFormFieldEntity
+import app.spammy.hof.captcha.entity.CaptchaChallengeEntity.Companion.KIND_VIGILANTE_PASS
+import app.spammy.hof.captcha.entity.CaptchaChallengeEntity.Companion.KIND_CAPTCHA
 import app.spammy.hof.captcha.repository.CaptchaChallengeRepository
 import app.spammy.hof.captcha.repository.CaptchaFormFieldCommandRepository
 import app.spammy.hof.captcha.repository.CaptchaQueryRepository
@@ -66,6 +68,14 @@ class CaptchaService(
         account: HofAccountEntity,
         html: String,
         sourceUrl: String,
+    ): CaptchaChallengeResponse? = detectAndRecord(account, html, sourceUrl, notifyAutomation = true)
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun detectAndRecord(
+        account: HofAccountEntity,
+        html: String,
+        sourceUrl: String,
+        notifyAutomation: Boolean,
     ): CaptchaChallengeResponse? {
         val document = HofHtmlParser.parse(html, sourceUrl)
         val pageText = document.text().trim()
@@ -78,12 +88,25 @@ class CaptchaService(
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "캡차를 저장할 계정을 찾지 못했습니다.")
         val activeChallenges = captchaQueryRepository.findActiveByAccountId(lockedAccount.id)
         val existingChallenge = activeChallenges.firstOrNull()
-        val prompt = if (pageText.contains(VIGILANTE_PASS_PROMPT)) {
+        val prompt = if (challengeParser.isVigilantePassGate(document, pageText)) {
             VIGILANTE_PASS_PROMPT
         } else {
             DEFAULT_PROMPT
         }
+        val challengeKind = if (prompt == VIGILANTE_PASS_PROMPT) KIND_VIGILANTE_PASS else KIND_CAPTCHA
         val detectedAt = timeProvider.now()
+
+        if (existingChallenge?.challengeKind == KIND_VIGILANTE_PASS && challengeKind == KIND_VIGILANTE_PASS) {
+            val staleChallenges = activeChallenges.drop(1)
+            if (staleChallenges.isNotEmpty()) {
+                captchaChallengeRepository.deleteAll(staleChallenges)
+                staleChallenges.forEach { stale ->
+                    imageManager.deleteAfterCommit(stale.account.id, stale.id, stale.preparationVersion)
+                }
+            }
+            if (notifyAutomation) automationHook?.detected(existingChallenge)
+            return existingChallenge.toResponse()
+        }
 
         val savedChallenge = if (existingChallenge == null) {
             captchaChallengeRepository.save(
@@ -91,6 +114,7 @@ class CaptchaService(
                     account = lockedAccount,
                     status = STATUS_DETECTED,
                     prompt = prompt,
+                    challengeKind = challengeKind,
                     imageUrl = null,
                     sourceUrl = sourceUrl,
                     answer = null,
@@ -106,6 +130,7 @@ class CaptchaService(
             val previousVersion = existingChallenge.preparationVersion
             existingChallenge.status = STATUS_DETECTED
             existingChallenge.prompt = prompt
+            existingChallenge.challengeKind = challengeKind
             existingChallenge.imageUrl = null
             existingChallenge.sourceUrl = sourceUrl
             existingChallenge.answer = null
@@ -128,7 +153,7 @@ class CaptchaService(
             }
         }
 
-        automationHook?.detected(savedChallenge)
+        if (notifyAutomation) automationHook?.detected(savedChallenge)
 
         return savedChallenge.toResponse()
     }
@@ -226,6 +251,18 @@ class CaptchaService(
         imageManager.deleteAfterCommit(accountId, challenge.id, previousVersion)
     }
 
+    /** 실패한 실행이 실제로 사용한 challenge만 무효화해 더 최신 사용자 화면을 보존한다. */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun invalidatePreparation(accountId: Long, challengeId: Long) {
+        captchaQueryRepository.findAccountByIdForUpdate(accountId) ?: return
+        val challenge = captchaQueryRepository.findOwnedByAccountIdAndIdForUpdate(accountId, challengeId) ?: return
+        if (challenge.status != STATUS_READY) return
+
+        val previousVersion = challenge.preparationVersion
+        resetPreparation(challenge)
+        imageManager.deleteAfterCommit(accountId, challenge.id, previousVersion)
+    }
+
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun recoverConsumedPreparation(
         accountId: Long,
@@ -256,6 +293,21 @@ class CaptchaService(
             ?: return null
 
         return challenge.toResponse()
+    }
+
+    /** 다른 HOF 화면에서 유효 통행증을 확인하면 남아 있던 통행증 challenge와 전투 관문도 함께 닫는다. */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun resolveCurrentPassChallenge(accountId: Long): Boolean {
+        captchaQueryRepository.findAccountByIdForUpdate(accountId) ?: return false
+        val challenge = captchaQueryRepository.findLatestActiveByAccountId(accountId)
+            ?.takeIf { it.challengeKind == KIND_VIGILANTE_PASS }
+            ?: return false
+        challenge.status = STATUS_ANSWERED
+        challenge.answer = null
+        challenge.answeredAt = timeProvider.now()
+        imageManager.deleteAfterCommit(accountId, challenge.id, challenge.preparationVersion)
+        automationHook?.answered(challenge, confirmPass = false)
+        return true
     }
 
     /** 자동 인식을 끝내지 못한 active challenge에 수동 입력 안내를 남긴다. */
@@ -326,6 +378,7 @@ class CaptchaService(
         challengeId: Long,
         recognition: CaptchaRecognition,
         preparationVersion: Int,
+        authorizeSubmission: () -> Boolean = { true },
     ): CaptchaChallengeResponse = submitAnswerInternal(
         accountId = accountId,
         challengeId = challengeId,
@@ -334,6 +387,7 @@ class CaptchaService(
         feedbackSource = CaptchaFeedbackSource.AUTOMATIC,
         predictedText = recognition.text,
         engineVersion = recognition.engineVersion,
+        authorizeSubmission = authorizeSubmission,
     )
 
     private fun submitAnswerInternal(
@@ -344,6 +398,7 @@ class CaptchaService(
         feedbackSource: CaptchaFeedbackSource,
         predictedText: String?,
         engineVersion: String,
+        authorizeSubmission: () -> Boolean = { true },
     ): CaptchaChallengeResponse {
         val normalizedAnswer = answer.trim()
         if (normalizedAnswer.isBlank()) {
@@ -353,6 +408,9 @@ class CaptchaService(
         val lockedAccount = captchaQueryRepository.findAccountByIdForUpdate(accountId)
         if (lockedAccount == null && isTransactionActive()) {
             throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
+        }
+        if (!authorizeSubmission()) {
+            throw CaptchaSubmissionAuthorizationCancelledException()
         }
         val lockedChallenge = captchaQueryRepository.findOwnedByAccountIdAndIdForUpdate(accountId, challengeId)
         val nonTransactionalFallback = if (!isTransactionActive()) {
@@ -811,3 +869,6 @@ class CaptchaService(
         const val MANUAL_ENGINE_VERSION = "manual"
     }
 }
+
+/** 계정 잠금을 획득한 POST 직전 실행 권한이 사라졌음을 원격 호출 없이 solver에 전달한다. */
+class CaptchaSubmissionAuthorizationCancelledException : RuntimeException()

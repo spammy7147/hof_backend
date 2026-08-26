@@ -1,6 +1,7 @@
 package app.spammy.hof.external.client
 
 import app.spammy.hof.character.service.CharacterRosterObservationService
+import app.spammy.hof.captcha.service.CaptchaPassMaintenanceService
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofHttpResponse
@@ -18,8 +19,15 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 class AccountHofGatewayTest {
     private val snapshots = Mockito.mock(HofStatusSnapshotService::class.java)
     private val characterRosters = Mockito.mock(CharacterRosterObservationService::class.java)
+    private val passMaintenance = Mockito.mock(CaptchaPassMaintenanceService::class.java)
     private val raw = RecordingGateway()
-    private val gateway = AccountHofGateway(raw, snapshots, characterRosters, TimeProvider { REQUEST_STARTED_AT })
+    private val gateway = AccountHofGateway(
+        raw,
+        snapshots,
+        characterRosters,
+        TimeProvider { REQUEST_STARTED_AT },
+        passMaintenance,
+    )
 
     @Test
     fun `returns the raw response and records it with request start time`() {
@@ -28,6 +36,7 @@ class AccountHofGatewayTest {
         assertSame(RESPONSE, actual)
         Mockito.verify(snapshots).observe(ACCOUNT_ID, RESPONSE.body, REQUEST_STARTED_AT)
         Mockito.verify(characterRosters).observe(ACCOUNT_ID, RESPONSE, REQUEST_STARTED_AT)
+        Mockito.verify(passMaintenance).observe(ACCOUNT_ID, RESPONSE.body, REQUEST_STARTED_AT, REQUEST_STARTED_AT)
         assertEquals(listOf(ACCOUNT_ID), raw.accountIds)
         kotlin.test.assertEquals(COOKIES, raw.cookies)
     }
@@ -61,7 +70,7 @@ class AccountHofGatewayTest {
         assertEquals(REQUEST_STARTED_AT, error.requestStartedAt)
         assertEquals(REQUEST_STARTED_AT, error.failureObservedAt)
         assertSame(raw.failure, error.cause)
-        Mockito.verifyNoInteractions(snapshots, characterRosters)
+        Mockito.verifyNoInteractions(snapshots, characterRosters, passMaintenance)
     }
 
     @Test
@@ -77,6 +86,34 @@ class AccountHofGatewayTest {
 
             Mockito.verify(snapshots).observe(ACCOUNT_ID, RESPONSE.body, REQUEST_STARTED_AT)
             Mockito.verify(characterRosters).observe(ACCOUNT_ID, RESPONSE, REQUEST_STARTED_AT)
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization()
+        }
+    }
+
+    @Test
+    fun `transaction callback keeps the response arrival time instead of the later completion time`() {
+        val times = ArrayDeque(listOf(REQUEST_STARTED_AT, RESPONSE_OBSERVED_AT))
+        val timedGateway = AccountHofGateway(
+            raw,
+            snapshots,
+            characterRosters,
+            TimeProvider { times.removeFirst() },
+            passMaintenance,
+        )
+        TransactionSynchronizationManager.initSynchronization()
+        try {
+            timedGateway.execute(ACCOUNT_ID, REQUEST, COOKIES)
+            TransactionSynchronizationManager.getSynchronizations().single()
+                .afterCompletion(TransactionSynchronization.STATUS_COMMITTED)
+
+            Mockito.verify(passMaintenance).observe(
+                ACCOUNT_ID,
+                RESPONSE.body,
+                REQUEST_STARTED_AT,
+                RESPONSE_OBSERVED_AT,
+            )
+            assertEquals(0, times.size)
         } finally {
             TransactionSynchronizationManager.clearSynchronization()
         }
@@ -102,6 +139,7 @@ class AccountHofGatewayTest {
     private companion object {
         const val ACCOUNT_ID = 17L
         val REQUEST_STARTED_AT: Instant = Instant.parse("2026-07-24T10:00:00Z")
+        val RESPONSE_OBSERVED_AT: Instant = REQUEST_STARTED_AT.plusSeconds(2)
         val REQUEST = HofRequest(HofHttpMethod.GET, "http://sic.zerosic.com/ZeroHOF/index.php")
         val COOKIES = mapOf("PHPSESSID" to "session")
         val RESPONSE = HofHttpResponse(200, REQUEST.url, "<html>response</html>", emptyMap())

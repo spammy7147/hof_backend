@@ -9,6 +9,7 @@ import app.spammy.hof.automation.outbox.AutomationOutboxService
 import app.spammy.hof.automation.repository.*
 import app.spammy.hof.common.persistence.QueryDslConfig
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.auth.service.AccountExecutionAuthorizationReader
 import java.time.Instant
 import java.time.LocalDate
 import jakarta.persistence.EntityManager
@@ -28,6 +29,9 @@ import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.transaction.support.TransactionTemplate
 import org.springframework.test.context.ActiveProfiles
+import org.springframework.test.context.bean.override.mockito.MockitoBean
+import org.junit.jupiter.api.BeforeEach
+import org.mockito.Mockito
 import tools.jackson.databind.ObjectMapper
 import tools.jackson.module.kotlin.jacksonObjectMapper
 
@@ -59,6 +63,12 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
     @Autowired private lateinit var bridge: TypedAutomationLifecycleBridge
     @Autowired private lateinit var transactionManager: PlatformTransactionManager
     @Autowired private lateinit var entityManager: EntityManager
+    @MockitoBean private lateinit var executionAuthorization: AccountExecutionAuthorizationReader
+
+    @BeforeEach
+    fun allowExecutionByDefault() {
+        Mockito.`when`(executionAuthorization.isExecutionAllowed(Mockito.anyLong())).thenReturn(true)
+    }
 
     @Test
     fun `resume atomically updates typed and preflight state and persists durable wake`() {
@@ -156,6 +166,109 @@ class UnifiedAutomationTypedLifecycleBridgeIntegrationTest {
         assertNull(state.stopActionId)
         val events = outboxQuery.findUnpublished(NOW.plusSeconds(1)).filter { it.account.id == accountId }
         assertEquals(1, events.size)
+    }
+
+    @Test
+    fun `authentication suspension pauses running automation and login resumes only that state`() {
+        val accountId = seed("auth-suspend-running")
+        TransactionTemplate(transactionManager).executeWithoutResult {
+            bridge.start(accountId, "USER_START")
+        }
+
+        TransactionTemplate(transactionManager).executeWithoutResult {
+            bridge.suspendForAuthentication(accountId, "LAST_APP_SESSION_ENDED")
+        }
+
+        requireNotNull(typedQuery.findRuntimeState(accountId)).also { suspended ->
+            assertEquals(TypedAutomationLifecycle.PAUSED, suspended.lifecycleStatus)
+            assertTrue(suspended.authSuspended)
+            assertTrue(suspended.resumeAfterAuth)
+        }
+
+        TransactionTemplate(transactionManager).executeWithoutResult {
+            bridge.resumeAfterAuthentication(accountId, "APP_SESSION_ACTIVATED")
+        }
+
+        requireNotNull(typedQuery.findRuntimeState(accountId)).also { resumed ->
+            assertEquals(TypedAutomationLifecycle.RUNNING, resumed.lifecycleStatus)
+            assertFalse(resumed.authSuspended)
+            assertFalse(resumed.resumeAfterAuth)
+        }
+    }
+
+    @Test
+    fun `start cannot erase authentication suspension before a new login session`() {
+        val accountId = seed("auth-suspend-start-guard")
+        TransactionTemplate(transactionManager).executeWithoutResult {
+            bridge.start(accountId, "USER_START")
+            bridge.suspendForAuthentication(accountId, "LAST_APP_SESSION_ENDED")
+        }
+
+        val started = TransactionTemplate(transactionManager).execute {
+            bridge.start(accountId, "STALE_ACCESS_TOKEN_START")
+        }
+
+        assertFalse(started)
+        requireNotNull(typedQuery.findRuntimeState(accountId)).also { suspended ->
+            assertEquals(TypedAutomationLifecycle.PAUSED, suspended.lifecycleStatus)
+            assertTrue(suspended.authSuspended)
+            assertTrue(suspended.resumeAfterAuth)
+        }
+    }
+
+    @Test
+    fun `stale access token cannot create a new running runtime after the last refresh family ends`() {
+        val accountId = seed("auth-no-runtime-start-guard")
+        TransactionTemplate(transactionManager).executeWithoutResult {
+            entityManager.createNativeQuery("delete from typed_automation_runtime_states where account_id = ?1")
+                .setParameter(1, accountId)
+                .executeUpdate()
+        }
+        Mockito.`when`(executionAuthorization.isExecutionAllowed(accountId)).thenReturn(false)
+
+        val started = TransactionTemplate(transactionManager).execute {
+            bridge.start(accountId, "STALE_ACCESS_TOKEN_START")
+        }
+
+        assertFalse(requireNotNull(started))
+        assertNull(typedQuery.findRuntimeState(accountId))
+    }
+
+    @Test
+    fun `manual stop during authentication suspension cancels automatic login resume`() {
+        val accountId = seed("auth-suspend-manual-stop")
+        TransactionTemplate(transactionManager).executeWithoutResult {
+            bridge.start(accountId, "USER_START")
+            bridge.suspendForAuthentication(accountId, "LAST_APP_SESSION_ENDED")
+            bridge.stop(accountId, AutomationStopReason.MANUAL_STOP, "USER_STOP")
+            bridge.resumeAfterAuthentication(accountId, "APP_SESSION_ACTIVATED")
+        }
+
+        requireNotNull(typedQuery.findRuntimeState(accountId)).also { stopped ->
+            assertEquals(TypedAutomationLifecycle.STOPPED, stopped.lifecycleStatus)
+            assertFalse(stopped.authSuspended)
+            assertFalse(stopped.resumeAfterAuth)
+        }
+    }
+
+    @Test
+    fun `authentication suspension preserves a user paused automation after login`() {
+        val accountId = seed("auth-suspend-paused")
+        TransactionTemplate(transactionManager).executeWithoutResult {
+            bridge.start(accountId, "USER_START")
+            bridge.pause(accountId, "USER_PAUSE")
+            bridge.suspendForAuthentication(accountId, "LAST_APP_SESSION_ENDED")
+        }
+
+        TransactionTemplate(transactionManager).executeWithoutResult {
+            bridge.resumeAfterAuthentication(accountId, "APP_SESSION_ACTIVATED")
+        }
+
+        requireNotNull(typedQuery.findRuntimeState(accountId)).also { resumed ->
+            assertEquals(TypedAutomationLifecycle.PAUSED, resumed.lifecycleStatus)
+            assertFalse(resumed.authSuspended)
+            assertFalse(resumed.resumeAfterAuth)
+        }
     }
 
     @Test

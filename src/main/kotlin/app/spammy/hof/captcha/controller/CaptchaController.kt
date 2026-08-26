@@ -97,8 +97,8 @@ class CaptchaController(
         @CurrentAccountId accountId: Long,
         @PathVariable challengeId: Long,
         @RequestBody request: SubmitCaptchaAnswerRequest,
-    ): CaptchaChallengeResponse =
-        retryCaptcha503 {
+    ): CaptchaChallengeResponse {
+        val response = retryCaptcha503 {
             try {
                 captchaService.submitAnswer(
                     accountId = accountId,
@@ -133,6 +133,8 @@ class CaptchaController(
                 throw error
             }
         }
+        return response
+    }
 
     private fun <T> retryCaptcha503(action: () -> T): T {
         while (true) {

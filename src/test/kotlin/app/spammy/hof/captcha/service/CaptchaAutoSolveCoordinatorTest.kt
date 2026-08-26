@@ -2,12 +2,16 @@ package app.spammy.hof.captcha.service
 
 import app.spammy.hof.captcha.config.CaptchaAutoSolveProperties
 import app.spammy.hof.captcha.dto.CaptchaChallengeResponse
+import app.spammy.hof.auth.service.AccountExecutionAuthorizationReader
+import app.spammy.hof.common.error.ApiException
+import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.client.HofCaptchaRetryException
 import java.time.Instant
 import java.time.Duration
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertFailsWith
 import org.mockito.Mockito
 
 class CaptchaAutoSolveCoordinatorTest {
@@ -38,8 +42,8 @@ class CaptchaAutoSolveCoordinatorTest {
         val correct = recognition("AB12")
         Mockito.`when`(recognizer.recognize(firstImage)).thenReturn(wrong)
         Mockito.`when`(recognizer.recognize(secondImage)).thenReturn(correct)
-        Mockito.`when`(captchaService.submitAutomaticAnswer(1L, 7L, wrong, 1)).thenReturn(secondReady)
-        Mockito.`when`(captchaService.submitAutomaticAnswer(1L, 7L, correct, 2)).thenReturn(answered)
+        stubSubmission(wrong, 1, secondReady)
+        stubSubmission(correct, 2, answered)
 
         val outcome = coordinator.solve(1L, 7L)
 
@@ -59,9 +63,9 @@ class CaptchaAutoSolveCoordinatorTest {
             Mockito.`when`(captchaService.loadImage(1L, 7L, ready.preparationVersion)).thenReturn(image)
             Mockito.`when`(recognizer.recognize(image)).thenReturn(recognition("BAD${ready.preparationVersion}"))
         }
-        Mockito.`when`(captchaService.submitAutomaticAnswer(1L, 7L, recognition("BAD1"), 1)).thenReturn(secondReady)
-        Mockito.`when`(captchaService.submitAutomaticAnswer(1L, 7L, recognition("BAD2"), 2)).thenReturn(thirdReady)
-        Mockito.`when`(captchaService.submitAutomaticAnswer(1L, 7L, recognition("BAD3"), 3)).thenReturn(fourthReady)
+        stubSubmission(recognition("BAD1"), 1, secondReady)
+        stubSubmission(recognition("BAD2"), 2, thirdReady)
+        stubSubmission(recognition("BAD3"), 3, fourthReady)
 
         val outcome = coordinator.solve(1L, 7L)
 
@@ -83,7 +87,7 @@ class CaptchaAutoSolveCoordinatorTest {
         Mockito.`when`(captchaService.prepareCurrent(1L)).thenReturn(secondReady)
         Mockito.`when`(captchaService.loadImage(1L, 7L, 2)).thenReturn(readable)
         Mockito.`when`(recognizer.recognize(readable)).thenReturn(recognition("AB12"))
-        Mockito.`when`(captchaService.submitAutomaticAnswer(1L, 7L, recognition("AB12"), 2)).thenReturn(answered)
+        stubSubmission(recognition("AB12"), 2, answered)
 
         val outcome = coordinator.solve(1L, 7L)
 
@@ -114,12 +118,14 @@ class CaptchaAutoSolveCoordinatorTest {
         Mockito.`when`(captchaService.prepareCurrent(1L)).thenReturn(secondReady)
         Mockito.`when`(captchaService.loadImage(1L, 7L, 2)).thenReturn(readable)
         Mockito.`when`(recognizer.recognize(readable)).thenReturn(recognition("AB12"))
-        Mockito.`when`(captchaService.submitAutomaticAnswer(1L, 7L, recognition("AB12"), 2)).thenReturn(answered)
+        stubSubmission(recognition("AB12"), 2, answered)
 
         val outcome = oneHofAttemptCoordinator.solve(1L, 7L)
 
         assertEquals(CaptchaAutoSolveOutcome.SOLVED, outcome)
-        Mockito.verify(captchaService).submitAutomaticAnswer(1L, 7L, recognition("AB12"), 2)
+        Mockito.verify(captchaService).submitAutomaticAnswer(
+            Mockito.eq(1L), Mockito.eq(7L), eqRecognition(recognition("AB12")), Mockito.eq(2), anyAuthorization(),
+        )
     }
 
     @Test
@@ -159,7 +165,9 @@ class CaptchaAutoSolveCoordinatorTest {
         Mockito.`when`(captchaService.findCurrent(1L)).thenReturn(ready)
         Mockito.`when`(captchaService.loadImage(1L, 7L, 1)).thenReturn(image)
         Mockito.`when`(recognizer.recognize(image)).thenReturn(recognition("AB12"))
-        Mockito.`when`(captchaService.submitAutomaticAnswer(1L, 7L, recognition("AB12"), 1))
+        Mockito.`when`(captchaService.submitAutomaticAnswer(
+            Mockito.eq(1L), Mockito.eq(7L), eqRecognition(recognition("AB12")), Mockito.eq(1), anyAuthorization(),
+        ))
             .thenThrow(HofCaptchaRetryException())
             .thenReturn(answered)
 
@@ -168,10 +176,96 @@ class CaptchaAutoSolveCoordinatorTest {
         assertEquals(CaptchaAutoSolveOutcome.SOLVED, outcome)
         Mockito.verify(recognizer, Mockito.times(1)).recognize(image)
         Mockito.verify(captchaService, Mockito.times(2))
-            .submitAutomaticAnswer(1L, 7L, recognition("AB12"), 1)
+            .submitAutomaticAnswer(
+                Mockito.eq(1L), Mockito.eq(7L), eqRecognition(recognition("AB12")), Mockito.eq(1), anyAuthorization(),
+            )
+    }
+
+    @Test
+    fun `checks the caller execution right immediately before every remote answer`() {
+        val ready = challenge(status = "READY", version = 1)
+        val image = CaptchaImageResponse("image/png", byteArrayOf(1))
+        Mockito.`when`(captchaService.findCurrent(1L)).thenReturn(ready)
+        Mockito.`when`(captchaService.loadImage(1L, 7L, 1)).thenReturn(image)
+        Mockito.`when`(recognizer.recognize(image)).thenReturn(recognition("AB12"))
+        stubAuthorizationCancellation()
+
+        val outcome = coordinator.solve(1L, 7L) { false }
+
+        assertEquals(CaptchaAutoSolveOutcome.CANCELLED, outcome)
+        Mockito.verify(captchaService).submitAutomaticAnswer(
+            Mockito.eq(1L), Mockito.eq(7L), eqRecognition(recognition("AB12")), Mockito.eq(1), anyAuthorization(),
+        )
+        Mockito.verify(captchaService, Mockito.never()).markManualInputRequired(1L, 7L, 0)
+    }
+
+    @Test
+    fun `proactive solving propagates HOF infrastructure failures to maintenance recovery`() {
+        val detected = challenge(status = "DETECTED", version = 0)
+        Mockito.`when`(captchaService.findCurrent(1L)).thenReturn(detected)
+        Mockito.doThrow(ApiException(ErrorCode.HOF_SESSION_EXPIRED, "expired"))
+            .`when`(captchaService).prepareCurrent(1L)
+
+        val error = assertFailsWith<ApiException> {
+            coordinator.solve(1L, 7L) { true }
+        }
+
+        assertEquals(ErrorCode.HOF_SESSION_EXPIRED, error.errorCode)
+        Mockito.verify(captchaService, Mockito.never()).markManualInputRequired(1L, 7L, 0)
+    }
+
+    @Test
+    fun `queued reactive solving stops before POST when the last app session ended`() {
+        val authorization = Mockito.mock(AccountExecutionAuthorizationReader::class.java)
+        val guarded = CaptchaAutoSolveCoordinator(captchaService, recognizer, properties, authorization)
+        val ready = challenge(status = "READY", version = 1)
+        val image = CaptchaImageResponse("image/png", byteArrayOf(1))
+        Mockito.`when`(captchaService.findCurrent(1L)).thenReturn(ready)
+        Mockito.`when`(captchaService.loadImage(1L, 7L, 1)).thenReturn(image)
+        Mockito.`when`(recognizer.recognize(image)).thenReturn(recognition("AB12"))
+        Mockito.`when`(authorization.isExecutionAllowed(1L)).thenReturn(false)
+        stubAuthorizationCancellation()
+
+        val outcome = guarded.solve(1L, 7L)
+
+        assertEquals(CaptchaAutoSolveOutcome.CANCELLED, outcome)
+        Mockito.verify(captchaService).submitAutomaticAnswer(
+            Mockito.eq(1L), Mockito.eq(7L), eqRecognition(recognition("AB12")), Mockito.eq(1), anyAuthorization(),
+        )
     }
 
     private fun recognition(text: String) = CaptchaRecognition(text, "2.1.1")
+
+    private fun stubSubmission(
+        recognition: CaptchaRecognition,
+        version: Int,
+        response: CaptchaChallengeResponse,
+    ) {
+        Mockito.`when`(
+            captchaService.submitAutomaticAnswer(
+                Mockito.eq(1L), Mockito.eq(7L), eqRecognition(recognition), Mockito.eq(version), anyAuthorization(),
+            ),
+        ).thenAnswer { invocation ->
+            val authorize = invocation.getArgument<() -> Boolean>(4)
+            if (!authorize()) throw CaptchaSubmissionAuthorizationCancelledException()
+            response
+        }
+    }
+
+    private fun stubAuthorizationCancellation() {
+        Mockito.doAnswer { invocation ->
+            val authorize = invocation.getArgument<() -> Boolean>(4)
+            if (!authorize()) throw CaptchaSubmissionAuthorizationCancelledException()
+            challenge(status = "ANSWERED", version = 1)
+        }.`when`(captchaService).submitAutomaticAnswer(
+            Mockito.eq(1L), Mockito.eq(7L), eqRecognition(recognition("AB12")), Mockito.eq(1), anyAuthorization(),
+        )
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun anyAuthorization(): () -> Boolean = Mockito.any<() -> Boolean>() ?: { true }
+
+    private fun eqRecognition(value: CaptchaRecognition): CaptchaRecognition = Mockito.eq(value) ?: value
 
     private fun challenge(
         id: Long = 7L,

@@ -1,6 +1,7 @@
 package app.spammy.hof.external.client
 
 import app.spammy.hof.character.service.CharacterRosterObservationService
+import app.spammy.hof.captcha.service.CaptchaPassMaintenanceService
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
@@ -18,6 +19,7 @@ class AccountHofGateway(
     private val snapshots: HofStatusSnapshotService,
     private val characterRosters: CharacterRosterObservationService,
     private val timeProvider: TimeProvider,
+    private val passMaintenance: CaptchaPassMaintenanceService? = null,
 ) {
     private val log = LoggerFactory.getLogger(AccountHofGateway::class.java)
 
@@ -55,32 +57,38 @@ class AccountHofGateway(
         observeCharacterRoster: Boolean,
     ): DeferredCharacterRosterHofResponse {
         val response = gateway.execute(accountId, request, cookies)
+        val responseObservedAt = timeProvider.now()
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
             TransactionSynchronizationManager.registerSynchronization(
                 object : TransactionSynchronization {
                     override fun afterCompletion(status: Int) {
-                        observe(accountId, response, requestStartedAt, observeCharacterRoster)
+                        observe(accountId, response, requestStartedAt, responseObservedAt, observeCharacterRoster)
                     }
                 },
             )
         } else {
-            observe(accountId, response, requestStartedAt, observeCharacterRoster)
+            observe(accountId, response, requestStartedAt, responseObservedAt, observeCharacterRoster)
         }
-        return DeferredCharacterRosterHofResponse(response, requestStartedAt, timeProvider.now())
+        return DeferredCharacterRosterHofResponse(response, requestStartedAt, responseObservedAt)
     }
 
     fun observe(accountId: Long, response: HofHttpResponse, requestStartedAt: Instant) =
-        observe(accountId, response, requestStartedAt, observeCharacterRoster = true)
+        observe(accountId, response, requestStartedAt, timeProvider.now(), observeCharacterRoster = true)
 
     private fun observe(
         accountId: Long,
         response: HofHttpResponse,
         requestStartedAt: Instant,
+        responseObservedAt: Instant,
         observeCharacterRoster: Boolean,
     ) {
         runCatching { snapshots.observe(accountId, response.body, requestStartedAt) }
             .onFailure { error ->
                 log.warn("HOF status observation failed accountId={}", accountId, error)
+            }
+        runCatching { passMaintenance?.observe(accountId, response.body, requestStartedAt, responseObservedAt) }
+            .onFailure { error ->
+                log.warn("HOF pass observation failed accountId={}", accountId, error)
             }
         if (!observeCharacterRoster) return
         runCatching { characterRosters.observe(accountId, response, requestStartedAt) }

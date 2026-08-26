@@ -6,6 +6,7 @@ import app.spammy.hof.account.repository.CookieQueryRepository
 import app.spammy.hof.account.repository.HofCookieRepository
 import app.spammy.hof.account.service.HofCookieCipher
 import app.spammy.hof.captcha.entity.CaptchaChallengeEntity
+import app.spammy.hof.captcha.entity.CaptchaChallengeEntity.Companion.KIND_VIGILANTE_PASS
 import app.spammy.hof.captcha.entity.CaptchaFormFieldEntity
 import app.spammy.hof.captcha.repository.CaptchaChallengeRepository
 import app.spammy.hof.captcha.repository.CaptchaFormFieldCommandRepository
@@ -36,6 +37,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertSame
+import kotlin.test.assertTrue
 
 class CaptchaServiceTest {
     private val now = Instant.parse("2026-07-08T00:00:00Z")
@@ -196,6 +198,65 @@ class CaptchaServiceTest {
         assertEquals(emptyList(), gateway.requests)
         assertEquals(emptyList(), binaryGateway.urls)
         assertEquals(emptyList(), formFieldRepository.savedBatches.flatten())
+    }
+
+    @Test
+    fun `proactive and battle pass detection preserve the same prepared challenge`() {
+        val existing = CaptchaChallengeEntity(
+            id = 7L,
+            account = account,
+            status = "READY",
+            prompt = "자경단에서 통행증을 발급받아주세요.",
+            challengeKind = KIND_VIGILANTE_PASS,
+            imageUrl = "https://example.test/captcha.png",
+            sourceUrl = "http://sic.zerosic.com/ZeroHOF/index.php?menu=police",
+            answer = null,
+            createdAt = now,
+            answeredAt = null,
+            preparationVersion = 3,
+        )
+        Mockito.`when`(queryRepository.findAccountByIdForUpdate(account.id)).thenReturn(account)
+        Mockito.`when`(queryRepository.findActiveByAccountId(account.id)).thenReturn(listOf(existing))
+
+        val response = assertNotNull(
+            service.detectAndRecord(
+                account,
+                CaptchaPassRenewalCoordinator.REQUIRED_PASS_HTML,
+                "http://sic.zerosic.com/ZeroHOF/index.php",
+                notifyAutomation = false,
+            ),
+        )
+
+        assertEquals(existing.id, response.id)
+        assertEquals("READY", response.status)
+        assertEquals(3, response.preparationVersion)
+        assertEquals(emptyList(), repository.savedEntities)
+        Mockito.verifyNoInteractions(automationHook)
+    }
+
+    @Test
+    fun `valid pass observation resolves the active pass challenge and wakes the battle gate`() {
+        val challenge = CaptchaChallengeEntity(
+            id = 7L,
+            account = account,
+            status = "READY",
+            prompt = CaptchaChallengeParser.VIGILANTE_PASS_PROMPT,
+            challengeKind = KIND_VIGILANTE_PASS,
+            imageUrl = "/api/captcha/7/image?version=2",
+            sourceUrl = "http://sic.zerosic.com/ZeroHOF/index.php?menu=police",
+            answer = null,
+            createdAt = now,
+            answeredAt = null,
+            preparationVersion = 2,
+        )
+        Mockito.`when`(queryRepository.findAccountByIdForUpdate(account.id)).thenReturn(account)
+        Mockito.`when`(queryRepository.findLatestActiveByAccountId(account.id)).thenReturn(challenge)
+
+        assertEquals(true, service.resolveCurrentPassChallenge(account.id))
+
+        assertEquals("ANSWERED", challenge.status)
+        assertEquals(now, challenge.answeredAt)
+        Mockito.verify(automationHook).answered(challenge, confirmPass = false)
     }
 
     @Test
@@ -412,14 +473,19 @@ class CaptchaServiceTest {
     }
 
     @Test
-    fun markManualInputRequiredExplainsThatThreeAutomaticAttemptsFailed() {
-        val challenge = pendingChallenge(id = 19L)
+    fun markManualInputRequiredPreservesThePassChallengeKindWhileChangingTheInstruction() {
+        val challenge = pendingChallenge(
+            id = 19L,
+            prompt = CaptchaChallengeParser.VIGILANTE_PASS_PROMPT,
+            challengeKind = KIND_VIGILANTE_PASS,
+        )
         Mockito.`when`(queryRepository.findAccountByIdForUpdate(1L)).thenReturn(account)
         Mockito.`when`(queryRepository.findOwnedByAccountIdAndIdForUpdate(1L, 19L)).thenReturn(challenge)
 
         service.markManualInputRequired(1L, 19L, automaticAttemptCount = 3)
 
         assertEquals("자동 인식에 3회 실패했습니다. 이미지를 보고 직접 입력해 주세요.", challenge.prompt)
+        assertEquals(KIND_VIGILANTE_PASS, challenge.challengeKind)
         assertEquals("READY", challenge.status)
         assertEquals(1, challenge.preparationVersion)
     }
@@ -528,6 +594,31 @@ class CaptchaServiceTest {
         assertEquals(CaptchaFeedbackSource.AUTOMATIC, feedback.source)
         assertEquals("2.1.1", feedback.engineVersion)
         assertContentEquals(byteArrayOf(3, 2, 1), feedback.image.bytes)
+    }
+
+    @Test
+    fun `automatic answer rechecks execution authorization after acquiring the account lock`() {
+        var accountLocked = false
+        Mockito.`when`(queryRepository.findAccountByIdForUpdate(1L)).thenAnswer {
+            accountLocked = true
+            account
+        }
+
+        assertFailsWith<CaptchaSubmissionAuthorizationCancelledException> {
+            service.submitAutomaticAnswer(
+                accountId = 1L,
+                challengeId = 22L,
+                recognition = CaptchaRecognition("uEjs5", "2.1.1"),
+                preparationVersion = 1,
+                authorizeSubmission = {
+                    assertTrue(accountLocked)
+                    false
+                },
+            )
+        }
+
+        Mockito.verify(queryRepository, Mockito.never()).findOwnedByAccountIdAndIdForUpdate(1L, 22L)
+        assertEquals(emptyList(), gateway.requests)
     }
 
     @Test
@@ -877,6 +968,7 @@ class CaptchaServiceTest {
         owner: HofAccountEntity = account,
         status: String = "READY",
         prompt: String = "통행증을 입력하세요",
+        challengeKind: String = CaptchaChallengeEntity.KIND_CAPTCHA,
         imageUrl: String? = null,
         submitUrl: String? = "http://sic.zerosic.com/ZeroHOF/pass_check.php",
         submitMethod: String = "POST",
@@ -888,6 +980,7 @@ class CaptchaServiceTest {
             account = owner,
             status = status,
             prompt = prompt,
+            challengeKind = challengeKind,
             imageUrl = imageUrl,
             sourceUrl = "http://sic.zerosic.com/ZeroHOF/index.php?common=snow22",
             answer = null,

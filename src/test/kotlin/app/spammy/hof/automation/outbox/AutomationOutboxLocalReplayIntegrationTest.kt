@@ -13,6 +13,7 @@ import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import app.spammy.hof.automation.service.TypedAutomationLifecycleBridge
 import app.spammy.hof.common.persistence.QueryDslConfig
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.auth.service.AccountExecutionAuthorizationReader
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
@@ -122,6 +123,11 @@ class AutomationOutboxLocalReplayIntegrationTest {
         @Bean fun timeProvider(): TimeProvider = TimeProvider { NOW }
         @Bean fun localExecutor(): LocalAutomationWakeExecutor = Mockito.mock(LocalAutomationWakeExecutor::class.java)
         @Bean fun wakeups(): AutomationWakeupPort = Mockito.mock(AutomationWakeupPort::class.java)
+        @Bean
+        fun executionAuthorization(): AccountExecutionAuthorizationReader =
+            Mockito.mock(AccountExecutionAuthorizationReader::class.java).also { reader ->
+                Mockito.`when`(reader.isExecutionAllowed(Mockito.anyLong())).thenReturn(true)
+            }
     }
 
     private companion object { val NOW: Instant = Instant.parse("2026-07-16T00:00:00Z") }

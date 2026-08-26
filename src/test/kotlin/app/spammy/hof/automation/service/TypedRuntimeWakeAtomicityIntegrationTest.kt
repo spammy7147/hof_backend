@@ -201,14 +201,14 @@ class TypedRuntimeWakeAtomicityIntegrationTest {
     @Test
     fun `action completion durably finishes requested pause without wake`() {
         val fixture = seed("durable-pause", TypedAutomationActionStatus.PREPARED)
+        val execution = acquire(fixture.accountId)
+        assertIs<TypedRuntimeSubmission.Started>(runtime.beginSubmission(execution))
         TransactionTemplate(transactionManager).executeWithoutResult {
             requireNotNull(typed.lockRuntimeState(fixture.accountId)).apply {
                 lifecycleStatus = TypedAutomationLifecycle.DRAINING
                 requestedLifecycle = TypedAutomationLifecycle.PAUSED
             }
         }
-        val execution = acquire(fixture.accountId)
-        assertIs<TypedRuntimeSubmission.Started>(runtime.beginSubmission(execution))
 
         assertTrue(
             runtime.complete(

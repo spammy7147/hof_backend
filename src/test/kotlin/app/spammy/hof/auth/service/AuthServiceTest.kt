@@ -3,6 +3,7 @@ package app.spammy.hof.auth.service
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.service.HofAccountService
 import app.spammy.hof.auth.dto.AuthClientType
+import app.spammy.hof.push.service.DevicePushTargetService
 import org.mockito.Mockito
 import java.time.Instant
 import kotlin.test.Test
@@ -12,7 +13,8 @@ class AuthServiceTest {
     private val accountService = Mockito.mock(HofAccountService::class.java)
     private val jwtTokenService = Mockito.mock(JwtTokenService::class.java)
     private val refreshTokenService = Mockito.mock(RefreshTokenService::class.java)
-    private val service = AuthService(accountService, jwtTokenService, refreshTokenService)
+    private val pushTargets = Mockito.mock(DevicePushTargetService::class.java)
+    private val service = AuthService(accountService, jwtTokenService, refreshTokenService, pushTargets)
 
     @Test
     fun successfulHofLoginIssuesTokenPairForSavedAccount() {
@@ -40,6 +42,24 @@ class AuthServiceTest {
         assertEquals("new-access", result.accessToken.value)
         assertEquals("new-refresh", result.refreshToken.value)
         assertEquals(AuthClientType.WEB, result.clientType)
+    }
+
+    @Test
+    fun logoutDeactivatesOnlyTheSubmittedDevicesOwnedPushTarget() {
+        Mockito.`when`(refreshTokenService.logout("refresh")).thenReturn(42L)
+
+        service.logout("refresh", 7L)
+
+        Mockito.verify(pushTargets).deactivate(42L, 7L)
+    }
+
+    @Test
+    fun `logout after an app restart deactivates the current device by durable installation id`() {
+        Mockito.`when`(refreshTokenService.logout("refresh")).thenReturn(42L)
+
+        service.logout("refresh", pushInstallationId = "install-7")
+
+        Mockito.verify(pushTargets).deactivateByInstallation(42L, "install-7")
     }
 
     private companion object {
