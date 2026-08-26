@@ -23,7 +23,7 @@ class PostgreSqlAdvisoryAccountExecutionLockTest {
     @Test
     fun `rejects a pool too small for advisory outer and after-commit transactions`() {
         val dataSource = Mockito.mock(HikariDataSource::class.java)
-        Mockito.`when`(dataSource.maximumPoolSize).thenReturn(2)
+        Mockito.`when`(dataSource.maximumPoolSize).thenReturn(3)
 
         assertFailsWith<IllegalArgumentException> {
             PostgreSqlAdvisoryAccountExecutionLock(dataSource)
