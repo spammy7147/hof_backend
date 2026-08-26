@@ -151,11 +151,11 @@ class PostgreSqlAdvisoryAccountExecutionLock(
                 .coerceAtLeast(1)
         }
 
-        const val MINIMUM_POOL_SIZE = 2
+        const val MINIMUM_POOL_SIZE = 3
         const val HIKARI_DEFAULT_POOL_SIZE = 10
-        const val UNKNOWN_POOL_SAFE_SIZE = 2
+        const val UNKNOWN_POOL_SAFE_SIZE = 3
         const val RESERVED_CONNECTIONS = 1
-        const val CONNECTIONS_PER_GATE = 2
+        const val CONNECTIONS_PER_GATE = 3
     }
 }
 

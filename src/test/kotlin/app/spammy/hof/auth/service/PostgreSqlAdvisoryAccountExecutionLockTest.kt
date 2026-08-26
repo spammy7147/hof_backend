@@ -1,5 +1,6 @@
 package app.spammy.hof.auth.service
 
+import com.zaxxer.hikari.HikariDataSource
 import java.sql.Connection
 import java.sql.DatabaseMetaData
 import java.sql.PreparedStatement
@@ -19,6 +20,16 @@ import kotlin.test.assertTrue
 import org.mockito.Mockito
 
 class PostgreSqlAdvisoryAccountExecutionLockTest {
+    @Test
+    fun `rejects a pool too small for advisory outer and after-commit transactions`() {
+        val dataSource = Mockito.mock(HikariDataSource::class.java)
+        Mockito.`when`(dataSource.maximumPoolSize).thenReturn(2)
+
+        assertFailsWith<IllegalArgumentException> {
+            PostgreSqlAdvisoryAccountExecutionLock(dataSource)
+        }
+    }
+
     @Test
     fun `uses PostgreSQL shared and exclusive session locks across the complete action`() {
         val fixture = postgresFixture()
