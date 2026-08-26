@@ -25,6 +25,13 @@ class RefreshTokenQueryRepository(
             .setLockMode(LockModeType.PESSIMISTIC_WRITE)
             .fetchOne()
 
+    /** 로그아웃 제출 경계를 계정 단위로 잡기 전에 토큰이 속한 계정만 읽는다. */
+    fun findByTokenHash(tokenHash: String): RefreshTokenEntity? =
+        queryFactory
+            .selectFrom(refreshTokenEntity)
+            .where(refreshTokenEntity.tokenHash.eq(tokenHash))
+            .fetchOne()
+
     /** 보안 사고나 로그아웃 시 같은 로그인에서 파생된 토큰 전체를 폐기하기 위해 패밀리를 조회한다. */
     fun findByFamilyId(familyId: String): List<RefreshTokenEntity> =
         queryFactory

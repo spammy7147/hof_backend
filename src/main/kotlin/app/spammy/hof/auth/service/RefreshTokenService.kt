@@ -85,12 +85,29 @@ class RefreshTokenService(
     /** 제출된 토큰이 존재하면 해당 로그인 패밀리를 모두 폐기하며, 이미 없는 토큰은 멱등 성공한다. */
     @Transactional
     fun logout(rawToken: String?): Long? {
+        return logout(rawToken) {}
+    }
+
+    /** 토큰 폐기와 계정 소유 후속 정리를 같은 commit에 포함한다. */
+    @Transactional
+    fun logout(rawToken: String?, afterRevocation: (Long) -> Unit): Long? {
         if (rawToken.isNullOrBlank()) return null
         val token = queryRepository.findByTokenHashForUpdate(hash(rawToken)) ?: return null
         revokeFamily(token.familyId, timeProvider.now())
         accountLifecycle.suspendIfNoActiveSessions(token.account.id)
+        afterRevocation(token.account.id)
         return token.account.id
     }
+
+    /** 원격 제출과 로그아웃을 직렬화할 계정 ID를 mutation 없이 먼저 해석한다. */
+    @Transactional(readOnly = true, propagation = org.springframework.transaction.annotation.Propagation.REQUIRES_NEW)
+    fun findLogoutAccountId(rawToken: String?): Long? =
+        rawToken
+            ?.takeIf(String::isNotBlank)
+            ?.let(::hash)
+            ?.let(queryRepository::findByTokenHash)
+            ?.account
+            ?.id
 
     private fun issue(
         account: HofAccountEntity,

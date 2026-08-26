@@ -1674,8 +1674,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                 return
             }
             append(startStored, startManaged, AutomationHistoryEventKind.ACTION_STARTED, "ACTION_STARTED", "낚시 START를 시작했습니다.")
-            val submitted = executeAuthorized(accountId) {
-                cycleExecutor.executeOneCast(command, object : FishingCycleTransitions {
+            cycleExecutor.executeOneCast(command, object : FishingCycleTransitions {
                 override fun startAppliedAndCatchPrepared(
                     command: FishingCycleCommand,
                     start: FishingCycleStepEvidence,
@@ -1761,14 +1760,12 @@ class UnifiedAutomationRunner @Autowired constructor(
                     )
                     handled = true
                 }
-                })
-            }
-            if (!submitted.authorized) {
-                discardUnauthorizedSubmission(accountId, execution, activeAttemptId)
-                return
-            }
+            })
             check(handled) { "Fishing cycle finished without a durable terminal transition." }
         } catch (_: FishingCycleFlowStopped) {
+            return
+        } catch (_: FishingSubmissionAuthorizationCancelledException) {
+            discardUnauthorizedSubmission(accountId, execution, activeAttemptId)
             return
         } catch (error: Throwable) {
             error.findActionPreconditionChanged()?.let { changed ->

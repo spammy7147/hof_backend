@@ -13,8 +13,20 @@ class AuthServiceTest {
     private val accountService = Mockito.mock(HofAccountService::class.java)
     private val jwtTokenService = Mockito.mock(JwtTokenService::class.java)
     private val refreshTokenService = Mockito.mock(RefreshTokenService::class.java)
+    private val executionGate = Mockito.mock(AccountExecutionSubmissionGate::class.java)
     private val pushTargets = Mockito.mock(DevicePushTargetService::class.java)
-    private val service = AuthService(accountService, jwtTokenService, refreshTokenService, pushTargets)
+    private val service = AuthService(accountService, jwtTokenService, refreshTokenService, executionGate, pushTargets)
+
+    init {
+        Mockito.doAnswer { invocation ->
+            (invocation.arguments[1] as Runnable).run()
+            null
+        }.`when`(executionGate).executeLogout(Mockito.anyLong(), anyRunnable())
+        Mockito.doAnswer { invocation ->
+            invocation.getArgument<(Long) -> Unit>(1).invoke(42L)
+            42L
+        }.`when`(refreshTokenService).logout(Mockito.eq("refresh"), anyAfterRevocation())
+    }
 
     @Test
     fun successfulHofLoginIssuesTokenPairForSavedAccount() {
@@ -46,7 +58,7 @@ class AuthServiceTest {
 
     @Test
     fun logoutDeactivatesOnlyTheSubmittedDevicesOwnedPushTarget() {
-        Mockito.`when`(refreshTokenService.logout("refresh")).thenReturn(42L)
+        Mockito.`when`(refreshTokenService.findLogoutAccountId("refresh")).thenReturn(42L)
 
         service.logout("refresh", 7L)
 
@@ -55,12 +67,16 @@ class AuthServiceTest {
 
     @Test
     fun `logout after an app restart deactivates the current device by durable installation id`() {
-        Mockito.`when`(refreshTokenService.logout("refresh")).thenReturn(42L)
+        Mockito.`when`(refreshTokenService.findLogoutAccountId("refresh")).thenReturn(42L)
 
         service.logout("refresh", pushInstallationId = "install-7")
 
         Mockito.verify(pushTargets).deactivateByInstallation(42L, "install-7")
     }
+
+    private fun anyRunnable(): Runnable = Mockito.any(Runnable::class.java) ?: Runnable {}
+
+    private fun anyAfterRevocation(): (Long) -> Unit = Mockito.any() ?: {}
 
     private companion object {
         val NOW: Instant = Instant.parse("2026-07-13T00:00:00Z")

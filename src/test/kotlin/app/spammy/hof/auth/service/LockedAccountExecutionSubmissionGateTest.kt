@@ -1,49 +1,66 @@
 package app.spammy.hof.auth.service
 
-import app.spammy.hof.account.entity.HofAccountEntity
-import app.spammy.hof.account.repository.AccountQueryRepository
-import app.spammy.hof.auth.repository.RefreshTokenQueryRepository
-import app.spammy.hof.common.time.TimeProvider
-import java.time.Instant
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import org.mockito.Mockito
 
 class LockedAccountExecutionSubmissionGateTest {
-    private val accounts = Mockito.mock(AccountQueryRepository::class.java)
-    private val refreshTokens = Mockito.mock(RefreshTokenQueryRepository::class.java)
-    private val timeProvider = Mockito.mock(TimeProvider::class.java)
-    private val service = LockedAccountExecutionSubmissionGate(accounts, refreshTokens, timeProvider)
-    private val now = Instant.parse("2026-08-26T00:00:00Z")
-    private val account = HofAccountEntity(7L, "login", "encrypted", now)
+    private val authorization = Mockito.mock(AccountExecutionAuthorizationReader::class.java)
+    private val service = LockedAccountExecutionSubmissionGate(authorization)
 
     @Test
     fun `runs the remote submission only while the locked account still has an active app session`() {
         var submitted = false
-        Mockito.`when`(accounts.findByIdForUpdate(7L)).thenReturn(account)
-        Mockito.`when`(timeProvider.now()).thenReturn(now)
-        Mockito.`when`(refreshTokens.countActiveByAccountId(7L, now)).thenReturn(1L)
+        Mockito.`when`(authorization.isExecutionAllowed(7L)).thenReturn(true)
 
         val authorized = service.executeIfAuthorized(7L, Runnable { submitted = true })
 
         assertTrue(authorized)
         assertTrue(submitted)
-        val order = Mockito.inOrder(accounts, refreshTokens)
-        order.verify(accounts).findByIdForUpdate(7L)
-        order.verify(refreshTokens).countActiveByAccountId(7L, now)
     }
 
     @Test
     fun `does not start a remote submission after logout removed the final active session`() {
         var submitted = false
-        Mockito.`when`(accounts.findByIdForUpdate(7L)).thenReturn(account)
-        Mockito.`when`(timeProvider.now()).thenReturn(now)
-        Mockito.`when`(refreshTokens.countActiveByAccountId(7L, now)).thenReturn(0L)
+        Mockito.`when`(authorization.isExecutionAllowed(7L)).thenReturn(false)
 
         val authorized = service.executeIfAuthorized(7L, Runnable { submitted = true })
 
         assertFalse(authorized)
         assertFalse(submitted)
+    }
+
+    @Test
+    fun `logout waits for an entered submission and blocks later submissions before they start`() {
+        Mockito.`when`(authorization.isExecutionAllowed(7L)).thenReturn(true, false)
+        val submissionEntered = CountDownLatch(1)
+        val finishSubmission = CountDownLatch(1)
+        val logoutFinished = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            val first = executor.submit<Boolean> {
+                service.executeIfAuthorized(7L, Runnable {
+                    submissionEntered.countDown()
+                    finishSubmission.await(5, TimeUnit.SECONDS)
+                })
+            }
+            assertTrue(submissionEntered.await(5, TimeUnit.SECONDS))
+            val logout = executor.submit {
+                service.executeLogout(7L, Runnable { logoutFinished.countDown() })
+            }
+            assertFalse(logoutFinished.await(100, TimeUnit.MILLISECONDS))
+
+            finishSubmission.countDown()
+            assertTrue(first.get(5, TimeUnit.SECONDS))
+            logout.get(5, TimeUnit.SECONDS)
+            assertTrue(logoutFinished.await(1, TimeUnit.SECONDS))
+            assertFalse(service.executeIfAuthorized(7L, Runnable { error("must not submit") }))
+        } finally {
+            executor.shutdownNow()
+        }
     }
 }

@@ -3,6 +3,7 @@ package app.spammy.hof.automation.service
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.CookieQueryRepository
+import app.spammy.hof.auth.service.AccountExecutionSubmissionGate
 import app.spammy.hof.battle.service.BattleMapService
 import app.spammy.hof.external.client.AccountHofGateway
 import app.spammy.hof.external.client.HofRequestFactory
@@ -24,6 +25,7 @@ import app.spammy.hof.town.fishing.service.FishingService
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import org.mockito.Mockito
 
@@ -47,7 +49,7 @@ class FishingCycleExecutorTest {
             AccountHofMutationFence(),
         )
         val fishingService = FishingService(town, locations, FishingPageParser(), battleMaps)
-        val executor: FishingCycleExecutor = DefaultFishingCycleExecutor(fishingService)
+        val executor: FishingCycleExecutor = DefaultFishingCycleExecutor(fishingService, allowingSubmissionGate())
         Mockito.`when`(accounts.findById(7L)).thenReturn(
             HofAccountEntity(7L, "fisher", "encrypted", Instant.EPOCH),
         )
@@ -130,7 +132,7 @@ class FishingCycleExecutorTest {
         )
         val events = mutableListOf<String>()
 
-        val result = DefaultFishingCycleExecutor(fishingService).executeOneCast(
+        val result = DefaultFishingCycleExecutor(fishingService, allowingSubmissionGate()).executeOneCast(
             FishingCycleCommand(7L, "cycle-1", "start-1", "catch-1", fishingService.loadForAutomation(7L)),
             object : FishingCycleTransitions {
                 override fun startAppliedAndCatchPrepared(
@@ -154,6 +156,65 @@ class FishingCycleExecutorTest {
         assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.POST), requests.map(HofRequest::method))
         assertEquals(listOf(HofRequestOrigin.AUTOMATION, HofRequestOrigin.AUTOMATION), requests.map(HofRequest::origin))
         Mockito.verifyNoInteractions(battleMaps)
+    }
+
+    @Test
+    fun `logout after START prevents the newly prepared CATCH from reaching HOF`() {
+        val accounts = Mockito.mock(AccountQueryRepository::class.java)
+        val cookies = Mockito.mock(CookieQueryRepository::class.java)
+        val gateway = Mockito.mock(AccountHofGateway::class.java)
+        val locations = Mockito.mock(TownLocationResolver::class.java)
+        val battleMaps = Mockito.mock(BattleMapService::class.java)
+        val fishingService = FishingService(
+            TownAuthenticatedExecutor(
+                accounts,
+                cookies,
+                HofRequestFactory(),
+                gateway,
+                LoginStateParser(),
+                HofFormParser(),
+                HofResultParser(),
+                TownActionGuard(),
+                AccountHofMutationFence(),
+            ),
+            locations,
+            FishingPageParser(),
+            battleMaps,
+        )
+        val gate = Mockito.mock(AccountExecutionSubmissionGate::class.java)
+        var authorizationChecks = 0
+        Mockito.doAnswer { invocation ->
+            authorizationChecks += 1
+            if (authorizationChecks == 1) {
+                (invocation.arguments[1] as Runnable).run()
+                true
+            } else {
+                false
+            }
+        }.`when`(gate).executeIfAuthorized(Mockito.eq(7L), anyRunnable())
+        Mockito.`when`(accounts.findById(7L)).thenReturn(
+            HofAccountEntity(7L, "fisher", "encrypted", Instant.EPOCH),
+        )
+        Mockito.`when`(cookies.findValueMapByAccountId(7L)).thenReturn(mapOf("PHPSESSID" to "session"))
+        Mockito.`when`(locations.resolve(TownFeatureId.FISHING, null)).thenReturn(
+            ResolvedTownLocation(TownFeatureId.FISHING, FISHING_URL),
+        )
+        Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies())).thenReturn(
+            response("reset.html", mapOf("phase" to "observed")),
+            response("waiting.html", mapOf("phase" to "started")),
+        )
+        val observation = fishingService.loadForAutomation(7L)
+
+        assertFailsWith<FishingSubmissionAuthorizationCancelledException> {
+            DefaultFishingCycleExecutor(fishingService, gate).executeOneCast(
+                FishingCycleCommand(7L, "cycle-1", "start-1", "catch-1", observation),
+                RecordingFishingCycleTransitions(gateway),
+            )
+        }
+
+        val requests = Mockito.mockingDetails(gateway).invocations.map { it.arguments[1] as HofRequest }
+        assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.POST), requests.map(HofRequest::method))
+        assertEquals(2, authorizationChecks)
     }
 
     @Test
@@ -230,6 +291,16 @@ class FishingCycleExecutorTest {
             start: FishingCycleStepEvidence,
         ) = error("정상 응답은 잡기 대기로 끝나면 안 됩니다.")
     }
+
+    private fun allowingSubmissionGate(): AccountExecutionSubmissionGate =
+        Mockito.mock(AccountExecutionSubmissionGate::class.java).also { gate ->
+            Mockito.doAnswer { invocation ->
+                (invocation.arguments[1] as Runnable).run()
+                true
+            }.`when`(gate).executeIfAuthorized(Mockito.anyLong(), anyRunnable())
+        }
+
+    private fun anyRunnable(): Runnable = Mockito.any(Runnable::class.java) ?: Runnable {}
 
     private fun response(name: String, setCookies: Map<String, String>) = HofHttpResponse(
         statusCode = 200,

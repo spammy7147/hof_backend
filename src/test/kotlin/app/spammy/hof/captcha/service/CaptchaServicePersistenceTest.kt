@@ -248,7 +248,7 @@ class CaptchaServicePersistenceTest {
     }
 
     @Test
-    fun proactiveAndReactiveDetectionRaceSerializesOnAccountAndKeepsOneDetectedChallenge() {
+    fun proactiveDueAndReactiveBattleRaceConvergesOnOnePreparationAndOneSubmission() {
         val account = savedAccountWithCookie("captcha-service-concurrent-detect")
         val start = CountDownLatch(1)
         val executor = Executors.newFixedThreadPool(2)
@@ -285,6 +285,23 @@ class CaptchaServicePersistenceTest {
             assertEquals(1L, queryRepository.countActiveByAccountId(account.id))
             val fields = queryRepository.findFormFields(responses.first().id)
             assertEquals(emptyList(), fields)
+
+            gateway.response = HofHttpResponse(200, POLICE_URL, captchaHtml("fresh_token", "fresh"), emptyMap())
+            val prepared = service.prepareCurrent(account.id)
+            assertEquals(responses.first().id, prepared.id)
+            assertEquals(1, prepared.preparationVersion)
+
+            gateway.response = HofHttpResponse(
+                200,
+                POLICE_URL,
+                "<html><body>통행증이 발급되었습니다.</body></html>",
+                emptyMap(),
+            )
+            val answered = service.submitAnswer(account.id, prepared.id, "correct", prepared.preparationVersion)
+
+            assertEquals("ANSWERED", answered.status)
+            assertEquals(1, gateway.requests.count { request -> request.method == HofHttpMethod.POST })
+            assertNull(service.findCurrent(account.id))
         } finally {
             executor.shutdownNow()
         }

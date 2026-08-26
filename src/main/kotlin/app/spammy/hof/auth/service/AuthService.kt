@@ -4,7 +4,6 @@ import app.spammy.hof.account.service.HofAccountService
 import app.spammy.hof.auth.dto.AuthClientType
 import app.spammy.hof.push.service.DevicePushTargetService
 import org.springframework.stereotype.Service
-import org.springframework.transaction.annotation.Transactional
 
 /** HOF 원본 인증 성공과 로컬 Access/Refresh Token 발급을 하나의 애플리케이션 흐름으로 묶는다. */
 @Service
@@ -12,6 +11,7 @@ class AuthService(
     private val accountService: HofAccountService,
     private val jwtTokenService: JwtTokenService,
     private val refreshTokenService: RefreshTokenService,
+    private val executionGate: AccountExecutionSubmissionGate,
     private val pushTargets: DevicePushTargetService? = null,
 ) {
     /** HOF 로그인 성공 후 저장된 계정을 기준으로 새 토큰 패밀리를 발급한다. */
@@ -35,18 +35,21 @@ class AuthService(
     }
 
     /** 현재 로그인 패밀리를 폐기한다. */
-    @Transactional
     fun logout(
         rawRefreshToken: String?,
         pushTargetId: Long? = null,
         pushInstallationId: String? = null,
     ) {
-        val accountId = refreshTokenService.logout(rawRefreshToken) ?: return
-        when {
-            pushTargetId != null -> pushTargets?.deactivate(accountId, pushTargetId)
-            !pushInstallationId.isNullOrBlank() ->
-                pushTargets?.deactivateByInstallation(accountId, pushInstallationId)
-        }
+        val accountId = refreshTokenService.findLogoutAccountId(rawRefreshToken) ?: return
+        executionGate.executeLogout(accountId, Runnable {
+            refreshTokenService.logout(rawRefreshToken) { revokedAccountId ->
+                when {
+                    pushTargetId != null -> pushTargets?.deactivate(revokedAccountId, pushTargetId)
+                    !pushInstallationId.isNullOrBlank() ->
+                        pushTargets?.deactivateByInstallation(revokedAccountId, pushInstallationId)
+                }
+            }
+        })
     }
 }
 

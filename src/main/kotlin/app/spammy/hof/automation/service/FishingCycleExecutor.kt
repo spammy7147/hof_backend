@@ -1,9 +1,12 @@
 package app.spammy.hof.automation.service
 
+import app.spammy.hof.auth.service.AccountExecutionSubmissionGate
+import app.spammy.hof.external.model.HofHttpResponse
+import app.spammy.hof.town.common.service.TownSubmissionBoundary
 import app.spammy.hof.town.fishing.dto.FishingResponse
 import app.spammy.hof.town.fishing.model.FishingAction
-import app.spammy.hof.town.fishing.service.FishingOneCastRemoteResult
 import app.spammy.hof.town.fishing.service.FishingAutomationObservation
+import app.spammy.hof.town.fishing.service.FishingOneCastRemoteResult
 import app.spammy.hof.town.fishing.service.FishingService
 import org.springframework.stereotype.Service
 
@@ -65,13 +68,27 @@ fun interface FishingCycleExecutor {
 @Service
 class DefaultFishingCycleExecutor(
     private val fishingService: FishingService,
+    private val submissionGate: AccountExecutionSubmissionGate,
 ) : FishingCycleExecutor {
     override fun executeOneCast(
         command: FishingCycleCommand,
         transitions: FishingCycleTransitions,
     ): FishingCycleResult {
         var startEvidence: FishingCycleStepEvidence? = null
-        return when (val remote = fishingService.executeOneCastForAutomation(command.accountId, command.observation) { startResponse ->
+        val boundary = TownSubmissionBoundary { submission ->
+            var response: HofHttpResponse? = null
+            val authorized = submissionGate.executeIfAuthorized(
+                command.accountId,
+                Runnable { response = submission() },
+            )
+            if (!authorized) throw FishingSubmissionAuthorizationCancelledException()
+            requireNotNull(response)
+        }
+        return when (val remote = fishingService.executeOneCastForAutomation(
+            command.accountId,
+            command.observation,
+            boundary,
+        ) { startResponse ->
             val start = FishingCycleStepEvidence(
                 command.startExecutionIdentity,
                 FishingAction.START,
@@ -110,3 +127,6 @@ class DefaultFishingCycleExecutor(
         }
     }
 }
+
+class FishingSubmissionAuthorizationCancelledException :
+    RuntimeException("Fishing submission was cancelled because the account logged out.")

@@ -99,6 +99,10 @@ class UnifiedAutomationRunnerTest {
                 (invocation.arguments[1] as Runnable).run()
                 true
             }
+        Mockito.doAnswer { invocation ->
+            (invocation.arguments[1] as Runnable).run()
+            null
+        }.`when`(submissionGate).executeLogout(Mockito.anyLong(), anyRunnable())
         Mockito.`when`(runtime.isRunning(7)).thenReturn(true)
         Mockito.`when`(preflight.ensureReady(7)).thenReturn(AutomationDailyPreflight.Result.Ready)
         Mockito.`when`(runtime.acquire(7)).thenReturn(TypedRuntimeAcquisition.Acquired(freshExecution))

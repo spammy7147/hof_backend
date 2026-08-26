@@ -31,6 +31,11 @@ sealed interface TownObservedAction {
     data class Link(val query: List<HofFormField>) : TownObservedAction
 }
 
+/** 다단계 HOF 명령의 각 실제 POST에 실행 권한 경계를 적용한다. */
+fun interface TownSubmissionBoundary {
+    fun submit(submission: () -> HofHttpResponse): HofHttpResponse
+}
+
 /**
  * 계정 쿠키로 HOF 마을 페이지를 읽고, 실행 직전 다시 파싱한 form만 제출한다.
  *
@@ -891,6 +896,8 @@ class TownAuthenticatedExecutor(
         finalAction: (String, String, ParsedTownPage) -> TownActionRequest?,
         expectedFinalForm: (ParsedTownForm) -> Boolean,
         beforeFinalSubmission: () -> Unit,
+        entrySubmissionBoundary: TownSubmissionBoundary = TownSubmissionBoundary { it() },
+        finalSubmissionBoundary: TownSubmissionBoundary = TownSubmissionBoundary { it() },
         projector: (String, String, app.spammy.hof.town.common.model.ParsedTownResult, ParsedTownPage) -> T,
     ): T? {
         val sequence = sequence@{
@@ -938,16 +945,18 @@ class TownAuthenticatedExecutor(
             if (!expectedEntryForm(guardedEntry.form)) {
                 throw ObservedTownActionPreconditionChangedException("현재 HOF 1단계 작업 양식이 변경되었습니다.")
             }
-            val entryResponse = executeAuthenticated(
-                context.account,
-                requestFactory.townForm(
-                    guardedEntry.form.method,
-                    guardedEntry.form.actionUrl,
-                    guardedEntry.formEntries,
-                    origin,
-                ),
-                context.cookies,
-            )
+            val entryResponse = entrySubmissionBoundary.submit {
+                executeAuthenticated(
+                    context.account,
+                    requestFactory.townForm(
+                        guardedEntry.form.method,
+                        guardedEntry.form.actionUrl,
+                        guardedEntry.formEntries,
+                        origin,
+                    ),
+                    context.cookies,
+                )
+            }
             val entryResult = resultParser.parse(entryResponse.body)
             val entryPage = formParser.parse(entryResponse.body, entryResponse.finalUrl)
             observeEntryResponse(entryResponse.body, entryResponse.finalUrl, entryResult, entryPage)
@@ -971,16 +980,18 @@ class TownAuthenticatedExecutor(
                 throw ObservedTownActionPreconditionChangedException("현재 HOF 최종 작업 양식이 변경되었습니다.")
             }
             beforeFinalSubmission()
-            val finalResponse = executeAuthenticated(
-                context.account,
-                requestFactory.townForm(
-                    guardedFinal.form.method,
-                    guardedFinal.form.actionUrl,
-                    guardedFinal.formEntries,
-                    origin,
-                ),
-                context.cookies + entryResponse.setCookies,
-            )
+            val finalResponse = finalSubmissionBoundary.submit {
+                executeAuthenticated(
+                    context.account,
+                    requestFactory.townForm(
+                        guardedFinal.form.method,
+                        guardedFinal.form.actionUrl,
+                        guardedFinal.formEntries,
+                        origin,
+                    ),
+                    context.cookies + entryResponse.setCookies,
+                )
+            }
             val result = resultParser.parse(finalResponse.body)
             val page = formParser.parse(finalResponse.body, finalResponse.finalUrl)
             projector(finalResponse.body, finalResponse.finalUrl, result, page)

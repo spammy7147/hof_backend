@@ -13,6 +13,7 @@ import app.spammy.hof.town.common.model.TownFeatureId
 import app.spammy.hof.town.common.service.TownAuthenticatedExecutor
 import app.spammy.hof.town.common.service.TownLocationResolver
 import app.spammy.hof.town.common.service.TownObservedPageContinuation
+import app.spammy.hof.town.common.service.TownSubmissionBoundary
 import app.spammy.hof.town.fishing.dto.FishingExchangeRequest
 import app.spammy.hof.town.fishing.dto.FishingExchangeResponse
 import app.spammy.hof.town.fishing.dto.FishingResponse
@@ -80,6 +81,7 @@ class FishingService(
     fun executeOneCastForAutomation(
         accountId: Long,
         observation: FishingAutomationObservation? = null,
+        submissionBoundary: TownSubmissionBoundary = TownSubmissionBoundary { it() },
         beforeCatchSubmission: (FishingResponse) -> Unit,
     ): FishingOneCastRemoteResult {
         val url = locationResolver.resolve(TownFeatureId.FISHING).url
@@ -103,6 +105,8 @@ class FishingService(
             beforeFinalSubmission = {
                 beforeCatchSubmission(requireNotNull(started))
             },
+            entrySubmissionBoundary = submissionBoundary,
+            finalSubmissionBoundary = submissionBoundary,
         ) { html, finalUrl, result, page ->
             FishingResponse.from(parser.parse(html, finalUrl, page, result))
         }
