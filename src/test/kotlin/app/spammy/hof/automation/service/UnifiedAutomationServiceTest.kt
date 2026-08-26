@@ -1322,6 +1322,26 @@ class UnifiedAutomationServiceTest {
     }
 
     @Test
+    fun `disabled battle map still exposes an unreachable minimum TIME warning`() {
+        val battle = entry(92L, AutomationType.BATTLE_MAP, enabled = false).also {
+            it.minimumRemainingTime = 5950
+        }
+        Mockito.`when`(accountQueryRepository.findById(ACCOUNT_ID)).thenReturn(account())
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(battle))
+        Mockito.`when`(statusSnapshots.findLatest(ACCOUNT_ID)).thenReturn(observedStatus(6000))
+
+        val response = service.getTyped(ACCOUNT_ID)
+
+        assertTrue(response.entries.single().ready)
+        assertTrue(response.runtime.warnings.isEmpty())
+        assertTrue(
+            response.entries.single().warnings.contains(
+                "현재 최대 Time으로는 설정한 최소 잔여 Time을 남기고 전투할 수 없습니다.",
+            ),
+        )
+    }
+
+    @Test
     fun `parked raid hold warning is attributed to the raid entry`() {
         val raid = entry(93L, AutomationType.RAID, enabled = true)
         val holdMessage = "사용자가 진행 중인 레이드가 끝날 때까지 레이드 자동화를 보류합니다."

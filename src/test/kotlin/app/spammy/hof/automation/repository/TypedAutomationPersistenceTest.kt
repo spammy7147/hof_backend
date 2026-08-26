@@ -132,6 +132,26 @@ class TypedAutomationPersistenceTest {
     }
 
     @Test
+    fun `minimum remaining TIME is rejected for a non battle map entry`() {
+        assertMinimumRemainingTimeRejected("typed-quest-minimum-time", AutomationType.QUEST, 1)
+    }
+
+    @Test
+    fun `zero minimum remaining TIME is rejected by the database`() {
+        assertMinimumRemainingTimeRejected("typed-zero-minimum-time", AutomationType.BATTLE_MAP, 0)
+    }
+
+    @Test
+    fun `negative minimum remaining TIME is rejected by the database`() {
+        assertMinimumRemainingTimeRejected("typed-negative-minimum-time", AutomationType.BATTLE_MAP, -1)
+    }
+
+    @Test
+    fun `minimum remaining TIME above the safe upper bound is rejected by the database`() {
+        assertMinimumRemainingTimeRejected("typed-overflow-minimum-time", AutomationType.BATTLE_MAP, Int.MAX_VALUE)
+    }
+
+    @Test
     fun recoverableRuntimeQueryIncludesRunningIdleAndDueRowsButExcludesInactiveOrNotYetDueRows() {
         val now = Instant.parse("2026-07-16T00:00:00Z")
         val idle = newAccount("typed-recovery-idle", now)
@@ -901,6 +921,24 @@ class TypedAutomationPersistenceTest {
         accountRepository.save(
             HofAccountEntity(loginId = loginId, encryptedPassword = "encrypted", createdAt = now),
         )
+
+    private fun assertMinimumRemainingTimeRejected(
+        loginId: String,
+        type: AutomationType,
+        minimumRemainingTime: Int,
+    ) {
+        val now = Instant.parse("2026-08-25T00:00:00Z")
+        val account = newAccount(loginId, now)
+
+        assertFailsWith<DataIntegrityViolationException> {
+            entryRepository.save(
+                newEntry(account, type, priority = 0, now).also {
+                    it.minimumRemainingTime = minimumRemainingTime
+                },
+            )
+            entryRepository.flush()
+        }
+    }
 
     private fun newEntry(
         account: HofAccountEntity,

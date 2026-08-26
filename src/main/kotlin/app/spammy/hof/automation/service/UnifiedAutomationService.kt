@@ -972,7 +972,7 @@ class UnifiedAutomationService(
                 type = entry.type,
                 enabled = entry.enabled,
                 priority = entry.priority,
-                ready = warnings.isEmpty(),
+                ready = !entry.enabled || warnings.isEmpty(),
                 warnings = warnings,
                 quests = quests.map { selection ->
                     QuestSelectionResponse(
@@ -1064,7 +1064,8 @@ class UnifiedAutomationService(
             .map(String::trim)
             .filter(String::isNotEmpty)
             .toList() + listOfNotNull(activeRaidRecoveryWarning)
-        val configWarnings = responses.flatMap(TypedAutomationEntryResponse::warnings)
+        val configWarnings = responses.filter(TypedAutomationEntryResponse::enabled)
+            .flatMap(TypedAutomationEntryResponse::warnings)
         return TypedAutomationAggregateResponse(
             entries = responses,
             hofStatus = hofStatus,
@@ -1122,7 +1123,17 @@ class UnifiedAutomationService(
         validPresetIds: Set<Long>,
         timeMax: Int?,
     ): List<String> {
-        if (!entry.enabled) return emptyList()
+        val minimumTimeWarning = if (
+            entry.type == AutomationType.BATTLE_MAP &&
+            entry.minimumRemainingTime != null &&
+            timeMax != null &&
+            entry.minimumRemainingTime!!.toLong() + BATTLE_MAP_SINGLE_RUN_TIME > timeMax.toLong()
+        ) {
+            "현재 최대 Time으로는 설정한 최소 잔여 Time을 남기고 전투할 수 없습니다."
+        } else {
+            null
+        }
+        if (!entry.enabled) return listOfNotNull(minimumTimeWarning)
         val warnings = linkedSetOf<String>()
         when (entry.type) {
             AutomationType.QUEST -> {
@@ -1144,13 +1155,7 @@ class UnifiedAutomationService(
             }
             AutomationType.BATTLE_MAP -> {
                 if (battle.isEmpty()) warnings += "전투 맵 설정이 없습니다."
-                if (
-                    entry.minimumRemainingTime != null &&
-                    timeMax != null &&
-                    entry.minimumRemainingTime!!.toLong() + BATTLE_MAP_SINGLE_RUN_TIME > timeMax.toLong()
-                ) {
-                    warnings += "현재 최대 Time으로는 설정한 최소 잔여 Time을 남기고 전투할 수 없습니다."
-                }
+                minimumTimeWarning?.let(warnings::add)
                 battle.forEach { map ->
                     presetWarning(
                         map.presetMode,
