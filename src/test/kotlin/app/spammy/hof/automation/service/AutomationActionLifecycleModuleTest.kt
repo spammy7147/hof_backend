@@ -1384,7 +1384,7 @@ class AutomationActionLifecycleModuleTest {
     }
 
     @Test
-    fun `CATCH 직접 응답에 방해 전투가 생겨도 낚시 cast 사이클은 즉시 완료한다`() {
+    fun `CATCH 직접 응답에 방해 전투가 생기면 전투가 끝날 때까지 낚시 작업을 유지한다`() {
         val managed = assertNotNull(module.prepare(
             7L,
             15L,
@@ -1398,7 +1398,7 @@ class AutomationActionLifecycleModuleTest {
         val execution = assertIs<TypedAutomationExecution.ActionCompleted>(managed.execute())
         managed.applyLegacyExecution(execution)
 
-        Mockito.verify(workLifecycle).completeFishingCycle(7L, 15L)
+        Mockito.verify(workLifecycle, Mockito.never()).completeFishingCycle(7L, 15L)
     }
 
     @Test
@@ -1756,6 +1756,64 @@ class AutomationActionLifecycleModuleTest {
             "RaidGoblin",
             retryAt,
             "10분 뒤 다시 확인",
+        )
+        Mockito.verify(workLifecycle, Mockito.never()).completeRaidCycle(7L, 13L)
+    }
+
+    @Test
+    fun `레이드 전역 등록 쿨타임은 작업권을 놓지만 사용자 경고로 저장하지 않는다`() {
+        val response = RaidPubResponse(
+            emptyList(), false, false, null, null, emptySet(), null, pageComplete = true,
+        )
+        val observation = RaidObservation(emptyList(), true, false)
+        val retryAt = now.plusSeconds(600)
+        Mockito.`when`(
+            raidPubService.actionForAutomation(
+                7L,
+                RaidPubActionRequest(RaidAction.REFRESH, null),
+                "RaidGoblin",
+            ),
+        ).thenReturn(response)
+        Mockito.`when`(raidObservationAdapter.from(response)).thenReturn(observation)
+        Mockito.`when`(
+            raidCycleModule.recordObservedResult(
+                7L,
+                RaidAttempt(13L, RaidIntentKind.REFRESH, "RaidGoblin", null),
+                RaidResultObservation.Page(observation),
+            ),
+        ).thenReturn(RaidRecordResult.EntryWait(
+            retryAt,
+            "RaidGoblin",
+            "레이드 전역 등록 쿨타임 종료 뒤 상태를 다시 갱신합니다.",
+            reasonCode = "RAID_GLOBAL_REGISTRATION_COOLDOWN",
+            releaseCondition = "전역 등록 쿨타임 종료 뒤 상태 갱신",
+        ))
+        val managed = assertNotNull(module.prepare(
+            7L,
+            13L,
+            RaidTownAutomationAction(
+                accountId = 7L,
+                action = RaidAction.REFRESH,
+                raidId = null,
+                targetRaidId = "RaidGoblin",
+                raidName = "고블린 레이드",
+            ),
+        ))
+
+        val execution = assertIs<TypedAutomationExecution.ActionCompleted>(managed.execute())
+        val waiting = assertIs<TypedAutomationExecution.ActionCompleted>(
+            managed.applyPolicyAcceptedExecution(execution),
+        ).raidWait
+
+        assertEquals("RAID_GLOBAL_REGISTRATION_COOLDOWN", waiting?.reasonCode)
+        assertEquals(retryAt, waiting?.retryAt)
+        assertEquals("전역 등록 쿨타임 종료 뒤 상태 갱신", waiting?.releaseCondition)
+        Mockito.verify(workLifecycle).waitForRaid(
+            7L,
+            13L,
+            "RaidGoblin",
+            retryAt,
+            null,
         )
         Mockito.verify(workLifecycle, Mockito.never()).completeRaidCycle(7L, 13L)
     }

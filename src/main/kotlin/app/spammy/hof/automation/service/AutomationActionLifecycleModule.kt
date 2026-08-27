@@ -616,7 +616,7 @@ class UnifiedAutomationActionLifecycleModule(
                     }
                     submittedResponse = null
                     requireFishingDirectApplied(payload, response)
-                    if (payload.action == FishingAction.CATCH) {
+                    if (payload.action == FishingAction.CATCH && !response.blockedByBattle) {
                         workLifecycle.completeFishingCycle(accountId, stored.entryId)
                     }
                     return execution
@@ -2061,7 +2061,7 @@ class UnifiedAutomationActionLifecycleModule(
             },
         )
         is RaidRecordResult.EntryWait -> {
-            workLifecycle.waitForRaid(accountId, attempt.entryId, result.raidId, result.at, result.message)
+            workLifecycle.waitForRaid(accountId, attempt.entryId, result.raidId, result.at, result.warning)
             RaidRecordProjection(
                 completion = result.completion,
                 waiting = result.toExecution(),
@@ -2093,7 +2093,7 @@ class UnifiedAutomationActionLifecycleModule(
             )
         }
         is RaidRecordResult.EntryWait -> {
-            workLifecycle.waitForRaid(accountId, attempt.entryId, result.raidId, result.at, result.message)
+            workLifecycle.waitForRaid(accountId, attempt.entryId, result.raidId, result.at, result.warning)
             AmbiguousActionResolution.Applied(result.toExecution())
         }
         is RaidRecordResult.EntrySkipped -> {

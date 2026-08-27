@@ -1096,7 +1096,13 @@ class DefaultRaidCycleModule(
                 now,
             )
             return at?.let {
-                RaidRecordResult.EntryWait(it, target.id, observedCycleWaitMessage(target))
+                RaidRecordResult.EntryWait(
+                    at = it,
+                    raidId = target.id,
+                    message = observedCycleWaitMessage(target),
+                    reasonCode = observedCycleWaitReason(target),
+                    releaseCondition = "관측된 레이드 시각 뒤 상태 갱신",
+                )
             } ?: RaidRecordResult.Recorded()
         }
         if (registrationIsRunnable(target) || requiresReset(target)) {

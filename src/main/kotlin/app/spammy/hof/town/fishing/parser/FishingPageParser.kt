@@ -432,10 +432,13 @@ class FishingPageParser(
         val CAUGHT = Regex("낚았다|획득했다|낚는데!|caught", RegexOption.IGNORE_CASE)
         val STARTED = Regex("지금부터 낚시를 시작|물고기 그림자|낚시를 시작합니다")
         val DIRECT_BATTLE_BLOCKED = Regex(
-            "낚시터에\\s*나타난\\s*몬스터[^。.!?]*(?:때문에|먼저)[^。.!?]*낚시(?:가|를)?\\s*(?:할 수 없|불가능)",
+            "낚시터에\\s*나타난\\s*몬스터[^。.!?]*(?:할 수 없|불가능)",
             RegexOption.IGNORE_CASE,
         )
-        val BATTLE_BLOCKED = Regex("(?:전투몹|몬스터)[^。.!?]*(?:출몰|등장|낚시(?:가|를)?\\s*(?:할 수 없|불가능))", RegexOption.IGNORE_CASE)
+        val BATTLE_BLOCKED = Regex(
+            "(?:전투몹|몬스터)[^。.!?]*(?:출몰|등장|낚시[^。.!?]{0,20}(?:할 수 없|불가능))",
+            RegexOption.IGNORE_CASE,
+        )
         val CSS_COLOR = Regex("(?:^|;)\\s*color\\s*:\\s*([^;\\s]+)", RegexOption.IGNORE_CASE)
         val RED_COLOR_VALUES = setOf("red", "#f00", "#ff0000", "rgb(255,0,0)", "rgb(255, 0, 0)")
         val FISHING_ACTION_LABEL = Regex("^(?:낚시를 시작한다|낚시 시작|낚는다|상태를 본다|거른다)$")

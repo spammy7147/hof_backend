@@ -227,6 +227,31 @@ class TypedAutomationRuntimeService(
     fun advanceAppliedActionToPreparedFollowup(
         execution: TypedRuntimeExecutionRight,
         followup: StoredTypedAutomationAction,
+    ): TypedRuntimePreparation = advanceActionToPreparedFollowup(
+        execution,
+        followup,
+        TypedAutomationActionStatus.SUCCEEDED,
+        null,
+    )
+
+    /** 최신 직접 응답이 현재 행동을 대체했을 때 그 행동을 실패로 닫고 복구 행동을 같은 lease에 연결한다. */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun advanceSupersededActionToPreparedFollowup(
+        execution: TypedRuntimeExecutionRight,
+        followup: StoredTypedAutomationAction,
+        reason: String,
+    ): TypedRuntimePreparation = advanceActionToPreparedFollowup(
+        execution,
+        followup,
+        TypedAutomationActionStatus.FAILED,
+        sanitizeDiagnostic(reason),
+    )
+
+    private fun advanceActionToPreparedFollowup(
+        execution: TypedRuntimeExecutionRight,
+        followup: StoredTypedAutomationAction,
+        completedStatus: TypedAutomationActionStatus,
+        diagnostic: String?,
     ): TypedRuntimePreparation {
         val right = execution.persistedRight()
         val state = fencedState(right.accountId, right.leaseToken)
@@ -242,8 +267,8 @@ class TypedAutomationRuntimeService(
         ) return TypedRuntimePreparation.Invalidated
         val now = timeProvider.now()
         if (blocksNewSubmission(state)) {
-            current.status = TypedAutomationActionStatus.SUCCEEDED
-            current.lastError = null
+            current.status = completedStatus
+            current.lastError = diagnostic
             current.finishedAt = now
             current.updatedAt = now
             state.leaseToken = null
@@ -257,8 +282,8 @@ class TypedAutomationRuntimeService(
         val entry = queryRepository.findEntry(right.accountId, followup.entryId)
             ?: return TypedRuntimePreparation.Invalidated
         val encoded = codec.encode(followup)
-        current.status = TypedAutomationActionStatus.SUCCEEDED
-        current.lastError = null
+        current.status = completedStatus
+        current.lastError = diagnostic
         current.finishedAt = now
         current.updatedAt = now
         val saved = actionRepository.save(

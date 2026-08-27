@@ -38,6 +38,10 @@ sealed interface FishingCycleResult {
     data class WaitingForCatch(
         val start: FishingCycleStepEvidence,
     ) : FishingCycleResult
+
+    data class BattleRequired(
+        val start: FishingCycleStepEvidence,
+    ) : FishingCycleResult
 }
 
 interface FishingCycleTransitions {
@@ -53,6 +57,11 @@ interface FishingCycleTransitions {
     )
 
     fun waitingForCatch(
+        command: FishingCycleCommand,
+        start: FishingCycleStepEvidence,
+    )
+
+    fun battleRequired(
         command: FishingCycleCommand,
         start: FishingCycleStepEvidence,
     )
@@ -121,8 +130,13 @@ class DefaultFishingCycleExecutor(
                     FishingAction.START,
                     remote.start,
                 )
-                transitions.waitingForCatch(command, start)
-                FishingCycleResult.WaitingForCatch(start)
+                if (remote.start.blockedByBattle) {
+                    transitions.battleRequired(command, start)
+                    FishingCycleResult.BattleRequired(start)
+                } else {
+                    transitions.waitingForCatch(command, start)
+                    FishingCycleResult.WaitingForCatch(start)
+                }
             }
         }
     }

@@ -147,6 +147,9 @@ class FishingCycleExecutorTest {
                 override fun waitingForCatch(command: FishingCycleCommand, start: FishingCycleStepEvidence) {
                     events += "WAITING"
                 }
+
+                override fun battleRequired(command: FishingCycleCommand, start: FishingCycleStepEvidence) =
+                    error("일반 대기 응답을 전투로 처리하면 안 됩니다.")
             },
         )
 
@@ -155,6 +158,70 @@ class FishingCycleExecutorTest {
         val requests = Mockito.mockingDetails(gateway).invocations.map { it.arguments[1] as HofRequest }
         assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.POST), requests.map(HofRequest::method))
         assertEquals(listOf(HofRequestOrigin.AUTOMATION, HofRequestOrigin.AUTOMATION), requests.map(HofRequest::origin))
+        Mockito.verifyNoInteractions(battleMaps)
+    }
+
+    @Test
+    fun `START 직접 응답에 방해 전투가 있으면 CATCH 없이 전투 전이로 넘긴다`() {
+        val accounts = Mockito.mock(AccountQueryRepository::class.java)
+        val cookies = Mockito.mock(CookieQueryRepository::class.java)
+        val gateway = Mockito.mock(AccountHofGateway::class.java)
+        val locations = Mockito.mock(TownLocationResolver::class.java)
+        val battleMaps = Mockito.mock(BattleMapService::class.java)
+        val fishingService = FishingService(
+            TownAuthenticatedExecutor(
+                accounts,
+                cookies,
+                HofRequestFactory(),
+                gateway,
+                LoginStateParser(),
+                HofFormParser(),
+                HofResultParser(),
+                TownActionGuard(),
+                AccountHofMutationFence(),
+            ),
+            locations,
+            FishingPageParser(),
+            battleMaps,
+        )
+        Mockito.`when`(accounts.findById(7L)).thenReturn(
+            HofAccountEntity(7L, "fisher", "encrypted", Instant.EPOCH),
+        )
+        Mockito.`when`(cookies.findValueMapByAccountId(7L)).thenReturn(mapOf("PHPSESSID" to "session"))
+        Mockito.`when`(locations.resolve(TownFeatureId.FISHING, null)).thenReturn(
+            ResolvedTownLocation(TownFeatureId.FISHING, FISHING_URL),
+        )
+        Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies())).thenReturn(
+            response("reset.html", mapOf("phase" to "observed")),
+            response("monster.html", mapOf("phase" to "battle")),
+        )
+        val events = mutableListOf<String>()
+
+        val result = DefaultFishingCycleExecutor(fishingService, allowingSubmissionGate()).executeOneCast(
+            FishingCycleCommand(7L, "cycle-1", "start-1", "catch-1", fishingService.loadForAutomation(7L)),
+            object : FishingCycleTransitions {
+                override fun startAppliedAndCatchPrepared(
+                    command: FishingCycleCommand,
+                    start: FishingCycleStepEvidence,
+                    catch: FishingCyclePreparedCatch,
+                ) = error("전투 응답 뒤 CATCH를 준비하면 안 됩니다.")
+
+                override fun catchApplied(command: FishingCycleCommand, catch: FishingCycleStepEvidence) =
+                    error("전투 응답 뒤 CATCH를 제출하면 안 됩니다.")
+
+                override fun waitingForCatch(command: FishingCycleCommand, start: FishingCycleStepEvidence) =
+                    error("확인된 전투를 일반 대기로 처리하면 안 됩니다.")
+
+                override fun battleRequired(command: FishingCycleCommand, start: FishingCycleStepEvidence) {
+                    events += "BATTLE:${start.response.battleTarget?.mapCode}"
+                }
+            },
+        )
+
+        assertIs<FishingCycleResult.BattleRequired>(result)
+        assertEquals(listOf("BATTLE:fishing_12"), events)
+        val requests = Mockito.mockingDetails(gateway).invocations.map { it.arguments[1] as HofRequest }
+        assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.POST), requests.map(HofRequest::method))
         Mockito.verifyNoInteractions(battleMaps)
     }
 
@@ -290,6 +357,11 @@ class FishingCycleExecutorTest {
             command: FishingCycleCommand,
             start: FishingCycleStepEvidence,
         ) = error("정상 응답은 잡기 대기로 끝나면 안 됩니다.")
+
+        override fun battleRequired(
+            command: FishingCycleCommand,
+            start: FishingCycleStepEvidence,
+        ) = error("정상 응답은 전투로 전환하면 안 됩니다.")
     }
 
     private fun allowingSubmissionGate(): AccountExecutionSubmissionGate =

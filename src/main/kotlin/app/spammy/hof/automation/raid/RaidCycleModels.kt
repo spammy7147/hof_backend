@@ -278,6 +278,7 @@ sealed interface RaidRecordResult {
         val completion: RaidCycleOutcome? = null,
         val reasonCode: String = "RAID_ENTRY_WAIT",
         val releaseCondition: String = "예약 시각 뒤 최신 레이드 상태 재확인",
+        val warning: String? = raidEntryWaitWarning(reasonCode, message),
     ) : RaidRecordResult
     data class EntrySkipped(val message: String) : RaidRecordResult
     data class NotApplied(val message: String) : RaidRecordResult
@@ -285,6 +286,15 @@ sealed interface RaidRecordResult {
     data class BattleRecoveryStarted(val at: Instant, val message: String) : RaidRecordResult
     data class RewardRetryReady(val message: String) : RaidRecordResult
     data class RewardHeld(val message: String) : RaidRecordResult
+}
+
+private fun raidEntryWaitWarning(reasonCode: String, message: String): String? = when (reasonCode) {
+    "RAID_WAITING_TO_START",
+    "RAID_GLOBAL_REGISTRATION_COOLDOWN",
+    "RAID_POST_REWARD_GLOBAL_COOLDOWN",
+    "RAID_PERSONAL_BATTLE_COOLDOWN",
+    -> null
+    else -> message
 }
 
 data class RaidCycleTarget(

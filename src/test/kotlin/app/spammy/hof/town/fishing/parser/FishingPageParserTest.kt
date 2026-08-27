@@ -98,6 +98,21 @@ class FishingPageParserTest {
     }
 
     @Test
+    fun `실서버 START 응답의 낚시하기 불가능 문구도 방해 전투로 인식한다`() {
+        val html = """
+            <html><body><section id="fishing">
+              <font color="#ff4500">낚시터에 나타난 몬스터 때문에 낚시하기가 불가능합니다!! 전투해 물리칩시다.</font>
+              <p>(오늘의 남은 낚시 횟수 : 12회)</p>
+            </section></body></html>
+        """.trimIndent()
+
+        val snapshot = parser.parse(html, url, forms.parse(html, url))
+
+        assertTrue(snapshot.blockedByBattle)
+        assertEquals(FishingPrimaryAction.NONE, snapshot.primaryAction)
+    }
+
+    @Test
     fun `낚시 action 결과에만 몬스터 차단 문구가 있어도 전투 상태로 전환한다`() {
         val html = fixture("reset.html")
         val result = ParsedTownResult(
