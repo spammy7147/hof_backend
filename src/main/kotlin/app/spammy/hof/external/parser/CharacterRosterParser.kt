@@ -49,6 +49,8 @@ class CharacterRosterParser {
      */
     private fun String.toCandidateName(): String =
         trim()
+            .removeSuffix("*")
+            .trimEnd()
             .takeIf { name -> name.isNotBlank() && !name.all { it.isDigit() } && name.length <= 20 }
             .orEmpty()
 

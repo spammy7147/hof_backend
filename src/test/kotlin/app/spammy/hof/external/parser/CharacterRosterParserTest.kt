@@ -40,4 +40,21 @@ class CharacterRosterParserTest {
         assertEquals(60, character.level)
         assertEquals("Great Witch", character.job)
     }
+
+    @Test
+    fun ignoresStatusMarkerAfterCharacterName() {
+        val html = """
+            <div class="character-card">
+              <a href="index.php?char=555"><img src="monk.gif"></a><br>
+              솔라몽크<span class="bold charge">*</span><br>
+              Lv.19 Fighter
+            </div>
+        """.trimIndent()
+
+        val character = parser.parse(html).single()
+
+        assertEquals("솔라몽크", character.name)
+        assertEquals(19, character.level)
+        assertEquals("Fighter", character.job)
+    }
 }
