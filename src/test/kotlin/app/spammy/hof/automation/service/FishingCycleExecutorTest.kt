@@ -4,6 +4,8 @@ import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.CookieQueryRepository
 import app.spammy.hof.auth.service.AccountExecutionSubmissionGate
+import app.spammy.hof.battle.dto.BattleMapResponse
+import app.spammy.hof.battle.model.BattleMapKeyMode
 import app.spammy.hof.battle.service.BattleMapService
 import app.spammy.hof.external.client.AccountHofGateway
 import app.spammy.hof.external.client.HofRequestFactory
@@ -226,6 +228,75 @@ class FishingCycleExecutorTest {
     }
 
     @Test
+    fun `START 직접 응답에 전투 대상 링크가 없으면 현재 낚시 전투맵을 연결한다`() {
+        val accounts = Mockito.mock(AccountQueryRepository::class.java)
+        val cookies = Mockito.mock(CookieQueryRepository::class.java)
+        val gateway = Mockito.mock(AccountHofGateway::class.java)
+        val locations = Mockito.mock(TownLocationResolver::class.java)
+        val battleMaps = Mockito.mock(BattleMapService::class.java)
+        val fishingService = FishingService(
+            TownAuthenticatedExecutor(
+                accounts,
+                cookies,
+                HofRequestFactory(),
+                gateway,
+                LoginStateParser(),
+                HofFormParser(),
+                HofResultParser(),
+                TownActionGuard(),
+                AccountHofMutationFence(),
+            ),
+            locations,
+            FishingPageParser(),
+            battleMaps,
+        )
+        Mockito.`when`(accounts.findById(7L)).thenReturn(
+            HofAccountEntity(7L, "fisher", "encrypted", Instant.EPOCH),
+        )
+        Mockito.`when`(cookies.findValueMapByAccountId(7L)).thenReturn(mapOf("PHPSESSID" to "session"))
+        Mockito.`when`(locations.resolve(TownFeatureId.FISHING, null)).thenReturn(
+            ResolvedTownLocation(TownFeatureId.FISHING, FISHING_URL),
+        )
+        val blockedWithoutTarget = fixture("monster.html")
+            .replace("<a href=\"?menu=hunt&amp;common=fishing_12\">전투</a>", "")
+        Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies())).thenReturn(
+            response("reset.html", mapOf("phase" to "observed")),
+            HofHttpResponse(200, FISHING_URL, blockedWithoutTarget, mapOf("phase" to "battle")),
+        )
+        Mockito.`when`(
+            battleMaps.findCurrentlyObservedMaps(7L, "battle_map", HofRequestOrigin.AUTOMATION),
+        ).thenReturn(listOf(observedFishingMap("Fish02", "Fishing- 피라냐")))
+        val events = mutableListOf<String>()
+
+        val result = DefaultFishingCycleExecutor(fishingService, allowingSubmissionGate()).executeOneCast(
+            FishingCycleCommand(7L, "cycle-1", "start-1", "catch-1", fishingService.loadForAutomation(7L)),
+            object : FishingCycleTransitions {
+                override fun startAppliedAndCatchPrepared(
+                    command: FishingCycleCommand,
+                    start: FishingCycleStepEvidence,
+                    catch: FishingCyclePreparedCatch,
+                ) = error("전투 응답 뒤 CATCH를 준비하면 안 됩니다.")
+
+                override fun catchApplied(command: FishingCycleCommand, catch: FishingCycleStepEvidence) =
+                    error("전투 응답 뒤 CATCH를 제출하면 안 됩니다.")
+
+                override fun waitingForCatch(command: FishingCycleCommand, start: FishingCycleStepEvidence) =
+                    error("확인된 전투를 일반 대기로 처리하면 안 됩니다.")
+
+                override fun battleRequired(command: FishingCycleCommand, start: FishingCycleStepEvidence) {
+                    events += "BATTLE:${start.response.battleTarget?.mapCode}"
+                }
+            },
+        )
+
+        assertIs<FishingCycleResult.BattleRequired>(result)
+        assertEquals(listOf("BATTLE:Fish02"), events)
+        val requests = Mockito.mockingDetails(gateway).invocations.map { it.arguments[1] as HofRequest }
+        assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.POST), requests.map(HofRequest::method))
+        Mockito.verify(battleMaps).findCurrentlyObservedMaps(7L, "battle_map", HofRequestOrigin.AUTOMATION)
+    }
+
+    @Test
     fun `logout after START prevents the newly prepared CATCH from reaching HOF`() {
         val accounts = Mockito.mock(AccountQueryRepository::class.java)
         val cookies = Mockito.mock(CookieQueryRepository::class.java)
@@ -379,6 +450,28 @@ class FishingCycleExecutorTest {
         finalUrl = FISHING_URL,
         body = fixture(name),
         setCookies = setCookies,
+    )
+
+    private fun observedFishingMap(mapCode: String, name: String) = BattleMapResponse(
+        categoryId = "battle_map",
+        mapCode = mapCode,
+        name = name,
+        groupName = "낚시",
+        groupOrder = 0,
+        mapOrder = 0,
+        recommendedLevel = null,
+        availableCount = null,
+        attemptCount = null,
+        winCount = null,
+        cooldownRemainingText = null,
+        cooldownRemainingSeconds = null,
+        keyMode = BattleMapKeyMode.UNKNOWN,
+        keyCount = null,
+        requiredTime = null,
+        enabled = true,
+        resolved = true,
+        iconUrl = null,
+        rawHref = "?menu=hunt&common=$mapCode",
     )
 
     private fun fixture(name: String): String = checkNotNull(

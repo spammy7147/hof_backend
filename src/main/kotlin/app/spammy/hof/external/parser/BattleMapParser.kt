@@ -650,7 +650,7 @@ class BattleMapParser {
         val ATTEMPT_COUNT_PATTERN = Regex("""도전\s*([\d,]+)\s*회""")
         val WIN_COUNT_PATTERN = Regex("""승리\s*([\d,]+)\s*회""")
         val DAILY_VICTORY_COMPLETE_PATTERN = Regex(
-            """승리\s*!\s*\(\s*총\s*[\d,]+\s*회\s*도전\s*\)""",
+            """승리\s*!\s*\(\s*총\s*(?:[\d,]+\s*)?회\s*도전\s*\)""",
         )
         val COOLDOWN_REMAINING_PATTERN =
             Regex("""\(\s*((?:([\d,]+)\s*시간(?:\s*([\d,]+)\s*분)?)|([\d,]+)\s*분)\s*\)\s*남음""")

@@ -96,7 +96,13 @@ class FishingService(
             },
             expectedEntryForm = { form -> parser.actionFor(form) == FishingAction.START },
             observeEntryResponse = { html, finalUrl, result, page ->
-                started = FishingResponse.from(parser.parse(html, finalUrl, page, result))
+                started = FishingResponse.from(
+                    withMissingObservedBattleTarget(
+                        accountId,
+                        parser.parse(html, finalUrl, page, result),
+                        HofRequestOrigin.AUTOMATION,
+                    ),
+                )
             },
             finalAction = { html, finalUrl, page ->
                 resolveFishingActionOrNull(html, finalUrl, page, FishingAction.CATCH)
@@ -108,7 +114,13 @@ class FishingService(
             entrySubmissionBoundary = submissionBoundary,
             finalSubmissionBoundary = submissionBoundary,
         ) { html, finalUrl, result, page ->
-            FishingResponse.from(parser.parse(html, finalUrl, page, result))
+            FishingResponse.from(
+                withMissingObservedBattleTarget(
+                    accountId,
+                    parser.parse(html, finalUrl, page, result),
+                    HofRequestOrigin.AUTOMATION,
+                ),
+            )
         }
         val startResponse = requireNotNull(started) {
             "Fishing START response was not observed after selecting a fishing cycle."
@@ -239,6 +251,16 @@ class FishingService(
                 name = observed.name,
             ),
         )
+    }
+
+    private fun withMissingObservedBattleTarget(
+        accountId: Long,
+        snapshot: FishingSnapshot,
+        origin: HofRequestOrigin,
+    ): FishingSnapshot = if (snapshot.blockedByBattle && snapshot.battleTarget == null) {
+        withObservedBattleTarget(accountId, snapshot, origin)
+    } else {
+        snapshot
     }
 
     private fun isFishingBattleMap(map: BattleMapResponse): Boolean =

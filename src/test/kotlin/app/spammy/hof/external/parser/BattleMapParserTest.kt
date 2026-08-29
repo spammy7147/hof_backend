@@ -32,6 +32,22 @@ class BattleMapParserTest {
     }
 
     @Test
+    fun `숫자가 텍스트에서 빠진 모험맵 승리 표식도 완료로 읽는다`() {
+        val html = """
+            <div id="mapgroup9">
+              <div>
+                <a href="index.php?sp_common=Conc005">Catacomb- 지하 묘소 - 그림자가 짙게 깔린 묘소</a>
+                [ 승리!(총 <img src="count-5.gif" alt="5">회 도전) ] (타임 소모 : 0)
+              </div>
+            </div>
+        """.trimIndent()
+
+        val map = parser.parse("adventure_map", "sp_common", html).single()
+
+        assertEquals(0, map.winCount)
+    }
+
+    @Test
     fun `모험맵 대상 부재는 전체 문서와 모든 map identity를 해석했을 때만 권위가 있다`() {
         val html = """
             <html><body>
