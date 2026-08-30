@@ -153,11 +153,11 @@ class HofCharacterCommandAdapterTest {
     }
 
     @Test
-    fun `kick requests all three confirmation steps and returns removal evidence`() {
+    fun `kick requests the real three confirmation steps and returns removal evidence`() {
         val executor = Mockito.mock(TownAuthenticatedExecutor::class.java)
         arrangeIdentitySequence(
             executor,
-            requiredFields = listOf("byebye", "byebye2", "byebye3"),
+            requiredFields = listOf("byebye", "byebye2", "kick"),
             rosterHtml = ROSTER_HTML,
             messages = listOf("삭제 완료"),
         )

@@ -367,7 +367,7 @@ class CharacterCommandLifecycleIntegrationTest {
     }
 
     @Test
-    fun `semantic kick submits all three transient confirmations before observing removal`() {
+    fun `semantic kick submits the real final kick confirmation before observing removal`() {
         Mockito.`when`(accounts.findById(1L)).thenReturn(account)
         Mockito.`when`(cookies.findValueMapByAccountId(1L)).thenReturn(mapOf("PHPSESSID" to "session"))
         val calls = AtomicInteger()
@@ -400,7 +400,7 @@ class CharacterCommandLifecycleIntegrationTest {
         )
         assertEquals(mapOf("byebye" to "Kick"), requests.allValues[1].formFields)
         assertEquals(mapOf("byebye2" to "Dismiss"), requests.allValues[2].formFields)
-        assertEquals(mapOf("byebye3" to "Yes"), requests.allValues[3].formFields)
+        assertEquals(mapOf("kick" to "정말 해고"), requests.allValues[3].formFields)
     }
 
     @Test
@@ -594,8 +594,8 @@ class CharacterCommandLifecycleIntegrationTest {
         private const val KICK_FINAL_CONFIRMATION_PAGE = """
             <div class="carpet_frame">소셜<br>Lv.60 Social Knight</div>
             <form action="?char=hof-10" method="post">
-              <input type="submit" name="byebye3" value="Yes">
-              <input type="submit" value="No">
+              <input type="submit" class="btn" name="kick" value="정말 해고">
+              <input type="submit" class="btn" value="역시 그만둘래">
             </form>
         """
         private const val ROSTER_AFTER_KICK_PAGE = """

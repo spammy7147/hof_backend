@@ -55,7 +55,7 @@ class HofCharacterCommandAdapter(
             is CharacterCommand.Rename -> executeRename(context, command.newName)
             is CharacterCommand.Kick -> return executeIdentitySequence(
                 context,
-                listOf("byebye", "byebye2", "byebye3"),
+                listOf("byebye", "byebye2", "kick"),
                 rememberContinuation,
             ) { roster, observedAt, messages -> CharacterCommandObservation.KickApplied(roster, observedAt, messages) }
             is CharacterCommand.Knockback -> return executeIdentitySequence(

@@ -46,6 +46,6 @@ class CharacterInternalFormExecutor(
     private class OptionalFormMissing : RuntimeException()
 
     private companion object {
-        val IDENTITY_ACTIONS = setOf("knockback", "knockback2", "byebye", "byebye2", "byebye3")
+        val IDENTITY_ACTIONS = setOf("knockback", "knockback2", "byebye", "byebye2", "kick")
     }
 }

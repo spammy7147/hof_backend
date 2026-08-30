@@ -19,7 +19,7 @@ class CharacterInternalFormExecutorTest {
             <form action="?char=hof-10" method="post">
               <input type="radio" name="position" value="front">Front
               <select name="guard"><option value="0">None</option></select>
-              <input type="submit" name="knockback" value="Knockback">
+              <input type="submit" name="kick" value="정말 해고">
             </form>
         """.trimIndent()
         val page = HofFormParser().parse(html, CHARACTER_URL)
