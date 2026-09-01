@@ -26,4 +26,5 @@ data class AuthProperties(
     val audience: String = "hof-api",
     val refreshCookieSecure: Boolean = false,
     val allowedOrigins: List<String> = listOf("http://localhost:8081", "http://127.0.0.1:8081"),
+    val allowedOriginPatterns: List<String> = emptyList(),
 )

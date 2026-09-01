@@ -33,6 +33,7 @@ import kotlin.test.assertTrue
         "hof.auth.login-rate-limit-per-id=2",
         "hof.auth.refresh-rate-limit-per-family=1000",
         "hof.auth.refresh-rate-limit-per-account=1000",
+        "hof.auth.allowed-origin-patterns=chrome-extension://*",
     ],
 )
 @AutoConfigureMockMvc
@@ -143,6 +144,19 @@ class AuthApiSecurityTest(
         )
             .andExpect(status().isOk)
             .andExpect(header().string("Access-Control-Allow-Origin", "http://localhost:8081"))
+            .andExpect(header().string("Access-Control-Allow-Credentials", "true"))
+    }
+
+    @Test
+    fun apiAllowsCredentialedCorsPreflightForChromeExtension() {
+        mockMvc.perform(
+            options("/api/auth/login")
+                .header("Origin", "chrome-extension://abcdefghijklmnop")
+                .header("Access-Control-Request-Method", "POST")
+                .header("Access-Control-Request-Headers", "content-type"),
+        )
+            .andExpect(status().isOk)
+            .andExpect(header().string("Access-Control-Allow-Origin", "chrome-extension://abcdefghijklmnop"))
             .andExpect(header().string("Access-Control-Allow-Credentials", "true"))
     }
 

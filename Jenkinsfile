@@ -25,6 +25,7 @@ pipeline {
         TRUSTED_PROXY_SOURCE_CIDR = ''
         SERVER_FORWARD_HEADERS_STRATEGY = 'NONE'
         PUBLIC_HEALTH_URL = 'https://api-hof.spammy.app/actuator/health'
+        HOF_AUTH_ALLOWED_ORIGIN_PATTERNS = 'chrome-extension://*'
         SSH_KNOWN_HOSTS_FILE = "${WORKSPACE}/.jenkins/known_hosts"
         IMAGE_REPOSITORY = 'hof-backend'
         CONTAINER_NAME = 'hof-backend'
@@ -224,7 +225,7 @@ pipeline {
                             ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes \
                               -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
                               "$DEPLOY_TARGET" \
-                              "IMAGE='$IMAGE' IMAGE_REPOSITORY='$IMAGE_REPOSITORY' CONTAINER_NAME='$CONTAINER_NAME' BACKEND_BIND_ADDRESS='$BACKEND_BIND_ADDRESS' HOST_PORT='$HOST_PORT' CONTAINER_PORT='$CONTAINER_PORT' SERVER_FORWARD_HEADERS_STRATEGY='$SERVER_FORWARD_HEADERS_STRATEGY' PUBLIC_HEALTH_URL='$PUBLIC_HEALTH_URL' RELEASE_HOST_DIR='$RELEASE_HOST_DIR' RELEASE_CONTAINER_DIR='$RELEASE_CONTAINER_DIR' REMOTE_ENV_FILE='$REMOTE_ENV_FILE' REMOTE_FIREBASE_FILE='$REMOTE_FIREBASE_FILE' REMOTE_RELEASE_ENV_FILE='$REMOTE_RELEASE_ENV_FILE' BUILD_NUMBER='$BUILD_NUMBER' bash -s" <<'REMOTE_SCRIPT'
+                              "IMAGE='$IMAGE' IMAGE_REPOSITORY='$IMAGE_REPOSITORY' CONTAINER_NAME='$CONTAINER_NAME' BACKEND_BIND_ADDRESS='$BACKEND_BIND_ADDRESS' HOST_PORT='$HOST_PORT' CONTAINER_PORT='$CONTAINER_PORT' SERVER_FORWARD_HEADERS_STRATEGY='$SERVER_FORWARD_HEADERS_STRATEGY' PUBLIC_HEALTH_URL='$PUBLIC_HEALTH_URL' HOF_AUTH_ALLOWED_ORIGIN_PATTERNS='$HOF_AUTH_ALLOWED_ORIGIN_PATTERNS' RELEASE_HOST_DIR='$RELEASE_HOST_DIR' RELEASE_CONTAINER_DIR='$RELEASE_CONTAINER_DIR' REMOTE_ENV_FILE='$REMOTE_ENV_FILE' REMOTE_FIREBASE_FILE='$REMOTE_FIREBASE_FILE' REMOTE_RELEASE_ENV_FILE='$REMOTE_RELEASE_ENV_FILE' BUILD_NUMBER='$BUILD_NUMBER' bash -s" <<'REMOTE_SCRIPT'
                             set -Eeuo pipefail
 
                             rollback_name="${CONTAINER_NAME}-rollback"
@@ -285,6 +286,7 @@ pipeline {
                                 --env "GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/firebase-service-account.json" \
                                 --env "HOF_RELEASE_STORAGE_ROOT=$RELEASE_CONTAINER_DIR" \
                                 --env "SERVER_FORWARD_HEADERS_STRATEGY=$SERVER_FORWARD_HEADERS_STRATEGY" \
+                                --env "HOF_AUTH_ALLOWED_ORIGIN_PATTERNS=$HOF_AUTH_ALLOWED_ORIGIN_PATTERNS" \
                                 --restart unless-stopped \
                                 "$IMAGE" >/dev/null; then
                                 restore_previous
