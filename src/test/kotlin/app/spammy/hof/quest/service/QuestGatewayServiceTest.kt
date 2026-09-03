@@ -85,5 +85,5 @@ class QuestGatewayServiceTest {
     private fun anyRequest(): HofRequest = Mockito.any(HofRequest::class.java) ?: HofRequest(HofHttpMethod.GET, QUEST_URL)
     private fun anyCookies(): Map<String, String> = Mockito.anyMap<String, String>() ?: emptyMap()
 
-    private companion object { const val QUEST_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=quest" }
+    private companion object { const val QUEST_URL = "https://hof.zerosic.com/index.php?menu=quest" }
 }

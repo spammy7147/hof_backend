@@ -481,7 +481,7 @@ class BattleMapServiceTest {
             service.refreshAdventureMaps(account.id)
         }
         assertEquals(
-            listOf("http://sic.zerosic.com/ZeroHOF/index.php?sp_hunt"),
+            listOf("https://hof.zerosic.com/index.php?sp_hunt"),
             gateway.requests.map { it.url },
         )
     }
@@ -538,7 +538,7 @@ class BattleMapServiceTest {
     @Test
     fun authenticatedAdventureRefreshRejectsNonSuccessHttpResponse() {
         val account = savedAccount("battle-map-http-error")
-        val url = "http://sic.zerosic.com/ZeroHOF/index.php?sp_hunt"
+        val url = "https://hof.zerosic.com/index.php?sp_hunt"
         gateway.responsesByUrl[url] = HofHttpResponse(
             statusCode = 503,
             finalUrl = url,
@@ -555,7 +555,7 @@ class BattleMapServiceTest {
     @Test
     fun authenticatedAdventureRefreshRejectsClientHttpResponseAsFatal() {
         val account = savedAccount("battle-map-http-client-error")
-        val url = "http://sic.zerosic.com/ZeroHOF/index.php?sp_hunt"
+        val url = "https://hof.zerosic.com/index.php?sp_hunt"
         gateway.responsesByUrl[url] = HofHttpResponse(
             statusCode = 403,
             finalUrl = url,
@@ -613,15 +613,15 @@ class BattleMapServiceTest {
     @Test
     fun fetchesScenarioOceanDetailPageBeforeSynchronizingMaps() {
         val account = savedAccount("battle-map-scenario")
-        gateway.responsesByUrl["http://sic.zerosic.com/ZeroHOF/index.php?raid_hunt"] = HofHttpResponse(
+        gateway.responsesByUrl["https://hof.zerosic.com/index.php?raid_hunt"] = HofHttpResponse(
             statusCode = 200,
-            finalUrl = "http://sic.zerosic.com/ZeroHOF/index.php?raid_hunt",
+            finalUrl = "https://hof.zerosic.com/index.php?raid_hunt",
             body = """<a href="index.php?menu=MapSunkenShip">대해</a>""",
             setCookies = mapOf("NO" to "scenario"),
         )
-        gateway.responsesByUrl["http://sic.zerosic.com/ZeroHOF/index.php?menu=MapSunkenShip"] = HofHttpResponse(
+        gateway.responsesByUrl["https://hof.zerosic.com/index.php?menu=MapSunkenShip"] = HofHttpResponse(
             statusCode = 200,
-            finalUrl = "http://sic.zerosic.com/ZeroHOF/index.php?menu=MapSunkenShip",
+            finalUrl = "https://hof.zerosic.com/index.php?menu=MapSunkenShip",
             body = """
                 <div>대해 (적정 레벨 : 40-60) (2)</div>
                 <div id="mapgroup1">
@@ -639,8 +639,8 @@ class BattleMapServiceTest {
         assertTrue(maps.all { it.resolved })
         assertEquals(
             listOf(
-                "http://sic.zerosic.com/ZeroHOF/index.php?raid_hunt",
-                "http://sic.zerosic.com/ZeroHOF/index.php?menu=MapSunkenShip",
+                "https://hof.zerosic.com/index.php?raid_hunt",
+                "https://hof.zerosic.com/index.php?menu=MapSunkenShip",
             ),
             gateway.requests.map { it.url },
         )
@@ -662,7 +662,7 @@ class BattleMapServiceTest {
     @Test
     fun `모험맵 최신 관측은 전체 목록의 완전성이 증명될 때만 observed다`() {
         val account = savedAccount("battle-map-adventure-observation")
-        val url = "http://sic.zerosic.com/ZeroHOF/index.php?sp_hunt"
+        val url = "https://hof.zerosic.com/index.php?sp_hunt"
         gateway.responsesByUrl[url] = HofHttpResponse(
             statusCode = 200,
             finalUrl = url,
@@ -713,7 +713,7 @@ class BattleMapServiceTest {
     @Test
     fun `non-success 맵 응답에 남은 링크는 최신 실행 가능 관측이 아니다`() {
         val account = savedAccount("battle-map-error-with-stale-link")
-        val raidUrl = "http://sic.zerosic.com/ZeroHOF/index.php?raid_hunt"
+        val raidUrl = "https://hof.zerosic.com/index.php?raid_hunt"
         gateway.responsesByUrl[raidUrl] = HofHttpResponse(
             statusCode = 500,
             finalUrl = raidUrl,
@@ -743,10 +743,10 @@ class BattleMapServiceTest {
     @Test
     fun `레이드 부재 문구가 있어도 최종 URL이나 페이지 구조가 다르면 관측 불완전이다`() {
         val account = savedAccount("battle-map-raid-absence-incomplete")
-        val raidUrl = "http://sic.zerosic.com/ZeroHOF/index.php?raid_hunt"
+        val raidUrl = "https://hof.zerosic.com/index.php?raid_hunt"
         gateway.responsesByUrl[raidUrl] = HofHttpResponse(
             statusCode = 200,
-            finalUrl = "http://sic.zerosic.com/ZeroHOF/index.php?menu=login",
+            finalUrl = "https://hof.zerosic.com/index.php?menu=login",
             body = completeRaidAbsencePage("진행 중인 전투가 없습니다."),
             setCookies = emptyMap(),
         )

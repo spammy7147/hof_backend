@@ -152,9 +152,9 @@ class CraftingServiceTest {
     private fun anyRequest(): HofRequest = Mockito.any(HofRequest::class.java) ?: HofRequest(HofHttpMethod.GET, WORK_URL)
     private fun anyCookies(): Map<String, String> = Mockito.anyMap<String, String>() ?: emptyMap()
     private companion object {
-        const val WORK_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=workbase"
-        const val VETERAN_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=refine2"
-        const val CREATE_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=create"
-        const val CLARIS_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=sewingshop"
+        const val WORK_URL = "https://hof.zerosic.com/index.php?menu=workbase"
+        const val VETERAN_URL = "https://hof.zerosic.com/index.php?menu=refine2"
+        const val CREATE_URL = "https://hof.zerosic.com/index.php?menu=create"
+        const val CLARIS_URL = "https://hof.zerosic.com/index.php?menu=sewingshop"
     }
 }

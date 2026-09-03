@@ -172,18 +172,18 @@ class HofRequestFactory {
     }
 
     private companion object {
-        const val HOF_BASE_URL = "http://sic.zerosic.com/ZeroHOF/index.php"
-        const val HOF_HOST = "sic.zerosic.com"
-        const val HOF_PATH = "/ZeroHOF/index.php"
+        const val HOF_BASE_URL = "https://hof.zerosic.com/index.php"
+        const val HOF_HOST = "hof.zerosic.com"
+        const val HOF_PATH = "/index.php"
     }
 
     private fun requireSafeTownUrl(value: String): String {
         val uri = runCatching { URI(value).normalize() }
             .getOrElse { throw IllegalArgumentException("Invalid HOF town URL") }
-        require(uri.scheme == "http" && uri.host.equals(HOF_HOST, ignoreCase = true)) {
+        require(uri.scheme == "https" && uri.host.equals(HOF_HOST, ignoreCase = true)) {
             "Town request must target the HOF origin"
         }
-        require(uri.port in setOf(-1, 80) && uri.rawUserInfo == null && uri.rawFragment == null && uri.path == HOF_PATH) {
+        require(uri.port in setOf(-1, 443) && uri.rawUserInfo == null && uri.rawFragment == null && uri.path == HOF_PATH) {
             "Town request must target the HOF entry path"
         }
         return uri.toASCIIString()

@@ -176,7 +176,7 @@ class RaidPubParserTest {
     }
 
     @Test fun `현재 페이지가 raidpub가 아니면 같은 HOF index POST도 화면으로 관측하지 않는다`() {
-        val nonRaidUrl = "http://sic.zerosic.com/ZeroHOF/index.php?menu=store"
+        val nonRaidUrl = "https://hof.zerosic.com/index.php?menu=store"
 
         val page = parser.parse(fixture(), nonRaidUrl, forms.parse(fixture(), nonRaidUrl))
 
@@ -556,5 +556,5 @@ class RaidPubParserTest {
     }
     private fun anyRequest(): HofRequest = Mockito.any(HofRequest::class.java) ?: HofRequest(HofHttpMethod.GET, URL)
     private fun anyCookies(): Map<String, String> = Mockito.anyMap<String, String>() ?: emptyMap()
-    private companion object { const val URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=raidpub" }
+    private companion object { const val URL = "https://hof.zerosic.com/index.php?menu=raidpub" }
 }

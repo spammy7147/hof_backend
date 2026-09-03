@@ -192,7 +192,7 @@ class CaptchaControllerTest {
         status = "READY",
         prompt = "캡차 인증이 필요합니다.",
         imageUrl = "/api/captcha/7/image?version=1",
-        sourceUrl = "http://sic.zerosic.com/ZeroHOF/index.php?menu=police",
+        sourceUrl = "https://hof.zerosic.com/index.php?menu=police",
         preparationVersion = 1,
         createdAt = Instant.parse("2026-07-23T00:00:00Z").toString(),
         answeredAt = null,

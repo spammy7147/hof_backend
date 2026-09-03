@@ -56,7 +56,7 @@ class CraftingParserTest {
               function ChangeTypecreate() {}
             </script>
         """.trimIndent()
-        val url = "http://sic.zerosic.com/ZeroHOF/index.php?menu=sewingshop"
+        val url = "https://hof.zerosic.com/index.php?menu=sewingshop"
 
         val value = parser.parse(CraftingMode.CLARIS, html, url, forms.parse(html, url))
 
@@ -206,5 +206,5 @@ class CraftingParserTest {
         parser.parse(mode, html, URL, forms.parse(html, URL))
     }
     private fun resource(name: String) = requireNotNull(javaClass.getResource("/fixtures/town/crafting/$name")).readText()
-    private companion object { const val URL = "http://sic.zerosic.com/ZeroHOF/index.php" }
+    private companion object { const val URL = "https://hof.zerosic.com/index.php" }
 }

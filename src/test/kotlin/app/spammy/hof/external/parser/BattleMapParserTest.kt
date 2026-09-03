@@ -71,7 +71,7 @@ class BattleMapParserTest {
         assertTrue(
             parser.observesCompleteAdventureMapPage(
                 html,
-                "http://sic.zerosic.com/ZeroHOF/index.php?sp_hunt",
+                "https://hof.zerosic.com/index.php?sp_hunt",
                 200,
                 maps,
             ),
@@ -79,7 +79,7 @@ class BattleMapParserTest {
         assertFalse(
             parser.observesCompleteAdventureMapPage(
                 html.substringBefore("<h5>"),
-                "http://sic.zerosic.com/ZeroHOF/index.php?sp_hunt",
+                "https://hof.zerosic.com/index.php?sp_hunt",
                 200,
                 maps,
             ),
@@ -87,7 +87,7 @@ class BattleMapParserTest {
         assertFalse(
             parser.observesCompleteAdventureMapPage(
                 html,
-                "http://sic.zerosic.com/ZeroHOF/index.php?sp_hunt",
+                "https://hof.zerosic.com/index.php?sp_hunt",
                 503,
                 maps,
             ),
@@ -95,7 +95,7 @@ class BattleMapParserTest {
         assertFalse(
             parser.observesCompleteAdventureMapPage(
                 html,
-                "http://sic.zerosic.com/ZeroHOF/index.php?hunt",
+                "https://hof.zerosic.com/index.php?hunt",
                 200,
                 maps,
             ),
@@ -124,7 +124,7 @@ class BattleMapParserTest {
         assertFalse(
             parser.observesCompleteAdventureMapPage(
                 html,
-                "http://sic.zerosic.com/ZeroHOF/index.php?sp_hunt",
+                "https://hof.zerosic.com/index.php?sp_hunt",
                 200,
                 maps,
             ),
@@ -137,7 +137,7 @@ class BattleMapParserTest {
         assertFalse(
             parser.observesCompleteAdventureMapPage(
                 unknownActionLink,
-                "http://sic.zerosic.com/ZeroHOF/index.php?sp_hunt",
+                "https://hof.zerosic.com/index.php?sp_hunt",
                 200,
                 parser.parse("adventure_map", "sp_common", unknownActionLink),
             ),

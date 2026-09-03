@@ -178,7 +178,7 @@ class RecruitmentTest {
     private fun fixture() = requireNotNull(javaClass.getResource("/fixtures/town/agency/recruitment.html")).readText()
     private fun liveFixture() = requireNotNull(javaClass.getResource("/fixtures/town/agency/recruitment-live.html")).readText()
     private companion object {
-        const val URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=recruit"
-        const val LIVE_URL = "http://sic.zerosic.com/ZeroHOF/index.php?recruit"
+        const val URL = "https://hof.zerosic.com/index.php?menu=recruit"
+        const val LIVE_URL = "https://hof.zerosic.com/index.php?recruit"
     }
 }

@@ -80,10 +80,10 @@ class HofFormParserTest {
     fun `query only form action preserves the HOF entry filename`() {
         val form = parser.parse(
             "<form method='post' action='?menu=create'><input name='item' type='radio' value='1'><button name='Create'>Create</button></form>",
-            "http://sic.zerosic.com/ZeroHOF/index.php?menu=town",
+            "https://hof.zerosic.com/index.php?menu=town",
         ).forms.single()
 
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?menu=create", form.actionUrl)
+        assertEquals("https://hof.zerosic.com/index.php?menu=create", form.actionUrl)
     }
 
     @Test
@@ -123,7 +123,7 @@ class HofFormParserTest {
                   <input type='submit' name='Recruit' value='Recruit'>
                 </form>
             """.trimIndent(),
-            "http://sic.zerosic.com/ZeroHOF/index.php?menu=town",
+            "https://hof.zerosic.com/index.php?menu=town",
         ).forms.single()
 
         assertEquals(listOf("Warrior ${'$'}2,000", "Monk ${'$'}10,000"), form.candidates.map { it.label })

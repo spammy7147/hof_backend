@@ -177,5 +177,5 @@ class CardPageParserTest {
     }
 
     private fun fixture(name: String) = requireNotNull(javaClass.getResource("/fixtures/town/card/$name")).readText()
-    companion object { const val URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=cardshop" }
+    companion object { const val URL = "https://hof.zerosic.com/index.php?menu=cardshop" }
 }

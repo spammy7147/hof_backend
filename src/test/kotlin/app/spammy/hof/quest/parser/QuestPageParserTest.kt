@@ -28,11 +28,11 @@ class QuestPageParserTest {
 
         val complete = parser.parseObservation(
             completeHtml,
-            "http://sic.zerosic.com/ZeroHOF/index.php?menu=quest",
+            "https://hof.zerosic.com/index.php?menu=quest",
         )
         val error = parser.parseObservation(
             "<html><body><h1>Temporary upstream error</h1></body></html>",
-            "http://sic.zerosic.com/ZeroHOF/index.php?menu=quest",
+            "https://hof.zerosic.com/index.php?menu=quest",
         )
 
         assertTrue(complete.complete)
@@ -49,12 +49,12 @@ class QuestPageParserTest {
 
         val serverError = parser.parseObservation(
             completeHtml,
-            "http://sic.zerosic.com/ZeroHOF/index.php?menu=quest",
+            "https://hof.zerosic.com/index.php?menu=quest",
             statusCode = 500,
         )
         val truncated = parser.parseObservation(
             completeHtml.substringBefore("<div id=\"foot\""),
-            "http://sic.zerosic.com/ZeroHOF/index.php?menu=quest",
+            "https://hof.zerosic.com/index.php?menu=quest",
         )
 
         assertFalse(serverError.complete)
@@ -73,7 +73,7 @@ class QuestPageParserTest {
 
         val observation = parser.parseObservation(
             unknownRow,
-            "http://sic.zerosic.com/ZeroHOF/index.php?menu=quest",
+            "https://hof.zerosic.com/index.php?menu=quest",
         )
 
         assertFalse(observation.complete)
@@ -94,7 +94,7 @@ class QuestPageParserTest {
 
         val observation = parser.parseObservation(
             multiRow,
-            "http://sic.zerosic.com/ZeroHOF/index.php?menu=quest",
+            "https://hof.zerosic.com/index.php?menu=quest",
         )
 
         assertTrue(observation.complete)
@@ -114,7 +114,7 @@ class QuestPageParserTest {
 
         val observation = parser.parseObservation(
             partialHtml,
-            "http://sic.zerosic.com/ZeroHOF/index.php?menu=quest",
+            "https://hof.zerosic.com/index.php?menu=quest",
         )
 
         assertFalse(observation.complete)

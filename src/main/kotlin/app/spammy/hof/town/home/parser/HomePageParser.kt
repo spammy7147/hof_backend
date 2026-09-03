@@ -183,8 +183,8 @@ class HomePageParser {
             if (href.startsWith("?")) URI("${base.scheme}://${base.authority}${base.path}$href").normalize()
             else base.resolve(href).normalize()
         }.getOrNull() ?: return null
-        if (uri.scheme != "http" || !uri.host.equals("sic.zerosic.com", true) || uri.port !in setOf(-1, 80) ||
-            uri.userInfo != null || uri.fragment != null || uri.path != "/ZeroHOF/index.php"
+        if (uri.scheme != "https" || !uri.host.equals("hof.zerosic.com", true) || uri.port !in setOf(-1, 443) ||
+            uri.userInfo != null || uri.fragment != null || uri.path != "/index.php"
         ) return null
         val query = decodeQuery(uri.rawQuery) ?: return null
         val pageQuery = decodeQuery(base.rawQuery) ?: return null
@@ -220,8 +220,8 @@ class HomePageParser {
     }
     private fun safeUrl(value: String): String? = runCatching {
         val uri = URI(value).normalize()
-        if (uri.scheme != "http" || !uri.host.equals("sic.zerosic.com", true) || uri.port !in setOf(-1, 80) ||
-            uri.userInfo != null || uri.fragment != null || uri.path != "/ZeroHOF/index.php"
+        if (uri.scheme != "https" || !uri.host.equals("hof.zerosic.com", true) || uri.port !in setOf(-1, 443) ||
+            uri.userInfo != null || uri.fragment != null || uri.path != "/index.php"
         ) return@runCatching null
         val query = decodeQuery(uri.rawQuery) ?: return@runCatching null
         if (query.keys != setOf("menu") || query["menu"]?.singleOrNull().isNullOrBlank()) return@runCatching null

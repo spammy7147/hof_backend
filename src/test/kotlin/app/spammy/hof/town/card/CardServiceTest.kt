@@ -101,8 +101,8 @@ class CardServiceTest {
     private fun changeMaterialId() = changeSnapshot().materialCards.single().id
 
     private companion object {
-        const val UPGRADE_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=cardmix"
-        const val CHANGE_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=cardmix2"
+        const val UPGRADE_URL = "https://hof.zerosic.com/index.php?menu=cardmix"
+        const val CHANGE_URL = "https://hof.zerosic.com/index.php?menu=cardmix2"
         val LIVE_UPGRADE = """
             <html><body><form method="post" action="?menu=cardmix">
               <table>

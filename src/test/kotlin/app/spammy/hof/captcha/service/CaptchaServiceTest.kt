@@ -124,7 +124,7 @@ class CaptchaServiceTest {
                   <div>전투에서 승리했습니다.</div>
                 </body></html>
             """.trimIndent(),
-            sourceUrl = "http://sic.zerosic.com/ZeroHOF/index.php",
+            sourceUrl = "https://hof.zerosic.com/index.php",
         )
 
         assertNull(response)
@@ -155,7 +155,7 @@ class CaptchaServiceTest {
                   <div>전투에서 승리했습니다.</div>
                 </body></html>
             """.trimIndent(),
-            sourceUrl = "http://sic.zerosic.com/ZeroHOF/index.php",
+            sourceUrl = "https://hof.zerosic.com/index.php",
         )
 
         assertNull(response)
@@ -181,7 +181,7 @@ class CaptchaServiceTest {
                       </form>
                     </body></html>
                 """.trimIndent(),
-                sourceUrl = "http://sic.zerosic.com/ZeroHOF/index.php?common=snow22",
+                sourceUrl = "https://hof.zerosic.com/index.php?common=snow22",
             ),
         )
 
@@ -209,7 +209,7 @@ class CaptchaServiceTest {
             prompt = "자경단에서 통행증을 발급받아주세요.",
             challengeKind = KIND_VIGILANTE_PASS,
             imageUrl = "https://example.test/captcha.png",
-            sourceUrl = "http://sic.zerosic.com/ZeroHOF/index.php?menu=police",
+            sourceUrl = "https://hof.zerosic.com/index.php?menu=police",
             answer = null,
             createdAt = now,
             answeredAt = null,
@@ -222,7 +222,7 @@ class CaptchaServiceTest {
             service.detectAndRecord(
                 account,
                 CaptchaPassRenewalCoordinator.REQUIRED_PASS_HTML,
-                "http://sic.zerosic.com/ZeroHOF/index.php",
+                "https://hof.zerosic.com/index.php",
                 notifyAutomation = false,
             ),
         )
@@ -243,7 +243,7 @@ class CaptchaServiceTest {
             prompt = CaptchaChallengeParser.VIGILANTE_PASS_PROMPT,
             challengeKind = KIND_VIGILANTE_PASS,
             imageUrl = "/api/captcha/7/image?version=2",
-            sourceUrl = "http://sic.zerosic.com/ZeroHOF/index.php?menu=police",
+            sourceUrl = "https://hof.zerosic.com/index.php?menu=police",
             answer = null,
             createdAt = now,
             answeredAt = null,
@@ -267,7 +267,7 @@ class CaptchaServiceTest {
             status = "DETECTED",
             prompt = "자경단에서 통행증을 발급받아주세요.",
             imageUrl = null,
-            sourceUrl = "http://sic.zerosic.com/ZeroHOF/index.php?common=snow22",
+            sourceUrl = "https://hof.zerosic.com/index.php?common=snow22",
             answer = null,
             createdAt = now,
             answeredAt = null,
@@ -277,7 +277,7 @@ class CaptchaServiceTest {
         Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(listOf(cookie()))
         gateway.response = HofHttpResponse(
             statusCode = 200,
-            finalUrl = "http://sic.zerosic.com/ZeroHOF/index.php?menu=police",
+            finalUrl = "https://hof.zerosic.com/index.php?menu=police",
             body = """
                 <html><body>
                   <a href="index.php?char=1">character</a>
@@ -292,7 +292,7 @@ class CaptchaServiceTest {
         )
         binaryGateway.response = HofBinaryResponse(
             statusCode = 200,
-            finalUrl = "http://sic.zerosic.com/ZeroHOF/simple-php-captcha.php?_CAPTCHA=1",
+            finalUrl = "https://hof.zerosic.com/simple-php-captcha.php?_CAPTCHA=1",
             contentType = "image/png",
             body = byteArrayOf(7, 7, 7),
         )
@@ -314,7 +314,7 @@ class CaptchaServiceTest {
         Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(listOf(cookie()))
         gateway.response = HofHttpResponse(
             statusCode = 200,
-            finalUrl = "http://sic.zerosic.com/ZeroHOF/index.php?menu=police",
+            finalUrl = "https://hof.zerosic.com/index.php?menu=police",
             body = """
                 <html><body>
                   <a href="index.php?char=1">character</a>
@@ -342,7 +342,7 @@ class CaptchaServiceTest {
         Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(listOf(cookie()))
         gateway.response = HofHttpResponse(
             statusCode = 200,
-            finalUrl = "http://sic.zerosic.com/ZeroHOF/index.php?menu=police",
+            finalUrl = "https://hof.zerosic.com/index.php?menu=police",
             body = """
                 <html><body>
                   <a href="index.php?char=1">character</a>
@@ -370,7 +370,7 @@ class CaptchaServiceTest {
             status = "DETECTED",
             prompt = "캡차 인증이 필요합니다.",
             imageUrl = null,
-            sourceUrl = "http://sic.zerosic.com/ZeroHOF/index.php?common=snow22",
+            sourceUrl = "https://hof.zerosic.com/index.php?common=snow22",
             answer = null,
             createdAt = now,
             answeredAt = null,
@@ -380,7 +380,7 @@ class CaptchaServiceTest {
         Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(listOf(cookie()))
         gateway.response = HofHttpResponse(
             statusCode = 200,
-            finalUrl = "http://sic.zerosic.com/ZeroHOF/index.php",
+            finalUrl = "https://hof.zerosic.com/index.php",
             body = """
                 <html><body><form action="index.php" method="post">
                   <input type="text" name="id">
@@ -410,7 +410,7 @@ class CaptchaServiceTest {
                       <p>자경단에서 통행증을 발급받아주세요.</p>
                     </body></html>
                 """.trimIndent(),
-                sourceUrl = "http://sic.zerosic.com/ZeroHOF/index.php?common=snow22",
+                sourceUrl = "https://hof.zerosic.com/index.php?common=snow22",
             ),
         )
 
@@ -423,7 +423,7 @@ class CaptchaServiceTest {
         val saved = repository.savedEntities.single()
         assertEquals("자경단에서 통행증을 발급받아주세요.", saved.prompt)
         assertNull(saved.imageUrl)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?common=snow22", saved.sourceUrl)
+        assertEquals("https://hof.zerosic.com/index.php?common=snow22", saved.sourceUrl)
         assertNull(saved.submitUrl)
         assertEquals("POST", saved.submitMethod)
         assertEquals(CaptchaChallengeParser.DEFAULT_ANSWER_FIELD, saved.answerFieldName)
@@ -443,7 +443,7 @@ class CaptchaServiceTest {
                   <input name="captcha">
                 </body></html>
             """.trimIndent(),
-            sourceUrl = "http://sic.zerosic.com/ZeroHOF/index.php?common=snow22",
+            sourceUrl = "https://hof.zerosic.com/index.php?common=snow22",
         )
 
         assertNotNull(response)
@@ -494,7 +494,7 @@ class CaptchaServiceTest {
     fun submitAnswerSendsStoredFormWithCookiesAndMarksAnsweredWhenCaptchaIsGone() {
         val challenge = pendingChallenge(
             id = 3L,
-            submitUrl = "http://sic.zerosic.com/ZeroHOF/pass_check.php",
+            submitUrl = "https://hof.zerosic.com/pass_check.php",
             submitMethod = "GET",
             answerFieldName = "pass_code",
             formFields = linkedMapOf("mode" to "battle", "map" to "snow22", "pass_code" to ""),
@@ -512,7 +512,7 @@ class CaptchaServiceTest {
         )
         gateway.response = HofHttpResponse(
             statusCode = 200,
-            finalUrl = "http://sic.zerosic.com/ZeroHOF/battle.php",
+            finalUrl = "https://hof.zerosic.com/battle.php",
             body = "<html><body><div>전투에서 승리했습니다.</div></body></html>",
             setCookies = emptyMap(),
         )
@@ -525,7 +525,7 @@ class CaptchaServiceTest {
         assertEquals(listOf("1:3:1"), captchaImageFileStore.deletedKeys)
         assertEquals(1, gateway.requests.size)
         assertEquals(HofHttpMethod.GET, gateway.requests.single().method)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/pass_check.php", gateway.requests.single().url)
+        assertEquals("https://hof.zerosic.com/pass_check.php", gateway.requests.single().url)
         assertEquals(
             mapOf(
                 "mode" to "battle",
@@ -542,8 +542,8 @@ class CaptchaServiceTest {
         val challenge = pendingChallenge(
             id = 22L,
             prompt = "자경단에서 통행증을 발급받아주세요.",
-            imageUrl = "http://sic.zerosic.com/ZeroHOF/simple-php-captcha.php?_CAPTCHA=1",
-            submitUrl = "http://sic.zerosic.com/ZeroHOF/index.php?menu=police",
+            imageUrl = "https://hof.zerosic.com/simple-php-captcha.php?_CAPTCHA=1",
+            submitUrl = "https://hof.zerosic.com/index.php?menu=police",
             submitMethod = "POST",
             answerFieldName = "AnswerV",
             formFields = linkedMapOf("AnswerV" to "", "AnswerOut" to "입니다."),
@@ -556,7 +556,7 @@ class CaptchaServiceTest {
         Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(listOf(cookie()))
         gateway.response = HofHttpResponse(
             statusCode = 200,
-            finalUrl = "http://sic.zerosic.com/ZeroHOF/index.php?menu=police",
+            finalUrl = "https://hof.zerosic.com/index.php?menu=police",
             body = """
                 <html><body>
                   <div>자경단 검문소(Checkpoint)</div>
@@ -626,7 +626,7 @@ class CaptchaServiceTest {
         val bytes = byteArrayOf(1, 2, 3, 4)
         val challenge = pendingChallenge(
             id = 19L,
-            imageUrl = "http://sic.zerosic.com/ZeroHOF/simple-php-captcha.php?_CAPTCHA=1",
+            imageUrl = "https://hof.zerosic.com/simple-php-captcha.php?_CAPTCHA=1",
         )
         challenge.status = "READY"
         challenge.preparationVersion = 2
@@ -703,7 +703,7 @@ class CaptchaServiceTest {
 
         service.submitAnswer(accountId = 1L, challengeId = 4L, answer = "1234", preparationVersion = 1)
 
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?common=snow22", gateway.requests.single().url)
+        assertEquals("https://hof.zerosic.com/index.php?common=snow22", gateway.requests.single().url)
     }
 
     @Test
@@ -711,7 +711,7 @@ class CaptchaServiceTest {
         val refreshedImageBytes = byteArrayOf(6, 6, 6)
         val challenge = pendingChallenge(
             id = 5L,
-            submitUrl = "http://sic.zerosic.com/ZeroHOF/pass_check.php",
+            submitUrl = "https://hof.zerosic.com/pass_check.php",
             submitMethod = "POST",
             answerFieldName = "pass_code",
             formFields = linkedMapOf("old_token" to "old", "pass_code" to ""),
@@ -725,7 +725,7 @@ class CaptchaServiceTest {
         gateway.responses += listOf(
             HofHttpResponse(
                 statusCode = 200,
-                finalUrl = "http://sic.zerosic.com/ZeroHOF/retry.php?common=snow22",
+                finalUrl = "https://hof.zerosic.com/retry.php?common=snow22",
                 body = """
                     <html><body>
                       <p>자경단에서 통행증을 발급받아주세요.</p>
@@ -735,10 +735,10 @@ class CaptchaServiceTest {
             ),
             HofHttpResponse(
                 statusCode = 200,
-                finalUrl = "http://sic.zerosic.com/ZeroHOF/index.php?menu=police",
+                finalUrl = "https://hof.zerosic.com/index.php?menu=police",
                 body = """
                     <html><body>
-                      <form action="/ZeroHOF/index.php?menu=police" method="post">
+                      <form action="/index.php?menu=police" method="post">
                         <input type="hidden" name="token" value="new-token">
                         <img src="simple-php-captcha.php?_CAPTCHA=1">
                         <input type="text" name="AnswerV">
@@ -751,7 +751,7 @@ class CaptchaServiceTest {
         )
         binaryGateway.response = HofBinaryResponse(
             statusCode = 200,
-            finalUrl = "http://sic.zerosic.com/ZeroHOF/simple-php-captcha.php?_CAPTCHA=1",
+            finalUrl = "https://hof.zerosic.com/simple-php-captcha.php?_CAPTCHA=1",
             contentType = "image/png",
             body = refreshedImageBytes,
         )
@@ -769,15 +769,15 @@ class CaptchaServiceTest {
             gateway.requests[0].formFields,
         )
         assertEquals(HofHttpMethod.GET, gateway.requests[1].method)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?menu=police", gateway.requests[1].url)
+        assertEquals("https://hof.zerosic.com/index.php?menu=police", gateway.requests[1].url)
         assertEquals("/api/captcha/5/image?version=2", response.imageUrl)
         assertEquals("READY", challenge.status)
         assertNull(challenge.answer)
         assertNull(challenge.answeredAt)
         assertEquals("자경단에서 통행증을 발급받아주세요.", challenge.prompt)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/simple-php-captcha.php?_CAPTCHA=1", challenge.imageUrl)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?menu=police", challenge.sourceUrl)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?menu=police", challenge.submitUrl)
+        assertEquals("https://hof.zerosic.com/simple-php-captcha.php?_CAPTCHA=1", challenge.imageUrl)
+        assertEquals("https://hof.zerosic.com/index.php?menu=police", challenge.sourceUrl)
+        assertEquals("https://hof.zerosic.com/index.php?menu=police", challenge.submitUrl)
         assertEquals("POST", challenge.submitMethod)
         assertEquals("AnswerV", challenge.answerFieldName)
         assertEquals(listOf("1:5:1"), captchaImageFileStore.deletedKeys)
@@ -970,7 +970,7 @@ class CaptchaServiceTest {
         prompt: String = "통행증을 입력하세요",
         challengeKind: String = CaptchaChallengeEntity.KIND_CAPTCHA,
         imageUrl: String? = null,
-        submitUrl: String? = "http://sic.zerosic.com/ZeroHOF/pass_check.php",
+        submitUrl: String? = "https://hof.zerosic.com/pass_check.php",
         submitMethod: String = "POST",
         answerFieldName: String = "captcha",
         formFields: Map<String, String> = linkedMapOf("captcha" to ""),
@@ -982,7 +982,7 @@ class CaptchaServiceTest {
             prompt = prompt,
             challengeKind = challengeKind,
             imageUrl = imageUrl,
-            sourceUrl = "http://sic.zerosic.com/ZeroHOF/index.php?common=snow22",
+            sourceUrl = "https://hof.zerosic.com/index.php?common=snow22",
             answer = null,
             createdAt = now,
             answeredAt = null,
@@ -1109,7 +1109,7 @@ class CaptchaServiceTest {
         val cookies = mutableListOf<Map<String, String>>()
         var response = HofHttpResponse(
             statusCode = 200,
-            finalUrl = "http://sic.zerosic.com/ZeroHOF/index.php",
+            finalUrl = "https://hof.zerosic.com/index.php",
             body = "<html><body>OK</body></html>",
             setCookies = emptyMap(),
         )
@@ -1134,7 +1134,7 @@ class CaptchaServiceTest {
         val cookies = mutableListOf<Map<String, String>>()
         var response = HofBinaryResponse(
             statusCode = 200,
-            finalUrl = "http://sic.zerosic.com/ZeroHOF/pass_image.php",
+            finalUrl = "https://hof.zerosic.com/pass_image.php",
             contentType = "application/octet-stream",
             body = byteArrayOf(),
         )

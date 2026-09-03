@@ -152,5 +152,5 @@ class CardService(
     private fun selectedMax(max: Int, baseOwned: Int?, materialOwned: Int?) = minOf(max, baseOwned ?: max, materialOwned ?: max)
     private fun validateQuantity(quantity: Int, min: Int, max: Int) { if (quantity !in min..max) invalid("수량은 $min~$max 사이여야 합니다.") }
     private fun invalid(message: String): Nothing = throw ApiException(ErrorCode.INVALID_REQUEST, message)
-    private companion object { const val TOWN_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=town" }
+    private companion object { const val TOWN_URL = "https://hof.zerosic.com/index.php?menu=town" }
 }

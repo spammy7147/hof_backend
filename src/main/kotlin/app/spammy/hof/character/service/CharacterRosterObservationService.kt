@@ -39,7 +39,7 @@ class CharacterRosterObservationService(
         ?.let { uri ->
             uri.scheme.equals(HOF_SCHEME, ignoreCase = true) &&
                 uri.host.equals(HOF_HOST, ignoreCase = true) &&
-                uri.port in setOf(-1, 80) &&
+                uri.port in setOf(-1, 443) &&
                 uri.rawUserInfo == null &&
                 uri.rawQuery == null &&
                 uri.rawFragment == null &&
@@ -47,8 +47,8 @@ class CharacterRosterObservationService(
         } == true
 
     private companion object {
-        const val HOF_SCHEME = "http"
-        const val HOF_HOST = "sic.zerosic.com"
-        const val HOF_PATH = "/ZeroHOF/index.php"
+        const val HOF_SCHEME = "https"
+        const val HOF_HOST = "hof.zerosic.com"
+        const val HOF_PATH = "/index.php"
     }
 }

@@ -218,8 +218,8 @@ class PantheonParser {
     }
 
     private fun safeSameHofPage(uri: URI): String? = uri.toASCIIString().takeIf {
-        uri.scheme == "http" && uri.host.equals("sic.zerosic.com", true) && uri.port in setOf(-1, 80) &&
-            uri.rawUserInfo == null && uri.rawFragment == null && uri.path == "/ZeroHOF/index.php"
+        uri.scheme == "https" && uri.host.equals("hof.zerosic.com", true) && uri.port in setOf(-1, 443) &&
+            uri.rawUserInfo == null && uri.rawFragment == null && uri.path == "/index.php"
     }
 
     private fun queryDelta(base: Map<String, List<String>>, target: Map<String, List<String>>): List<HofFormField>? {
@@ -257,9 +257,8 @@ class PantheonParser {
     }
     private fun safeImageUrl(value: String): Boolean = runCatching {
         val uri = URI(value).normalize()
-        uri.scheme in setOf("http", "https") && uri.host.equals("sic.zerosic.com", true) &&
-            ((uri.scheme == "http" && uri.port in setOf(-1, 80)) || (uri.scheme == "https" && uri.port in setOf(-1, 443))) &&
-            uri.userInfo == null && uri.fragment == null && uri.path.startsWith("/ZeroHOF/")
+        uri.scheme == "https" && uri.host.equals("hof.zerosic.com", true) && uri.port in setOf(-1, 443) &&
+            uri.userInfo == null && uri.fragment == null && uri.path.startsWith("/image/")
     }.getOrDefault(false)
     private fun isSubmit(element: Element) = when (element.tagName()) {
         "input" -> element.attr("type").lowercase() in setOf("submit", "image")

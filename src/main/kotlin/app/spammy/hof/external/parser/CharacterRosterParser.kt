@@ -88,6 +88,6 @@ class CharacterRosterParser {
         val WHITESPACE_REGEX = Regex("""\s+""")
         val LEVEL_TOKEN_REGEX = Regex("""\bLv\.?\s*\d+""", RegexOption.IGNORE_CASE)
         val ROSTER_CARD_REGEX = Regex("""^(.+?)\s+Lv\.?\s*(\d+)\s+(.+)$""", RegexOption.IGNORE_CASE)
-        const val HOF_BASE_URL = "http://sic.zerosic.com/ZeroHOF/index.php"
+        const val HOF_BASE_URL = "https://hof.zerosic.com/index.php"
     }
 }

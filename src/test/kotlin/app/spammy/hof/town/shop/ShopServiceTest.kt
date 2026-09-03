@@ -24,7 +24,7 @@ class ShopServiceTest {
     @Test
     fun `모든 상점은 사용자 HOF 페이지를 호출할 때마다 파싱한다`() {
         ShopId.entries.forEach { shopId ->
-            val url = "http://sic.zerosic.com/ZeroHOF/index.php?menu=${shopId.menuCode}"
+            val url = "https://hof.zerosic.com/index.php?menu=${shopId.menuCode}"
             val page = HofFormParser().parse(ShopCatalogRefreshServiceTest.SHOP_HTML, url)
             Mockito.`when`(locations.resolve(feature(shopId), null))
                 .thenReturn(ResolvedTownLocation(feature(shopId), url))

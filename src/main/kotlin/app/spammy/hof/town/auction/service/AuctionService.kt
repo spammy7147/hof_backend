@@ -240,7 +240,7 @@ class AuctionService(
     }
     private companion object {
         val logger = LoggerFactory.getLogger(AuctionService::class.java)
-        const val TOWN_ENTRY_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=town"
+        const val TOWN_ENTRY_URL = "https://hof.zerosic.com/index.php?menu=town"
         val BID_SCALARS = setOf("ArticleNo", "BidPrice")
         val EXHIBIT_SCALARS = setOf("Amount", "ExhibitTime", "StartPrice", "Comment")
     }

@@ -218,7 +218,7 @@ class CharacterRosterObservationServiceTest {
     }
 
     private companion object {
-        const val HOME_URL = "http://sic.zerosic.com/ZeroHOF/index.php"
+        const val HOME_URL = "https://hof.zerosic.com/index.php"
         val NOW: Instant = Instant.parse("2026-08-18T07:00:00Z")
     }
 }

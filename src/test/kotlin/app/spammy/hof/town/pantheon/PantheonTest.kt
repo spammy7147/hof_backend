@@ -8,7 +8,7 @@ import kotlin.test.*
 class PantheonTest {
     private val parser = PantheonParser()
     private val forms = HofFormParser()
-    private val base = "http://sic.zerosic.com/ZeroHOF/index.php?menu=pantheon"
+    private val base = "https://hof.zerosic.com/index.php?menu=pantheon"
 
     @Test
     fun `신전 거리의 열 개 신전을 관측 링크로 파싱한다`() {
@@ -26,7 +26,7 @@ class PantheonTest {
         assertEquals(1, street.shrines.size)
         assertEquals("군신 마르두크", street.shrines.single().name)
         assertEquals("Marduk", street.shrines.single().alias)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?menu=marduktemple", street.shrines.single().detailUrl)
+        assertEquals("https://hof.zerosic.com/index.php?menu=marduktemple", street.shrines.single().detailUrl)
     }
 
     @Test
@@ -45,7 +45,7 @@ class PantheonTest {
 
     @Test
     fun `실제 신전의 한 form에 함께 있는 네 submit을 각각 action으로 파싱한다`() {
-        val url = "http://sic.zerosic.com/ZeroHOF/index.php?menu=marduktemple"
+        val url = "https://hof.zerosic.com/index.php?menu=marduktemple"
         val html = """
             <h4>마르두크의 전당 - 군신 마르두크(Marduk)</h4>
             <form method="post" action="?menu=marduktemple">

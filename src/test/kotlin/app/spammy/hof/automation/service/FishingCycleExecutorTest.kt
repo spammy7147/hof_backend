@@ -484,6 +484,6 @@ class FishingCycleExecutorTest {
     private fun anyCookies(): Map<String, String> = Mockito.anyMap<String, String>() ?: emptyMap()
 
     private companion object {
-        const val FISHING_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=fishing"
+        const val FISHING_URL = "https://hof.zerosic.com/index.php?menu=fishing"
     }
 }

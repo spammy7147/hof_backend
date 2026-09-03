@@ -94,7 +94,7 @@ class CharacterServiceTest {
         val characters = service.findAll(accountId = 1L)
 
         assertEquals(1, characters.size)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/image/char/sknight02.gif", characters.single().imageUrl)
+        assertEquals("https://hof.zerosic.com/image/char/sknight02.gif", characters.single().imageUrl)
         assertEquals(2, characters.single().patternSlots.size)
         assertEquals("0", characters.single().patternSlots[0].slot)
         assertEquals("범용", characters.single().patternSlots[0].label)
@@ -223,7 +223,7 @@ class CharacterServiceTest {
         assertEquals("소셜", detail.name)
         assertEquals("Social Knight", detail.job)
         assertEquals(60, detail.level)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/image/char/sknight02.gif", detail.imageUrl)
+        assertEquals("https://hof.zerosic.com/image/char/sknight02.gif", detail.imageUrl)
         assertEquals(listOf("HP : 5628 + 5033"), detail.statusLines)
         assertEquals("범용", detail.patternSlots.single().label)
         assertEquals(116, detail.stats.atk)
@@ -247,7 +247,7 @@ class CharacterServiceTest {
             job = "Social Knight",
             level = 60,
             patternSlotCount = patternSlotCount,
-            imageUrl = "http://sic.zerosic.com/ZeroHOF/image/char/sknight02.gif",
+            imageUrl = "https://hof.zerosic.com/image/char/sknight02.gif",
             updatedAt = now,
         )
 

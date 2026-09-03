@@ -636,7 +636,7 @@ class BattleMapParser {
     )
 
     private companion object {
-        const val HOF_BASE_URL = "http://sic.zerosic.com/ZeroHOF/index.php"
+        const val HOF_BASE_URL = "https://hof.zerosic.com/index.php"
         const val MAP_GROUP_ID_PREFIX = "mapgroup"
         const val UNION_CATEGORY = "union"
         const val UNION_CARD_CLASS = "carpet_frame"
@@ -679,9 +679,9 @@ class BattleMapParser {
         val RAID_ABSENCE_PATTERN = Regex(
             "(?:현재\\s*열린\\s*레이드가|진행\\s*중인\\s*전투가)\\s*없습니다[.]?",
         )
-        val RAID_PAGE_URL_PATTERN = Regex("""/ZeroHOF/index[.]php[?](?:[^#&]*&)*raid_hunt(?:[=&][^#]*)?(?:#.*)?$""")
+        val RAID_PAGE_URL_PATTERN = Regex("""/index[.]php[?](?:[^#&]*&)*raid_hunt(?:[=&][^#]*)?(?:#.*)?$""")
         val ADVENTURE_PAGE_URL_PATTERN = Regex(
-            """/ZeroHOF/index[.]php[?](?:[^#&]*&)*sp_hunt(?:[=&][^#]*)?(?:#.*)?$""",
+            """/index[.]php[?](?:[^#&]*&)*sp_hunt(?:[=&][^#]*)?(?:#.*)?$""",
         )
         val RAID_PAGE_MARKER = Regex("Special\\s*Battle", RegexOption.IGNORE_CASE)
         val RAID_BATTLE_LOG_MARKER = Regex("Battle\\s*Log", RegexOption.IGNORE_CASE)

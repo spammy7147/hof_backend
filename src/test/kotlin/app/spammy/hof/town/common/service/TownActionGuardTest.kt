@@ -28,7 +28,7 @@ class TownActionGuardTest {
     private val form = ParsedTownForm(
         actionId = "action-1",
         method = HofHttpMethod.POST,
-        actionUrl = "http://sic.zerosic.com/ZeroHOF/index.php?menu=shop",
+        actionUrl = "https://hof.zerosic.com/index.php?menu=shop",
         rows = listOf(ParsedTownRow("선택 가능 아이템", candidate)),
         hiddenFields = listOf(HofFormField("csrf", "fresh-token")),
         submitFields = listOf(HofFormField("Create", "교환")),

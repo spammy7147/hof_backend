@@ -125,6 +125,6 @@ class ShopService(
     private fun invalid(message: String): Nothing = throw ApiException(ErrorCode.INVALID_REQUEST, message)
 
     private companion object {
-        const val TOWN_ENTRY_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=town"
+        const val TOWN_ENTRY_URL = "https://hof.zerosic.com/index.php?menu=town"
     }
 }

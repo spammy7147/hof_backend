@@ -95,7 +95,7 @@ class ColosseumTest {
     private fun anyRequest(): HofRequest = Mockito.any(HofRequest::class.java) ?: HofRequest(HofHttpMethod.GET, BASE)
     private fun anyCookies(): Map<String, String> = Mockito.anyMap<String, String>() ?: emptyMap()
     private companion object {
-        const val BASE = "http://sic.zerosic.com/ZeroHOF/index.php"
+        const val BASE = "https://hof.zerosic.com/index.php"
         const val BATTLE_URL = "$BASE?menu=colosseum"
         const val SHOP_URL = "$BASE?menu=colosseumshop"
     }

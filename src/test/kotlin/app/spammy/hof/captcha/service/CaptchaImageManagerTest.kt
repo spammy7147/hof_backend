@@ -183,7 +183,7 @@ class CaptchaImageManagerTest {
     }
 
     private companion object {
-        const val IMAGE_URL = "http://sic.zerosic.com/ZeroHOF/simple-php-captcha.php?_CAPTCHA=1"
+        const val IMAGE_URL = "https://hof.zerosic.com/simple-php-captcha.php?_CAPTCHA=1"
 
         fun imageResponse(bytes: ByteArray) = HofBinaryResponse(200, IMAGE_URL, "image/png", bytes)
     }

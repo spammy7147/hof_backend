@@ -26,7 +26,7 @@ class HomePageParserTest {
             <tr><td>[BAD3] 깨진 인코딩</td><td>조건 1/1</td><td>-</td><td><a href="?menu=housing&amp;action=complete&amp;no=%ZZ">완료</a></td></tr>
             </table></div>
         """.trimIndent()
-        val url = "http://sic.zerosic.com/ZeroHOF/index.php?menu=housing"
+        val url = "https://hof.zerosic.com/index.php?menu=housing"
         val snapshot = parser.parse(HomeMode.HOME, html, url, forms.parse(html, url))
 
         assertEquals(HomeQuestState.AVAILABLE, snapshot.quests.first { it.name.contains("H001") }.state)
@@ -40,7 +40,7 @@ class HomePageParserTest {
 
     @Test
     fun `home quest id remains stable when progress and section change`() {
-        val url = "http://sic.zerosic.com/ZeroHOF/index.php?menu=housing"
+        val url = "https://hof.zerosic.com/index.php?menu=housing"
         val availableHtml = """
             <h4>수락 가능한 퀘스트</h4><table>
             <tr><td>[H001] 손님 맞이</td><td>미션 0/1</td><td>보상 Item</td><td><a href="?menu=housing&amp;action=get&amp;no=11">수락</a></td></tr>
@@ -99,7 +99,7 @@ class HomePageParserTest {
               </table>
             </div>
         """.trimIndent()
-        val url = "http://sic.zerosic.com/ZeroHOF/index.php?menu=quest2"
+        val url = "https://hof.zerosic.com/index.php?menu=quest2"
 
         val snapshot = parser.parse(HomeMode.HOME, html, url, forms.parse(html, url))
 
@@ -127,7 +127,7 @@ class HomePageParserTest {
             <form method="post" action="?menu=rest"><input name="target"><input type="submit" name="Other" value="휴식 복구"></form>
             <form method="post" action="?menu=other"><input type="submit" name="Rest" value="휴식한다"></form>
         """.trimIndent()
-        val url = "http://sic.zerosic.com/ZeroHOF/index.php?menu=rest"
+        val url = "https://hof.zerosic.com/index.php?menu=rest"
         val snapshot = parser.parse(HomeMode.REST, html, url, forms.parse(html, url))
         assertEquals(1, snapshot.actions.size)
         assertTrue(snapshot.actions.single().label.contains("회복"))
@@ -141,7 +141,7 @@ class HomePageParserTest {
     @Test
     fun `rest marks explicit daily use without inventing recovery numbers`() {
         val html = "<p>오늘은 이미 휴식을 사용했습니다.</p>"
-        val url = "http://sic.zerosic.com/ZeroHOF/index.php?menu=rest"
+        val url = "https://hof.zerosic.com/index.php?menu=rest"
 
         val snapshot = parser.parse(HomeMode.REST, html, url, forms.parse(html, url))
 
@@ -159,7 +159,7 @@ class HomePageParserTest {
             <div>UpDate - Manual - Tutorial - GameData - Top 현재 접속자 수는 6명 입니다. Copy Right Tekito 2007-2008.</div>
             <form method="post" action="?menu=rest"><input type="submit" name="Rest" value="휴식을 취한다"></form>
         """.trimIndent()
-        val url = "http://sic.zerosic.com/ZeroHOF/index.php?menu=rest"
+        val url = "https://hof.zerosic.com/index.php?menu=rest"
 
         val snapshot = parser.parse(HomeMode.REST, html, url, forms.parse(html, url))
 
@@ -176,7 +176,7 @@ class HomePageParserTest {
                 <div id="foot">UpDate - Manual - Tutorial - GameData - Top</div>
             </li></ul>
         """.trimIndent()
-        val url = "http://sic.zerosic.com/ZeroHOF/index.php?menu=rest"
+        val url = "https://hof.zerosic.com/index.php?menu=rest"
 
         val snapshot = parser.parse(HomeMode.REST, html, url, forms.parse(html, url))
 
@@ -214,7 +214,7 @@ class HomePageParserTest {
               <tr></tr>
             </tbody></table>
         """.trimIndent()
-        val url = "http://sic.zerosic.com/ZeroHOF/index.php?menu=rest"
+        val url = "https://hof.zerosic.com/index.php?menu=rest"
 
         val snapshot = parser.parse(HomeMode.REST, html, url, forms.parse(html, url))
         val facilities = snapshot.restStatus?.facilities.orEmpty()
@@ -247,7 +247,7 @@ class HomePageParserTest {
             "<tr>$cells</tr>"
         }
         val html = "<h3>보유 중인 시설</h3><table>$rows</table>"
-        val url = "http://sic.zerosic.com/ZeroHOF/index.php?menu=rest"
+        val url = "https://hof.zerosic.com/index.php?menu=rest"
 
         val facilities = parser.parse(HomeMode.REST, html, url, forms.parse(html, url))
             .restStatus?.facilities.orEmpty()

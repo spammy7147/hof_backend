@@ -149,7 +149,7 @@ class RewardParserTest {
 
     private fun fixture(name: String) = requireNotNull(javaClass.getResource("/fixtures/town/reward/$name")).readText()
     private companion object {
-        const val STASH_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=stash"
-        const val ORB_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=orbboxshop"
+        const val STASH_URL = "https://hof.zerosic.com/index.php?menu=stash"
+        const val ORB_URL = "https://hof.zerosic.com/index.php?menu=orbboxshop"
     }
 }

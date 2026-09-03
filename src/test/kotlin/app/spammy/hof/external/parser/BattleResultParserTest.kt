@@ -66,7 +66,7 @@ class BattleResultParserTest {
         val result = parser.parse(
             html = """
                 <html><body>
-                  <a href="http://sic.zerosic.com/ZeroHOF/index.php?common=gb0#">로그 주소 복사</a>
+                  <a href="https://hof.zerosic.com/index.php?common=gb0#">로그 주소 복사</a>
                   《얼어붙은 손길》공민이은(는) 승리했다!
                   <div>
                     남은 HP : 0/780
@@ -91,7 +91,7 @@ class BattleResultParserTest {
 
         assertEquals(HofBattleOutcome.VICTORY, result.outcome)
         assertEquals("《얼어붙은 손길》공민이은(는) 승리했다!", result.title)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?common=gb0#", result.rawLogUrl)
+        assertEquals("https://hof.zerosic.com/index.php?common=gb0#", result.rawLogUrl)
         assertEquals(0, result.enemySide.hpCurrent)
         assertEquals(780, result.enemySide.hpMax)
         assertEquals(26087, result.allySide.hpCurrent)
@@ -111,7 +111,7 @@ class BattleResultParserTest {
         val result = parser.parse(
             html = """
                 <html><body>
-                  <a href="http://sic.zerosic.com/ZeroHOF/index.php?common=english-detail#">Show Detail(6 turns.)</a>
+                  <a href="https://hof.zerosic.com/index.php?common=english-detail#">Show Detail(6 turns.)</a>
                   공민이은(는) 승리했다!
                   <div>남은 HP : 0/100</div>
                   <div>남은 HP : 100/100 획득 Funds : ${'$'} 200</div>
@@ -120,7 +120,7 @@ class BattleResultParserTest {
             playerName = "공민이",
         )
 
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?common=english-detail#", result.rawLogUrl)
+        assertEquals("https://hof.zerosic.com/index.php?common=english-detail#", result.rawLogUrl)
     }
 
     @Test
@@ -133,11 +133,11 @@ class BattleResultParserTest {
                 </body></html>
             """.trimIndent(),
             playerName = "공민이",
-            baseUrl = "http://sic.zerosic.com/ZeroHOF/index.php?common=Sky04",
+            baseUrl = "https://hof.zerosic.com/index.php?common=Sky04",
         )
 
         assertEquals(44, result.turns)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?log=1785775740092211", result.rawLogUrl)
+        assertEquals("https://hof.zerosic.com/index.php?log=1785775740092211", result.rawLogUrl)
     }
 
     @Test
@@ -145,7 +145,7 @@ class BattleResultParserTest {
         val result = parser.parse(
             html = """
                 <html><body>
-                  <a href="http://sic.zerosic.com/ZeroHOF/index.php?common=gb0#">로그 주소 복사</a>
+                  <a href="https://hof.zerosic.com/index.php?common=gb0#">로그 주소 복사</a>
                   《얼어붙은 손길》공민이은(는) 승리했다!
                   <div>
                     남은 HP : 0/860
@@ -310,7 +310,7 @@ class BattleResultParserTest {
             html = """
                 <html><body>
                   <h2>Show Detail( 6 turns. )</h2>
-                  <a href="http://sic.zerosic.com/ZeroHOF/index.php?common=round1#">로그 주소 복사</a>
+                  <a href="https://hof.zerosic.com/index.php?common=round1#">로그 주소 복사</a>
                   《얼어붙은 손길》공민이은(는) 승리했다!
                   <div>
                     남은 HP : 0/820
@@ -326,7 +326,7 @@ class BattleResultParserTest {
                     획득 Funds : $ 200
                   </div>
                   <h2>Show Detail( 6 turns. )</h2>
-                  <a href="http://sic.zerosic.com/ZeroHOF/index.php?common=round2#">로그 주소 복사</a>
+                  <a href="https://hof.zerosic.com/index.php?common=round2#">로그 주소 복사</a>
                   《얼어붙은 손길》공민이은(는) 승리했다!
                   <div>
                     남은 HP : 0/780
@@ -342,7 +342,7 @@ class BattleResultParserTest {
                     획득 Funds : $ 200
                   </div>
                   <h2>Show Detail( 6 turns. )</h2>
-                  <a href="http://sic.zerosic.com/ZeroHOF/index.php?common=round3#">로그 주소 복사</a>
+                  <a href="https://hof.zerosic.com/index.php?common=round3#">로그 주소 복사</a>
                   《얼어붙은 손길》공민이은(는) 승리했다!
                   <div>
                     남은 HP : 0/820
@@ -369,9 +369,9 @@ class BattleResultParserTest {
         assertEquals(listOf(102450, 90686, 93937), results.map { it.allySide.totalDamage })
         assertEquals(
             listOf(
-                "http://sic.zerosic.com/ZeroHOF/index.php?common=round1#",
-                "http://sic.zerosic.com/ZeroHOF/index.php?common=round2#",
-                "http://sic.zerosic.com/ZeroHOF/index.php?common=round3#",
+                "https://hof.zerosic.com/index.php?common=round1#",
+                "https://hof.zerosic.com/index.php?common=round2#",
+                "https://hof.zerosic.com/index.php?common=round3#",
             ),
             results.map { it.rawLogUrl },
         )

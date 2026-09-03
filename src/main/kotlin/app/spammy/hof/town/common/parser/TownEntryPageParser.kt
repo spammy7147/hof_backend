@@ -45,7 +45,7 @@ class TownEntryPageParser {
         }.getOrNull() ?: return null
         if (!resolved.scheme.equals(HOF_SCHEME, ignoreCase = true) ||
             !resolved.host.equals(HOF_HOST, ignoreCase = true) ||
-            resolved.port !in setOf(-1, 80) ||
+            resolved.port !in setOf(-1, 443) ||
             resolved.rawUserInfo != null ||
             resolved.rawFragment != null ||
             resolved.path != HOF_PATH
@@ -71,10 +71,10 @@ class TownEntryPageParser {
         .replace(NON_LETTER_OR_DIGIT, "")
 
     private companion object {
-        const val HOF_ENTRY_URL = "http://sic.zerosic.com/ZeroHOF/index.php"
-        const val HOF_SCHEME = "http"
-        const val HOF_HOST = "sic.zerosic.com"
-        const val HOF_PATH = "/ZeroHOF/index.php"
+        const val HOF_ENTRY_URL = "https://hof.zerosic.com/index.php"
+        const val HOF_SCHEME = "https"
+        const val HOF_HOST = "hof.zerosic.com"
+        const val HOF_PATH = "/index.php"
         val PARENTHETICAL = Regex("[（(]([^）)]+)[）)]")
         val NON_LETTER_OR_DIGIT = Regex("[^\\p{L}\\p{N}]+")
     }

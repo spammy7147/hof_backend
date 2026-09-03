@@ -389,8 +389,8 @@ class HofCharacterCommandAdapterTest {
     private fun formPage(html: String): ParsedTownPage = HofFormParser().parse(html, CHARACTER_URL)
 
     private companion object {
-        const val CHARACTER_URL = "http://sic.zerosic.com/ZeroHOF/index.php?char=hof-10"
-        const val HOME_URL = "http://sic.zerosic.com/ZeroHOF/index.php"
+        const val CHARACTER_URL = "https://hof.zerosic.com/index.php?char=hof-10"
+        const val HOME_URL = "https://hof.zerosic.com/index.php"
         const val ROSTER_HTML = """
             <div class="character-card">
               <a href="?char=20"><img src="other.gif"></a><br>

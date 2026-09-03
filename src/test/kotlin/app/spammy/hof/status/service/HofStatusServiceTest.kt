@@ -72,7 +72,7 @@ class HofStatusServiceTest {
         assertEquals(2, response.totalCharacterCount)
         assertEquals(1, response.synchronizedCharacterCount)
         assertTrue(response.characterSyncRequired)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php", gateway.requests.single().url)
+        assertEquals("https://hof.zerosic.com/index.php", gateway.requests.single().url)
         assertEquals(mapOf("PHPSESSID" to "session-value"), gateway.cookies.single())
     }
 

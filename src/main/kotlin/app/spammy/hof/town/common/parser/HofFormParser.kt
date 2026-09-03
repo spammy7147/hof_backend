@@ -281,7 +281,7 @@ class HofFormParser {
     private fun cleanText(value: String): String = value.replace(Regex("\\s+"), " ").trim()
 
     private companion object {
-        const val HOF_BASE_URL = "http://sic.zerosic.com/ZeroHOF/index.php"
+        const val HOF_BASE_URL = "https://hof.zerosic.com/index.php"
         val SELECTION_TYPES = setOf("radio", "checkbox")
         val TEXT_INPUT_TYPES = setOf("", "text", "tel")
         val QUANTITY_NAME = Regex("^(qty|quantity|count|amount|num|number|many|suu)(_|\\[|$).*", RegexOption.IGNORE_CASE)

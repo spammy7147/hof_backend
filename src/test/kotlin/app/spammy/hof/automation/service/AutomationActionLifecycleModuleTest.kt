@@ -2670,7 +2670,7 @@ class AutomationActionLifecycleModuleTest {
     }
 
     private companion object {
-        const val QUEST_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=quest"
-        const val RAID_PUB_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=raidpub"
+        const val QUEST_URL = "https://hof.zerosic.com/index.php?menu=quest"
+        const val RAID_PUB_URL = "https://hof.zerosic.com/index.php?menu=raidpub"
     }
 }

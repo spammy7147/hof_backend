@@ -571,14 +571,14 @@ class HofRequestGovernorTest {
 
     private fun response(statusCode: Int) = HofHttpResponse(
         statusCode = statusCode,
-        finalUrl = "https://sic.zerosic.com/test",
+        finalUrl = "https://hof.zerosic.com/test",
         body = "",
         setCookies = emptyMap(),
     )
 
     private fun binaryResponse(statusCode: Int) = HofBinaryResponse(
         statusCode = statusCode,
-        finalUrl = "https://sic.zerosic.com/test.png",
+        finalUrl = "https://hof.zerosic.com/test.png",
         contentType = "image/png",
         body = byteArrayOf(),
     )

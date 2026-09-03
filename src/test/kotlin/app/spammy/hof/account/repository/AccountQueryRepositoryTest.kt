@@ -151,8 +151,8 @@ class AccountQueryRepositoryTest {
             account = account,
             name = name,
             value = value,
-            domain = "sic.zerosic.com",
-            path = "/ZeroHOF",
+            domain = "hof.zerosic.com",
+            path = "/",
             updatedAt = NOW,
         )
 

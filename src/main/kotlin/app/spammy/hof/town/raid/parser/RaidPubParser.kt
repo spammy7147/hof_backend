@@ -221,8 +221,8 @@ class RaidPubParser {
     }
     private fun safeHofIndexUrl(value: String, acceptsQuery: (String) -> Boolean): Boolean = runCatching {
         val uri = URI(value).normalize()
-        uri.scheme == "http" && uri.host.equals("sic.zerosic.com", true) && uri.port in setOf(-1, 80) &&
-            uri.rawUserInfo == null && uri.rawFragment == null && uri.path == "/ZeroHOF/index.php" &&
+        uri.scheme == "https" && uri.host.equals("hof.zerosic.com", true) && uri.port in setOf(-1, 443) &&
+            uri.rawUserInfo == null && uri.rawFragment == null && uri.path == "/index.php" &&
             acceptsQuery(uri.rawQuery.orEmpty())
     }.getOrDefault(false)
     private fun clean(value: String) = value.replace('\u00a0', ' ').replace(Regex("\\s+"), " ").trim()

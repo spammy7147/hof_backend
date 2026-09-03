@@ -35,18 +35,18 @@ class TownLocationResolverTest {
     fun `known feature resolves directly without cache access`() {
         val location = resolver.resolve(TownFeatureId.SUNDRIES_STORE)
 
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?menu=buy2", location.url)
+        assertEquals("https://hof.zerosic.com/index.php?menu=buy2", location.url)
         verify(queryRepository, never()).findByFeatureIdForUpdate(TownFeatureId.SUNDRIES_STORE)
     }
 
     @Test
     fun `recruitment and housing resolve directly without town page discovery`() {
         assertEquals(
-            "http://sic.zerosic.com/ZeroHOF/index.php?recruit",
+            "https://hof.zerosic.com/index.php?recruit",
             resolver.resolve(TownFeatureId.TALENT_AGENCY).url,
         )
         assertEquals(
-            "http://sic.zerosic.com/ZeroHOF/index.php?menu=quest2",
+            "https://hof.zerosic.com/index.php?menu=quest2",
             resolver.resolve(TownFeatureId.HOME_MANAGEMENT).url,
         )
         verify(queryRepository, never()).findByFeatureIdForUpdate(TownFeatureId.TALENT_AGENCY)
@@ -64,7 +64,7 @@ class TownLocationResolverTest {
         )
 
         assertEquals(
-            "http://sic.zerosic.com/ZeroHOF/index.php?menu=event2026",
+            "https://hof.zerosic.com/index.php?menu=event2026",
             resolver.resolve(TownFeatureId.EVENT_SHOP).url,
         )
     }
@@ -96,7 +96,7 @@ class TownLocationResolverTest {
 
         val location = resolver.resolve(TownFeatureId.EVENT_SHOP, html)
 
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?menu=event2026", location.url)
+        assertEquals("https://hof.zerosic.com/index.php?menu=event2026", location.url)
         val saved = ArgumentCaptor.forClass(TownFeatureLocationEntity::class.java)
         verify(repository).save(
             saved.capture() ?: TownFeatureLocationEntity(TownFeatureId.EVENT_SHOP, "?menu=placeholder", Instant.EPOCH),
@@ -129,7 +129,7 @@ class TownLocationResolverTest {
             "<a href='?menu=newEvent'>특별 교환상점(Event Shop)</a>",
         )
 
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?menu=newEvent", location.url)
+        assertEquals("https://hof.zerosic.com/index.php?menu=newEvent", location.url)
         assertEquals("?menu=newEvent", cached.href)
         assertEquals(Instant.parse("2026-07-31T00:00:00Z"), cached.observedAt)
         verify(repository).save(cached)

@@ -689,8 +689,8 @@ class CaptchaService(
                         account = account,
                         name = name,
                         value = cookieCipher.encrypt(value),
-                        domain = "sic.zerosic.com",
-                        path = "/ZeroHOF",
+                        domain = "hof.zerosic.com",
+                        path = "/",
                         updatedAt = now,
                     ),
                 )
@@ -728,8 +728,8 @@ class CaptchaService(
                         account = account,
                         name = name,
                         value = cookieCipher.encrypt(value),
-                        domain = "sic.zerosic.com",
-                        path = "/ZeroHOF",
+                        domain = "hof.zerosic.com",
+                        path = "/",
                         updatedAt = now,
                     ),
                 )

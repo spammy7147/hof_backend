@@ -145,7 +145,7 @@ class ShopCatalogRefreshServiceTest {
     private fun eqString(value: String): String = Mockito.eq(value) ?: value
     companion object {
         val NOW: Instant = Instant.parse("2026-07-31T00:00:00Z")
-        const val URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=buy"
+        const val URL = "https://hof.zerosic.com/index.php?menu=buy"
         const val SHOP_HTML = """<form action="?menu=buy" method="post"><table>
           <tr><td>$ 100</td><td><input type="checkbox" name="item[]" value="item-a"><input name="qty_a" value="1">Potion (useitem)</td></tr>
           <tr><td>$ 200</td><td><input type="checkbox" name="item[]" value="item-b"><input name="qty_b" value="1">Bread (item)</td></tr>

@@ -92,6 +92,6 @@ class HofCharacterPatternRemoteFactoryTest {
     private fun eqString(value: String): String = Mockito.eq(value) ?: value
 
     private companion object {
-        const val CHARACTER_URL = "http://sic.zerosic.com/ZeroHOF/index.php?char=hof-10"
+        const val CHARACTER_URL = "https://hof.zerosic.com/index.php?char=hof-10"
     }
 }

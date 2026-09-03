@@ -128,8 +128,8 @@ class HofAccountService(
                     account = managedAccount,
                     name = name,
                     value = cookieCipher.encrypt(value),
-                    domain = "sic.zerosic.com",
-                    path = "/ZeroHOF",
+                    domain = "hof.zerosic.com",
+                    path = "/",
                     updatedAt = now,
                 ),
             )

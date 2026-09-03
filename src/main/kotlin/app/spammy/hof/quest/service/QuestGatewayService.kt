@@ -83,8 +83,8 @@ class QuestGatewayService(
                 else base.resolve(href).normalize()
             }.getOrNull()
         }.filter { uri ->
-            uri.scheme == "http" && uri.host.equals("sic.zerosic.com", true) && uri.port in setOf(-1, 80) &&
-                uri.userInfo == null && uri.fragment == null && uri.path == "/ZeroHOF/index.php" &&
+            uri.scheme == "https" && uri.host.equals("hof.zerosic.com", true) && uri.port in setOf(-1, 443) &&
+                uri.userInfo == null && uri.fragment == null && uri.path == "/index.php" &&
                 query(uri) == mapOf("menu" to listOf("quest"), "action" to listOf(action), "no" to listOf(actionNo))
         }
         if (matches.size != 1) invalid("현재 HOF 퀘스트 링크를 안전하게 확인하지 못했습니다.")
@@ -99,5 +99,5 @@ class QuestGatewayService(
     private fun decode(value: String) = URLDecoder.decode(value, StandardCharsets.UTF_8)
     private fun invalid(message: String): Nothing = throw ApiException(ErrorCode.INVALID_REQUEST, message)
 
-    private companion object { const val QUEST_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=quest" }
+    private companion object { const val QUEST_URL = "https://hof.zerosic.com/index.php?menu=quest" }
 }

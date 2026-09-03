@@ -139,9 +139,9 @@ class PantheonServiceTest {
     private fun anyCookies(): Map<String, String> = Mockito.anyMap<String, String>() ?: emptyMap()
 
     private companion object {
-        const val STREET_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=pantheon"
+        const val STREET_URL = "https://hof.zerosic.com/index.php?menu=pantheon"
         const val DETAIL_URL = "$STREET_URL&shrine=Marduk"
-        const val ACTUAL_DETAIL_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=marduktemple"
-        const val KAZM_DETAIL_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=kazmtemple"
+        const val ACTUAL_DETAIL_URL = "https://hof.zerosic.com/index.php?menu=marduktemple"
+        const val KAZM_DETAIL_URL = "https://hof.zerosic.com/index.php?menu=kazmtemple"
     }
 }

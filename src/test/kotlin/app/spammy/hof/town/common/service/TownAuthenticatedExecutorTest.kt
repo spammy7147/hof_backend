@@ -609,10 +609,10 @@ class TownAuthenticatedExecutorTest {
     private fun <T : Any> capture(captor: ArgumentCaptor<T>, fallback: T): T = captor.capture() ?: fallback
 
     private companion object {
-        const val HOF_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=buy"
-        const val AUCTION_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=auction"
-        const val QUEST_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=quest"
-        const val HOME_URL = "http://sic.zerosic.com/ZeroHOF/index.php"
-        const val DETAIL_URL = "http://sic.zerosic.com/ZeroHOF/index.php?char=11"
+        const val HOF_URL = "https://hof.zerosic.com/index.php?menu=buy"
+        const val AUCTION_URL = "https://hof.zerosic.com/index.php?menu=auction"
+        const val QUEST_URL = "https://hof.zerosic.com/index.php?menu=quest"
+        const val HOME_URL = "https://hof.zerosic.com/index.php"
+        const val DETAIL_URL = "https://hof.zerosic.com/index.php?char=11"
     }
 }

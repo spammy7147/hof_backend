@@ -16,7 +16,7 @@ class FishingPageParserTest {
     private val forms = HofFormParser()
     private val results = HofResultParser()
     private val parser = FishingPageParser()
-    private val url = "http://sic.zerosic.com/ZeroHOF/index.php?menu=fishing"
+    private val url = "https://hof.zerosic.com/index.php?menu=fishing"
 
     @Test
     fun `날짜 갱신과 시작 action을 읽는다`() {

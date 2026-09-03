@@ -704,8 +704,8 @@ class CaptchaServicePersistenceTest {
                 account = account,
                 name = "NEW_SESSION",
                 value = cookieCipher.encrypt("newer-cookie"),
-                domain = "sic.zerosic.com",
-                path = "/ZeroHOF",
+                domain = "hof.zerosic.com",
+                path = "/",
                 updatedAt = NOW.plusSeconds(1),
             ),
         )
@@ -822,8 +822,8 @@ class CaptchaServicePersistenceTest {
                 account = account,
                 name = "PHPSESSID",
                 value = "session",
-                domain = "sic.zerosic.com",
-                path = "/ZeroHOF",
+                domain = "hof.zerosic.com",
+                path = "/",
                 updatedAt = NOW,
             ),
         )
@@ -859,7 +859,7 @@ class CaptchaServicePersistenceTest {
                 account = account,
                 status = "READY",
                 prompt = "캡차를 입력해주세요.",
-                imageUrl = "http://sic.zerosic.com/ZeroHOF/captcha.png",
+                imageUrl = "https://hof.zerosic.com/captcha.png",
                 sourceUrl = POLICE_URL,
                 answer = null,
                 createdAt = createdAt,
@@ -916,7 +916,7 @@ class CaptchaServicePersistenceTest {
                 <input type="hidden" name="$tokenName" value="$tokenValue">
                 <input type="text" name="AnswerV" value="ignored-prefill">
                 <input type="submit" name="AnswerOut" value="입니다.">
-                <img src="http://sic.zerosic.com/ZeroHOF/captcha.png" alt="captcha">
+                <img src="https://hof.zerosic.com/captcha.png" alt="captcha">
               </form>
             </body></html>
         """.trimIndent()
@@ -1049,6 +1049,6 @@ class CaptchaServicePersistenceTest {
 
     private companion object {
         val NOW: Instant = Instant.parse("2026-07-12T00:00:00Z")
-        const val POLICE_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=police"
+        const val POLICE_URL = "https://hof.zerosic.com/index.php?menu=police"
     }
 }

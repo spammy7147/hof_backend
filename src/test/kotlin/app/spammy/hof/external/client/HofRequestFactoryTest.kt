@@ -15,7 +15,7 @@ class HofRequestFactoryTest {
         val request = factory.login(id = "user", password = "pass")
 
         assertEquals(HofHttpMethod.POST, request.method)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php", request.url)
+        assertEquals("https://hof.zerosic.com/index.php", request.url)
         assertEquals(
             mapOf("id" to "user", "pass" to "pass", "Login" to "login"),
             request.formFields,
@@ -27,7 +27,7 @@ class HofRequestFactoryTest {
         val request = factory.loadPattern(characterId = "1683198503393759", slot = 0)
 
         assertEquals(HofHttpMethod.POST, request.method)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?char=1683198503393759", request.url)
+        assertEquals("https://hof.zerosic.com/index.php?char=1683198503393759", request.url)
         assertEquals(mapOf("patternno" to "0", "loadpattern" to "LOAD"), request.formFields)
     }
 
@@ -40,7 +40,7 @@ class HofRequestFactoryTest {
             battleCount = 3,
         )
 
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?common=snow22", request.url)
+        assertEquals("https://hof.zerosic.com/index.php?common=snow22", request.url)
         assertEquals(
             mapOf(
                 "char_111" to "1",
@@ -63,7 +63,7 @@ class HofRequestFactoryTest {
             battleCount = 1,
         )
 
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?union=union001", request.url)
+        assertEquals("https://hof.zerosic.com/index.php?union=union001", request.url)
         assertEquals(
             mapOf(
                 "char_111" to "1",
@@ -94,13 +94,14 @@ class HofRequestFactoryTest {
 
     @Test
     fun `town requests only allow the fixed HOF origin and entry path`() {
-        val request = factory.townPage("http://sic.zerosic.com/ZeroHOF/index.php?menu=buy")
+        val request = factory.townPage("https://hof.zerosic.com/index.php?menu=buy")
 
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?menu=buy", request.url)
-        assertFailsWith<IllegalArgumentException> { factory.townPage("https://evil.example/ZeroHOF/index.php") }
-        assertFailsWith<IllegalArgumentException> { factory.townPage("http://sic.zerosic.com/admin") }
+        assertEquals("https://hof.zerosic.com/index.php?menu=buy", request.url)
+        assertFailsWith<IllegalArgumentException> { factory.townPage("https://evil.example/index.php") }
+        assertFailsWith<IllegalArgumentException> { factory.townPage("https://hof.zerosic.com/admin") }
+        assertFailsWith<IllegalArgumentException> { factory.townPage("http://sic.zerosic.com/ZeroHOF/index.php") }
         assertFailsWith<IllegalArgumentException> {
-            factory.townPage("http://sic.zerosic.com@evil.example/ZeroHOF/index.php")
+            factory.townPage("https://hof.zerosic.com@evil.example/index.php")
         }
     }
 }

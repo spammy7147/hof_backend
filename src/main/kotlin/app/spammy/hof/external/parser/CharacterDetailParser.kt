@@ -512,7 +512,7 @@ class CharacterDetailParser {
                     fileName.startsWith("skill_", ignoreCase = true) -> "skill"
                     else -> "image/icon"
                 }
-                "http://sic.zerosic.com/ZeroHOF/$folder/$fileName"
+                "https://hof.zerosic.com/$folder/$fileName"
             } else {
                 absUrl("src").ifBlank { source }
             }
@@ -550,7 +550,7 @@ class CharacterDetailParser {
     )
 
     private companion object {
-        const val HOF_BASE_URL = "http://sic.zerosic.com/ZeroHOF/index.php"
+        const val HOF_BASE_URL = "https://hof.zerosic.com/index.php"
         val LEVEL_JOB_REGEX = Regex("""Lv\.?\s*(\d+)\s*(.*)$""", RegexOption.IGNORE_CASE)
         val ACTION_FIELD_REGEX = Regex("""(?:judge|quantity|skill)(\d+)""")
         val BASE_BONUS_VALUE_REGEX = Regex("""([+-]?\d+)(?:\s*\+\s*([+-]?\d+))?""")

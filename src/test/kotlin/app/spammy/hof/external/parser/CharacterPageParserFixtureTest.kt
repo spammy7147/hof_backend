@@ -133,13 +133,13 @@ class CharacterPageParserFixtureTest {
         """.trimIndent()
 
         assertEquals(
-            "http://sic.zerosic.com/ZeroHOF/image/char/sknight02.gif",
+            "https://hof.zerosic.com/image/char/sknight02.gif",
             parser.parse("id", html).imageUrl,
         )
 
         val captured = parser.parse("id", readFixture("Hall of Fame Ver ZeroHOF_skillPoint_not_exist.html"))
-        assertEquals("http://sic.zerosic.com/ZeroHOF/image/char/sknight02.gif", captured.imageUrl)
-        assertTrue(captured.equipment.filter { it.name.isNotBlank() }.all { it.iconUrl.contains("/ZeroHOF/image/icon/") })
+        assertEquals("https://hof.zerosic.com/image/char/sknight02.gif", captured.imageUrl)
+        assertTrue(captured.equipment.filter { it.name.isNotBlank() }.all { it.iconUrl.contains("/image/icon/") })
     }
 
     private fun readFixture(name: String): String =

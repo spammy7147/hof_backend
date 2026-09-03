@@ -257,11 +257,11 @@ class BattleRunServiceTest {
         assertEquals(listOf("Silver Ingot x 1"), response.loots.map { it.name })
         assertEquals(0, response.enemy.hpCurrent)
         assertEquals(25955, response.ally.hpCurrent)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?char=1683198503393759", gateway.requests[0].url)
+        assertEquals("https://hof.zerosic.com/index.php?char=1683198503393759", gateway.requests[0].url)
         assertEquals(mapOf("patternno" to "0", "loadpattern" to "LOAD"), gateway.requests[0].formFields)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?char=1683198503393763", gateway.requests[4].url)
+        assertEquals("https://hof.zerosic.com/index.php?char=1683198503393763", gateway.requests[4].url)
         assertEquals(mapOf("patternno" to "4", "loadpattern" to "LOAD"), gateway.requests[4].formFields)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?common=snow22", gateway.requests[5].url)
+        assertEquals("https://hof.zerosic.com/index.php?common=snow22", gateway.requests[5].url)
         assertEquals(
             mapOf(
                 "char_1683198503393759" to "1",
@@ -439,8 +439,8 @@ class BattleRunServiceTest {
         assertEquals(5, gateway.requests.count { request -> request.url.contains("?char=") })
         assertEquals(
             listOf(
-                "http://sic.zerosic.com/ZeroHOF/index.php?common=snow22",
-                "http://sic.zerosic.com/ZeroHOF/index.php?common=second",
+                "https://hof.zerosic.com/index.php?common=snow22",
+                "https://hof.zerosic.com/index.php?common=second",
             ),
             gateway.requests.filterNot { request -> request.url.contains("?char=") }.map { request -> request.url },
         )
@@ -798,7 +798,7 @@ class BattleRunServiceTest {
             <html><body>
               <div id="menu2">Funds : ${'$'} 1 Time : 10/10</div>
               <h2>Show Detail( 6 turns. )</h2>
-              <a href="http://sic.zerosic.com/ZeroHOF/index.php?common=gb0#">로그 주소 복사</a>
+              <a href="https://hof.zerosic.com/index.php?common=gb0#">로그 주소 복사</a>
               《얼어붙은 손길》공민이은(는) 승리했다!
               <div>
                 남은 HP : 0/820
@@ -814,7 +814,7 @@ class BattleRunServiceTest {
                 획득 Funds : $ 200
               </div>
               <h2>Show Detail( 6 turns. )</h2>
-              <a href="http://sic.zerosic.com/ZeroHOF/index.php?common=gb0#">로그 주소 복사</a>
+              <a href="https://hof.zerosic.com/index.php?common=gb0#">로그 주소 복사</a>
               《얼어붙은 손길》공민이은(는) 승리했다!
               <div>
                 남은 HP : 0/780
@@ -830,7 +830,7 @@ class BattleRunServiceTest {
                 획득 Funds : $ 200
               </div>
               <h2>Show Detail( 6 turns. )</h2>
-              <a href="http://sic.zerosic.com/ZeroHOF/index.php?common=gb0#">로그 주소 복사</a>
+              <a href="https://hof.zerosic.com/index.php?common=gb0#">로그 주소 복사</a>
               《얼어붙은 손길》공민이은(는) 승리했다!
               <div>
                 남은 HP : 0/820

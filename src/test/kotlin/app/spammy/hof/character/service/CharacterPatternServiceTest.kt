@@ -84,7 +84,7 @@ class CharacterPatternServiceTest {
         assertEquals("패턴 로드 완료", response.message)
         assertEquals(false, response.characterSynchronized)
         assertEquals(null, response.character)
-        assertEquals("http://sic.zerosic.com/ZeroHOF/index.php?char=1683198503393759", gateway.requests.single().url)
+        assertEquals("https://hof.zerosic.com/index.php?char=1683198503393759", gateway.requests.single().url)
         assertEquals(mapOf("patternno" to "0", "loadpattern" to "LOAD"), gateway.requests.single().formFields)
         assertEquals(mapOf("PHPSESSID" to "abc"), gateway.cookies.single())
     }

@@ -14,7 +14,7 @@ class HofHtmlParserTest {
                 <main><p>기능 본문</p></main>
                 <div id="foot"><a href="?menu=manual">UpDate - Manual</a><form><button>푸터 동작</button></form></div>
             """.trimIndent(),
-            "http://sic.zerosic.com/ZeroHOF/index.php?menu=rest",
+            "https://hof.zerosic.com/index.php?menu=rest",
         )
 
         assertNull(document.selectFirst("#foot"))

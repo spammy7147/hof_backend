@@ -140,7 +140,7 @@ class AccountHofGatewayTest {
         const val ACCOUNT_ID = 17L
         val REQUEST_STARTED_AT: Instant = Instant.parse("2026-07-24T10:00:00Z")
         val RESPONSE_OBSERVED_AT: Instant = REQUEST_STARTED_AT.plusSeconds(2)
-        val REQUEST = HofRequest(HofHttpMethod.GET, "http://sic.zerosic.com/ZeroHOF/index.php")
+        val REQUEST = HofRequest(HofHttpMethod.GET, "https://hof.zerosic.com/index.php")
         val COOKIES = mapOf("PHPSESSID" to "session")
         val RESPONSE = HofHttpResponse(200, REQUEST.url, "<html>response</html>", emptyMap())
     }

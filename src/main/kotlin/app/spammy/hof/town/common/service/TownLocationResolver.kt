@@ -65,7 +65,7 @@ class TownLocationResolver(
     )
 
     private companion object {
-        const val HOF_ENTRY_URL = "http://sic.zerosic.com/ZeroHOF/index.php"
+        const val HOF_ENTRY_URL = "https://hof.zerosic.com/index.php"
         val PUBLIC_MENU_HREF = Regex("^(?:[?]menu=[A-Za-z0-9_-]{1,80}|[?][A-Za-z0-9_-]{1,80})$")
     }
 }

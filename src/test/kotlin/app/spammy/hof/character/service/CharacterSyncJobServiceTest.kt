@@ -96,7 +96,7 @@ class CharacterSyncJobServiceTest {
         assertEquals(listOf("111", "222"), snapshot.characters.map { it.hofCharacterId })
         assertEquals(
             listOf(
-                "http://sic.zerosic.com/ZeroHOF/index.php",
+                "https://hof.zerosic.com/index.php",
             ),
             gateway.requests.map { it.url },
         )
@@ -106,7 +106,7 @@ class CharacterSyncJobServiceTest {
         )
         assertEquals(listOf(null, null, "111", "222", null), publishedEvents.map { it.character?.hofCharacterId })
         assertEquals(
-            listOf(null, null, "http://sic.zerosic.com/ZeroHOF/image/char/sknight02.gif", "http://sic.zerosic.com/ZeroHOF/image/char/cavalry.gif", null),
+            listOf(null, null, "https://hof.zerosic.com/image/char/sknight02.gif", "https://hof.zerosic.com/image/char/cavalry.gif", null),
             publishedEvents.map { it.character?.imageUrl },
         )
         assertEquals(List(5) { emptyList() }, publishedEvents.map { it.failedCharacterIds })
@@ -313,8 +313,8 @@ class CharacterSyncJobServiceTest {
                 level = null,
                 patternSlotCount = 0,
                 imageUrl = when (roster.id) {
-                    "111" -> "http://sic.zerosic.com/ZeroHOF/image/char/sknight02.gif"
-                    else -> "http://sic.zerosic.com/ZeroHOF/image/char/cavalry.gif"
+                    "111" -> "https://hof.zerosic.com/image/char/sknight02.gif"
+                    else -> "https://hof.zerosic.com/image/char/cavalry.gif"
                 },
                 revision = now,
                 patternSlots = emptyList(),
@@ -391,12 +391,12 @@ class CharacterSyncJobServiceTest {
                 """.trimIndent()
 
                 request.url.endsWith("char=111") -> """
-                    <div class="carpet_frame"><img src="http://sic.zerosic.com/ZeroHOF/image/char/sknight02.gif">소셜 Lv.60 Social Knight</div>
+                    <div class="carpet_frame"><img src="https://hof.zerosic.com/image/char/sknight02.gif">소셜 Lv.60 Social Knight</div>
                     <form><input name="patternno" value="0"><input name="loadpattern" value="LOAD"></form>
                 """.trimIndent()
 
                 request.url.endsWith("char=222") -> """
-                    <div class="carpet_frame"><img src="http://sic.zerosic.com/ZeroHOF/image/char/cavalry.gif">카발 Lv.60 Cavalry</div>
+                    <div class="carpet_frame"><img src="https://hof.zerosic.com/image/char/cavalry.gif">카발 Lv.60 Cavalry</div>
                     <form><input name="patternno" value="0"><input name="loadpattern" value="LOAD"></form>
                 """.trimIndent()
 

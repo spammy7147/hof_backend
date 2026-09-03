@@ -11,7 +11,7 @@ class CaptchaChallengeParserTest {
 
     @Test
     fun extractsTheSelectedFormWithoutPersistingHtmlAsJson() {
-        val sourceUrl = "http://sic.zerosic.com/ZeroHOF/index.php?menu=police"
+        val sourceUrl = "https://hof.zerosic.com/index.php?menu=police"
         val document = Jsoup.parse(
             """
                 <form action="/ZeroHOF/index.php?menu=police" method="post">
@@ -31,14 +31,14 @@ class CaptchaChallengeParserTest {
         assertEquals("", metadata.formFields.single { it.fieldName == "AnswerV" }.fieldValue)
         assertEquals("입니다.", metadata.formFields.single { it.fieldName == "AnswerOut" }.fieldValue)
         assertEquals(
-            "http://sic.zerosic.com/ZeroHOF/simple-php-captcha.php?_CAPTCHA=1",
+            "https://hof.zerosic.com/simple-php-captcha.php?_CAPTCHA=1",
             metadata.imageUrl,
         )
     }
 
     @Test
     fun usesConcisePromptInsteadOfFlatteningTheWholePageAroundCaptchaForm() {
-        val sourceUrl = "http://sic.zerosic.com/ZeroHOF/index.php?menu=police"
+        val sourceUrl = "https://hof.zerosic.com/index.php?menu=police"
         val document = Jsoup.parse(
             """
                 <main>
@@ -107,14 +107,14 @@ class CaptchaChallengeParserTest {
 
     @Test
     fun buildsPoliceAndSimpleCaptchaUrlsFromTheSameInstallationDirectory() {
-        val sourceUrl = "http://sic.zerosic.com/ZeroHOF/index.php?common=gb0"
+        val sourceUrl = "https://hof.zerosic.com/index.php?common=gb0"
 
         assertEquals(
-            "http://sic.zerosic.com/ZeroHOF/index.php?menu=police",
+            "https://hof.zerosic.com/index.php?menu=police",
             parser.buildPoliceUrl(sourceUrl),
         )
         assertEquals(
-            "http://sic.zerosic.com/ZeroHOF/simple-php-captcha.php?_CAPTCHA=1",
+            "https://hof.zerosic.com/simple-php-captcha.php?_CAPTCHA=1",
             parser.buildSimpleCaptchaImageUrl(sourceUrl),
         )
     }

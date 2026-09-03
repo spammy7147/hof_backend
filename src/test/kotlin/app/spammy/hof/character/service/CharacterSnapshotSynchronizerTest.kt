@@ -58,7 +58,7 @@ class CharacterSnapshotSynchronizerTest {
         Mockito.`when`(gateway.execute(Mockito.eq(1L), anyHofRequest(), Mockito.anyMap())).thenReturn(
             HofHttpResponse(
                 200,
-                "http://sic.zerosic.com/ZeroHOF/index.php?char=1",
+                "https://hof.zerosic.com/index.php?char=1",
                 "<div class='carpet_frame'>returned Lv.60 job</div>",
                 emptyMap(),
             ),

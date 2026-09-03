@@ -144,7 +144,7 @@ class ExchangeTest {
     private fun anyRequest(): HofRequest = Mockito.any(HofRequest::class.java) ?: HofRequest(HofHttpMethod.GET, BASE)
     private fun anyCookies(): Map<String, String> = Mockito.anyMap<String, String>() ?: emptyMap()
     private companion object {
-        const val BASE = "http://sic.zerosic.com/ZeroHOF/index.php"
+        const val BASE = "https://hof.zerosic.com/index.php"
         const val EMBLEM_URL = "$BASE?menu=create2"
         const val LEGACY_URL = "$BASE?menu=legacy"
         const val ANN_URL = "$BASE?menu=ann"

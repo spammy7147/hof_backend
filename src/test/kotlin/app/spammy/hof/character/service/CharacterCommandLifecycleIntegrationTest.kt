@@ -459,7 +459,7 @@ class CharacterCommandLifecycleIntegrationTest {
     private fun <T : Any> capture(captor: ArgumentCaptor<T>, fallback: T): T = captor.capture() ?: fallback
 
     companion object {
-        private const val CHARACTER_URL = "http://sic.zerosic.com/ZeroHOF/index.php?char=hof-10"
+        private const val CHARACTER_URL = "https://hof.zerosic.com/index.php?char=hof-10"
         private const val BASE_PAGE = """
             <div class="carpet_frame">소셜<br>Lv.60 Social Knight</div>
             <form action="?char=hof-10" method="post">

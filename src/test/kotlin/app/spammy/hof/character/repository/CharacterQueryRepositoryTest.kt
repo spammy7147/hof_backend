@@ -202,7 +202,7 @@ class CharacterQueryRepositoryTest {
                     slot = "weapon",
                     part = "Weapon",
                     name = "Soulcollector's Sword Breaker",
-                    iconUrl = "http://sic.zerosic.com/ZeroHOF/item/swordb.gif",
+                    iconUrl = "https://hof.zerosic.com/item/swordb.gif",
                     description = "Atk:96",
                     checked = true,
                 ),
@@ -213,7 +213,7 @@ class CharacterQueryRepositoryTest {
             listOf(
                 CharacterSkillResponse(
                     name = "Attack / enemy - individual",
-                    iconUrl = "http://sic.zerosic.com/ZeroHOF/skill/skill_042.png",
+                    iconUrl = "https://hof.zerosic.com/skill/skill_042.png",
                     category = "사용 가능 스킬(Mastered)",
                 ),
             ),
@@ -224,7 +224,7 @@ class CharacterQueryRepositoryTest {
                 CharacterSkillResponse(
                     value = "1014",
                     name = "Double Quick Slash / 8pt",
-                    iconUrl = "http://sic.zerosic.com/ZeroHOF/skill/skill_074z.png",
+                    iconUrl = "https://hof.zerosic.com/skill/skill_074z.png",
                 ),
             ),
             detail.learnableSkills,
@@ -258,7 +258,7 @@ class CharacterQueryRepositoryTest {
         val oldSlots = characterQueryRepository.findPatternSlotsByCharacterIds(listOf(character.id)).associateBy { it.slotCode }
 
         val updated = initial.copy(
-            imageUrl = "http://sic.zerosic.com/ZeroHOF/image/updated.gif",
+            imageUrl = "https://hof.zerosic.com/image/updated.gif",
             statusLines = listOf("교체 상태"),
             patternSlots = listOf(
                 HofPatternSlot(slot = "1", label = "갱신 슬롯", canLoad = true),
@@ -374,7 +374,7 @@ class CharacterQueryRepositoryTest {
             job = "Roster Job",
             level = 44,
             patternSlots = listOf(HofPatternSlot(slot = "0", label = "roster 슬롯", canLoad = true)),
-            imageUrl = "http://sic.zerosic.com/ZeroHOF/image/roster.gif",
+            imageUrl = "https://hof.zerosic.com/image/roster.gif",
         )
 
         characterService.upsertCharacterSnapshot(
@@ -486,7 +486,7 @@ class CharacterQueryRepositoryTest {
             characterId = characterId,
             html = """
                 <div class="carpet_frame">
-                  <img src="/ZeroHOF/image/char/sknight02.gif">
+                  <img src="/image/char/sknight02.gif">
                   소셜 Lv.60 Social Knight
                 </div>
 
@@ -523,7 +523,7 @@ class CharacterQueryRepositoryTest {
                     <td class="align-right">Weapon :</td>
                     <td>
                       <input name="spot" value="weapon" checked>
-                      <img src="/ZeroHOF/item/swordb.gif">
+                      <img src="/item/swordb.gif">
                       Soulcollector's Sword Breaker
                       <span class="dmg">Atk:96</span>
                       <span style="font-size:10px">Atk:96</span>
@@ -538,7 +538,7 @@ class CharacterQueryRepositoryTest {
                   <table>
                     <tr>
                       <td><input name="newskill" value="1014"></td>
-                      <td><img src="/ZeroHOF/skill/skill_074z.png"> Double Quick Slash / 8pt</td>
+                      <td><img src="/skill/skill_074z.png"> Double Quick Slash / 8pt</td>
                     </tr>
                   </table>
                 </form>
@@ -547,7 +547,7 @@ class CharacterQueryRepositoryTest {
             learnedSkills = listOf(
                 app.spammy.hof.external.model.HofSkill(
                     name = "Attack / enemy - individual",
-                    iconUrl = "http://sic.zerosic.com/ZeroHOF/skill/skill_042.png",
+                    iconUrl = "https://hof.zerosic.com/skill/skill_042.png",
                     category = "사용 가능 스킬(Mastered)",
                 ),
             ),

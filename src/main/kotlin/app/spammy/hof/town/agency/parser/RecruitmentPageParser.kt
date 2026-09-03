@@ -142,11 +142,10 @@ class RecruitmentPageParser {
     }
     private fun safeImageUrl(url: String): Boolean = runCatching {
         val uri = URI(url)
-        val safePort = (uri.scheme == "http" && uri.port in setOf(-1, 80)) ||
-            (uri.scheme == "https" && uri.port in setOf(-1, 443))
-        safePort && uri.host.equals("sic.zerosic.com", true) &&
+        val safePort = uri.scheme == "https" && uri.port in setOf(-1, 443)
+        safePort && uri.host.equals("hof.zerosic.com", true) &&
             uri.rawUserInfo == null && uri.rawFragment == null &&
-            uri.path.startsWith("/ZeroHOF/")
+            uri.path.startsWith("/image/")
     }.getOrDefault(false)
     private fun clean(value: String) = value.replace(Regex("\\s+"), " ").trim()
 

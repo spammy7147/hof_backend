@@ -215,8 +215,8 @@ class FishingServiceTest {
     private fun anyCookies(): Map<String, String> = Mockito.anyMap<String, String>() ?: emptyMap()
 
     private companion object {
-        const val URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=fishing"
-        const val EXCHANGE_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=createF"
-        const val CREATE_URL = "http://sic.zerosic.com/ZeroHOF/index.php?menu=createF"
+        const val URL = "https://hof.zerosic.com/index.php?menu=fishing"
+        const val EXCHANGE_URL = "https://hof.zerosic.com/index.php?menu=createF"
+        const val CREATE_URL = "https://hof.zerosic.com/index.php?menu=createF"
     }
 }
