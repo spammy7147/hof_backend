@@ -577,6 +577,7 @@ internal object FreshSchemaContract {
             optionalVarchar("diagnostic_kind", 64), optionalVarchar("cooldown_source", 40),
             optionalVarchar("impact_scope", 64), optionalVarchar("release_condition", 255),
             optionalVarchar("entry_display_name", 100),
+            optionalText("diagnostic_context"),
         ),
         table(
             "raid_cooldown_evidence_cases",

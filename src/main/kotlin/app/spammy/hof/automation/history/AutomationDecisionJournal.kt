@@ -40,6 +40,7 @@ data class AutomationHistoryEvent(
     val presetId: Long?, val presetName: String?, val nextRunAt: Instant?, val occurredAt: Instant,
     val diagnosticKind: AutomationDiagnosticKind?, val cooldownSource: RaidCooldownSource?,
     val impactScope: AutomationImpactScope?, val releaseCondition: String?,
+    val diagnosticContext: String? = null,
 )
 data class AutomationHistoryCycle(
     val id: Long, val result: AutomationDecisionResult, val selectedEntryId: Long?,
@@ -123,6 +124,7 @@ class JpaAutomationDecisionJournal(
             presetId = item.presetId, presetName = presetName(accountId, item.presetId), occurredAt = now,
             diagnosticKind = item.diagnosticKind, cooldownSource = item.cooldownSource,
             impactScope = item.impactScope, releaseCondition = item.releaseCondition,
+            diagnosticContext = item.diagnosticContext,
         ) })
         eventCommands.flush()
         afterCommitTelemetry { progressTelemetry?.recordDecision(accountId, decision) }
@@ -214,6 +216,7 @@ class JpaAutomationDecisionJournal(
             e.id, e.sequence, e.entryId, e.type, e.entryDisplayName, e.kind, e.reasonCode, e.message, e.targetKey,
             e.targetName, e.actionKind, e.presetId, e.presetName, e.nextRunAt, e.occurredAt,
             e.diagnosticKind, e.cooldownSource, e.impactScope, e.releaseCondition,
+            e.diagnosticContext,
         ) }
         val steps = groupSteps(events, cycle.selectedEntryId)
         return AutomationHistoryCycle(

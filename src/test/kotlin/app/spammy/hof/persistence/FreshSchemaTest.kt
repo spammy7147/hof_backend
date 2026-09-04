@@ -99,6 +99,7 @@ class FreshSchemaTest {
                 "48" to "add account auth execution lifecycle",
                 "49" to "classify captcha challenges",
                 "50" to "allow automation loop interval",
+                "51" to "add automation decision diagnostics",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -156,6 +157,7 @@ class FreshSchemaTest {
                 "V49__classify_captcha_challenges.sql",
                 "V4__prepare_captcha_on_demand.sql",
                 "V50__allow_automation_loop_interval.sql",
+                "V51__add_automation_decision_diagnostics.sql",
                 "V5__track_character_detail_sync.sql",
                 "V6__learn_shared_battle_cooldowns.sql",
                 "V7__add_automation_wait_reason.sql",

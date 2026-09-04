@@ -28,6 +28,27 @@ class AutomationDecisionJournalTest {
     private val now = Instant.parse("2026-08-12T01:00:00Z")
 
     @Test
+    fun `판단 불가 진단은 다음 판단 이후에도 같은 이력에서 조회된다`() {
+        val account = account("history-diagnostic")
+        val battle = entry(account, AutomationType.BATTLE_MAP, 0)
+        val diagnostic = """{"stage":"ENTRY_EVALUATION","snapshot":{"keyMode":"UNKNOWN","attemptRemaining":null}}"""
+        val journal = journal()
+        val cycleId = journal.appendDecision(account.id, AutomationCoordination.Idle(emptyList(), listOf(
+            AutomationEvaluationTrace(
+                0, battle.id, AutomationType.BATTLE_MAP, AutomationDecisionOutcome.SKIPPED,
+                "NOT_RUNNABLE", "실행 조건을 확정하지 못했습니다.", diagnosticContext = diagnostic,
+            ),
+        )))
+        journal.appendDecision(account.id, AutomationCoordination.Idle(emptyList()))
+        entityManager.flush()
+        entityManager.clear()
+
+        val event = journal.page(account.id, AutomationHistoryQuery()).cycles.first { it.id == cycleId }.events.single()
+        assertEquals(AutomationHistoryEventKind.SKIPPED, event.kind)
+        assertEquals(diagnostic, event.diagnosticContext)
+    }
+
+    @Test
     fun `all ineligible entries record no action while scheduling another check`() {
         val account = account("history-skipped-conditions")
         val battle = entry(account, AutomationType.BATTLE_MAP, 0)

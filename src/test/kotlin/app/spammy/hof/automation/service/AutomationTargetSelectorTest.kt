@@ -53,6 +53,12 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import org.mockito.Mockito
+import org.mockito.ArgumentCaptor
+import app.spammy.hof.automation.history.AutomationDecisionJournal
+import tools.jackson.module.kotlin.jacksonObjectMapper
+import kotlin.test.assertFailsWith
+import kotlin.test.assertSame
+import kotlin.test.assertFalse
 
 class AutomationTargetSelectorTest {
     private val now = Instant.parse("2026-07-23T00:00:00Z")
@@ -73,6 +79,7 @@ class AutomationTargetSelectorTest {
     private val unionRules = ScriptedHandler<UnionAutomationSnapshot>()
     private val fishingRules = ScriptedHandler<FishingAutomationSnapshot>()
     private val homeQuestRules = ScriptedHandler<HomeQuestAutomationSnapshot>()
+    private val decisionJournal = Mockito.mock(AutomationDecisionJournal::class.java)
     private val selector = AutomationTargetSelector(
         typed,
         work,
@@ -86,7 +93,81 @@ class AutomationTargetSelectorTest {
         unionRules,
         fishingRules,
         homeQuestRules,
+        decisionJournal = decisionJournal,
     )
+
+    @Test
+    fun `상태 조회 오류는 앞서 스킵한 항목과 실패 위치를 기록하고 원래 재시도 예외를 유지한다`() {
+        val battle = battleDecisionEntry()
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(battleEntry, adventureEntry))
+        Mockito.`when`(loader.loadEntry(7, battleEntry.id, null)).thenReturn(battle)
+        battleRules.returns(requireNotNull(battle.battle), HandlerEvaluation.Skipped)
+        val failure = SafeRetryableAutomationException("cookie=secret-cookie", java.io.IOException("token=secret-token"))
+        Mockito.`when`(loader.loadEntry(7, adventureEntry.id, null)).thenThrow(failure)
+
+        assertSame(failure, assertFailsWith<SafeRetryableAutomationException> { selector.select(7) })
+
+        val recorded = ArgumentCaptor.forClass(AutomationCoordination::class.java)
+        Mockito.verify(decisionJournal).appendDecision(Mockito.eq(7L), recorded.capture() ?: AutomationCoordination.Idle(emptyList()))
+        assertIs<AutomationCoordination.Idle>(recorded.value)
+        assertEquals(listOf(battleEntry.id, adventureEntry.id), recorded.value.trace.map { it.entryId })
+        assertEquals(AutomationDecisionOutcome.SKIPPED, recorded.value.trace.first().outcome)
+        val event = recorded.value.trace.last()
+        assertEquals("SNAPSHOT_LOAD_FAILED", event.reasonCode)
+        val json = requireNotNull(event.diagnosticContext)
+        val context = jacksonObjectMapper().readTree(json)
+        assertEquals("SNAPSHOT_LOAD", context["stage"].asString())
+        assertEquals("java.io.IOException", context["errors"][1]["type"].asString())
+        assertTrue(context["snapshot"].isNull)
+        assertFalse(json.contains("secret-cookie"))
+        assertFalse(json.contains("secret-token"))
+    }
+
+    @Test
+    fun `판단 코드 오류는 성공적으로 읽은 상태와 실패 단계를 함께 보존한다`() {
+        val battle = battleDecisionEntry()
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(battleEntry))
+        Mockito.`when`(loader.loadEntry(7, battleEntry.id, null)).thenReturn(battle)
+        // 응답을 지정하지 않은 handler가 평가 시점에 예외를 던진다.
+        assertFailsWith<IllegalStateException> { selector.select(7) }
+        val recorded = ArgumentCaptor.forClass(AutomationCoordination::class.java)
+        Mockito.verify(decisionJournal).appendDecision(Mockito.eq(7L), recorded.capture() ?: AutomationCoordination.Idle(emptyList()))
+        val event = recorded.value.trace.single()
+        assertEquals("ENTRY_EVALUATION_FAILED", event.reasonCode)
+        val context = jacksonObjectMapper().readTree(event.diagnosticContext)
+        assertEquals(0, context["snapshot"]["targetCount"].asInt())
+        assertEquals("java.lang.IllegalStateException", context["errors"][0]["type"].asString())
+    }
+
+    @Test
+    fun `진단 저장 실패가 기존 오류의 복구 방식을 바꾸지 않는다`() {
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(battleEntry))
+        val failure = SafeRetryableAutomationException("일시적인 연결 실패")
+        Mockito.`when`(loader.loadEntry(7, battleEntry.id, null)).thenThrow(failure)
+        Mockito.`when`(decisionJournal.appendDecision(Mockito.eq(7L), Mockito.any(AutomationCoordination::class.java)
+            ?: AutomationCoordination.Idle(emptyList()))).thenThrow(IllegalStateException("DB unavailable"))
+        assertSame(failure, assertFailsWith<SafeRetryableAutomationException> { selector.select(7) })
+    }
+
+    @Test
+    fun `레이드 판단 예외도 해당 항목의 실패 이력으로 남긴다`() {
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(raidEntry))
+        val failure = SafeRetryableAutomationException("레이드 관측 실패")
+        Mockito.`when`(defaultRaidModule.decide(7)).thenThrow(failure)
+        assertSame(failure, assertFailsWith<SafeRetryableAutomationException> { selector.select(7) })
+        val recorded = ArgumentCaptor.forClass(AutomationCoordination::class.java)
+        Mockito.verify(decisionJournal).appendDecision(Mockito.eq(7L), recorded.capture() ?: AutomationCoordination.Idle(emptyList()))
+        assertEquals(raidEntry.id, recorded.value.trace.single().entryId)
+        assertEquals("RAID_EVALUATION_FAILED", recorded.value.trace.single().reasonCode)
+    }
+
+    @Test
+    fun `설정 변경 재판단은 오류 이력을 만들지 않는다`() {
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(battleEntry))
+        Mockito.`when`(loader.loadEntry(7, battleEntry.id, null)).thenThrow(TypedAutomationConfigurationChangedException())
+        assertFailsWith<TypedAutomationConfigurationChangedException> { selector.select(7) }
+        Mockito.verifyNoInteractions(decisionJournal)
+    }
 
     @Test
     fun `first runnable priority stops lower entry probes`() {
@@ -713,6 +794,10 @@ class AutomationTargetSelectorTest {
         val selected = assertIs<AutomationCoordination.Runnable>(activeSelector.select(7L))
 
         assertEquals(questEntry.id, selected.entryId)
+        assertEquals("HOME_ACTION_ID_MISSING", selected.trace.first().reasonCode)
+        val diagnostic = jacksonObjectMapper().readTree(requireNotNull(selected.trace.first().diagnosticContext))
+        assertEquals("ENTRY_EVALUATION", diagnostic["stage"].asString())
+        assertEquals(0, diagnostic["snapshot"]["targetCount"].asInt())
         assertEquals(
             1,
             store.findActive(

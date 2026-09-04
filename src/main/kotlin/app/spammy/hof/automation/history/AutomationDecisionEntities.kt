@@ -53,4 +53,5 @@ class AutomationDecisionEventEntity(
     @Enumerated(EnumType.STRING) @Column(name = "impact_scope", length = 64)
     val impactScope: AutomationImpactScope? = null,
     @Column(name = "release_condition", length = 255) val releaseCondition: String? = null,
+    @Column(name = "diagnostic_context", columnDefinition = "text") val diagnosticContext: String? = null,
 )

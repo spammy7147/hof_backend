@@ -11,6 +11,7 @@ import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.entity.AutomationWorkStatus
 import app.spammy.hof.automation.entity.AutomationWorkType
+import app.spammy.hof.automation.history.AutomationDecisionJournal
 import app.spammy.hof.automation.raid.RaidCycleModule
 import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
 import app.spammy.hof.automation.raid.RaidDecision
@@ -52,6 +53,7 @@ class AutomationTargetSelector(
     private val convergenceRollout: AutomationConvergenceRollout? = null,
     private val convergenceModule: AutomationActionConvergenceModule? = null,
     private val progressTelemetry: AutomationProgressTelemetry? = null,
+    private val decisionJournal: AutomationDecisionJournal? = null,
 ) : AutomationDecisionSource {
 
     override fun select(accountId: Long): AutomationCoordination {
@@ -94,9 +96,10 @@ class AutomationTargetSelector(
                 snapshotLoader,
             )
         }
-        val entry = snapshotLoader.loadEntry(accountId, session.entryId, session.targetKey)
-            .withWorkSession(session)
-        return when (val result = coordinate(accountId, entry)) {
+        return when (val result = loadAndCoordinate(
+            accountId, session.entryId, AutomationType.valueOf(session.workType.name),
+            snapshotLoader, initialTrace, session,
+        )) {
             is AutomationCoordination.Runnable -> {
                 result.withPrefix(initialWarnings, initialTrace)
             }
@@ -240,7 +243,11 @@ class AutomationTargetSelector(
                     }
                 }
                 if (entry.type == AutomationType.RAID) {
-                    val directive = decideRaid(accountId)
+                    val decision = decideRaid(accountId, entry.id, trace)
+                    val directive = decision.directive
+                    val diagnosticContext = AutomationDecisionDiagnostics.capture(
+                        "RAID_EVALUATION", now, raid = decision.authoritativeState,
+                    )
                     when (directive) {
                         is RaidDirective.Execute -> {
                             val action = directive.intent.toPreparedAction(accountId)
@@ -255,10 +262,13 @@ class AutomationTargetSelector(
                                     block.reasonCode,
                                     block.message,
                                     observedAt = timeProvider.now(),
+                                    targetKey = block.scope.key,
+                                    scope = block.scope.kind.name,
+                                    diagnosticContext = diagnosticContext,
                                 )
                                 return@forEach
                             }
-                            trace += directive.toTrace(entry.id, trace.size)
+                            trace += directive.toTrace(entry.id, trace.size, diagnosticContext)
                             return AutomationCoordination.Runnable(
                                 entry.id,
                                 action,
@@ -269,7 +279,7 @@ class AutomationTargetSelector(
                             )
                         }
                         is RaidDirective.WaitUntil -> {
-                            trace += directive.toTrace(entry.id, trace.size)
+                            trace += directive.toTrace(entry.id, trace.size, diagnosticContext)
                             lifecycle.waitForRaid(
                                 accountId,
                                 directive.entryId,
@@ -280,7 +290,7 @@ class AutomationTargetSelector(
                         }
                         is RaidDirective.Hold -> {
                             if (directive.isUserWarning()) warnings += directive.message
-                            trace += directive.toTrace(entry.id, trace.size)
+                            trace += directive.toTrace(entry.id, trace.size, diagnosticContext)
                             directive.raidId?.let { raidId ->
                                 lifecycle.waitForRaid(
                                     accountId,
@@ -294,12 +304,11 @@ class AutomationTargetSelector(
                                 if (earliest == null || at < earliest) earliest = at
                             }
                         }
-                        is RaidDirective.Complete -> trace += directive.toTrace(entry.id, trace.size)
+                        is RaidDirective.Complete -> trace += directive.toTrace(entry.id, trace.size, diagnosticContext)
                     }
                     return@forEach
                 }
-                val snapshot = snapshotLoader.loadEntry(accountId, entry.id)
-                when (val result = coordinate(accountId, snapshot)) {
+                when (val result = loadAndCoordinate(accountId, entry.id, entry.type, snapshotLoader, trace)) {
                     is AutomationCoordination.Runnable -> return result.copy(
                         warnings = warnings + result.warnings,
                         trace = trace + result.trace.resequenced(trace.size),
@@ -379,6 +388,81 @@ class AutomationTargetSelector(
             )
     }
 
+    private fun loadAndCoordinate(
+        accountId: Long,
+        entryId: Long,
+        type: AutomationType,
+        snapshotLoader: TypedAutomationSnapshotLoader,
+        previousTrace: List<AutomationEvaluationTrace>,
+        session: AutomationWorkSessionView? = null,
+    ): AutomationCoordination {
+        var snapshot: AutomationEntrySnapshot? = null
+        var stage = "SNAPSHOT_LOAD"
+        try {
+            val loaded = snapshotLoader.loadEntry(accountId, entryId, session?.targetKey)
+            snapshot = session?.let { loaded.withWorkSession(it) } ?: loaded
+            stage = "ENTRY_EVALUATION"
+            val result = coordinate(accountId, snapshot)
+            val trace = result.trace.map { item ->
+                if (item.outcome in DIAGNOSTIC_OUTCOMES) item.copy(
+                    diagnosticContext = AutomationDecisionDiagnostics.capture(
+                        stage, timeProvider.now(), snapshot, workSessionId = session?.id,
+                        targetKey = item.targetKey ?: session?.targetKey, scope = item.scope,
+                    ),
+                ) else item
+            }
+            return when (result) {
+                is AutomationCoordination.Runnable -> result.copy(trace = trace)
+                is AutomationCoordination.Unavailable -> result.copy(trace = trace)
+                is AutomationCoordination.Idle -> result.copy(trace = trace)
+                is AutomationCoordination.CycleBoundary -> result.copy(trace = trace)
+                is AutomationCoordination.Fatal -> result.copy(trace = trace)
+            }
+        } catch (error: Exception) {
+            recordSelectionFailure(accountId, entryId, type, stage, previousTrace, error, snapshot, session)
+            throw error
+        }
+    }
+
+    private fun recordSelectionFailure(
+        accountId: Long,
+        entryId: Long,
+        type: AutomationType,
+        stage: String,
+        previousTrace: List<AutomationEvaluationTrace>,
+        error: Exception,
+        snapshot: AutomationEntrySnapshot? = null,
+        session: AutomationWorkSessionView? = null,
+    ) {
+        // 요청 간격 조절과 설정 변경은 실패가 아니며 기존 재판단 경로를 그대로 따른다.
+        if (error is TypedAutomationConfigurationChangedException ||
+            error is app.spammy.hof.external.client.HofAutomationDeferredException
+        ) return
+        var diagnosticContext: String? = null
+        try {
+            diagnosticContext = AutomationDecisionDiagnostics.capture(
+                stage, timeProvider.now(), snapshot, error = error, workSessionId = session?.id,
+                targetKey = session?.targetKey,
+            )
+            val trace = AutomationEvaluationTrace(
+                sequence = previousTrace.size, entryId = entryId, type = type,
+                outcome = AutomationDecisionOutcome.FATAL,
+                reasonCode = "${stage}_FAILED",
+                message = "자동화 상태 조회 또는 판단 중 오류가 발생했습니다. 당시 진단 정보를 저장했습니다.",
+                targetKey = session?.targetKey,
+                diagnosticContext = diagnosticContext,
+            )
+            // 선택 전 실패 이력이 전체 자동화 중지를 뜻하지는 않는다. 복구 여부는 runner가 결정한다.
+            decisionJournal?.appendDecision(accountId, AutomationCoordination.Idle(emptyList(), previousTrace + trace))
+        } catch (recordingError: Exception) {
+            // 진단 저장 실패가 원래 예외의 재시도·로그인 복구 의미를 바꾸지 않는다.
+            log.error(
+                "Automation selection diagnostic write failed accountId={} entryId={} stage={} errorType={} recordingErrorType={} diagnosticContext={}",
+                accountId, entryId, stage, error.javaClass.name, recordingError.javaClass.name, diagnosticContext,
+            )
+        }
+    }
+
     private fun coordinate(
         accountId: Long,
         entry: AutomationEntrySnapshot,
@@ -399,6 +483,8 @@ class AutomationTargetSelector(
                     reasonCode = block.reasonCode,
                     message = block.message,
                     observedAt = timeProvider.now(),
+                    targetKey = block.scope.key,
+                    scope = block.scope.kind.name,
                 ),
             ),
         )
@@ -491,42 +577,52 @@ class AutomationTargetSelector(
         val constraints = guard.constraints(accountId)
         // Captcha gates and terminal legacy baseline suppression are safety controls, not policy rollout decisions.
         if (constraints.battleGateActive && preview.actionKind.battle) {
-            return SelectionBlock(CAPTCHA_BATTLE_GATE_REASON, CAPTCHA_BATTLE_GATE_MESSAGE)
+            return SelectionBlock(CAPTCHA_BATTLE_GATE_REASON, CAPTCHA_BATTLE_GATE_MESSAGE, preview.scope)
         }
         if (
             preview.baselineFingerprint?.let {
                 it in constraints.suppressedBaselines[preview.scope].orEmpty()
             } == true
-        ) return SelectionBlock(CONVERGENCE_BLOCKED_REASON, CONVERGENCE_HELD_MESSAGE)
+        ) return SelectionBlock(CONVERGENCE_BLOCKED_REASON, CONVERGENCE_HELD_MESSAGE, preview.scope)
         if (convergenceRollout?.active == false) return null
         if (convergenceRollout?.active == true) {
             convergenceModule?.resolveObservationGap(accountId, preview.scope, timeProvider.now())
         }
         return if (guard.constraints(accountId).blocks(preview)) {
-            SelectionBlock(CONVERGENCE_BLOCKED_REASON, CONVERGENCE_BLOCKED_MESSAGE)
+            SelectionBlock(CONVERGENCE_BLOCKED_REASON, CONVERGENCE_BLOCKED_MESSAGE, preview.scope)
         } else {
             null
         }
     }
 
-    private fun decideRaid(accountId: Long): RaidDirective {
-        val decision = raidModule.decide(accountId)
-        val registration = (decision.directive as? RaidDirective.Execute)?.intent as? RaidIntent.Town
-        if (registration?.kind == RaidIntentKind.REGISTER) {
-            val preview = convergenceSelectionFactory?.preview(
-                registration.entryId, registration.toPreparedAction(accountId),
-            )
-            val suppressed = convergenceGuard?.constraints(accountId)?.suppressedBaselines
-            if (preview != null && preview.baselineFingerprint in suppressed?.get(preview.scope).orEmpty()) {
-                return RaidDirective.Execute(
-                    registration.copy(kind = RaidIntentKind.REFRESH, requestRaidId = null),
-                    reasonCode = "RAID_REGISTRATION_RECOVERY_REFRESH",
-                    message = "기존 신청 보류를 재평가하기 위해 레이드 상태를 갱신합니다.",
+    private fun decideRaid(
+        accountId: Long,
+        entryId: Long,
+        previousTrace: List<AutomationEvaluationTrace>,
+        session: AutomationWorkSessionView? = null,
+    ): RaidDecision {
+        return try {
+            val decision = raidModule.decide(accountId)
+            val registration = (decision.directive as? RaidDirective.Execute)?.intent as? RaidIntent.Town
+            if (registration?.kind == RaidIntentKind.REGISTER) {
+                val preview = convergenceSelectionFactory?.preview(
+                    registration.entryId, registration.toPreparedAction(accountId),
                 )
+                val suppressed = convergenceGuard?.constraints(accountId)?.suppressedBaselines
+                if (preview != null && preview.baselineFingerprint in suppressed?.get(preview.scope).orEmpty()) {
+                    return RaidDecision(RaidDirective.Execute(
+                        registration.copy(kind = RaidIntentKind.REFRESH, requestRaidId = null),
+                        reasonCode = "RAID_REGISTRATION_RECOVERY_REFRESH",
+                        message = "기존 신청 보류를 재평가하기 위해 레이드 상태를 갱신합니다.",
+                    ), decision.authoritativeState)
+                }
             }
+            observeRaidAuthoritativeState(accountId, decision)
+            decision
+        } catch (error: Exception) {
+            recordSelectionFailure(accountId, entryId, AutomationType.RAID, "RAID_EVALUATION", previousTrace, error, session = session)
+            throw error
         }
-        observeRaidAuthoritativeState(accountId, decision)
-        return decision.directive
     }
 
     private fun observeRaidAuthoritativeState(accountId: Long, decision: RaidDecision) {
@@ -589,7 +685,12 @@ class AutomationTargetSelector(
         evaluatedEntryIds: Set<Long>,
         snapshotLoader: TypedAutomationSnapshotLoader,
     ): AutomationCoordination {
-        val directive = decideRaid(accountId)
+        val decision = decideRaid(accountId, session.entryId, initialTrace, session)
+        val directive = decision.directive
+        val diagnosticContext = AutomationDecisionDiagnostics.capture(
+            "RAID_EVALUATION", timeProvider.now(), raid = decision.authoritativeState,
+            workSessionId = session.id, targetKey = session.targetKey,
+        )
         return when (directive) {
             is RaidDirective.Execute -> {
                 val action = directive.intent.toPreparedAction(accountId)
@@ -610,6 +711,9 @@ class AutomationTargetSelector(
                             block.reasonCode,
                             block.message,
                             observedAt = timeProvider.now(),
+                            targetKey = block.scope.key,
+                            scope = block.scope.kind.name,
+                            diagnosticContext = diagnosticContext,
                         ),
                     )
                 } else {
@@ -617,7 +721,7 @@ class AutomationTargetSelector(
                         session.entryId,
                         action,
                         initialWarnings + listOfNotNull(directive.warning ?: directive.intent.recoveryWarning()),
-                        initialTrace + directive.toTrace(session.entryId, initialTrace.size),
+                        initialTrace + directive.toTrace(session.entryId, initialTrace.size, diagnosticContext),
                     )
                 }
             }
@@ -625,7 +729,7 @@ class AutomationTargetSelector(
                 lifecycle.waitForCooldown(accountId, session.id, directive.at)
                 AutomationCoordination.CycleBoundary(
                     warnings = initialWarnings,
-                    trace = initialTrace + directive.toTrace(session.entryId, initialTrace.size),
+                    trace = initialTrace + directive.toTrace(session.entryId, initialTrace.size, diagnosticContext),
                 )
             }
             is RaidDirective.Hold -> {
@@ -638,20 +742,20 @@ class AutomationTargetSelector(
                 )
                 AutomationCoordination.CycleBoundary(
                     warnings = initialWarnings + listOfNotNull(directive.message.takeIf { directive.isUserWarning() }),
-                    trace = initialTrace + directive.toTrace(session.entryId, initialTrace.size),
+                    trace = initialTrace + directive.toTrace(session.entryId, initialTrace.size, diagnosticContext),
                 )
             }
             is RaidDirective.Complete -> {
                 lifecycle.applyTransition(accountId, session.id, AutomationWorkTransition.Complete)
                 AutomationCoordination.CycleBoundary(
                     warnings = initialWarnings,
-                    trace = initialTrace + directive.toTrace(session.entryId, initialTrace.size),
+                    trace = initialTrace + directive.toTrace(session.entryId, initialTrace.size, diagnosticContext),
                 )
             }
         }
     }
 
-    private fun RaidDirective.toTrace(entryId: Long, sequence: Int): AutomationEvaluationTrace = when (this) {
+    private fun RaidDirective.toTrace(entryId: Long, sequence: Int, diagnosticContext: String): AutomationEvaluationTrace = when (this) {
         is RaidDirective.Execute -> AutomationEvaluationTrace(
             sequence = sequence,
             entryId = entryId,
@@ -705,7 +809,7 @@ class AutomationTargetSelector(
             message ?: "레이드 사이클을 ${outcome.kind.name} 상태로 마쳤습니다.",
             targetKey = outcome.raidId,
         )
-    }
+    }.let { if (it.outcome in DIAGNOSTIC_OUTCOMES) it.copy(diagnosticContext = diagnosticContext) else it }
 
     private fun RaidDirective.WaitUntil.waitDiagnosticKind(): AutomationDiagnosticKind? = when (reason) {
         RaidWaitReason.BATTLE_COOLDOWN,
@@ -834,9 +938,14 @@ class AutomationTargetSelector(
     private data class SelectionBlock(
         val reasonCode: String,
         val message: String,
+        val scope: AutomationIsolationScope,
     )
 
     private companion object {
+        val DIAGNOSTIC_OUTCOMES = setOf(
+            AutomationDecisionOutcome.SKIPPED, AutomationDecisionOutcome.WAITING,
+            AutomationDecisionOutcome.CONFIGURATION_WARNING, AutomationDecisionOutcome.FATAL,
+        )
         val log = LoggerFactory.getLogger(AutomationTargetSelector::class.java)
         val SEOUL: ZoneId = ZoneId.of("Asia/Seoul")
         const val CONVERGENCE_BLOCKED_REASON = "CONVERGENCE_SCOPE_BLOCKED"

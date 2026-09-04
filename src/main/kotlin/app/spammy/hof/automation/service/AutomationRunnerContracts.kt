@@ -83,6 +83,7 @@ data class AutomationEvaluationTrace(
     val workSessionId: Long? = null,
     val scope: String? = null,
     val observedAt: Instant? = null,
+    val diagnosticContext: String? = null,
 )
 
 sealed interface AutomationCoordination {
