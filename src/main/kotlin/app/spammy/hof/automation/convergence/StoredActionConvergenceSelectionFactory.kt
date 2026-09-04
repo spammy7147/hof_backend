@@ -10,6 +10,9 @@ import app.spammy.hof.automation.service.HomeQuestAutomationAction
 import app.spammy.hof.automation.service.HomeQuestAutomationActionType
 import app.spammy.hof.automation.service.PreparedAutomationAction
 import app.spammy.hof.automation.service.QuestAction
+import app.spammy.hof.automation.service.QuestAutomationSnapshot
+import app.spammy.hof.quest.model.QuestState
+import app.spammy.hof.quest.model.QuestMissionType
 import app.spammy.hof.automation.service.RaidCycleAbortAutomationAction
 import app.spammy.hof.automation.service.RaidTownAutomationAction
 import app.spammy.hof.automation.service.StoredTypedActionPayload
@@ -27,6 +30,16 @@ class StoredActionConvergenceSelectionFactory {
         scope = scope(AutomationIsolationScopeKind.RAID_ENTRY, state.raidId),
         fingerprint = fingerprint(canonicalRaidState(state)),
     )
+
+    /** 한 퀘스트의 현재 미션들은 같은 격리 범위 안에서 동시에 유효한 기준이다. */
+    fun authoritativeQuestBattleBaselines(snapshot: QuestAutomationSnapshot): Map<String, Set<String>> = snapshot.quests
+        .filter { it.state == QuestState.ACTIVE }
+        .associate { quest -> quest.questKey to quest.missions
+            .filter { it.type in setOf(QuestMissionType.MONSTER_KILL, QuestMissionType.MAP_CLEAR) }
+            .map { mission -> fingerprint(questBattleBaseline(quest.questKey,
+                snapshot.currentCycles[quest.questKey] ?: "0", mission.key,
+                mission.progress?.current, mission.progress?.required)) }.toSet()
+        }
 
     fun create(
         stored: StoredTypedAutomationAction,
@@ -80,8 +93,7 @@ class StoredActionConvergenceSelectionFactory {
             AutomationActionKind.QUEST_BATTLE,
             AutomationIsolationScopeKind.QUEST_TARGET,
             action.questKey,
-            "quest|battle|${action.questKey}|${action.questCycle}|${action.missionKey}|" +
-                "${action.missionCurrent}|${action.missionRequired}",
+            questBattleBaseline(action.questKey, action.questCycle, action.missionKey, action.missionCurrent, action.missionRequired),
         )
         is HomeQuestAutomationAction -> preview(
             if (action.action == HomeQuestAutomationActionType.ACCEPT) {
@@ -163,6 +175,9 @@ class StoredActionConvergenceSelectionFactory {
         )
     }
 
+    private fun questBattleBaseline(questKey: String, cycle: String, missionKey: String, current: Int?, required: Int?) =
+        "quest|battle|$questKey|$cycle|$missionKey|$current|$required"
+
     private fun map(
         stored: StoredTypedAutomationAction,
         legacySuppressionEpoch: String?,
@@ -180,8 +195,7 @@ class StoredActionConvergenceSelectionFactory {
         is StoredTypedActionPayload.QuestBattle -> Mapping(
             AutomationActionKind.QUEST_BATTLE,
             scope(AutomationIsolationScopeKind.QUEST_TARGET, payload.questKey),
-            "quest|battle|${payload.questKey}|${payload.questCycle}|${payload.missionKey}|" +
-                "${payload.observedCurrent}|${payload.observedRequired}",
+            questBattleBaseline(payload.questKey, payload.questCycle, payload.missionKey, payload.observedCurrent, payload.observedRequired),
         )
         is StoredTypedActionPayload.HomeQuest -> Mapping(
             when (payload.action) {

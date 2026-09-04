@@ -52,6 +52,8 @@ import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.EnumSource
 import org.mockito.Mockito
 import org.mockito.ArgumentCaptor
 import app.spammy.hof.automation.history.AutomationDecisionJournal
@@ -1392,8 +1394,9 @@ class AutomationTargetSelectorTest {
         Mockito.verify(loader, Mockito.never()).loadEntry(7, battleEntry.id, null, null)
     }
 
-    @Test
-    fun `raid cooldown parks its cycle and ends the current decision`() {
+    @ParameterizedTest
+    @EnumSource(RaidWaitReason::class)
+    fun `raid wait classification on resumed work preserves its boundary`(reason: RaidWaitReason) {
         val runningRaid = session(30, raidEntry, AutomationWorkType.RAID, "RaidGoblin", AutomationWorkStatus.RUNNING)
         val retryAt = now.plusSeconds(120)
         val raidModule = Mockito.mock(RaidCycleModule::class.java)
@@ -1409,11 +1412,11 @@ class AutomationTargetSelectorTest {
             battleCount = 1,
             executionIdentity = "battle-after-raid-wait",
         )
-        Mockito.`when`(work.findRunning(7)).thenReturn(runningRaid)
+        Mockito.`when`(work.findRunning(7)).thenReturn(runningRaid, null)
         Mockito.`when`(raidModule.decide(7)).thenReturn(
             RaidDecision(RaidDirective.WaitUntil(
                 at = retryAt,
-                reason = RaidWaitReason.BATTLE_COOLDOWN,
+                reason = reason,
                 message = "레이드 전투 쿨다운",
                 entryId = raidEntry.id,
                 raidId = "RaidGoblin",
@@ -1434,19 +1437,23 @@ class AutomationTargetSelectorTest {
 
         assertEquals(1, boundary.trace.size)
         assertEquals(AutomationType.RAID, boundary.trace.single().type)
-        assertEquals(AutomationDecisionOutcome.SKIPPED, boundary.trace.single().outcome)
+        assertEquals(expectedRaidWaitOutcome(reason), boundary.trace.single().outcome)
         assertEquals("RAID_BATTLE_SAFETY_GATE", boundary.trace.single().reasonCode)
-        assertEquals(AutomationDiagnosticKind.RAID_LOCAL_SAFETY_GATE, boundary.trace.single().diagnosticKind)
+        assertEquals(retryAt, boundary.trace.single().nextRunAt)
+        assertEquals("RaidGoblin", boundary.trace.single().targetKey)
+        assertTrue(requireNotNull(boundary.trace.single().diagnosticContext).contains("RAID_EVALUATION"))
         assertEquals(RaidCooldownSource.LOCAL_FALLBACK, boundary.trace.single().cooldownSource)
         assertEquals(AutomationImpactScope.RAID_ONLY, boundary.trace.single().impactScope)
         assertEquals("마감 뒤 최신 레이드 상태 재확인", boundary.trace.single().releaseCondition)
         Mockito.verify(lifecycle).waitForCooldown(7, 30, retryAt)
         Mockito.verify(loader, Mockito.never()).loadEntry(7, 13, "RaidGoblin")
         Mockito.verify(loader, Mockito.never()).loadEntry(7, battleEntry.id, null, null)
+        assertEquals(battleEntry.id, assertIs<AutomationCoordination.Runnable>(moduleSelector.select(7)).entryId)
     }
 
-    @Test
-    fun `raid wait before its first action is persisted and releases the next automation entry`() {
+    @ParameterizedTest
+    @EnumSource(RaidWaitReason::class)
+    fun `raid wait before its first action is classified and releases the next automation entry`(reason: RaidWaitReason) {
         val retryAt = now.plusSeconds(120)
         val battleSnapshot = battleDecisionEntry()
         val battleAction = BattleMapAutomationAction(
@@ -1465,7 +1472,7 @@ class AutomationTargetSelectorTest {
         Mockito.`when`(defaultRaidModule.decide(7)).thenReturn(
             RaidDecision(RaidDirective.WaitUntil(
                 at = retryAt,
-                reason = RaidWaitReason.REGISTRATION_COOLDOWN,
+                reason = reason,
                 message = "레이드 등록 쿨타임",
                 entryId = raidEntry.id,
                 raidId = "RaidGoblin",
@@ -1477,6 +1484,12 @@ class AutomationTargetSelectorTest {
         val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
 
         assertEquals(11, selected.entryId)
+        val raidTrace = selected.trace.first()
+        assertEquals(expectedRaidWaitOutcome(reason), raidTrace.outcome)
+        assertEquals(reason.name, raidTrace.reasonCode)
+        assertEquals("RaidGoblin", raidTrace.targetKey)
+        assertEquals(retryAt, raidTrace.nextRunAt)
+        assertTrue(requireNotNull(raidTrace.diagnosticContext).contains("RAID_EVALUATION"))
         Mockito.verify(lifecycle).waitForRaid(7, raidEntry.id, "RaidGoblin", retryAt)
     }
 
@@ -2422,6 +2435,12 @@ class AutomationTargetSelectorTest {
             28,
             AutomationWorkTransition.Complete,
         )
+    }
+
+    private fun expectedRaidWaitOutcome(reason: RaidWaitReason) = when (reason) {
+        RaidWaitReason.BATTLE_RECOVERY_RECHECK, RaidWaitReason.REWARD_CONFIRMATION, RaidWaitReason.POST_REWARD_CHECK ->
+            AutomationDecisionOutcome.WAITING
+        else -> AutomationDecisionOutcome.SKIPPED
     }
 
     private fun session(

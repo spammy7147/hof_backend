@@ -36,7 +36,12 @@ data class HomeQuestAutomationAction(
 
 @Service
 class HomeQuestAutomationHandler : AutomationHandler<HomeQuestAutomationSnapshot> {
-    override fun evaluate(context: HomeQuestAutomationSnapshot): HandlerEvaluation {
+    override fun evaluate(context: HomeQuestAutomationSnapshot): HandlerEvaluation = evaluate(context) { true }
+
+    override fun evaluate(
+        context: HomeQuestAutomationSnapshot,
+        accepts: (PreparedAutomationAction) -> Boolean,
+    ): HandlerEvaluation {
         val liveById = context.quests.associateBy { it.id }
         val enabled = context.selections.filter { it.enabled }.sortedBy { it.sourceOrder }
         if (enabled.isEmpty()) return HandlerEvaluation.ConfigurationWarning("활성화된 자택 퀘스트가 없습니다.")
@@ -47,6 +52,7 @@ class HomeQuestAutomationHandler : AutomationHandler<HomeQuestAutomationSnapshot
             liveById,
             HomeQuestState.CLAIMABLE,
             HomeQuestAutomationActionType.CLAIM,
+            accepts,
         )
         claim.runnable?.let { return it }
         val accept = evaluateState(
@@ -55,6 +61,7 @@ class HomeQuestAutomationHandler : AutomationHandler<HomeQuestAutomationSnapshot
             liveById,
             HomeQuestState.AVAILABLE,
             HomeQuestAutomationActionType.ACCEPT,
+            accepts,
         )
         accept.runnable?.let { return it }
         claim.gap?.let { return it }
@@ -88,6 +95,7 @@ class HomeQuestAutomationHandler : AutomationHandler<HomeQuestAutomationSnapshot
         liveById: Map<String, HomeQuestResponse>,
         state: HomeQuestState,
         action: HomeQuestAutomationActionType,
+        accepts: (PreparedAutomationAction) -> Boolean,
     ): StateEvaluation {
         var gap: HandlerEvaluation.ObservationGap? = null
         selections.forEach { selection ->
@@ -101,11 +109,8 @@ class HomeQuestAutomationHandler : AutomationHandler<HomeQuestAutomationSnapshot
                 if (gap == null) gap = observationGap(context, quest, action)
                 return@forEach
             }
-            return StateEvaluation(
-                runnable = HandlerEvaluation.Runnable(
-                    HomeQuestAutomationAction(context.accountId, quest.id, quest.name, actionId, action),
-                ),
-            )
+            val candidate = HomeQuestAutomationAction(context.accountId, quest.id, quest.name, actionId, action)
+            if (accepts(candidate)) return StateEvaluation(runnable = HandlerEvaluation.Runnable(candidate))
         }
         return StateEvaluation(gap = gap)
     }

@@ -1109,7 +1109,7 @@ class UnifiedAutomationRunnerTest {
                 ),
             ),
         )
-        val questRules = Mockito.mock(QuestWorkCycleModule::class.java)
+        val questRules = Mockito.mock(QuestWorkCycleModule::class.java, Mockito.CALLS_REAL_METHODS)
         val evaluatedQuestRevisions = mutableListOf<Long?>()
         val resumedQuestAction = QuestAction.Accept("quest-1", "accept-1")
         Mockito.`when`(questRules.decideNext(anyQuestSnapshotValue())).thenAnswer { invocation ->

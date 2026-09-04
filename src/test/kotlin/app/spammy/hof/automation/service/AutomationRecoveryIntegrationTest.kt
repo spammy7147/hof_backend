@@ -4,6 +4,15 @@ import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.entity.HofCookieEntity
 import app.spammy.hof.auth.service.AccountExecutionAuthorizationReader
 import app.spammy.hof.automation.convergence.*
+import app.spammy.hof.automation.raid.*
+import app.spammy.hof.automation.history.AutomationHistoryEventKind
+import app.spammy.hof.automation.history.AutomationDecisionJournal
+import app.spammy.hof.automation.history.AutomationHistoryQuery
+import app.spammy.hof.town.home.model.HomeMode
+import app.spammy.hof.town.home.parser.HomePageParser
+import app.spammy.hof.town.common.parser.HofFormParser
+import app.spammy.hof.quest.parser.QuestPageParser
+import tools.jackson.module.kotlin.jacksonObjectMapper
 import app.spammy.hof.party.entity.PartyPresetEntity
 import app.spammy.hof.party.entity.PartyPresetMemberEntity
 import app.spammy.hof.character.entity.CharacterPatternSlotEntity
@@ -30,6 +39,7 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
+import org.junit.jupiter.params.provider.EnumSource
 import org.mockito.Mockito
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
@@ -49,12 +59,14 @@ import org.springframework.transaction.support.TransactionTemplate
 class AutomationRecoveryIntegrationTest {
     @Autowired private lateinit var runner: UnifiedAutomationRunner
     @Autowired private lateinit var store: ConvergenceStore
+    @Autowired private lateinit var journal: AutomationDecisionJournal
     @Autowired private lateinit var entityManager: EntityManager
     @Autowired private lateinit var transactions: PlatformTransactionManager
     @Autowired private lateinit var jdbc: JdbcTemplate
     @Autowired private lateinit var clock: RecoveryClock
     @MockitoBean private lateinit var gateway: HofGateway
     @MockitoSpyBean private lateinit var decisions: AutomationDecisionSource
+    @MockitoSpyBean private lateinit var raidModule: RaidCycleModule
     @MockitoBean private lateinit var preflight: AutomationDailyPreflight
     @MockitoBean private lateinit var authorization: AccountExecutionAuthorizationReader
     @MockitoBean private lateinit var wakeups: AutomationWakeupPort
@@ -175,6 +187,172 @@ class AutomationRecoveryIntegrationTest {
         runner.runOne(accountId)
         assertEquals(0, battleRequests().size)
         assertTrue(store.findSuppressedBaselines(accountId).isEmpty())
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = ActionConvergenceResult::class, names = ["HELD", "PENDING"])
+    fun `자택 A만 보류이면 실제 후보 B를 선택 제출하고 A 제외 이유를 이력에 남긴다`(result: ActionConvergenceResult) {
+        Mockito.doCallRealMethod().`when`(decisions).select(accountId)
+        val url = "https://hof.zerosic.com/index.php?menu=housing"
+        var accepted = false
+        fun page() = """<div id="menu2">Funds : $ 1 Time : 100/100</div>
+            <h4>수락 가능한 퀘스트</h4><table>
+            <tr><td>[A] 작업 A</td><td>미션 0/1</td><td>-</td><td>-</td><td><a href="?menu=housing&amp;action=get&amp;no=A">수락</a></td></tr>
+            <tr><td>[B] 작업 B</td><td>미션 0/1</td><td>-</td><td>-</td><td>${if (accepted) "-" else "<a href='?menu=housing&amp;action=get&amp;no=B'>수락</a>"}</td></tr>
+            </table>"""
+        val quests = HomePageParser().parse(HomeMode.HOME, page(), url, HofFormParser().parse(page(), url)).quests
+        assertEquals(2, quests.size)
+        TransactionTemplate(transactions).executeWithoutResult {
+            val entry = entityManager.find(AutomationEntryEntity::class.java, entryId)
+            entry.type = AutomationType.HOME_QUEST
+            entry.singletonTypeMarker = AutomationType.HOME_QUEST
+            quests.forEachIndexed { order, quest ->
+                entityManager.persist(HomeQuestAutomationSelectionEntity(entry = entry,
+                    questId = quest.id, questName = quest.name, enabled = true, sourceOrder = order))
+            }
+        }
+        Mockito.doAnswer { invocation ->
+            val request = invocation.arguments[1] as HofRequest
+            requests += request
+            if (request.formFields["action"] == "get" && request.formFields["no"] == "B") accepted = true
+            HofHttpResponse(200, url, page(), emptyMap())
+        }.`when`(gateway).execute(Mockito.eq(accountId), anyRequest(), Mockito.anyMap())
+        val a = quests.first()
+        val action = HomeQuestAutomationAction(accountId, a.id, a.name, requireNotNull(a.actionId), HomeQuestAutomationActionType.ACCEPT)
+        val preview = StoredActionConvergenceSelectionFactory().preview(entryId, action)
+        val old = store.createOrGet(accountId, SelectedAutomationAction(entryId, UUID.randomUUID().toString(),
+            preview.actionKind, preview.scope, "automation-action-convergence-v1", requireNotNull(preview.baselineFingerprint)), clock.now())
+        old.result = result
+        old.nextProbeAt = clock.now().plusSeconds(60)
+        old.finishedAt = clock.now().takeIf { result == ActionConvergenceResult.HELD }
+        store.save(old)
+
+        val selected = assertIs<AutomationCoordination.Runnable>(decisions.select(accountId))
+        assertEquals(quests[1].id, assertIs<HomeQuestAutomationAction>(selected.action).questId)
+        runner.runOne(accountId)
+
+        assertEquals(1, requests.count { it.formFields["action"] == "get" && it.formFields["no"] == "B" })
+        assertEquals(0, requests.count { it.formFields["action"] == "get" && it.formFields["no"] == "A" })
+        assertEquals(result, store.get(old.attemptId)?.result)
+        val history = journal.page(accountId, AutomationHistoryQuery()).cycles.single()
+        assertEquals(1, history.topLevelStepCount)
+        val diagnostic = jacksonObjectMapper().readTree(requireNotNull(history.steps.first().event.diagnosticContext))
+        assertEquals(a.id, diagnostic["excludedCandidates"][0]["targetKey"].asString())
+        assertEquals(if (result == ActionConvergenceResult.HELD) "이전 행동 결과를 확정하지 못해 해당 범위를 보류했습니다. 최신 상태의 복구 조건을 확인하면 해제합니다."
+            else "이전 행동 결과를 확인 중이라 해당 범위만 잠시 건너뜁니다.", diagnostic["excludedCandidates"][0]["reasonMessage"].asString())
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = ActionConvergenceResult::class, names = ["HELD", "PENDING"])
+    fun `일반 퀘스트 A만 보류이면 실제 후보 B를 제출하고 B의 수락 사이클만 증가한다`(result: ActionConvergenceResult) {
+        Mockito.doCallRealMethod().`when`(decisions).select(accountId)
+        val url = "https://hof.zerosic.com/index.php?menu=quest"
+        val header = "<tr><td>퀘스트명</td><td>타입</td><td>제한</td><td>보상</td><td>행동</td></tr>"
+        var accepted = false
+        fun row(id: String, active: Boolean = false) = """<tr><td class="td7s">[Q00$id] 작업 $id</td><td>미션 : 즉시 완료</td><td>-</td><td>-</td><td>${if (active) "-" else "<a href='?menu=quest&amp;action=get&amp;no=$id'>수락</a>"}</td></tr>"""
+        val emptyPage = requireNotNull(javaClass.getResource("/fixtures/quest/quest-complete-empty.html")).readText()
+        fun page() = emptyPage.replace(
+            "<h4>진행중인 퀘스트 목록</h4>\n  <table>$header</table>",
+            "<h4>진행중인 퀘스트 목록</h4><table>$header${if (accepted) row("B", true) else ""}</table>",
+        ).replace(
+            "<h4>수락 가능한 퀘스트 목록</h4>\n  <table>$header</table>",
+            "<h4>수락 가능한 퀘스트 목록</h4><table>$header${row("A")}${if (accepted) "" else row("B")}</table>",
+        )
+        val observation = QuestPageParser().parseObservation(page(), url)
+        assertTrue(observation.complete)
+        val quests = observation.quests.filter { it.actionNo in listOf("A", "B") }
+        assertEquals(2, quests.size)
+        TransactionTemplate(transactions).executeWithoutResult {
+            val entry = entityManager.find(AutomationEntryEntity::class.java, entryId)
+            entry.type = AutomationType.QUEST
+            entry.singletonTypeMarker = AutomationType.QUEST
+            quests.forEachIndexed { order, quest ->
+                entityManager.persist(QuestAutomationSelectionEntity(entry = entry,
+                    questKey = quest.questKey, enabled = true, sourceOrder = order))
+            }
+        }
+        Mockito.doAnswer { invocation ->
+            val request = invocation.arguments[1] as HofRequest
+            requests += request
+            if (request.formFields["action"] == "get" && request.formFields["no"] == "B") accepted = true
+            HofHttpResponse(200, url, page(), emptyMap())
+        }.`when`(gateway).execute(Mockito.eq(accountId), anyRequest(), Mockito.anyMap())
+        val a = quests.first()
+        val preview = StoredActionConvergenceSelectionFactory().preview(entryId, QuestAction.Accept(a.questKey, "A", a.name, "0"))
+        val old = store.createOrGet(accountId, SelectedAutomationAction(entryId, UUID.randomUUID().toString(),
+            preview.actionKind, preview.scope, "automation-action-convergence-v1", requireNotNull(preview.baselineFingerprint)), clock.now())
+        old.result = result
+        old.nextProbeAt = clock.now().plusSeconds(60)
+        old.finishedAt = clock.now().takeIf { result == ActionConvergenceResult.HELD }
+        store.save(old)
+
+        val selected = assertIs<AutomationCoordination.Runnable>(decisions.select(accountId))
+        assertEquals(quests[1].questKey, assertIs<QuestAction.Accept>(selected.action).questKey)
+        runner.runOne(accountId)
+
+        assertEquals(1, requests.count { it.formFields["action"] == "get" && it.formFields["no"] == "B" })
+        assertEquals(0, requests.count { it.formFields["action"] == "get" && it.formFields["no"] == "A" })
+        assertEquals(result, store.get(old.attemptId)?.result)
+        assertEquals(listOf(quests[1].questKey), jdbc.queryForList(
+            "select quest_code from quest_automation_cycles where account_id = ?", String::class.java, accountId))
+        val history = journal.page(accountId, AutomationHistoryQuery()).cycles.single()
+        assertEquals(1, history.topLevelStepCount)
+        val diagnostic = jacksonObjectMapper().readTree(requireNotNull(history.steps.first().event.diagnosticContext))
+        assertEquals(a.questKey, diagnostic["excludedCandidates"][0]["targetKey"].asString())
+        assertEquals(if (result == ActionConvergenceResult.HELD) "이전 행동 결과를 확정하지 못해 해당 범위를 보류했습니다. 최신 상태의 복구 조건을 확인하면 해제합니다."
+            else "이전 행동 결과를 확인 중이라 해당 범위만 잠시 건너뜁니다.", diagnostic["excludedCandidates"][0]["reasonMessage"].asString())
+    }
+
+    @ParameterizedTest
+    @EnumSource(RaidWaitReason::class)
+    fun `레이드 대기 사유를 저장하면서 하위 자택을 실행하고 재확인 시각을 보존한다`(reason: RaidWaitReason) {
+        Mockito.doCallRealMethod().`when`(decisions).select(accountId)
+        val retryAt = clock.now().plusSeconds(120)
+        val directive = RaidDirective.WaitUntil(retryAt, reason, "레이드 상태 재확인", entryId, "RaidGoblin",
+            impactScope = AutomationImpactScope.RAID_ONLY, releaseCondition = "최신 레이드 상태 재확인")
+        Mockito.doReturn(RaidDecision(directive)).`when`(raidModule).decide(accountId)
+        val url = "https://hof.zerosic.com/index.php?menu=housing"
+        var accepted = false
+        fun page() = """<div id="menu2">Funds : $ 1 Time : 100/100</div><h4>수락 가능한 퀘스트</h4><table>
+            <tr><td>[B] 하위 자택</td><td>미션 0/1</td><td>-</td><td>-</td><td>${if (accepted) "-" else "<a href='?menu=housing&amp;action=get&amp;no=B'>수락</a>"}</td></tr></table>"""
+        val quest = HomePageParser().parse(HomeMode.HOME, page(), url, HofFormParser().parse(page(), url)).quests.single()
+        TransactionTemplate(transactions).executeWithoutResult {
+            val entry = entityManager.find(AutomationEntryEntity::class.java, entryId)
+            entry.type = AutomationType.RAID
+            entry.singletonTypeMarker = AutomationType.RAID
+            val home = AutomationEntryEntity(account = entry.account, type = AutomationType.HOME_QUEST, priority = 1,
+                enabled = true, createdAt = clock.now(), updatedAt = clock.now())
+            entityManager.persist(home)
+            entityManager.persist(HomeQuestAutomationSelectionEntity(entry = home,
+                questId = quest.id, questName = quest.name, enabled = true, sourceOrder = 0))
+        }
+        Mockito.doAnswer { invocation ->
+            val request = invocation.arguments[1] as HofRequest
+            requests += request
+            if (request.formFields["action"] == "get" && request.formFields["no"] == "B") accepted = true
+            HofHttpResponse(200, url, page(), emptyMap())
+        }.`when`(gateway).execute(Mockito.eq(accountId), anyRequest(), Mockito.anyMap())
+
+        runner.runOne(accountId)
+
+        assertEquals(1, requests.count { it.formFields["action"] == "get" && it.formFields["no"] == "B" })
+        val history = journal.page(accountId, AutomationHistoryQuery()).cycles.single()
+        val raidEvent = history.steps.first().event
+        val expectedKind = if (reason in setOf(RaidWaitReason.BATTLE_RECOVERY_RECHECK,
+                RaidWaitReason.REWARD_CONFIRMATION, RaidWaitReason.POST_REWARD_CHECK)) {
+            AutomationHistoryEventKind.WAITING
+        } else AutomationHistoryEventKind.SKIPPED
+        assertEquals(2, history.topLevelStepCount)
+        assertEquals(expectedKind, raidEvent.kind)
+        assertEquals(reason.name, raidEvent.reasonCode)
+        assertEquals("RaidGoblin", raidEvent.targetKey)
+        assertEquals(retryAt, raidEvent.nextRunAt)
+        assertNotNull(raidEvent.diagnosticContext)
+        assertEquals(retryAt, jdbc.queryForObject(
+            "select next_check_at from automation_work_sessions where account_id = ? and work_type = 'RAID'",
+            java.sql.Timestamp::class.java, accountId)?.toInstant())
+        journal.appendDecision(accountId, AutomationCoordination.Idle(emptyList()))
+        assertEquals(raidEvent, journal.page(accountId, AutomationHistoryQuery()).cycles.first { it.id == history.id }.steps.first().event)
     }
 
     @Test

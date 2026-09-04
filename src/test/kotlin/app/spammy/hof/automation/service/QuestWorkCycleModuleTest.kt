@@ -51,6 +51,43 @@ class QuestWorkCycleModuleTest {
     private val handler = DefaultQuestWorkCycleModule(progress)
 
     @Test
+    fun `blocked claim and first mission do not hide the next mission or skip ahead to acceptance`() {
+        val context = snapshot(
+            quests = listOf(quest("claim", QuestState.CLAIMABLE, 0, immediate()),
+                quest("active", QuestState.ACTIVE, 1, monster("A"), monster("B")),
+                quest("new", QuestState.AVAILABLE, 2, immediate())),
+            selections = listOf(selection("claim"), selection("active", maps = listOf(map("A", "map-a", 0), map("B", "map-b", 1))), selection("new")),
+            states = listOf(state("map-a"), state("map-b")),
+        )
+        val visited = mutableListOf<PreparedAutomationAction>()
+        val selected = handler.decideNext(context) { action ->
+            visited += action
+            action is QuestAction.Battle && action.missionKey == "B"
+        }
+        assertEquals("B", battle(selected).missionKey)
+        assertEquals(3, visited.size)
+        assertEquals(emptyList(), progress.results)
+        assertEquals(emptyList(), progress.claimedMissions)
+        assertEquals(emptyMap(), progress.cycles)
+        assertEquals("new", assertIs<QuestAction.Accept>(assertIs<QuestDirective.Execute>(
+            handler.decideNext(context) { it is QuestAction.Accept }).action).questKey)
+    }
+
+    @Test
+    fun `excluded map clear mission is never claimed by running work`() {
+        val context = snapshot(
+            quests = listOf(quest("q", QuestState.ACTIVE, 0, mapClear("A", "map-a"), mapClear("B", "map-b"))),
+            selections = listOf(selection("q", maps = listOf(map("A", "map-a", 0, manual = true), map("B", "map-b", 1, manual = true)))),
+            states = listOf(state("map-a"), state("map-b")), workSessionId = 90,
+        )
+        progress.runningWorkTargets[90] = "q"
+        val selected = handler.decideNext(context) { it is QuestAction.Battle && it.missionKey == "B" }
+        assertEquals("B", battle(selected).missionKey)
+        assertEquals(listOf("B"), progress.claimedMissions.map { it.second.missionKey })
+        assertEquals(emptyList(), progress.results)
+    }
+
+    @Test
     fun `quest battle map follows shared 100 and 300 TIME rules`() {
         fun actionAt(timeCurrent: Int) = battle(handler.decideNext(snapshot(
             quests = listOf(quest(

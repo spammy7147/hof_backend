@@ -49,6 +49,12 @@ interface AutomationActionConvergenceModule {
         scope: AutomationIsolationScope,
         baselineFingerprint: String,
         observedAt: Instant,
+    ): Int = observeAuthoritativeBaselines(accountId, scope, setOf(baselineFingerprint), observedAt)
+    fun observeAuthoritativeBaselines(
+        accountId: Long,
+        scope: AutomationIsolationScope,
+        baselineFingerprints: Set<String>,
+        observedAt: Instant,
     ): Int
     fun allowFreshDecision(accountId: Long, attemptId: Long, allowedAt: Instant): Boolean
     fun allowRaidRegistrationFreshDecision(
@@ -331,17 +337,15 @@ class DefaultAutomationActionConvergenceModule(
     override fun releaseBattleGate(accountId: Long, resolvedAt: Instant): Boolean =
         store.releaseBattleGate(accountId, resolvedAt)
 
-    override fun observeAuthoritativeBaseline(
+    override fun observeAuthoritativeBaselines(
         accountId: Long,
         scope: AutomationIsolationScope,
-        baselineFingerprint: String,
+        baselineFingerprints: Set<String>,
         observedAt: Instant,
-    ): Int = store.releaseSupersededSuppressions(
-        accountId,
-        scope,
-        baselineFingerprint,
-        observedAt,
-    )
+    ): Int {
+        require(baselineFingerprints.isNotEmpty()) { "An authoritative observation must contain a baseline." }
+        return store.releaseSupersededSuppressions(accountId, scope, baselineFingerprints, observedAt)
+    }
 
     override fun allowFreshDecision(accountId: Long, attemptId: Long, allowedAt: Instant): Boolean =
         store.releaseSuppression(accountId, attemptId, allowedAt)

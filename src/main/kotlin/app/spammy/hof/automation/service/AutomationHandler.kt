@@ -12,6 +12,9 @@ data class ResolvedAutomationParty(val characterIds: List<String>, val patternLo
 /** A typed, side-effect-free handler decision consumed by the future coordinator. */
 fun interface AutomationHandler<C> {
     fun evaluate(context: C): HandlerEvaluation
+
+    /** 복수 후보를 순회하는 구현은 후보 채택 전에 공통 선택 제약을 확인한다. */
+    fun evaluate(context: C, accepts: (PreparedAutomationAction) -> Boolean): HandlerEvaluation = evaluate(context)
 }
 
 sealed interface HandlerEvaluation {

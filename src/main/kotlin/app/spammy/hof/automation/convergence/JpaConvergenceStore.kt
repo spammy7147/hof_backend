@@ -200,7 +200,7 @@ class JpaConvergenceStore(
     override fun releaseSupersededSuppressions(
         accountId: Long,
         scope: AutomationIsolationScope,
-        currentBaselineFingerprint: String,
+        currentBaselineFingerprints: Set<String>,
         releasedAt: Instant,
     ): Int {
         val superseded = entityManager.createQuery(
@@ -212,7 +212,7 @@ class JpaConvergenceStore(
               and convergence.scopeKey = :scopeKey
               and convergence.result in :results
               and convergence.suppressionReleasedAt is null
-              and attempt.baselineFingerprint <> :currentBaselineFingerprint
+              and attempt.baselineFingerprint not in :currentBaselineFingerprints
             """.trimIndent(),
             ActionConvergenceEntity::class.java,
         ).setParameter("accountId", accountId)
@@ -222,7 +222,7 @@ class JpaConvergenceStore(
                 "results",
                 setOf(ActionConvergenceResult.HELD, ActionConvergenceResult.RESULT_UNOBSERVED),
             )
-            .setParameter("currentBaselineFingerprint", currentBaselineFingerprint)
+            .setParameter("currentBaselineFingerprints", currentBaselineFingerprints)
             .resultList
         superseded.forEach { it.suppressionReleasedAt = releasedAt }
         return superseded.size

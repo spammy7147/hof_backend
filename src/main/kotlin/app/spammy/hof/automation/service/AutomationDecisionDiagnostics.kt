@@ -18,6 +18,7 @@ internal object AutomationDecisionDiagnostics {
         workSessionId: Long? = null,
         targetKey: String? = null,
         scope: String? = null,
+        excludedCandidates: List<AutomationCandidateExclusion> = emptyList(),
     ): String {
         val context = linkedMapOf<String, Any?>(
             "version" to 1,
@@ -27,6 +28,8 @@ internal object AutomationDecisionDiagnostics {
             "workSessionId" to workSessionId,
             "targetKey" to targetKey,
             "scope" to scope,
+            "excludedCandidates" to excludedCandidates.take(TARGET_LIMIT),
+            "excludedCandidateCount" to excludedCandidates.size,
             "targetLimit" to TARGET_LIMIT,
             "snapshot" to snapshot?.summary(),
             "raid" to raid,

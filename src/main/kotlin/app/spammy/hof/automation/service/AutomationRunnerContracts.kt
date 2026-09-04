@@ -64,6 +64,15 @@ enum class AutomationImpactScope {
     RAID_ONLY,
 }
 
+data class AutomationCandidateExclusion(
+    val targetKey: String,
+    val scope: String,
+    val actionKind: String,
+    val reasonCode: String,
+    val observedAt: Instant,
+    val reasonMessage: String,
+)
+
 data class AutomationEvaluationTrace(
     val sequence: Int,
     val entryId: Long,
@@ -84,6 +93,7 @@ data class AutomationEvaluationTrace(
     val scope: String? = null,
     val observedAt: Instant? = null,
     val diagnosticContext: String? = null,
+    val excludedCandidates: List<AutomationCandidateExclusion> = emptyList(),
 )
 
 sealed interface AutomationCoordination {

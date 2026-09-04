@@ -403,21 +403,19 @@ class AutomationTargetSelector(
             snapshot = session?.let { loaded.withWorkSession(it) } ?: loaded
             stage = "ENTRY_EVALUATION"
             val result = coordinate(accountId, snapshot)
-            val trace = result.trace.map { item ->
-                if (item.outcome in DIAGNOSTIC_OUTCOMES) item.copy(
+            val trace = result.trace.map { original ->
+                val item = if (session == null && type in CANDIDATE_ARBITRATED_TYPES &&
+                    original.outcome == AutomationDecisionOutcome.WAITING
+                ) original.copy(outcome = AutomationDecisionOutcome.SKIPPED) else original
+                if (item.outcome in DIAGNOSTIC_OUTCOMES || item.excludedCandidates.isNotEmpty()) item.copy(
                     diagnosticContext = AutomationDecisionDiagnostics.capture(
                         stage, timeProvider.now(), snapshot, workSessionId = session?.id,
                         targetKey = item.targetKey ?: session?.targetKey, scope = item.scope,
+                        excludedCandidates = item.excludedCandidates,
                     ),
                 ) else item
             }
-            return when (result) {
-                is AutomationCoordination.Runnable -> result.copy(trace = trace)
-                is AutomationCoordination.Unavailable -> result.copy(trace = trace)
-                is AutomationCoordination.Idle -> result.copy(trace = trace)
-                is AutomationCoordination.CycleBoundary -> result.copy(trace = trace)
-                is AutomationCoordination.Fatal -> result.copy(trace = trace)
-            }
+            return result.withTrace(trace)
         } catch (error: Exception) {
             recordSelectionFailure(accountId, entryId, type, stage, previousTrace, error, snapshot, session)
             throw error
@@ -467,24 +465,52 @@ class AutomationTargetSelector(
         accountId: Long,
         entry: AutomationEntrySnapshot,
     ): AutomationCoordination {
-        val result = evaluateEntry(entry, quest, battle, adventure, union, fishing, homeQuest) { gap ->
+        val exclusions = linkedSetOf<AutomationCandidateExclusion>()
+        val messages = linkedSetOf<String>()
+        val observedScopes = mutableSetOf<AutomationIsolationScope>()
+        val questBattleBaselines = entry.quest?.let { convergenceSelectionFactory?.authoritativeQuestBattleBaselines(it) }.orEmpty()
+        val accepts: (PreparedAutomationAction) -> Boolean = { action ->
+            val block = selectionBlock(accountId, entry.id, action, observedScopes, questBattleBaselines)
+            if (block != null) {
+                val preview = requireNotNull(convergenceSelectionFactory).preview(entry.id, action)
+                exclusions += AutomationCandidateExclusion(block.scope.key, block.scope.kind.name,
+                    preview.actionKind.name, block.reasonCode, timeProvider.now(), block.message)
+                messages += block.message
+            }
+            block == null
+        }
+        val result = evaluateEntry(entry, quest, battle, adventure, union, fishing, homeQuest, accepts) { gap ->
             coordinateObservationGap(accountId, entry, gap)
         }
-        val runnable = result as? AutomationCoordination.Runnable ?: return result
-        val block = selectionBlock(accountId, entry.id, runnable.action) ?: return result
+        if (result is AutomationCoordination.Runnable && accepts(result.action)) return result.copy(
+            warnings = result.warnings + messages,
+            trace = result.trace.map { it.copy(excludedCandidates = exclusions.toList()) },
+        )
+        if (exclusions.isEmpty()) return result
+        val running = entry.homeQuest?.workSessionId != null || entry.quest?.workSessionId != null
+        // 다른 후보의 구체적인 관측·설정 사유는 보류 사유로 덮어쓰지 않는다.
+        if (result is AutomationCoordination.Fatal || (!running && result !is AutomationCoordination.Runnable &&
+                result.trace.any { it.reasonCode != HandlerEvaluation.Skipped.reasonCode })) {
+            return result.withTrace(result.trace.map { it.copy(excludedCandidates = exclusions.toList()) })
+        }
+        val first = exclusions.first()
         return AutomationCoordination.Idle(
-            warnings = listOf(block.message),
+            warnings = result.warnings + messages,
+            nextRunAt = (result as? AutomationCoordination.Unavailable)?.nextRunAt,
             trace = listOf(
                 AutomationEvaluationTrace(
                     sequence = 0,
                     entryId = entry.id,
                     type = entry.type,
-                    outcome = AutomationDecisionOutcome.WAITING,
-                    reasonCode = block.reasonCode,
-                    message = block.message,
+                    outcome = if (running || entry.type !in CANDIDATE_ARBITRATED_TYPES) {
+                        AutomationDecisionOutcome.WAITING
+                    } else AutomationDecisionOutcome.SKIPPED,
+                    reasonCode = first.reasonCode,
+                    message = messages.joinToString(" ").take(1000),
                     observedAt = timeProvider.now(),
-                    targetKey = block.scope.key,
-                    scope = block.scope.kind.name,
+                    targetKey = first.targetKey,
+                    scope = first.scope,
+                    excludedCandidates = exclusions.toList(),
                 ),
             ),
         )
@@ -565,13 +591,19 @@ class AutomationTargetSelector(
         accountId: Long,
         entryId: Long,
         action: PreparedAutomationAction,
+        observedScopes: MutableSet<AutomationIsolationScope>? = null,
+        questBattleBaselines: Map<String, Set<String>> = emptyMap(),
     ): SelectionBlock? {
         val guard = convergenceGuard ?: return null
         val factory = convergenceSelectionFactory ?: return null
         val preview = factory.preview(entryId, action)
-        if (action !is RaidTownAutomationAction || action.action != RaidAction.REFRESH) {
+        // 같은 관측에서 다른 미션을 탐색한 사실은 이전 미션의 상태 변경 증거가 아니다.
+        val firstObservation = observedScopes?.add(preview.scope) != false
+        if (firstObservation && (action !is RaidTownAutomationAction || action.action != RaidAction.REFRESH)) {
             preview.baselineFingerprint?.let { baselineFingerprint ->
-                observeAuthoritativeBaseline(accountId, preview.scope, baselineFingerprint)
+                val currentBaselines = (action as? QuestAction.Battle)?.let { questBattleBaselines[it.questKey] }
+                    ?.takeIf { it.isNotEmpty() } ?: setOf(baselineFingerprint)
+                observeAuthoritativeBaselines(accountId, preview.scope, currentBaselines)
             }
         }
         val constraints = guard.constraints(accountId)
@@ -628,18 +660,18 @@ class AutomationTargetSelector(
     private fun observeRaidAuthoritativeState(accountId: Long, decision: RaidDecision) {
         val state = decision.authoritativeState ?: return
         val baseline = convergenceSelectionFactory?.authoritativeRaidBaseline(state) ?: return
-        observeAuthoritativeBaseline(accountId, baseline.scope, baseline.fingerprint)
+        observeAuthoritativeBaselines(accountId, baseline.scope, setOf(baseline.fingerprint))
     }
 
-    private fun observeAuthoritativeBaseline(
+    private fun observeAuthoritativeBaselines(
         accountId: Long,
         scope: AutomationIsolationScope,
-        baselineFingerprint: String,
+        baselineFingerprints: Set<String>,
     ) {
-        val released = convergenceModule?.observeAuthoritativeBaseline(
+        val released = convergenceModule?.observeAuthoritativeBaselines(
             accountId,
             scope,
-            baselineFingerprint,
+            baselineFingerprints,
             timeProvider.now(),
         ) ?: 0
         if (released > 0) {
@@ -772,7 +804,15 @@ class AutomationTargetSelector(
             sequence,
             entryId,
             AutomationType.RAID,
-            AutomationDecisionOutcome.SKIPPED,
+            when (reason) {
+                RaidWaitReason.REGISTRATION_COOLDOWN,
+                RaidWaitReason.WAITING_TO_START,
+                RaidWaitReason.BATTLE_COOLDOWN,
+                RaidWaitReason.BATTLE_APPLIED_COOLDOWN -> AutomationDecisionOutcome.SKIPPED
+                RaidWaitReason.BATTLE_RECOVERY_RECHECK,
+                RaidWaitReason.REWARD_CONFIRMATION,
+                RaidWaitReason.POST_REWARD_CHECK -> AutomationDecisionOutcome.WAITING
+            },
             reasonCode ?: reason.name,
             message,
             at,
@@ -846,6 +886,14 @@ class AutomationTargetSelector(
 
     private fun List<AutomationEvaluationTrace>.resequenced(offset: Int): List<AutomationEvaluationTrace> =
         mapIndexed { index, item -> item.copy(sequence = offset + index) }
+
+    private fun AutomationCoordination.withTrace(trace: List<AutomationEvaluationTrace>): AutomationCoordination = when (this) {
+        is AutomationCoordination.Runnable -> copy(trace = trace)
+        is AutomationCoordination.Unavailable -> copy(trace = trace)
+        is AutomationCoordination.Idle -> copy(trace = trace)
+        is AutomationCoordination.CycleBoundary -> copy(trace = trace)
+        is AutomationCoordination.Fatal -> copy(trace = trace)
+    }
 
     private fun AutomationCoordination.withPrefix(
         warnings: List<String>,
@@ -968,13 +1016,14 @@ private fun evaluateEntry(
     union: AutomationHandler<UnionAutomationSnapshot>,
     fishing: AutomationHandler<FishingAutomationSnapshot>,
     homeQuest: AutomationHandler<HomeQuestAutomationSnapshot>,
+    accepts: (PreparedAutomationAction) -> Boolean = { true },
     observationGap: ((HandlerEvaluation.ObservationGap) -> AutomationCoordination)? = null,
 ): AutomationCoordination {
     val evaluation = when (entry.type) {
         AutomationType.QUEST -> entry.quest?.let {
-            quest.decideNext(it).toEntryEvaluation(hasRunningWork = it.workSessionId != null)
+            quest.decideNext(it, accepts).toEntryEvaluation(hasRunningWork = it.workSessionId != null)
         }
-        AutomationType.HOME_QUEST -> entry.homeQuest?.let(homeQuest::evaluate)
+        AutomationType.HOME_QUEST -> entry.homeQuest?.let { homeQuest.evaluate(it, accepts) }
         AutomationType.BATTLE_MAP -> entry.battle?.let(battle::evaluate)
         AutomationType.ADVENTURE_MAP -> entry.adventure?.let(adventure::evaluate)
         AutomationType.RAID -> HandlerEvaluation.Skipped

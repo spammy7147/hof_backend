@@ -11,6 +11,11 @@ import app.spammy.hof.quest.model.QuestSnapshot
 interface QuestWorkCycleModule {
     fun decideNext(snapshot: QuestAutomationSnapshot): QuestDirective
 
+    fun decideNext(
+        snapshot: QuestAutomationSnapshot,
+        accepts: (PreparedAutomationAction) -> Boolean,
+    ): QuestDirective = decideNext(snapshot)
+
     fun recordObservedResult(
         accountId: Long,
         attempt: QuestAttempt,

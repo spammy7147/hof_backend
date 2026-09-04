@@ -592,7 +592,12 @@ class DefaultQuestWorkCycleModule(
     private val timePolicy: BattleTimePolicy = BattleTimePolicy(),
     private val lootSignals: AutomationLootSignalService = AutomationLootSignalService(),
 ) : QuestWorkCycleModule {
-    override fun decideNext(snapshot: QuestAutomationSnapshot): QuestDirective {
+    override fun decideNext(snapshot: QuestAutomationSnapshot): QuestDirective = decideNext(snapshot) { true }
+
+    override fun decideNext(
+        snapshot: QuestAutomationSnapshot,
+        accepts: (PreparedAutomationAction) -> Boolean,
+    ): QuestDirective {
         val work = snapshot.workSessionId?.let { progressStore.findRunningWork(snapshot.accountId, it) }
         if (
             snapshot.workSessionId != null &&
@@ -608,7 +613,7 @@ class DefaultQuestWorkCycleModule(
             )
         }
         reconcileAuthoritativeMapClearProgress(snapshot, work?.mapClearProgress)?.let { return it }
-        val next = evaluateRules(snapshot)
+        val next = evaluateRules(snapshot, accepts)
         if (next is QuestDirective.Hold && work != null) {
             return QuestDirective.WaitForConfiguration(next.message, next.reasonCode)
         }
@@ -676,7 +681,10 @@ class DefaultQuestWorkCycleModule(
         message = "퀘스트 진행 상태가 판단 중 변경되어 최신 상태를 즉시 다시 확인합니다.",
     )
 
-    private fun evaluateRules(context: QuestAutomationSnapshot): QuestDirective {
+    private fun evaluateRules(
+        context: QuestAutomationSnapshot,
+        accepts: (PreparedAutomationAction) -> Boolean,
+    ): QuestDirective {
         val selections = context.selections
             .asSequence()
             .filter(QuestAutomationSelection::enabled)
@@ -689,15 +697,13 @@ class DefaultQuestWorkCycleModule(
         candidates.filter {
             it.state == QuestState.CLAIMABLE && it.canClaimWithoutWastingTime(context.timeSnapshot, context.now)
         }.forEach { quest ->
-            quest.actionNo?.let {
-                return QuestDirective.Execute(
-                    QuestAction.Claim(
-                        quest.questKey,
-                        it,
-                        quest.name,
-                        context.currentCycles[quest.questKey] ?: INITIAL_CYCLE,
-                    ),
+            quest.actionNo?.let { actionNo ->
+                val action = QuestAction.Claim(
+                    quest.questKey, actionNo, quest.name,
+                    context.currentCycles[quest.questKey] ?: INITIAL_CYCLE,
                 )
+                if (accepts(action)) return QuestDirective.Execute(action)
+                return@forEach
             }
             if (claimFallback == null) {
                 claimFallback = QuestDirective.Hold(
@@ -707,20 +713,18 @@ class DefaultQuestWorkCycleModule(
             }
         }
 
-        val progressEvaluation = evaluateProgress(candidates, selections, context)
+        val progressEvaluation = evaluateProgress(candidates, selections, context, accepts)
         if (progressEvaluation is QuestDirective.Execute) return progressEvaluation
 
         var acceptFallback: QuestDirective.Hold? = null
         candidates.filter { it.state == QuestState.AVAILABLE }.forEach { quest ->
-            quest.actionNo?.let {
-                return QuestDirective.Execute(
-                    QuestAction.Accept(
-                        quest.questKey,
-                        it,
-                        quest.name,
-                        context.currentCycles[quest.questKey] ?: INITIAL_CYCLE,
-                    ),
+            quest.actionNo?.let { actionNo ->
+                val action = QuestAction.Accept(
+                    quest.questKey, actionNo, quest.name,
+                    context.currentCycles[quest.questKey] ?: INITIAL_CYCLE,
                 )
+                if (accepts(action)) return QuestDirective.Execute(action)
+                return@forEach
             }
             if (acceptFallback == null) {
                 acceptFallback = QuestDirective.Hold(
@@ -872,6 +876,7 @@ class DefaultQuestWorkCycleModule(
         quests: List<QuestSnapshot>,
         selections: Map<String, QuestAutomationSelection>,
         context: QuestAutomationSnapshot,
+        accepts: (PreparedAutomationAction) -> Boolean,
     ): QuestDirective? {
         val evaluations = mutableListOf<QuestDirective>()
         quests.filter { it.state == QuestState.ACTIVE }.forEach { quest ->
@@ -884,8 +889,9 @@ class DefaultQuestWorkCycleModule(
                     QuestMissionType.MAP_CLEAR -> mapClearAction(quest, mission, selection, context)
                     else -> null
                 }
-                if (result is QuestDirective.Execute) return result
-                if (result != null) evaluations += result
+                if (result is QuestDirective.Execute) {
+                    if (accepts(result.action)) return result
+                } else if (result != null) evaluations += result
             }
         }
         if (evaluations.isEmpty()) return null

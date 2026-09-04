@@ -242,6 +242,35 @@ class ConvergencePersistenceTest {
         assertEquals(setOf(battle.selection.baselineFingerprint), reloaded.findSuppressedBaselines(account.id)[battle.selection.scope])
     }
 
+    @Test
+    fun `같은 퀘스트의 현재 미션 보류를 모두 보존하고 진행도가 바뀐 미션만 영구 해제한다`() {
+        val now = Instant.parse("2026-09-04T00:00:00Z")
+        val (account, entry) = fixture("quest-mission-baselines", now)
+        val scope = AutomationIsolationScope(AutomationIsolationScopeKind.QUEST_TARGET, "quest-a")
+        val held = listOf("mission-a", "mission-b").map { baseline ->
+            store.createOrGet(account.id, SelectedAutomationAction(entry.id, baseline,
+                AutomationActionKind.QUEST_BATTLE, scope, "v1", baseline), now).also {
+                it.result = ActionConvergenceResult.HELD
+                it.finishedAt = now
+                store.save(it)
+                entityManager.flush()
+            }
+        }
+        val module = DefaultAutomationActionConvergenceModule(store, TimeProvider { now })
+        assertEquals(0, module.observeAuthoritativeBaselines(account.id, scope, setOf("mission-a", "mission-b"), now))
+        entityManager.flush()
+        entityManager.clear()
+        assertEquals(setOf("mission-a", "mission-b"), store.findSuppressedBaselines(account.id)[scope])
+
+        assertEquals(1, module.observeAuthoritativeBaselines(account.id, scope, setOf("mission-a-progressed", "mission-b"), now))
+        entityManager.flush()
+        entityManager.clear()
+        assertEquals(setOf("mission-b"), store.findSuppressedBaselines(account.id)[scope])
+        held.forEach { assertEquals(ActionConvergenceResult.HELD, store.get(it.attemptId)?.result) }
+        assertEquals(0, module.observeAuthoritativeBaselines(account.id, scope, setOf("mission-a", "mission-b"), now))
+        assertEquals(setOf("mission-b"), store.findSuppressedBaselines(account.id)[scope])
+    }
+
     private fun fixture(loginId: String, now: Instant): Pair<HofAccountEntity, AutomationEntryEntity> {
         val account = accounts.save(
             HofAccountEntity(loginId = loginId, encryptedPassword = "encrypted", createdAt = now),

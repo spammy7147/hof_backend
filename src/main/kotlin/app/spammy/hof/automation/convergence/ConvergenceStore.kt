@@ -15,7 +15,7 @@ interface ConvergenceStore {
     fun releaseSupersededSuppressions(
         accountId: Long,
         scope: AutomationIsolationScope,
-        currentBaselineFingerprint: String,
+        currentBaselineFingerprints: Set<String>,
         releasedAt: Instant,
     ): Int
     fun releaseSuppression(accountId: Long, attemptId: Long, releasedAt: Instant): Boolean
@@ -109,14 +109,14 @@ class InMemoryConvergenceStore : ConvergenceStore {
     override fun releaseSupersededSuppressions(
         accountId: Long,
         scope: AutomationIsolationScope,
-        currentBaselineFingerprint: String,
+        currentBaselineFingerprints: Set<String>,
         releasedAt: Instant,
     ): Int {
         val superseded = records.values.filter {
             it.accountId == accountId &&
                 it.selection.scope == scope &&
                 it.result in setOf(ActionConvergenceResult.HELD, ActionConvergenceResult.RESULT_UNOBSERVED) &&
-                it.selection.baselineFingerprint != currentBaselineFingerprint &&
+                it.selection.baselineFingerprint !in currentBaselineFingerprints &&
                 (accountId to it.attemptId) !in releasedSuppressions
         }
         superseded.forEach { releasedSuppressions += accountId to it.attemptId }
