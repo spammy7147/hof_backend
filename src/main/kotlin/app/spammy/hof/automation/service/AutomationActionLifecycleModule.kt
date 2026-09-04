@@ -19,6 +19,7 @@ import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
 import app.spammy.hof.automation.raid.RaidIntentKind
 import app.spammy.hof.automation.raid.RaidObservedStatus
 import app.spammy.hof.automation.raid.RaidRecordResult
+import app.spammy.hof.automation.raid.RaidRewardResultEvidence
 import app.spammy.hof.automation.raid.RaidResultObservation
 import app.spammy.hof.battle.dto.RunBattleRequest
 import app.spammy.hof.battle.model.hasUsableKey
@@ -1114,11 +1115,12 @@ class UnifiedAutomationActionLifecycleModule(
         val matches = targetId?.let { id -> response.raids.filter { it.id == id } }.orEmpty()
         val raid = matches.singleOrNull()
         val rewardAvailable = RaidAction.REWARD in response.globalActions
+        val rewardResult = RaidRewardResultEvidence.from(response.result)
         val snippet = "RaidPubResponse|targetMultiplicity=${targetMultiplicity(matches.size)}|" +
             "targetPresent=${raid != null}|joined=${raid?.joined == true}|" +
             "status=${raid?.status?.name ?: "ABSENT"}|battleTargetPresent=${raid?.battleTarget != null}|" +
             "rewardAvailable=$rewardAvailable|pageComplete=${response.pageComplete}|" +
-            "resultStatus=${response.result?.status ?: "NONE"}"
+            "resultStatus=${response.result?.status ?: "NONE"}|rewardResult=${rewardResult?.name ?: "NONE"}"
         val actionPoststateComplete = response.pageComplete && matches.size <= 1 && when (payload.action) {
             RaidAction.REGISTER,
             RaidAction.START,
@@ -1136,6 +1138,7 @@ class UnifiedAutomationActionLifecycleModule(
                 sharedStatus = raid?.status?.name ?: "ABSENT",
                 personalCooldown = raid?.battleTarget?.cooldownRemainingSeconds?.let { it > 0L } == true,
                 rewardAvailable = rewardAvailable,
+                rewardResult = rewardResult,
             ),
             responseShapeMaterial = responseShapeMaterial(
                 ProductionEvidenceShapes.RAID_RESPONSE,
@@ -1143,8 +1146,10 @@ class UnifiedAutomationActionLifecycleModule(
             ),
             sanitizedSnippet = snippet,
             actionSuccessMarker = response.result?.status == "SUCCESS",
-            explicitRejected = response.result?.status == "FAILURE",
-            rejectionReason = response.result?.status?.takeIf { it == "FAILURE" }?.let { "RAID_ACTION_REJECTED" },
+            explicitRejected = response.result?.status == "FAILURE" && rewardResult == null,
+            rejectionReason = response.result?.status
+                ?.takeIf { it == "FAILURE" && rewardResult == null }
+                ?.let { "RAID_ACTION_REJECTED" },
             raidOutcome = outcome,
         )
     }

@@ -80,12 +80,13 @@ class RaidPubService(
                                 ?: unavailable(reportPreconditionChange, "현재 대상 레이드를 확인할 수 없습니다.")
                         } else null
                         if (expectedRaid != null &&
-                            (expectedRaid.status != RaidStatus.COMPLETED ||
+                            (!expectedRaid.joined ||
+                                expectedRaid.status != RaidStatus.COMPLETED ||
                                 isRaidResetRequiredStatus(expectedRaid.statusText))
                         ) {
                             unavailable(reportPreconditionChange, "대상 레이드가 더 이상 보상 확인 단계가 아닙니다.")
                         }
-                        if (current.applyWait || current.raids.none {
+                        if (current.raids.none {
                                 it.status == RaidStatus.COMPLETED && !isRaidResetRequiredStatus(it.statusText)
                             }
                         ) {

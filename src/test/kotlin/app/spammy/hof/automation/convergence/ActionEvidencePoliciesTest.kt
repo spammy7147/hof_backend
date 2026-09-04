@@ -1,5 +1,6 @@
 package app.spammy.hof.automation.convergence
 
+import app.spammy.hof.automation.raid.RaidRewardResultKind
 import app.spammy.hof.quest.model.QuestState
 import app.spammy.hof.town.fishing.model.FishingOutcome
 import app.spammy.hof.town.fishing.model.FishingPrimaryAction
@@ -172,6 +173,25 @@ class ActionEvidencePoliciesTest {
                 start,
                 fresh(RaidObservedState("external", joined = false, sharedStatus = "COMPLETED")),
             ),
+        )
+    }
+
+    @Test
+    fun `레이드 보상은 상시 버튼이 아니라 직접 보상 결과로 Applied를 판단한다`() {
+        val reward = selection(AutomationActionKind.RAID_REWARD, "raid-a")
+        val completed = RaidObservedState(
+            fingerprint = "completed",
+            joined = true,
+            sharedStatus = "COMPLETED",
+            rewardAvailable = true,
+            rewardResult = RaidRewardResultKind.NOTHING_AVAILABLE,
+        )
+
+        assertIs<AutomationActionEvidence.DirectApplied>(
+            policies.evaluate(reward, direct(completed)),
+        )
+        assertIs<AutomationActionEvidence.StateAdvanced>(
+            policies.evaluate(reward, direct(completed.copy(rewardResult = null))),
         )
     }
 

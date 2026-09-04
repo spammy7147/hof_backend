@@ -15,7 +15,7 @@ object ProductionEvidenceShapes {
     const val FISHING_RESPONSE =
         "FishingResponse|primaryAction|remainingCastsPresent|lastOutcome|blockedByBattle|resultStatus"
     const val RAID_RESPONSE =
-        "RaidPubResponse|targetPresent|joined|status|battleTargetPresent|rewardAvailable|resultStatus"
+        "RaidPubResponse|targetPresent|joined|status|battleTargetPresent|rewardAvailable|resultStatus|rewardResult"
     const val LOCAL_RAID_ABORT = "LocalRaidCycleAbort|reason|outcome"
 
     fun fingerprint(value: String): String = HexFormat.of().formatHex(

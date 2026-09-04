@@ -1944,7 +1944,7 @@ class AutomationActionLifecycleModuleTest {
         val cases = listOf(
             Triple(RaidAction.REGISTER, RaidStatus.RECRUITING, AutomationActionEvidence.DirectApplied::class),
             Triple(RaidAction.START, RaidStatus.IN_BATTLE, AutomationActionEvidence.StateAdvanced::class),
-            Triple(RaidAction.REWARD, RaidStatus.COMPLETED, AutomationActionEvidence.DirectApplied::class),
+            Triple(RaidAction.REWARD, RaidStatus.COMPLETED, AutomationActionEvidence.StateAdvanced::class),
         )
         cases.forEach { (action, status, expectedEvidence) ->
             val requestRaidId = if (action == RaidAction.REWARD) null else "RaidGoblin"
@@ -1982,6 +1982,42 @@ class AutomationActionLifecycleModuleTest {
 
             assertEquals(expectedEvidence, policyEvidence(managed, execution)::class, action.name)
         }
+    }
+
+    @Test
+    fun `수령 가능한 보상 없음 응답은 실패 문자열이어도 레이드 보상 완료다`() {
+        val base = raidBattleResponse(status = RaidStatus.COMPLETED, targetPresent = false)
+        val response = base.copy(
+            globalActions = setOf(RaidAction.REWARD),
+            result = app.spammy.hof.town.fishing.dto.TownActionResultResponse(
+                status = "FAILURE",
+                messages = listOf("수령 가능한 보상이 없습니다."),
+                items = emptyList(),
+            ),
+        )
+        Mockito.`when`(
+            raidPubService.actionForAutomation(
+                7L,
+                RaidPubActionRequest(RaidAction.REWARD, null),
+                "RaidGoblin",
+            ),
+        ).thenReturn(response)
+        val managed = assertNotNull(
+            module.prepare(
+                7L,
+                13L,
+                RaidTownAutomationAction(
+                    accountId = 7L,
+                    action = RaidAction.REWARD,
+                    raidId = null,
+                    targetRaidId = "RaidGoblin",
+                ),
+            ),
+        )
+
+        val execution = assertIs<TypedAutomationExecution.ActionCompleted>(managed.execute())
+
+        assertIs<AutomationActionEvidence.DirectApplied>(policyEvidence(managed, execution))
     }
 
     @Test

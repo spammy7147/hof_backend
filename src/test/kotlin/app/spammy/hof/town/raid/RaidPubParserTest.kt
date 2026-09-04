@@ -333,6 +333,28 @@ class RaidPubParserTest {
         assertEquals(1, context.requests().size)
     }
 
+    @Test fun `자동화 보상은 등록 쿨타임 중에도 가입한 완료 대상이면 제출한다`() {
+        val completed = fixture()
+            .replace(
+                "현재 상태 : 418초 후 출발",
+                "현재 상태 : 보상 확인 시간 (남은 시간 앞으로 0시간 26분 43초)",
+            )
+            .replace("- [다른 사람]", "- [《테스트 길드》현재사용자]")
+        val context = service(completed, completed)
+
+        context.service.actionForAutomation(
+            7L,
+            RaidPubActionRequest(RaidAction.REWARD, null),
+            "RaidSiren",
+        )
+
+        assertEquals(2, context.requests().size)
+        assertEquals(
+            "보상 확인",
+            context.requests().last().formEntries.single { it.name == "reward_nonce" }.value,
+        )
+    }
+
     @Test fun `보상 공유 대기만으로는 레이드 리셋을 제출하지 않는다`() {
         val completed = fixture()
             .replace("현재 상태 : 418초 후 출발", "현재 상태 : 보상 확인 시간 (남은 시간 앞으로 0시간 26분 43초)")
@@ -537,12 +559,14 @@ class RaidPubParserTest {
         Mockito.`when`(accounts.findById(7L)).thenReturn(HofAccountEntity(7L, "raid", "encrypted", Instant.EPOCH))
         Mockito.`when`(cookies.findValueMapByAccountId(7L)).thenReturn(mapOf("PHPSESSID" to "session"))
         Mockito.`when`(locations.resolve(TownFeatureId.RAID_INFO, null)).thenReturn(ResolvedTownLocation(TownFeatureId.RAID_INFO, URL))
-        Mockito.`when`(maps.observeCurrentlyAvailableMaps(7L, "raid")).thenReturn(
-            CurrentBattleMapObservation(
-                CurrentBattleMapObservationStatus.OBSERVED,
-                listOf(observedMap("RaidGoblin"), observedMap("RaidSiren")),
-            ),
+        val mapObservation = CurrentBattleMapObservation(
+            CurrentBattleMapObservationStatus.OBSERVED,
+            listOf(observedMap("RaidGoblin"), observedMap("RaidSiren")),
         )
+        Mockito.`when`(maps.observeCurrentlyAvailableMaps(7L, "raid")).thenReturn(mapObservation)
+        Mockito.`when`(
+            maps.observeCurrentlyAvailableMaps(7L, "raid", HofRequestOrigin.AUTOMATION),
+        ).thenReturn(mapObservation)
         Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies())).thenReturn(
             HofHttpResponse(200, URL, responses.first(), emptyMap()),
             *responses.drop(1).map { HofHttpResponse(200, URL, it, emptyMap()) }.toTypedArray(),

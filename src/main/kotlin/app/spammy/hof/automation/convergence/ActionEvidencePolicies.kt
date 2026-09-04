@@ -1,5 +1,6 @@
 package app.spammy.hof.automation.convergence
 
+import app.spammy.hof.automation.raid.RaidRewardResultKind
 import app.spammy.hof.quest.model.QuestState
 import app.spammy.hof.town.fishing.model.FishingOutcome
 import app.spammy.hof.town.fishing.model.FishingPrimaryAction
@@ -79,6 +80,7 @@ data class RaidObservedState(
     val sharedStatus: String,
     val personalCooldown: Boolean = false,
     val rewardAvailable: Boolean? = null,
+    val rewardResult: RaidRewardResultKind? = null,
     val terminalOutcomes: List<String> = emptyList(),
 ) : ActionObservedState
 
@@ -301,7 +303,7 @@ class DefaultActionEvidencePolicies : ActionEvidencePolicies {
                 state.joined && state.sharedStatus == "IN_BATTLE"
             AutomationActionKind.RAID_RESET -> !state.joined &&
                 state.sharedStatus in setOf("ABSENT", "RECRUITING", "READY", "WAITING")
-            AutomationActionKind.RAID_REWARD -> state.rewardAvailable == false
+            AutomationActionKind.RAID_REWARD -> state.rewardResult != null
             AutomationActionKind.RAID_REFRESH -> observation.actionSuccessMarker
             AutomationActionKind.RAID_BATTLE -> state.terminalOutcomes.isNotEmpty() &&
                 state.terminalOutcomes.all(::terminalBattleOutcome)

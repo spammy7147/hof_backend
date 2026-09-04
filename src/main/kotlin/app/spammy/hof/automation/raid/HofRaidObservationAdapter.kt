@@ -3,6 +3,7 @@ package app.spammy.hof.automation.raid
 import app.spammy.hof.automation.service.HofSessionRecoveryExecutor
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.model.HofRequestOrigin
+import app.spammy.hof.town.fishing.dto.TownActionResultResponse
 import app.spammy.hof.town.raid.dto.RaidPubResponse
 import app.spammy.hof.town.raid.model.RaidAction
 import app.spammy.hof.town.raid.model.RaidBattleObservationStatus
@@ -81,6 +82,7 @@ class HofRaidObservationAdapter(
         resultMessages = response.result?.messages.orEmpty(),
         observedAt = timeProvider.now(),
         fresh = response.pageComplete,
+        rewardResult = RaidRewardResultEvidence.from(response.result),
     )
 
     private fun RaidStatus.toObservedStatus(): RaidObservedStatus = when (this) {
@@ -103,5 +105,19 @@ class HofRaidObservationAdapter(
         RaidAction.LEAVE,
         RaidAction.WAIT_RESET,
         -> null
+    }
+}
+
+object RaidRewardResultEvidence {
+    fun from(result: TownActionResultResponse?): RaidRewardResultKind? {
+        val actionResult = result ?: return null
+        if (actionResult.items.isNotEmpty()) return RaidRewardResultKind.RECEIVED
+        if (actionResult.messages.any { message ->
+                message.trim().removeSuffix(".") == "수령 가능한 보상이 없습니다"
+            }
+        ) {
+            return RaidRewardResultKind.NOTHING_AVAILABLE
+        }
+        return null
     }
 }

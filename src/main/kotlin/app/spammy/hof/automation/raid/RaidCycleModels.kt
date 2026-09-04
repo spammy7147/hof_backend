@@ -144,7 +144,13 @@ data class RaidObservation(
     val observedAt: Instant? = null,
     val fresh: Boolean = true,
     val actionSuccessMarker: Boolean = false,
+    val rewardResult: RaidRewardResultKind? = null,
 )
+
+enum class RaidRewardResultKind {
+    RECEIVED,
+    NOTHING_AVAILABLE,
+}
 
 sealed interface RaidResultObservation {
     data class Page(val value: RaidObservation) : RaidResultObservation

@@ -5,6 +5,7 @@ import app.spammy.hof.account.service.HofSessionRecoveryService
 import app.spammy.hof.automation.service.HofSessionRecoveryExecutor
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.town.fishing.dto.TownActionResultResponse
+import app.spammy.hof.town.fishing.dto.TownResultItemResponse
 import app.spammy.hof.town.raid.dto.RaidBattleTargetResponse
 import app.spammy.hof.town.raid.dto.RaidPubRaidResponse
 import app.spammy.hof.town.raid.dto.RaidPubResponse
@@ -98,6 +99,60 @@ class HofRaidObservationAdapterTest {
         assertEquals(setOf(RaidIntentKind.START, RaidIntentKind.RESET), observation.raids.single().actions)
         assertEquals(RaidObservedBattle("raid", "raid001", 33), observation.raids.single().battle)
         assertEquals(RaidBattleAvailability.COOLDOWN, observation.raids.single().battleAvailability)
+    }
+
+    @Test
+    fun `보상 없음 직접 응답을 보상 처리 완료 증거로 변환한다`() {
+        val response = RaidPubResponse(
+            raids = emptyList(),
+            applied = false,
+            applyWait = false,
+            applyWaitSeconds = null,
+            myStatus = null,
+            globalActions = setOf(RaidAction.REWARD),
+            result = TownActionResultResponse(
+                status = "FAILURE",
+                messages = listOf("수령 가능한 보상이 없습니다."),
+                items = emptyList(),
+            ),
+            pageComplete = true,
+            battleObservationStatus = RaidBattleObservationStatus.INCOMPLETE,
+        )
+
+        val observation = HofRaidObservationAdapter(
+            Mockito.mock(RaidPubService::class.java),
+            HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
+            TimeProvider { now },
+        ).from(response)
+
+        assertEquals(RaidRewardResultKind.NOTHING_AVAILABLE, observation.rewardResult)
+    }
+
+    @Test
+    fun `보상 아이템 직접 응답을 수령 완료 증거로 변환한다`() {
+        val response = RaidPubResponse(
+            raids = emptyList(),
+            applied = false,
+            applyWait = false,
+            applyWaitSeconds = null,
+            myStatus = null,
+            globalActions = setOf(RaidAction.REWARD),
+            result = TownActionResultResponse(
+                status = "SUCCESS",
+                messages = listOf("보상을 수령했습니다."),
+                items = listOf(TownResultItemResponse("레이드 보상", 1, null, null)),
+            ),
+            pageComplete = true,
+            battleObservationStatus = RaidBattleObservationStatus.INCOMPLETE,
+        )
+
+        val observation = HofRaidObservationAdapter(
+            Mockito.mock(RaidPubService::class.java),
+            HofSessionRecoveryExecutor(HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java))),
+            TimeProvider { now },
+        ).from(response)
+
+        assertEquals(RaidRewardResultKind.RECEIVED, observation.rewardResult)
     }
 
     @Test
