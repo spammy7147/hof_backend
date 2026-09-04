@@ -74,6 +74,7 @@ sealed interface TypedRuntimeOutcome {
         val wakeReason: String,
     ) : TypedRuntimeOutcome
     data class SubmissionDeferred(val retryAt: Instant, val message: String) : TypedRuntimeOutcome
+    data class UnsubmittedFailure(val message: String) : TypedRuntimeOutcome
     data class SubmissionAmbiguous(val message: String) : TypedRuntimeOutcome
     data class ReconciliationApplied(val wakeReason: String) : TypedRuntimeOutcome
     data class ReconciliationDeferred(

@@ -3,6 +3,7 @@ package app.spammy.hof.automation.service
 import app.spammy.hof.battle.dto.BattleResultResponse
 import app.spammy.hof.battle.dto.RunBattleRequest
 import app.spammy.hof.battle.service.BattleRunService
+import app.spammy.hof.battle.service.BattleNotSubmittedException
 import app.spammy.hof.battle.service.SharedBattleCooldownRejectedException
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
@@ -55,6 +56,10 @@ class AutomationBattleSubmission(
             try {
                 battleRunService.runBattle(accountId, request, HofRequestOrigin.AUTOMATION)
             } catch (error: Exception) {
+                generateSequence<Throwable>(error) { it.cause }
+                    .filterIsInstance<BattleNotSubmittedException>()
+                    .firstOrNull()
+                    ?.let { throw it }
                 generateSequence<Throwable>(error) { it.cause }
                     .filterIsInstance<SharedBattleCooldownRejectedException>()
                     .firstOrNull()

@@ -210,6 +210,38 @@ class ConvergencePersistenceTest {
         assertEquals(36, remaining.id.length)
     }
 
+    @Test
+    fun `신청 보류 해제는 계정 항목 대상 행동을 제한하고 재로딩과 재처리 뒤에도 유지된다`() {
+        val now = Instant.parse("2026-09-04T00:00:00Z")
+        val (account, entry) = fixture("raid-release", now)
+        val (otherAccount, otherEntry) = fixture("other-raid-release", now)
+        fun held(owner: Long, entryId: Long, identity: String, raidId: String, kind: AutomationActionKind): ActionConvergenceRecord {
+            val record = store.createOrGet(owner, SelectedAutomationAction(entryId, identity, kind,
+                AutomationIsolationScope(AutomationIsolationScopeKind.RAID_ENTRY, raidId), "v1", identity), now)
+            record.result = ActionConvergenceResult.HELD
+            record.finishedAt = now
+            store.save(record)
+            return record
+        }
+        val registration = held(account.id, entry.id, "register", "raid-a", AutomationActionKind.RAID_REGISTER)
+        val battle = held(account.id, entry.id, "battle", "raid-a", AutomationActionKind.RAID_BATTLE)
+        val anotherTarget = held(account.id, entry.id, "other-target", "raid-b", AutomationActionKind.RAID_REGISTER)
+        val foreign = held(otherAccount.id, otherEntry.id, "foreign", "raid-a", AutomationActionKind.RAID_REGISTER)
+        assertEquals(0, store.releaseRaidRegistrationSuppressions(account.id, otherEntry.id, "raid-a", now))
+        assertEquals(1, store.releaseRaidRegistrationSuppressions(account.id, entry.id, "raid-a", now.plusSeconds(1)))
+        entityManager.flush()
+        entityManager.clear()
+        val reloaded = JpaConvergenceStore(entityManager)
+        assertEquals(0, reloaded.releaseRaidRegistrationSuppressions(account.id, entry.id, "raid-a", now.plusSeconds(2)))
+        assertEquals(ActionConvergenceResult.HELD, reloaded.get(registration.attemptId)?.result)
+        assertEquals("RAID_REGISTRATION_FRESH_DECISION_RELEASED", reloaded.get(registration.attemptId)?.reasonCode)
+        assertEquals(setOf(battle.selection.baselineFingerprint), reloaded.findSuppressedBaselines(account.id)[battle.selection.scope])
+        assertEquals(setOf(anotherTarget.selection.baselineFingerprint), reloaded.findSuppressedBaselines(account.id)[anotherTarget.selection.scope])
+        assertEquals(setOf(foreign.selection.baselineFingerprint), reloaded.findSuppressedBaselines(otherAccount.id)[foreign.selection.scope])
+        reloaded.createOrGet(account.id, registration.selection, now.plusSeconds(3))
+        assertEquals(setOf(battle.selection.baselineFingerprint), reloaded.findSuppressedBaselines(account.id)[battle.selection.scope])
+    }
+
     private fun fixture(loginId: String, now: Instant): Pair<HofAccountEntity, AutomationEntryEntity> {
         val account = accounts.save(
             HofAccountEntity(loginId = loginId, encryptedPassword = "encrypted", createdAt = now),

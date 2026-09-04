@@ -238,6 +238,40 @@ class JpaConvergenceStore(
         return true
     }
 
+    override fun releaseRaidRegistrationSuppressions(
+        accountId: Long,
+        entryId: Long,
+        raidId: String,
+        observedAt: Instant,
+    ): Int {
+        val held = entityManager.createQuery(
+            """
+            select convergence from ActionConvergenceEntity convergence
+            join fetch convergence.attempt attempt
+            where convergence.accountId = :accountId
+              and attempt.entry.id = :entryId
+              and attempt.actionKind = :actionKind
+              and convergence.scopeKind = :scopeKind
+              and convergence.scopeKey = :scopeKey
+              and convergence.result in :results
+              and convergence.suppressionReleasedAt is null
+            """.trimIndent(),
+            ActionConvergenceEntity::class.java,
+        ).setParameter("accountId", accountId)
+            .setParameter("entryId", entryId)
+            .setParameter("actionKind", AutomationActionKind.RAID_REGISTER)
+            .setParameter("scopeKind", AutomationIsolationScopeKind.RAID_ENTRY)
+            .setParameter("scopeKey", raidId)
+            .setParameter("results", setOf(ActionConvergenceResult.HELD, ActionConvergenceResult.RESULT_UNOBSERVED))
+            .resultList
+        held.forEach {
+            it.suppressionReleasedAt = observedAt
+            it.reasonCode = "RAID_REGISTRATION_FRESH_DECISION_RELEASED"
+            it.updatedAt = observedAt
+        }
+        return held.size
+    }
+
     @Transactional(readOnly = true)
     override fun activeBattleGate(accountId: Long): AccountBattleGate? =
         entityManager.find(AccountBattleGateEntity::class.java, accountId)

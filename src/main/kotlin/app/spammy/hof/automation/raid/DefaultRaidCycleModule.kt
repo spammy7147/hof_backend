@@ -1,5 +1,6 @@
 package app.spammy.hof.automation.raid
 
+import app.spammy.hof.automation.convergence.AutomationActionConvergenceModule
 import app.spammy.hof.automation.entity.RaidAutomationCycleStatus
 import app.spammy.hof.automation.config.RaidAutomationProperties
 import app.spammy.hof.automation.service.AutomationDiagnosticKind
@@ -16,6 +17,7 @@ class DefaultRaidCycleModule(
     private val observations: RaidObservationReader,
     private val timeProvider: TimeProvider,
     private val properties: RaidAutomationProperties = RaidAutomationProperties(),
+    private val convergence: AutomationActionConvergenceModule? = null,
 ) : RaidCycleModule {
     override fun decide(accountId: Long): RaidDecision {
         val state = store.load(accountId)
@@ -744,6 +746,18 @@ class DefaultRaidCycleModule(
         val page = (observation as? RaidResultObservation.Page)?.value
             ?: return needsRecheck("레이드 화면 관측 결과가 필요합니다.")
         val accountState = store.load(accountId)
+        val registrationAvailable = page.fresh && !page.registrationWait &&
+            page.raids.none(RaidObservedTarget::joined) &&
+            page.raids.singleOrNull { it.id == attempt.raidId }
+                ?.let { registrationIsRunnable(it) && !requiresReset(it) } == true &&
+            accountState.configuration?.takeIf { it.enabled && it.entryId == attempt.entryId }
+                ?.targets?.any { it.raidId == attempt.raidId } == true &&
+            (accountState.openCycle == null || accountState.openCycle.raidId == attempt.raidId)
+        if (attempt.kind == RaidIntentKind.REFRESH && registrationAvailable) {
+            convergence?.allowRaidRegistrationFreshDecision(
+                accountId, attempt.entryId, attempt.raidId, timeProvider.now(),
+            )
+        }
         val cycle = accountState.openCycle ?: if (attempt.kind == RaidIntentKind.REFRESH) {
             return recordInitialRefresh(accountId, attempt, page, accountState)
         } else {
@@ -924,6 +938,11 @@ class DefaultRaidCycleModule(
             } else {
                 RaidRecordResult.Recorded(completion)
             }
+        }
+        if (attempt.kind == RaidIntentKind.REGISTER && registrationAvailable) {
+            return RaidRecordResult.FreshDecision(
+                "신청 가능한 레이드 상태를 확인해 새 참가 신청을 판단합니다.",
+            )
         }
         if (actionIsProvablyNotApplied(page, attempt)) {
             if (attempt.kind == RaidIntentKind.REWARD) {

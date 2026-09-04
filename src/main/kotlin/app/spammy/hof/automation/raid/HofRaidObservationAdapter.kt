@@ -1,10 +1,13 @@
 package app.spammy.hof.automation.raid
 
 import app.spammy.hof.automation.service.HofSessionRecoveryExecutor
+import app.spammy.hof.automation.service.AutomationLoginRequiredException
+import app.spammy.hof.auth.service.AccountExecutionSubmissionGate
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.town.fishing.dto.TownActionResultResponse
 import app.spammy.hof.town.raid.dto.RaidPubResponse
+import app.spammy.hof.town.raid.dto.RaidPubActionRequest
 import app.spammy.hof.town.raid.model.RaidAction
 import app.spammy.hof.town.raid.model.RaidBattleObservationStatus
 import app.spammy.hof.town.raid.model.RaidStatus
@@ -18,12 +21,22 @@ class HofRaidObservationAdapter(
     private val raidPubService: RaidPubService,
     private val sessionRecovery: HofSessionRecoveryExecutor,
     private val timeProvider: TimeProvider,
+    private val submissionGate: AccountExecutionSubmissionGate? = null,
 ) : RaidObservationReader {
     override fun read(accountId: Long): RaidObservation {
         val load = {
             from(raidPubService.load(accountId, HofRequestOrigin.AUTOMATION))
         }
         return sessionRecovery.execute(accountId, load)
+    }
+
+    fun refresh(accountId: Long, raidId: String): RaidObservation {
+        var response: RaidPubResponse? = null
+        val authorized = requireNotNull(submissionGate).executeIfAuthorized(accountId, Runnable {
+            response = raidPubService.actionForAutomation(accountId, RaidPubActionRequest(RaidAction.REFRESH), raidId)
+        })
+        if (!authorized) throw AutomationLoginRequiredException("로그아웃되어 레이드 상태 갱신을 보내지 않았습니다.")
+        return from(requireNotNull(response))
     }
 
     fun from(response: RaidPubResponse): RaidObservation = RaidObservation(

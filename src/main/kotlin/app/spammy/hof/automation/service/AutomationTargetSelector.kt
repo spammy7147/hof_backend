@@ -22,6 +22,7 @@ import app.spammy.hof.automation.repository.AutomationWorkSessionQueryRepository
 import app.spammy.hof.automation.repository.AutomationWorkSessionView
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.town.raid.model.RaidAction
 import java.time.Instant
 import java.time.ZoneId
 import java.util.UUID
@@ -484,8 +485,10 @@ class AutomationTargetSelector(
         val guard = convergenceGuard ?: return null
         val factory = convergenceSelectionFactory ?: return null
         val preview = factory.preview(entryId, action)
-        preview.baselineFingerprint?.let { baselineFingerprint ->
-            observeAuthoritativeBaseline(accountId, preview.scope, baselineFingerprint)
+        if (action !is RaidTownAutomationAction || action.action != RaidAction.REFRESH) {
+            preview.baselineFingerprint?.let { baselineFingerprint ->
+                observeAuthoritativeBaseline(accountId, preview.scope, baselineFingerprint)
+            }
         }
         val constraints = guard.constraints(accountId)
         // Captcha gates and terminal legacy baseline suppression are safety controls, not policy rollout decisions.
@@ -496,7 +499,7 @@ class AutomationTargetSelector(
             preview.baselineFingerprint?.let {
                 it in constraints.suppressedBaselines[preview.scope].orEmpty()
             } == true
-        ) return SelectionBlock(CONVERGENCE_BLOCKED_REASON, CONVERGENCE_BLOCKED_MESSAGE)
+        ) return SelectionBlock(CONVERGENCE_BLOCKED_REASON, CONVERGENCE_HELD_MESSAGE)
         if (convergenceRollout?.active == false) return null
         if (convergenceRollout?.active == true) {
             convergenceModule?.resolveObservationGap(accountId, preview.scope, timeProvider.now())
@@ -510,6 +513,20 @@ class AutomationTargetSelector(
 
     private fun decideRaid(accountId: Long): RaidDirective {
         val decision = raidModule.decide(accountId)
+        val registration = (decision.directive as? RaidDirective.Execute)?.intent as? RaidIntent.Town
+        if (registration?.kind == RaidIntentKind.REGISTER) {
+            val preview = convergenceSelectionFactory?.preview(
+                registration.entryId, registration.toPreparedAction(accountId),
+            )
+            val suppressed = convergenceGuard?.constraints(accountId)?.suppressedBaselines
+            if (preview != null && preview.baselineFingerprint in suppressed?.get(preview.scope).orEmpty()) {
+                return RaidDirective.Execute(
+                    registration.copy(kind = RaidIntentKind.REFRESH, requestRaidId = null),
+                    reasonCode = "RAID_REGISTRATION_RECOVERY_REFRESH",
+                    message = "기존 신청 보류를 재평가하기 위해 레이드 상태를 갱신합니다.",
+                )
+            }
+        }
         observeRaidAuthoritativeState(accountId, decision)
         return decision.directive
     }
@@ -826,6 +843,7 @@ class AutomationTargetSelector(
         val log = LoggerFactory.getLogger(AutomationTargetSelector::class.java)
         val SEOUL: ZoneId = ZoneId.of("Asia/Seoul")
         const val CONVERGENCE_BLOCKED_REASON = "CONVERGENCE_SCOPE_BLOCKED"
+        const val CONVERGENCE_HELD_MESSAGE = "이전 행동 결과를 확정하지 못해 해당 범위를 보류했습니다. 최신 상태의 복구 조건을 확인하면 해제합니다."
         const val CONVERGENCE_BLOCKED_MESSAGE = "이전 행동 결과를 확인 중이라 해당 범위만 잠시 건너뜁니다."
         const val CAPTCHA_BATTLE_GATE_REASON = "CAPTCHA_BATTLE_GATE_BLOCKED"
         const val CAPTCHA_BATTLE_GATE_MESSAGE = "캡차 해결 전까지 전투 범위만 잠시 건너뜁니다."

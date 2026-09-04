@@ -301,7 +301,7 @@ class RaidCycleModuleTest {
     }
 
     @Test
-    fun `권위 조회에서 REGISTER가 적용되지 않았음이 명확하면 안전한 재제출을 허용한다`() {
+    fun `완전한 신청 가능 상태는 이전 결과 귀속 없이 새 신청 판단을 허용한다`() {
         val target = target("raid-a", 0)
         val store = InMemoryRaidCycleStore(
             RaidCycleAccountState(
@@ -331,7 +331,7 @@ class RaidCycleModuleTest {
             RaidResultObservation.Page(notRegistered),
         )
 
-        assertIs<RaidRecordResult.NotApplied>(result)
+        assertIs<RaidRecordResult.FreshDecision>(result)
         assertEquals(RaidAutomationCycleStatus.PREPARING, store.state.openCycle?.status)
     }
 

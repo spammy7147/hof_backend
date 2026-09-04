@@ -676,8 +676,8 @@ class UnifiedAutomationActionLifecycleModule(
                     evidence: AutomationActionEvidence,
                 ) {
                     val response = submittedResponse ?: return
-                    val registrationRecovery = payload.action in setOf(RaidAction.REGISTER, RaidAction.REFRESH) &&
-                        (response.applyWait ||
+                    val registrationRecovery = payload.action == RaidAction.REFRESH && response.pageComplete ||
+                        payload.action == RaidAction.REGISTER && (response.applyWait ||
                             RaidRegistrationResultEvidence.hasStaleBattleConflict(response.result?.messages.orEmpty()))
                     if (
                         registrationRecovery &&
@@ -2012,7 +2012,11 @@ class UnifiedAutomationActionLifecycleModule(
             stored.executionIdentity.takeIf { payload.action == RaidAction.REWARD },
         )
             ?: return verifyLater("저장된 레이드 대상이 없어 결과를 안전하게 확인할 수 없습니다.")
-        val observation = raidObservationAdapter.read(accountId)
+        val observation = if (payload.action == RaidAction.REGISTER) {
+            raidObservationAdapter.refresh(accountId, attempt.raidId)
+        } else {
+            raidObservationAdapter.read(accountId)
+        }
         if (
             payload.action == RaidAction.START &&
             !observation.actionSuccessMarker &&
@@ -2077,6 +2081,7 @@ class UnifiedAutomationActionLifecycleModule(
             RaidRecordProjection()
         }
         is RaidRecordResult.NotApplied -> throw AmbiguousAutomationSubmissionException(result.message)
+        is RaidRecordResult.FreshDecision -> throw AmbiguousAutomationSubmissionException(result.message)
         is RaidRecordResult.NeedsRecheck -> throw AmbiguousAutomationSubmissionException(result.message)
         is RaidRecordResult.BattleRecoveryStarted -> throw AmbiguousAutomationSubmissionException(result.message)
         is RaidRecordResult.RewardRetryReady -> throw AmbiguousAutomationSubmissionException(result.message)
@@ -2093,9 +2098,13 @@ class UnifiedAutomationActionLifecycleModule(
     ) {
         is RaidRecordResult.Recorded -> {
             result.completion?.let { workLifecycle.completeRaidCycle(accountId, attempt.entryId) }
-            AmbiguousActionResolution.Applied(
-                result.completion?.let(TypedAutomationExecution::RaidCycleFinished) ?: defaultExecution,
-            )
+            if (attempt.kind == RaidIntentKind.REGISTER) {
+                AmbiguousActionResolution.Superseded("현재 레이드 참가 상태에서 이어갑니다. 이전 신청 결과는 귀속하지 않습니다.")
+            } else {
+                AmbiguousActionResolution.Applied(
+                    result.completion?.let(TypedAutomationExecution::RaidCycleFinished) ?: defaultExecution,
+                )
+            }
         }
         is RaidRecordResult.EntryWait -> {
             workLifecycle.waitForRaid(accountId, attempt.entryId, result.raidId, result.at, result.warning)
@@ -2110,6 +2119,7 @@ class UnifiedAutomationActionLifecycleModule(
         } else {
             AmbiguousActionResolution.Resubmit
         }
+        is RaidRecordResult.FreshDecision -> AmbiguousActionResolution.FreshDecision(result.message)
         is RaidRecordResult.NeedsRecheck -> AmbiguousActionResolution.VerifyLater(result.at, result.message)
         is RaidRecordResult.BattleRecoveryStarted ->
             AmbiguousActionResolution.HandedOff(result.at, result.message)

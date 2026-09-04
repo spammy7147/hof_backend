@@ -18,6 +18,7 @@ import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.auth.service.AccountExecutionSubmissionGate
 import app.spammy.hof.external.client.HofAutomationDeferredException
+import app.spammy.hof.battle.service.BattleNotSubmittedException
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.town.fishing.model.FishingAction
 import app.spammy.hof.town.common.service.AccountHofObservationInvalidatedException
@@ -1060,7 +1061,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                     is AutomationActionEvidence.ResultUnobserved ->
                         "직접 응답에서 행동 결과를 관측하지 못해 자동 재제출을 보류합니다."
                     is AutomationActionEvidence.ResultUnobservedFreshDecision ->
-                        "이전 결과는 귀속하지 않고 최신 퀘스트 진행도에서 새 행동을 판단합니다."
+                        "이전 결과는 귀속하지 않고 최신 상태에서 새 행동을 판단합니다."
                     is AutomationActionEvidence.BattleGateRequired ->
                         "전투 캡차 해결 전에는 전투 행동을 성공으로 처리하지 않습니다."
                     is AutomationActionEvidence.DirectApplied -> error("Handled above")
@@ -1226,6 +1227,31 @@ class UnifiedAutomationRunner @Autowired constructor(
                 return
             }
             if (closeBattleForCaptcha(error)) return
+            val unsubmittedBattle = generateSequence(error) { it.cause }
+                .filterIsInstance<BattleNotSubmittedException>()
+                .firstOrNull()
+            unsubmittedBattle?.let { failure ->
+                convergenceSelection?.let { selection ->
+                    convergenceModule?.discardUnsubmitted(
+                        accountId, selection, now(), BattleNotSubmittedException.REASON_CODE,
+                    )
+                }
+                observeShadow(
+                    accountId,
+                    stored.executionIdentity,
+                    AutomationActionEvidence.DirectRejected(now(), BattleNotSubmittedException.REASON_CODE),
+                    LegacyConvergenceDecision.SUPERSEDED,
+                )
+                val message = requireNotNull(failure.message)
+                val retryAt = typedRuntime.complete(execution, TypedRuntimeOutcome.UnsubmittedFailure(message)).nextAttemptAt
+                retryAt?.let { wakeupPort.schedule(accountId, it, HOF_COOLDOWN_WAKE_REASON) }
+                decisionCycleId?.let { cycleId ->
+                    decisionJournal?.appendActionResult(cycleId, trace(
+                        AutomationHistoryEventKind.WAITING, BattleNotSubmittedException.REASON_CODE, message, retryAt,
+                    ))
+                }
+                return
+            }
             error.findHofAutomationDeferral()?.let { deferred ->
                 val evidence = if (deferred.actionSubmissionAttempted) {
                     AutomationActionEvidence.NetworkFailure(

@@ -390,6 +390,7 @@ class TypedAutomationRuntimeService(
                 outcome.retryAt,
                 outcome.message,
             ).projection(outcome.retryAt)
+            is TypedRuntimeOutcome.UnsubmittedFailure -> failUnsubmittedAction(right, outcome.message)
             is TypedRuntimeOutcome.SubmissionAmbiguous -> markReconcilingAndEnqueueWake(
                 right.accountId,
                 right.leaseToken,
@@ -442,6 +443,31 @@ class TypedAutomationRuntimeService(
                 TypedRuntimeProjection(retryAt != null, retryAt)
             }
         }
+    }
+
+    private fun failUnsubmittedAction(
+        right: PersistedTypedRuntimeExecutionRight,
+        message: String,
+    ): TypedRuntimeProjection {
+        val state = fencedState(right.accountId, right.leaseToken) ?: return TypedRuntimeProjection(false)
+        val action = queryRepository.lockTypedAction(right.requireActionId()) ?: return TypedRuntimeProjection(false)
+        if (action.account.id != right.accountId || action.leaseToken != right.leaseToken ||
+            action.status != TypedAutomationActionStatus.SUBMITTING
+        ) return TypedRuntimeProjection(false)
+
+        val now = timeProvider.now()
+        action.status = TypedAutomationActionStatus.FAILED
+        action.submittedAt = null
+        action.nextAttemptAt = null
+        action.finishedAt = now
+        action.updatedAt = now
+        action.lastError = sanitizeDiagnostic(message)
+        if (blocksNewSubmission(state)) {
+            return releaseCore(right.accountId, right.leaseToken, null, null, emptyList()).projection()
+        }
+        val retryAt = scheduleAutomaticRetry(state, AutomationStopReason.NETWORK, message)
+        action.entry?.let { lifecycleBridge.parkUnsubmittedWork(right.accountId, it.id, retryAt) }
+        return TypedRuntimeProjection(true, retryAt)
     }
 
     private fun deferSubmittedAction(

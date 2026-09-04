@@ -51,6 +51,12 @@ interface AutomationActionConvergenceModule {
         observedAt: Instant,
     ): Int
     fun allowFreshDecision(accountId: Long, attemptId: Long, allowedAt: Instant): Boolean
+    fun allowRaidRegistrationFreshDecision(
+        accountId: Long,
+        entryId: Long,
+        raidId: String,
+        observedAt: Instant,
+    ): Int
 }
 
 @Service
@@ -339,6 +345,14 @@ class DefaultAutomationActionConvergenceModule(
 
     override fun allowFreshDecision(accountId: Long, attemptId: Long, allowedAt: Instant): Boolean =
         store.releaseSuppression(accountId, attemptId, allowedAt)
+
+    override fun allowRaidRegistrationFreshDecision(
+        accountId: Long,
+        entryId: Long,
+        raidId: String,
+        observedAt: Instant,
+    ): Int =
+        store.releaseRaidRegistrationSuppressions(accountId, entryId, raidId, observedAt)
 
     private fun pending(
         record: ActionConvergenceRecord,

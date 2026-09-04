@@ -288,6 +288,7 @@ sealed interface RaidRecordResult {
     ) : RaidRecordResult
     data class EntrySkipped(val message: String) : RaidRecordResult
     data class NotApplied(val message: String) : RaidRecordResult
+    data class FreshDecision(val message: String) : RaidRecordResult
     data class NeedsRecheck(val at: Instant, val message: String) : RaidRecordResult
     data class BattleRecoveryStarted(val at: Instant, val message: String) : RaidRecordResult
     data class RewardRetryReady(val message: String) : RaidRecordResult

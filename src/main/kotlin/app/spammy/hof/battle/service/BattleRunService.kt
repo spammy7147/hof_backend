@@ -28,6 +28,7 @@ import app.spammy.hof.external.parser.LoginStateParser
 import app.spammy.hof.external.parser.SharedBattleCooldownParser
 import app.spammy.hof.status.repository.HofStatusSnapshotQueryRepository
 import app.spammy.hof.town.common.service.AccountHofMutationFence
+import java.io.IOException
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.time.Instant
@@ -35,6 +36,16 @@ import java.util.HexFormat
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.springframework.transaction.support.TransactionSynchronizationManager
+
+/** 패턴 요청은 실패했지만 전투 요청 호출에는 아직 도달하지 않았다는 증거다. */
+class BattleNotSubmittedException(cause: IOException) : RuntimeException(
+    "패턴 불러오기 중 통신에 실패했습니다. 전투는 보내지 않았으며 최신 상태에서 다시 판단합니다.",
+    cause,
+) {
+    companion object {
+        const val REASON_CODE = "BATTLE_PATTERN_PRELOAD_FAILED"
+    }
+}
 
 @Service
 /**
@@ -151,6 +162,8 @@ class BattleRunService(
                         actionSubmissionAttempted = false,
                         reasonCode = BATTLE_PATTERN_PRELOAD_DEFERRED,
                     )
+                } catch (error: IOException) {
+                    throw BattleNotSubmittedException(error)
                 }
                 ensureActiveSession(
                     response = preloadResponse,

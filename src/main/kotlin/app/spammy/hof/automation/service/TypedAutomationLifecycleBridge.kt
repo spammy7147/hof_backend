@@ -351,6 +351,18 @@ class TypedAutomationLifecycleBridge(
         }
     }
 
+    @Transactional(propagation = Propagation.MANDATORY)
+    fun parkUnsubmittedWork(accountId: Long, entryId: Long, retryAt: java.time.Instant) {
+        workSessions.lockOpen(accountId)
+            .filter { it.entry.id == entryId && it.status == AutomationWorkStatus.RUNNING }
+            .forEach { session ->
+                session.transitionTo(AutomationWorkStatus.WAITING_COOLDOWN)
+                session.nextCheckAt = retryAt
+                session.updatedAt = timeProvider.now()
+                workSessionCommands.save(session)
+            }
+    }
+
     private fun stopOpenWorkSessions(accountId: Long, now: java.time.Instant) {
         workSessions.lockOpen(accountId).forEach { session ->
             session.transitionTo(AutomationWorkStatus.STOPPED)

@@ -19,6 +19,12 @@ interface ConvergenceStore {
         releasedAt: Instant,
     ): Int
     fun releaseSuppression(accountId: Long, attemptId: Long, releasedAt: Instant): Boolean
+    fun releaseRaidRegistrationSuppressions(
+        accountId: Long,
+        entryId: Long,
+        raidId: String,
+        observedAt: Instant,
+    ): Int
     fun activeBattleGate(accountId: Long): AccountBattleGate?
     fun openBattleGate(accountId: Long, challengeId: Long?, reason: String, now: Instant): AccountBattleGate
     fun releaseBattleGate(accountId: Long, resolvedAt: Instant): Boolean
@@ -125,6 +131,28 @@ class InMemoryConvergenceStore : ConvergenceStore {
         } ?: return false
         releasedSuppressions += accountId to record.attemptId
         return true
+    }
+
+    @Synchronized
+    override fun releaseRaidRegistrationSuppressions(
+        accountId: Long,
+        entryId: Long,
+        raidId: String,
+        observedAt: Instant,
+    ): Int {
+        val held = records.values.filter {
+            it.accountId == accountId && it.selection.entryId == entryId &&
+                it.selection.actionKind == AutomationActionKind.RAID_REGISTER &&
+                it.selection.scope == AutomationIsolationScope(AutomationIsolationScopeKind.RAID_ENTRY, raidId) &&
+                it.result in setOf(ActionConvergenceResult.HELD, ActionConvergenceResult.RESULT_UNOBSERVED) &&
+                (accountId to it.attemptId) !in releasedSuppressions
+        }
+        held.forEach {
+            releasedSuppressions += accountId to it.attemptId
+            it.reasonCode = "RAID_REGISTRATION_FRESH_DECISION_RELEASED"
+            it.updatedAt = observedAt
+        }
+        return held.size
     }
 
     @Synchronized
