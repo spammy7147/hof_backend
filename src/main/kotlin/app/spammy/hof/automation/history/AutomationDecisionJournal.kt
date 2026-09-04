@@ -98,7 +98,10 @@ class JpaAutomationDecisionJournal(
         val entryDisplayNames = entryDisplayNames(accountId)
         val cycle = AutomationDecisionCycleEntity(accountId = accountId, result = when (decision) {
             is AutomationCoordination.Runnable -> AutomationDecisionResult.ACTION_SELECTED
-            is AutomationCoordination.Unavailable -> AutomationDecisionResult.WAITING
+            is AutomationCoordination.Unavailable -> if (
+                decision.waitScope == AutomationWaitScope.HOLD_CURRENT_WORK ||
+                decision.trace.any { it.outcome == AutomationDecisionOutcome.WAITING }
+            ) AutomationDecisionResult.WAITING else AutomationDecisionResult.IDLE
             is AutomationCoordination.CycleBoundary -> AutomationDecisionResult.IDLE
             is AutomationCoordination.Idle -> AutomationDecisionResult.IDLE
             is AutomationCoordination.Fatal -> AutomationDecisionResult.FATAL

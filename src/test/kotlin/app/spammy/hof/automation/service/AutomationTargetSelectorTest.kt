@@ -849,6 +849,7 @@ class AutomationTargetSelectorTest {
 
         assertEquals(earlier, unavailable.nextRunAt)
         assertEquals(listOf(0, 1), unavailable.trace.map(AutomationEvaluationTrace::sequence))
+        assertEquals(listOf(AutomationDecisionOutcome.SKIPPED, AutomationDecisionOutcome.SKIPPED), unavailable.trace.map(AutomationEvaluationTrace::outcome))
     }
 
     @Test
@@ -1224,9 +1225,10 @@ class AutomationTargetSelectorTest {
     }
 
     @Test
-    fun `unavailable battle map does not block a lower priority adventure entry`() {
+    fun `exhausted fishing and cooling battle are skipped before selecting a lower priority adventure`() {
         val battleSnapshot = battleDecisionEntry()
         val adventureSnapshot = adventureDecisionEntry()
+        val fishingSnapshot = fishingDecisionEntry()
         val retryAt = now.plusSeconds(501)
         val adventureAction = AdventureMapAutomationAction(
             accountId = 7,
@@ -1239,7 +1241,12 @@ class AutomationTargetSelectorTest {
         )
         Mockito.`when`(work.findRunning(7)).thenReturn(null)
         Mockito.`when`(work.findWaiting(7)).thenReturn(emptyList())
-        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(battleEntry, adventureEntry))
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(fishingEntry, battleEntry, adventureEntry))
+        Mockito.`when`(loader.loadEntry(7, fishingEntry.id, null, null)).thenReturn(fishingSnapshot)
+        fishingRules.returns(
+            requireNotNull(fishingSnapshot.fishing),
+            HandlerEvaluation.Unavailable(now.plusSeconds(86400), "FISHING_DAILY_LIMIT", "오늘의 낚시 횟수를 모두 사용했습니다."),
+        )
         Mockito.`when`(loader.loadEntry(7, 11, null, null)).thenReturn(battleSnapshot)
         battleRules.returns(
             requireNotNull(battleSnapshot.battle),
@@ -1254,6 +1261,13 @@ class AutomationTargetSelectorTest {
         val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
 
         assertEquals(12, selected.entryId)
+        assertEquals(
+            listOf(AutomationDecisionOutcome.SKIPPED, AutomationDecisionOutcome.SKIPPED, AutomationDecisionOutcome.SELECTED),
+            selected.trace.map(AutomationEvaluationTrace::outcome),
+        )
+        assertEquals(retryAt, selected.trace[1].nextRunAt)
+        assertEquals(listOf(fishingEntry.id, battleEntry.id, adventureEntry.id), selected.trace.map(AutomationEvaluationTrace::entryId))
+        assertEquals(null, selected.trace[0].actionKind)
     }
 
     @Test
@@ -1285,6 +1299,7 @@ class AutomationTargetSelectorTest {
         val selected = assertIs<AutomationCoordination.Unavailable>(selector.select(7))
 
         assertEquals(retryAt, selected.nextRunAt)
+        assertEquals(AutomationDecisionOutcome.WAITING, selected.trace.single().outcome)
         Mockito.verify(lifecycle, Mockito.never()).waitForCooldown(7, 31, retryAt)
         Mockito.verify(loader, Mockito.never()).loadEntry(7, home.id, null, null)
         Mockito.verify(loader, Mockito.never()).loadEntry(7, battleEntry.id, null, null)
@@ -1332,7 +1347,7 @@ class AutomationTargetSelectorTest {
 
         assertEquals(1, boundary.trace.size)
         assertEquals(AutomationType.RAID, boundary.trace.single().type)
-        assertEquals(AutomationDecisionOutcome.WAITING, boundary.trace.single().outcome)
+        assertEquals(AutomationDecisionOutcome.SKIPPED, boundary.trace.single().outcome)
         assertEquals("RAID_BATTLE_SAFETY_GATE", boundary.trace.single().reasonCode)
         assertEquals(AutomationDiagnosticKind.RAID_LOCAL_SAFETY_GATE, boundary.trace.single().diagnosticKind)
         assertEquals(RaidCooldownSource.LOCAL_FALLBACK, boundary.trace.single().cooldownSource)

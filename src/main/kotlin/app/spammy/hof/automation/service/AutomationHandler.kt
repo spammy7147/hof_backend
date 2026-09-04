@@ -32,7 +32,7 @@ sealed interface HandlerEvaluation {
     data class Unavailable(
         val nextRunAt: Instant,
         val reasonCode: String = "COOLDOWN",
-        val message: String = "다음 실행 가능 시각까지 대기합니다.",
+        val message: String = "쿨다운 중이므로 이번 판단에서 건너뜁니다.",
         val waitScope: AutomationWaitScope = AutomationWaitScope.RELEASE_OTHER_AUTOMATIONS,
     ) : HandlerEvaluation
     data class ConfigurationWarning(

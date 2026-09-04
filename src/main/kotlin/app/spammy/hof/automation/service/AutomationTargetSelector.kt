@@ -670,11 +670,10 @@ class AutomationTargetSelector(
             sequence,
             entryId,
             AutomationType.RAID,
-            AutomationDecisionOutcome.WAITING,
+            AutomationDecisionOutcome.SKIPPED,
             reasonCode ?: reason.name,
             message,
             at,
-            actionKind = "WAIT",
             targetKey = raidId,
             diagnosticKind = waitDiagnosticKind(),
             cooldownSource = cooldownSource,
@@ -903,15 +902,16 @@ private fun evaluateEntry(
         )
         is HandlerEvaluation.Unavailable -> {
             val detail = entry.waitingEntryTrace(evaluation)
+            val holdsCurrentWork = evaluation.waitScope == AutomationWaitScope.HOLD_CURRENT_WORK
             AutomationEvaluationTrace(
                 0,
                 entry.id,
                 entry.type,
-                AutomationDecisionOutcome.WAITING,
+                if (holdsCurrentWork) AutomationDecisionOutcome.WAITING else AutomationDecisionOutcome.SKIPPED,
                 evaluation.reasonCode,
                 detail?.message ?: evaluation.message,
                 evaluation.nextRunAt,
-                detail?.actionKind,
+                detail?.actionKind.takeIf { holdsCurrentWork },
                 detail?.targetKey,
                 detail?.targetName,
                 detail?.presetId,

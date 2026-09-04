@@ -28,6 +28,42 @@ class AutomationDecisionJournalTest {
     private val now = Instant.parse("2026-08-12T01:00:00Z")
 
     @Test
+    fun `all ineligible entries record no action while scheduling another check`() {
+        val account = account("history-skipped-conditions")
+        val battle = entry(account, AutomationType.BATTLE_MAP, 0)
+        val journal = journal()
+        val nextRunAt = now.plusSeconds(120)
+        journal.appendDecision(account.id, AutomationCoordination.Unavailable(
+            nextRunAt = nextRunAt,
+            warnings = emptyList(),
+            trace = listOf(AutomationEvaluationTrace(
+                0, battle.id, AutomationType.BATTLE_MAP, AutomationDecisionOutcome.SKIPPED,
+                "COOLDOWN", "쿨다운 중이므로 건너뜁니다.", nextRunAt,
+            )),
+        ))
+        entityManager.flush()
+        entityManager.clear()
+
+        val cycle = journal.page(account.id, AutomationHistoryQuery()).cycles.single()
+        assertEquals(AutomationDecisionResult.IDLE, cycle.result)
+        assertNull(cycle.selectedEntryId)
+        assertEquals(AutomationHistoryEventKind.SKIPPED, cycle.events.single().kind)
+        assertEquals(nextRunAt, cycle.events.single().nextRunAt)
+    }
+
+    @Test
+    fun `pending action transition still records a wait`() {
+        val account = account("history-pending-transition")
+        val journal = journal()
+        journal.appendDecision(account.id, AutomationCoordination.Unavailable(
+            nextRunAt = now.plusSeconds(5),
+            warnings = emptyList(),
+            waitScope = AutomationWaitScope.HOLD_CURRENT_WORK,
+        ))
+        assertEquals(AutomationDecisionResult.WAITING, journal.page(account.id, AutomationHistoryQuery()).cycles.single().result)
+    }
+
+    @Test
     fun `stores evaluated order and isolates account history`() {
         val first = account("history-first")
         val second = account("history-second")
