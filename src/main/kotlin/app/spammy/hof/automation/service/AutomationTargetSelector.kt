@@ -348,9 +348,7 @@ class AutomationTargetSelector(
                 snapshotLoader,
             )
         }
-        val idleHeartbeatAt = now.plusSeconds(IDLE_HEARTBEAT_SECONDS)
-        val nextDecisionAt = earliest?.takeIf { it < idleHeartbeatAt } ?: idleHeartbeatAt
-        return AutomationCoordination.Unavailable(nextDecisionAt, warnings, trace)
+        return AutomationCoordination.Idle(warnings, trace)
     }
 
     private fun AutomationCoordination.withEarlierRetry(earlier: Instant?): AutomationCoordination =
@@ -849,7 +847,6 @@ class AutomationTargetSelector(
         const val OBSERVATION_GAP_HELD_REASON = "OBSERVATION_GAP_HELD"
         const val QUEST_PROGRESS_STALE_REASON = "QUEST_PROGRESS_STALE"
         const val SCOPE_SUPPRESSION_RECHECK_SECONDS = 30L
-        const val IDLE_HEARTBEAT_SECONDS = 5L * 60L
         val CANDIDATE_ARBITRATED_TYPES = setOf(AutomationType.QUEST, AutomationType.HOME_QUEST)
     }
 }

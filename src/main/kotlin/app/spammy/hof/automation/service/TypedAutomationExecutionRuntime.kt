@@ -48,6 +48,7 @@ sealed interface TypedRuntimeSubmission {
 /** Runner가 해석한 domain 결과를 runtime 저장 상태로 원자적으로 투영하는 입력이다. */
 sealed interface TypedRuntimeOutcome {
     data object Idle : TypedRuntimeOutcome
+    data class RoundCompleted(val warnings: List<String> = emptyList()) : TypedRuntimeOutcome
     data class SelectionChanged(val wakeReason: String) : TypedRuntimeOutcome
     data class ScheduledWait(
         val nextRunAt: Instant,

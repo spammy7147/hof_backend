@@ -38,8 +38,34 @@ class TypedAutomationRuntimeServiceTest {
         TimeProvider { now },
         lifecycleBridge,
         outbox,
+        app.spammy.hof.external.config.HofRequestProperties(
+            automationMinimumInterval = java.time.Duration.ofSeconds(7),
+        ),
     )
     private val account = HofAccountEntity(7, "login", "encrypted", now)
+
+    @Test
+    fun `round completion enqueues the next round using the request interval`() {
+        val state = state()
+        val execution = acquire(state, null)
+
+        val result = service.complete(execution, TypedRuntimeOutcome.RoundCompleted(listOf("missing preset")))
+
+        assertTrue(result.applied)
+        assertEquals(now.plusSeconds(7), result.nextAttemptAt)
+        assertEquals(AutomationWaitReason.LOOP_INTERVAL, state.waitReason)
+        assertEquals("missing preset", state.warningText)
+        Mockito.verify(outbox).enqueue(7, "TYPED_NEXT_ROUND", now.plusSeconds(7))
+    }
+
+    @Test
+    fun `expired lease cannot enqueue another round`() {
+        val state = state()
+        val execution = acquire(state, null)
+        state.leaseToken = "new-owner"
+        assertFalse(service.complete(execution, TypedRuntimeOutcome.RoundCompleted()).applied)
+        Mockito.verifyNoInteractions(outbox)
+    }
 
     @Test
     fun `authentication suspension still lets an in-flight draining action reach reconciliation`() {

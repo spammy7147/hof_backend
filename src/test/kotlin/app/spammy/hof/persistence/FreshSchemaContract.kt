@@ -1414,7 +1414,7 @@ internal object FreshSchemaContract {
         check(
             "typed_automation_runtime_states",
             "ck_typed_runtime_wait_reason",
-            "wait_reason is null or locate(',' || wait_reason || ',', ',SCHEDULED,HOF_CONNECTION,') > 0",
+            "wait_reason is null or locate(',' || wait_reason || ',', ',SCHEDULED,HOF_CONNECTION,LOOP_INTERVAL,') > 0",
         ),
         check("typed_automation_runtime_states", "ck_typed_runtime_lease", "(lease_token is null and lease_until is null) or (lease_token is not null and lease_until is not null)"),
         check("typed_automation_runtime_states", "ck_typed_runtime_stop_action", "lifecycle_status = 'STOPPED' or stop_action_id is null"),

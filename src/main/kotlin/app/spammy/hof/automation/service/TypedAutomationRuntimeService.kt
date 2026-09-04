@@ -4,6 +4,7 @@ import app.spammy.hof.automation.entity.*
 import app.spammy.hof.automation.repository.*
 import app.spammy.hof.automation.outbox.AutomationOutboxService
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.external.config.HofRequestProperties
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
@@ -27,6 +28,7 @@ class TypedAutomationRuntimeService(
     private val timeProvider: TimeProvider,
     private val lifecycleBridge: TypedAutomationLifecycleBridge,
     private val outbox: AutomationOutboxService,
+    private val requestProperties: HofRequestProperties = HofRequestProperties(),
 ) {
     @Transactional(readOnly = true, propagation = Propagation.REQUIRES_NEW)
     fun isRunning(accountId: Long): Boolean =
@@ -318,6 +320,21 @@ class TypedAutomationRuntimeService(
     ): TypedRuntimeProjection {
         val right = execution.persistedRight()
         return when (outcome) {
+            is TypedRuntimeOutcome.RoundCompleted -> {
+                val state = fencedState(right.accountId, right.leaseToken)
+                    ?: return TypedRuntimeProjection(false)
+                val next = timeProvider.now().plus(
+                    requestProperties.automationMinimumInterval.coerceAtLeast(Duration.ofMillis(100)),
+                )
+                val released = releaseCore(
+                    right.accountId, right.leaseToken, next,
+                    AutomationWaitReason.LOOP_INTERVAL, outcome.warnings,
+                )
+                if (released && state.lifecycleStatus == TypedAutomationLifecycle.RUNNING && !state.authSuspended) {
+                    outbox.enqueue(right.accountId, "TYPED_NEXT_ROUND", next)
+                }
+                released.projection(next)
+            }
             TypedRuntimeOutcome.Idle -> releaseCore(
                 right.accountId,
                 right.leaseToken,

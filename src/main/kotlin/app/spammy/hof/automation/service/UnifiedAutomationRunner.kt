@@ -320,16 +320,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                         runConvergenceProbe(accountId, execution, fallbackConvergenceProbe)
                         return
                     }
-                    if (decision.warnings.isEmpty()) {
-                        typedRuntime.complete(execution, TypedRuntimeOutcome.Idle)
-                    } else {
-                        completeAndSchedule(
-                            accountId,
-                            execution,
-                            TypedRuntimeOutcome.ConfigurationWait(decision.warnings),
-                            "TYPED_CONFIG_RECHECK",
-                        )
-                    }
+                    typedRuntime.complete(execution, TypedRuntimeOutcome.RoundCompleted(decision.warnings))
                     return
                 }
             }

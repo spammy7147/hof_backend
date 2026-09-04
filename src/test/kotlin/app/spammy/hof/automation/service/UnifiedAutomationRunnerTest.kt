@@ -1940,16 +1940,16 @@ class UnifiedAutomationRunnerTest {
     }
 
     @Test
-    fun `idle configuration warnings become a bounded runtime recheck`() {
+    fun `an exhausted round preserves warnings and continues to the next round`() {
         Mockito.`when`(decisions.select(7)).thenReturn(
             AutomationCoordination.Idle(listOf("missing primary")),
         )
 
         runner.runOne(7)
 
-        val outcome = assertIs<TypedRuntimeOutcome.ConfigurationWait>(capturedOutcome())
+        val outcome = assertIs<TypedRuntimeOutcome.RoundCompleted>(capturedOutcome())
         assertEquals(listOf("missing primary"), outcome.warnings)
-        Mockito.verify(wakeup).schedule(7, CONFIG_RECHECK_AT, "TYPED_CONFIG_RECHECK")
+        Mockito.verifyNoInteractions(wakeup)
     }
 
     @Test

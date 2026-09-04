@@ -6,7 +6,7 @@ import java.time.Instant
 
 enum class TypedAutomationLifecycle { RUNNING, DRAINING, PAUSED, STOPPED }
 enum class TypedAutomationActionStatus { PREPARED, SUBMITTING, RECONCILING, SUCCEEDED, FAILED, AMBIGUOUS }
-enum class AutomationWaitReason { SCHEDULED, HOF_CONNECTION }
+enum class AutomationWaitReason { SCHEDULED, HOF_CONNECTION, LOOP_INTERVAL }
 
 @Entity
 @Table(name = "typed_automation_runtime_states")

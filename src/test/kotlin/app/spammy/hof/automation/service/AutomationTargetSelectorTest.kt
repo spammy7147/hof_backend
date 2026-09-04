@@ -126,6 +126,7 @@ class AutomationTargetSelectorTest {
         val selected = assertIs<AutomationCoordination.Runnable>(directSelector.select(7))
 
         assertEquals(10, selected.entryId)
+        assertEquals(10, assertIs<AutomationCoordination.Runnable>(directSelector.select(7)).entryId)
         Mockito.verify(loader, Mockito.never()).loadEntry(7, 11, null)
         Mockito.verify(loader, Mockito.never()).loadEntry(7, 12, null)
     }
@@ -571,7 +572,7 @@ class AutomationTargetSelectorTest {
         Mockito.`when`(work.findWaiting(7L)).thenReturn(emptyList())
         Mockito.`when`(typed.findEntries(7L)).thenReturn(listOf(raidEntry))
 
-        assertIs<AutomationCoordination.Unavailable>(guarded.select(7L))
+        assertIs<AutomationCoordination.Idle>(guarded.select(7L))
         assertEquals(emptyMap(), store.findSuppressedBaselines(7L))
 
         val selected = assertIs<AutomationCoordination.Runnable>(guarded.select(7L))
@@ -781,7 +782,7 @@ class AutomationTargetSelectorTest {
             ),
         )
 
-        assertIs<AutomationCoordination.Unavailable>(activeSelector.select(7L))
+        assertIs<AutomationCoordination.Idle>(activeSelector.select(7L))
         val gapAttemptId = requireNotNull(store.findActive(7L, scope)).attemptId
 
         val selected = assertIs<AutomationCoordination.Runnable>(activeSelector.select(7L))
@@ -832,7 +833,7 @@ class AutomationTargetSelectorTest {
     }
 
     @Test
-    fun `earliest unavailable is returned after every configured entry is evaluated`() {
+    fun `cooling entries finish the round without waiting for their deadlines`() {
         val battleSnapshot = battleDecisionEntry()
         val adventureSnapshot = adventureDecisionEntry()
         val later = now.plusSeconds(600)
@@ -845,15 +846,16 @@ class AutomationTargetSelectorTest {
         battleRules.returns(requireNotNull(battleSnapshot.battle), HandlerEvaluation.Unavailable(later))
         adventureRules.returns(requireNotNull(adventureSnapshot.adventure), HandlerEvaluation.Unavailable(earlier))
 
-        val unavailable = assertIs<AutomationCoordination.Unavailable>(selector.select(7))
+        val unavailable = assertIs<AutomationCoordination.Idle>(selector.select(7))
 
-        assertEquals(earlier, unavailable.nextRunAt)
+        assertNull(unavailable.nextRunAt)
+        assertEquals(listOf(later, earlier), unavailable.trace.map(AutomationEvaluationTrace::nextRunAt))
         assertEquals(listOf(0, 1), unavailable.trace.map(AutomationEvaluationTrace::sequence))
         assertEquals(listOf(AutomationDecisionOutcome.SKIPPED, AutomationDecisionOutcome.SKIPPED), unavailable.trace.map(AutomationEvaluationTrace::outcome))
     }
 
     @Test
-    fun `all skipped entries schedule a fresh global decision in five minutes`() {
+    fun `all skipped entries finish the round without a five minute idle deadline`() {
         val battleSnapshot = battleDecisionEntry()
         val adventureSnapshot = adventureDecisionEntry()
         Mockito.`when`(work.findRunning(7)).thenReturn(null)
@@ -864,9 +866,9 @@ class AutomationTargetSelectorTest {
         battleRules.returns(requireNotNull(battleSnapshot.battle), HandlerEvaluation.Skipped)
         adventureRules.returns(requireNotNull(adventureSnapshot.adventure), HandlerEvaluation.Skipped)
 
-        val idleHeartbeat = assertIs<AutomationCoordination.Unavailable>(selector.select(7))
+        val idleHeartbeat = assertIs<AutomationCoordination.Idle>(selector.select(7))
 
-        assertEquals(now.plusSeconds(300), idleHeartbeat.nextRunAt)
+        assertNull(idleHeartbeat.nextRunAt)
         assertEquals(
             listOf(AutomationDecisionOutcome.SKIPPED, AutomationDecisionOutcome.SKIPPED),
             idleHeartbeat.trace.map(AutomationEvaluationTrace::outcome),
@@ -1517,9 +1519,9 @@ class AutomationTargetSelectorTest {
             )),
         )
 
-        val decision = assertIs<AutomationCoordination.Unavailable>(selector.select(7))
+        val decision = assertIs<AutomationCoordination.Idle>(selector.select(7))
 
-        assertEquals(now.plusSeconds(300), decision.nextRunAt)
+        assertNull(decision.nextRunAt)
         assertEquals(AutomationDecisionOutcome.CYCLE_ABORTED, decision.trace.single().outcome)
         assertEquals(RaidCycleOutcomeKind.ABORTED_CLOSED.name, decision.trace.single().reasonCode)
     }

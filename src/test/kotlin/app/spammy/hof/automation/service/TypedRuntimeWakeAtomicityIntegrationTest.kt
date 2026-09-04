@@ -55,6 +55,20 @@ class TypedRuntimeWakeAtomicityIntegrationTest {
     @Autowired private lateinit var codec: StoredTypedAutomationActionCodec
 
     @Test
+    fun `round completion commits the ordinary interval and durable wake together`() {
+        val accountId = seedStateOnly("durable-round")
+        val execution = acquire(accountId)
+        val result = runtime.complete(execution, TypedRuntimeOutcome.RoundCompleted())
+
+        val state = requireNotNull(typed.findRuntimeState(accountId))
+        assertEquals(NOW.plusSeconds(3), result.nextAttemptAt)
+        assertEquals(AutomationWaitReason.LOOP_INTERVAL, state.waitReason)
+        assertEquals(0, outbox.findUnpublished(NOW.plusSeconds(1)).count { it.account.id == accountId })
+        assertEquals(1, outbox.findUnpublished(NOW.plusSeconds(3)).count { it.account.id == accountId })
+        assertIs<TypedRuntimeAcquisition.Busy>(runtime.acquire(accountId))
+    }
+
+    @Test
     fun `success commits action runtime release and wake row in one transaction`() {
         val fixture = seed("atomic-success", TypedAutomationActionStatus.PREPARED)
         val execution = acquire(fixture.accountId)
