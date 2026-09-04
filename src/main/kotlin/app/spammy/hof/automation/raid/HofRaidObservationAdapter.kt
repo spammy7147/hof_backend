@@ -30,13 +30,13 @@ class HofRaidObservationAdapter(
         return sessionRecovery.execute(accountId, load)
     }
 
-    fun refresh(accountId: Long, raidId: String): RaidObservation {
+    fun refresh(accountId: Long, raidId: String): RaidObservation = sessionRecovery.execute(accountId) {
         var response: RaidPubResponse? = null
         val authorized = requireNotNull(submissionGate).executeIfAuthorized(accountId, Runnable {
             response = raidPubService.actionForAutomation(accountId, RaidPubActionRequest(RaidAction.REFRESH), raidId)
         })
         if (!authorized) throw AutomationLoginRequiredException("로그아웃되어 레이드 상태 갱신을 보내지 않았습니다.")
-        return from(requireNotNull(response))
+        from(requireNotNull(response))
     }
 
     fun from(response: RaidPubResponse): RaidObservation = RaidObservation(

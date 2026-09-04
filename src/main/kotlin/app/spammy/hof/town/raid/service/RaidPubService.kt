@@ -98,7 +98,13 @@ class RaidPubService(
                 }
                 TownActionRequest(actionId)
             },
-            acceptsActionResponse = RaidPubSnapshot::pageComplete,
+            acceptsActionResponse = { observed ->
+                // 신청 복구의 갱신 근거는 직접 응답이어야 하므로 보충 GET으로 대체하지 않는다.
+                if (origin == HofRequestOrigin.AUTOMATION && request.action == RaidAction.REFRESH && !observed.pageComplete) {
+                    incompletePage()
+                }
+                observed.pageComplete
+            },
         ) { html, finalUrl, result, page -> parser.parse(html, finalUrl, page, result) }
         if (!projected.pageComplete) incompletePage()
         rememberAutomationTargets(accountId, projected)

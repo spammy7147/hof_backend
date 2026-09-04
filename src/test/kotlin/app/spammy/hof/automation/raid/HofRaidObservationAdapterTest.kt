@@ -4,6 +4,11 @@ import app.spammy.hof.account.service.HofAccountService
 import app.spammy.hof.account.service.HofSessionRecoveryService
 import app.spammy.hof.automation.service.HofSessionRecoveryExecutor
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.common.error.ApiException
+import app.spammy.hof.common.error.ErrorCode
+import app.spammy.hof.auth.service.AccountExecutionSubmissionGate
+import app.spammy.hof.external.model.HofRequestOrigin
+import app.spammy.hof.town.raid.dto.RaidPubActionRequest
 import app.spammy.hof.town.fishing.dto.TownActionResultResponse
 import app.spammy.hof.town.fishing.dto.TownResultItemResponse
 import app.spammy.hof.town.raid.dto.RaidBattleTargetResponse
@@ -53,6 +58,33 @@ class HofRaidObservationAdapterTest {
             7L,
             app.spammy.hof.external.model.HofRequestOrigin.AUTOMATION,
         )
+    }
+
+    @Test
+    fun `신청 복구 갱신도 세션을 재인증하고 제출 권한을 다시 확인한다`() {
+        val raidPubService = Mockito.mock(RaidPubService::class.java)
+        val accounts = Mockito.mock(HofAccountService::class.java)
+        val response = RaidPubResponse(emptyList(), false, false, null, null, emptySet(), null, pageComplete = true)
+        val refresh = RaidPubActionRequest(RaidAction.REFRESH)
+        Mockito.`when`(raidPubService.actionForAutomation(7L, refresh, "RaidGoblin"))
+            .thenThrow(ApiException(ErrorCode.HOF_SESSION_EXPIRED, "세션 만료"))
+            .thenReturn(response)
+        var authorizationChecks = 0
+        val gate = object : AccountExecutionSubmissionGate {
+            override fun executeIfAuthorized(accountId: Long, submission: Runnable): Boolean {
+                authorizationChecks++
+                submission.run()
+                return true
+            }
+            override fun executeLogout(accountId: Long, logout: Runnable) = error("unexpected logout")
+        }
+        val adapter = HofRaidObservationAdapter(raidPubService,
+            HofSessionRecoveryExecutor(HofSessionRecoveryService(accounts)), TimeProvider { now }, gate)
+
+        assertEquals(true, adapter.refresh(7L, "RaidGoblin").fresh)
+        assertEquals(2, authorizationChecks)
+        Mockito.verify(accounts).reauthenticate(7L, HofRequestOrigin.AUTOMATION)
+        Mockito.verify(raidPubService, Mockito.times(2)).actionForAutomation(7L, refresh, "RaidGoblin")
     }
 
     @Test

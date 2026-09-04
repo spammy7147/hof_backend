@@ -2012,7 +2012,7 @@ class UnifiedAutomationActionLifecycleModule(
             stored.executionIdentity.takeIf { payload.action == RaidAction.REWARD },
         )
             ?: return verifyLater("저장된 레이드 대상이 없어 결과를 안전하게 확인할 수 없습니다.")
-        val observation = if (payload.action == RaidAction.REGISTER) {
+        val observation = if (payload.action in setOf(RaidAction.REGISTER, RaidAction.REFRESH)) {
             raidObservationAdapter.refresh(accountId, attempt.raidId)
         } else {
             raidObservationAdapter.read(accountId)
@@ -2108,11 +2108,19 @@ class UnifiedAutomationActionLifecycleModule(
         }
         is RaidRecordResult.EntryWait -> {
             workLifecycle.waitForRaid(accountId, attempt.entryId, result.raidId, result.at, result.warning)
-            AmbiguousActionResolution.Applied(result.toExecution())
+            if (attempt.kind == RaidIntentKind.REGISTER) {
+                AmbiguousActionResolution.Superseded(result.message)
+            } else {
+                AmbiguousActionResolution.Applied(result.toExecution())
+            }
         }
         is RaidRecordResult.EntrySkipped -> {
             workLifecycle.completeRaidCycle(accountId, attempt.entryId)
-            AmbiguousActionResolution.Applied(defaultExecution)
+            if (attempt.kind == RaidIntentKind.REGISTER) {
+                AmbiguousActionResolution.Superseded(result.message)
+            } else {
+                AmbiguousActionResolution.Applied(defaultExecution)
+            }
         }
         is RaidRecordResult.NotApplied -> if (attempt.kind == RaidIntentKind.REWARD) {
             AmbiguousActionResolution.Superseded(result.message)

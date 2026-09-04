@@ -2088,7 +2088,7 @@ class AutomationActionLifecycleModuleTest {
     @Test
     fun `불명확한 레이드 행동은 최신 원본 상태를 규칙 모듈에 다시 전달한다`() {
         val observation = RaidObservation(emptyList(), false, false)
-        Mockito.`when`(raidObservationAdapter.read(7L)).thenReturn(observation)
+        Mockito.`when`(raidObservationAdapter.refresh(7L, "RaidGoblin")).thenReturn(observation)
         Mockito.`when`(
             raidCycleModule.recordObservedResult(
                 7L,
@@ -2107,7 +2107,7 @@ class AutomationActionLifecycleModuleTest {
         val resolution = assertIs<AmbiguousActionResolution.VerifyLater>(managed.reconcile())
 
         assertEquals(now.plusSeconds(30), resolution.retryAt)
-        Mockito.verify(raidObservationAdapter).read(7L)
+        Mockito.verify(raidObservationAdapter).refresh(7L, "RaidGoblin")
         Mockito.verifyNoInteractions(workLifecycle)
     }
 

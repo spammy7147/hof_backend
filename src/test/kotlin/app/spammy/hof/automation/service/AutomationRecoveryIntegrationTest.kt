@@ -68,6 +68,7 @@ class AutomationRecoveryIntegrationTest {
     private val characters = listOf("recovery-1", "recovery-2", "recovery-3")
     private var selectedCharacters = characters
     private var raidPageTransform: (String) -> String = { it }
+    private var incompleteRefreshPost = false
 
     @BeforeEach
     fun prepareAccount() {
@@ -217,6 +218,36 @@ class AutomationRecoveryIntegrationTest {
         assertEquals(2, registerRequests().size)
     }
 
+    @ParameterizedTest
+    @ValueSource(booleans = [true, false])
+    fun `신청 응답 유실 뒤 참가 대기와 전역 쿨다운은 과거 신청 성공으로 귀속하지 않는다`(alreadyJoined: Boolean) {
+        setupRaid(loseFirstRegistration = true, joinOnLost = alreadyJoined)
+        runner.runOne(accountId)
+        nextRun()
+        val attemptId = jdbc.queryForObject(
+            "select id from automation_action_attempts where account_id = ? and action_kind = 'RAID_REGISTER'",
+            Long::class.java, accountId)!!
+        if (!alreadyJoined) {
+            raidPageTransform = { it.replace("현재 상태는 신청 가능", "현재 상태는 신청 대기 (신청 가능까지 6분 58초)") }
+        }
+        repeat(2) { nextRun() }
+        assertEquals(ActionConvergenceResult.SUPERSEDED, store.get(attemptId)?.result)
+        assertEquals(1, registerRequests().size)
+        assertNotNull(jdbc.queryForObject("select next_check_at from automation_work_sessions where account_id = ?",
+            java.time.OffsetDateTime::class.java, accountId))
+    }
+
+    @Test
+    fun `갱신 POST만 불완전하면 완전한 GET이 있어도 신청 보류를 해제하지 않는다`() {
+        setupRaid()
+        runner.runOne(accountId)
+        val old = holdRegistration()
+        incompleteRefreshPost = true
+        repeat(3) { nextRun() }
+        assertEquals(0, registerRequests().size)
+        assertTrue(old.selection.baselineFingerprint in store.findSuppressedBaselines(accountId)[old.selection.scope].orEmpty())
+    }
+
     @Test
     fun `신청 결과 확인 중 로그아웃하면 갱신 POST도 보내지 않는다`() {
         setupRaid(loseFirstRegistration = true)
@@ -261,7 +292,7 @@ class AutomationRecoveryIntegrationTest {
         assertEquals(listOf(characters.last()), submittedCharacters)
     }
 
-    private fun setupRaid(loseFirstRegistration: Boolean = false) {
+    private fun setupRaid(loseFirstRegistration: Boolean = false, joinOnLost: Boolean = false) {
         Mockito.doCallRealMethod().`when`(decisions).select(accountId)
         TransactionTemplate(transactions).executeWithoutResult {
             val account = entityManager.find(HofAccountEntity::class.java, accountId)
@@ -286,14 +317,19 @@ class AutomationRecoveryIntegrationTest {
             if (request.formEntries.any { it.name == "register_goblin" }) {
                 if (loseFirstRegistration && !lost) {
                     lost = true
+                    joined = joinOnLost
                     throw IOException("registration response lost")
                 }
                 joined = true
             }
             val html = if (request.url.contains("raidpub") || request.method == HofHttpMethod.POST) {
-                raidPageTransform(raidHtml(joined))
+                raidPageTransform(raidHtml(joined)).let { page ->
+                    if (incompleteRefreshPost && request.formEntries.any { it.name == "refresh_nonce" }) {
+                        page.substringBefore("<div id=\"foot\"")
+                    } else page
+                }
             } else "<div id='menu2'>Funds : $ 1 Time : 100/100</div>아무것도 없다"
-            HofHttpResponse(200, request.url.takeIf { it.contains("raidpub") } ?: "https://hof.zerosic.com/index.php?town=raidpub", html, emptyMap())
+            HofHttpResponse(200, request.url.takeIf { it.contains("raidpub") } ?: "https://hof.zerosic.com/index.php?menu=raidpub", html, emptyMap())
         }.`when`(gateway).execute(Mockito.eq(accountId), anyRequest(), Mockito.anyMap())
     }
 
