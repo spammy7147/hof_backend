@@ -15,15 +15,70 @@ import java.net.http.HttpRequest
 import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 class HofHttpClientTest {
+    @Test
+    fun `a three second gap reuses the connection and four seconds of idle time retires it`() {
+        val connections = CopyOnWriteArrayList<InetSocketAddress>()
+        val methods = CopyOnWriteArrayList<String>()
+        val server = HttpServer.create(InetSocketAddress(0), 0)
+        server.createContext("/test") { exchange ->
+            connections += exchange.remoteAddress
+            methods += exchange.requestMethod
+            exchange.requestBody.use { it.readBytes() }
+            exchange.sendText("OK")
+        }
+        server.start()
+
+        try {
+            val client = client()
+            val url = "http://localhost:${server.address.port}/test"
+            client.execute(ACCOUNT_ID, HofRequest(HofHttpMethod.GET, url))
+            Thread.sleep(3_000)
+            client.execute(ACCOUNT_ID, HofRequest(HofHttpMethod.POST, url))
+            assertEquals(connections[0], connections[1], "3초 간격의 요청은 연결을 재사용한다")
+
+            Thread.sleep(4_500)
+            client.execute(ACCOUNT_ID, HofRequest(HofHttpMethod.POST, url))
+
+            assertEquals(listOf("GET", "POST", "POST"), methods)
+            assertNotEquals(connections[1], connections[2], "유휴 4초가 지난 연결로 POST를 보내면 안 된다")
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `a response taking longer than four seconds is not interrupted by idle cleanup`() {
+        val server = HttpServer.create(InetSocketAddress(0), 0)
+        server.createContext("/test") { exchange ->
+            Thread.sleep(4_500)
+            exchange.sendText("slow response")
+        }
+        server.start()
+
+        try {
+            val response = client().execute(
+                ACCOUNT_ID,
+                HofRequest(HofHttpMethod.POST, "http://localhost:${server.address.port}/test"),
+            )
+
+            assertEquals(200, response.statusCode)
+            assertEquals("slow response", response.body)
+        } finally {
+            server.stop(0)
+        }
+    }
+
     @Test
     fun `same origin redirect is followed and redirect cookies are retained`() {
         val cookies = mutableListOf<String?>()

@@ -73,6 +73,14 @@ tasks.withType<Test> {
 	// Keep the complete Spring suite within the 4 GB Jenkins agent while avoiding the default 512 MB test OOM.
 	maxHeapSize = "1g"
 	systemProperty("spring.test.context.cache.maxSize", "8")
+	// 연결 재사용 테스트는 운영 환경변수와 독립적으로 4초 정책을 검증한다.
+	systemProperty("jdk.httpclient.keepalive.timeout", "4")
+}
+
+tasks.named<org.springframework.boot.gradle.tasks.run.BootRun>("bootRun") {
+	// 환경변수로 지정한 JVM 옵션을 우선하고, 없으면 배포 이미지와 같은 기본값을 사용한다.
+	environment("JAVA_TOOL_OPTIONS", providers.environmentVariable("JAVA_TOOL_OPTIONS")
+		.orElse("-Djdk.httpclient.keepalive.timeout=4").get())
 }
 
 tasks.register<JavaExec>("generateBattleMapSeed") {
