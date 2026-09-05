@@ -42,7 +42,10 @@ class BattleMapAutomationHandlerTest {
             timeCurrent = 1599,
             minimumRemainingTime = 1500,
         ))
-        assertEquals(now.plusMillis(1_600), assertIs<HandlerEvaluation.Unavailable>(belowOneBattle).nextRunAt)
+        val wait = assertIs<HandlerEvaluation.Unavailable>(belowOneBattle)
+        assertEquals(now.plusMillis(1_600), wait.nextRunAt)
+        assertEquals("TIME_INSUFFICIENT", wait.reasonCode)
+        assertEquals("Time이 부족하여 이번 판단에서 건너뜁니다. 현재 1599, 필요 1600 (최소 잔여 Time 1500 포함).", wait.message)
 
         fun actionAt(time: Int) = assertIs<BattleMapAutomationAction>(
             assertIs<HandlerEvaluation.Runnable>(handler.evaluate(snapshot(

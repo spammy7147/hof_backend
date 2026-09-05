@@ -299,7 +299,7 @@ class BattleMapAutomationHandler(
 ) : AutomationHandler<BattleMapAutomationSnapshot> {
     override fun evaluate(context: BattleMapAutomationSnapshot): HandlerEvaluation {
         val states = context.mapStates.associateBy { BattleMapProgressIdentity(it.categoryId, it.mapCode) }
-        val waits = mutableListOf<Instant>()
+        val waits = mutableListOf<HandlerEvaluation.Unavailable>()
         context.settings
             .asSequence()
             .filter(BattleMapAutomationSetting::enabled)
@@ -316,7 +316,7 @@ class BattleMapAutomationHandler(
                 val state = states[identity]?.takeIf { it.isRunnableIgnoringCooldown() }
                     ?: return@forEach
                 state.cooldownUntil?.takeIf { it.isAfter(context.evaluationInstant) }?.let {
-                    waits += it
+                    waits += HandlerEvaluation.Unavailable(it)
                     return@forEach
                 }
                 when (val time = timePolicy.forBattleMap(
@@ -328,7 +328,7 @@ class BattleMapAutomationHandler(
                     minimumRemainingTime = context.minimumRemainingTime,
                 )) {
                     is BattleTimeDecision.Wait -> {
-                        waits += time.nextRunAt
+                        waits += time.toUnavailable(context.minimumRemainingTime)
                         return@forEach
                     }
                     is BattleTimeDecision.Run -> return HandlerEvaluation.Runnable(
@@ -347,7 +347,7 @@ class BattleMapAutomationHandler(
                     )
                 }
             }
-        return waits.minOrNull()?.let(HandlerEvaluation::Unavailable) ?: HandlerEvaluation.Skipped
+        return waits.minByOrNull { it.nextRunAt } ?: HandlerEvaluation.Skipped
     }
 
     fun onBattleCompleted(

@@ -100,7 +100,7 @@ class AdventureMapAutomationHandler(
             .filterValues { it > 1 }
             .keys
         var firstWarning: HandlerEvaluation.ConfigurationWarning? = null
-        val waits = mutableListOf<Instant>()
+        val waits = mutableListOf<HandlerEvaluation.Unavailable>()
 
         context.settings
             .asSequence()
@@ -153,7 +153,7 @@ class AdventureMapAutomationHandler(
                     ?: return@forEach
                 if (state.hasExhaustedCapacity()) return@forEach
                 state.cooldownUntil?.takeIf { it.isAfter(context.evaluationInstant) }?.let {
-                    waits += it
+                    waits += HandlerEvaluation.Unavailable(it)
                     return@forEach
                 }
 
@@ -163,7 +163,7 @@ class AdventureMapAutomationHandler(
                     requiredTime = state.requiredTime,
                 )) {
                     is BattleTimeDecision.Wait -> {
-                        waits += time.nextRunAt
+                        waits += time.toUnavailable()
                         return@forEach
                     }
                     is BattleTimeDecision.Run -> return HandlerEvaluation.Runnable(
@@ -187,7 +187,7 @@ class AdventureMapAutomationHandler(
             }
 
         firstWarning?.let { return it }
-        waits.minOrNull()?.let { return HandlerEvaluation.Unavailable(it) }
+        waits.minByOrNull { it.nextRunAt }?.let { return it }
         return HandlerEvaluation.Skipped
     }
 

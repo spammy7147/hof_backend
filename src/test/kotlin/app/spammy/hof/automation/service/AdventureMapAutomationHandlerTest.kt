@@ -19,6 +19,8 @@ class AdventureMapAutomationHandlerTest {
             timeCurrent = 100,
         ))
         assertEquals(NOW.plusSeconds(80), assertIs<HandlerEvaluation.Unavailable>(waiting).nextRunAt)
+        assertEquals("TIME_INSUFFICIENT", waiting.reasonCode)
+        assertEquals("Time이 부족하여 이번 판단에서 건너뜁니다. 현재 100, 필요 150.", waiting.message)
 
         val action = runnable(handler.evaluate(snapshot(
             listOf(setting(1, "costly", 0)),

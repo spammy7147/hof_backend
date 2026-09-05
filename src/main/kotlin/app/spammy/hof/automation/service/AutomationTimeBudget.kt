@@ -212,3 +212,17 @@ class BattleTimePolicy(
         const val MISSING_OBSERVATION_RETRY_SECONDS = 10L
     }
 }
+
+/** 재확인 시각과 함께 Time 판단 근거를 이력까지 보존한다. */
+internal fun BattleTimeDecision.Wait.toUnavailable(minimumRemainingTime: Int? = null): HandlerEvaluation.Unavailable {
+    val reserve = minimumRemainingTime?.takeIf { it > 0 }?.let { " (최소 잔여 Time $it 포함)" }.orEmpty()
+    return HandlerEvaluation.Unavailable(
+        nextRunAt = nextRunAt,
+        reasonCode = if (estimatedTime == null) "TIME_OBSERVATION_MISSING" else "TIME_INSUFFICIENT",
+        message = if (estimatedTime == null) {
+            "현재 Time을 확인하지 못해 이번 판단에서 건너뜁니다. 필요 $requiredTime$reserve."
+        } else {
+            "Time이 부족하여 이번 판단에서 건너뜁니다. 현재 $estimatedTime, 필요 $requiredTime$reserve."
+        },
+    )
+}
