@@ -1571,6 +1571,54 @@ class AutomationTargetSelectorTest {
     }
 
     @Test
+    fun `다음 확인 시각 전인 레이드도 하위 항목 선택 이력에 스킵을 남긴다`() {
+        val retryAt = now.plusSeconds(900)
+        val lowerQuest = AutomationEntryEntity(15, account, AutomationType.QUEST, 1, true, now, now)
+        val questSnapshot = questDecisionEntry(lowerQuest.id)
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(raidEntry, lowerQuest))
+        Mockito.`when`(work.findWaiting(7)).thenReturn(listOf(
+            session(33, raidEntry, AutomationWorkType.RAID, "RaidGoblin",
+                AutomationWorkStatus.WAITING_COOLDOWN, nextCheckAt = retryAt),
+        ))
+        Mockito.`when`(loader.loadEntry(7, lowerQuest.id, null, null)).thenReturn(questSnapshot)
+        questRules.returns(requireNotNull(questSnapshot.quest), QuestDirective.Execute(QuestAction.Accept("quest-1", "accept-1")))
+
+        val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
+
+        assertEquals(lowerQuest.id, selected.entryId)
+        assertEquals(listOf(raidEntry.id, lowerQuest.id), selected.trace.map { it.entryId })
+        assertEquals(listOf(0, 1), selected.trace.map { it.sequence })
+        assertEquals(AutomationDecisionOutcome.SKIPPED, selected.trace.first().outcome)
+        assertEquals("WORK_RECHECK_NOT_DUE", selected.trace.first().reasonCode)
+        assertEquals(retryAt, selected.trace.first().nextRunAt)
+        assertEquals("RaidGoblin", selected.trace.first().targetKey)
+        val diagnostic = jacksonObjectMapper().readTree(requireNotNull(selected.trace.first().diagnosticContext))
+        assertEquals(33L, diagnostic.path("workSessionId").asLong())
+        Mockito.verifyNoInteractions(defaultRaidModule, lifecycle)
+    }
+
+    @Test
+    fun `재확인 시각 없는 레이드 보류도 유휴 판단 이력에서 사라지지 않는다`() {
+        val holdMessage = "진행 중인 레이드 상태를 확인할 수 없습니다."
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(raidEntry))
+        Mockito.`when`(work.findWaiting(7)).thenReturn(listOf(
+            session(34, raidEntry, AutomationWorkType.RAID, "RaidGoblin",
+                AutomationWorkStatus.WAITING_COOLDOWN, holdMessage = holdMessage),
+        ))
+
+        val result = assertIs<AutomationCoordination.Idle>(selector.select(7))
+
+        assertEquals(raidEntry.id, result.trace.single().entryId)
+        assertEquals(AutomationDecisionOutcome.SKIPPED, result.trace.single().outcome)
+        assertEquals("WORK_RECHECK_UNSCHEDULED", result.trace.single().reasonCode)
+        assertEquals(holdMessage, result.trace.single().message)
+        assertEquals(listOf(holdMessage), result.warnings)
+        assertNull(result.trace.single().nextRunAt)
+        assertNull(result.nextRunAt)
+        Mockito.verifyNoInteractions(defaultRaidModule, lifecycle, loader)
+    }
+
+    @Test
     fun `parked raid hold warning survives lower priority actions without an early raid recheck`() {
         val holdMessage = "사용자가 진행 중인 레이드가 끝날 때까지 레이드 자동화를 보류합니다."
         val battleSnapshot = battleDecisionEntry()
@@ -1603,6 +1651,9 @@ class AutomationTargetSelectorTest {
         val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
 
         assertEquals(listOf(holdMessage), selected.warnings)
+        assertEquals(raidEntry.id, selected.trace.first().entryId)
+        assertEquals(AutomationDecisionOutcome.SKIPPED, selected.trace.first().outcome)
+        assertEquals(holdMessage, selected.trace.first().message)
         Mockito.verifyNoInteractions(defaultRaidModule)
     }
 

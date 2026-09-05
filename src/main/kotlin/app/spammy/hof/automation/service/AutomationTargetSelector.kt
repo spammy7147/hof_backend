@@ -206,7 +206,30 @@ class AutomationTargetSelector(
                         if (message !in warnings) warnings += message
                     }
                     if (blockedUntil != null && (earliest == null || blockedUntil < earliest)) earliest = blockedUntil
-                    if (entry.type !in CANDIDATE_ARBITRATED_TYPES) return@forEach
+                    if (entry.type !in CANDIDATE_ARBITRATED_TYPES) {
+                        val parked = waiting.minBy { it.nextCheckAt ?: Instant.MAX }
+                        trace += AutomationEvaluationTrace(
+                            sequence = trace.size,
+                            entryId = entry.id,
+                            type = entry.type,
+                            outcome = AutomationDecisionOutcome.SKIPPED,
+                            reasonCode = if (blockedUntil != null) "WORK_RECHECK_NOT_DUE" else "WORK_RECHECK_UNSCHEDULED",
+                            message = parked.holdMessage ?: if (blockedUntil != null) {
+                                "다음 확인 시각 전이라 이번 판단에서 건너뜁니다."
+                            } else {
+                                "현재 작업의 재확인 조건이 충족되지 않아 이번 판단에서 건너뜁니다."
+                            },
+                            nextRunAt = blockedUntil,
+                            targetKey = parked.targetKey,
+                            workSessionId = parked.id,
+                            observedAt = now,
+                            diagnosticContext = AutomationDecisionDiagnostics.capture(
+                                "WORK_RECHECK_GATE", now,
+                                workSessionId = parked.id, targetKey = parked.targetKey,
+                            ),
+                        )
+                        return@forEach
+                    }
                 }
                 if (entry.type !in CANDIDATE_ARBITRATED_TYPES) {
                     due?.let {
