@@ -58,6 +58,7 @@ class BattleRunService(
     private val cookieQueryRepository: CookieQueryRepository,
     private val characterQueryRepository: CharacterQueryRepository,
     private val battleMapQueryRepository: BattleMapQueryRepository,
+    private val battleMapService: BattleMapService,
     private val hofStatusSnapshotQueryRepository: HofStatusSnapshotQueryRepository,
     private val requestFactory: HofRequestFactory,
     private val gateway: AccountHofGateway,
@@ -108,8 +109,14 @@ class BattleRunService(
         val account = accountQueryRepository.findById(accountId)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
         val playerName = hofStatusSnapshotQueryRepository.findByAccountId(account.id)?.playerName
-        val mapState = battleMapQueryRepository.findStateForExecution(account.id, category.value, mapCode)
+        var mapState = battleMapQueryRepository.findStateForExecution(account.id, category.value, mapCode)
             ?: throw ApiException(ErrorCode.INVALID_REQUEST, "해결된 계정 전투 맵 상태가 없습니다.")
+        // 수동 화면을 열어 둔 동안 다시 출현한 맵을 과거 숨김 상태만으로 차단하지 않는다.
+        if (!mapState.visible && origin == HofRequestOrigin.INTERACTIVE) {
+            battleMapService.findMaps(account.id, category.value, origin)
+            mapState = battleMapQueryRepository.findStateForExecution(account.id, category.value, mapCode)
+                ?: throw ApiException(ErrorCode.INVALID_REQUEST, "해결된 계정 전투 맵 상태가 없습니다.")
+        }
         validateMapState(mapState, battleCount)
         val cookies = cookieQueryRepository.findValueMapByAccountId(account.id)
         if (cookies.isEmpty()) {

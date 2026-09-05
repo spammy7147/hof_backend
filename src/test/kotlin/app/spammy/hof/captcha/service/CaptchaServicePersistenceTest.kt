@@ -363,6 +363,7 @@ class CaptchaServicePersistenceTest {
             cookieQueryRepository = cookieQueryRepository,
             characterQueryRepository = characters,
             battleMapQueryRepository = battleMaps,
+            battleMapService = Mockito.mock(app.spammy.hof.battle.service.BattleMapService::class.java),
             hofStatusSnapshotQueryRepository = status,
             requestFactory = app.spammy.hof.external.client.HofRequestFactory(),
             gateway = accountGateway,

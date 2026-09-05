@@ -83,6 +83,7 @@ class BattleRunServiceTest {
     private val cookieQueryRepository = Mockito.mock(CookieQueryRepository::class.java)
     private val characterQueryRepository = Mockito.mock(CharacterQueryRepository::class.java)
     private val battleMapQueryRepository = Mockito.mock(BattleMapQueryRepository::class.java)
+    private val battleMapService = Mockito.mock(BattleMapService::class.java)
     private val hofStatusSnapshotQueryRepository = Mockito.mock(HofStatusSnapshotQueryRepository::class.java)
     private val battleLogRepository = RecordingBattleLogRepository()
     private val participantRepository = RecordingBattleLogParticipantRepository()
@@ -124,6 +125,7 @@ class BattleRunServiceTest {
         cookieQueryRepository = cookieQueryRepository,
         characterQueryRepository = characterQueryRepository,
         battleMapQueryRepository = battleMapQueryRepository,
+        battleMapService = battleMapService,
         hofStatusSnapshotQueryRepository = hofStatusSnapshotQueryRepository,
         requestFactory = HofRequestFactory(),
         gateway = accountGateway,
@@ -153,6 +155,37 @@ class BattleRunServiceTest {
                 observedAt = now,
             ),
         )
+    }
+
+    @Test
+    fun `수동 전투는 숨김으로 저장된 맵이 다시 보이면 최신 상태로 실행한다`() {
+        Mockito.`when`(accountQueryRepository.findById(1L)).thenReturn(account)
+        Mockito.`when`(cookieQueryRepository.findValueMapByAccountId(1L))
+            .thenReturn(mapOf("PHPSESSID" to "abc"))
+        Mockito.`when`(characterQueryRepository.findByAccountIdAndHofCharacterIds(
+            1L, characters.map { it.hofCharacterId },
+        )).thenReturn(characters)
+        Mockito.`when`(battleMapQueryRepository.findStateForExecution(1L, "battle_map", "snow22"))
+            .thenReturn(battleMapState(visible = false), battleMapState())
+
+        val response = service.runBattle(1L, runRequest().copy(characterIds = characters.map { it.hofCharacterId }))
+
+        assertEquals(HofBattleOutcome.VICTORY.name, response.outcome)
+        Mockito.verify(battleMapService).findMaps(1L, "battle_map", HofRequestOrigin.INTERACTIVE)
+    }
+
+    @Test
+    fun `자동화 전투는 숨김 상태를 자체 갱신하거나 전투를 전송하지 않는다`() {
+        Mockito.`when`(accountQueryRepository.findById(1L)).thenReturn(account)
+        Mockito.`when`(battleMapQueryRepository.findStateForExecution(1L, "battle_map", "snow22"))
+            .thenReturn(battleMapState(visible = false))
+
+        assertFailsWith<ApiException> {
+            service.runBattle(1L, runRequest(), HofRequestOrigin.AUTOMATION)
+        }
+
+        Mockito.verifyNoInteractions(battleMapService)
+        assertTrue(gateway.requests.isEmpty())
     }
 
     @Test
