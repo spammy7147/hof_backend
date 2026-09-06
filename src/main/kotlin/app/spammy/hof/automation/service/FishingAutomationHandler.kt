@@ -37,7 +37,6 @@ data class FishingTownAutomationAction(
     val observedPrimaryAction: FishingPrimaryAction, val observedRemainingCasts: Int?,
     val progressDate: LocalDate? = null,
     val observation: FishingAutomationObservation? = null,
-    val cycleContext: FishingAutomationSnapshot? = null,
 ) : PreparedAutomationAction
 
 @Service
@@ -67,7 +66,6 @@ class FishingAutomationHandler : AutomationHandler<FishingAutomationSnapshot> {
                 context.state.remainingCasts,
                 context.now.atZone(FISHING_ZONE).toLocalDate(),
                 context.observation,
-                context,
             ))
             FishingPrimaryAction.CATCH -> HandlerEvaluation.Runnable(FishingTownAutomationAction(
                 context.accountId,
@@ -76,7 +74,6 @@ class FishingAutomationHandler : AutomationHandler<FishingAutomationSnapshot> {
                 context.state.remainingCasts,
                 context.now.atZone(FISHING_ZONE).toLocalDate(),
                 context.observation,
-                context,
             ))
             FishingPrimaryAction.NONE -> retry(context, "FISHING_STATE_INCOMPLETE", "낚시 상태를 다시 확인합니다.")
         }

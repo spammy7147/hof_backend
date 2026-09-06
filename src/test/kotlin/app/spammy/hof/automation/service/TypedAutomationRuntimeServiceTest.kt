@@ -253,33 +253,6 @@ class TypedAutomationRuntimeServiceTest {
     }
 
     @Test
-    fun `START 응답에서 놓친 전투를 찾으면 START를 대체로 닫고 전투 준비를 같은 lease에 보존한다`() {
-        val state = state()
-        val start = action(TypedAutomationActionStatus.PREPARED)
-        val execution = acquire(state, start.row)
-        assertIs<TypedRuntimeSubmission.Started>(service.beginSubmission(execution))
-        val battle = start.stored.copy(executionIdentity = "fishing-battle-1")
-        Mockito.`when`(query.findEntry(7, start.entry.id)).thenReturn(start.entry)
-        Mockito.`when`(actions.save(anyActionRow())).thenAnswer { it.arguments[0] }
-
-        val preparedBattle = assertIs<TypedRuntimePreparation.Ready>(
-            service.advanceSupersededActionToPreparedFollowup(
-                execution,
-                battle,
-                "이전 CATCH에서 생성된 낚시 전투를 START 응답에서 복구했습니다.",
-            ),
-        )
-        val battleRow = Mockito.mockingDetails(actions).invocations
-            .last { it.method.name == "save" }.arguments.single() as TypedAutomationActionRunEntity
-
-        assertEquals(TypedAutomationActionStatus.FAILED, start.row.status)
-        assertEquals("이전 CATCH에서 생성된 낚시 전투를 START 응답에서 복구했습니다.", start.row.lastError)
-        assertEquals(TypedAutomationActionStatus.PREPARED, battleRow.status)
-        assertEquals("fishing-battle-1", preparedBattle.execution.checkpoint?.storedAction?.executionIdentity)
-        assertEquals(start.row.leaseToken, battleRow.leaseToken)
-    }
-
-    @Test
     fun `logout after fishing START convergence does not prepare or submit a new CATCH`() {
         val state = state()
         val start = action(TypedAutomationActionStatus.PREPARED)

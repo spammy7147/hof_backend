@@ -284,26 +284,11 @@ class UnifiedAutomationRunnerTest {
         val shadow = Mockito.mock(AutomationConvergenceShadowEvaluator::class.java)
         val startManaged = Mockito.mock(ManagedFishingAutomationAction::class.java)
         val catchManaged = Mockito.mock(ManagedFishingAutomationAction::class.java)
-        val battleManaged = Mockito.mock(ManagedAutomationAction::class.java)
         val startStored = fishingStartStored()
-        val baseBattleStored = raidStoredAction()
-        val battleStored = baseBattleStored.copy(
-            entryId = 15L,
-            executionIdentity = "fishing-battle-1",
-            payload = (baseBattleStored.payload as StoredTypedActionPayload.BattleMap).copy(
-                categoryId = "battle_map",
-                mapCode = "fish-monster",
-                source = BattleAutomationActionSource.FISHING_AUTOMATION,
-                sourceTargetKey = null,
-            ),
-        )
         val startPrepared = executionRight(
             TypedRuntimeCheckpoint(startStored, TypedRuntimeCheckpointPhase.PREPARED, null, null),
         )
         val catchPrepared = executionRight()
-        val battlePrepared = executionRight(
-            TypedRuntimeCheckpoint(battleStored, TypedRuntimeCheckpointPhase.PREPARED, null, null),
-        )
         val startResponse = fishingResponse(FishingPrimaryAction.CATCH, 17, FishingOutcome.STARTED)
         val catchResponse = fishingResponse(FishingPrimaryAction.NONE, 16, FishingOutcome.CAUGHT).copy(
             availableActions = emptySet(),
@@ -311,43 +296,19 @@ class UnifiedAutomationRunnerTest {
             battleTarget = FishingBattleTargetResponse("battle_map", "fish-monster", "낚시터 괴물"),
         )
         val action = fishingStartAction()
-        val battleAction = legacyBattleAction().copy(
-            categoryId = "battle_map",
-            mapCode = "fish-monster",
-            executionIdentity = "fishing-battle-1",
-            source = BattleAutomationActionSource.FISHING_AUTOMATION,
-            mapName = "낚시터 괴물",
-        )
         Mockito.`when`(decisions.select(7L)).thenReturn(AutomationCoordination.Runnable(15L, action, emptyList()))
         Mockito.`when`(lifecycle.describe(action)).thenReturn(fishingDescriptor("START"))
         Mockito.`when`(lifecycle.prepare(7L, 15L, action)).thenReturn(startManaged)
-        Mockito.`when`(lifecycle.prepare(7L, 15L, battleAction)).thenReturn(battleManaged)
         Mockito.`when`(startManaged.storedAction).thenReturn(startStored)
         Mockito.`when`(startManaged.descriptor).thenReturn(fishingDescriptor("START"))
-        Mockito.`when`(startManaged.obstructionBattle(catchResponse)).thenReturn(battleAction)
         Mockito.`when`(catchManaged.descriptor).thenReturn(fishingDescriptor("CATCH"))
-        Mockito.`when`(battleManaged.storedAction).thenReturn(battleStored)
-        Mockito.`when`(battleManaged.descriptor).thenReturn(defaultDescriptor())
-        val battleExecution = TypedAutomationExecution.BattleCompleted(
-            "battle_map",
-            "fish-monster",
-            listOf("VICTORY"),
-        )
-        Mockito.`when`(battleManaged.execute()).thenReturn(battleExecution)
-        Mockito.`when`(battleManaged.applyLegacyExecution(battleExecution)).thenReturn(battleExecution)
-        Mockito.`when`(battleManaged.applyPolicyAcceptedExecution(battleExecution)).thenReturn(battleExecution)
         Mockito.`when`(runtime.persistPrepared(freshExecution, startStored, emptyList()))
             .thenReturn(TypedRuntimePreparation.Ready(startPrepared))
         Mockito.`when`(runtime.beginSubmission(startPrepared)).thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
         Mockito.`when`(runtime.advanceAppliedActionToPreparedFollowup(anyExecution(), anyStoredAction()))
-            .thenReturn(
-                TypedRuntimePreparation.Ready(catchPrepared),
-                TypedRuntimePreparation.Ready(battlePrepared),
-            )
+            .thenReturn(TypedRuntimePreparation.Ready(catchPrepared))
         Mockito.`when`(runtime.beginSubmission(catchPrepared)).thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
-        Mockito.`when`(runtime.beginSubmission(battlePrepared)).thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
         Mockito.`when`(lifecycle.restoreVerified(anyStoredAction(), Mockito.eq(7L))).thenReturn(catchManaged)
-        Mockito.`when`(lifecycle.restoreVerified(battleStored, 7L)).thenReturn(battleManaged)
         Mockito.`when`(startManaged.observeDirectResponse(startResponse)).thenReturn(fishingExecution(startResponse))
         Mockito.`when`(catchManaged.observeDirectResponse(catchResponse)).thenReturn(fishingExecution(catchResponse))
         Mockito.`when`(startManaged.applyLegacyExecution(anyTypedExecution())).thenAnswer { it.arguments[0] }
@@ -357,7 +318,6 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(convergence.prepare(Mockito.eq(7L), anyConvergenceSelection())).thenReturn(
             ConvergenceDirective.Submit(201L),
             ConvergenceDirective.Submit(202L),
-            ConvergenceDirective.Submit(203L),
         )
         Mockito.`when`(convergence.record(Mockito.anyLong(), anyConvergenceEvidence()))
             .thenReturn(ConvergenceDirective.ContinueSelection)
@@ -398,9 +358,8 @@ class UnifiedAutomationRunnerTest {
         Mockito.verify(decisions, Mockito.times(1)).select(7L)
         Mockito.verify(runtime, Mockito.times(1))
             .advanceAppliedActionToPreparedFollowup(anyExecution(), anyStoredAction())
-        Mockito.verify(lifecycle, Mockito.never()).prepare(7L, 15L, battleAction)
-        Mockito.verify(runtime, Mockito.never()).beginSubmission(battlePrepared)
-        Mockito.verify(battleManaged, Mockito.never()).execute()
+        Mockito.verify(runtime, Mockito.times(2)).beginSubmission(anyExecution())
+        Mockito.verify(lifecycle, Mockito.times(1)).prepare(Mockito.eq(7L), Mockito.eq(15L), anyPreparedAction())
         if (mode == AutomationConvergenceMode.ACTIVE) {
             Mockito.verify(convergence, Mockito.times(2)).prepare(Mockito.eq(7L), anyConvergenceSelection())
             val projectionOrder = Mockito.inOrder(startManaged, catchManaged, convergence)
@@ -2948,11 +2907,8 @@ class UnifiedAutomationRunnerTest {
         actionLifecycleModule = actionLifecycleModule,
         submissionGate = submissionGate,
         decisionJournal = decisionJournal,
-        convergenceModule = convergenceModule,
-        convergenceSelectionFactory = convergenceSelectionFactory,
         timeProvider = timeProvider,
         convergenceWorkPriority = convergenceWorkPriority,
-        evidenceInterpreter = evidenceInterpreter,
         fishingCycleExecutor = fishingCycleExecutor,
         results = AutomationResultCoordinator(
             actionLifecycleModule, sharedBattleCooldowns, convergenceModule,

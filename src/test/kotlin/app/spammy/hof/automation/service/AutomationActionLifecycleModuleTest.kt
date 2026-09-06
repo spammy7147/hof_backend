@@ -62,7 +62,6 @@ import app.spammy.hof.town.home.dto.HomeResponse
 import app.spammy.hof.town.home.model.HomeMode
 import app.spammy.hof.town.home.model.HomeQuestState
 import app.spammy.hof.town.home.service.HomeService
-import app.spammy.hof.town.fishing.dto.FishingBattleTargetResponse
 import app.spammy.hof.town.fishing.dto.FishingResponse
 import app.spammy.hof.town.fishing.dto.TownActionResultResponse
 import app.spammy.hof.town.fishing.model.FishingAction
@@ -94,7 +93,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import org.mockito.Mockito
 import tools.jackson.module.kotlin.jacksonObjectMapper
@@ -1494,52 +1492,6 @@ class AutomationActionLifecycleModuleTest {
         assertIs<AmbiguousActionResolution.Applied>(catchCompleted.reconcile())
 
         Mockito.verify(workLifecycle, Mockito.times(3)).completeFishingCycle(7L, 15L)
-    }
-
-    @Test
-    fun `CATCH 직접 응답의 방해 전투는 같은 낚시 문맥의 프리셋으로 준비한다`() {
-        val request = battleRequest()
-        val party = ResolvedAutomationParty(request.characterIds, request.patternLoads)
-        val blocked = fishingResponse(FishingPrimaryAction.NONE, 9, blockedByBattle = true)
-        Mockito.`when`(blocked.battleTarget).thenReturn(
-            FishingBattleTargetResponse("battle_map", "fish-monster", "낚시터 괴물"),
-        )
-        val context = FishingAutomationSnapshot(
-            accountId = 7L,
-            state = fishingResponse(FishingPrimaryAction.START, 10),
-            maps = listOf(
-                FishingAutomationMapSetting(
-                    categoryId = "battle_map",
-                    mapCode = "fish-monster",
-                    presetMode = PresetSelectionMode.EXPLICIT,
-                    presetId = 301L,
-                    resolvedParty = party,
-                ),
-            ),
-            primaryPreset = null,
-            now = now,
-        )
-        val managed = assertIs<ManagedFishingAutomationAction>(
-            module.prepare(
-                7L,
-                15L,
-                FishingTownAutomationAction(
-                    accountId = 7L,
-                    action = FishingAction.CATCH,
-                    observedPrimaryAction = FishingPrimaryAction.CATCH,
-                    observedRemainingCasts = 10,
-                    cycleContext = context,
-                ),
-            ),
-        )
-
-        val battle = assertNotNull(managed.obstructionBattle(blocked))
-
-        assertEquals(BattleAutomationActionSource.FISHING_AUTOMATION, battle.source)
-        assertEquals("battle_map", battle.categoryId)
-        assertEquals("fish-monster", battle.mapCode)
-        assertEquals(301L, battle.presetId)
-        assertEquals(party, battle.resolvedParty)
     }
 
     @Test

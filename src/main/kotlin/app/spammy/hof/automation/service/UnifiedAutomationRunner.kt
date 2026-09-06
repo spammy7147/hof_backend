@@ -1,13 +1,10 @@
 package app.spammy.hof.automation.service
 
-import app.spammy.hof.automation.convergence.AutomationActionConvergenceModule
 import app.spammy.hof.automation.convergence.AutomationActionEvidence
 import app.spammy.hof.automation.convergence.AutomationConvergenceBudget
 import app.spammy.hof.automation.convergence.ConvergenceDirective
 import app.spammy.hof.automation.convergence.LegacyConvergenceDecision
-import app.spammy.hof.automation.convergence.ProductionActionEvidenceInterpreter
 import app.spammy.hof.automation.convergence.SelectedAutomationAction
-import app.spammy.hof.automation.convergence.StoredActionConvergenceSelectionFactory
 import app.spammy.hof.automation.entity.AutomationWaitReason
 import app.spammy.hof.automation.history.*
 import app.spammy.hof.automation.port.AutomationWakeupPort
@@ -38,12 +35,8 @@ class UnifiedAutomationRunner @Autowired constructor(
     private val submissionGate: AccountExecutionSubmissionGate,
     private val results: AutomationResultCoordinator,
     private val decisionJournal: AutomationDecisionJournal? = null,
-    // 낚시 단계별 연결은 08에서 같은 결과 조정으로 옮긴다.
-    private val convergenceModule: AutomationActionConvergenceModule? = null,
-    private val convergenceSelectionFactory: StoredActionConvergenceSelectionFactory? = null,
     private val timeProvider: TimeProvider? = null,
     private val convergenceWorkPriority: AutomationConvergenceWorkPriority? = null,
-    private val evidenceInterpreter: ProductionActionEvidenceInterpreter? = null,
     private val fishingCycleExecutor: FishingCycleExecutor? = null,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
@@ -489,16 +482,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             managedAction is ManagedFishingAutomationAction &&
             managedAction.cycleObservation == null
         ) {
-            if (results.active) {
-                results.freshSelection(accountId, stored)?.policy?.let { selection ->
-                    results.discardUnsubmitted(
-                        accountId = accountId,
-                        selection = selection,
-                        discardedAt = now(),
-                        reasonCode = FISHING_OBSERVATION_LOST_BEFORE_SUBMISSION,
-                    )
-                }
-            }
+            results.discardLostFishingObservation(accountId, stored, FISHING_OBSERVATION_LOST_BEFORE_SUBMISSION)
             typedRuntime.complete(
                 execution,
                 TypedRuntimeOutcome.ActionSuperseded(
@@ -1259,7 +1243,7 @@ class UnifiedAutomationRunner @Autowired constructor(
         selectedWarnings: List<String>?,
         retryUnsubmitted: Boolean,
     ) {
-        val selection = convergenceSelectionFactory?.create(stored)
+        val selection = results.fishingSelection(stored)
         var attemptId: Long? = null
         var attemptTerminalized = false
 
@@ -1272,13 +1256,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             }
         }
 
-        if (results.active && selection != null) {
-            val convergence = requireNotNull(convergenceModule)
-            val directive = if (retryUnsubmitted) {
-                convergence.retryUnsubmitted(accountId, selection, now())
-            } else {
-                convergence.prepare(accountId, selection)
-            }
+        results.prepareFishing(accountId, selection, retryUnsubmitted)?.let { directive ->
             when (directive) {
                 is ConvergenceDirective.Submit -> attemptId = directive.attemptId
                 else -> {
@@ -1290,7 +1268,7 @@ class UnifiedAutomationRunner @Autowired constructor(
         val submission = typedRuntime.beginSubmission(execution)
         if (submission !is TypedRuntimeSubmission.Started) {
             attemptId?.let { id ->
-                convergenceModule?.record(
+                results.record(
                     id,
                     AutomationActionEvidence.DirectRejected(now(), "SUBMISSION_NOT_STARTED"),
                 )
@@ -1306,32 +1284,17 @@ class UnifiedAutomationRunner @Autowired constructor(
             }
             val direct = authorizedExecution.value
                 ?: throw AutomationActionPreconditionChangedException("재사용할 최신 CATCH 관측이 없습니다.")
-            val evidence = selection?.let { selected ->
-                evidenceInterpreter?.fromExecution(selected, direct.execution, now())
-                    ?: AutomationActionEvidence.IncompleteObservation(
-                        capturedAt = now(),
-                        reason = "PRODUCTION_EVIDENCE_INTERPRETER_MISSING",
-                    )
-            }
-            if (attemptId != null) {
-                val recorded = requireNotNull(evidence)
-                if (recorded !is AutomationActionEvidence.DirectApplied) {
-                    val directive = convergenceModule?.record(requireNotNull(attemptId), recorded)
-                    typedRuntime.complete(
-                        execution,
-                        TypedRuntimeOutcome.AmbiguousHandoff(
-                            "낚시 CATCH 직접 응답이 적용을 확정하지 못했습니다.",
-                            TYPED_CONVERGENCE_WAKE_REASON,
-                        ),
-                    )
-                    directive?.let { scheduleConvergenceDirective(accountId, it) }
+            val evidence = results.directEvidence(selection, direct.execution)
+            when (val result = results.applyFishingDirect(
+                managed, direct.execution, evidence, attemptId,
+                "낚시 CATCH 직접 응답이 적용을 확정하지 못했습니다.",
+            )) {
+                is AutomationResultCoordinator.DirectResult.Unapplied -> {
+                    typedRuntime.complete(execution, result.outcome)
+                    result.directive?.let { scheduleConvergenceDirective(accountId, it) }
                     return
                 }
-                managed.applyPolicyAcceptedExecution(direct.execution)
-                convergenceModule?.record(requireNotNull(attemptId), recorded)
-                attemptTerminalized = true
-            } else {
-                managed.applyLegacyExecution(direct.execution)
+                is AutomationResultCoordinator.DirectResult.Accepted -> attemptTerminalized = attemptId != null
             }
             evidence?.let { observed ->
                 results.observeShadow(
@@ -1353,7 +1316,7 @@ class UnifiedAutomationRunner @Autowired constructor(
         } catch (error: Throwable) {
             error.findActionPreconditionChanged()?.let { changed ->
                 attemptId?.let { id ->
-                    convergenceModule?.record(
+                    results.record(
                         id,
                         AutomationActionEvidence.StateAdvanced(
                             now(),
@@ -1372,7 +1335,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             }
             error.findHofAutomationDeferral()?.takeIf { !it.actionSubmissionAttempted }?.let { deferred ->
                 if (attemptId != null && selection != null) {
-                    convergenceModule?.discardUnsubmitted(
+                    results.discardUnsubmitted(
                         accountId = accountId,
                         selection = selection,
                         discardedAt = now(),
@@ -1392,7 +1355,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             }
             val message = error.message ?: "낚시 CATCH 제출 결과가 불확실합니다."
             attemptId?.takeUnless { attemptTerminalized }?.let { id ->
-                convergenceModule?.record(id, AutomationActionEvidence.IncompleteObservation(now(), message))
+                results.record(id, AutomationActionEvidence.IncompleteObservation(now(), message))
             }
             results.observeShadow(
                 accountId,
@@ -1433,7 +1396,7 @@ class UnifiedAutomationRunner @Autowired constructor(
         var activeManaged: ManagedAutomationAction = startManaged
         var activeAttemptId: Long? = null
         var activeAttemptTerminalized = false
-        var activeSelection = convergenceSelectionFactory?.create(startStored)
+        var activeSelection = results.fishingSelection(startStored)
         var handled = false
 
         fun append(
@@ -1455,13 +1418,10 @@ class UnifiedAutomationRunner @Autowired constructor(
             stored: StoredTypedAutomationAction,
             selection: SelectedAutomationAction?,
         ): Long? {
-            if (!results.active || selection == null) return null
-            val convergence = requireNotNull(convergenceModule)
-            val directive = if (retryUnsubmitted && stored.executionIdentity == startStored.executionIdentity) {
-                convergence.retryUnsubmitted(accountId, selection, now())
-            } else {
-                convergence.prepare(accountId, selection)
-            }
+            val directive = results.prepareFishing(
+                accountId, selection,
+                retryUnsubmitted && stored.executionIdentity == startStored.executionIdentity,
+            ) ?: return null
             return when (directive) {
                 is ConvergenceDirective.Submit -> directive.attemptId
                 else -> {
@@ -1479,32 +1439,17 @@ class UnifiedAutomationRunner @Autowired constructor(
             response: app.spammy.hof.town.fishing.dto.FishingResponse,
         ) {
             val direct = managed.observeDirectResponse(response)
-            val evidence = selection?.let { selected ->
-                evidenceInterpreter?.fromExecution(selected, direct, now())
-                    ?: AutomationActionEvidence.IncompleteObservation(
-                        capturedAt = now(),
-                        reason = "PRODUCTION_EVIDENCE_INTERPRETER_MISSING",
-                    )
-            }
-            if (attemptId != null) {
-                val recorded = requireNotNull(evidence)
-                if (recorded !is AutomationActionEvidence.DirectApplied) {
-                    val directive = convergenceModule?.record(attemptId, recorded)
-                    typedRuntime.complete(
-                        execution,
-                        TypedRuntimeOutcome.AmbiguousHandoff(
-                            "낚시 직접 응답이 현재 단계를 확정하지 못했습니다.",
-                            TYPED_CONVERGENCE_WAKE_REASON,
-                        ),
-                    )
-                    directive?.let { scheduleConvergenceDirective(accountId, it) }
+            val evidence = results.directEvidence(selection, direct)
+            when (val result = results.applyFishingDirect(
+                managed, direct, evidence, attemptId,
+                "낚시 직접 응답이 현재 단계를 확정하지 못했습니다.",
+            )) {
+                is AutomationResultCoordinator.DirectResult.Unapplied -> {
+                    typedRuntime.complete(execution, result.outcome)
+                    result.directive?.let { scheduleConvergenceDirective(accountId, it) }
                     throw FishingCycleFlowStopped()
                 }
-                managed.applyPolicyAcceptedExecution(direct)
-                convergenceModule?.record(attemptId, recorded)
-                activeAttemptTerminalized = true
-            } else {
-                managed.applyLegacyExecution(direct)
+                is AutomationResultCoordinator.DirectResult.Accepted -> activeAttemptTerminalized = attemptId != null
             }
             evidence?.let { observed ->
                 results.observeShadow(
@@ -1516,13 +1461,12 @@ class UnifiedAutomationRunner @Autowired constructor(
             }
         }
 
-
         try {
             activeAttemptId = prepareConvergence(startStored, activeSelection)
             val submission = typedRuntime.beginSubmission(execution)
             if (submission !is TypedRuntimeSubmission.Started) {
                 activeAttemptId?.let { attemptId ->
-                    convergenceModule?.record(
+                    results.record(
                         attemptId,
                         AutomationActionEvidence.DirectRejected(now(), "SUBMISSION_NOT_STARTED"),
                     )
@@ -1563,13 +1507,13 @@ class UnifiedAutomationRunner @Autowired constructor(
                     execution = preparation.execution
                     activeStored = catchStored
                     activeManaged = catchManaged
-                    activeSelection = convergenceSelectionFactory?.create(catchStored)
+                    activeSelection = results.fishingSelection(catchStored)
                     activeAttemptTerminalized = false
                     activeAttemptId = prepareConvergence(catchStored, activeSelection)
                     val catchSubmission = typedRuntime.beginSubmission(execution)
                     if (catchSubmission !is TypedRuntimeSubmission.Started) {
                         activeAttemptId?.let { attemptId ->
-                            convergenceModule?.record(
+                            results.record(
                                 attemptId,
                                 AutomationActionEvidence.DirectRejected(now(), "SUBMISSION_NOT_STARTED"),
                             )
@@ -1610,11 +1554,8 @@ class UnifiedAutomationRunner @Autowired constructor(
                         "fishing-start-observed-pending-battle:${start.response.battleTarget?.mapCode ?: "unknown"}",
                     )
                     val direct = startManaged.observeDirectResponse(start.response)
-                    startManaged.applyPolicyResolvedExecution(direct, evidence)
-                    activeAttemptId?.let { attemptId ->
-                        convergenceModule?.record(attemptId, evidence)
-                        activeAttemptTerminalized = true
-                    }
+                    results.resolveFishingStateAdvanced(startManaged, direct, evidence, activeAttemptId)
+                    activeAttemptTerminalized = activeAttemptId != null
                     results.observeShadow(
                         accountId,
                         startStored.executionIdentity,
@@ -1666,7 +1607,7 @@ class UnifiedAutomationRunner @Autowired constructor(
         } catch (error: Throwable) {
             error.findActionPreconditionChanged()?.let { changed ->
                 activeAttemptId?.let { attemptId ->
-                    convergenceModule?.record(
+                    results.record(
                         attemptId,
                         AutomationActionEvidence.StateAdvanced(
                             now(),
@@ -1685,7 +1626,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             }
             error.findHofAutomationDeferral()?.takeIf { !it.actionSubmissionAttempted }?.let { deferred ->
                 if (activeAttemptId != null && activeSelection != null) {
-                    convergenceModule?.discardUnsubmitted(
+                    results.discardUnsubmitted(
                         accountId = accountId,
                         selection = requireNotNull(activeSelection),
                         discardedAt = now(),
@@ -1705,7 +1646,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             }
             val message = error.message ?: "낚시 단계 제출 결과가 불확실합니다."
             activeAttemptId?.takeUnless { activeAttemptTerminalized }?.let { attemptId ->
-                convergenceModule?.record(
+                results.record(
                     attemptId,
                     AutomationActionEvidence.IncompleteObservation(now(), message),
                 )

@@ -23,7 +23,7 @@ class AutomationResultCoordinator(
     private val evidenceInterpreter: ProductionActionEvidenceInterpreter? = null,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
-    val active = rollout?.active ?: (convergenceModule != null)
+    private val active = rollout?.active ?: (convergenceModule != null)
     private val shadow = rollout?.shadow == true
     val postsEnabled = rollout?.automationPostsEnabled != false
 
@@ -53,6 +53,20 @@ class AutomationResultCoordinator(
         val selection = convergenceSelectionFactory?.create(stored)
         return ActionSelection(selection, selection)
     }
+
+    fun discardLostFishingObservation(accountId: Long, stored: StoredTypedAutomationAction, reasonCode: String) {
+        if (!active) return
+        freshSelection(accountId, stored)?.policy?.let {
+            discardUnsubmitted(accountId, it, now(), reasonCode)
+        }
+    }
+
+    /** 낚시는 기존 LEGACY 경로에서도 단계별 직접 응답 증거를 만든다. */
+    fun fishingSelection(stored: StoredTypedAutomationAction): SelectedAutomationAction? =
+        convergenceSelectionFactory?.create(stored)
+
+    fun prepareFishing(accountId: Long, selection: SelectedAutomationAction?, retryUnsubmitted: Boolean): ConvergenceDirective? =
+        if (active && selection != null) prepare(accountId, selection, retryUnsubmitted) else null
 
     fun resumeDue(accountId: Long): ConvergenceDirective? = if (active) convergenceModule?.resumeDue(accountId) else null
 
@@ -164,13 +178,38 @@ class AutomationResultCoordinator(
                 directive,
             )
         }
-        val applied = if (attemptId != null) {
-            managed.applyPolicyAcceptedExecution(execution)
-        } else {
-            managed.applyLegacyExecution(execution)
+        return DirectResult.Accepted(applyAccepted(managed, execution, attemptId))
+    }
+
+    /** 낚시는 직접 적용만 허용하고 단계 projection 직후 증거를 종결한다. */
+    fun applyFishingDirect(
+        managed: ManagedFishingAutomationAction,
+        execution: TypedAutomationExecution,
+        evidence: AutomationActionEvidence?,
+        attemptId: Long?,
+        unconfirmedWarning: String,
+    ): DirectResult {
+        if (attemptId != null && evidence !is AutomationActionEvidence.DirectApplied) {
+            return DirectResult.Unapplied(unconfirmedWarning, false, record(attemptId, requireNotNull(evidence)))
         }
+        val applied = applyAccepted(managed, execution, attemptId)
+        attemptId?.let { record(it, requireNotNull(evidence)) }
         return DirectResult.Accepted(applied)
     }
+
+    /** START가 이전 전투를 관측하면 최신 상태만 반영한 뒤 기존 행동을 대체한다. */
+    fun resolveFishingStateAdvanced(
+        managed: ManagedFishingAutomationAction,
+        execution: TypedAutomationExecution,
+        evidence: AutomationActionEvidence.StateAdvanced,
+        attemptId: Long?,
+    ) {
+        managed.applyPolicyResolvedExecution(execution, evidence)
+        attemptId?.let { record(it, evidence) }
+    }
+
+    private fun applyAccepted(managed: ManagedAutomationAction, execution: TypedAutomationExecution, attemptId: Long?) =
+        if (attemptId != null) managed.applyPolicyAcceptedExecution(execution) else managed.applyLegacyExecution(execution)
 
     /** 호출자가 도메인 후처리를 마친 뒤에만 적용 증거를 종결한다. */
     fun finishDirect(

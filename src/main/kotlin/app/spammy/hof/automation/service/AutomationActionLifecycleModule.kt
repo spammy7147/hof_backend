@@ -120,10 +120,6 @@ interface ManagedFishingAutomationAction : ManagedAutomationAction {
     fun observeDirectResponse(
         response: app.spammy.hof.town.fishing.dto.FishingResponse,
     ): TypedAutomationExecution.ActionCompleted
-
-    fun obstructionBattle(
-        response: app.spammy.hof.town.fishing.dto.FishingResponse,
-    ): BattleMapAutomationAction?
 }
 
 data class FishingDirectExecution(
@@ -387,7 +383,6 @@ class UnifiedAutomationActionLifecycleModule(
         accountId: Long,
         stored: StoredTypedAutomationAction,
         fishingObservation: app.spammy.hof.town.fishing.service.FishingAutomationObservation? = null,
-        fishingContext: FishingAutomationSnapshot? = null,
     ): ManagedAutomationAction {
         return when (val payload = stored.payload) {
             is StoredTypedActionPayload.HomeQuest -> object : ManagedAutomationAction {
@@ -638,14 +633,6 @@ class UnifiedAutomationActionLifecycleModule(
 
                 override fun applyLegacyExecution(execution: TypedAutomationExecution) =
                     applyFishingExecution(execution)
-
-                override fun obstructionBattle(
-                    response: app.spammy.hof.town.fishing.dto.FishingResponse,
-                ): BattleMapAutomationAction? = fishingContext
-                    ?.copy(state = response, observation = null)
-                    ?.let(::fishingObstructionEvaluation)
-                    ?.let { it as? HandlerEvaluation.Runnable }
-                    ?.action as? BattleMapAutomationAction
 
                 override fun reconcile(): AmbiguousActionResolution = reconcileFishing(accountId, stored.entryId, payload)
             }
@@ -1303,7 +1290,6 @@ class UnifiedAutomationActionLifecycleModule(
                 ),
             ),
             action.observation,
-            action.cycleContext,
         )
     }
 
