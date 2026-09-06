@@ -151,26 +151,107 @@ class RecruitmentTest {
         assertEquals(listOf(HofHttpMethod.GET), harness.requests().map(HofRequest::method))
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = ["hidden", "disabled", "readonly", "display:none", "maxlength", "submit", "capacity", "job", "gender"])
+    fun `최신 모집 양식과 선택지가 바뀌면 기존 화면의 입력을 제출하지 않는다`(change: String) {
+        val original = fixture()
+        val initial = parser.parse(original, URL, forms.parse(original, URL))
+        val latest = when (change) {
+            "hidden" -> original.replace("type=\"text\"", "type=\"hidden\"")
+            "disabled" -> original.replace("name=\"NewName\"", "name=\"NewName\" disabled")
+            "readonly" -> original.replace("name=\"NewName\"", "name=\"NewName\" readonly")
+            "display:none" -> original.replace("name=\"NewName\"", "name=\"NewName\" style=\"display:none\"")
+            "maxlength" -> original.replace("maxlength=\"16\"", "maxlength=\"2\"")
+            "submit" -> original.replace("value=\"Recruit\"", "value=\"Delete\"")
+            "capacity" -> original.replace("현재 캐릭터: 29", "현재 캐릭터: 45")
+            "job" -> original.replace("job-opaque-9", "job-new-9")
+            "gender" -> original.replace("gender-server-f", "gender-new-f")
+            else -> error(change)
+        }
+        val harness = Harness()
+        harness.stub(latest)
+
+        assertFailsWith<ApiException> {
+            harness.service.recruit(7L, RecruitCharacterRequest(initial.jobs.last().id, "새동료", initial.genders.last().id))
+        }
+
+        assertEquals(listOf(HofHttpMethod.GET), harness.requests().map(HofRequest::method))
+    }
+
+    @Test fun `모집은 최신 응답의 쿠키와 nonce 및 바뀐 이름 필드를 사용한다`() {
+        val initial = parser.parse(fixture(), URL, forms.parse(fixture(), URL))
+        val latest = fixture().replace("NewName", "CharacterName").replace("fresh-recruitment", "rotated-nonce")
+        val harness = Harness()
+        harness.stub(latest, latest, responseCookies = mapOf("PHPSESSID" to "rotated-session"))
+
+        harness.service.recruit(7L, RecruitCharacterRequest(initial.jobs.last().id, "동료", initial.genders.last().id))
+
+        assertEquals(listOf("nonce", "Job", "Gender", "CharacterName", "Recruit"), harness.requests().last().formEntries.map { it.name })
+        assertEquals("rotated-nonce", harness.requests().last().formEntries.first().value)
+        assertEquals(mapOf("PHPSESSID" to "rotated-session"), harness.requestCookies().last())
+    }
+
+    @Test fun `모집의 최신 GET과 POST 사이에 다른 계정 행동이 끼어들지 않는다`() {
+        val harness = Harness()
+        harness.stub(fixture(), fixture())
+        val initial = parser.parse(fixture(), URL, forms.parse(fixture(), URL))
+        val getObserved = java.util.concurrent.CountDownLatch(1)
+        val releaseGet = java.util.concurrent.CountDownLatch(1)
+        val otherEntered = java.util.concurrent.CountDownLatch(1)
+        val otherStarted = java.util.concurrent.CountDownLatch(1)
+        harness.beforeResponse = { request ->
+            if (request.method == HofHttpMethod.GET) {
+                getObserved.countDown()
+                check(releaseGet.await(2, java.util.concurrent.TimeUnit.SECONDS))
+            }
+        }
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            val recruitment = pool.submit {
+                harness.service.recruit(7L, RecruitCharacterRequest(initial.jobs.last().id, "동료", initial.genders.last().id))
+            }
+            assertTrue(getObserved.await(2, java.util.concurrent.TimeUnit.SECONDS))
+            val other = pool.submit {
+                otherStarted.countDown()
+                harness.executor.executeAccountSequence(7L) {
+                    otherEntered.countDown()
+                    assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.POST), harness.requests().map(HofRequest::method))
+                }
+            }
+            assertTrue(otherStarted.await(2, java.util.concurrent.TimeUnit.SECONDS))
+            assertFalse(otherEntered.await(100, java.util.concurrent.TimeUnit.MILLISECONDS))
+            releaseGet.countDown()
+            recruitment.get(2, java.util.concurrent.TimeUnit.SECONDS)
+            other.get(2, java.util.concurrent.TimeUnit.SECONDS)
+            assertEquals(0, otherEntered.count)
+        } finally {
+            releaseGet.countDown()
+            pool.shutdownNow()
+        }
+    }
+
     private inner class Harness {
         private val accounts = Mockito.mock(AccountQueryRepository::class.java)
         private val cookies = Mockito.mock(CookieQueryRepository::class.java)
         private val gateway = Mockito.mock(AccountHofGateway::class.java)
         private val locations = Mockito.mock(TownLocationResolver::class.java)
-        val service = RecruitmentService(
-            TownAuthenticatedExecutor(accounts, cookies, HofRequestFactory(), gateway, LoginStateParser(), forms, HofResultParser(), TownActionGuard(), app.spammy.hof.town.common.service.AccountHofMutationFence()),
-            locations,
-            parser,
-        )
+        val executor = TownAuthenticatedExecutor(accounts, cookies, HofRequestFactory(), gateway, LoginStateParser(), forms, HofResultParser(), TownActionGuard(), AccountHofMutationFence())
+        val service = RecruitmentService(executor, locations, parser)
+        var beforeResponse: (HofRequest) -> Unit = {}
 
-        fun stub(vararg responses: String) {
+        fun stub(vararg responses: String, responseCookies: Map<String, String> = emptyMap()) {
             Mockito.`when`(accounts.findById(7L)).thenReturn(HofAccountEntity(7L, "recruiter", "encrypted", Instant.EPOCH))
             Mockito.`when`(cookies.findValueMapByAccountId(7L)).thenReturn(mapOf("PHPSESSID" to "session"))
             Mockito.`when`(locations.resolve(TownFeatureId.TALENT_AGENCY, null)).thenReturn(ResolvedTownLocation(TownFeatureId.TALENT_AGENCY, URL))
-            val values = responses.map { HofHttpResponse(200, URL, it, emptyMap()) }.toTypedArray()
-            Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies())).thenReturn(values.first(), *values.drop(1).toTypedArray())
+            var index = 0
+            Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies())).thenAnswer { invocation ->
+                beforeResponse(invocation.getArgument(1))
+                HofHttpResponse(200, URL, responses[(index++).coerceAtMost(responses.lastIndex)], responseCookies)
+            }
         }
 
         fun requests(): List<HofRequest> = Mockito.mockingDetails(gateway).invocations.mapNotNull { it.arguments.getOrNull(1) as? HofRequest }
+        fun requestCookies(): List<Map<String, String>> = Mockito.mockingDetails(gateway).invocations.map { it.getArgument(2) }
         private fun anyRequest(): HofRequest = Mockito.any(HofRequest::class.java) ?: HofRequest(HofHttpMethod.GET, URL)
         private fun anyCookies(): Map<String, String> = Mockito.anyMap<String, String>() ?: emptyMap()
     }

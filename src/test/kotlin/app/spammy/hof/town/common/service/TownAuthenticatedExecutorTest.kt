@@ -223,6 +223,33 @@ class TownAuthenticatedExecutorTest {
         }
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = ["missing", "hidden", "readonly", "duplicate", "other_form", "unknown_action", "maxlength"])
+    fun `문자열 제출 경계는 최신 guard form 밖의 필드와 변경된 control을 거부한다`(change: String) {
+        stubAccount()
+        val input = "<input type='text' name='memo' maxlength='32'>"
+        val changed = when (change) {
+            "hidden" -> input.replace("type='text'", "type='hidden'")
+            "readonly" -> input.replace("name='memo'", "name='memo' readonly")
+            "duplicate" -> input + input
+            else -> input
+        }
+        val html = "<form method='post'>" + changed + "<button name='Save' value='save'>저장</button></form>" +
+            "<form method='post'><input type='text' name='other' maxlength='32'><button name='Other' value='save'>별도</button></form>"
+        Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies())).thenReturn(response(html))
+
+        assertFailsWith<ApiException> {
+            executor.executeResolvedTextProjected(7L, HOF_URL, resolve = { _, _, page ->
+                val id = if (change == "unknown_action") "unknown" else page.forms.first().actionId
+                val name = when (change) { "missing" -> "missing"; "other_form" -> "other"; else -> "memo" }
+                val value = if (change == "maxlength") "x".repeat(33) else "문자열"
+                TownActionRequest(id) to HofFormField(name, value)
+            }) { _, _, _, _ -> Unit }
+        }
+
+        Mockito.verify(gateway, Mockito.times(1)).execute(Mockito.eq(7L), anyRequest(), anyCookies())
+    }
+
     @Test
     fun `continuation is discarded without POST when another account mutation follows its GET`() {
         stubAccount()

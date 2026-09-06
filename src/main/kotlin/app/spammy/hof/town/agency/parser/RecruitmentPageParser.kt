@@ -1,6 +1,9 @@
 package app.spammy.hof.town.agency.parser
 
 import app.spammy.hof.external.parser.HofHtmlParser
+import app.spammy.hof.external.model.HofFormField
+import app.spammy.hof.common.error.ApiException
+import app.spammy.hof.common.error.ErrorCode
 
 import app.spammy.hof.town.agency.model.RecruitmentGender
 import app.spammy.hof.town.agency.model.RecruitmentJob
@@ -71,6 +74,26 @@ class RecruitmentPageParser {
             nameField = nameInput?.attr("name")?.takeIf { available },
             result = result,
         )
+    }
+
+    /** 모집 의미를 확인한 최신 문서에서 이름 control의 유일성과 관측 길이를 다시 검증한다. */
+    fun resolveNameField(html: String, finalUrl: String, current: RecruitmentSnapshot, value: String): HofFormField {
+        val name = current.nameField
+            ?: throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 이름 입력란을 찾지 못했습니다.")
+        val maximumLength = current.nameMaxLength
+        if (name.isBlank() || name.length > 80 || value.length !in 1..maximumLength || maximumLength !in 1..16) {
+            throw ApiException(ErrorCode.INVALID_REQUEST, "캐릭터 이름은 1~16자로 입력해 주세요.")
+        }
+        val forms = HofHtmlParser.parse(html, finalUrl).select("form").filter(::isRecruitmentForm)
+        if (forms.size != 1) throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 모집 양식을 안전하게 확인하지 못했습니다.")
+        val controls = forms.single().select("input,select,textarea").filter {
+            !it.hasAttr("disabled") && it.attr("name") == name
+        }
+        val input = controls.singleOrNull()
+        if (input == null || input.tagName() != "input" || !isObservedNameInput(input) ||
+            input.attr("maxlength").toIntOrNull() != maximumLength
+        ) throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 이름 입력란이 변경되었습니다.")
+        return HofFormField(name, value)
     }
 
     private fun isRecruitmentForm(element: Element): Boolean {

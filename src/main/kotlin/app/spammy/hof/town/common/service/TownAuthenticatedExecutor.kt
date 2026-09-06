@@ -671,13 +671,13 @@ class TownAuthenticatedExecutor(
     }
 
     /**
-     * 인재 모집처럼 이름 input의 서버 필드명이 페이지마다 바뀔 수 있는 단일 문자열 form 경계다.
-     * 최신 GET에서 모집 form, 의미가 관측된 name input 하나와 opaque 선택지를 함께 다시 결정한다.
+     * 최신 GET에서 기능이 고른 form과 그 form의 단일 text input만 제출한다.
+     * 기능별 의미 검증은 resolve가 소유하고, 공통 guard·control 제약과 요청 fence를 유지한다.
      */
-    fun <T> executeRecruitmentProjected(
+    fun <T> executeResolvedTextProjected(
         accountId: Long,
         pageUrl: String,
-        resolve: (String, String, ParsedTownPage) -> Triple<TownActionRequest, HofFormField, Int>,
+        resolve: (String, String, ParsedTownPage) -> Pair<TownActionRequest, HofFormField>,
         projector: (String, String, app.spammy.hof.town.common.model.ParsedTownResult, ParsedTownPage) -> T,
     ): T = withAccountActionFence(accountId) {
         val context = authenticatedContext(accountId)
@@ -687,46 +687,32 @@ class TownAuthenticatedExecutor(
             context.cookies,
         )
         val currentPage = formParser.parse(current.body, current.finalUrl)
-        val (action, nameField, maximumLength) = resolve(current.body, current.finalUrl, currentPage)
-        if (nameField.name.isBlank() || nameField.name.length > 80 || nameField.value.length !in 1..maximumLength ||
-            maximumLength !in 1..16 || containsUnsafeRecruitmentNameCharacter(nameField.value)
-        ) {
-            throw ApiException(ErrorCode.INVALID_REQUEST, "캐릭터 이름은 1~16자로 입력해 주세요.")
+        val (action, field) = resolve(current.body, current.finalUrl, currentPage)
+        if (field.name.isBlank() || field.name.length > 80 || field.value.length !in 1..500 || action.values.isNotEmpty()) {
+            throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 입력값을 안전하게 확인하지 못했습니다.")
         }
         val guarded = actionGuard.guard(currentPage, action)
-        val submit = guarded.form.submitFields.singleOrNull()
-        if (submit == null || !submit.name.equals("Recruit", true) ||
-            !Regex("(?:Recruit|모집|고용)", RegexOption.IGNORE_CASE).matches(submit.value.trim())
-        ) throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 모집 양식이 변경되었습니다.")
         val document = HofHtmlParser.parse(current.body, current.finalUrl)
         val matchingForms = document.select("form").filter { domForm ->
             val semantic = formParser.parse(domForm.outerHtml(), current.finalUrl).forms
             semantic.any { it.actionId == guarded.form.actionId && it.method == guarded.form.method && it.actionUrl == guarded.form.actionUrl }
         }
-        if (matchingForms.size != 1) throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 모집 양식을 안전하게 확인하지 못했습니다.")
+        if (matchingForms.size != 1) throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 입력 양식을 안전하게 확인하지 못했습니다.")
         val controlsWithName = matchingForms.single().select("input,select,textarea").filter { control ->
-            !control.hasAttr("disabled") && control.attr("name") == nameField.name
+            !control.hasAttr("disabled") && control.attr("name") == field.name
         }
-        if (controlsWithName.size != 1) throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 이름 입력란이 변경되었습니다.")
+        if (controlsWithName.size != 1) throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 입력 필드가 변경되었습니다.")
         val inputs = controlsWithName.filter { input ->
             input.tagName() == "input" &&
                 input.attr("type").lowercase() in setOf("", "text") &&
-                input.attr("maxlength").toIntOrNull() == maximumLength && maximumLength <= 16 &&
+                input.attr("maxlength").toIntOrNull()?.let { field.value.length <= it } == true &&
                 !input.hasAttr("readonly") && !input.attr("style").contains("display:none", true)
         }
-        if (inputs.size != 1) throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 이름 입력란이 변경되었습니다.")
-        val input = inputs.single()
-        val meaning = listOf(
-            input.attr("name"), input.id(), input.attr("placeholder"), input.attr("title"),
-            input.closest("label")?.text().orEmpty(), input.parent()?.text().orEmpty(),
-        ).joinToString(" ")
-        if (!Regex("name|이름|성명", RegexOption.IGNORE_CASE).containsMatchIn(meaning)) {
-            throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 이름 입력란을 확인하지 못했습니다.")
-        }
+        if (inputs.size != 1) throw ApiException(ErrorCode.INVALID_REQUEST, "현재 HOF 입력 필드가 변경되었습니다.")
         val entries = guarded.formEntries.toMutableList()
         val submitStart = entries.indexOfFirst { field -> guarded.form.submitFields.any { it.name == field.name && it.value == field.value } }
             .let { if (it < 0) entries.size else it }
-        entries.add(submitStart, nameField)
+        entries.add(submitStart, field)
         val response = executeAuthenticated(
             context.account,
             requestFactory.townForm(guarded.form.method, guarded.form.actionUrl, entries, HofRequestOrigin.INTERACTIVE),
@@ -735,19 +721,6 @@ class TownAuthenticatedExecutor(
         val result = resultParser.parse(response.body)
         val page = formParser.parse(response.body, response.finalUrl)
         projector(response.body, response.finalUrl, result, page)
-    }
-
-    private fun containsUnsafeRecruitmentNameCharacter(value: String): Boolean {
-        var offset = 0
-        while (offset < value.length) {
-            val codePoint = value.codePointAt(offset)
-            val type = Character.getType(codePoint)
-            if (type == Character.CONTROL.toInt() || type == Character.FORMAT.toInt() ||
-                type == Character.SURROGATE.toInt() || type == Character.PRIVATE_USE.toInt()
-            ) return true
-            offset += Character.charCount(codePoint)
-        }
-        return false
     }
 
     private fun ownedControlSignatures(form: org.jsoup.nodes.Element): List<ControlSignature> =
