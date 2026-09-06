@@ -50,6 +50,21 @@ class AccountHofGateway(
     ): DeferredCharacterRosterHofResponse {
         val response = gateway.execute(accountId, request, cookies)
         val responseObservedAt = timeProvider.now()
+        observe(accountId, response, requestStartedAt, responseObservedAt, observeCharacterRoster)
+        return DeferredCharacterRosterHofResponse(response, requestStartedAt, responseObservedAt)
+    }
+
+    /** 이미 받은 원격 응답의 시각도 callback 등록 전에 확정해야 한다. */
+    fun observe(accountId: Long, response: HofHttpResponse, requestStartedAt: Instant, responseObservedAt: Instant) =
+        observe(accountId, response, requestStartedAt, responseObservedAt, observeCharacterRoster = true)
+
+    private fun observe(
+        accountId: Long,
+        response: HofHttpResponse,
+        requestStartedAt: Instant,
+        responseObservedAt: Instant,
+        observeCharacterRoster: Boolean,
+    ) {
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
             TransactionSynchronizationManager.registerSynchronization(
                 object : TransactionSynchronization {
@@ -61,11 +76,7 @@ class AccountHofGateway(
         } else {
             observations.observe(accountId, response, requestStartedAt, responseObservedAt, observeCharacterRoster)
         }
-        return DeferredCharacterRosterHofResponse(response, requestStartedAt, responseObservedAt)
     }
-
-    fun observe(accountId: Long, response: HofHttpResponse, requestStartedAt: Instant) =
-        observations.observe(accountId, response, requestStartedAt, timeProvider.now(), observeCharacterRoster = true)
 }
 
 data class DeferredCharacterRosterHofResponse(

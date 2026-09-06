@@ -12,15 +12,11 @@ import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.client.AccountHofGateway
 import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.client.HofRequestFactory
-import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.external.parser.LoginStateParser
-import java.time.Instant
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
-import org.springframework.transaction.support.TransactionSynchronization
-import org.springframework.transaction.support.TransactionSynchronizationManager
 
 @Service
 /**
@@ -97,6 +93,7 @@ class HofAccountService(
             ),
             cookies = initialResponse.setCookies,
         )
+        val loginResponseObservedAt = timeProvider.now()
         val loginState = loginStateParser.parse(loginResponse.body)
         log.info(
             "HOF login response accountId={} status={} loggedIn={} hasLoginForm={} hasCharacterLinks={} cookies={}",
@@ -112,7 +109,7 @@ class HofAccountService(
             log.warn("HOF login failed accountId={} loginId={}", account.id, account.loginId)
             throw ApiException(ErrorCode.HOF_LOGIN_FAILED, "HOF 로그인에 실패했습니다.")
         }
-        observeAfterTransaction(account.id, loginResponse, loginRequestStartedAt)
+        accountGateway.observe(account.id, loginResponse, loginRequestStartedAt, loginResponseObservedAt)
 
         val managedAccount = accountQueryRepository.findByIdForUpdate(account.id)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
@@ -141,23 +138,5 @@ class HofAccountService(
         log.info("HOF login success accountId={} cookieCount={}", managedAccount.id, cookies.size)
 
         return managedAccount
-    }
-
-    private fun observeAfterTransaction(
-        accountId: Long,
-        response: HofHttpResponse,
-        requestStartedAt: Instant,
-    ) {
-        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            accountGateway.observe(accountId, response, requestStartedAt)
-            return
-        }
-        TransactionSynchronizationManager.registerSynchronization(
-            object : TransactionSynchronization {
-                override fun afterCompletion(status: Int) {
-                    accountGateway.observe(accountId, response, requestStartedAt)
-                }
-            },
-        )
     }
 }

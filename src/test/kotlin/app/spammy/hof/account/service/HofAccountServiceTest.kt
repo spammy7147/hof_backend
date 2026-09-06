@@ -9,6 +9,11 @@ import app.spammy.hof.account.repository.HofCookieRepository
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.client.AccountHofGateway
+import app.spammy.hof.external.client.AccountHofResponseObserver
+import app.spammy.hof.status.service.HofStatusSnapshotService
+import app.spammy.hof.character.service.CharacterRosterObservationService
+import app.spammy.hof.captcha.service.CaptchaPassMaintenanceService
+import org.springframework.transaction.support.TransactionSynchronizationManager
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofHttpResponse
@@ -172,6 +177,50 @@ class HofAccountServiceTest {
         assertEquals(listOf(23L, 23L), gateway.accountIds)
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource("false,-1", "false,0", "false,1", "true,-1", "true,0", "true,1")
+    fun `로그인과 재인증 관측은 지연된 commit rollback에서도 원래 응답 시각을 전달한다`(reauthenticate: Boolean, completion: Int) {
+        val responseAt = now.plusSeconds(2)
+        var currentTime = now
+        val clock = TimeProvider { currentTime }
+        val snapshots = Mockito.mock(HofStatusSnapshotService::class.java)
+        val rosters = Mockito.mock(CharacterRosterObservationService::class.java)
+        val pass = Mockito.mock(CaptchaPassMaintenanceService::class.java)
+        val observingGateway = AccountHofGateway(gateway, AccountHofResponseObserver(snapshots, rosters, pass), clock)
+        val observedService = HofAccountService(
+            accountRepository, cookieRepository, accountQueryRepository, cookieQueryRepository,
+            accountIdentityService, credentialCipher, cookieCipher, HofRequestFactory(), gateway,
+            observingGateway, LoginStateParser(), clock,
+        )
+        val account = HofAccountEntity(7L, "observed-user", credentialCipher.encrypt("password"), now)
+        Mockito.`when`(accountQueryRepository.findByLoginId("observed-user")).thenReturn(account)
+        Mockito.`when`(accountQueryRepository.findById(7L)).thenReturn(account)
+        Mockito.`when`(accountQueryRepository.findByIdForUpdate(7L)).thenAnswer {
+            currentTime = now.plusSeconds(10)
+            account
+        }
+        Mockito.`when`(accountRepository.save(anyAccount())).thenAnswer { it.arguments[0] }
+        Mockito.`when`(cookieRepository.save(anyCookie())).thenAnswer { it.arguments[0] }
+        gateway.loginReturned = { currentTime = responseAt }
+        if (completion >= 0) TransactionSynchronizationManager.initSynchronization()
+        try {
+            if (reauthenticate) observedService.reauthenticate(7L)
+            else observedService.authenticate("observed-user", "password")
+            assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.POST), gateway.requests.map { it.method })
+            if (completion >= 0) {
+                Mockito.verifyNoInteractions(snapshots, pass, rosters)
+                currentTime = now.plusSeconds(60)
+                TransactionSynchronizationManager.getSynchronizations().single().afterCompletion(completion)
+            }
+
+            Mockito.verify(pass).observe(7L, gateway.loginBody, now, responseAt)
+            Mockito.verify(snapshots).observe(7L, gateway.loginBody, now)
+            assertEquals(2, gateway.requests.size)
+        } finally {
+            if (completion >= 0) TransactionSynchronizationManager.clearSynchronization()
+        }
+    }
+
     private fun anyAccount(): HofAccountEntity =
         Mockito.any(HofAccountEntity::class.java) ?: account()
 
@@ -198,6 +247,8 @@ class HofAccountServiceTest {
     private class FakeHofGateway : HofGateway {
         val accountIds = mutableListOf<Long>()
         val requests = mutableListOf<HofRequest>()
+        val loginBody = """<a href="?char=1683198503393759">소셜</a>"""
+        var loginReturned: () -> Unit = {}
 
         override fun execute(
             accountId: Long,
@@ -214,10 +265,11 @@ class HofAccountServiceTest {
                     setCookies = mapOf("PHPSESSID" to "initial"),
                 )
             } else {
+                loginReturned()
                 HofHttpResponse(
                     statusCode = 200,
                     finalUrl = request.url,
-                    body = """<a href="?char=1683198503393759">소셜</a>""",
+                    body = loginBody,
                     setCookies = mapOf("NO" to "42"),
                 )
             }
