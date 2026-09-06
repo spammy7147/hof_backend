@@ -1461,7 +1461,7 @@ class AutomationActionLifecycleModuleTest {
     }
 
     @Test
-    fun `불명확한 낚시는 CATCH와 방해 전투를 이어가고 terminal에서만 작업을 닫는다`() {
+    fun `불명확한 낚시는 CATCH를 이어가고 방해 전투는 성공 귀속 없이 작업을 닫는다`() {
         fun managed(action: FishingAction, primary: FishingPrimaryAction, remaining: Int?) = assertNotNull(
             module.prepare(
                 7L,
@@ -1488,12 +1488,12 @@ class AutomationActionLifecycleModuleTest {
         )
 
         assertIs<AmbiguousActionResolution.Applied>(startToCatch.reconcile())
-        assertIs<AmbiguousActionResolution.Applied>(startToBattle.reconcile())
+        assertIs<AmbiguousActionResolution.Superseded>(startToBattle.reconcile())
         assertIs<AmbiguousActionResolution.Resubmit>(startIndeterminate.reconcile())
         assertIs<AmbiguousActionResolution.Applied>(startEscaped.reconcile())
         assertIs<AmbiguousActionResolution.Applied>(catchCompleted.reconcile())
 
-        Mockito.verify(workLifecycle, Mockito.times(2)).completeFishingCycle(7L, 15L)
+        Mockito.verify(workLifecycle, Mockito.times(3)).completeFishingCycle(7L, 15L)
     }
 
     @Test

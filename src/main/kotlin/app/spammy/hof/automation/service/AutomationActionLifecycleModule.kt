@@ -623,6 +623,16 @@ class UnifiedAutomationActionLifecycleModule(
                     return execution
                 }
 
+                override fun applyPolicyResolvedExecution(
+                    execution: TypedAutomationExecution,
+                    evidence: AutomationActionEvidence,
+                ) {
+                    if (evidence is AutomationActionEvidence.StateAdvanced && submittedResponse?.blockedByBattle == true) {
+                        submittedResponse = null
+                        workLifecycle.completeFishingCycle(accountId, stored.entryId)
+                    }
+                }
+
                 override fun applyPolicyAcceptedExecution(execution: TypedAutomationExecution) =
                     applyFishingExecution(execution)
 
@@ -1936,10 +1946,16 @@ class UnifiedAutomationActionLifecycleModule(
         val latest = sessionRecovery.execute(accountId) {
             fishingService.load(accountId, HofRequestOrigin.AUTOMATION)
         }
+        if (latest.blockedByBattle) {
+            workLifecycle.completeFishingCycle(accountId, entryId)
+            return AmbiguousActionResolution.Superseded(
+                "최신 낚시 상태에서 방해 전투를 확인했습니다. 이전 제출은 성공으로 귀속하지 않고 새 판단에서 전투를 선택합니다.",
+            )
+        }
         val remainingDecreased = payload.observedRemainingCasts != null &&
             latest.remainingCasts != null &&
             latest.remainingCasts < payload.observedRemainingCasts
-        val terminal = !latest.blockedByBattle && (
+        val terminal = (
             latest.lastOutcome in setOf(FishingOutcome.CAUGHT, FishingOutcome.ESCAPED) ||
                 remainingDecreased && latest.primaryAction == FishingPrimaryAction.START ||
                 payload.action == FishingAction.CATCH && latest.primaryAction == FishingPrimaryAction.START

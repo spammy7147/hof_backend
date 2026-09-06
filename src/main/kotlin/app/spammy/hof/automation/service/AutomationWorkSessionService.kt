@@ -419,9 +419,9 @@ class AutomationWorkSessionService(
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     override fun completeFishingCycle(accountId: Long, entryId: Long) {
         requireRunningRuntime(accountId)
+        // 결과 확인을 위해 작업권을 놓은 낚시도 최신 종료 관측으로 닫는다.
         val session = queries.lockOpen(accountId).singleOrNull {
-            it.status == AutomationWorkStatus.RUNNING &&
-                it.entry.id == entryId &&
+            it.entry.id == entryId &&
                 it.workType == AutomationWorkType.FISHING &&
                 it.targetKey == FISHING_CYCLE_TARGET
         } ?: return

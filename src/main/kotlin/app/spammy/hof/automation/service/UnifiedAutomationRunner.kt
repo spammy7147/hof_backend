@@ -1516,182 +1516,6 @@ class UnifiedAutomationRunner @Autowired constructor(
             }
         }
 
-        fun executePreparedBattle() {
-            val managed = activeManaged
-            val stored = activeStored
-            val authorizedExecution = executeAuthorized(accountId) { managed.execute() }
-            if (!authorizedExecution.authorized) {
-                discardUnauthorizedSubmission(accountId, execution, activeAttemptId)
-                throw FishingCycleFlowStopped()
-            }
-            val direct = requireNotNull(authorizedExecution.value)
-            val evidence = activeSelection?.let { selection ->
-                evidenceInterpreter?.fromExecution(selection, direct, now())
-                    ?: AutomationActionEvidence.IncompleteObservation(
-                        capturedAt = now(),
-                        reason = "PRODUCTION_EVIDENCE_INTERPRETER_MISSING",
-                    )
-            }
-            if (
-                activeAttemptId != null &&
-                evidence !is AutomationActionEvidence.DirectApplied &&
-                direct !is TypedAutomationExecution.SharedCooldown
-            ) {
-                val recorded = requireNotNull(evidence)
-                val directive = convergenceModule?.record(requireNotNull(activeAttemptId), recorded)
-                if (
-                    recorded is AutomationActionEvidence.DirectRejected ||
-                    recorded is AutomationActionEvidence.StateAdvanced
-                ) {
-                    managed.applyPolicyResolvedExecution(direct, recorded)
-                }
-                val outcome = if (
-                    recorded is AutomationActionEvidence.DirectRejected ||
-                    recorded is AutomationActionEvidence.StateAdvanced
-                ) {
-                    TypedRuntimeOutcome.ActionSuperseded(
-                        "낚시 방해 전투 직접 응답이 저장 행동보다 최신 상태를 가리킵니다.",
-                        TYPED_CONVERGENCE_WAKE_REASON,
-                    )
-                } else {
-                    TypedRuntimeOutcome.AmbiguousHandoff(
-                        "낚시 방해 전투 직접 응답을 확정하지 못했습니다.",
-                        TYPED_CONVERGENCE_WAKE_REASON,
-                    )
-                }
-                results.observeShadow(
-                    accountId,
-                    stored.executionIdentity,
-                    recorded,
-                    if (outcome is TypedRuntimeOutcome.ActionSuperseded) {
-                        LegacyConvergenceDecision.SUPERSEDED
-                    } else {
-                        LegacyConvergenceDecision.RECONCILING
-                    },
-                )
-                typedRuntime.complete(execution, outcome)
-                directive?.let { scheduleConvergenceDirective(accountId, it) }
-                throw FishingCycleFlowStopped()
-            }
-            val accepted = if (activeAttemptId != null) {
-                managed.applyPolicyAcceptedExecution(direct)
-            } else {
-                managed.applyLegacyExecution(direct)
-            }
-            val domain = accepted.runtimeDomainExecution()
-            val wakeReason = if (domain is TypedAutomationExecution.SharedCooldown) {
-                sharedBattleCooldowns.learnAndApply(
-                    accountId,
-                    domain.categoryId,
-                    domain.mapCode,
-                    domain.retryAt,
-                )
-                "TYPED_SHARED_COOLDOWN_SKIPPED"
-            } else {
-                if (domain is TypedAutomationExecution.BattleCompleted) {
-                    sharedBattleCooldowns.applyAfterSuccessfulBattle(accountId, domain.categoryId, domain.mapCode)
-                }
-                "TYPED_ACTION_COMPLETED"
-            }
-            evidence?.let { observed ->
-                results.observeShadow(
-                    accountId,
-                    stored.executionIdentity,
-                    observed,
-                    if (domain is TypedAutomationExecution.SharedCooldown) {
-                        LegacyConvergenceDecision.SUPERSEDED
-                    } else {
-                        LegacyConvergenceDecision.APPLIED
-                    },
-                )
-            }
-            activeAttemptId?.let { attemptId ->
-                convergenceModule?.record(attemptId, requireNotNull(evidence))
-                activeAttemptTerminalized = true
-            }
-            typedRuntime.complete(
-                execution,
-                if (domain is TypedAutomationExecution.SharedCooldown) {
-                    TypedRuntimeOutcome.SharedCooldownHandled(wakeReason, selectedWarnings)
-                } else {
-                    TypedRuntimeOutcome.ActionSucceeded(wakeReason, selectedWarnings)
-                },
-            )
-            append(
-                stored,
-                managed,
-                AutomationHistoryEventKind.ACTION_SUCCEEDED,
-                "FISHING_OBSTRUCTION_BATTLE_COMPLETED",
-                "낚시 방해 전투를 완료했습니다. 다음 판단에서 낚시 START를 새로 확인합니다.",
-            )
-            handled = true
-        }
-
-        fun handoffToBattle(
-            fishingManaged: ManagedFishingAutomationAction,
-            response: app.spammy.hof.town.fishing.dto.FishingResponse,
-            supersededStart: Boolean,
-            completedManaged: ManagedAutomationAction = fishingManaged,
-        ) {
-            val battleAction = fishingManaged.obstructionBattle(response)
-                ?: throw AutomationPreSubmitObservationIncompleteException(
-                    "낚시 방해 전투는 확인했지만 전투 대상이나 프리셋을 확정하지 못했습니다.",
-                )
-            val battleManaged = actionLifecycleModule.prepare(accountId, activeStored.entryId, battleAction)
-            val battleStored = battleManaged.storedAction
-            val preparation = if (supersededStart) {
-                typedRuntime.advanceSupersededActionToPreparedFollowup(
-                    execution,
-                    battleStored,
-                    "이전 CATCH에서 생성된 낚시 전투를 START 응답에서 복구했습니다.",
-                )
-            } else {
-                typedRuntime.advanceAppliedActionToPreparedFollowup(execution, battleStored)
-            }
-            if (preparation !is TypedRuntimePreparation.Ready) {
-                typedRuntime.complete(
-                    execution,
-                    TypedRuntimeOutcome.SubmissionAmbiguous("낚시 응답 뒤 방해 전투 준비 상태를 저장하지 못했습니다."),
-                )
-                throw FishingCycleFlowStopped()
-            }
-            append(
-                activeStored,
-                completedManaged,
-                if (supersededStart) AutomationHistoryEventKind.SKIPPED else AutomationHistoryEventKind.ACTION_SUCCEEDED,
-                if (supersededStart) "FISHING_BATTLE_RECOVERED_FROM_START" else "FISHING_BATTLE_DETECTED_FROM_CATCH",
-                if (supersededStart) {
-                    "START 직접 응답에서 이전 CATCH가 만든 방해 전투를 복구했습니다."
-                } else {
-                    "CATCH 직접 응답에서 방해 전투 발생을 확인했습니다."
-                },
-            )
-            execution = preparation.execution
-            activeStored = battleStored
-            activeManaged = battleManaged
-            activeSelection = convergenceSelectionFactory?.create(battleStored)
-            activeAttemptTerminalized = false
-            activeAttemptId = prepareConvergence(battleStored, activeSelection)
-            val battleSubmission = typedRuntime.beginSubmission(execution)
-            if (battleSubmission !is TypedRuntimeSubmission.Started) {
-                activeAttemptId?.let { attemptId ->
-                    convergenceModule?.record(
-                        attemptId,
-                        AutomationActionEvidence.DirectRejected(now(), "SUBMISSION_NOT_STARTED"),
-                    )
-                }
-                typedRuntime.complete(execution, TypedRuntimeOutcome.SelectionChanged("TYPED_CONFIG_RELOAD"))
-                throw FishingCycleFlowStopped()
-            }
-            append(
-                battleStored,
-                battleManaged,
-                AutomationHistoryEventKind.ACTION_STARTED,
-                "ACTION_STARTED",
-                "낚시 방해 전투를 시작했습니다.",
-            )
-            executePreparedBattle()
-        }
 
         try {
             activeAttemptId = prepareConvergence(startStored, activeSelection)
@@ -1785,6 +1609,8 @@ class UnifiedAutomationRunner @Autowired constructor(
                         now(),
                         "fishing-start-observed-pending-battle:${start.response.battleTarget?.mapCode ?: "unknown"}",
                     )
+                    val direct = startManaged.observeDirectResponse(start.response)
+                    startManaged.applyPolicyResolvedExecution(direct, evidence)
                     activeAttemptId?.let { attemptId ->
                         convergenceModule?.record(attemptId, evidence)
                         activeAttemptTerminalized = true
@@ -1795,7 +1621,21 @@ class UnifiedAutomationRunner @Autowired constructor(
                         evidence,
                         LegacyConvergenceDecision.SUPERSEDED,
                     )
-                    handoffToBattle(startManaged, start.response, supersededStart = true)
+                    typedRuntime.complete(
+                        execution,
+                        TypedRuntimeOutcome.ActionSuperseded(
+                            "START 응답에서 이전 낚시 전투를 확인해 최신 상태로 다시 판단합니다.",
+                            ACTION_SUPERSEDED_REASON,
+                        ),
+                    )
+                    append(
+                        startStored,
+                        startManaged,
+                        AutomationHistoryEventKind.SKIPPED,
+                        "FISHING_BATTLE_RECOVERED_FROM_START",
+                        "START는 성공으로 귀속하지 않고 낚시 작업권을 놓았습니다. 다음 판단에서 방해 전투를 확인합니다.",
+                    )
+                    handled = true
                 }
 
                 override fun waitingForCatch(

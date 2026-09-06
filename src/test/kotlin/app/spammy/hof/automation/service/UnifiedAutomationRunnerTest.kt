@@ -428,117 +428,72 @@ class UnifiedAutomationRunnerTest {
         assertIs<TypedRuntimeOutcome.ActionSucceeded>(capturedOutcome())
     }
 
-    @Test
-    fun `START 응답에서 놓친 방해 전투를 찾으면 CATCH 없이 같은 작업에서 즉시 복구한다`() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(AutomationConvergenceMode::class)
+    fun `START에서 발견한 방해 전투는 시작 성공으로 귀속하지 않고 새 판단으로 넘긴다`(mode: AutomationConvergenceMode) {
         val cycleExecutor = Mockito.mock(FishingCycleExecutor::class.java)
         val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
+        val shadow = Mockito.mock(AutomationConvergenceShadowEvaluator::class.java)
         val startManaged = Mockito.mock(ManagedFishingAutomationAction::class.java)
-        val battleManaged = Mockito.mock(ManagedAutomationAction::class.java)
         val startStored = fishingStartStored()
-        val baseBattleStored = raidStoredAction()
-        val battleStored = baseBattleStored.copy(
-            entryId = 15L,
-            executionIdentity = "fishing-battle-recovered-1",
-            payload = (baseBattleStored.payload as StoredTypedActionPayload.BattleMap).copy(
-                categoryId = "battle_map",
-                mapCode = "fish-monster",
-                source = BattleAutomationActionSource.FISHING_AUTOMATION,
-                sourceTargetKey = null,
-            ),
-        )
         val startPrepared = executionRight(
             TypedRuntimeCheckpoint(startStored, TypedRuntimeCheckpointPhase.PREPARED, null, null),
         )
-        val battlePrepared = executionRight(
-            TypedRuntimeCheckpoint(battleStored, TypedRuntimeCheckpointPhase.PREPARED, null, null),
-        )
-        val startResponse = fishingResponse(FishingPrimaryAction.NONE, 17, FishingOutcome.CAUGHT).copy(
-            availableActions = emptySet(),
-            blockedByBattle = true,
+        val response = fishingResponse(FishingPrimaryAction.NONE, 17, FishingOutcome.CAUGHT).copy(
+            availableActions = emptySet(), blockedByBattle = true,
             battleTarget = FishingBattleTargetResponse("battle_map", "fish-monster", "낚시터 괴물"),
         )
+        val direct = fishingExecution(response)
         val action = fishingStartAction()
-        val battleAction = legacyBattleAction().copy(
-            categoryId = "battle_map",
-            mapCode = "fish-monster",
-            executionIdentity = "fishing-battle-recovered-1",
-            source = BattleAutomationActionSource.FISHING_AUTOMATION,
-            mapName = "낚시터 괴물",
-        )
-        val battleExecution = TypedAutomationExecution.BattleCompleted(
-            "battle_map",
-            "fish-monster",
-            listOf("VICTORY"),
-        )
         Mockito.`when`(decisions.select(7L)).thenReturn(AutomationCoordination.Runnable(15L, action, emptyList()))
         Mockito.`when`(lifecycle.describe(action)).thenReturn(fishingDescriptor("START"))
         Mockito.`when`(lifecycle.prepare(7L, 15L, action)).thenReturn(startManaged)
-        Mockito.`when`(lifecycle.prepare(7L, 15L, battleAction)).thenReturn(battleManaged)
         Mockito.`when`(startManaged.storedAction).thenReturn(startStored)
         Mockito.`when`(startManaged.descriptor).thenReturn(fishingDescriptor("START"))
-        Mockito.`when`(startManaged.obstructionBattle(startResponse)).thenReturn(battleAction)
-        Mockito.`when`(battleManaged.storedAction).thenReturn(battleStored)
-        Mockito.`when`(battleManaged.descriptor).thenReturn(defaultDescriptor())
-        Mockito.`when`(battleManaged.execute()).thenReturn(battleExecution)
-        Mockito.`when`(battleManaged.applyPolicyAcceptedExecution(battleExecution)).thenReturn(battleExecution)
+        Mockito.`when`(startManaged.observeDirectResponse(response)).thenReturn(direct)
         Mockito.`when`(runtime.persistPrepared(freshExecution, startStored, emptyList()))
             .thenReturn(TypedRuntimePreparation.Ready(startPrepared))
         Mockito.`when`(runtime.beginSubmission(startPrepared)).thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
-        Mockito.`when`(
-            runtime.advanceSupersededActionToPreparedFollowup(
-                anyExecution(),
-                anyStoredAction(),
-                Mockito.anyString(),
-            ),
-        ).thenReturn(TypedRuntimePreparation.Ready(battlePrepared))
-        Mockito.`when`(runtime.beginSubmission(battlePrepared)).thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
-        Mockito.`when`(convergence.prepare(Mockito.eq(7L), anyConvergenceSelection())).thenReturn(
-            ConvergenceDirective.Submit(211L),
-            ConvergenceDirective.Submit(212L),
-        )
-        Mockito.`when`(convergence.record(Mockito.anyLong(), anyConvergenceEvidence()))
-            .thenReturn(ConvergenceDirective.ContinueSelection)
-        Mockito.`when`(cycleExecutor.executeOneCast(anyFishingCommand(), anyFishingTransitions()))
-            .thenAnswer { invocation ->
-                val command = invocation.arguments[0] as FishingCycleCommand
-                val transitions = invocation.arguments[1] as FishingCycleTransitions
-                val start = FishingCycleStepEvidence(command.startExecutionIdentity, FishingAction.START, startResponse)
-                transitions.battleRequired(command, start)
-                FishingCycleResult.BattleRequired(start)
-            }
+        Mockito.`when`(convergence.prepare(Mockito.eq(7L), anyConvergenceSelection())).thenReturn(ConvergenceDirective.Submit(211L))
+        Mockito.`when`(convergence.record(Mockito.anyLong(), anyConvergenceEvidence())).thenReturn(ConvergenceDirective.ContinueSelection)
+        Mockito.`when`(cycleExecutor.executeOneCast(anyFishingCommand(), anyFishingTransitions())).thenAnswer { invocation ->
+            val command = invocation.arguments[0] as FishingCycleCommand
+            val transitions = invocation.arguments[1] as FishingCycleTransitions
+            val start = FishingCycleStepEvidence(command.startExecutionIdentity, FishingAction.START, response)
+            transitions.battleRequired(command, start)
+            FishingCycleResult.BattleRequired(start)
+        }
         val scoped = buildRunner(
-            preflight,
-            runtime,
-            decisions,
-            wakeup,
-            sharedCooldowns,
-            lifecycle,
-            submissionGate,
+            preflight, runtime, decisions, wakeup, sharedCooldowns, lifecycle, submissionGate,
             convergenceModule = convergence,
             convergenceSelectionFactory = StoredActionConvergenceSelectionFactory(),
             evidenceInterpreter = productionEvidenceInterpreter,
-            rollout = AutomationConvergenceRollout(
-                AutomationConvergenceProperties(mode = AutomationConvergenceMode.ACTIVE),
-            ),
-            fishingCycleExecutor = cycleExecutor,
+            rollout = AutomationConvergenceRollout(AutomationConvergenceProperties(mode = mode)),
+            fishingCycleExecutor = cycleExecutor, shadowEvaluator = shadow,
         )
 
         scoped.runOne(7L)
 
-        Mockito.verify(decisions, Mockito.times(1)).select(7L)
-        Mockito.verify(runtime, Mockito.never())
-            .advanceAppliedActionToPreparedFollowup(anyExecution(), anyStoredAction())
-        Mockito.verify(runtime).advanceSupersededActionToPreparedFollowup(
-            anyExecution(),
-            anyStoredAction(),
-            Mockito.anyString(),
-        )
-        Mockito.verify(runtime).beginSubmission(battlePrepared)
-        Mockito.verify(battleManaged).execute()
-        Mockito.verify(convergence).record(Mockito.eq(211L), anyConvergenceEvidence())
-        Mockito.verify(convergence).record(Mockito.eq(212L), anyConvergenceEvidence())
-        Mockito.verify(lifecycle, Mockito.never()).restoreVerified(anyStoredAction(), Mockito.eq(7L))
-        assertIs<TypedRuntimeOutcome.ActionSucceeded>(capturedOutcome())
+        Mockito.verify(decisions).select(7L)
+        Mockito.verify(runtime, Mockito.never()).advanceAppliedActionToPreparedFollowup(anyExecution(), anyStoredAction())
+        Mockito.verify(startManaged, Mockito.never()).applyPolicyAcceptedExecution(anyTypedExecution())
+        Mockito.verify(startManaged, Mockito.never()).applyLegacyExecution(anyTypedExecution())
+        val order = Mockito.inOrder(startManaged, convergence, runtime)
+        order.verify(startManaged).applyPolicyResolvedExecution(Mockito.eq(direct) ?: direct, anyConvergenceEvidence())
+        if (mode == AutomationConvergenceMode.ACTIVE) {
+            order.verify(convergence).record(Mockito.eq(211L), anyConvergenceEvidence())
+        } else {
+            Mockito.verifyNoInteractions(convergence)
+        }
+        val outcome = assertIs<TypedRuntimeOutcome.ActionSuperseded>(capturedOutcome())
+        assertEquals("ACTION_SUPERSEDED_BY_FRESH_STATE", outcome.wakeReason)
+        if (mode == AutomationConvergenceMode.SHADOW) {
+            val (evidence, legacy) = shadowObservation(shadow, startStored.executionIdentity)
+            assertIs<AutomationActionEvidence.StateAdvanced>(evidence)
+            assertEquals(LegacyConvergenceDecision.SUPERSEDED, legacy)
+        } else {
+            Mockito.verifyNoInteractions(shadow)
+        }
     }
 
     @Test
