@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Single-instance HOF replacement, called by Jenkins over SSH (stdlib only)."""
 import json
+import fcntl
 import math
 import os
 from pathlib import Path
@@ -10,6 +11,7 @@ import signal
 import subprocess
 import sys
 import time
+import tempfile
 import uuid
 
 
@@ -25,26 +27,43 @@ class Interrupted(Exception):
         super().__init__('signal_' + signal.Signals(signum).name)
 
 
-class PendingStop(DeploymentError):
-    def __init__(self, process, cause):
-        self.process = process
-        code = 124 if isinstance(cause, subprocess.TimeoutExpired) else getattr(cause, 'exit_code', 1)
-        super().__init__('stop_timeout' if code == 124 else str(cause), code)
+class DeploymentBusy(DeploymentError):
+    def __init__(self):
+        super().__init__('server_deployment_lock_held', 75)
 
 
-def command(args, seconds):
+class UnsafeState(DeploymentError):
+    def __init__(self, reason):
+        super().__init__(reason, 77)
+
+
+def atomic_json(path, value):
+    with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, prefix=path.name + '.', delete=False) as temporary:
+        try:
+            json.dump(value, temporary)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+            temporary.close()
+            os.replace(temporary.name, path)
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        finally:
+            Path(temporary.name).unlink(missing_ok=True)
+
+
+def command(args, seconds, lock_fd=None):
     # Kill the client process group on cancellation/timeout; Docker state is
     # subsequently inspected because stopping a client does not undo its RPC.
     deadline = time.monotonic() + seconds
     process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                               text=True, start_new_session=True)
+                               text=True, start_new_session=True,
+                               pass_fds=() if lock_fd is None else (lock_fd,))
     try:
         output, _ = process.communicate(timeout=max(0, deadline - time.monotonic()))
-    except BaseException as error:
-        # Stop continues in the daemon even if its client disconnects. Keep this
-        # exact call alive so restoration can wait for the actual stop response.
-        if args[:2] == ['docker', 'stop']:
-            raise PendingStop(process, error) from None
+    except BaseException:
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
@@ -61,9 +80,21 @@ def report(result, **fields):
     print(json.dumps({'result': result, **fields}), flush=True)
 
 
+def transfer_paths(values):
+    if not isinstance(values, list) or len(values) != 3 or any(not isinstance(value, str) for value in values):
+        raise UnsafeState('invalid_transfer_paths')
+    paths = [Path(value) for value in values]
+    parent = paths[0].parent
+    if (parent.parent != Path('/tmp') or not re.fullmatch(r'hof-deploy\.[A-Za-z0-9_]+', parent.name)
+            or parent.is_symlink() or any(path.parent != parent for path in paths)
+            or {path.name for path in paths} != {'backend.env', 'firebase.json', 'release.env'}):
+        raise UnsafeState('invalid_transfer_paths')
+    return paths
+
+
 class Deployment:
     def __init__(self):
-        self.env = os.environ
+        self.env = dict(os.environ)
         required = ('IMAGE', 'IMAGE_REPOSITORY', 'CONTAINER_NAME', 'BACKEND_BIND_ADDRESS',
                     'HOST_PORT', 'CONTAINER_PORT', 'SERVER_FORWARD_HEADERS_STRATEGY',
                     'PUBLIC_HEALTH_URL', 'HOF_AUTH_ALLOWED_ORIGIN_PATTERNS', 'RELEASE_HOST_DIR',
@@ -89,8 +120,141 @@ class Deployment:
         self.committed = False
         self.preflight_complete = False
         self.phase = 'preflight'
-        self.pending_stop = None
+        self.stop_child = None
         self.stop_confirmed = False
+        self.state_dir = Path(self.env.get('DEPLOY_STATE_DIR', Path.home() / '.local/state/hof-deploy'))
+        self.lock_file = None
+        self.lock_acquired = False
+        self.journal_started = False
+        self.manage = False
+        self.finished = False
+        self.resume_code = 0
+        self.cleanup_incoming = True
+        self.recovering_prior = False
+        self.incoming_transfers = [Path(self.env[key]) for key in
+                                  ('REMOTE_ENV_FILE', 'REMOTE_FIREBASE_FILE', 'REMOTE_RELEASE_ENV_FILE')]
+        self.transfer_paths = self.incoming_transfers
+        boot_path = Path('/proc/sys/kernel/random/boot_id')
+        self.boot_id = boot_path.read_text().strip() if boot_path.exists() else None
+        self.saved_boot_id = self.boot_id
+
+    @property
+    def journal(self):
+        return self.state_dir / (self.name + '.json')
+
+    def checkpoint(self, phase=None):
+        if phase:
+            self.phase = phase
+        previous = ({key: self.previous[key] for key in ('Id', 'Image', 'Name')} if self.previous else None)
+        # Never persist a complete Docker inspect: Config.Env contains secrets.
+        value = {'version': 1, 'id': self.id, 'build': self.build, 'name': self.name,
+                 'image_ref': self.env['IMAGE'], 'image_id': self.image_id, 'previous': previous,
+                 'new': self.new, 'secret': str(self.secret), 'phase': self.phase,
+                 'touched_previous': self.touched_previous, 'stop_confirmed': self.stop_confirmed,
+                 'committed': self.committed, 'finished': self.finished,
+                 'boot_id': self.saved_boot_id,
+                 'transfers': [str(path) for path in self.transfer_paths],
+                 'health': {key: self.env[key] for key in ('BACKEND_BIND_ADDRESS', 'HOST_PORT', 'PUBLIC_HEALTH_URL', 'IMAGE_REPOSITORY')}}
+        atomic_json(self.journal, value)
+        self.journal_started = True
+
+    def validate_ownership(self):
+        candidate = self.find(container_id=self.new) if self.new else self.find(self.candidate)
+        if candidate:
+            if ((candidate['Config'].get('Labels') or {}).get('app.hof.deployment') != self.id
+                    or candidate['Image'] != self.image_id
+                    or candidate['Name'] not in ('/' + self.name, '/' + self.candidate)):
+                raise UnsafeState('candidate_ownership_mismatch')
+            self.new = candidate['Id']
+        elif self.committed:
+            raise UnsafeState('committed_container_missing')
+        if self.previous:
+            previous = self.find(container_id=self.previous['Id'])
+            if previous is None and not self.committed:
+                raise UnsafeState('previous_container_missing')
+            if previous and (previous['Image'] != self.previous['Image']
+                             or previous['Name'] not in ('/' + self.name, '/' + self.backup)):
+                raise UnsafeState('previous_ownership_mismatch')
+            if previous and previous['State']['Running'] and candidate and candidate['State']['Running']:
+                raise UnsafeState('both_versions_running')
+        occupant = self.find(self.name)
+        allowed = {self.new, self.previous['Id'] if self.previous else None}
+        if occupant and occupant['Id'] not in allowed:
+            raise UnsafeState('service_name_ownership_mismatch')
+        return candidate
+
+    def resume(self):
+        if not self.journal.exists():
+            return False
+        try:
+            saved = json.loads(self.journal.read_text())
+            if saved['version'] != 1 or saved['name'] != self.name or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', saved['id']):
+                raise ValueError()
+            if any(type(saved[key]) is not bool for key in ('finished', 'committed', 'touched_previous', 'stop_confirmed')):
+                raise ValueError()
+            if set(saved['health']) != {'BACKEND_BIND_ADDRESS', 'HOST_PORT', 'PUBLIC_HEALTH_URL', 'IMAGE_REPOSITORY'}:
+                raise ValueError()
+            same_request = saved['build'] == self.build and saved['image_ref'] == self.env['IMAGE']
+            paths = transfer_paths(saved['transfers'])
+            if saved['finished'] and not same_request:
+                self.verify_finished(saved)
+                # A crash may occur after the terminal marker but before transfer cleanup.
+                self.remove_transfers(paths)
+                return False
+            self.id, self.build = saved['id'], saved['build']
+            self.candidate = self.name + '-candidate-' + self.id
+            self.backup = self.name + '-rollback-' + self.id
+            self.secret = self.secret_dir / ('firebase-service-account-' + self.id + '.json')
+            if saved['secret'] != str(self.secret):
+                raise ValueError()
+            self.env.update(saved['health'])
+            self.env['IMAGE'] = saved['image_ref']
+            self.image_id, self.new, self.previous = saved['image_id'], saved['new'], saved['previous']
+            self.phase = saved['phase']
+            self.touched_previous, self.stop_confirmed = saved['touched_previous'], saved['stop_confirmed']
+            self.committed, self.finished = saved['committed'], saved['finished']
+            self.saved_boot_id = saved['boot_id']
+            self.transfer_paths = paths
+            self.journal_started = True
+            self.preflight_complete = True
+            candidate = self.validate_ownership()
+        except (ValueError, KeyError, TypeError, OSError) as error:
+            raise UnsafeState('invalid_deployment_journal') from error
+        self.manage = True
+        self.cleanup_incoming = same_request
+        self.recovering_prior = not same_request
+        if self.committed:
+            if candidate['Name'] != '/' + self.name or not all(self.health(self.new, self.image_id)):
+                raise UnsafeState('committed_service_unhealthy')
+            report('already_deployed', deployment_id=self.id, container_id=self.new)
+        elif candidate and candidate['State']['Running'] and candidate['Name'] == '/' + self.name:
+            if not all(self.health(self.new, self.image_id)):
+                raise DeploymentError('resumed_candidate_unhealthy')
+            self.committed = True
+            self.checkpoint('committed')
+            report('deployed', deployment_id=self.id, container_id=self.new, resumed=True)
+        else:
+            self.resume_code = 1
+        if not same_request:
+            self.resume_code = 76
+        return True
+
+    def verify_finished(self, saved):
+        current = self.find(self.name)
+        if saved['committed']:
+            valid = (current and current['Id'] == saved['new'] and current['Image'] == saved['image_id']
+                     and (current['Config'].get('Labels') or {}).get('app.hof.deployment') == saved['id'])
+            if saved['previous'] and self.find(container_id=saved['previous']['Id']):
+                raise UnsafeState('finished_previous_container_still_present')
+        elif saved['previous']:
+            valid = (current and current['Id'] == saved['previous']['Id'] and
+                     current['Image'] == saved['previous']['Image'])
+        else:
+            valid = current is None
+        if not valid or self.find(self.name + '-candidate-' + saved['id']):
+            raise UnsafeState('finished_service_ownership_mismatch')
+        if not saved['committed'] and saved['new'] and self.find(container_id=saved['new']):
+            raise UnsafeState('finished_candidate_still_present')
 
     def seconds(self, key, default):
         value = float(self.env.get(key, default))
@@ -99,7 +263,73 @@ class Deployment:
         return value
 
     def docker(self, *args, seconds=None):
-        return command(['docker', *args], self.command_seconds if seconds is None else seconds)
+        return command(['docker', *args], self.command_seconds if seconds is None else seconds,
+                       self.lock_file.fileno())
+
+    @property
+    def stop_receipt(self):
+        return self.state_dir / (self.name + '-stop-' + self.id + '.json')
+
+    def wait_stop(self, seconds):
+        deadline = time.monotonic() + seconds
+        while True:
+            if self.stop_receipt.exists():
+                receipt = json.loads(self.stop_receipt.read_text())
+                if receipt['id'] != self.id or receipt['previous'] != self.previous['Id']:
+                    raise UnsafeState('stop_receipt_mismatch')
+                if receipt['exit_code'] is not None:
+                    if receipt['exit_code'] != 0:
+                        raise DeploymentError('stop_outcome_unknown')
+                    self.stop_confirmed = True
+                    if self.stop_child:
+                        os.waitpid(self.stop_child, os.WNOHANG)
+                        self.stop_child = None
+                    return
+            if time.monotonic() >= deadline:
+                raise DeploymentError('stop_timeout', 124)
+            time.sleep(min(0.05, max(0, deadline - time.monotonic())))
+
+    def stop_previous(self):
+        # Docker stop outlives a disconnected client. This small child keeps the
+        # same OS lock and records that exact response even if SSH/the parent dies.
+        self.stop_child = os.fork()
+        if self.stop_child == 0:
+            try:
+                os.setsid()
+                for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+                    signal.signal(signum, signal.SIG_IGN)
+                with open(os.devnull, 'r+b', buffering=0) as sink:
+                    for descriptor in (0, 1, 2):
+                        os.dup2(sink.fileno(), descriptor)
+                receipt = {'id': self.id, 'previous': self.previous['Id'], 'exit_code': None}
+                atomic_json(self.stop_receipt, receipt)
+                try:
+                    self.docker('stop', '--time', '10', self.previous['Id'],
+                                seconds=self.command_seconds + self.health_seconds)
+                    receipt['exit_code'] = 0
+                except Exception as error:
+                    receipt['exit_code'] = getattr(error, 'exit_code', 1)
+                atomic_json(self.stop_receipt, receipt)
+            finally:
+                os._exit(0)
+        self.wait_stop(self.command_seconds)
+
+    def reconcile_stop(self):
+        if not self.touched_previous or self.stop_confirmed:
+            return
+        if self.stop_child:
+            try:
+                self.wait_stop(self.health_seconds)
+            except DeploymentError:
+                raise DeploymentError('stop_outcome_unknown') from None
+        elif self.saved_boot_id and self.boot_id and self.saved_boot_id != self.boot_id:
+            # A daemon request from the previous OS boot cannot stop a new task.
+            self.stop_confirmed = True
+        elif not self.stop_receipt.exists() and self.phase == 'stop_previous':
+            # Lock acquired again, but child never persisted its intent or sent RPC.
+            self.touched_previous = False
+        else:
+            self.wait_stop(0)
 
     def inspect(self, container_id, seconds=None):
         return json.loads(self.docker('container', 'inspect', container_id, seconds=seconds))[0]
@@ -113,6 +343,9 @@ class Deployment:
         return self.inspect(ids[0]) if ids else None
 
     def preflight(self):
+        self.manage = True
+        self.phase = 'preflight'
+        self.transfer_paths = transfer_paths([str(path) for path in self.incoming_transfers])
         for executable in ('docker', 'curl'):
             if not shutil.which(executable):
                 raise DeploymentError('missing_' + executable)
@@ -140,6 +373,20 @@ class Deployment:
                 shutil.copyfileobj(source, target)
         Path(self.env['RELEASE_HOST_DIR']).mkdir(parents=True, exist_ok=True, mode=0o750)
         self.preflight_complete = True
+        self.checkpoint('prepared')
+
+    def acquire_lock(self):
+        self.phase = 'locking'
+        self.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.state_dir.chmod(0o700)
+        path = self.state_dir / (self.name + '.lock')
+        self.lock_file = path.open('a')
+        path.chmod(0o600)
+        try:
+            fcntl.flock(self.lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise DeploymentBusy() from None
+        self.lock_acquired = True
 
     def create(self):
         self.new = self.docker('create', '--name', self.candidate,
@@ -158,26 +405,27 @@ class Deployment:
     def replace(self):
         # Create validates Docker options/mounts while the previous service runs.
         # A created container cannot submit HOF actions until it is started.
-        self.phase = 'create_candidate'
+        self.checkpoint('create_candidate')
         self.create()
+        self.checkpoint('candidate_created')
         if self.previous:
             self.touched_previous = True
-            self.phase = 'stop_previous'
-            self.docker('stop', '--time', '10', self.previous['Id'])
-            self.stop_confirmed = True
+            self.checkpoint('stop_previous')
+            self.stop_previous()
             if self.inspect(self.previous['Id'])['State']['Running']:
                 raise DeploymentError('previous_still_running')
-            self.phase = 'rename_previous'
+            self.checkpoint('rename_previous')
             self.docker('rename', self.previous['Id'], self.backup)
-        self.phase = 'rename_candidate'
+        self.checkpoint('rename_candidate')
         self.docker('rename', self.new, self.name)
-        self.phase = 'start_candidate'
+        self.checkpoint('start_candidate')
         self.docker('start', self.new)
-        self.phase = 'health'
+        self.checkpoint('health')
         internal, public = self.health(self.new, self.image_id)
         if not (internal and public):
             raise DeploymentError('new_health_failed')
         self.committed = True
+        self.checkpoint('committed')
         report('deployed', deployment_id=self.id, container_id=self.new, image_id=self.image_id)
 
     def probe(self, url, deadline, per_request):
@@ -214,16 +462,9 @@ class Deployment:
         return internal, public
 
     def rollback(self):
-        if self.pending_stop:
-            try:
-                self.pending_stop.communicate(timeout=self.health_seconds)
-            except subprocess.TimeoutExpired:
-                os.killpg(self.pending_stop.pid, signal.SIGKILL)
-                self.pending_stop.communicate(timeout=1)
-                raise DeploymentError('stop_outcome_unknown') from None
-            if self.pending_stop.returncode:
-                raise DeploymentError('stop_outcome_unknown')
-            self.stop_confirmed = True
+        if self.journal_started:
+            self.validate_ownership()
+        self.reconcile_stop()
         # A create RPC may have completed even when its client failed to return ID.
         candidate = self.find(container_id=self.new) if self.new else self.find(self.candidate)
         if candidate:
@@ -254,18 +495,42 @@ class Deployment:
             internal, public = self.health(self.previous['Id'], self.previous['Image'])
             report('rollback_healthy' if internal and public else 'rollback_unhealthy',
                    container_id=self.previous['Id'], internal=internal, public=public)
+            if not (internal and public):
+                return
         self.secret.unlink(missing_ok=True)
+        if self.journal_started:
+            self.finished = True
+            self.checkpoint('rolled_back')
 
     def cleanup_committed(self):
+        self.validate_ownership()
+        self.checkpoint('committed')
         if self.previous:
             self.docker('image', 'tag', self.previous['Image'], self.env['IMAGE_REPOSITORY'] + ':rollback')
-            self.docker('rm', self.previous['Id'])
+            if self.find(container_id=self.previous['Id']):
+                self.docker('rm', self.previous['Id'])
         # Retain previous versioned credentials and images; never prune shared
         # Docker storage or guess which old secrets other containers still mount.
+        self.finished = True
+        self.checkpoint('finished')
+
+    def remove_transfers(self, paths):
+        parents = set()
+        for path in paths:
+            path.unlink(missing_ok=True)
+            parents.add(path.parent)
+        for parent in parents:
+            if parent.parent == Path('/tmp') and re.fullmatch(r'hof-deploy\.[A-Za-z0-9_]+', parent.name):
+                try:
+                    parent.rmdir()
+                except FileNotFoundError:
+                    pass
 
     def cleanup_transfers(self):
-        for key in ('REMOTE_ENV_FILE', 'REMOTE_FIREBASE_FILE', 'REMOTE_RELEASE_ENV_FILE'):
-            Path(self.env[key]).unlink(missing_ok=True)
+        paths = set(self.transfer_paths)
+        if self.cleanup_incoming:
+            paths.update(self.incoming_transfers)
+        self.remove_transfers(paths)
 
 
 def main():
@@ -277,20 +542,27 @@ def main():
     exit_code = 0
     try:
         deployment = Deployment()
-        deployment.preflight()
-        deployment.replace()
+        deployment.acquire_lock()
+        if deployment.resume():
+            exit_code = deployment.resume_code
+        else:
+            deployment.preflight()
+            deployment.replace()
     except Exception as error:
-        if deployment and isinstance(error, PendingStop):
-            deployment.pending_stop = error.process
+        if deployment and isinstance(error, UnsafeState):
+            deployment.manage = False
         exit_code = getattr(error, 'exit_code', 1)
-        report('deployment_failed', reason=str(error) if isinstance(error, (DeploymentError, Interrupted)) else type(error).__name__,
+        result = ('deployment_busy' if isinstance(error, DeploymentBusy) else
+                  'deployment_result_unknown' if isinstance(error, UnsafeState) else 'deployment_failed')
+        report(result,
+               reason=str(error) if isinstance(error, (DeploymentError, Interrupted)) else type(error).__name__,
                phase=deployment.phase if deployment else 'configuration', exit_code=exit_code,
                deployment_id=deployment.id if deployment else None, image_id=deployment.image_id if deployment else None)
     finally:
         # Further cancellation must not interrupt restoration halfway through.
         for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
             signal.signal(signum, signal.SIG_IGN)
-        if deployment:
+        if deployment and deployment.lock_acquired and deployment.manage:
             try:
                 if deployment.committed:
                     deployment.cleanup_committed()
@@ -299,10 +571,16 @@ def main():
             except Exception as error:
                 report('cleanup_warning' if deployment.committed else 'rollback_failed',
                        reason=str(error) if isinstance(error, DeploymentError) else type(error).__name__)
+            if deployment.recovering_prior:
+                exit_code = 76 if deployment.finished else 77
+                report('prior_deployment_recovered_retry_requested' if deployment.finished else 'deployment_result_unknown',
+                       deployment_id=deployment.id)
             try:
                 deployment.cleanup_transfers()
             except OSError:
                 report('transfer_cleanup_warning')
+        if deployment and deployment.lock_file:
+            deployment.lock_file.close()
     return exit_code
 
 

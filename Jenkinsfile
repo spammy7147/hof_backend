@@ -57,9 +57,6 @@ pipeline {
                     ).trim()
                     env.IMAGE_TAG = "${BUILD_NUMBER}-${env.GIT_SHORT}"
                     env.IMAGE = "${IMAGE_REPOSITORY}:${env.IMAGE_TAG}"
-                    env.REMOTE_ENV_FILE = "/tmp/hof-backend-env-${BUILD_NUMBER}"
-                    env.REMOTE_FIREBASE_FILE = "/tmp/hof-firebase-${BUILD_NUMBER}.json"
-                    env.REMOTE_RELEASE_ENV_FILE = "/tmp/hof-release-token-${BUILD_NUMBER}.env"
                 }
             }
         }
@@ -209,6 +206,27 @@ pipeline {
                 ]) {
                         sh(script: '''#!/usr/bin/env bash
                             set -Eeuo pipefail
+                            # Each invocation uploads into a private, unique directory.
+                            # A retry cannot overwrite credentials used by a surviving deployment.
+                            transfer_dir=$(ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes \
+                              -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 \
+                              -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
+                              "$DEPLOY_TARGET" 'umask 077; mktemp -d /tmp/hof-deploy.XXXXXXXXXX')
+                            [[ "$transfer_dir" =~ ^/tmp/hof-deploy[.][A-Za-z0-9]+$ ]]
+                            REMOTE_ENV_FILE="$transfer_dir/backend.env"
+                            REMOTE_FIREBASE_FILE="$transfer_dir/firebase.json"
+                            REMOTE_RELEASE_ENV_FILE="$transfer_dir/release.env"
+                            remote_started=0
+                            cleanup_upload() {
+                              if [ "$remote_started" -eq 0 ]; then
+                                ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes \
+                                  -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 \
+                                  -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
+                                  "$DEPLOY_TARGET" \
+                                  "rm -f -- '$REMOTE_ENV_FILE' '$REMOTE_FIREBASE_FILE' '$REMOTE_RELEASE_ENV_FILE'; rmdir -- '$transfer_dir'" >/dev/null 2>&1 || true
+                              fi
+                            }
+                            trap cleanup_upload EXIT
                             scp -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes \
                               -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
                               "$HOF_ENV_FILE" "$DEPLOY_TARGET:$REMOTE_ENV_FILE"
@@ -223,10 +241,25 @@ pipeline {
                                 -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
                                 "$DEPLOY_TARGET" \
                                 "umask 077; cat > '$REMOTE_RELEASE_ENV_FILE'"
-                            ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes \
+                            remote_started=1
+                            for attempt in 1 2 3; do
+                              if ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes \
+                              -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 \
                               -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
                               "$DEPLOY_TARGET" \
-                              "IMAGE='$IMAGE' IMAGE_REPOSITORY='$IMAGE_REPOSITORY' CONTAINER_NAME='$CONTAINER_NAME' BACKEND_BIND_ADDRESS='$BACKEND_BIND_ADDRESS' HOST_PORT='$HOST_PORT' CONTAINER_PORT='$CONTAINER_PORT' SERVER_FORWARD_HEADERS_STRATEGY='$SERVER_FORWARD_HEADERS_STRATEGY' PUBLIC_HEALTH_URL='$PUBLIC_HEALTH_URL' HOF_AUTH_ALLOWED_ORIGIN_PATTERNS='$HOF_AUTH_ALLOWED_ORIGIN_PATTERNS' RELEASE_HOST_DIR='$RELEASE_HOST_DIR' RELEASE_CONTAINER_DIR='$RELEASE_CONTAINER_DIR' REMOTE_ENV_FILE='$REMOTE_ENV_FILE' REMOTE_FIREBASE_FILE='$REMOTE_FIREBASE_FILE' REMOTE_RELEASE_ENV_FILE='$REMOTE_RELEASE_ENV_FILE' BUILD_NUMBER='$BUILD_NUMBER' python3 -" < scripts/deploy_backend.py
+                              "IMAGE='$IMAGE' IMAGE_REPOSITORY='$IMAGE_REPOSITORY' CONTAINER_NAME='$CONTAINER_NAME' BACKEND_BIND_ADDRESS='$BACKEND_BIND_ADDRESS' HOST_PORT='$HOST_PORT' CONTAINER_PORT='$CONTAINER_PORT' SERVER_FORWARD_HEADERS_STRATEGY='$SERVER_FORWARD_HEADERS_STRATEGY' PUBLIC_HEALTH_URL='$PUBLIC_HEALTH_URL' HOF_AUTH_ALLOWED_ORIGIN_PATTERNS='$HOF_AUTH_ALLOWED_ORIGIN_PATTERNS' RELEASE_HOST_DIR='$RELEASE_HOST_DIR' RELEASE_CONTAINER_DIR='$RELEASE_CONTAINER_DIR' REMOTE_ENV_FILE='$REMOTE_ENV_FILE' REMOTE_FIREBASE_FILE='$REMOTE_FIREBASE_FILE' REMOTE_RELEASE_ENV_FILE='$REMOTE_RELEASE_ENV_FILE' BUILD_NUMBER='$BUILD_NUMBER' python3 -" < scripts/deploy_backend.py; then
+                                exit 0
+                              else
+                                deploy_code=$?
+                              fi
+                              case "$deploy_code" in
+                                75|76|255) echo "Deployment result pending (remote exit $deploy_code); rechecking under the server lock." ;;
+                                *) exit "$deploy_code" ;;
+                              esac
+                              if [ "$attempt" -lt 3 ]; then sleep 2; fi
+                            done
+                            echo '{"result":"deployment_result_unknown","reason":"remote_execution_or_connection_pending"}'
+                            exit 77
                         '''.stripIndent())
                 }
             }
@@ -239,28 +272,15 @@ pipeline {
                 if (env.IMAGE?.trim()) {
                     sh 'docker image rm "$IMAGE" >/dev/null 2>&1 || true'
                 }
-                if (env.REMOTE_ENV_FILE?.trim() || env.REMOTE_FIREBASE_FILE?.trim() || env.REMOTE_RELEASE_ENV_FILE?.trim()) {
-                    withCredentials([
-                        sshUserPrivateKey(
-                            credentialsId: "${SSH_CREDENTIAL_ID}",
-                            keyFileVariable: 'SSH_KEY_FILE',
-                        ),
-                    ]) {
-                        sh '''
-                            ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes \
-                              -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
-                              "$DEPLOY_TARGET" \
-                              "rm -f -- '$REMOTE_ENV_FILE' '$REMOTE_FIREBASE_FILE' '$REMOTE_RELEASE_ENV_FILE'" >/dev/null 2>&1 || true
-                        '''
-                    }
-                }
+                // The server entry point owns transfer cleanup under its lock.
+                // Cancellation/SSH loss is not evidence that remote use has ended.
             }
         }
         success {
             echo "HOF backend deployed successfully: ${env.IMAGE}"
         }
         failure {
-            echo 'HOF backend deployment failed. Check the failed stage and the remote container logs printed above.'
+            echo 'HOF backend job did not confirm deployment success. Check the structured remote result: failure, rollback, or result unknown.'
         }
     }
 }

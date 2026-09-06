@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import signal
 import subprocess
 import sys
 import tempfile
@@ -68,6 +69,7 @@ class RealDockerDeploymentTest(unittest.TestCase):
         self.old_secret = self.root / 'previous.json'
         self.old_secret.write_text('{"test":true}')
         self.stop_delay = {'test_real_pending_stop_finishes_before_restoration': '3',
+                          'test_real_killed_parent_keeps_stop_lock_and_resumes_after_response': '3',
                           'test_real_forced_stop_finishes_before_restoration': '30',
                           'test_real_unconfirmed_stop_never_restarts_previous_container': '30'}.get(self._testMethodName, '0')
         self.old = self.docker('run', '-d', '--name', self.name,
@@ -82,11 +84,14 @@ class RealDockerDeploymentTest(unittest.TestCase):
             'HOF_AUTH_ALLOWED_ORIGIN_PATTERNS': 'chrome-extension://*',
             'RELEASE_HOST_DIR': str(self.release), 'RELEASE_CONTAINER_DIR': '/var/lib/hof/releases',
             'DEPLOY_SECRET_DIR': str(self.root / 'secrets'), 'DEPLOY_HEALTH_SECONDS': '4',
+            'DEPLOY_STATE_DIR': str(self.root / 'deployment-state'),
         }
-        for key, content in [('REMOTE_ENV_FILE', 'TEST_HEALTH=UP\n'),
-                             ('REMOTE_FIREBASE_FILE', '{"test":true}'),
-                             ('REMOTE_RELEASE_ENV_FILE', 'HOF_RELEASE_PUBLISH_TOKEN=smoke-only\n')]:
-            path = self.root / key
+        transfers = tempfile.TemporaryDirectory(prefix='hof-deploy.', dir='/tmp')
+        self.addCleanup(transfers.cleanup)
+        for key, filename, content in [('REMOTE_ENV_FILE', 'backend.env', 'TEST_HEALTH=UP\n'),
+                             ('REMOTE_FIREBASE_FILE', 'firebase.json', '{"test":true}'),
+                             ('REMOTE_RELEASE_ENV_FILE', 'release.env', 'HOF_RELEASE_PUBLISH_TOKEN=smoke-only\n')]:
+            path = Path(transfers.name) / filename
             path.write_text(content)
             self.env[key] = str(path)
         self.addCleanup(self.remove_containers)
@@ -179,6 +184,35 @@ class RealDockerDeploymentTest(unittest.TestCase):
         self.assertEqual(0o600, Path(secret['Source']).stat().st_mode & 0o777)
         self.assertEqual(str(self.release), mounts['/var/lib/hof/releases']['Source'])
         self.assertFalse(mounts['/var/lib/hof/releases']['RW'])
+        self.wait_healthy()
+
+    def test_real_killed_parent_keeps_stop_lock_and_resumes_after_response(self):
+        self.env['DEPLOY_HEALTH_SECONDS'] = '6'
+        first = subprocess.Popen([sys.executable, str(SCRIPT)], env=self.env,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: first.kill() if first.poll() is None else None)
+        directory = Path(self.env['DEPLOY_STATE_DIR'])
+        deadline = time.monotonic() + 10
+        while not list(directory.glob('*-stop-*.json')):
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.02)
+        first.kill()
+        first.communicate(timeout=3)
+        self.assertEqual(-signal.SIGKILL, first.returncode)
+        second = self.deploy()
+        self.assertEqual(75, second.returncode, second.stdout + second.stderr)
+        receipt = next(directory.glob('*-stop-*.json'))
+        while json.loads(receipt.read_text())['exit_code'] is None:
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.1)
+        result = self.deploy()
+        self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+        self.assertIn('rollback_healthy', result.stdout)
+        current = json.loads(self.docker('container', 'inspect', self.name))[0]
+        self.assertEqual(self.old, current['Id'])
+        self.wait_healthy()
+        repeated = self.deploy()
+        self.assertEqual(1, repeated.returncode, repeated.stdout + repeated.stderr)
         self.wait_healthy()
 
 
