@@ -20,6 +20,10 @@ import org.springframework.test.context.bean.override.mockito.MockitoSpyBean
 import app.spammy.hof.town.raid.model.RaidAction
 import app.spammy.hof.automation.entity.*
 import app.spammy.hof.automation.port.AutomationWakeupPort
+import app.spammy.hof.automation.kafka.AutomationWakeupConsumer
+import app.spammy.hof.automation.kafka.KafkaAutomationWakeupAdapter
+import app.spammy.hof.automation.lease.AccountAutomationLeaseService
+import app.spammy.hof.automation.outbox.*
 import app.spammy.hof.battle.dto.BattlePatternLoadRequest
 import app.spammy.hof.character.entity.CharacterEntity
 import app.spammy.hof.common.time.TimeProvider
@@ -52,6 +56,8 @@ import org.springframework.test.context.ActiveProfiles
 import org.springframework.test.context.bean.override.mockito.MockitoBean
 import org.springframework.transaction.PlatformTransactionManager
 import org.springframework.transaction.support.TransactionTemplate
+import org.springframework.kafka.support.Acknowledgment
+import tools.jackson.databind.ObjectMapper
 
 @SpringBootTest(properties = ["hof.automation-convergence.mode=ACTIVE"])
 @ActiveProfiles("test")
@@ -64,12 +70,19 @@ class AutomationRecoveryIntegrationTest {
     @Autowired private lateinit var transactions: PlatformTransactionManager
     @Autowired private lateinit var jdbc: JdbcTemplate
     @Autowired private lateinit var clock: RecoveryClock
+    @Autowired private lateinit var publisher: AutomationOutboxPublisher
+    @Autowired private lateinit var outbox: AutomationOutboxQueryRepository
+    @Autowired private lateinit var transport: ConsumerReplayTransport
+    @Autowired private lateinit var battleMaps: app.spammy.hof.battle.service.BattleMapService
+    @Autowired private lateinit var application: UnifiedAutomationService
+    @Autowired private lateinit var recoveryQuery: app.spammy.hof.automation.recovery.AutomationRecoveryDueAccountQuery
+    @Autowired private lateinit var lifecycle: TypedAutomationLifecycleBridge
     @MockitoBean private lateinit var gateway: HofGateway
     @MockitoSpyBean private lateinit var decisions: AutomationDecisionSource
     @MockitoSpyBean private lateinit var raidModule: RaidCycleModule
     @MockitoBean private lateinit var preflight: AutomationDailyPreflight
     @MockitoBean private lateinit var authorization: AccountExecutionAuthorizationReader
-    @MockitoBean private lateinit var wakeups: AutomationWakeupPort
+    @Autowired private lateinit var wakeups: AutomationWakeupPort
 
     private var accountId = 0L
     private var entryId = 0L
@@ -84,6 +97,7 @@ class AutomationRecoveryIntegrationTest {
 
     @BeforeEach
     fun prepareAccount() {
+        transport.delivered.clear()
         clock.current = Instant.parse("2026-09-04T00:00:00Z")
         TransactionTemplate(transactions).executeWithoutResult {
             val account = HofAccountEntity(loginId = "recovery-${UUID.randomUUID()}", encryptedPassword = "test", createdAt = clock.now())
@@ -129,12 +143,14 @@ class AutomationRecoveryIntegrationTest {
 
     @AfterEach
     fun removeAccount() {
+        transport.delivered.forEach { jdbc.update("delete from automation_consumed_events where event_id = ?", it) }
         if (accountId != 0L) jdbc.update("delete from hof_accounts where id = ?", accountId)
     }
 
     @Test
     fun `패턴 IO 실패는 미전송으로 끝나고 새 판단에서 유니온 전투를 한 번만 제출한다`() {
-        runner.runOne(accountId)
+        wakeups.wake(accountId, "CONTINUITY_BASELINE")
+        publisher.publishBatch()
 
         assertEquals(2, patternCalls)
         assertEquals(0, battleRequests().size)
@@ -145,11 +161,14 @@ class AutomationRecoveryIntegrationTest {
         assertTrue(store.findActiveScopes(accountId).isEmpty())
         val retryAt = jdbc.queryForObject("select next_attempt_at from typed_automation_runtime_states where account_id = ?",
             java.time.OffsetDateTime::class.java, accountId)!!.toInstant()
-        assertTrue(retryAt.isAfter(clock.now()))
+        assertEquals(clock.now().plusSeconds(10), retryAt)
+        assertScheduledWake("HOF_503_COOLDOWN", retryAt)
+        assertEquals("HOF_CONNECTION", jdbc.queryForObject(
+            "select wait_reason from typed_automation_runtime_states where account_id = ?", String::class.java, accountId))
 
         failedPattern = -1
         clock.current = retryAt
-        runner.runOne(accountId)
+        publisher.publishBatch()
 
         val completed = runs().last()
         assertEquals("SUCCEEDED", completed["status"], completed.toString())
@@ -158,18 +177,186 @@ class AutomationRecoveryIntegrationTest {
         assertEquals(listOf(characters[0], characters[1], characters[1], characters[2]),
             requests.filter { it.url.contains("?char=") }.map { it.url.substringAfter("?char=") })
         assertTrue(store.findSuppressedBaselines(accountId).isEmpty())
+        assertEquals(2, transport.delivered.size)
+        assertTrue(transport.delivered.all { outbox.consumed(it) })
+        assertEquals(0, jdbc.queryForObject("select count(*) from account_automation_leases where account_id = ?", Int::class.java, accountId))
+        assertNull(jdbc.queryForObject("select lease_token from typed_automation_runtime_states where account_id = ?", String::class.java, accountId))
     }
 
     @Test
     fun `실제 전투 응답 유실은 미전송으로 바꾸거나 전투를 즉시 재제출하지 않는다`() {
         failedPattern = -1
         failBattle = true
-        runner.runOne(accountId)
+        wakeups.wake(accountId, "LOST_BATTLE_BASELINE")
+        publisher.publishBatch()
         assertEquals(1, battleRequests().size)
         assertEquals("AMBIGUOUS", runs().single()["status"])
         assertNotNull(runs().single()["submitted_at"])
-        runner.runOne(accountId)
+        consumeNextWake()
         assertEquals(1, battleRequests().size)
+    }
+
+    @Test
+    fun `정상 낚시는 START CATCH 뒤 작업권을 놓고 후속 유휴 판단을 계속 소비한다`() {
+        setupFishing()
+        wakeups.wake(accountId, "FISHING_CONTINUITY_BASELINE")
+        publisher.publishBatch()
+
+        assertEquals(listOf("FStart", "FCatch"), fishingPosts())
+        assertEquals(listOf("SUCCEEDED", "SUCCEEDED"), runs().map { it["status"] }, runs().toString())
+        assertEquals(2, runs().map { it["execution_identity"] }.distinct().size)
+        assertEquals(0, runningWorkCount())
+        consumeNextWake()
+        val firstIdle = journal.page(accountId, AutomationHistoryQuery()).cycles
+        assertEquals(2, firstIdle.size)
+        val idleAt = clock.now()
+        assertScheduledWake("TYPED_NEXT_ROUND", idleAt.plusSeconds(3))
+        consumeNextWake()
+        assertEquals(idleAt.plusSeconds(3), clock.now())
+        assertEquals(3, journal.page(accountId, AutomationHistoryQuery()).cycles.size)
+        assertEquals(listOf("FStart", "FCatch"), fishingPosts())
+        assertEquals(0, runningWorkCount())
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    fun `현행 CATCH 방해 전투의 동일 판단 연결과 맵 미관측 편차를 재현한다`(mapPreviouslyObserved: Boolean) {
+        setupFishing(obstruction = true)
+        if (mapPreviouslyObserved) {
+            assertTrue(battleMaps.findMaps(accountId, "battle_map").any { it.mapCode == "fishing_12" })
+            requests.clear()
+        }
+        wakeups.wake(accountId, "FISHING_OBSTRUCTION_BASELINE")
+        publisher.publishBatch()
+
+        assertEquals(listOf("FStart", "FCatch"), fishingPosts())
+        // Known ADR-0008 deviation: ticket 08 must replace this characterization
+        // with a new-decision, separate-battle-cycle contract before completion.
+        assertEquals(3, runs().size, runs().toString())
+        assertEquals(1, journal.page(accountId, AutomationHistoryQuery()).cycles.size)
+        if (mapPreviouslyObserved) {
+            assertEquals(listOf("SUCCEEDED", "SUCCEEDED", "SUCCEEDED"), runs().map { it["status"] }, runs().toString())
+            assertEquals(1, requests.count { it.method == HofHttpMethod.POST && it.url.contains("common=fishing_12") })
+            consumeNextWake()
+            assertEquals(2, journal.page(accountId, AutomationHistoryQuery()).cycles.size)
+        } else {
+            // Direct CATCH has a target, but the current same-cycle handoff skips
+            // fresh map validation/catalog synchronization before runBattle.
+            assertEquals(listOf("SUCCEEDED", "SUCCEEDED", "RECONCILING"), runs().map { it["status"] })
+            assertEquals("Battle submission outcome is not provable; it will not be resent.", runs().last()["last_error"])
+            assertEquals(0, requests.count { it.method == HofHttpMethod.POST && it.url.contains("common=fishing_12") })
+            assertEquals(0, jdbc.queryForObject("select count(*) from account_battle_map_states where account_id = ?", Int::class.java, accountId))
+            consumeNextWake()
+            assertEquals(0, requests.count { it.method == HofHttpMethod.POST && it.url.contains("common=fishing_12") })
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["SETTINGS", "PAUSE", "AUTH"])
+    fun `설정 정지와 사용자 일시정지와 인증 중단 뒤 최신 상태로 낚시 판단을 재개한다`(boundary: String) {
+        setupFishing()
+        wakeups.wake(accountId, "BEFORE_CONTROL_CHANGE")
+        when (boundary) {
+            "SETTINGS" -> application.updateFishing(accountId, app.spammy.hof.automation.dto.UpdateFishingAutomationRequest(false))
+            "PAUSE" -> application.pauseTyped(accountId)
+            "AUTH" -> {
+                Mockito.`when`(authorization.isExecutionAllowed(accountId)).thenReturn(false)
+                TransactionTemplate(transactions).executeWithoutResult {
+                    lifecycle.suspendForAuthentication(accountId, "AUTH_SUSPEND_BASELINE")
+                }
+            }
+        }
+        consumeNextWake()
+        assertTrue(fishingPosts().isEmpty())
+        assertTrue(runs().isEmpty())
+        val beforeResume = journal.page(accountId, AutomationHistoryQuery()).cycles.size
+        when (boundary) {
+            "SETTINGS" -> application.updateFishing(accountId, app.spammy.hof.automation.dto.UpdateFishingAutomationRequest(true))
+            "PAUSE" -> application.resumeTyped(accountId)
+            "AUTH" -> {
+                Mockito.`when`(authorization.isExecutionAllowed(accountId)).thenReturn(true)
+                TransactionTemplate(transactions).executeWithoutResult {
+                    assertTrue(lifecycle.resumeAfterAuthentication(accountId, "AUTH_RESUME_BASELINE"))
+                }
+            }
+        }
+        consumeNextWake()
+        assertEquals(listOf("FStart", "FCatch"), fishingPosts())
+        assertEquals(listOf("SUCCEEDED", "SUCCEEDED"), runs().map { it["status"] })
+        assertEquals(0, runningWorkCount())
+        assertTrue(journal.page(accountId, AutomationHistoryQuery()).cycles.size > beforeResume)
+        val beforeIdle = journal.page(accountId, AutomationHistoryQuery()).cycles.size
+        consumeNextWake()
+        assertEquals(beforeIdle + 1, journal.page(accountId, AutomationHistoryQuery()).cycles.size)
+        assertEquals(listOf("FStart", "FCatch"), fishingPosts())
+    }
+
+    @Test
+    fun `프로세스 시작 복구는 만료된 runtime lease의 계정을 깨워 행동과 후속 판단을 이어간다`() {
+        setupFishing()
+        jdbc.update("update typed_automation_runtime_states set lease_token = ?, lease_until = ?, next_attempt_at = ? where account_id = ?",
+            UUID.randomUUID().toString(), java.sql.Timestamp.from(clock.now().minusSeconds(1)),
+            java.sql.Timestamp.from(clock.now().minusSeconds(1)), accountId)
+        assertTrue(recoveryQuery.findDueAccountIds(clock.now()).contains(accountId))
+        app.spammy.hof.automation.recovery.AutomationRecoveryScheduler(recoveryQuery, wakeups, clock).recoverOnStartup()
+        consumeNextWake()
+        assertEquals(listOf("FStart", "FCatch"), fishingPosts())
+        assertEquals(listOf("SUCCEEDED", "SUCCEEDED"), runs().map { it["status"] })
+        consumeNextWake()
+        assertEquals(2, journal.page(accountId, AutomationHistoryQuery()).cycles.size)
+        assertEquals(listOf("FStart", "FCatch"), fishingPosts())
+        assertNull(jdbc.queryForObject("select lease_token from typed_automation_runtime_states where account_id = ?", String::class.java, accountId))
+    }
+
+    private fun runningWorkCount() = jdbc.queryForObject(
+        "select count(*) from automation_work_sessions where account_id = ? and status = 'RUNNING'", Int::class.java, accountId)
+
+    private fun fishingPosts() = requests.mapNotNull { request ->
+        val action = listOf("FStart", "FCatch").singleOrNull { it in request.formFields } ?: return@mapNotNull null
+        assertEquals(HofHttpMethod.POST, request.method)
+        assertEquals("https://hof.zerosic.com/index.php?menu=fishing", request.url)
+        assertEquals(if (action == "FStart") "낚시를 시작한다" else "낚는다", request.formFields[action])
+        action
+    }
+
+    private fun setupFishing(obstruction: Boolean = false) {
+        Mockito.doCallRealMethod().`when`(decisions).select(accountId)
+        TransactionTemplate(transactions).executeWithoutResult {
+            val entry = entityManager.find(AutomationEntryEntity::class.java, entryId)
+            entry.type = AutomationType.FISHING
+            entry.singletonTypeMarker = AutomationType.FISHING
+            val preset = PartyPresetEntity(account = entry.account, name = "낚시 파티", createdAt = clock.now(), updatedAt = clock.now(), isPrimary = true)
+            entityManager.persist(preset)
+            val character = entityManager.createQuery("select c from CharacterEntity c where c.account.id = :id", CharacterEntity::class.java)
+                .setParameter("id", accountId).resultList.first()
+            val pattern = CharacterPatternSlotEntity(character = character, slotCode = "1", label = "기본", canLoad = true)
+            entityManager.persist(pattern)
+            entityManager.persist(PartyPresetMemberEntity(preset, 0, character, pattern))
+        }
+        val header = "<div id='menu2'>Funds : $ 1 Time : 100/100</div>"
+        fun fixture(name: String) = requireNotNull(javaClass.getResource("/fixtures/town/fishing/$name.html")).readText()
+        var phase = "reset"
+        Mockito.doAnswer { invocation ->
+            val request = invocation.arguments[1] as HofRequest
+            requests += request
+            val body = when {
+                request.url.contains("?char=") -> header
+                "FStart" in request.formFields -> { phase = "waiting"; fixture("waiting") }
+                "FCatch" in request.formFields -> {
+                    phase = if (obstruction) "monster" else "exhausted"
+                    if (obstruction) fixture("caught").substringBefore("<form") + fixture("monster") + "</main>" else fixture("caught")
+                }
+                request.method == HofHttpMethod.POST -> {
+                    phase = "exhausted"
+                    """$header<h2>Show Detail( 1 turns. )</h2><h1>테스트은(는) 승리했다!</h1>
+                    <div>남은 HP : 0/100 생존자 : 0/1 총 데미지 : 0</div>
+                    <div>남은 HP : 100/100 생존자 : 1/1 총 데미지 : 100 턴 : 1/100 획득 경험치 : 1 획득 Funds : $ 1</div>"""
+                }
+                request.url.contains("menu=fishing") -> if (phase == "exhausted") fixture("reset").replace("18회", "0회") else fixture(phase)
+                else -> "<a href='index.php?common=fishing_12'>낚시 전투</a>"
+            }
+            HofHttpResponse(200, request.url, header + body, emptyMap())
+        }.`when`(gateway).execute(Mockito.eq(accountId), anyRequest(), Mockito.anyMap())
     }
 
     @Test
@@ -229,7 +416,8 @@ class AutomationRecoveryIntegrationTest {
 
         val selected = assertIs<AutomationCoordination.Runnable>(decisions.select(accountId))
         assertEquals(quests[1].id, assertIs<HomeQuestAutomationAction>(selected.action).questId)
-        runner.runOne(accountId)
+        wakeups.wake(accountId, "CANDIDATE_CONTINUITY_BASELINE")
+        publisher.publishBatch()
 
         assertEquals(1, requests.count { it.formFields["action"] == "get" && it.formFields["no"] == "B" })
         assertEquals(0, requests.count { it.formFields["action"] == "get" && it.formFields["no"] == "A" })
@@ -240,6 +428,12 @@ class AutomationRecoveryIntegrationTest {
         assertEquals(a.id, diagnostic["excludedCandidates"][0]["targetKey"].asString())
         assertEquals(if (result == ActionConvergenceResult.HELD) "이전 행동 결과를 확정하지 못해 해당 범위를 보류했습니다. 최신 상태의 복구 조건을 확인하면 해제합니다."
             else "이전 행동 결과를 확인 중이라 해당 범위만 잠시 건너뜁니다.", diagnostic["excludedCandidates"][0]["reasonMessage"].asString())
+        assertEquals(1, transport.delivered.size)
+        consumeNextWake()
+        assertEquals(2, journal.page(accountId, AutomationHistoryQuery()).cycles.size)
+        assertEquals(1, requests.count { it.formFields["action"] == "get" && it.formFields["no"] == "B" })
+        assertEquals(0, requests.count { it.formFields["action"] == "get" && it.formFields["no"] == "A" })
+        assertEquals(0, jdbc.queryForObject("select count(*) from account_automation_leases where account_id = ?", Int::class.java, accountId))
     }
 
     @ParameterizedTest
@@ -288,7 +482,8 @@ class AutomationRecoveryIntegrationTest {
 
         val selected = assertIs<AutomationCoordination.Runnable>(decisions.select(accountId))
         assertEquals(quests[1].questKey, assertIs<QuestAction.Accept>(selected.action).questKey)
-        runner.runOne(accountId)
+        wakeups.wake(accountId, "WAITING_CONTINUITY_BASELINE")
+        publisher.publishBatch()
 
         assertEquals(1, requests.count { it.formFields["action"] == "get" && it.formFields["no"] == "B" })
         assertEquals(0, requests.count { it.formFields["action"] == "get" && it.formFields["no"] == "A" })
@@ -301,6 +496,10 @@ class AutomationRecoveryIntegrationTest {
         assertEquals(a.questKey, diagnostic["excludedCandidates"][0]["targetKey"].asString())
         assertEquals(if (result == ActionConvergenceResult.HELD) "이전 행동 결과를 확정하지 못해 해당 범위를 보류했습니다. 최신 상태의 복구 조건을 확인하면 해제합니다."
             else "이전 행동 결과를 확인 중이라 해당 범위만 잠시 건너뜁니다.", diagnostic["excludedCandidates"][0]["reasonMessage"].asString())
+        consumeNextWake()
+        assertEquals(2, journal.page(accountId, AutomationHistoryQuery()).cycles.size)
+        assertEquals(1, requests.count { it.formFields["action"] == "get" && it.formFields["no"] == "B" })
+        assertEquals(0, requests.count { it.formFields["action"] == "get" && it.formFields["no"] == "A" })
     }
 
     @ParameterizedTest
@@ -333,7 +532,8 @@ class AutomationRecoveryIntegrationTest {
             HofHttpResponse(200, url, page(), emptyMap())
         }.`when`(gateway).execute(Mockito.eq(accountId), anyRequest(), Mockito.anyMap())
 
-        runner.runOne(accountId)
+        wakeups.wake(accountId, "WAITING_CONTINUITY_BASELINE")
+        publisher.publishBatch()
 
         assertEquals(1, requests.count { it.formFields["action"] == "get" && it.formFields["no"] == "B" })
         val history = journal.page(accountId, AutomationHistoryQuery()).cycles.single()
@@ -351,7 +551,9 @@ class AutomationRecoveryIntegrationTest {
         assertEquals(retryAt, jdbc.queryForObject(
             "select next_check_at from automation_work_sessions where account_id = ? and work_type = 'RAID'",
             java.sql.Timestamp::class.java, accountId)?.toInstant())
-        journal.appendDecision(accountId, AutomationCoordination.Idle(emptyList()))
+        consumeNextWake()
+        assertEquals(2, journal.page(accountId, AutomationHistoryQuery()).cycles.size)
+        assertEquals(1, requests.count { it.formFields["action"] == "get" && it.formFields["no"] == "B" })
         assertEquals(raidEvent, journal.page(accountId, AutomationHistoryQuery()).cycles.first { it.id == history.id }.steps.first().event)
     }
 
@@ -431,7 +633,8 @@ class AutomationRecoveryIntegrationTest {
         setupRaid(loseFirstRegistration = true)
         runner.runOne(accountId)
         nextRun()
-        nextRun() // 기존 작업권 양보
+        assertEquals(1, registerRequests().size)
+        assertTrue(store.findActiveScopes(accountId).isNotEmpty(), "로그아웃은 신청 결과가 미확정인 경계에서 발생해야 한다.")
         val postsBeforeLogout = requests.count { it.method == HofHttpMethod.POST }
         Mockito.`when`(authorization.isExecutionAllowed(accountId)).thenReturn(false)
         nextRun()
@@ -537,7 +740,28 @@ class AutomationRecoveryIntegrationTest {
         val probeAt = jdbc.queryForObject("select min(next_probe_at) from automation_action_convergences where account_id = ? and active_marker = 1",
             java.time.OffsetDateTime::class.java, accountId)?.toInstant() ?: clock.now()
         clock.current = maxOf(nextRetryAt(), probeAt)
-        runner.runOne(accountId)
+        consumeNextWake()
+    }
+
+    private fun consumeNextWake() {
+        val next = jdbc.queryForObject(
+            "select min(available_at) from automation_outbox where account_id = ? and topic = ? and published_at is null",
+            java.time.OffsetDateTime::class.java, accountId, AutomationOutboxService.WAKEUP_TOPIC)?.toInstant()
+        assertNotNull(next, "행동 수렴 뒤 실제 소비할 후속 wakeup이 있어야 한다.")
+        clock.current = maxOf(clock.now(), next)
+        val before = transport.delivered.size
+        publisher.publishBatch()
+        assertTrue(transport.delivered.size > before)
+        assertTrue(transport.delivered.all { outbox.consumed(it) })
+        assertEquals(0, jdbc.queryForObject("select count(*) from account_automation_leases where account_id = ?", Int::class.java, accountId))
+    }
+
+    private fun assertScheduledWake(reason: String, at: Instant) {
+        val payloads = jdbc.queryForList(
+            "select payload from automation_outbox where account_id = ? and topic = ? and available_at = ? and published_at is null",
+            String::class.java, accountId, AutomationOutboxService.WAKEUP_TOPIC, java.sql.Timestamp.from(at))
+        assertTrue(payloads.any { jacksonObjectMapper().readTree(it)["reason"].asString() == reason },
+            "$reason wake가 $at 에 예약되어 있어야 한다.")
     }
 
     private fun battle() = BattleMapAutomationAction(accountId, LocalDate.of(2026, 9, 4), "union", "0003",
@@ -556,8 +780,30 @@ class AutomationRecoveryIntegrationTest {
         override fun now(): Instant = current
     }
 
+    /** Only broker delivery is replaced; production consumer, lease and runtime are real. */
+    class ConsumerReplayTransport(private val consumer: AutomationWakeupConsumer) : AutomationOutboxTransport {
+        override val supportedTopics = setOf(AutomationOutboxService.WAKEUP_TOPIC)
+        val delivered = mutableListOf<String>()
+        override fun publish(row: AutomationOutboxEntity) {
+            var acknowledged = false
+            consumer.consume(row.payload, Acknowledgment { acknowledged = true })
+            check(acknowledged) { "Wake was not consumed: ${row.eventId}" }
+            delivered += row.eventId
+        }
+    }
+
     @TestConfiguration
     class Config {
         @Bean @Primary fun recoveryClock() = RecoveryClock()
+        @Bean @Primary
+        fun durableWakeups(outbox: AutomationOutboxService): AutomationWakeupPort = KafkaAutomationWakeupAdapter(outbox)
+        @Bean @Primary
+        fun consumerReplayTransport(
+            mapper: ObjectMapper,
+            consumed: AutomationConsumedEventService,
+            lease: AccountAutomationLeaseService,
+            runner: UnifiedAutomationRunner,
+            clock: TimeProvider,
+        ) = ConsumerReplayTransport(AutomationWakeupConsumer(mapper, consumed, lease, runner, clock))
     }
 }
