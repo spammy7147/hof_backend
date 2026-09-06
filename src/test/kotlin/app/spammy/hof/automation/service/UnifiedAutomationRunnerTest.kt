@@ -83,7 +83,7 @@ class UnifiedAutomationRunnerTest {
     private val preparedExecution = executionRight(
         TypedRuntimeCheckpoint(defaultStored, TypedRuntimeCheckpointPhase.PREPARED, null, null),
     )
-    private val runner = UnifiedAutomationRunner(
+    private val runner = buildRunner(
         preflight,
         runtime,
         decisions,
@@ -144,7 +144,7 @@ class UnifiedAutomationRunnerTest {
         val decision = AutomationCoordination.Runnable(12, action, listOf("parked warning"))
         Mockito.`when`(decisions.select(7)).thenReturn(decision)
         Mockito.`when`(journal.appendDecision(Mockito.eq(7L), anyCoordination())).thenReturn(41L)
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -254,7 +254,7 @@ class UnifiedAutomationRunnerTest {
             transitions.catchApplied(command, caught)
             FishingCycleResult.Completed(start, caught)
         }
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -373,7 +373,7 @@ class UnifiedAutomationRunnerTest {
                 transitions.catchApplied(command, caught)
                 FishingCycleResult.Completed(start, caught)
             }
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -487,7 +487,7 @@ class UnifiedAutomationRunnerTest {
                 transitions.battleRequired(command, start)
                 FishingCycleResult.BattleRequired(start)
             }
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -560,7 +560,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(runtime.persistPrepared(freshExecution, catchStored, emptyList()))
             .thenReturn(TypedRuntimePreparation.Ready(catchPrepared))
         Mockito.`when`(runtime.beginSubmission(catchPrepared)).thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -623,7 +623,7 @@ class UnifiedAutomationRunnerTest {
             .thenReturn(ConvergenceDirective.Submit(205L))
         Mockito.`when`(convergence.record(Mockito.eq(205L), anyConvergenceEvidence()))
             .thenReturn(ConvergenceDirective.ContinueSelection)
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -661,7 +661,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(catchManaged.storedAction).thenReturn(stored)
         Mockito.`when`(catchManaged.descriptor).thenReturn(fishingDescriptor("CATCH"))
         Mockito.`when`(catchManaged.cycleObservation).thenReturn(null)
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -705,7 +705,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(startManaged.storedAction).thenReturn(stored)
         Mockito.`when`(startManaged.descriptor).thenReturn(fishingDescriptor("START"))
         Mockito.`when`(startManaged.cycleObservation).thenReturn(null)
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -753,7 +753,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(runtime.persistPrepared(freshExecution, catchStored, emptyList()))
             .thenReturn(TypedRuntimePreparation.Ready(catchPrepared))
         Mockito.`when`(runtime.beginSubmission(catchPrepared)).thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -803,7 +803,7 @@ class UnifiedAutomationRunnerTest {
             .thenReturn(ConvergenceDirective.Submit(205L))
         Mockito.`when`(convergence.record(Mockito.eq(205L), anyConvergenceEvidence()))
             .thenReturn(ConvergenceDirective.ContinueSelection)
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -845,7 +845,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(runtime.beginSubmission(startPrepared)).thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
         Mockito.`when`(cycleExecutor.executeOneCast(anyFishingCommand(), anyFishingTransitions()))
             .thenThrow(HofAutomationDeferredException(retryAt, 1, requestAttempted = true))
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -883,7 +883,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(runtime.beginSubmission(startPrepared)).thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
         Mockito.`when`(cycleExecutor.executeOneCast(anyFishingCommand(), anyFishingTransitions()))
             .thenThrow(ObservedTownActionPreconditionChangedException("낚시 START form 변경"))
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -925,7 +925,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(convergence.prepare(Mockito.eq(7L), anyConvergenceSelection()))
             .thenReturn(ConvergenceDirective.Submit(204L))
         val convergenceFactory = StoredActionConvergenceSelectionFactory()
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -974,7 +974,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(startManaged.reconcile()).thenReturn(
             AmbiguousActionResolution.Held("아직 START 화면이라 낚시만 보류합니다."),
         )
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -1170,7 +1170,7 @@ class UnifiedAutomationRunnerTest {
                 AutomationConvergenceProperties(mode = AutomationConvergenceMode.SHADOW),
             ),
         )
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             selector,
@@ -1211,7 +1211,7 @@ class UnifiedAutomationRunnerTest {
                 anyConvergenceEvidence(),
                 anyLegacyConvergenceDecision(),
             )
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -1255,7 +1255,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.doThrow(AmbiguousAutomationSubmissionException("legacy result requires reconciliation"))
             .`when`(managed)
             .applyLegacyExecution(anyTypedExecution())
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -1380,7 +1380,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(managed.storedAction).thenReturn(stored)
         Mockito.`when`(managed.reconcile()).thenReturn(AmbiguousActionResolution.Resubmit)
 
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -1425,7 +1425,7 @@ class UnifiedAutomationRunnerTest {
         )
         val store = InMemoryConvergenceStore()
         val factory = StoredActionConvergenceSelectionFactory()
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -1478,7 +1478,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(managed.reconcile()).thenThrow(HofAutomationDeferredException(retryAt, 1))
         val store = InMemoryConvergenceStore()
         val factory = StoredActionConvergenceSelectionFactory()
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -1530,7 +1530,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(managed.reconcile()).thenThrow(
             AmbiguousAutomationSubmissionException("HOF request failed while reconciling"),
         )
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -1572,7 +1572,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(managed.reconcile()).thenReturn(
             AmbiguousActionResolution.VerifyLater(observedAt.plusSeconds(10), "still unchanged"),
         )
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -1614,7 +1614,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(managed.reconcile()).thenReturn(
             AmbiguousActionResolution.VerifyLater(retryAt, "still unchanged"),
         )
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -1734,7 +1734,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(managed.execute()).thenReturn(
             TypedAutomationExecution.SharedCooldown("raid", "castle", retryAt),
         )
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -1857,7 +1857,7 @@ class UnifiedAutomationRunnerTest {
             remoteRequests += listOf("pattern-2", "pattern-3", "battle")
             TypedAutomationExecution.BattleCompleted("raid", "castle", listOf("VICTORY"))
         }.`when`(managed).execute()
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -2040,7 +2040,7 @@ class UnifiedAutomationRunnerTest {
                 automationPostsEnabled = false,
             ),
         )
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -2079,7 +2079,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(managed.execute())
             .thenReturn(TypedAutomationExecution.BattleCompleted("raid", "castle"))
         Mockito.`when`(journal.appendDecision(Mockito.eq(7L), anyCoordination())).thenReturn(41L)
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -2134,7 +2134,7 @@ class UnifiedAutomationRunnerTest {
             ),
         )
         Mockito.`when`(journal.appendDecision(Mockito.eq(7L), anyCoordination())).thenReturn(41L)
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -2194,7 +2194,7 @@ class UnifiedAutomationRunnerTest {
             ),
         )
         Mockito.`when`(journal.appendDecision(Mockito.eq(7L), anyCoordination())).thenReturn(41L)
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -2233,7 +2233,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(convergence.record(Mockito.eq(99L), anyConvergenceEvidence()))
             .thenReturn(ConvergenceDirective.ContinueSelection)
         Mockito.`when`(managed.execute()).thenReturn(questClaimExecution())
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -2268,7 +2268,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(convergence.record(Mockito.eq(111L), anyConvergenceEvidence())).thenReturn(
             ConvergenceDirective.WaitUntil(probeAt, selection.scope),
         )
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -2305,7 +2305,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(convergence.record(Mockito.eq(112L), anyConvergenceEvidence()))
             .thenReturn(ConvergenceDirective.ContinueSelection)
         Mockito.`when`(managed.execute()).thenReturn(rejected)
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -2335,7 +2335,7 @@ class UnifiedAutomationRunnerTest {
         )
         Mockito.`when`(runtime.persistPrepared(anyExecution(), anyStoredAction(), anyWarnings()))
             .thenThrow(IllegalStateException("checkpoint write failed"))
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -2366,7 +2366,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(convergence.record(Mockito.eq(106L), anyConvergenceEvidence()))
             .thenReturn(ConvergenceDirective.ContinueSelection)
         Mockito.doThrow(IllegalStateException("unexpected adapter failure")).`when`(managed).execute()
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -2400,7 +2400,7 @@ class UnifiedAutomationRunnerTest {
         )
         Mockito.doThrow(HofAutomationDeferredException(retryAt, 1, requestAttempted = true))
             .`when`(managed).execute()
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -2433,7 +2433,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.doThrow(
             AutomationActionPreconditionChangedException("최신 상태에서 저장 행동의 사전조건이 사라졌습니다."),
         ).`when`(managed).execute()
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -2468,7 +2468,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.doThrow(
             AutomationPreSubmitObservationIncompleteException("최신 전투 맵을 완전하게 관측하지 못했습니다."),
         ).`when`(managed).validateBeforeSubmission()
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -2508,7 +2508,7 @@ class UnifiedAutomationRunnerTest {
                 sanitizedSnippet = "BattleHttpResponse|status=200|rounds=1|outcomes=UNKNOWN",
             ),
         ).`when`(managed).execute()
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -2562,7 +2562,7 @@ class UnifiedAutomationRunnerTest {
         )
         Mockito.doThrow(AmbiguousAutomationSubmissionException("전투 응답 시간 초과"))
             .`when`(managed).execute()
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -2602,7 +2602,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(convergence.record(Mockito.eq(99L), anyConvergenceEvidence()))
             .thenReturn(ConvergenceDirective.ContinueSelection)
         Mockito.`when`(decisions.select(7L)).thenReturn(AutomationCoordination.Idle(emptyList()))
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -2648,7 +2648,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(convergence.record(Mockito.eq(100L), anyConvergenceEvidence()))
             .thenReturn(ConvergenceDirective.ContinueSelection)
         Mockito.`when`(managed.execute()).thenReturn(questClaimExecution())
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -2688,7 +2688,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(managed.reconcile()).thenReturn(AmbiguousActionResolution.Resubmit)
         Mockito.`when`(convergence.record(Mockito.eq(109L), anyConvergenceEvidence()))
             .thenReturn(ConvergenceDirective.ContinueSelection)
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -2737,7 +2737,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(convergence.record(Mockito.eq(101L), anyConvergenceEvidence())).thenReturn(
             ConvergenceDirective.WaitUntil(probeAt, selection.scope),
         )
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -2785,7 +2785,7 @@ class UnifiedAutomationRunnerTest {
             ConvergenceDirective.BattleGateWait(Instant.EPOCH, "CAPTCHA_REQUIRED"),
         )
         Mockito.doThrow(ApiException(ErrorCode.CAPTCHA_REQUIRED, "captcha")).`when`(managed).execute()
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -2825,7 +2825,7 @@ class UnifiedAutomationRunnerTest {
             convergence.requireBattleGate(7L, null, ErrorCode.CAPTCHA_REQUIRED.name, Instant.EPOCH),
         ).thenReturn(ConvergenceDirective.BattleGateWait(Instant.EPOCH, ErrorCode.CAPTCHA_REQUIRED.name))
         Mockito.doThrow(ApiException(ErrorCode.CAPTCHA_REQUIRED, "captcha")).`when`(managed).execute()
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -2877,7 +2877,7 @@ class UnifiedAutomationRunnerTest {
             convergence.requireBattleGate(7L, null, ErrorCode.CAPTCHA_REQUIRED.name, Instant.EPOCH),
         ).thenReturn(ConvergenceDirective.BattleGateWait(Instant.EPOCH, ErrorCode.CAPTCHA_REQUIRED.name))
         Mockito.doThrow(ApiException(ErrorCode.CAPTCHA_REQUIRED, "captcha")).`when`(managed).execute()
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -2927,7 +2927,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.doThrow(ApiException(ErrorCode.CAPTCHA_REQUIRED, "captcha"))
             .`when`(managed)
             .validateBeforeSubmission()
-        val scoped = UnifiedAutomationRunner(
+        val scoped = buildRunner(
             preflight,
             runtime,
             decisions,
@@ -2947,13 +2947,53 @@ class UnifiedAutomationRunnerTest {
         Mockito.verify(runtime, Mockito.never()).beginSubmission(anyExecution())
     }
 
+    private fun buildRunner(
+        dailyPreflight: AutomationDailyPreflight,
+        typedRuntime: TypedAutomationRuntimeService,
+        decisionSource: AutomationDecisionSource,
+        wakeupPort: AutomationWakeupPort,
+        sharedBattleCooldowns: SharedBattleCooldownService,
+        actionLifecycleModule: AutomationActionLifecycleModule,
+        submissionGate: AccountExecutionSubmissionGate,
+        decisionJournal: AutomationDecisionJournal? = null,
+        convergenceModule: AutomationActionConvergenceModule? = null,
+        convergenceSelectionFactory: StoredActionConvergenceSelectionFactory? = null,
+        storedConvergenceActionLoader: StoredConvergenceActionLoader? = null,
+        timeProvider: TimeProvider? = null,
+        rollout: AutomationConvergenceRollout? = null,
+        shadowEvaluator: AutomationConvergenceShadowEvaluator? = null,
+        convergenceWorkPriority: AutomationConvergenceWorkPriority? = null,
+        evidenceInterpreter: ProductionActionEvidenceInterpreter? = null,
+        fishingCycleExecutor: FishingCycleExecutor? = null,
+    ) = UnifiedAutomationRunner(
+        dailyPreflight = dailyPreflight,
+        typedRuntime = typedRuntime,
+        decisionSource = decisionSource,
+        wakeupPort = wakeupPort,
+        sharedBattleCooldowns = sharedBattleCooldowns,
+        actionLifecycleModule = actionLifecycleModule,
+        submissionGate = submissionGate,
+        decisionJournal = decisionJournal,
+        convergenceModule = convergenceModule,
+        convergenceSelectionFactory = convergenceSelectionFactory,
+        timeProvider = timeProvider,
+        convergenceWorkPriority = convergenceWorkPriority,
+        evidenceInterpreter = evidenceInterpreter,
+        fishingCycleExecutor = fishingCycleExecutor,
+        results = AutomationResultCoordinator(
+            actionLifecycleModule, sharedBattleCooldowns, convergenceModule,
+            convergenceSelectionFactory, storedConvergenceActionLoader, timeProvider,
+            rollout, shadowEvaluator, evidenceInterpreter,
+        ),
+    )
+
     private fun capturedOutcome(): TypedRuntimeOutcome {
         val captor = ArgumentCaptor.forClass(TypedRuntimeOutcome::class.java)
         Mockito.verify(runtime).complete(anyExecution(), captureOutcome(captor))
         return captor.value
     }
 
-    private fun shadowRunner(shadow: AutomationConvergenceShadowEvaluator) = UnifiedAutomationRunner(
+    private fun shadowRunner(shadow: AutomationConvergenceShadowEvaluator) = buildRunner(
         preflight,
         runtime,
         decisions,

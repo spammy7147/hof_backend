@@ -3,14 +3,11 @@ package app.spammy.hof.automation.service
 import app.spammy.hof.automation.convergence.AutomationActionConvergenceModule
 import app.spammy.hof.automation.convergence.AutomationActionEvidence
 import app.spammy.hof.automation.convergence.AutomationConvergenceBudget
-import app.spammy.hof.automation.convergence.AutomationConvergenceRollout
-import app.spammy.hof.automation.convergence.AutomationConvergenceShadowEvaluator
 import app.spammy.hof.automation.convergence.ConvergenceDirective
 import app.spammy.hof.automation.convergence.LegacyConvergenceDecision
 import app.spammy.hof.automation.convergence.ProductionActionEvidenceInterpreter
 import app.spammy.hof.automation.convergence.SelectedAutomationAction
 import app.spammy.hof.automation.convergence.StoredActionConvergenceSelectionFactory
-import app.spammy.hof.automation.convergence.StoredConvergenceActionLoader
 import app.spammy.hof.automation.entity.AutomationWaitReason
 import app.spammy.hof.automation.history.*
 import app.spammy.hof.automation.port.AutomationWakeupPort
@@ -39,13 +36,12 @@ class UnifiedAutomationRunner @Autowired constructor(
     private val sharedBattleCooldowns: SharedBattleCooldownService,
     private val actionLifecycleModule: AutomationActionLifecycleModule,
     private val submissionGate: AccountExecutionSubmissionGate,
+    private val results: AutomationResultCoordinator,
     private val decisionJournal: AutomationDecisionJournal? = null,
+    // 낚시 단계별 연결은 08에서 같은 결과 조정으로 옮긴다.
     private val convergenceModule: AutomationActionConvergenceModule? = null,
     private val convergenceSelectionFactory: StoredActionConvergenceSelectionFactory? = null,
-    private val storedConvergenceActionLoader: StoredConvergenceActionLoader? = null,
     private val timeProvider: TimeProvider? = null,
-    private val rollout: AutomationConvergenceRollout? = null,
-    private val shadowEvaluator: AutomationConvergenceShadowEvaluator? = null,
     private val convergenceWorkPriority: AutomationConvergenceWorkPriority? = null,
     private val evidenceInterpreter: ProductionActionEvidenceInterpreter? = null,
     private val fishingCycleExecutor: FishingCycleExecutor? = null,
@@ -71,10 +67,9 @@ class UnifiedAutomationRunner @Autowired constructor(
                 if (!completingCurrentAction && !ensurePreflight(accountId, acquisition.execution)) return
                 val dueDirective = if (
                     !completingCurrentAction &&
-                    acquisition.execution.checkpoint == null &&
-                    convergenceActive()
+                    acquisition.execution.checkpoint == null
                 ) {
-                    convergenceModule?.resumeDue(accountId)
+                    results.resumeDue(accountId)
                 } else {
                     null
                 }
@@ -155,8 +150,7 @@ class UnifiedAutomationRunner @Autowired constructor(
         var decisionCycleId: Long? = continuedDecisionCycleId
         var selectedWarnings: List<String>? = continuedWarnings
         var convergenceAttemptId: Long? = null
-        var convergenceSelection: SelectedAutomationAction? = null
-        var evidenceSelection: SelectedAutomationAction? = null
+        var resultSelection = AutomationResultCoordinator.ActionSelection()
         lateinit var managedAction: ManagedAutomationAction
         val stored: StoredTypedAutomationAction
 
@@ -173,12 +167,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                 )
                 return
             }
-            if (rollout?.shadow == true) {
-                convergenceSelectionFactory?.create(stored)?.let { selection ->
-                    evidenceSelection = selection
-                    selectShadow(accountId, selection)
-                }
-            }
+            resultSelection = results.restoredSelection(accountId, stored)
         } else {
             val decision = try {
                 decisionSource.select(accountId)
@@ -325,24 +314,10 @@ class UnifiedAutomationRunner @Autowired constructor(
                 }
             }
             stored = managedAction.storedAction
-            val selectionFactory = convergenceSelectionFactory
-            if (selectionFactory != null && convergenceActive()) {
-                if (convergenceModule == null) {
-                    stopPreparationFailure(
-                        accountId,
-                        execution,
-                        stored.entryId,
-                        "CONVERGENCE_MODULE",
-                        IllegalStateException("Active convergence module is missing."),
-                    )
-                    return
-                }
-                convergenceSelection = selectionFactory.create(stored)
-                evidenceSelection = convergenceSelection
-            } else if (selectionFactory != null && rollout?.shadow == true) {
-                val selection = selectionFactory.create(stored)
-                evidenceSelection = selection
-                selectShadow(accountId, selection)
+            resultSelection = results.freshSelection(accountId, stored) ?: run {
+                stopPreparationFailure(accountId, execution, stored.entryId, "CONVERGENCE_MODULE",
+                    IllegalStateException("Active convergence module is missing."))
+                return
             }
             val preparation = try {
                 typedRuntime.persistPrepared(execution, stored, selectedWarnings.orEmpty())
@@ -362,19 +337,12 @@ class UnifiedAutomationRunner @Autowired constructor(
         }
 
         val activeCheckpoint = requireNotNull(checkpoint)
-        if ((continuedPreparedFollowup || resumedDeferredSubmission) && convergenceActive()) {
-            if (convergenceModule == null) {
-                stopPreparationFailure(
-                    accountId,
-                    execution,
-                    stored.entryId,
-                    "CONVERGENCE_MODULE",
-                    IllegalStateException("Active convergence module is missing."),
-                )
+        if (continuedPreparedFollowup || resumedDeferredSubmission) {
+            resultSelection = results.continuationSelection(stored, resultSelection) ?: run {
+                stopPreparationFailure(accountId, execution, stored.entryId, "CONVERGENCE_MODULE",
+                    IllegalStateException("Active convergence module is missing."))
                 return
             }
-            convergenceSelection = convergenceSelectionFactory?.create(stored)
-            evidenceSelection = convergenceSelection
         }
         val actionDescriptor = managedAction.descriptor
         fun trace(
@@ -444,21 +412,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             val successfulObservationCount = activeCheckpoint.successfulObservationCount + 1
             val firstPendingAt = activeCheckpoint.firstPendingAt ?: activeCheckpoint.submittedAt ?: observedAt
             val evidence = AutomationActionEvidence.ResultUnobserved(observedAt, resolution.reason)
-            convergenceSelectionFactory?.create(stored, activeCheckpoint.legacySuppressionEpoch)?.let { selection ->
-                convergenceModule?.holdUnresolved(
-                    accountId,
-                    selection,
-                    evidence,
-                    successfulObservationCount,
-                    firstPendingAt,
-                )
-            }
-            observeShadow(
-                accountId,
-                stored.executionIdentity,
-                evidence,
-                LegacyConvergenceDecision.RESULT_UNOBSERVED,
-            )
+            results.holdUnresolved(accountId, stored, activeCheckpoint, evidence, successfulObservationCount, firstPendingAt)
             typedRuntime.complete(
                 execution,
                 TypedRuntimeOutcome.AmbiguousHandoff(
@@ -476,36 +430,12 @@ class UnifiedAutomationRunner @Autowired constructor(
             }
         }
         fun closeBattleForCaptcha(error: Throwable): Boolean {
-            val captcha = error.findCaptchaRequired() ?: return false
-            val selection = convergenceSelection
-                ?: evidenceSelection
-                ?: convergenceSelectionFactory?.create(stored)
+            val gate = results.closeBattleForCaptcha(accountId, stored, resultSelection, convergenceAttemptId, error)
                 ?: return false
-            if (!selection.actionKind.battle) return false
-            val convergence = convergenceModule ?: return false
-            val evidence = AutomationActionEvidence.BattleGateRequired(
-                capturedAt = now(),
-                challengeId = null,
-                reason = ErrorCode.CAPTCHA_REQUIRED.name,
-            )
-            val directive = convergenceAttemptId?.let { attemptId ->
-                convergence.record(attemptId, evidence)
-            } ?: convergence.requireBattleGate(
-                accountId = accountId,
-                challengeId = null,
-                reason = ErrorCode.CAPTCHA_REQUIRED.name,
-                capturedAt = evidence.capturedAt,
-            )
-            observeShadow(
-                accountId,
-                stored.executionIdentity,
-                evidence,
-                LegacyConvergenceDecision.HELD,
-            )
             typedRuntime.complete(
                 execution,
                 TypedRuntimeOutcome.BattleGateBlocked(
-                    warning = captcha.message,
+                    warning = gate.warning,
                     wakeReason = TYPED_BATTLE_GATE_WAKE_REASON,
                 ),
             )
@@ -516,7 +446,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                     "캡차가 해결될 때까지 전투만 보류하고 저장된 전투는 폐기합니다.",
                 ))
             } }
-            scheduleConvergenceDirective(accountId, directive)
+            scheduleConvergenceDirective(accountId, gate.directive)
             return true
         }
         if (decisionCycleId == null) {
@@ -559,9 +489,9 @@ class UnifiedAutomationRunner @Autowired constructor(
             managedAction is ManagedFishingAutomationAction &&
             managedAction.cycleObservation == null
         ) {
-            if (convergenceActive()) {
-                convergenceSelectionFactory?.create(stored)?.let { selection ->
-                    convergenceModule?.discardUnsubmitted(
+            if (results.active) {
+                results.freshSelection(accountId, stored)?.policy?.let { selection ->
+                    results.discardUnsubmitted(
                         accountId = accountId,
                         selection = selection,
                         discardedAt = now(),
@@ -578,22 +508,11 @@ class UnifiedAutomationRunner @Autowired constructor(
             )
             return
         }
-        if (resumedLegacyCheckpoint && convergenceActive()) {
-            when (activeCheckpoint.phase) {
-                TypedRuntimeCheckpointPhase.PREPARED -> {
-                    typedRuntime.complete(
-                        execution,
-                        TypedRuntimeOutcome.PreparedDiscarded(
-                            warning = "Active convergence cutover discarded an unsubmitted legacy payload.",
-                            wakeReason = TYPED_CONVERGENCE_WAKE_REASON,
-                        ),
-                    )
-                    return
-                }
-                TypedRuntimeCheckpointPhase.RECONCILING -> {
-                    cutoverLegacyReconciliation(accountId, execution, managedAction, stored, activeCheckpoint)
-                    return
-                }
+        if (resumedLegacyCheckpoint) {
+            results.recoverLegacyCheckpoint(accountId, managedAction, stored, activeCheckpoint)?.let { recovery ->
+                typedRuntime.complete(execution, recovery.outcome)
+                recovery.directive?.let { scheduleConvergenceDirective(accountId, it) }
+                return
             }
         }
         if (activeCheckpoint.phase == TypedRuntimeCheckpointPhase.RECONCILING) {
@@ -683,13 +602,13 @@ class UnifiedAutomationRunner @Autowired constructor(
             }
             when (resolution) {
                 is AmbiguousActionResolution.Applied -> {
-                    observeShadow(
+                    results.observeShadow(
                         accountId,
                         stored.executionIdentity,
                         AutomationActionEvidence.StateAdvanced(now(), "advanced:${stored.executionIdentity}"),
                         LegacyConvergenceDecision.APPLIED,
                     )
-                    applyRecoveredExecution(accountId, resolution.execution)
+                    results.applyRecoveredExecution(accountId, resolution.execution)
                     typedRuntime.complete(
                         execution,
                         TypedRuntimeOutcome.ReconciliationApplied(recoveredWakeReason(resolution.execution)),
@@ -731,7 +650,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                         )
                         return
                     }
-                    observeShadow(
+                    results.observeShadow(
                         accountId,
                         stored.executionIdentity,
                         AutomationActionEvidence.SameState(observedAt, "same:${stored.executionIdentity}"),
@@ -757,7 +676,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                     )
                 }
                 is AmbiguousActionResolution.Superseded -> {
-                    observeShadow(
+                    results.observeShadow(
                         accountId,
                         stored.executionIdentity,
                         AutomationActionEvidence.StateAdvanced(now(), "superseded:${stored.executionIdentity}"),
@@ -780,7 +699,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                         capturedAt = now(),
                         reason = resolution.reason,
                     )
-                    observeShadow(
+                    results.observeShadow(
                         accountId,
                         stored.executionIdentity,
                         evidence,
@@ -824,7 +743,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                         )
                         return
                     }
-                    observeShadow(
+                    results.observeShadow(
                         accountId,
                         stored.executionIdentity,
                         AutomationActionEvidence.IncompleteObservation(observedAt, resolution.reason),
@@ -855,7 +774,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             return
         }
 
-        if (rollout?.automationPostsEnabled == false) {
+        if (!results.postsEnabled) {
             val retryAt = now().plusSeconds(POST_KILL_SWITCH_RECHECK_SECONDS)
             decisionCycleId?.let { cycleId -> runCatching {
                 decisionJournal?.appendActionResult(cycleId, trace(
@@ -907,13 +826,8 @@ class UnifiedAutomationRunner @Autowired constructor(
             return
         }
 
-        convergenceSelection?.let { selection ->
-            val convergence = requireNotNull(convergenceModule)
-            val directive = if (resumedDeferredSubmission) {
-                convergence.retryUnsubmitted(accountId, selection, now())
-            } else {
-                convergence.prepare(accountId, selection)
-            }
+        resultSelection.policy?.let { selection ->
+            val directive = results.prepare(accountId, selection, resumedDeferredSubmission)
             when (directive) {
                 is ConvergenceDirective.Submit -> convergenceAttemptId = directive.attemptId
                 else -> {
@@ -931,9 +845,9 @@ class UnifiedAutomationRunner @Autowired constructor(
                 stateFingerprint = "precondition-changed:${stored.payload.kind()}",
             )
             val directive = convergenceAttemptId?.let { attemptId ->
-                convergenceModule?.record(attemptId, evidence)
+                results.record(attemptId, evidence)
             }
-            observeShadow(
+            results.observeShadow(
                 accountId,
                 stored.executionIdentity,
                 evidence,
@@ -952,9 +866,9 @@ class UnifiedAutomationRunner @Autowired constructor(
             val message = incomplete.message ?: "제출 직전 최신 상태를 완전하게 관측하지 못했습니다."
             val evidence = AutomationActionEvidence.IncompleteObservation(now(), message)
             val directive = convergenceAttemptId?.let { attemptId ->
-                convergenceModule?.record(attemptId, evidence)
+                results.record(attemptId, evidence)
             }
-            observeShadow(
+            results.observeShadow(
                 accountId,
                 stored.executionIdentity,
                 evidence,
@@ -975,9 +889,9 @@ class UnifiedAutomationRunner @Autowired constructor(
             val message = error.message ?: "제출 직전 최신 상태 확인에 실패했습니다."
             val evidence = AutomationActionEvidence.NetworkFailure(now(), message)
             val directive = convergenceAttemptId?.let { attemptId ->
-                convergenceModule?.record(attemptId, evidence)
+                results.record(attemptId, evidence)
             }
-            observeShadow(
+            results.observeShadow(
                 accountId,
                 stored.executionIdentity,
                 evidence,
@@ -991,7 +905,7 @@ class UnifiedAutomationRunner @Autowired constructor(
         val submission = typedRuntime.beginSubmission(execution)
         if (submission !is TypedRuntimeSubmission.Started) {
             convergenceAttemptId?.let { attemptId ->
-                convergenceModule?.record(
+                results.record(
                     attemptId,
                     AutomationActionEvidence.DirectRejected(now(), "SUBMISSION_NOT_STARTED"),
                 )
@@ -1015,76 +929,20 @@ class UnifiedAutomationRunner @Autowired constructor(
                 return discardUnauthorizedSubmission(accountId, execution, convergenceAttemptId)
             }
             val evidenceExecution = requireNotNull(authorizedExecution.value)
-            appliedEvidence = evidenceSelection?.let { selection ->
-                evidenceInterpreter?.fromExecution(selection, evidenceExecution, now())
-                    ?: AutomationActionEvidence.IncompleteObservation(
-                        capturedAt = now(),
-                        reason = "PRODUCTION_EVIDENCE_INTERPRETER_MISSING",
-                    )
-            }
-            if (
-                convergenceAttemptId != null &&
-                appliedEvidence !is AutomationActionEvidence.DirectApplied &&
-                evidenceExecution !is TypedAutomationExecution.SharedCooldown
-            ) {
-                val policyEvidence = requireNotNull(appliedEvidence)
-                val convergenceDirective = convergenceModule?.record(
-                    requireNotNull(convergenceAttemptId),
-                    policyEvidence,
-                )
-                if (
-                    policyEvidence is AutomationActionEvidence.DirectRejected ||
-                    policyEvidence is AutomationActionEvidence.StateAdvanced
-                ) {
-                    managedAction.applyPolicyResolvedExecution(evidenceExecution, policyEvidence)
-                }
-                val warning = when (policyEvidence) {
-                    is AutomationActionEvidence.DirectRejected ->
-                        "직접 응답이 행동 미적용을 확인해 최신 상태로 다시 판단합니다."
-                    is AutomationActionEvidence.StateAdvanced ->
-                        "직접 응답에서 저장 행동보다 최신 상태가 확인되어 성공으로 귀속하지 않습니다."
-                    is AutomationActionEvidence.SameState ->
-                        "직접 응답만으로 행동 적용을 확인하지 못해 권위 상태를 다시 관측합니다."
-                    is AutomationActionEvidence.IncompleteObservation ->
-                        "직접 응답 관측이 불완전해 같은 행동을 다시 보내지 않고 결과를 재확인합니다."
-                    is AutomationActionEvidence.NetworkFailure ->
-                        "직접 응답 확인에 실패해 같은 행동을 다시 보내지 않고 결과를 재확인합니다."
-                    is AutomationActionEvidence.ResultUnobserved ->
-                        "직접 응답에서 행동 결과를 관측하지 못해 자동 재제출을 보류합니다."
-                    is AutomationActionEvidence.ResultUnobservedFreshDecision ->
-                        "이전 결과는 귀속하지 않고 최신 상태에서 새 행동을 판단합니다."
-                    is AutomationActionEvidence.BattleGateRequired ->
-                        "전투 캡차 해결 전에는 전투 행동을 성공으로 처리하지 않습니다."
-                    is AutomationActionEvidence.DirectApplied -> error("Handled above")
-                }
-                val policyOutcome = when (policyEvidence) {
-                    is AutomationActionEvidence.DirectRejected,
-                    is AutomationActionEvidence.StateAdvanced,
-                    -> TypedRuntimeOutcome.ActionSuperseded(warning, TYPED_CONVERGENCE_WAKE_REASON)
-                    else -> TypedRuntimeOutcome.AmbiguousHandoff(
-                        warning,
-                        TYPED_CONVERGENCE_WAKE_REASON,
-                    )
-                }
-                typedRuntime.complete(execution, policyOutcome)
-                convergenceDirective?.let { scheduleConvergenceDirective(accountId, it) }
-                decisionCycleId?.let { cycleId ->
-                    val kind = if (policyOutcome is TypedRuntimeOutcome.ActionSuperseded) {
-                        AutomationHistoryEventKind.SKIPPED
-                    } else {
-                        AutomationHistoryEventKind.WAITING
+            appliedEvidence = results.directEvidence(resultSelection.evidence, evidenceExecution)
+            val acceptedExecution = when (val connected = results.applyDirect(managedAction, evidenceExecution, appliedEvidence, convergenceAttemptId)) {
+                is AutomationResultCoordinator.DirectResult.Accepted -> connected.execution
+                is AutomationResultCoordinator.DirectResult.Unapplied -> {
+                    typedRuntime.complete(execution, connected.outcome)
+                    connected.directive?.let { scheduleConvergenceDirective(accountId, it) }
+                    decisionCycleId?.let { cycleId ->
+                        decisionJournal?.appendActionResult(cycleId, trace(
+                            if (connected.superseded) AutomationHistoryEventKind.SKIPPED else AutomationHistoryEventKind.WAITING,
+                            "ACTION_RESULT_NOT_APPLIED", connected.warning,
+                        ))
                     }
-                    decisionJournal?.appendActionResult(
-                        cycleId,
-                        trace(kind, "ACTION_RESULT_NOT_APPLIED", warning),
-                    )
+                    return
                 }
-                return
-            }
-            val acceptedExecution = if (convergenceAttemptId != null) {
-                managedAction.applyPolicyAcceptedExecution(evidenceExecution)
-            } else {
-                managedAction.applyLegacyExecution(evidenceExecution)
             }
             val domainExecution = acceptedExecution.runtimeDomainExecution()
             val storedBattle = stored.payload as? StoredTypedActionPayload.BattleMap
@@ -1133,26 +991,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             } else {
                 TypedRuntimeOutcome.ActionSucceeded(wakeReason, finalWarnings)
             }
-            appliedEvidence?.let { evidence ->
-                observeShadow(
-                    accountId,
-                    stored.executionIdentity,
-                    evidence,
-                    if (domainExecution is TypedAutomationExecution.SharedCooldown) {
-                        LegacyConvergenceDecision.SUPERSEDED
-                    } else {
-                        LegacyConvergenceDecision.APPLIED
-                    },
-                )
-            }
-            convergenceAttemptId?.let { attemptId ->
-                convergenceModule?.record(
-                    attemptId,
-                    requireNotNull(appliedEvidence) {
-                        "Active convergence execution is missing production evidence."
-                    },
-                )
-            }
+            results.finishDirect(accountId, stored.executionIdentity, appliedEvidence, convergenceAttemptId, domainExecution)
             typedRuntime.complete(execution, outcome)
             decisionCycleId?.let { cycleId ->
                 val resultTrace = when (domainExecution) {
@@ -1189,9 +1028,9 @@ class UnifiedAutomationRunner @Autowired constructor(
                     stateFingerprint = "precondition-changed:${stored.payload.kind()}",
                 )
                 val directive = convergenceAttemptId?.let { attemptId ->
-                    convergenceModule?.record(attemptId, evidence)
+                    results.record(attemptId, evidence)
                 }
-                observeShadow(
+                results.observeShadow(
                     accountId,
                     stored.executionIdentity,
                     evidence,
@@ -1222,12 +1061,12 @@ class UnifiedAutomationRunner @Autowired constructor(
                 .filterIsInstance<BattleNotSubmittedException>()
                 .firstOrNull()
             unsubmittedBattle?.let { failure ->
-                convergenceSelection?.let { selection ->
-                    convergenceModule?.discardUnsubmitted(
+                resultSelection.policy?.let { selection ->
+                    results.discardUnsubmitted(
                         accountId, selection, now(), BattleNotSubmittedException.REASON_CODE,
                     )
                 }
-                observeShadow(
+                results.observeShadow(
                     accountId,
                     stored.executionIdentity,
                     AutomationActionEvidence.DirectRejected(now(), BattleNotSubmittedException.REASON_CODE),
@@ -1257,10 +1096,10 @@ class UnifiedAutomationRunner @Autowired constructor(
                 }
                 val directive = convergenceAttemptId?.let { attemptId ->
                     if (deferred.actionSubmissionAttempted) {
-                        convergenceModule?.record(attemptId, evidence)
+                        results.record(attemptId, evidence)
                     } else {
-                        convergenceSelection?.let { selection ->
-                            convergenceModule?.discardUnsubmitted(
+                        resultSelection.policy?.let { selection ->
+                            results.discardUnsubmitted(
                                 accountId = accountId,
                                 selection = selection,
                                 discardedAt = now(),
@@ -1270,7 +1109,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                         ConvergenceDirective.ContinueSelection
                     }
                 }
-                observeShadow(
+                results.observeShadow(
                     accountId,
                     stored.executionIdentity,
                     evidence,
@@ -1332,9 +1171,9 @@ class UnifiedAutomationRunner @Autowired constructor(
                         sanitizedSnippet = ambiguous.sanitizedSnippet,
                     )
                     val directive = convergenceAttemptId?.let { attemptId ->
-                        convergenceModule?.record(attemptId, evidence)
+                        results.record(attemptId, evidence)
                     }
-                    observeShadow(
+                    results.observeShadow(
                         accountId,
                         stored.executionIdentity,
                         evidence,
@@ -1345,7 +1184,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                     return
                 }
                 convergenceAttemptId?.let { attemptId ->
-                    val directive = convergenceModule?.record(
+                    val directive = results.record(
                         attemptId,
                         AutomationActionEvidence.IncompleteObservation(
                             capturedAt = now(),
@@ -1366,7 +1205,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                         return
                     }
                 }
-                observeShadow(
+                results.observeShadow(
                     accountId,
                     stored.executionIdentity,
                     appliedEvidence ?: AutomationActionEvidence.IncompleteObservation(
@@ -1393,9 +1232,9 @@ class UnifiedAutomationRunner @Autowired constructor(
                 reason = error.javaClass.simpleName,
             )
             convergenceAttemptId?.let { attemptId ->
-                convergenceModule?.record(attemptId, evidence)
+                results.record(attemptId, evidence)
             }
-            observeShadow(
+            results.observeShadow(
                 accountId,
                 stored.executionIdentity,
                 evidence,
@@ -1433,7 +1272,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             }
         }
 
-        if (convergenceActive() && selection != null) {
+        if (results.active && selection != null) {
             val convergence = requireNotNull(convergenceModule)
             val directive = if (retryUnsubmitted) {
                 convergence.retryUnsubmitted(accountId, selection, now())
@@ -1495,7 +1334,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                 managed.applyLegacyExecution(direct.execution)
             }
             evidence?.let { observed ->
-                observeShadow(
+                results.observeShadow(
                     accountId,
                     stored.executionIdentity,
                     observed,
@@ -1555,7 +1394,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             attemptId?.takeUnless { attemptTerminalized }?.let { id ->
                 convergenceModule?.record(id, AutomationActionEvidence.IncompleteObservation(now(), message))
             }
-            observeShadow(
+            results.observeShadow(
                 accountId,
                 stored.executionIdentity,
                 AutomationActionEvidence.IncompleteObservation(now(), message),
@@ -1616,7 +1455,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             stored: StoredTypedAutomationAction,
             selection: SelectedAutomationAction?,
         ): Long? {
-            if (!convergenceActive() || selection == null) return null
+            if (!results.active || selection == null) return null
             val convergence = requireNotNull(convergenceModule)
             val directive = if (retryUnsubmitted && stored.executionIdentity == startStored.executionIdentity) {
                 convergence.retryUnsubmitted(accountId, selection, now())
@@ -1668,7 +1507,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                 managed.applyLegacyExecution(direct)
             }
             evidence?.let { observed ->
-                observeShadow(
+                results.observeShadow(
                     accountId,
                     stored.executionIdentity,
                     observed,
@@ -1720,7 +1559,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                         TYPED_CONVERGENCE_WAKE_REASON,
                     )
                 }
-                observeShadow(
+                results.observeShadow(
                     accountId,
                     stored.executionIdentity,
                     recorded,
@@ -1755,7 +1594,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                 "TYPED_ACTION_COMPLETED"
             }
             evidence?.let { observed ->
-                observeShadow(
+                results.observeShadow(
                     accountId,
                     stored.executionIdentity,
                     observed,
@@ -1959,7 +1798,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                         convergenceModule?.record(attemptId, evidence)
                         activeAttemptTerminalized = true
                     }
-                    observeShadow(
+                    results.observeShadow(
                         accountId,
                         startStored.executionIdentity,
                         evidence,
@@ -2040,7 +1879,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                     AutomationActionEvidence.IncompleteObservation(now(), message),
                 )
             }
-            observeShadow(
+            results.observeShadow(
                 accountId,
                 activeStored.executionIdentity,
                 AutomationActionEvidence.IncompleteObservation(now(), message),
@@ -2072,7 +1911,7 @@ class UnifiedAutomationRunner @Autowired constructor(
         convergenceAttemptId: Long?,
     ) {
         convergenceAttemptId?.let { attemptId ->
-            convergenceModule?.record(
+            results.record(
                 attemptId,
                 AutomationActionEvidence.DirectRejected(now(), AUTHORIZATION_ENDED_REASON),
             )
@@ -2091,17 +1930,13 @@ class UnifiedAutomationRunner @Autowired constructor(
         execution: TypedRuntimeExecutionRight,
         directive: ConvergenceDirective.Probe,
     ) {
-        val convergence = convergenceModule ?: return
-        val evidence = observeStoredConvergenceAction(accountId, directive)
-        val next = convergence.record(directive.attemptId, evidence)
+        val next = results.probe(accountId, directive) ?: return
         typedRuntime.complete(
             execution,
             TypedRuntimeOutcome.SelectionChanged(TYPED_CONVERGENCE_WAKE_REASON),
         )
         scheduleConvergenceDirective(accountId, next)
     }
-
-    private fun convergenceActive(): Boolean = rollout?.active ?: (convergenceModule != null)
 
     private fun completeLegacyReconciliationBudget(
         accountId: Long,
@@ -2121,21 +1956,7 @@ class UnifiedAutomationRunner @Autowired constructor(
         val warning = "이전 요청 결과를 최대 5회 또는 2분 안에 확정하지 못해 해당 상태만 보류합니다. " +
             "성공 관측 ${successfulObservationCount}회 · 마지막 사유: $sanitizedReason"
         val evidence = AutomationActionEvidence.ResultUnobserved(observedAt, sanitizedReason)
-        convergenceSelectionFactory?.create(stored, activeCheckpoint.legacySuppressionEpoch)?.let { selection ->
-            convergenceModule?.holdUnresolved(
-                accountId,
-                selection,
-                evidence,
-                successfulObservationCount,
-                firstPendingAt,
-            )
-        }
-        observeShadow(
-            accountId,
-            stored.executionIdentity,
-            evidence,
-            LegacyConvergenceDecision.RESULT_UNOBSERVED,
-        )
+        results.holdUnresolved(accountId, stored, activeCheckpoint, evidence, successfulObservationCount, firstPendingAt)
         decisionCycleId?.let { cycleId ->
             decisionJournal?.appendActionResult(cycleId, actionTrace(
                 stored,
@@ -2153,197 +1974,6 @@ class UnifiedAutomationRunner @Autowired constructor(
                 successfulObservationCount,
             ),
         )
-    }
-
-    private fun cutoverLegacyReconciliation(
-        accountId: Long,
-        execution: TypedRuntimeExecutionRight,
-        managed: ManagedAutomationAction,
-        stored: StoredTypedAutomationAction,
-        activeCheckpoint: TypedRuntimeCheckpoint,
-    ) {
-        val convergence = convergenceModule
-        val factory = convergenceSelectionFactory
-        if (convergence == null || factory == null) {
-            typedRuntime.complete(
-                execution,
-                TypedRuntimeOutcome.AmbiguousHandoff(
-                    "Active convergence cutover dependencies are missing.",
-                    TYPED_CONVERGENCE_WAKE_REASON,
-                ),
-            )
-            return
-        }
-        val selection = factory.create(stored, activeCheckpoint.legacySuppressionEpoch)
-        val directive = when (val prepared = convergence.prepare(accountId, selection)) {
-            is ConvergenceDirective.Submit -> {
-                val observation = try {
-                    when (val resolution = managed.reconcile()) {
-                        is AmbiguousActionResolution.Applied -> {
-                            applyRecoveredExecution(accountId, resolution.execution)
-                            evidenceInterpreter?.fromReconciliation(
-                                selection,
-                                resolution,
-                                now(),
-                            ) ?: AutomationActionEvidence.StateAdvanced(now(), "advanced:${stored.executionIdentity}")
-                        }
-                        else -> evidenceInterpreter?.fromReconciliation(
-                            selection,
-                            resolution,
-                            now(),
-                        ) ?: when (resolution) {
-                            AmbiguousActionResolution.Resubmit -> AutomationActionEvidence.SameState(
-                                now(),
-                                "same:${stored.executionIdentity}",
-                            )
-                            is AmbiguousActionResolution.VerifyLater -> AutomationActionEvidence.IncompleteObservation(
-                                now(),
-                                resolution.reason,
-                            )
-                            is AmbiguousActionResolution.Held -> AutomationActionEvidence.ResultUnobserved(
-                                now(),
-                                resolution.reason,
-                            )
-                            is AmbiguousActionResolution.HandedOff -> AutomationActionEvidence.ResultUnobserved(
-                                now(),
-                                resolution.reason,
-                            )
-                            is AmbiguousActionResolution.Superseded -> AutomationActionEvidence.StateAdvanced(
-                                now(),
-                                "superseded:${stored.executionIdentity}",
-                            )
-                            is AmbiguousActionResolution.FreshDecision ->
-                                AutomationActionEvidence.ResultUnobservedFreshDecision(
-                                    now(),
-                                    resolution.reason,
-                                )
-                            is AmbiguousActionResolution.Applied -> error("Handled above")
-                        }
-                    }
-                } catch (error: Throwable) {
-                    if (error.findHofAutomationDeferral() != null) {
-                        AutomationActionEvidence.NetworkFailure(now(), error.message ?: "HOF_DEFERRED")
-                    } else {
-                        AutomationActionEvidence.ResultUnobserved(
-                            now(),
-                            error.message ?: error.javaClass.simpleName,
-                        )
-                    }
-                }
-                convergence.record(prepared.attemptId, observation)
-            }
-            else -> prepared
-        }
-        typedRuntime.complete(
-            execution,
-            TypedRuntimeOutcome.AmbiguousHandoff(
-                "Legacy ambiguous payload was closed after one fresh authoritative observation.",
-                TYPED_CONVERGENCE_WAKE_REASON,
-            ),
-        )
-        scheduleConvergenceDirective(accountId, directive)
-    }
-
-    private fun observeShadow(
-        accountId: Long,
-        executionIdentity: String,
-        evidence: AutomationActionEvidence,
-        legacyDecision: LegacyConvergenceDecision,
-    ) {
-        if (rollout?.shadow == true) {
-            try {
-                shadowEvaluator?.observe(accountId, executionIdentity, evidence, legacyDecision)
-            } catch (error: RuntimeException) {
-                log.warn(
-                    "Automation convergence SHADOW observation failed accountId={} errorType={}",
-                    accountId,
-                    error.javaClass.name,
-                )
-            }
-        }
-    }
-
-    private fun selectShadow(accountId: Long, selection: SelectedAutomationAction) {
-        try {
-            shadowEvaluator?.selected(accountId, selection)
-        } catch (error: RuntimeException) {
-            log.warn(
-                "Automation convergence SHADOW selection failed accountId={} errorType={}",
-                accountId,
-                error.javaClass.name,
-            )
-        }
-    }
-
-    private fun observeStoredConvergenceAction(
-        accountId: Long,
-        directive: ConvergenceDirective.Probe,
-    ): AutomationActionEvidence {
-        val stored = storedConvergenceActionLoader?.load(accountId, directive.executionIdentity)
-            ?: return AutomationActionEvidence.ResultUnobserved(now(), "STORED_ACTION_NOT_FOUND")
-        val managed = try {
-            actionLifecycleModule.restoreVerified(stored, accountId)
-        } catch (error: RuntimeException) {
-            return AutomationActionEvidence.ResultUnobserved(
-                now(),
-                error.message ?: "STORED_ACTION_INVALID",
-            )
-        }
-        val selection = convergenceSelectionFactory?.create(stored)
-        return try {
-            when (val resolution = managed.reconcile()) {
-                is AmbiguousActionResolution.Applied -> {
-                    applyRecoveredExecution(accountId, resolution.execution)
-                    selection?.let { selected ->
-                        evidenceInterpreter?.fromReconciliation(selected, resolution, now())
-                    } ?: AutomationActionEvidence.StateAdvanced(
-                        now(),
-                        "advanced:${directive.executionIdentity}",
-                    )
-                }
-                else -> selection?.let { selected ->
-                    evidenceInterpreter?.fromReconciliation(selected, resolution, now())
-                } ?: when (resolution) {
-                    AmbiguousActionResolution.Resubmit -> AutomationActionEvidence.SameState(
-                        now(),
-                        "unchanged:${directive.executionIdentity}",
-                    )
-                    is AmbiguousActionResolution.VerifyLater -> AutomationActionEvidence.IncompleteObservation(
-                        now(),
-                        resolution.reason,
-                    )
-                    is AmbiguousActionResolution.Held -> AutomationActionEvidence.ResultUnobserved(
-                        now(),
-                        resolution.reason,
-                    )
-                    is AmbiguousActionResolution.HandedOff -> AutomationActionEvidence.ResultUnobserved(
-                        now(),
-                        resolution.reason,
-                    )
-                    is AmbiguousActionResolution.Superseded -> AutomationActionEvidence.StateAdvanced(
-                        now(),
-                        "superseded:${directive.executionIdentity}",
-                    )
-                    is AmbiguousActionResolution.FreshDecision ->
-                        AutomationActionEvidence.ResultUnobservedFreshDecision(
-                            now(),
-                            resolution.reason,
-                        )
-                    is AmbiguousActionResolution.Applied -> error("Handled above")
-                }
-            }
-        } catch (error: Throwable) {
-            error.findHofAutomationDeferral()?.let {
-                return AutomationActionEvidence.NetworkFailure(
-                    now(),
-                    it.message ?: "HOF_DEFERRED",
-                )
-            }
-            AutomationActionEvidence.NetworkFailure(
-                now(),
-                error.message ?: error.javaClass.simpleName,
-            )
-        }
     }
 
     private fun releaseForConvergenceDirective(
@@ -2466,34 +2096,6 @@ class UnifiedAutomationRunner @Autowired constructor(
                     )
                 }
 
-    private fun Throwable.findCaptchaRequired(): ApiException? =
-        generateSequence(this) { it.cause }
-            .filterIsInstance<ApiException>()
-            .firstOrNull { it.errorCode == ErrorCode.CAPTCHA_REQUIRED }
-
-    private fun applyRecoveredExecution(accountId: Long, execution: TypedAutomationExecution) {
-        when (execution) {
-            TypedAutomationExecution.Completed -> Unit
-            is TypedAutomationExecution.ActionCompleted ->
-                execution.runtimeDomainExecution().let { recovered ->
-                    if (recovered !== execution) applyRecoveredExecution(accountId, recovered)
-                }
-            is TypedAutomationExecution.RaidCycleFinished -> Unit
-            is TypedAutomationExecution.RaidWaiting -> Unit
-            is TypedAutomationExecution.BattleCompleted -> sharedBattleCooldowns.applyAfterSuccessfulBattle(
-                accountId,
-                execution.categoryId,
-                execution.mapCode,
-            )
-            is TypedAutomationExecution.SharedCooldown -> sharedBattleCooldowns.learnAndApply(
-                accountId,
-                execution.categoryId,
-                execution.mapCode,
-                execution.retryAt,
-            )
-        }
-    }
-
     private fun recoveredWakeReason(execution: TypedAutomationExecution): String =
         when (execution) {
             is TypedAutomationExecution.SharedCooldown -> "TYPED_SHARED_COOLDOWN_SKIPPED"
@@ -2501,15 +2103,6 @@ class UnifiedAutomationRunner @Autowired constructor(
             is TypedAutomationExecution.RaidWaiting -> "TYPED_RAID_WAITING"
             else -> "TYPED_ACTION_COMPLETED"
         }
-
-    private fun TypedAutomationExecution.runtimeDomainExecution(): TypedAutomationExecution = when (this) {
-        is TypedAutomationExecution.ActionCompleted -> raidWait
-            ?: raidOutcome?.let(TypedAutomationExecution::RaidCycleFinished)
-            ?: TypedAutomationExecution.Completed
-        is TypedAutomationExecution.BattleCompleted -> raidOutcome?.let(TypedAutomationExecution::RaidCycleFinished)
-            ?: this
-        else -> this
-    }
 
     private fun AutomationCoordination.withDescriptor(
         descriptor: AutomationActionDescriptor?,
