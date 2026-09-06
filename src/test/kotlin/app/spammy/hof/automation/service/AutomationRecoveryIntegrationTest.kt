@@ -220,7 +220,7 @@ class AutomationRecoveryIntegrationTest {
 
     @ParameterizedTest
     @ValueSource(booleans = [false, true])
-    fun `현행 CATCH 방해 전투의 동일 판단 연결과 맵 미관측 편차를 재현한다`(mapPreviouslyObserved: Boolean) {
+    fun `CATCH 방해 전투는 새 판단에서 최신 맵을 확인하고 별도 사이클로 실행한다`(mapPreviouslyObserved: Boolean) {
         setupFishing(obstruction = true)
         if (mapPreviouslyObserved) {
             assertTrue(battleMaps.findMaps(accountId, "battle_map").any { it.mapCode == "fishing_12" })
@@ -230,25 +230,98 @@ class AutomationRecoveryIntegrationTest {
         publisher.publishBatch()
 
         assertEquals(listOf("FStart", "FCatch"), fishingPosts())
-        // Known ADR-0008 deviation: ticket 08 must replace this characterization
-        // with a new-decision, separate-battle-cycle contract before completion.
-        assertEquals(3, runs().size, runs().toString())
-        assertEquals(1, journal.page(accountId, AutomationHistoryQuery()).cycles.size)
-        if (mapPreviouslyObserved) {
-            assertEquals(listOf("SUCCEEDED", "SUCCEEDED", "SUCCEEDED"), runs().map { it["status"] }, runs().toString())
-            assertEquals(1, requests.count { it.method == HofHttpMethod.POST && it.url.contains("common=fishing_12") })
-            consumeNextWake()
-            assertEquals(2, journal.page(accountId, AutomationHistoryQuery()).cycles.size)
-        } else {
-            // Direct CATCH has a target, but the current same-cycle handoff skips
-            // fresh map validation/catalog synchronization before runBattle.
-            assertEquals(listOf("SUCCEEDED", "SUCCEEDED", "RECONCILING"), runs().map { it["status"] })
-            assertEquals("Battle submission outcome is not provable; it will not be resent.", runs().last()["last_error"])
-            assertEquals(0, requests.count { it.method == HofHttpMethod.POST && it.url.contains("common=fishing_12") })
-            assertEquals(0, jdbc.queryForObject("select count(*) from account_battle_map_states where account_id = ?", Int::class.java, accountId))
-            consumeNextWake()
-            assertEquals(0, requests.count { it.method == HofHttpMethod.POST && it.url.contains("common=fishing_12") })
+        assertEquals(listOf("SUCCEEDED", "SUCCEEDED"), runs().map { it["status"] }, runs().toString())
+        assertEquals(2, runs().map { it["execution_identity"] }.distinct().size)
+        assertEquals(0, runningWorkCount())
+        assertEquals(0, requests.count { it.method == HofHttpMethod.POST && it.url.contains("common=fishing_12") })
+        val fishingCycle = journal.page(accountId, AutomationHistoryQuery()).cycles.single()
+        val requestBoundary = requests.size
+        assertScheduledWake("TYPED_FISHING_CYCLE_COMPLETED", clock.now())
+
+        consumeNextWake()
+
+        val cycles = journal.page(accountId, AutomationHistoryQuery()).cycles
+        assertEquals(2, cycles.size)
+        assertEquals(1, cycles.count { it.id == fishingCycle.id })
+        assertEquals(listOf("SUCCEEDED", "SUCCEEDED", "SUCCEEDED"), runs().map { it["status"] }, runs().toString())
+        assertEquals(3, runs().map { it["execution_identity"] }.distinct().size)
+        val battleRequests = requests.drop(requestBoundary)
+        val battlePost = battleRequests.indexOfFirst { it.method == HofHttpMethod.POST && it.url.contains("common=fishing_12") }
+        assertTrue(battlePost >= 0, "새 판단에서 전투를 한 번 제출해야 한다.")
+        assertTrue(battleRequests.take(battlePost).any { it.method == HofHttpMethod.GET && it.url == "https://hof.zerosic.com/index.php?hunt" },
+            "전투 제출 전에 최신 맵 관측을 거쳐야 한다.")
+        assertEquals(1, requests.count { it.method == HofHttpMethod.POST && it.url.contains("common=fishing_12") })
+        assertEquals(0, runningWorkCount())
+        assertScheduledWake("TYPED_ACTION_COMPLETED", clock.now())
+
+        consumeNextWake()
+        assertEquals(3, journal.page(accountId, AutomationHistoryQuery()).cycles.size)
+        assertEquals(listOf("FStart", "FCatch"), fishingPosts())
+        assertEquals(1, requests.count { it.method == HofHttpMethod.POST && it.url.contains("common=fishing_12") })
+        assertEquals(0, runningWorkCount())
+    }
+
+    @Test
+    fun `CATCH 뒤 새로 실행 가능한 상위 항목이 방해 전투보다 먼저 선택된다`() {
+        val url = "https://hof.zerosic.com/index.php?menu=quest2"
+        var ready = false
+        var accepted = false
+        fun homePage(showQuest: Boolean = ready) = """<h4>수락 가능한 퀘스트</h4><table>
+            ${if (showQuest) """<tr><td>[A] 상위 작업</td><td>미션 0/1</td><td>-</td><td>-</td><td>${if (accepted) "-" else "<a href='?menu=quest2&amp;action=get&amp;no=A'>수락</a>"}</td></tr>""" else ""}
+            </table>${if (accepted) "<div id='result'>수락했습니다.</div>" else ""}"""
+        val html = homePage(showQuest = true)
+        val quest = HomePageParser().parse(HomeMode.HOME, html, url, HofFormParser().parse(html, url)).quests.single()
+        setupFishing(obstruction = true, homeResponse = { request ->
+            if (request.formFields["action"] == "get") accepted = true
+            homePage()
+        })
+        val homeEntryId = TransactionTemplate(transactions).execute {
+            val account = entityManager.find(HofAccountEntity::class.java, accountId)
+            entityManager.find(AutomationEntryEntity::class.java, entryId).priority = 1
+            entityManager.flush()
+            val entry = AutomationEntryEntity(account = account, type = AutomationType.HOME_QUEST, priority = 0,
+                enabled = true, createdAt = clock.now(), updatedAt = clock.now())
+            entityManager.persist(entry)
+            entityManager.persist(HomeQuestAutomationSelectionEntity(entry = entry, questId = quest.id,
+                questName = quest.name, enabled = true, sourceOrder = 0))
+            entityManager.flush()
+            entry.id
         }
+        wakeups.wake(accountId, "FISHING_PRIORITY_BOUNDARY")
+        publisher.publishBatch()
+        assertEquals(entryId, journal.page(accountId, AutomationHistoryQuery()).cycles.single().selectedEntryId)
+        assertEquals(listOf("FStart", "FCatch"), fishingPosts())
+        assertEquals(0, runningWorkCount())
+
+        ready = true
+        assertScheduledWake("TYPED_FISHING_CYCLE_COMPLETED", clock.now())
+        consumeNextWake()
+        val afterHome = journal.page(accountId, AutomationHistoryQuery()).cycles
+        assertEquals(2, afterHome.size)
+        assertEquals(homeEntryId, afterHome.first().selectedEntryId, afterHome.toString())
+        val acceptance = requests.single { it.formFields["action"] == "get" }
+        assertEquals(HofHttpMethod.GET, acceptance.method)
+        assertEquals("A", acceptance.formFields["no"])
+        assertEquals(0, requests.count { it.method == HofHttpMethod.POST && it.url.contains("common=fishing_12") })
+
+        consumeNextWake()
+        assertEquals(3, journal.page(accountId, AutomationHistoryQuery()).cycles.size)
+        assertEquals(0, runningWorkCount())
+        assertEquals(0, requests.count { it.method == HofHttpMethod.POST && it.url.contains("common=fishing_12") })
+        assertEquals(listOf("WAITING_COOLDOWN"), jdbc.queryForList(
+            "select status from automation_work_sessions where account_id = ? and automation_entry_id = ?",
+            String::class.java, accountId, homeEntryId))
+
+        consumeNextWake()
+        assertEquals(4, journal.page(accountId, AutomationHistoryQuery()).cycles.size)
+        assertEquals(entryId, journal.page(accountId, AutomationHistoryQuery()).cycles.first().selectedEntryId)
+        assertEquals(1, requests.count { it.method == HofHttpMethod.POST && it.url.contains("common=fishing_12") })
+        assertEquals(listOf("FStart", "FCatch"), fishingPosts())
+        assertEquals(0, runningWorkCount())
+        consumeNextWake()
+        assertEquals(5, journal.page(accountId, AutomationHistoryQuery()).cycles.size)
+        assertEquals(1, requests.count { it.formFields["action"] == "get" })
+        assertEquals(1, requests.count { it.method == HofHttpMethod.POST && it.url.contains("common=fishing_12") })
     }
 
     @ParameterizedTest
@@ -319,7 +392,7 @@ class AutomationRecoveryIntegrationTest {
         action
     }
 
-    private fun setupFishing(obstruction: Boolean = false) {
+    private fun setupFishing(obstruction: Boolean = false, homeResponse: ((HofRequest) -> String)? = null) {
         Mockito.doCallRealMethod().`when`(decisions).select(accountId)
         TransactionTemplate(transactions).executeWithoutResult {
             val entry = entityManager.find(AutomationEntryEntity::class.java, entryId)
@@ -341,6 +414,7 @@ class AutomationRecoveryIntegrationTest {
             requests += request
             val body = when {
                 request.url.contains("?char=") -> header
+                homeResponse != null && request.url.contains("menu=quest2") -> homeResponse(request)
                 "FStart" in request.formFields -> { phase = "waiting"; fixture("waiting") }
                 "FCatch" in request.formFields -> {
                     phase = if (obstruction) "monster" else "exhausted"

@@ -1763,15 +1763,6 @@ class UnifiedAutomationRunner @Autowired constructor(
                     val catchManaged = activeManaged as? ManagedFishingAutomationAction
                         ?: error("Prepared fishing CATCH is not managed as a fishing action.")
                     acceptStep(catchManaged, activeStored, activeSelection, activeAttemptId, catch.response)
-                    if (catch.response.blockedByBattle) {
-                        handoffToBattle(
-                            startManaged,
-                            catch.response,
-                            supersededStart = false,
-                            completedManaged = catchManaged,
-                        )
-                        return
-                    }
                     typedRuntime.complete(
                         execution,
                         TypedRuntimeOutcome.ActionSucceeded("TYPED_FISHING_CYCLE_COMPLETED", selectedWarnings),

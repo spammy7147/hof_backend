@@ -1384,7 +1384,7 @@ class AutomationActionLifecycleModuleTest {
     }
 
     @Test
-    fun `CATCH 직접 응답에 방해 전투가 생기면 전투가 끝날 때까지 낚시 작업을 유지한다`() {
+    fun `CATCH 직접 응답에 방해 전투가 생겨도 낚시 작업을 완료한다`() {
         val managed = assertNotNull(module.prepare(
             7L,
             15L,
@@ -1398,7 +1398,7 @@ class AutomationActionLifecycleModuleTest {
         val execution = assertIs<TypedAutomationExecution.ActionCompleted>(managed.execute())
         managed.applyLegacyExecution(execution)
 
-        Mockito.verify(workLifecycle, Mockito.never()).completeFishingCycle(7L, 15L)
+        Mockito.verify(workLifecycle).completeFishingCycle(7L, 15L)
     }
 
     @Test

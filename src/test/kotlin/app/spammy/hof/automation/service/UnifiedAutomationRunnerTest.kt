@@ -276,10 +276,12 @@ class UnifiedAutomationRunnerTest {
         Mockito.verify(startManaged, Mockito.never()).execute()
     }
 
-    @Test
-    fun `낚시 CATCH 응답의 방해 전투는 같은 작업 소유권에서 즉시 이어서 실행한다`() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(AutomationConvergenceMode::class)
+    fun `낚시 CATCH 응답의 방해 전투는 실행하지 않고 한 번 낚시를 완료한다`(mode: AutomationConvergenceMode) {
         val cycleExecutor = Mockito.mock(FishingCycleExecutor::class.java)
         val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
+        val shadow = Mockito.mock(AutomationConvergenceShadowEvaluator::class.java)
         val startManaged = Mockito.mock(ManagedFishingAutomationAction::class.java)
         val catchManaged = Mockito.mock(ManagedFishingAutomationAction::class.java)
         val battleManaged = Mockito.mock(ManagedAutomationAction::class.java)
@@ -385,27 +387,44 @@ class UnifiedAutomationRunnerTest {
             convergenceSelectionFactory = StoredActionConvergenceSelectionFactory(),
             evidenceInterpreter = productionEvidenceInterpreter,
             rollout = AutomationConvergenceRollout(
-                AutomationConvergenceProperties(mode = AutomationConvergenceMode.ACTIVE),
+                AutomationConvergenceProperties(mode = mode),
             ),
             fishingCycleExecutor = cycleExecutor,
+            shadowEvaluator = shadow,
         )
 
         scoped.runOne(7L)
 
         Mockito.verify(decisions, Mockito.times(1)).select(7L)
-        Mockito.verify(runtime, Mockito.times(2))
+        Mockito.verify(runtime, Mockito.times(1))
             .advanceAppliedActionToPreparedFollowup(anyExecution(), anyStoredAction())
-        Mockito.verify(lifecycle).prepare(7L, 15L, battleAction)
-        Mockito.verify(runtime).beginSubmission(battlePrepared)
-        Mockito.verify(battleManaged).execute()
-        Mockito.verify(convergence, Mockito.times(3)).prepare(Mockito.eq(7L), anyConvergenceSelection())
-        val projectionOrder = Mockito.inOrder(startManaged, catchManaged, battleManaged, convergence)
-        projectionOrder.verify(startManaged).applyPolicyAcceptedExecution(anyTypedExecution())
-        projectionOrder.verify(convergence).record(Mockito.eq(201L), anyConvergenceEvidence())
-        projectionOrder.verify(catchManaged).applyPolicyAcceptedExecution(anyTypedExecution())
-        projectionOrder.verify(convergence).record(Mockito.eq(202L), anyConvergenceEvidence())
-        projectionOrder.verify(battleManaged).applyPolicyAcceptedExecution(battleExecution)
-        projectionOrder.verify(convergence).record(Mockito.eq(203L), anyConvergenceEvidence())
+        Mockito.verify(lifecycle, Mockito.never()).prepare(7L, 15L, battleAction)
+        Mockito.verify(runtime, Mockito.never()).beginSubmission(battlePrepared)
+        Mockito.verify(battleManaged, Mockito.never()).execute()
+        if (mode == AutomationConvergenceMode.ACTIVE) {
+            Mockito.verify(convergence, Mockito.times(2)).prepare(Mockito.eq(7L), anyConvergenceSelection())
+            val projectionOrder = Mockito.inOrder(startManaged, catchManaged, convergence)
+            projectionOrder.verify(startManaged).applyPolicyAcceptedExecution(anyTypedExecution())
+            projectionOrder.verify(convergence).record(Mockito.eq(201L), anyConvergenceEvidence())
+            projectionOrder.verify(catchManaged).applyPolicyAcceptedExecution(anyTypedExecution())
+            projectionOrder.verify(convergence).record(Mockito.eq(202L), anyConvergenceEvidence())
+            Mockito.verify(startManaged, Mockito.never()).applyLegacyExecution(anyTypedExecution())
+            Mockito.verify(catchManaged, Mockito.never()).applyLegacyExecution(anyTypedExecution())
+        } else {
+            Mockito.verify(startManaged).applyLegacyExecution(anyTypedExecution())
+            Mockito.verify(catchManaged).applyLegacyExecution(anyTypedExecution())
+            Mockito.verify(startManaged, Mockito.never()).applyPolicyAcceptedExecution(anyTypedExecution())
+            Mockito.verify(catchManaged, Mockito.never()).applyPolicyAcceptedExecution(anyTypedExecution())
+            Mockito.verifyNoInteractions(convergence)
+        }
+        if (mode == AutomationConvergenceMode.SHADOW) {
+            Mockito.verify(shadow, Mockito.times(2)).observe(
+                Mockito.eq(7L), Mockito.anyString() ?: "", anyConvergenceEvidence(),
+                Mockito.eq(LegacyConvergenceDecision.APPLIED) ?: LegacyConvergenceDecision.APPLIED,
+            )
+        } else {
+            Mockito.verifyNoInteractions(shadow)
+        }
         assertIs<TypedRuntimeOutcome.ActionSucceeded>(capturedOutcome())
     }
 

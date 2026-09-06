@@ -617,7 +617,7 @@ class UnifiedAutomationActionLifecycleModule(
                     }
                     submittedResponse = null
                     requireFishingDirectApplied(payload, response)
-                    if (payload.action == FishingAction.CATCH && !response.blockedByBattle) {
+                    if (payload.action == FishingAction.CATCH) {
                         workLifecycle.completeFishingCycle(accountId, stored.entryId)
                     }
                     return execution
