@@ -12,8 +12,10 @@ fun testAccountHofGateway(
     timeProvider: TimeProvider,
 ): AccountHofGateway = AccountHofGateway(
     gateway = gateway,
-    snapshots = Mockito.mock(HofStatusSnapshotService::class.java),
-    characterRosters = Mockito.mock(CharacterRosterObservationService::class.java),
+    observations = AccountHofResponseObserver(
+        snapshots = Mockito.mock(HofStatusSnapshotService::class.java),
+        characterRosters = Mockito.mock(CharacterRosterObservationService::class.java),
+        passMaintenance = Mockito.mock(CaptchaPassMaintenanceService::class.java),
+    ),
     timeProvider = timeProvider,
-    passMaintenance = Mockito.mock(CaptchaPassMaintenanceService::class.java),
 )

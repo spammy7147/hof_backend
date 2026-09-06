@@ -33,6 +33,7 @@ import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.persistence.QueryDslConfig
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.client.AccountHofGateway
+import app.spammy.hof.external.client.AccountHofResponseObserver
 import app.spammy.hof.external.client.HofBinaryGateway
 import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.model.HofBinaryResponse
@@ -934,8 +935,10 @@ class CaptchaServicePersistenceTest {
         ): AccountHofGateway =
             AccountHofGateway(
                 gateway,
-                org.mockito.Mockito.mock(HofStatusSnapshotService::class.java),
-                org.mockito.Mockito.mock(app.spammy.hof.character.service.CharacterRosterObservationService::class.java),
+                AccountHofResponseObserver(
+                    org.mockito.Mockito.mock(HofStatusSnapshotService::class.java),
+                    org.mockito.Mockito.mock(app.spammy.hof.character.service.CharacterRosterObservationService::class.java),
+                ),
                 timeProvider,
             )
 

@@ -26,6 +26,7 @@ import app.spammy.hof.captcha.dto.CaptchaChallengeResponse
 import app.spammy.hof.captcha.service.CaptchaService
 import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.client.AccountHofGateway
+import app.spammy.hof.external.client.AccountHofResponseObserver
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
@@ -959,8 +960,10 @@ class BattleMapServiceTest {
         fun accountHofGateway(gateway: FakeHofGateway, timeProvider: TimeProvider): AccountHofGateway =
             AccountHofGateway(
                 gateway,
-                Mockito.mock(HofStatusSnapshotService::class.java),
-                Mockito.mock(app.spammy.hof.character.service.CharacterRosterObservationService::class.java),
+                AccountHofResponseObserver(
+                    Mockito.mock(HofStatusSnapshotService::class.java),
+                    Mockito.mock(app.spammy.hof.character.service.CharacterRosterObservationService::class.java),
+                ),
                 timeProvider,
             )
 
