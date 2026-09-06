@@ -70,6 +70,9 @@ allOpen {
 
 tasks.withType<Test> {
 	useJUnitPlatform()
+	// JenkinsfileTest executes these files; changes must invalidate Gradle's test cache.
+	inputs.files("Jenkinsfile", fileTree("scripts") { include("**/*.py") })
+		.withPathSensitivity(PathSensitivity.RELATIVE)
 	// Keep the complete Spring suite within the 4 GB Jenkins agent while avoiding the default 512 MB test OOM.
 	maxHeapSize = "1g"
 	systemProperty("spring.test.context.cache.maxSize", "8")

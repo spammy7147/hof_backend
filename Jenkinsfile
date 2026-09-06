@@ -70,6 +70,7 @@ pipeline {
                     set -eu
                     command -v docker
                     command -v bash
+                    command -v python3
                     command -v gzip
                     command -v ssh
                     command -v scp
@@ -138,7 +139,7 @@ pipeline {
                         ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes \
                           -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
                           "$DEPLOY_TARGET" \
-                          'command -v bash >/dev/null && command -v docker >/dev/null && command -v gunzip >/dev/null && command -v curl >/dev/null && command -v grep >/dev/null && command -v seq >/dev/null && docker info >/dev/null'
+                          'command -v bash >/dev/null && command -v docker >/dev/null && command -v gunzip >/dev/null && command -v curl >/dev/null && command -v python3 >/dev/null && docker info >/dev/null'
                     '''
                 }
             }
@@ -208,10 +209,10 @@ pipeline {
                 ]) {
                         sh(script: '''#!/usr/bin/env bash
                             set -Eeuo pipefail
-                            scp -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes \
+                            scp -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes \
                               -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
                               "$HOF_ENV_FILE" "$DEPLOY_TARGET:$REMOTE_ENV_FILE"
-                            scp -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes \
+                            scp -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes \
                               -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
                               "$HOF_FIREBASE_FILE" "$DEPLOY_TARGET:$REMOTE_FIREBASE_FILE"
                             case "$HOF_RELEASE_PUBLISH_TOKEN" in
@@ -225,117 +226,7 @@ pipeline {
                             ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes \
                               -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
                               "$DEPLOY_TARGET" \
-                              "IMAGE='$IMAGE' IMAGE_REPOSITORY='$IMAGE_REPOSITORY' CONTAINER_NAME='$CONTAINER_NAME' BACKEND_BIND_ADDRESS='$BACKEND_BIND_ADDRESS' HOST_PORT='$HOST_PORT' CONTAINER_PORT='$CONTAINER_PORT' SERVER_FORWARD_HEADERS_STRATEGY='$SERVER_FORWARD_HEADERS_STRATEGY' PUBLIC_HEALTH_URL='$PUBLIC_HEALTH_URL' HOF_AUTH_ALLOWED_ORIGIN_PATTERNS='$HOF_AUTH_ALLOWED_ORIGIN_PATTERNS' RELEASE_HOST_DIR='$RELEASE_HOST_DIR' RELEASE_CONTAINER_DIR='$RELEASE_CONTAINER_DIR' REMOTE_ENV_FILE='$REMOTE_ENV_FILE' REMOTE_FIREBASE_FILE='$REMOTE_FIREBASE_FILE' REMOTE_RELEASE_ENV_FILE='$REMOTE_RELEASE_ENV_FILE' BUILD_NUMBER='$BUILD_NUMBER' bash -s" <<'REMOTE_SCRIPT'
-                            set -Eeuo pipefail
-
-                            rollback_name="${CONTAINER_NAME}-rollback"
-                            had_previous=0
-                            previous_image=''
-                            previous_image_id=''
-                            previous_secret_path=''
-                            secret_dir="$HOME/.config/hof/secrets"
-                            secret_path="$secret_dir/firebase-service-account-${BUILD_NUMBER}.json"
-
-                            cleanup_transfers() {
-                                rm -f -- "$REMOTE_ENV_FILE" "$REMOTE_FIREBASE_FILE" "$REMOTE_RELEASE_ENV_FILE" "${secret_path}.tmp"
-                            }
-
-                            restore_previous() {
-                                docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-                                if [ "$had_previous" -eq 1 ]; then
-                                    docker rename "$rollback_name" "$CONTAINER_NAME"
-                                    docker start "$CONTAINER_NAME" >/dev/null
-                                fi
-                            }
-
-                            trap cleanup_transfers EXIT
-                            chmod 600 "$REMOTE_ENV_FILE"
-                            chmod 600 "$REMOTE_RELEASE_ENV_FILE"
-                            test -s "$REMOTE_RELEASE_ENV_FILE"
-                            test -s "$REMOTE_FIREBASE_FILE"
-                            install -d -m 700 "$secret_dir"
-                            install -m 600 "$REMOTE_FIREBASE_FILE" "${secret_path}.tmp"
-                            mv -f "${secret_path}.tmp" "$secret_path"
-                            install -d -m 750 "$RELEASE_HOST_DIR"
-
-                            if docker container inspect "$rollback_name" >/dev/null 2>&1; then
-                                if docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
-                                    docker rm -f "$rollback_name" >/dev/null
-                                else
-                                    docker rename "$rollback_name" "$CONTAINER_NAME"
-                                    docker start "$CONTAINER_NAME" >/dev/null
-                                fi
-                            fi
-
-                            if docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
-                                had_previous=1
-                                previous_image="$(docker container inspect --format '{{.Config.Image}}' "$CONTAINER_NAME")"
-                                previous_image_id="$(docker container inspect --format '{{.Image}}' "$CONTAINER_NAME")"
-                                previous_secret_path="$(docker container inspect --format '{{range .Mounts}}{{if eq .Destination "/run/secrets/firebase-service-account.json"}}{{.Source}}{{end}}{{end}}' "$CONTAINER_NAME")"
-                                docker stop "$CONTAINER_NAME" >/dev/null
-                                docker rename "$CONTAINER_NAME" "$rollback_name"
-                            fi
-
-                            if ! docker run -d \
-                                --name "$CONTAINER_NAME" \
-                                --publish "$BACKEND_BIND_ADDRESS:$HOST_PORT:$CONTAINER_PORT" \
-                                --env-file "$REMOTE_ENV_FILE" \
-                                --env-file "$REMOTE_RELEASE_ENV_FILE" \
-                                --mount "type=bind,src=$secret_path,dst=/run/secrets/firebase-service-account.json,readonly" \
-                                --mount "type=bind,src=$RELEASE_HOST_DIR,dst=$RELEASE_CONTAINER_DIR,readonly" \
-                                --env "GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/firebase-service-account.json" \
-                                --env "HOF_RELEASE_STORAGE_ROOT=$RELEASE_CONTAINER_DIR" \
-                                --env "SERVER_FORWARD_HEADERS_STRATEGY=$SERVER_FORWARD_HEADERS_STRATEGY" \
-                                --env "HOF_AUTH_ALLOWED_ORIGIN_PATTERNS=$HOF_AUTH_ALLOWED_ORIGIN_PATTERNS" \
-                                --restart unless-stopped \
-                                "$IMAGE" >/dev/null; then
-                                restore_previous
-                                rm -f -- "$secret_path"
-                                exit 1
-                            fi
-
-                            healthy=0
-                            for attempt in $(seq 1 30); do
-                                if curl --fail --silent \
-                                    "http://${BACKEND_BIND_ADDRESS}:${HOST_PORT}/actuator/health" | \
-                                    grep -Eq '"status"[[:space:]]*:[[:space:]]*"UP"'; then
-                                    healthy=1
-                                    break
-                                fi
-                                sleep 2
-                            done
-
-                            if [ "$healthy" -ne 1 ]; then
-                                docker logs --tail 100 "$CONTAINER_NAME" || true
-                                restore_previous
-                                rm -f -- "$secret_path"
-                                exit 1
-                            fi
-
-                            if ! curl --fail --silent --show-error --max-time 10 "$PUBLIC_HEALTH_URL" | \
-                                grep -Eq '"status"[[:space:]]*:[[:space:]]*"UP"'; then
-                                echo 'Public HTTPS health check failed; restoring previous container.' >&2
-                                docker logs --tail 100 "$CONTAINER_NAME" || true
-                                restore_previous
-                                rm -f -- "$secret_path"
-                                exit 1
-                            fi
-
-                            if [ "$had_previous" -eq 1 ]; then
-                                docker rm "$rollback_name" >/dev/null
-                                docker image tag "$previous_image_id" "${IMAGE_REPOSITORY}:rollback"
-                                if [ "$previous_image" != "${IMAGE_REPOSITORY}:rollback" ]; then
-                                    docker image rm "$previous_image" >/dev/null 2>&1 || true
-                                fi
-                            fi
-                            if [ -n "$previous_secret_path" ] && [ "$previous_secret_path" != "$secret_path" ]; then
-                                case "$previous_secret_path" in
-                                    "$secret_dir"/firebase-service-account-*.json) rm -f -- "$previous_secret_path" ;;
-                                    *) echo "Refusing to remove unexpected previous Firebase secret path" >&2 ;;
-                                esac
-                            fi
-                            docker image prune -f >/dev/null
-REMOTE_SCRIPT
+                              "IMAGE='$IMAGE' IMAGE_REPOSITORY='$IMAGE_REPOSITORY' CONTAINER_NAME='$CONTAINER_NAME' BACKEND_BIND_ADDRESS='$BACKEND_BIND_ADDRESS' HOST_PORT='$HOST_PORT' CONTAINER_PORT='$CONTAINER_PORT' SERVER_FORWARD_HEADERS_STRATEGY='$SERVER_FORWARD_HEADERS_STRATEGY' PUBLIC_HEALTH_URL='$PUBLIC_HEALTH_URL' HOF_AUTH_ALLOWED_ORIGIN_PATTERNS='$HOF_AUTH_ALLOWED_ORIGIN_PATTERNS' RELEASE_HOST_DIR='$RELEASE_HOST_DIR' RELEASE_CONTAINER_DIR='$RELEASE_CONTAINER_DIR' REMOTE_ENV_FILE='$REMOTE_ENV_FILE' REMOTE_FIREBASE_FILE='$REMOTE_FIREBASE_FILE' REMOTE_RELEASE_ENV_FILE='$REMOTE_RELEASE_ENV_FILE' BUILD_NUMBER='$BUILD_NUMBER' python3 -" < scripts/deploy_backend.py
                         '''.stripIndent())
                 }
             }
