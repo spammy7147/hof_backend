@@ -765,6 +765,7 @@ class TypedAutomationPersistenceTest {
         val runtime = TypedAutomationRuntimeService(
             queryRepository, actionRepository, codec, TimeProvider { now },
             Mockito.mock(TypedAutomationLifecycleBridge::class.java), Mockito.mock(AutomationOutboxService::class.java),
+            app.spammy.hof.character.repository.CharacterOperationJobQueryRepository(com.querydsl.jpa.impl.JPAQueryFactory(entityManager)),
         )
 
         val acquisition = assertIs<TypedRuntimeAcquisition.Acquired>(runtime.acquire(account.id))

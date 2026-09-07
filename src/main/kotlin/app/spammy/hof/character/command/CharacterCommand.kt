@@ -137,4 +137,7 @@ sealed interface CharacterCommandObservation {
 
 interface CharacterAutomationGate {
     fun <T> execute(accountId: Long, unavailable: () -> T, operation: () -> T): T
+
+    fun <T> executeJob(accountId: Long, jobId: Long, unavailable: () -> T, operation: () -> T): T =
+        execute(accountId, unavailable, operation)
 }

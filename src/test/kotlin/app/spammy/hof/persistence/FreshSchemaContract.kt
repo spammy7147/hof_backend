@@ -352,6 +352,27 @@ internal object FreshSchemaContract {
             requiredText("progress_payload"), requiredText("completed_step_ids"),
             optionalText("result_payload"), optionalText("message"), requiredInstant("started_at"),
             requiredInstant("updated_at"), optionalInstant("finished_at"),
+            optionalVarchar("recovery_status", 20), optionalBigint("automation_intent_revision"),
+            requiredBoolean("resume_automation"), requiredBoolean("automation_released"),
+            requiredInteger("restore_attempt_limit"), optionalVarchar("recovery_review_token", 36),
+            optionalVarchar("recovery_review_fingerprint", 64), optionalInstant("recovery_reviewed_at"),
+            optionalInstant("recovery_accepted_at"),
+        ),
+        table(
+            "character_recovery_originals", requiredBigint("job_id"), requiredVarchar("hof_character_id"),
+            requiredVarchar("position"), requiredVarchar("guard_value"), requiredInstant("captured_at"),
+            requiredBoolean("collection_complete"), optionalText("collection_error"), requiredInteger("restore_attempts"),
+            optionalVarchar("observed_equipment", 64), optionalVarchar("observed_patterns", 64),
+            optionalVarchar("observed_conditions", 64), optionalVarchar("observed_position"), optionalVarchar("observed_guard"),
+            optionalVarchar("pending_change", 32), requiredBigint("version"), primaryKey = listOf("job_id"),
+        ),
+        table(
+            "character_recovery_patterns", serialId(), requiredBigint("job_id"), requiredInteger("row_index"),
+            requiredVarchar("judge_value"), requiredVarchar("quantity"), requiredVarchar("skill"),
+        ),
+        table(
+            "character_recovery_equipment", serialId(), requiredBigint("job_id"), requiredInteger("item_order"),
+            requiredVarchar("slot"), requiredVarchar("part"), requiredText("name"), requiredText("icon_url"), requiredText("description"),
         ),
         table(
             "battle_map_groups",
@@ -616,6 +637,7 @@ internal object FreshSchemaContract {
             optionalInstant("lease_until"), optionalBigint("stop_action_id"), optionalText("warning_text"), optionalText("last_error"),
             optionalVarchar("requested_lifecycle", 20), requiredBoolean("auth_suspended"),
             requiredBoolean("resume_after_auth"),
+            requiredBigint("intent_revision"),
             requiredInstant("created_at"), requiredInstant("updated_at"), requiredBigint("version"),
             primaryKey = listOf("account_id"),
         ),
@@ -763,6 +785,8 @@ internal object FreshSchemaContract {
     )
 
     private val UNIQUE_KEYS = listOf(
+        key("character_recovery_patterns", "uk_character_recovery_patterns_job_row", "job_id", "row_index"),
+        key("character_recovery_equipment", "uk_character_recovery_equipment_job_order", "job_id", "item_order"),
         key("app_releases", "uk_app_releases_platform_version", "platform", "version_code"),
         key("app_releases", "uk_app_releases_file_name", "file_name"),
         key("hof_accounts", "uk_hof_accounts_login_id", "login_id"),
@@ -908,6 +932,9 @@ internal object FreshSchemaContract {
     )
 
     private val FOREIGN_KEYS = listOf(
+        fk("fk_character_recovery_originals_job", "character_recovery_originals.job_id", "character_operation_jobs.id", DeleteAction.CASCADE),
+        fk("fk_character_recovery_patterns_job", "character_recovery_patterns.job_id", "character_recovery_originals.job_id", DeleteAction.CASCADE),
+        fk("fk_character_recovery_equipment_job", "character_recovery_equipment.job_id", "character_recovery_originals.job_id", DeleteAction.CASCADE),
         fk("fk_hof_cookies_account", "hof_cookies.account_id", "hof_accounts.id", DeleteAction.CASCADE),
         fk("fk_latest_hof_status_account", "latest_hof_status.account_id", "hof_accounts.id", DeleteAction.CASCADE),
         fk("fk_refresh_tokens_account", "refresh_tokens.account_id", "hof_accounts.id", DeleteAction.CASCADE),
@@ -1313,6 +1340,12 @@ internal object FreshSchemaContract {
     )
 
     private val CHECKS = listOf(
+        check("character_operation_jobs", "chk_character_operation_recovery_status",
+            "recovery_status in ('NOT_STARTED', 'REQUIRED', 'RESTORING', 'RESTORED', 'UNAVAILABLE', 'ACCEPTED') or recovery_status is null"),
+        check("character_operation_jobs", "ck_character_recovery_attempt_limit", "restore_attempt_limit >= 3"),
+        check("character_recovery_originals", "ck_character_recovery_originals_attempts", "restore_attempts >= 0"),
+        check("character_recovery_originals", "ck_character_recovery_originals_pending",
+            "pending_change in ('LOAD_PATTERN', 'LOAD_EQUIPMENT', 'RESTORE_EQUIPMENT', 'RESTORE_PATTERN', 'RESTORE_POSITION')"),
         check("app_releases", "ck_app_releases_platform", "platform = 'ANDROID'"),
         check("app_releases", "ck_app_releases_version_code", "version_code > cast(0 as bigint)"),
         check("app_releases", "ck_app_releases_file_size", "file_size > cast(0 as bigint)"),

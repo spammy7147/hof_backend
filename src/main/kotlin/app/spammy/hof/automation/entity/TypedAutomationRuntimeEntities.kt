@@ -26,6 +26,7 @@ class TypedAutomationRuntimeStateEntity(
     @Enumerated(EnumType.STRING) @Column(name = "requested_lifecycle", length = 20) var requestedLifecycle: TypedAutomationLifecycle? = null,
     @Column(name = "auth_suspended", nullable = false) var authSuspended: Boolean = false,
     @Column(name = "resume_after_auth", nullable = false) var resumeAfterAuth: Boolean = false,
+    @Column(name = "intent_revision", nullable = false) var intentRevision: Long = 0,
     @Column(name = "created_at") val createdAt: Instant,
     @Column(name = "updated_at") var updatedAt: Instant,
     // Nullable version lets Spring Data identify a new @MapsId row and persist it instead of merging it.

@@ -64,7 +64,7 @@ class CharacterLifecycleServiceTest {
         }
         val service = CharacterLifecycleService(
             AccountHofMutationFence(),
-            CharacterLifecycleTransaction(accounts, query, identity, characters, histories, TimeProvider { now }),
+            CharacterLifecycleTransaction(accounts, query, identity, characters, histories, TimeProvider { now }, Mockito.mock(app.spammy.hof.character.repository.CharacterOperationJobQueryRepository::class.java)),
         )
 
         service.link(1L, 7L, "new-1", CharacterHofIdLinkReason.KNOCKBACK, false)
@@ -90,7 +90,7 @@ class CharacterLifecycleServiceTest {
         Mockito.`when`(accounts.findByIdForUpdate(1L)).thenReturn(account)
         val service = CharacterLifecycleService(
             AccountHofMutationFence(),
-            CharacterLifecycleTransaction(accounts, query, identity, characters, histories, TimeProvider { now }),
+            CharacterLifecycleTransaction(accounts, query, identity, characters, histories, TimeProvider { now }, Mockito.mock(app.spammy.hof.character.repository.CharacterOperationJobQueryRepository::class.java)),
         )
 
         service.archive(1L, 7L)
@@ -121,7 +121,7 @@ class CharacterLifecycleServiceTest {
         Mockito.`when`(query.findByAccountIdAndIdForUpdate(1L, 7L)).thenReturn(character)
         val lifecycle = CharacterLifecycleService(
             mutationFence,
-            CharacterLifecycleTransaction(accounts, query, identity, characters, histories, TimeProvider { now }),
+            CharacterLifecycleTransaction(accounts, query, identity, characters, histories, TimeProvider { now }, Mockito.mock(app.spammy.hof.character.repository.CharacterOperationJobQueryRepository::class.java)),
         )
         val town = TownAuthenticatedExecutor(
             accounts,

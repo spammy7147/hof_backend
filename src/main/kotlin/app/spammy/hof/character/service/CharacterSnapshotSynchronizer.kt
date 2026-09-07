@@ -6,6 +6,7 @@ import app.spammy.hof.account.repository.CookieQueryRepository
 import app.spammy.hof.character.dto.CharacterDetailResponse
 import app.spammy.hof.character.dto.CharacterResponse
 import app.spammy.hof.character.entity.CharacterLifecycle
+import app.spammy.hof.character.entity.CharacterRecoveryStatus
 import app.spammy.hof.character.entity.CharacterSection
 import app.spammy.hof.character.entity.CharacterSectionSyncStatus
 import app.spammy.hof.character.repository.CharacterQueryRepository
@@ -140,13 +141,15 @@ class CharacterSnapshotSynchronizer(
 /** 깊은 동기화가 HOF에서 수행해야 하는 상태 전환. Task 6의 typed 명령 실행기가 이 port를 구현한다. */
 interface CharacterDeepSyncRemote {
     fun captureCurrent(): CharacterPageParseResult
-    fun loadSavedPattern(slotCode: String): CharacterPageParseResult
-    fun loadEquipmentPreset(slotNumber: Int): CharacterPageParseResult
-    fun restoreCurrent(original: CharacterPageParseResult): CharacterPageParseResult
+    fun loadSavedPattern(slotCode: String, beforeChange: CharacterSyncBeforeChange): CharacterPageParseResult
+    fun loadEquipmentPreset(slotNumber: Int, beforeChange: CharacterSyncBeforeChange): CharacterPageParseResult
+    fun restoreCurrent(original: CharacterRestoreState, beforeChange: CharacterSyncBeforeChange): CharacterPageParseResult
 }
 
 /** 깊은 동기화에서 관측한 현재/저장 설정을 영속화하는 port. */
 interface CharacterDeepSyncStore {
+    fun loadCheckpoint(): CharacterDeepSyncCheckpoint?
+    fun saveCheckpoint(checkpoint: CharacterDeepSyncCheckpoint)
     fun saveCurrent(snapshot: CharacterPageParseResult)
     fun savePatternSlot(slotCode: String, snapshot: CharacterPageParseResult)
     fun saveEquipmentPreset(slotNumber: Int, snapshot: CharacterPageParseResult)
@@ -162,51 +165,96 @@ data class CharacterDeepSyncProgress(
 
 enum class CharacterDeepSyncPhase { CURRENT, SAVED_PATTERN, EQUIPMENT_PRESET, RESTORE, COMPLETED }
 
-/**
- * 원격에는 transaction이 없으므로 항상 원본 상태를 먼저 보관하고, 모든 관측 후 finally에서 복원을 시도한다.
- * load 응답을 곧바로 저장해 9개 슬롯이면 정확히 9회의 load/capture가 일어난다.
- */
+/** 최초 원본은 첫 변경 전에 저장하고 재실행에서도 같은 작업의 원본만 사용한다. */
 class CharacterDeepSyncOrchestrator {
     fun synchronize(
         remote: CharacterDeepSyncRemote,
         store: CharacterDeepSyncStore,
         report: (CharacterDeepSyncProgress) -> Unit = {},
     ) {
-        val original = remote.captureCurrent()
-        val patternSlots = original.snapshot.patternSlots.filter { it.canLoad }
-        val equipmentSlots = listOf(1, 2)
-        val total = 1 + patternSlots.size + equipmentSlots.size + 1
-        var completed = 0
-
-        store.saveCurrent(original)
-        report(CharacterDeepSyncProgress(CharacterDeepSyncPhase.CURRENT, ++completed, total))
-        try {
-            patternSlots.forEach { slot ->
-                store.savePatternSlot(slot.slot, remote.loadSavedPattern(slot.slot))
-                report(
-                    CharacterDeepSyncProgress(
-                        CharacterDeepSyncPhase.SAVED_PATTERN,
-                        ++completed,
-                        total,
-                        patternSlotCode = slot.slot,
-                    ),
-                )
-            }
-            equipmentSlots.forEach { slot ->
-                store.saveEquipmentPreset(slot, remote.loadEquipmentPreset(slot))
-                report(
-                    CharacterDeepSyncProgress(
-                        CharacterDeepSyncPhase.EQUIPMENT_PRESET,
-                        ++completed,
-                        total,
-                        equipmentSlotNumber = slot,
-                    ),
-                )
-            }
-        } finally {
-            store.saveCurrent(remote.restoreCurrent(original))
-            report(CharacterDeepSyncProgress(CharacterDeepSyncPhase.RESTORE, ++completed, total))
+        val current = remote.captureCurrent()
+        var checkpoint = store.loadCheckpoint() ?: CharacterDeepSyncCheckpoint(CharacterRestoreState.capture(current))
+            .also(store::saveCheckpoint)
+        checkpoint.requireExpected(CharacterRestoreState.capture(current))
+        val beforeChange: CharacterSyncBeforeChange = { state, change ->
+            checkpoint.requireExpected(state)
+            checkpoint = checkpoint.copy(observed = CharacterSyncObservation.from(state), pendingChange = change)
+            store.saveCheckpoint(checkpoint)
         }
-        report(CharacterDeepSyncProgress(CharacterDeepSyncPhase.COMPLETED, completed, total))
+        fun recordObservation(page: CharacterPageParseResult) {
+            val state = CharacterRestoreState.capture(page)
+            checkpoint.requireExpected(state)
+            checkpoint = checkpoint.copy(observed = CharacterSyncObservation.from(state), pendingChange = null)
+            store.saveCheckpoint(checkpoint)
+        }
+        val patternSlots = current.snapshot.patternSlots.filter { it.canLoad }
+        val total = 1 + patternSlots.size + 2 + 1
+        var completed = 0
+        if (checkpoint.status == CharacterRecoveryStatus.RESTORED) {
+            check(CharacterRestoreState.capture(current) == checkpoint.original) { "복원 완료 후 원본 서버의 설정이 변경되었습니다." }
+            checkpoint.collectionError?.let { error(it) }
+            check(checkpoint.collectionComplete) { "저장 설정 수집이 완료되지 않았습니다." }
+            report(CharacterDeepSyncProgress(CharacterDeepSyncPhase.COMPLETED, total, total))
+            return
+        }
+        check(checkpoint.status in setOf(
+            CharacterRecoveryStatus.REQUIRED,
+            CharacterRecoveryStatus.RESTORING,
+        )) { "자동 복원을 진행할 수 없는 작업입니다." }
+        // 새 원본 캡처와 일반 현재 snapshot 갱신은 서로 다른 책임이다.
+        var collectionFailure: Exception? = null
+        try {
+            store.saveCurrent(current)
+            report(CharacterDeepSyncProgress(CharacterDeepSyncPhase.CURRENT, ++completed, total))
+            if (checkpoint.status == CharacterRecoveryStatus.REQUIRED && !checkpoint.collectionComplete && checkpoint.collectionError == null) {
+                patternSlots.forEach { slot ->
+                    val observed = remote.loadSavedPattern(slot.slot, beforeChange)
+                    recordObservation(observed)
+                    store.savePatternSlot(slot.slot, observed)
+                    report(CharacterDeepSyncProgress(CharacterDeepSyncPhase.SAVED_PATTERN, ++completed, total, patternSlotCode = slot.slot))
+                }
+                (1..2).forEach { slot ->
+                    val observed = remote.loadEquipmentPreset(slot, beforeChange)
+                    recordObservation(observed)
+                    store.saveEquipmentPreset(slot, observed)
+                    report(CharacterDeepSyncProgress(CharacterDeepSyncPhase.EQUIPMENT_PRESET, ++completed, total, equipmentSlotNumber = slot))
+                }
+                checkpoint = checkpoint.copy(collectionComplete = true)
+                store.saveCheckpoint(checkpoint)
+            }
+        } catch (error: Exception) {
+            collectionFailure = error
+            checkpoint = checkpoint.copy(collectionError = error.message ?: "저장 설정 수집에 실패했습니다.")
+            try {
+                store.saveCheckpoint(checkpoint)
+            } catch (saveError: Exception) {
+                error.addSuppressed(saveError)
+            }
+        }
+        val beforeRestore = remote.captureCurrent()
+        checkpoint.requireExpected(CharacterRestoreState.capture(beforeRestore))
+        val restored = if (CharacterRestoreState.capture(beforeRestore) == checkpoint.original) beforeRestore else {
+            check(checkpoint.restoreAttempts < checkpoint.restoreAttemptLimit) { "원본 복구 시도 한도를 넘었습니다. 현재 상태를 확인해 주세요." }
+            checkpoint = checkpoint.copy(
+                status = CharacterRecoveryStatus.RESTORING,
+                restoreAttempts = checkpoint.restoreAttempts + 1,
+            )
+            store.saveCheckpoint(checkpoint)
+            remote.restoreCurrent(checkpoint.original, beforeChange)
+        }
+        check(CharacterRestoreState.capture(restored) == checkpoint.original) { "시작 전 현재 캐릭터 설정으로 복원됐는지 확인하지 못했습니다." }
+        checkpoint = checkpoint.copy(
+            status = CharacterRecoveryStatus.RESTORED,
+            observed = CharacterSyncObservation.from(checkpoint.original),
+            pendingChange = null,
+        )
+        store.saveCheckpoint(checkpoint)
+        store.saveCurrent(restored)
+        report(CharacterDeepSyncProgress(CharacterDeepSyncPhase.RESTORE, ++completed, total))
+        collectionFailure?.let { throw it }
+        checkpoint.collectionError?.let { error(it) }
+        check(checkpoint.collectionComplete) { "저장 설정 수집이 완료되지 않았습니다." }
+        report(CharacterDeepSyncProgress(CharacterDeepSyncPhase.COMPLETED, total, total))
     }
+
 }

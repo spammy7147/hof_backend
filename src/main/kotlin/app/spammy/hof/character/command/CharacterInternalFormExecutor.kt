@@ -12,15 +12,21 @@ class CharacterInternalFormExecutor(
     private val executor: TownAuthenticatedExecutor,
     private val requestFactory: HofRequestFactory,
 ) {
+    fun execute(accountId: Long, hofCharacterId: String, resolve: (ParsedTownPage) -> TownActionRequest) =
+        execute(accountId, hofCharacterId, {}, resolve)
+
     fun execute(
         accountId: Long,
         hofCharacterId: String,
+        beforeSubmit: (String) -> Unit,
         resolve: (ParsedTownPage) -> TownActionRequest,
     ) {
         executor.executeProjected(
             accountId = accountId,
             pageUrl = requestFactory.characterPage(hofCharacterId).url,
-            resolveAction = { _, _, page -> resolve(page).also { page.requireSafeInternalAction(it) } },
+            resolveAction = { html, _, page ->
+                resolve(page).also { page.requireSafeInternalAction(it); beforeSubmit(html) }
+            },
         ) { _, _, _, _ -> Unit }
     }
 

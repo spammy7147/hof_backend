@@ -699,7 +699,7 @@ class CharacterCommandExecutorTest {
         }
         val waits = mutableListOf<Duration>()
         var executed = false
-        val bridge = TypedAutomationCharacterCommandBridge(automation, CharacterCommandPauseWaiter(waits::add))
+        val bridge = TypedAutomationCharacterCommandBridge(automation, CharacterCommandPauseWaiter(waits::add), Mockito.mock(app.spammy.hof.character.service.CharacterOperationAutomation::class.java), app.spammy.hof.town.common.service.AccountHofMutationFence())
 
         val result = bridge.execute(1L, unavailable = { error("must become available") }) {
             executed = true
@@ -727,7 +727,7 @@ class CharacterCommandExecutorTest {
             aggregate(if (states.isEmpty()) TypedAutomationLifecycle.PAUSED else states.removeFirst())
         }
         var executed = false
-        val bridge = TypedAutomationCharacterCommandBridge(automation, CharacterCommandPauseWaiter { })
+        val bridge = TypedAutomationCharacterCommandBridge(automation, CharacterCommandPauseWaiter { }, Mockito.mock(app.spammy.hof.character.service.CharacterOperationAutomation::class.java), app.spammy.hof.town.common.service.AccountHofMutationFence())
 
         bridge.execute(1L, unavailable = { error("must wait") }) { executed = true }
 

@@ -4,6 +4,7 @@ import app.spammy.hof.automation.entity.*
 import app.spammy.hof.automation.repository.*
 import app.spammy.hof.automation.outbox.AutomationOutboxService
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.character.repository.CharacterOperationJobQueryRepository
 import app.spammy.hof.external.config.HofRequestProperties
 import java.time.Duration
 import java.time.Instant
@@ -28,13 +29,14 @@ class TypedAutomationRuntimeService(
     private val timeProvider: TimeProvider,
     private val lifecycleBridge: TypedAutomationLifecycleBridge,
     private val outbox: AutomationOutboxService,
+    private val characterJobs: CharacterOperationJobQueryRepository,
     private val requestProperties: HofRequestProperties = HofRequestProperties(),
 ) {
     @Transactional(readOnly = true, propagation = Propagation.REQUIRES_NEW)
     fun isRunning(accountId: Long): Boolean =
-        queryRepository.findRuntimeState(accountId)?.let { state ->
+        !characterJobs.hasUnrestoredJob(accountId) && queryRepository.findRuntimeState(accountId)?.let { state ->
             state.lifecycleStatus == TypedAutomationLifecycle.DRAINING ||
-                (!state.authSuspended && state.lifecycleStatus == TypedAutomationLifecycle.RUNNING)
+                (!state.authSuspended && state.lifecycleStatus == TypedAutomationLifecycle.RUNNING && !characterJobs.hasRecoveryHold(accountId))
         } == true
 
     @Transactional(readOnly = true, propagation = Propagation.REQUIRES_NEW)
@@ -70,6 +72,10 @@ class TypedAutomationRuntimeService(
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun acquire(accountId: Long): TypedRuntimeAcquisition {
         val state = queryRepository.lockRuntimeState(accountId) ?: return TypedRuntimeAcquisition.Inactive
+        if (characterJobs.hasUnrestoredJob(accountId)) return TypedRuntimeAcquisition.Inactive
+        if (state.lifecycleStatus != TypedAutomationLifecycle.DRAINING && characterJobs.hasRecoveryHold(accountId)) {
+            return TypedRuntimeAcquisition.Inactive
+        }
         if (state.lifecycleStatus !in setOf(TypedAutomationLifecycle.RUNNING, TypedAutomationLifecycle.DRAINING)) {
             return TypedRuntimeAcquisition.Inactive
         }

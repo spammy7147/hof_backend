@@ -13,6 +13,10 @@ import app.spammy.hof.character.repository.CharacterQueryRepository
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.client.AccountHofGateway
 import app.spammy.hof.external.client.HofRequestFactory
+import app.spammy.hof.external.model.HofActionPatternRow
+import app.spammy.hof.external.model.HofPositionGuard
+import app.spammy.hof.external.parser.CharacterPageSection
+import app.spammy.hof.external.parser.CharacterSectionParseResult
 import app.spammy.hof.external.model.HofCharacter
 import app.spammy.hof.external.model.HofPatternSlot
 import app.spammy.hof.external.model.HofHttpResponse
@@ -290,14 +294,81 @@ class CharacterSnapshotSynchronizerTest {
         CharacterDeepSyncOrchestrator().synchronize(remote, store, progress::add)
 
         assertEquals(
-            listOf("capture", *(0..8).map { "pattern:$it" }.toTypedArray(), "equipment:1", "equipment:2", "restore"),
+            listOf("capture", *(0..8).map { "pattern:$it" }.toTypedArray(), "equipment:1", "equipment:2", "capture", "restore"),
             remote.operations,
         )
         assertEquals((0..8).map(Int::toString), store.patterns)
         assertEquals(listOf(1, 2), store.equipment)
-        assertEquals(listOf("original", "restored"), store.current)
+        assertEquals(listOf("original", "original"), store.current)
         assertEquals(13, progress.last().totalSteps)
         assertEquals(CharacterDeepSyncPhase.COMPLETED, progress.last().phase)
+    }
+
+    @Test
+    fun `unexpected external change after collection is not overwritten by restoration`() {
+        val remote = FakeDeepRemote(page("original"), externalChangeAfterCollection = true)
+        val store = RecordingStore()
+
+        assertFailsWith<IllegalStateException> {
+            CharacterDeepSyncOrchestrator().synchronize(remote, store)
+        }
+
+        assertFalse("restore" in remote.operations)
+        assertEquals("original", store.loadCheckpoint()?.original?.patterns?.single()?.skill)
+    }
+
+    @Test
+    fun `incomplete original pattern fields cause no remote mutation`() {
+        val complete = page("original")
+        val incomplete = complete.copy(snapshot = complete.snapshot.copy(
+            actionPatterns = listOf(HofActionPatternRow(0, quantity = "0", skill = "original")),
+        ))
+        val remote = FakeDeepRemote(incomplete)
+        val store = RecordingStore()
+
+        assertFailsWith<IllegalStateException> {
+            CharacterDeepSyncOrchestrator().synchronize(remote, store)
+        }
+
+        assertEquals(listOf("capture"), remote.operations)
+        assertEquals(null, store.loadCheckpoint())
+    }
+
+    @Test
+    fun `already restored state is confirmed even after the last recovery attempt lost its response`() {
+        val original = page("original")
+        val remote = FakeDeepRemote(original)
+        val store = RecordingStore(CharacterDeepSyncCheckpoint(
+            CharacterRestoreState.capture(original),
+            status = app.spammy.hof.character.entity.CharacterRecoveryStatus.RESTORING,
+            collectionComplete = true,
+            restoreAttempts = 3,
+        ))
+        val progress = mutableListOf<CharacterDeepSyncProgress>()
+
+        CharacterDeepSyncOrchestrator().synchronize(remote, store, progress::add)
+
+        assertFalse("restore" in remote.operations)
+        assertEquals(CharacterDeepSyncPhase.COMPLETED, progress.last().phase)
+        assertEquals(app.spammy.hof.character.entity.CharacterRecoveryStatus.RESTORED, store.loadCheckpoint()?.status)
+    }
+
+    @Test
+    fun `exhausted recovery preserves its original without another mutation`() {
+        val original = CharacterRestoreState.capture(page("original"))
+        val temporary = page("temporary")
+        val remote = FakeDeepRemote(temporary)
+        val store = RecordingStore(CharacterDeepSyncCheckpoint(
+            original, status = app.spammy.hof.character.entity.CharacterRecoveryStatus.RESTORING,
+            collectionComplete = true, restoreAttempts = 3,
+            observed = CharacterSyncObservation.from(CharacterRestoreState.capture(temporary)),
+        ))
+
+        val error = assertFailsWith<IllegalStateException> { CharacterDeepSyncOrchestrator().synchronize(remote, store) }
+
+        assertTrue(error.message.orEmpty().contains("한도"))
+        assertFalse("restore" in remote.operations)
+        assertEquals(original, store.loadCheckpoint()?.original)
     }
 
     @Test
@@ -313,32 +384,45 @@ class CharacterSnapshotSynchronizerTest {
             CharacterDeepSyncOrchestrator().synchronize(remote, store)
         }
 
-        assertEquals(listOf("capture", "pattern:0", "pattern:1", "restore"), remote.operations)
-        assertEquals(listOf("original", "restored"), store.current)
+        assertEquals(listOf("capture", "pattern:0", "pattern:1", "capture", "restore"), remote.operations)
+        assertEquals(listOf("original", "original"), store.current)
     }
 
     private class FakeDeepRemote(
         private val original: CharacterPageParseResult,
         private val failingPattern: String? = null,
+        private val externalChangeAfterCollection: Boolean = false,
     ) : CharacterDeepSyncRemote {
         val operations = mutableListOf<String>()
+        private var current = original
 
-        override fun captureCurrent(): CharacterPageParseResult = original.also { operations += "capture" }
-
-        override fun loadSavedPattern(slotCode: String): CharacterPageParseResult {
-            operations += "pattern:$slotCode"
-            check(slotCode != failingPattern) { "pattern load failed" }
-            return page("pattern-$slotCode")
+        override fun captureCurrent(): CharacterPageParseResult {
+            if (externalChangeAfterCollection && "equipment:2" in operations) current = page("external")
+            return current.also { operations += "capture" }
         }
 
-        override fun loadEquipmentPreset(slotNumber: Int): CharacterPageParseResult =
-            page("equipment-$slotNumber").also { operations += "equipment:$slotNumber" }
+        override fun loadSavedPattern(slotCode: String, beforeChange: CharacterSyncBeforeChange): CharacterPageParseResult {
+            beforeChange(CharacterRestoreState.capture(current), CharacterSyncChange.LOAD_PATTERN)
+            operations += "pattern:$slotCode"
+            check(slotCode != failingPattern) { "pattern load failed" }
+            return page("pattern-$slotCode").also { current = it }
+        }
 
-        override fun restoreCurrent(original: CharacterPageParseResult): CharacterPageParseResult =
-            page("restored").also { operations += "restore" }
+        override fun loadEquipmentPreset(slotNumber: Int, beforeChange: CharacterSyncBeforeChange): CharacterPageParseResult {
+            beforeChange(CharacterRestoreState.capture(current), CharacterSyncChange.LOAD_EQUIPMENT)
+            return page("equipment-$slotNumber").also { current = it; operations += "equipment:$slotNumber" }
+        }
+
+        override fun restoreCurrent(original: CharacterRestoreState, beforeChange: CharacterSyncBeforeChange): CharacterPageParseResult {
+            beforeChange(CharacterRestoreState.capture(current), CharacterSyncChange.RESTORE_PATTERN)
+            return page(original.patterns.single().skill).also { current = it; operations += "restore" }
+        }
     }
 
-    private class RecordingStore : CharacterDeepSyncStore {
+    private class RecordingStore(initial: CharacterDeepSyncCheckpoint? = null) : CharacterDeepSyncStore {
+        private var checkpoint: CharacterDeepSyncCheckpoint? = initial
+        override fun loadCheckpoint() = checkpoint
+        override fun saveCheckpoint(checkpoint: CharacterDeepSyncCheckpoint) { this.checkpoint = checkpoint }
         val current = mutableListOf<String>()
         val patterns = mutableListOf<String>()
         val equipment = mutableListOf<Int>()
@@ -358,7 +442,12 @@ class CharacterSnapshotSynchronizerTest {
 
     private companion object {
         fun page(name: String, slots: List<HofPatternSlot> = emptyList()) =
-            CharacterPageParseResult(HofCharacter(id = "1", name = name, patternSlots = slots), emptyMap())
+            CharacterPageParseResult(
+                HofCharacter(id = "1", name = name, patternSlots = slots,
+                    actionPatterns = listOf(HofActionPatternRow(0, judge = "always", quantity = "0", skill = name)),
+                    positionGuard = HofPositionGuard(selectedPosition = "front", guardValue = "0")),
+                CharacterPageSection.entries.associateWith { CharacterSectionParseResult.Success(1) },
+            )
 
         fun character(now: Instant): CharacterEntity {
             val account = HofAccountEntity(

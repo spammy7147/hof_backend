@@ -26,6 +26,10 @@ import app.spammy.hof.automation.lease.AccountAutomationLeaseService
 import app.spammy.hof.automation.outbox.*
 import app.spammy.hof.battle.dto.BattlePatternLoadRequest
 import app.spammy.hof.character.entity.CharacterEntity
+import app.spammy.hof.character.entity.CharacterOperationJobEntity
+import app.spammy.hof.character.entity.CharacterOperationStatus
+import app.spammy.hof.character.entity.CharacterOperationType
+import app.spammy.hof.character.entity.CharacterRecoveryStatus
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.status.entity.HofStatusSnapshotEntity
 import app.spammy.hof.external.client.HofGateway
@@ -83,6 +87,13 @@ class AutomationRecoveryIntegrationTest {
     @MockitoBean private lateinit var preflight: AutomationDailyPreflight
     @MockitoBean private lateinit var authorization: AccountExecutionAuthorizationReader
     @Autowired private lateinit var wakeups: AutomationWakeupPort
+    @Autowired private lateinit var characterGate: app.spammy.hof.character.command.CharacterAutomationGate
+    @Autowired private lateinit var characterRecovery: app.spammy.hof.character.service.CharacterDeepSyncRecovery
+    @Autowired private lateinit var characterJobs: app.spammy.hof.character.service.CharacterOperationJobService
+    @Autowired private lateinit var characterIdentity: app.spammy.hof.character.identity.CharacterLifecycleService
+    @Autowired private lateinit var characterAutomation: app.spammy.hof.character.service.CharacterOperationAutomation
+    @Autowired private lateinit var recoveryActions: app.spammy.hof.character.service.CharacterOperationRecoveryService
+    @Autowired private lateinit var accountMutations: app.spammy.hof.town.common.service.AccountHofMutationFence
 
     private var accountId = 0L
     private var entryId = 0L
@@ -94,6 +105,131 @@ class AutomationRecoveryIntegrationTest {
     private var selectedCharacters = characters
     private var raidPageTransform: (String) -> String = { it }
     private var incompleteRefreshPost = false
+
+    @ParameterizedTest
+    @ValueSource(strings = ["CURRENT", "RETRY", "STARTUP", "NOT_STARTED", "NOT_STARTED_RETRY", "USER_STOP"])
+    fun `completed recovery releases a stranded automation hold without another HOF request`(entry: String) {
+        val job = TransactionTemplate(transactions).execute {
+            val character = entityManager.createQuery("select c from CharacterEntity c where c.account.id = :accountId", CharacterEntity::class.java)
+                .setParameter("accountId", accountId).resultList.first()
+            CharacterOperationJobEntity(account = entityManager.getReference(HofAccountEntity::class.java, accountId),
+                operationType = CharacterOperationType.DEEP_SYNC, targetCharacterId = character.id,
+                recoveryStatus = CharacterRecoveryStatus.NOT_STARTED, startedAt = clock.now(), updatedAt = clock.now(),
+            ).also(entityManager::persist)
+        }
+        characterAutomation.begin(accountId, job.id)
+        if (!entry.startsWith("NOT_STARTED")) {
+            val original = app.spammy.hof.character.service.CharacterRestoreState(
+                "recovery-1", listOf(app.spammy.hof.external.model.HofActionPatternRow(0, judge = "0", quantity = "0", skill = "0")),
+                emptyList(), "front", "0")
+            characterRecovery.save(job.id, accountId, job.targetCharacterId,
+                app.spammy.hof.character.service.CharacterDeepSyncCheckpoint(original, status = CharacterRecoveryStatus.RESTORED,
+                    collectionComplete = true))
+        }
+        // Persist the state left when remote recovery committed but the finish transaction failed.
+        jdbc.update("update character_operation_jobs set status = 'FAILED', message = 'finish transaction unavailable' where id = ?", job.id)
+        if (entry == "USER_STOP") application.stopTyped(accountId)
+        when (entry) {
+            "RETRY", "NOT_STARTED_RETRY" -> characterJobs.retryRecovery(accountId, job.id)
+            "STARTUP" -> characterJobs.resumeIncompleteJobs()
+            else -> characterJobs.findCurrent(accountId)
+        }
+        assertTrue(jdbc.queryForObject("select automation_released from character_operation_jobs where id = ?", Boolean::class.java, job.id)!!)
+        assertTrue(requests.isEmpty(), "Finalizing a persisted recovery must not read or mutate HOF again")
+        assertEquals(if (entry == "USER_STOP") "STOPPED" else "RUNNING", jdbc.queryForObject(
+            "select lifecycle_status from typed_automation_runtime_states where account_id = ?", String::class.java, accountId))
+        if (entry != "USER_STOP") {
+            failedPattern = -1
+            publisher.publishBatch()
+            assertTrue(battleRequests().isNotEmpty())
+            consumeNextWake()
+            Mockito.verify(decisions, Mockito.atLeast(2)).select(accountId)
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["UNAVAILABLE", "REQUIRED"])
+    fun `현재 상태를 명시적으로 수락하면 원본과 수집 실패를 보존하고 자동화를 정지한다`(recovery: String) {
+        val jobId = reviewableJob(recovery)
+        assertEquals(jobId, characterJobs.findCurrent(accountId)?.id)
+        assertNull(characterJobs.findCurrent(accountId + 99999))
+        val original = if (recovery == "REQUIRED") {
+            val job = characterJobs.find(accountId, jobId)
+            val state = app.spammy.hof.character.service.CharacterRestoreState(
+                characters.first(), listOf(app.spammy.hof.external.model.HofActionPatternRow(0, judge = "1000", quantity = "0", skill = "9564")),
+                emptyList(), "front", "1")
+            jdbc.update("update character_operation_jobs set recovery_status = 'NOT_STARTED' where id = ?", jobId)
+            characterRecovery.save(jobId, accountId, job.targetCharacterId,
+                app.spammy.hof.character.service.CharacterDeepSyncCheckpoint(state))
+            state
+        } else null
+        val observed = app.spammy.hof.character.service.CharacterDeepSyncServiceTest.Fixture()
+        reviewPage { observed.page() }
+
+        val preview = recoveryActions.preview(accountId, jobId)
+        assertTrue(preview.patterns.isNotEmpty())
+        assertEquals(jobId, preview.jobId)
+        val accepted = recoveryActions.accept(accountId, jobId, preview.confirmationToken)
+        assertEquals(CharacterOperationStatus.STOPPED, accepted.status)
+        assertEquals(CharacterRecoveryStatus.ACCEPTED, accepted.recoveryStatus)
+        assertEquals("수집 중단", accepted.message)
+        assertEquals("STOPPED", jdbc.queryForObject("select lifecycle_status from typed_automation_runtime_states where account_id = ?", String::class.java, accountId))
+        assertNotNull(jdbc.queryForObject("select recovery_accepted_at from character_operation_jobs where id = ?", java.sql.Timestamp::class.java, jobId))
+        if (original != null) assertEquals(original, characterRecovery.load(jobId, accountId, accepted.targetCharacterId)?.original)
+        characterAutomation.requireAvailable(accountId)
+        val requestCount = requests.size
+        assertEquals(accepted, recoveryActions.accept(accountId, jobId, preview.confirmationToken))
+        assertEquals(requestCount, requests.size, "이미 수락한 요청은 원격 관측도 반복하지 않는다.")
+        assertTrue(requests.all { it.method == HofHttpMethod.GET })
+        wakeups.wake(accountId, "STALE_WAKE_AFTER_ACCEPTED_RECOVERY")
+        publisher.publishBatch()
+        assertEquals(requestCount, requests.size, "보호를 해제해도 자동화를 저절로 재개하지 않는다.")
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["CHANGED", "EXPIRED", "WRONG_TOKEN", "OTHER_ACCOUNT", "RUNNING", "INCOMPLETE", "OTHER_JOB"])
+    fun `다른 상태나 만료된 관측 또는 다른 소유권은 현재 상태 수락을 허용하지 않는다`(reason: String) {
+        val jobId = reviewableJob("UNAVAILABLE")
+        val observed = app.spammy.hof.character.service.CharacterDeepSyncServiceTest.Fixture()
+        var html = observed.page()
+        reviewPage { html }
+        val preview = recoveryActions.preview(accountId, jobId)
+        when (reason) {
+            "CHANGED" -> html = html.replace("value='9564' selected", "value='7777' selected").also { assertNotEquals(html, it) }
+            "EXPIRED" -> clock.current = clock.now().plusSeconds(301)
+            "RUNNING" -> jdbc.update("update character_operation_jobs set status = 'RUNNING' where id = ?", jobId)
+            "INCOMPLETE" -> html = "<div>현재 캐릭터를 확인하지 못했습니다.</div>"
+        }
+        val targetJobId = if (reason == "OTHER_JOB") reviewableJob("UNAVAILABLE") else jobId
+        assertFailsWith<app.spammy.hof.common.error.ApiException> {
+            recoveryActions.accept(if (reason == "OTHER_ACCOUNT") accountId + 99999 else accountId,
+                targetJobId, if (reason == "WRONG_TOKEN") "wrong-token" else preview.confirmationToken)
+        }
+        assertEquals(CharacterRecoveryStatus.UNAVAILABLE, characterJobs.find(accountId, jobId).recoveryStatus)
+        assertFailsWith<app.spammy.hof.common.error.ApiException> { characterAutomation.requireAvailable(accountId) }
+        assertTrue(requests.all { it.method == HofHttpMethod.GET })
+    }
+
+    private fun reviewableJob(recovery: String): Long = TransactionTemplate(transactions).execute {
+        val character = entityManager.createQuery("select c from CharacterEntity c where c.account.id = :accountId order by c.id", CharacterEntity::class.java)
+            .setParameter("accountId", accountId).resultList.first()
+        val job = CharacterOperationJobEntity(account = entityManager.getReference(HofAccountEntity::class.java, accountId),
+            operationType = CharacterOperationType.DEEP_SYNC, status = CharacterOperationStatus.FAILED,
+            targetCharacterId = character.id, recoveryStatus = CharacterRecoveryStatus.valueOf(recovery),
+            message = "수집 중단", startedAt = clock.now(), updatedAt = clock.now())
+        entityManager.persist(job)
+        entityManager.flush()
+        job.id
+    }
+
+    private fun reviewPage(body: () -> String) {
+        Mockito.doAnswer { invocation ->
+            val request = invocation.arguments[1] as HofRequest
+            requests += request
+            check(request.method == HofHttpMethod.GET)
+            HofHttpResponse(200, request.url, body(), emptyMap())
+        }.`when`(gateway).execute(Mockito.eq(accountId), anyRequest(), Mockito.anyMap())
+    }
 
     @BeforeEach
     fun prepareAccount() {
@@ -145,6 +281,211 @@ class AutomationRecoveryIntegrationTest {
     fun removeAccount() {
         transport.delivered.forEach { jdbc.update("delete from automation_consumed_events where event_id = ?", it) }
         if (accountId != 0L) jdbc.update("delete from hof_accounts where id = ?", accountId)
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["REQUIRED", "RESTORING", "UNAVAILABLE", "LEGACY"])
+    fun `미복원 캐릭터 작업은 재시작 깨우기에서 새 자동화 판단과 제출을 막는다`(recovery: String) {
+        failedPattern = -1
+        TransactionTemplate(transactions).executeWithoutResult {
+            val character = entityManager.createQuery("select c from CharacterEntity c where c.account.id = :accountId", CharacterEntity::class.java)
+                .setParameter("accountId", accountId).resultList.first()
+            entityManager.persist(CharacterOperationJobEntity(
+                account = entityManager.getReference(HofAccountEntity::class.java, accountId),
+                operationType = CharacterOperationType.DEEP_SYNC,
+                status = if (recovery == "LEGACY") CharacterOperationStatus.RUNNING else CharacterOperationStatus.FAILED,
+                targetCharacterId = character.id,
+                recoveryStatus = recovery.takeUnless { it == "LEGACY" }?.let(CharacterRecoveryStatus::valueOf),
+                startedAt = clock.now(), updatedAt = clock.now(),
+            ))
+        }
+
+        wakeups.wake(accountId, "STARTUP_WITH_CHARACTER_RECOVERY")
+        publisher.publishBatch()
+
+        assertTrue(requests.isEmpty(), "미복원 상태에서는 HOF 요청을 시작하지 않아야 한다.")
+        Mockito.verify(decisions, Mockito.never()).select(accountId)
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["RESTORED", "REQUIRED", "COLLECTION_FAILED_RESTORED", "USER_PAUSE", "USER_STOP", "AUTH",
+        "INITIAL_PAUSED", "INITIAL_STOPPED", "RETRY_RESTORED", "AUTH_RELOGIN"])
+    fun `동기화 일시정지는 원본 복원과 최신 사용자 의도가 허용할 때만 후속 판단으로 복귀한다`(outcome: String) {
+        val job = TransactionTemplate(transactions).execute {
+            val character = entityManager.createQuery("select c from CharacterEntity c where c.account.id = :accountId", CharacterEntity::class.java)
+                .setParameter("accountId", accountId).resultList.first()
+            CharacterOperationJobEntity(
+                account = entityManager.getReference(HofAccountEntity::class.java, accountId),
+                operationType = CharacterOperationType.DEEP_SYNC, targetCharacterId = character.id,
+                recoveryStatus = CharacterRecoveryStatus.NOT_STARTED, startedAt = clock.now(), updatedAt = clock.now(),
+            ).also(entityManager::persist)
+        }
+        val original = app.spammy.hof.character.service.CharacterRestoreState(
+            "recovery-1", listOf(app.spammy.hof.external.model.HofActionPatternRow(0, judge = "0", quantity = "0", skill = "0")),
+            emptyList(), "front", "0",
+        )
+        when (outcome) {
+            "INITIAL_PAUSED" -> application.pauseTyped(accountId)
+            "INITIAL_STOPPED" -> application.stopTyped(accountId)
+            "RETRY_RESTORED" -> assertFailsWith<IllegalStateException> {
+                characterGate.executeJob(accountId, job.id, { error("pause did not complete") }) {
+                    characterRecovery.save(job.id, accountId, job.targetCharacterId,
+                        app.spammy.hof.character.service.CharacterDeepSyncCheckpoint(original))
+                    error("first recovery interrupted")
+                }
+            }
+        }
+        try {
+            characterGate.executeJob(accountId, job.id, { error("pause did not complete") }) {
+                characterRecovery.save(job.id, accountId, job.targetCharacterId,
+                    app.spammy.hof.character.service.CharacterDeepSyncCheckpoint(original))
+                when (outcome) {
+                    "USER_PAUSE" -> application.pauseTyped(accountId)
+                    "USER_STOP" -> application.stopTyped(accountId)
+                    "AUTH", "AUTH_RELOGIN" -> TransactionTemplate(transactions).executeWithoutResult {
+                        lifecycle.suspendForAuthentication(accountId, "LAST_APP_SESSION_ENDED")
+                        if (outcome == "AUTH_RELOGIN") lifecycle.resumeAfterAuthentication(accountId, "APP_SESSION_ACTIVATED")
+                    }
+                }
+                if (outcome != "REQUIRED") {
+                    characterRecovery.save(job.id, accountId, job.targetCharacterId,
+                        app.spammy.hof.character.service.CharacterDeepSyncCheckpoint(original,
+                            status = CharacterRecoveryStatus.RESTORED, collectionComplete = outcome != "COLLECTION_FAILED_RESTORED"))
+                }
+                if (outcome in setOf("REQUIRED", "COLLECTION_FAILED_RESTORED")) error("fixture collection failed")
+            }
+        } catch (error: IllegalStateException) {
+            assertEquals("fixture collection failed", error.message)
+        }
+
+        val shouldResume = outcome in setOf("RESTORED", "COLLECTION_FAILED_RESTORED", "RETRY_RESTORED")
+        val expected = if (shouldResume) "RUNNING" else if (outcome in setOf("USER_STOP", "INITIAL_STOPPED")) "STOPPED" else "PAUSED"
+        assertEquals(expected, jdbc.queryForObject(
+            "select lifecycle_status from typed_automation_runtime_states where account_id = ?", String::class.java, accountId))
+        failedPattern = -1
+        if (!shouldResume) wakeups.wake(accountId, "STALE_WAKE_AFTER_CHARACTER_RECOVERY")
+        publisher.publishBatch()
+        if (shouldResume) {
+            assertTrue(battleRequests().isNotEmpty(), "복원 뒤 실제 깨우기가 다음 행동을 실행해야 한다.")
+            consumeNextWake()
+            Mockito.verify(decisions, Mockito.atLeast(2)).select(accountId)
+        } else {
+            assertTrue(requests.isEmpty(), "사용자 의도나 미복원 상태를 우회해 실행하면 안 된다.")
+        }
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = CharacterOperationType::class, names = ["DEEP_SYNC", "RESTORE"])
+    fun `미복원 작업이 있으면 같은 계정의 새 캐릭터 작업을 만들지 않는다`(type: CharacterOperationType) {
+        val targetId = TransactionTemplate(transactions).execute {
+            val target = entityManager.createQuery("select c from CharacterEntity c where c.account.id = :accountId", CharacterEntity::class.java)
+                .setParameter("accountId", accountId).resultList.first()
+            entityManager.persist(CharacterOperationJobEntity(account = target.account,
+                operationType = CharacterOperationType.DEEP_SYNC, status = CharacterOperationStatus.FAILED,
+                targetCharacterId = target.id, recoveryStatus = CharacterRecoveryStatus.REQUIRED,
+                startedAt = clock.now(), updatedAt = clock.now()))
+            target.id
+        }
+
+        val error = assertFailsWith<app.spammy.hof.common.error.ApiException> {
+            TransactionTemplate(transactions).executeWithoutResult { transaction ->
+                if (type == CharacterOperationType.RESTORE) characterJobs.startRestore(accountId, targetId)
+                else characterJobs.startDeepSync(accountId, targetId)
+                transaction.setRollbackOnly()
+            }
+        }
+
+        assertEquals(app.spammy.hof.common.error.ErrorCode.CHARACTER_RECOVERY_REQUIRED, error.errorCode)
+        assertTrue(requests.isEmpty())
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["ARCHIVE", "DELETE", "LINK"])
+    fun `미복원 원본을 가진 캐릭터의 삭제나 식별 변경을 막는다`(action: String) {
+        val targetId = TransactionTemplate(transactions).execute {
+            val target = entityManager.createQuery("select c from CharacterEntity c where c.account.id = :accountId", CharacterEntity::class.java)
+                .setParameter("accountId", accountId).resultList.first()
+            if (action == "DELETE") target.lifecycle = app.spammy.hof.character.entity.CharacterLifecycle.ARCHIVED
+            entityManager.persist(CharacterOperationJobEntity(account = target.account,
+                operationType = CharacterOperationType.DEEP_SYNC, status = CharacterOperationStatus.FAILED,
+                targetCharacterId = target.id, recoveryStatus = CharacterRecoveryStatus.REQUIRED,
+                startedAt = clock.now(), updatedAt = clock.now()))
+            target.id
+        }
+
+        val error = assertFailsWith<app.spammy.hof.common.error.ApiException> {
+            when (action) {
+                "ARCHIVE" -> characterIdentity.archive(accountId, targetId)
+                "DELETE" -> characterIdentity.deletePermanently(accountId, targetId)
+                else -> characterIdentity.link(accountId, targetId, "new-hof-id",
+                    app.spammy.hof.character.entity.CharacterHofIdLinkReason.KNOCKBACK, true)
+            }
+        }
+
+        assertEquals(app.spammy.hof.common.error.ErrorCode.CHARACTER_RECOVERY_REQUIRED, error.errorCode)
+        assertEquals(1, jdbc.queryForObject("select count(*) from character_operation_jobs where account_id = ?", Int::class.java, accountId))
+    }
+
+    @Test
+    fun `다른 계정의 미복원 작업은 이 계정의 자동화와 새 동기화를 막지 않는다`() {
+        val otherId = TransactionTemplate(transactions).execute {
+            val other = HofAccountEntity(loginId = "blocked-peer-${UUID.randomUUID()}", encryptedPassword = "fixture", createdAt = clock.now())
+            entityManager.persist(other)
+            val target = CharacterEntity(account = other, hofCharacterId = "peer-1", name = "peer", job = "Knight", updatedAt = clock.now())
+            entityManager.persist(target)
+            entityManager.persist(CharacterOperationJobEntity(account = other, operationType = CharacterOperationType.DEEP_SYNC,
+                status = CharacterOperationStatus.FAILED, targetCharacterId = target.id,
+                recoveryStatus = CharacterRecoveryStatus.REQUIRED, startedAt = clock.now(), updatedAt = clock.now()))
+            other.id
+        }
+        try {
+            failedPattern = -1
+            wakeups.wake(accountId, "UNRELATED_ACCOUNT_RECOVERY")
+            publisher.publishBatch()
+            assertEquals(1, battleRequests().size)
+            consumeNextWake()
+            Mockito.verify(decisions, Mockito.atLeast(2)).select(accountId)
+
+            TransactionTemplate(transactions).executeWithoutResult { transaction ->
+                val target = entityManager.createQuery("select c from CharacterEntity c where c.account.id = :accountId", CharacterEntity::class.java)
+                    .setParameter("accountId", accountId).resultList.first()
+                assertEquals(CharacterOperationStatus.PENDING, characterJobs.startDeepSync(accountId, target.id).status)
+                transaction.setRollbackOnly()
+            }
+        } finally {
+            jdbc.update("delete from hof_accounts where id = ?", otherId)
+        }
+    }
+
+    @Test
+    fun `동기화의 일시정지 대기는 기존 보호 행동의 깨우기와 결과 수렴을 막지 않는다`() {
+        setupFishing(obstruction = true, lostFishingResponse = "FCatch")
+        wakeups.wake(accountId, "FISHING_BEFORE_SYNC")
+        publisher.publishBatch()
+        assertEquals("RECONCILING", runs().last()["status"])
+        val job = TransactionTemplate(transactions).execute {
+            val target = entityManager.createQuery("select c from CharacterEntity c where c.account.id = :accountId", CharacterEntity::class.java)
+                .setParameter("accountId", accountId).resultList.first()
+            CharacterOperationJobEntity(account = target.account, operationType = CharacterOperationType.DEEP_SYNC,
+                targetCharacterId = target.id, recoveryStatus = CharacterRecoveryStatus.NOT_STARTED,
+                startedAt = clock.now(), updatedAt = clock.now()).also(entityManager::persist)
+        }
+        var waits = 0
+        val gate = app.spammy.hof.character.command.TypedAutomationCharacterCommandBridge(application,
+            app.spammy.hof.character.command.CharacterCommandPauseWaiter {
+                check(waits++ < 5) { "보호 행동이 유한한 후속 확인으로 끝나야 한다." }
+                nextRun()
+            }, characterAutomation, accountMutations)
+
+        gate.executeJob(accountId, job.id, { error("protected action did not settle") }) {
+            assertEquals("PAUSED", jdbc.queryForObject("select lifecycle_status from typed_automation_runtime_states where account_id = ?",
+                String::class.java, accountId))
+            assertTrue(runs().none { it["status"] in setOf("SUBMITTING", "RECONCILING") })
+        }
+
+        assertTrue(waits > 0)
+        assertEquals("RUNNING", jdbc.queryForObject("select lifecycle_status from typed_automation_runtime_states where account_id = ?",
+            String::class.java, accountId))
     }
 
     @Test

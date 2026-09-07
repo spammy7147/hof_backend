@@ -8,6 +8,7 @@ import app.spammy.hof.character.repository.CharacterHofIdHistoryRepository
 import app.spammy.hof.character.repository.CharacterIdentityQueryRepository
 import app.spammy.hof.character.repository.CharacterQueryRepository
 import app.spammy.hof.character.repository.CharacterRepository
+import app.spammy.hof.character.repository.CharacterOperationJobQueryRepository
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
@@ -23,6 +24,7 @@ class CharacterLifecycleTransaction(
     private val characters: CharacterRepository,
     private val histories: CharacterHofIdHistoryRepository,
     private val timeProvider: TimeProvider,
+    private val jobs: CharacterOperationJobQueryRepository,
 ) {
     @Transactional
     fun link(
@@ -43,6 +45,7 @@ class CharacterLifecycleTransaction(
             character.updatedAt = now
             return
         }
+        requireNoSync(accountId)
         query.findByAccountIdAndHofCharacterId(accountId, newHofCharacterId)
             ?.takeIf { it.id != character.id }
             ?.let { provisional ->
@@ -77,6 +80,7 @@ class CharacterLifecycleTransaction(
     @Transactional
     fun archive(accountId: Long, characterId: Long) {
         val character = owned(accountId, characterId)
+        requireNoSync(accountId)
         val now = timeProvider.now()
         character.lifecycle = CharacterLifecycle.ARCHIVED
         character.archivedAt = now
@@ -87,6 +91,7 @@ class CharacterLifecycleTransaction(
     @Transactional
     fun restore(accountId: Long, characterId: Long) {
         val character = owned(accountId, characterId)
+        requireNoSync(accountId)
         character.lifecycle = CharacterLifecycle.MISSING
         character.archivedAt = null
         character.missingSince = timeProvider.now()
@@ -96,8 +101,15 @@ class CharacterLifecycleTransaction(
     @Transactional
     fun deletePermanently(accountId: Long, characterId: Long) {
         val character = owned(accountId, characterId)
+        requireNoSync(accountId)
         require(character.lifecycle == CharacterLifecycle.ARCHIVED) { "보관된 캐릭터만 영구 삭제할 수 있습니다." }
         characters.delete(character)
+    }
+
+    private fun requireNoSync(accountId: Long) {
+        if (jobs.findConflictingSync(accountId) != null) {
+            throw ApiException(ErrorCode.CHARACTER_RECOVERY_REQUIRED, "진행 중이거나 복원이 필요한 캐릭터 작업을 먼저 확인해 주세요.")
+        }
     }
 
     private fun owned(accountId: Long, characterId: Long) =

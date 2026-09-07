@@ -38,6 +38,7 @@ class TypedAutomationRuntimeServiceTest {
         TimeProvider { now },
         lifecycleBridge,
         outbox,
+        Mockito.mock(app.spammy.hof.character.repository.CharacterOperationJobQueryRepository::class.java),
         app.spammy.hof.external.config.HofRequestProperties(
             automationMinimumInterval = java.time.Duration.ofSeconds(7),
         ),

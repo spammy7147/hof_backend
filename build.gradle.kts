@@ -37,7 +37,8 @@ dependencies {
 	implementation("org.jetbrains.kotlin:kotlin-reflect")
 	implementation("tools.jackson.module:jackson-module-kotlin")
 	developmentOnly("org.springframework.boot:spring-boot-devtools")
-	runtimeOnly("com.h2database:h2")
+	// H2 #4302: DDL 연결 종료 후 다른 연결에서 CHECK 제약 검증이 실패하는 오류 수정.
+	runtimeOnly("com.h2database:h2:2.5.250")
 	runtimeOnly("org.postgresql:postgresql")
 	annotationProcessor("org.springframework.boot:spring-boot-configuration-processor")
 	kapt("com.querydsl:querydsl-apt:5.1.0:jakarta")

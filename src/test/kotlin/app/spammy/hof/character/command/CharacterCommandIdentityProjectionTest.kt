@@ -39,6 +39,7 @@ import org.springframework.transaction.annotation.Transactional
 @ActiveProfiles("test")
 @DataJpaTest
 @Import(
+    app.spammy.hof.character.repository.CharacterOperationJobQueryRepository::class,
     QueryDslConfig::class,
     AccountQueryRepository::class,
     CharacterQueryRepository::class,

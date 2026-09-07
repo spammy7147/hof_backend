@@ -16,6 +16,7 @@ import java.time.Instant
 
 enum class CharacterOperationType { DEEP_SYNC, RESTORE, TRANSFER }
 enum class CharacterOperationStatus { PENDING, RUNNING, COMPLETED, FAILED, STOPPED }
+enum class CharacterRecoveryStatus { NOT_STARTED, REQUIRED, RESTORING, RESTORED, UNAVAILABLE, ACCEPTED }
 
 /** 오래 걸리는 캐릭터 작업의 요청, 체크포인트와 결과를 계정별로 보존한다. */
 @Entity
@@ -66,4 +67,33 @@ class CharacterOperationJobEntity(
 
     @Column(name = "finished_at")
     var finishedAt: Instant? = null,
+
+    /** null은 복원 원본 보존을 지원하기 전에 생성된 작업이다. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "recovery_status", length = 20)
+    var recoveryStatus: CharacterRecoveryStatus? = null,
+
+    @Column(name = "automation_intent_revision")
+    var automationIntentRevision: Long? = null,
+
+    @Column(name = "resume_automation", nullable = false)
+    var resumeAutomation: Boolean = false,
+
+    @Column(name = "automation_released", nullable = false)
+    var automationReleased: Boolean = false,
+
+    @Column(name = "restore_attempt_limit", nullable = false)
+    var restoreAttemptLimit: Int = 3,
+
+    @Column(name = "recovery_review_token", length = 36)
+    var recoveryReviewToken: String? = null,
+
+    @Column(name = "recovery_review_fingerprint", length = 64)
+    var recoveryReviewFingerprint: String? = null,
+
+    @Column(name = "recovery_reviewed_at")
+    var recoveryReviewedAt: Instant? = null,
+
+    @Column(name = "recovery_accepted_at")
+    var recoveryAcceptedAt: Instant? = null,
 )

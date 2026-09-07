@@ -15,6 +15,7 @@ import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import app.spammy.hof.automation.repository.TypedAutomationRuntimeStateCommandRepository
 import app.spammy.hof.auth.service.AccountExecutionAuthorizationReader
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.character.repository.CharacterOperationJobQueryRepository
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
@@ -36,10 +37,12 @@ class TypedAutomationLifecycleBridge(
     private val workSessionCommands: AutomationWorkSessionCommandRepository,
     private val timeProvider: TimeProvider,
     private val executionAuthorization: AccountExecutionAuthorizationReader,
+    private val characterJobs: CharacterOperationJobQueryRepository,
 ) {
     @Transactional(propagation = Propagation.MANDATORY)
     fun start(accountId: Long, wakeReason: String): Boolean {
         val account = accounts.findByIdForUpdate(accountId) ?: error("Account $accountId does not exist.")
+        if (characterJobs.hasRecoveryHold(accountId)) return false
         if (!executionAuthorization.isExecutionAllowed(accountId)) return false
         if (!typed.hasTypedAutomation(accountId)) {
             outbox.enqueue(accountId, wakeReason)
@@ -51,6 +54,7 @@ class TypedAutomationLifecycleBridge(
             states.save(TypedAutomationRuntimeStateEntity(accountId, account, TypedAutomationLifecycle.RUNNING, createdAt = now, updatedAt = now))
         } else {
             if (state.authSuspended) return false
+            state.intentRevision += 1
             state.lifecycleStatus = TypedAutomationLifecycle.RUNNING
             state.resumeAfterAuth = false
             clearRuntime(state, now)
@@ -69,6 +73,7 @@ class TypedAutomationLifecycleBridge(
             val now = timeProvider.now()
             states.save(TypedAutomationRuntimeStateEntity(accountId, account, TypedAutomationLifecycle.PAUSED, createdAt = now, updatedAt = now))
         } else state?.let {
+            it.intentRevision += 1
             if (it.lifecycleStatus != TypedAutomationLifecycle.STOPPED) {
                 it.resumeAfterAuth = false
                 val active = typed.findActiveTypedAction(accountId)
@@ -96,6 +101,7 @@ class TypedAutomationLifecycleBridge(
     @Transactional(propagation = Propagation.MANDATORY)
     fun resume(accountId: Long, wakeReason: String) {
         val account = accounts.findByIdForUpdate(accountId) ?: error("Account $accountId does not exist.")
+        if (characterJobs.hasRecoveryHold(accountId)) return
         if (!executionAuthorization.isExecutionAllowed(accountId)) return
         val now = timeProvider.now()
         if (typed.hasTypedAutomation(accountId)) {
@@ -104,6 +110,7 @@ class TypedAutomationLifecycleBridge(
                 states.save(TypedAutomationRuntimeStateEntity(accountId, account, TypedAutomationLifecycle.RUNNING, createdAt = now, updatedAt = now))
             } else {
                 if (state.authSuspended) return
+                state.intentRevision += 1
                 state.lifecycleStatus = TypedAutomationLifecycle.RUNNING
                 state.resumeAfterAuth = false
                 clearRuntime(state, now)
@@ -137,6 +144,7 @@ class TypedAutomationLifecycleBridge(
             return
         }
         if (state.authSuspended) return
+        state.intentRevision += 1
 
         val wasRunning = state.lifecycleStatus == TypedAutomationLifecycle.RUNNING
         state.authSuspended = true
@@ -171,6 +179,11 @@ class TypedAutomationLifecycleBridge(
         if (!state.authSuspended) return false
         val now = timeProvider.now()
         state.authSuspended = false
+        if (characterJobs.hasRecoveryHold(accountId)) {
+            state.resumeAfterAuth = false
+            state.updatedAt = now
+            return false
+        }
         if (!state.resumeAfterAuth) {
             state.updatedAt = now
             return false
@@ -192,6 +205,7 @@ class TypedAutomationLifecycleBridge(
     @Transactional(propagation = Propagation.MANDATORY)
     fun resumeIfStoppedForCaptcha(accountId: Long, wakeReason: String): Boolean {
         accounts.findByIdForUpdate(accountId) ?: error("Account $accountId does not exist.")
+        if (characterJobs.hasRecoveryHold(accountId)) return false
         val state = typed.lockRuntimeState(accountId) ?: return false
         if (state.authSuspended) return false
         if (state.lifecycleStatus != TypedAutomationLifecycle.STOPPED ||
@@ -211,6 +225,7 @@ class TypedAutomationLifecycleBridge(
     @Transactional(propagation = Propagation.MANDATORY)
     fun wakeFreshAfterCaptcha(accountId: Long, wakeReason: String): Boolean {
         accounts.findByIdForUpdate(accountId) ?: error("Account $accountId does not exist.")
+        if (characterJobs.hasRecoveryHold(accountId)) return false
         val state = typed.lockRuntimeState(accountId) ?: return false
         if (state.lifecycleStatus != TypedAutomationLifecycle.RUNNING) return false
         val now = timeProvider.now()
@@ -240,6 +255,7 @@ class TypedAutomationLifecycleBridge(
         if (state == null && typed.hasTypedAutomation(accountId)) {
             states.save(TypedAutomationRuntimeStateEntity(accountId, account, TypedAutomationLifecycle.STOPPED, reason.name, createdAt = now, updatedAt = now))
         } else state?.let {
+            it.intentRevision += 1
             discardActiveActionForFreshRestart(accountId, now)
             it.lifecycleStatus = TypedAutomationLifecycle.STOPPED
             it.resumeAfterAuth = false

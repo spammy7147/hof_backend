@@ -33,6 +33,7 @@ import tools.jackson.module.kotlin.jacksonObjectMapper
 @DataJpaTest
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 @Import(
+    app.spammy.hof.character.repository.CharacterOperationJobQueryRepository::class,
     QueryDslConfig::class,
     AccountQueryRepository::class,
     TypedAutomationQueryRepository::class,

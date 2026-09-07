@@ -29,6 +29,7 @@ class CharacterControllerLegacyEndpointTest {
             characterLifecycleService = Mockito.mock(CharacterLifecycleService::class.java),
             characterTransferService = Mockito.mock(CharacterTransferService::class.java),
             sessionRecoveryService = Mockito.mock(HofSessionRecoveryService::class.java),
+            characterRecoveryService = Mockito.mock(app.spammy.hof.character.service.CharacterOperationRecoveryService::class.java),
         )
         val mockMvc = MockMvcBuilders.standaloneSetup(controller).build()
 

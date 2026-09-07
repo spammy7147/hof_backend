@@ -67,9 +67,11 @@ abstract class AutomationModeContinuityTest {
     @MockitoBean private lateinit var gateway: HofGateway
     @MockitoBean private lateinit var preflight: AutomationDailyPreflight
     @MockitoBean private lateinit var authorization: AccountExecutionAuthorizationReader
+    @Autowired private lateinit var characterGate: app.spammy.hof.character.command.CharacterAutomationGate
+    @Autowired private lateinit var characterRecovery: app.spammy.hof.character.service.CharacterDeepSyncRecovery
 
     @Test
-    fun `같은 자택 응답은 한 번 제출하고 후속 판단에서 진행 대기로 양보한다`() {
+    fun `동기화 복구 뒤 같은 자택 응답은 한 번 제출하고 후속 판단에서 진행 대기로 양보한다`() {
         assertEquals(mode, properties.mode)
         clock.current = Instant.parse("2026-09-06T00:00:00Z")
         transport.delivered.clear()
@@ -79,6 +81,7 @@ abstract class AutomationModeContinuityTest {
         fun page() = """<div id="menu2">Funds : $ 1 Time : 100/100</div><h4>수락 가능한 퀘스트</h4><table>
             <tr><td>[A] 모드 기준</td><td>미션 0/1</td><td>-</td><td>-</td><td>${if (accepted) "-" else "<a href='?menu=housing&amp;action=get&amp;no=A'>수락</a>"}</td></tr></table>"""
         val quest = HomePageParser().parse(HomeMode.HOME, page(), url, HofFormParser().parse(page(), url)).quests.single()
+        lateinit var characterJob: app.spammy.hof.character.entity.CharacterOperationJobEntity
         val accountId = TransactionTemplate(transactions).execute {
             val account = HofAccountEntity(loginId = "mode-${UUID.randomUUID()}", encryptedPassword = "test", createdAt = clock.now())
             entityManager.persist(account)
@@ -93,6 +96,14 @@ abstract class AutomationModeContinuityTest {
                 timeCurrent = 100, timeMax = 100, work = "", auction = "", observedAt = clock.now()))
             entityManager.persist(TypedAutomationRuntimeStateEntity(accountId = account.id, account = account,
                 lifecycleStatus = TypedAutomationLifecycle.RUNNING, createdAt = clock.now(), updatedAt = clock.now()))
+            val character = app.spammy.hof.character.entity.CharacterEntity(account = account, hofCharacterId = "mode-character",
+                name = "fixture", job = "Knight", updatedAt = clock.now())
+            entityManager.persist(character)
+            characterJob = app.spammy.hof.character.entity.CharacterOperationJobEntity(account = account,
+                operationType = app.spammy.hof.character.entity.CharacterOperationType.DEEP_SYNC, targetCharacterId = character.id,
+                recoveryStatus = app.spammy.hof.character.entity.CharacterRecoveryStatus.NOT_STARTED,
+                startedAt = clock.now(), updatedAt = clock.now())
+            entityManager.persist(characterJob)
             account.id
         }
         try {
@@ -106,7 +117,18 @@ abstract class AutomationModeContinuityTest {
             }.`when`(gateway).execute(Mockito.eq(accountId), Mockito.any<HofRequest>()
                 ?: HofRequest(HofHttpMethod.GET, "https://example.test"), Mockito.anyMap())
 
-            wakeups.wake(accountId, "MODE_CONTINUITY_BASELINE")
+            val original = app.spammy.hof.character.service.CharacterRestoreState("mode-character",
+                listOf(app.spammy.hof.external.model.HofActionPatternRow(0, judge = "0", quantity = "0", skill = "0")), emptyList(), "front", "0")
+            characterGate.executeJob(accountId, characterJob.id, { error("동기화 일시정지 실패") }) {
+                characterRecovery.save(characterJob.id, accountId, characterJob.targetCharacterId,
+                    app.spammy.hof.character.service.CharacterDeepSyncCheckpoint(original))
+                wakeups.wake(accountId, "MODE_CHARACTER_RECOVERY_PENDING")
+                publisher.publishBatch()
+                assertTrue(requests.isEmpty(), "$mode 미복원 중 새 HOF 행동을 실행하면 안 된다.")
+                characterRecovery.save(characterJob.id, accountId, characterJob.targetCharacterId,
+                    app.spammy.hof.character.service.CharacterDeepSyncCheckpoint(original,
+                        status = app.spammy.hof.character.entity.CharacterRecoveryStatus.RESTORED, collectionComplete = true))
+            }
             publisher.publishBatch()
             val first = journal.page(accountId, AutomationHistoryQuery()).cycles.single()
             assertEquals(1, requests.count { it.formFields["action"] == "get" },

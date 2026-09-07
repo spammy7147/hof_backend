@@ -10,6 +10,10 @@ import app.spammy.hof.character.service.CharacterService
 import app.spammy.hof.character.service.CharacterSnapshotSynchronizer
 import app.spammy.hof.character.service.CharacterOperationJobService
 import app.spammy.hof.character.dto.CharacterOperationJobResponse
+import app.spammy.hof.character.dto.CharacterCurrentOperationResponse
+import app.spammy.hof.character.dto.CharacterRecoveryPreviewResponse
+import app.spammy.hof.character.dto.CharacterRecoveryAcceptRequest
+import app.spammy.hof.character.service.CharacterOperationRecoveryService
 import app.spammy.hof.character.command.CharacterCommand
 import app.spammy.hof.character.command.CharacterCommandExecutor
 import app.spammy.hof.character.command.CharacterCommandResult
@@ -53,6 +57,7 @@ class CharacterController(
     private val characterLifecycleService: CharacterLifecycleService,
     private val characterTransferService: CharacterTransferService,
     private val sessionRecoveryService: HofSessionRecoveryService,
+    private val characterRecoveryService: CharacterOperationRecoveryService,
 ) {
     /**
      * 캐릭터 동기화 job을 생성하고 즉시 백그라운드 실행한다.
@@ -128,6 +133,31 @@ class CharacterController(
         @CurrentAccountId accountId: Long,
         @PathVariable jobId: Long,
     ): CharacterOperationJobResponse = characterOperationJobService.find(accountId, jobId)
+
+    @GetMapping("/operation-jobs/current")
+    fun findCurrentOperationJob(
+        @CurrentAccountId accountId: Long,
+        @RequestParam(required = false) characterId: Long?,
+    ): CharacterCurrentOperationResponse = CharacterCurrentOperationResponse(characterOperationJobService.findCurrent(accountId, characterId))
+
+    @PostMapping("/operation-jobs/{jobId}/retry-recovery")
+    fun retryRecovery(
+        @CurrentAccountId accountId: Long,
+        @PathVariable jobId: Long,
+    ): CharacterOperationJobResponse = characterOperationJobService.retryRecovery(accountId, jobId)
+
+    @PostMapping("/operation-jobs/{jobId}/recovery-preview")
+    fun previewRecovery(
+        @CurrentAccountId accountId: Long,
+        @PathVariable jobId: Long,
+    ): CharacterRecoveryPreviewResponse = characterRecoveryService.preview(accountId, jobId)
+
+    @PostMapping("/operation-jobs/{jobId}/accept-current")
+    fun acceptCurrentRecovery(
+        @CurrentAccountId accountId: Long,
+        @PathVariable jobId: Long,
+        @RequestBody request: CharacterRecoveryAcceptRequest,
+    ): CharacterOperationJobResponse = characterRecoveryService.accept(accountId, jobId, request.confirmationToken)
 
     @PostMapping("/commands")
     fun executeCommand(
