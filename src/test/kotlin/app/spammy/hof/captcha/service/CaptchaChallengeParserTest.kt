@@ -106,6 +106,24 @@ class CaptchaChallengeParserTest {
     }
 
     @Test
+    fun readsTheExpiredVigilanteMenuAsRequiredPassState() {
+        val expired = Jsoup.parse("<div id='menu'><font color='red'>자경단</font></div>")
+
+        assertEquals(VigilantePassState(required = true, remainingSeconds = null), parser.parseVigilantePassState(expired))
+    }
+
+    @Test
+    fun ignoresVigilanteTextWithoutARedCueAndRedVigilanteOutsideTheMenu() {
+        val unrelated = Jsoup.parse("""
+            <div id='menu2'><font color='red'>자경단</font></div>
+            <div id='menu'><a>자경단</a><font color='00ff00'>0:24:21</font></div>
+            <main><font color='red'>자경단</font></main>
+        """.trimIndent())
+
+        assertEquals(VigilantePassState(required = false, remainingSeconds = 1_461), parser.parseVigilantePassState(unrelated))
+    }
+
+    @Test
     fun buildsPoliceAndSimpleCaptchaUrlsFromTheSameInstallationDirectory() {
         val sourceUrl = "https://hof.zerosic.com/index.php?common=gb0"
 

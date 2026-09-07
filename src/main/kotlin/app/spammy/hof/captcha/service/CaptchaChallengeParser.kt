@@ -51,7 +51,7 @@ class CaptchaChallengeParser {
             findChallengeImage(element) != null
 
     /**
-     * 게임 내부 메뉴인 `#menu`만 대상으로 빨간 `통행증`과 인증 유효시간 `H:MM:SS`를 읽는다.
+     * 게임 내부 메뉴인 `#menu`만 대상으로 빨간 `통행증`·`자경단`과 인증 유효시간 `H:MM:SS`를 읽는다.
      * 남은 시간은 인증 시각으로 계산하지 않고, 호출자가 전달한 매 HTML 응답의 표시값을 그대로 사용한다.
      * 계정 정보 영역 `#menu2`나 본문의 같은 문자열은 통행증 상태에 영향을 주지 않는다.
      */
@@ -61,7 +61,7 @@ class CaptchaChallengeParser {
         val required = menu.getAllElements().any { element ->
             element.ownText().contains(PASS_LABEL) &&
                 (hasRedCue(element) || element.parents().any(::hasRedCue))
-        }
+        } || hasRedVigilanteSignal(menu)
         val remainingSeconds = PASS_REMAINING.find(menu.text())?.destructured?.let { (hours, minutes, seconds) ->
             hours.toIntOrNull()?.let { hour -> hour * 3_600 + minutes.toInt() * 60 + seconds.toInt() }
         }
