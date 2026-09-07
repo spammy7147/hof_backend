@@ -35,7 +35,7 @@ class DeploymentTest(unittest.TestCase):
         self.env = {**os.environ, 'PATH': str(self.bin) + os.pathsep + os.environ['PATH'],
             'FAKE_DEPLOY_STATE': str(self.state_path), 'DEPLOY_SECRET_DIR': str(self.root / 'secrets'),
             'DEPLOY_STATE_DIR': str(self.root / 'deployment-state'),
-            'IMAGE': 'hof-test:new', 'IMAGE_REPOSITORY': 'hof-test', 'CONTAINER_NAME': 'hof-test',
+            'IMAGE': 'hof-test:new', 'IMAGE_ID': 'new-image-id', 'IMAGE_REPOSITORY': 'hof-test', 'CONTAINER_NAME': 'hof-test',
             'BACKEND_BIND_ADDRESS': '127.0.0.1', 'HOST_PORT': '18080', 'CONTAINER_PORT': '8080',
             'SERVER_FORWARD_HEADERS_STRATEGY': 'NONE', 'PUBLIC_HEALTH_URL': 'https://test.invalid/health',
             'HOF_AUTH_ALLOWED_ORIGIN_PATTERNS': 'chrome-extension://*',
@@ -69,6 +69,15 @@ class DeploymentTest(unittest.TestCase):
         self.assertNotIn('do-not-log-this', result.stdout + result.stderr)
         return result
 
+    def next_request(self):
+        self.env['BUILD_NUMBER'] += '-next'
+        transfers = tempfile.TemporaryDirectory(prefix='hof-deploy.', dir='/tmp')
+        self.addCleanup(transfers.cleanup)
+        for key in ('REMOTE_ENV_FILE', 'REMOTE_FIREBASE_FILE', 'REMOTE_RELEASE_ENV_FILE'):
+            path = Path(transfers.name) / Path(self.env[key]).name
+            path.write_text('next request credential')
+            self.env[key] = str(path)
+
     def test_rename_failure_restores_same_previous_container_and_checks_health(self):
         self.configure(fault='rename')
         result = self.deploy()
@@ -94,6 +103,14 @@ class DeploymentTest(unittest.TestCase):
         before = self.state()['containers']
         result = self.deploy()
         self.assertNotEqual(0, result.returncode)
+        self.assertEqual(before, self.state()['containers'])
+
+    def test_loaded_image_id_mismatch_does_not_touch_previous_service(self):
+        self.env['IMAGE_ID'] = 'unexpected-image-id'
+        before = self.state()['containers']
+        result = self.deploy()
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn('loaded_image_id_mismatch', result.stdout)
         self.assertEqual(before, self.state()['containers'])
 
     def test_docker_create_failure_leaves_previous_service_and_secret_unchanged(self):
@@ -221,7 +238,7 @@ class DeploymentTest(unittest.TestCase):
         result = self.deploy()
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         self.assertEqual(['new-id'], [c['Id'] for c in self.state()['containers']])
-        self.assertEqual(1, sum(call[:2] == ['docker', 'create'] for call in self.state()['calls']))
+        self.assertEqual(1, self.state()['create_count'])
         journal = Path(self.env['DEPLOY_STATE_DIR']) / 'hof-test.json'
         self.assertNotIn('do-not-log-this', journal.read_text())
         self.assertTrue(json.loads(journal.read_text())['committed'])
@@ -271,7 +288,7 @@ class DeploymentTest(unittest.TestCase):
         self.assertEqual(75, second.returncode, second.stdout + second.stderr)
         stdout, stderr = first.communicate(timeout=5)
         self.assertEqual(0, first.returncode, stdout + stderr)
-        self.assertEqual(1, sum(call[:2] == ['docker', 'create'] for call in self.state()['calls']))
+        self.assertEqual(1, self.state()['create_count'])
 
     def test_recovered_unhealthy_candidate_restores_previous_id(self):
         self.configure(kill_at='health', fault='internal-health')
@@ -373,6 +390,42 @@ class DeploymentTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         self.assertEqual([('new-id-2', True)], [(c['Id'], c['State']['Running']) for c in self.state()['containers']])
         self.assertEqual(2, self.state()['create_count'])
+
+    def test_compose_replacement_kill_recovers_release_at_each_boundary(self):
+        for point in ('rm-before', 'rm-after', 'create-before', 'create-after', 'start-before', 'start-after', 'health'):
+            with self.subTest(point=point):
+                self.setUp()
+                first = self.deploy()
+                self.assertEqual(0, first.returncode, first.stdout + first.stderr)
+                previous = self.state()['containers'][0]
+                self.next_request()
+                self.configure(kill_at=point, killed=False, calls=[])
+                killed = self.deploy()
+                self.assertEqual(-signal.SIGKILL, killed.returncode, killed.stdout + killed.stderr)
+                result = self.deploy()
+                self.assertIn(result.returncode, (0, 1), result.stdout + result.stderr)
+                current = self.state()['containers']
+                self.assertEqual(1, len(current))
+                self.assertTrue(current[0]['State']['Running'])
+                labels = current[0]['Config']['Labels']
+                if point not in ('start-after', 'health'):
+                    self.assertEqual(previous['Config']['Labels'], labels)
+                    self.assertEqual(previous['Image'], current[0]['Image'])
+                    self.assertEqual(previous['Mounts'], current[0]['Mounts'])
+                else:
+                    self.assertNotEqual(previous['Config']['Labels']['app.hof.deployment'], labels['app.hof.deployment'])
+                repeated = self.deploy()
+                self.assertEqual(result.returncode, repeated.returncode, repeated.stdout + repeated.stderr)
+                self.assertEqual(current, self.state()['containers'])
+
+    def test_missing_previous_compose_definition_does_not_stop_service(self):
+        self.assertEqual(0, self.deploy().returncode)
+        previous = self.state()['containers']
+        Path(previous[0]['Config']['Labels']['com.docker.compose.project.config_files']).unlink()
+        self.next_request()
+        result = self.deploy()
+        self.assertEqual(77, result.returncode, result.stdout + result.stderr)
+        self.assertEqual(previous, self.state()['containers'])
 
     def test_finished_rollback_next_build_rejects_changed_previous_identity(self):
         self.configure(fault='internal-health')

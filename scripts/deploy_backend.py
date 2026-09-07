@@ -95,7 +95,7 @@ def transfer_paths(values):
 class Deployment:
     def __init__(self):
         self.env = dict(os.environ)
-        required = ('IMAGE', 'IMAGE_REPOSITORY', 'CONTAINER_NAME', 'BACKEND_BIND_ADDRESS',
+        required = ('IMAGE', 'IMAGE_ID', 'IMAGE_REPOSITORY', 'CONTAINER_NAME', 'BACKEND_BIND_ADDRESS',
                     'HOST_PORT', 'CONTAINER_PORT', 'SERVER_FORWARD_HEADERS_STRATEGY',
                     'PUBLIC_HEALTH_URL', 'HOF_AUTH_ALLOWED_ORIGIN_PATTERNS', 'RELEASE_HOST_DIR',
                     'RELEASE_CONTAINER_DIR', 'REMOTE_ENV_FILE', 'REMOTE_FIREBASE_FILE',
@@ -114,6 +114,7 @@ class Deployment:
         self.command_seconds = self.seconds('DEPLOY_COMMAND_SECONDS', 30)
         self.health_seconds = self.seconds('DEPLOY_HEALTH_SECONDS', 120)
         self.previous = None
+        self.release = None
         self.new = None
         self.image_id = None
         self.touched_previous = False
@@ -122,7 +123,7 @@ class Deployment:
         self.phase = 'preflight'
         self.stop_child = None
         self.stop_confirmed = False
-        self.state_dir = Path(self.env.get('DEPLOY_STATE_DIR', Path.home() / '.local/state/hof-deploy'))
+        self.state_dir = Path(self.env.get('DEPLOY_STATE_DIR', Path.home() / '.local/state/hof-deploy')).resolve()
         self.lock_file = None
         self.lock_acquired = False
         self.journal_started = False
@@ -145,9 +146,11 @@ class Deployment:
     def checkpoint(self, phase=None):
         if phase:
             self.phase = phase
-        previous = ({key: self.previous[key] for key in ('Id', 'Image', 'Name')} if self.previous else None)
+        previous = ({key: self.previous[key] for key in ('Id', 'Image', 'Name', 'Release', 'Health')
+                     if key in self.previous} if self.previous else None)
         # Never persist a complete Docker inspect: Config.Env contains secrets.
-        value = {'version': 1, 'id': self.id, 'build': self.build, 'name': self.name,
+        value = {'version': 2, 'id': self.id, 'build': self.build, 'name': self.name,
+                 'release': str(self.release) if self.release else None,
                  'image_ref': self.env['IMAGE'], 'image_id': self.image_id, 'previous': previous,
                  'new': self.new, 'secret': str(self.secret), 'phase': self.phase,
                  'touched_previous': self.touched_previous, 'stop_confirmed': self.stop_confirmed,
@@ -158,8 +161,16 @@ class Deployment:
         atomic_json(self.journal, value)
         self.journal_started = True
 
+    def find_candidate(self):
+        if self.new:
+            return self.find(container_id=self.new)
+        candidate = self.find(self.name if self.release else self.candidate)
+        if candidate and (candidate['Config'].get('Labels') or {}).get('app.hof.deployment') == self.id:
+            return candidate
+        return None
+
     def validate_ownership(self):
-        candidate = self.find(container_id=self.new) if self.new else self.find(self.candidate)
+        candidate = self.find_candidate()
         if candidate:
             if ((candidate['Config'].get('Labels') or {}).get('app.hof.deployment') != self.id
                     or candidate['Image'] != self.image_id
@@ -170,7 +181,12 @@ class Deployment:
             raise UnsafeState('committed_container_missing')
         if self.previous:
             previous = self.find(container_id=self.previous['Id'])
-            if previous is None and not self.committed:
+            if previous is None and self.previous.get('Release'):
+                restored = self.find(self.name)
+                if restored and self.matches_release(restored, Path(self.previous['Release'])):
+                    previous = restored
+                    self.previous['Id'] = restored['Id']
+            if previous is None and not self.committed and not self.previous.get('Release'):
                 raise UnsafeState('previous_container_missing')
             if previous and (previous['Image'] != self.previous['Image']
                              or previous['Name'] not in ('/' + self.name, '/' + self.backup)):
@@ -188,7 +204,7 @@ class Deployment:
             return False
         try:
             saved = json.loads(self.journal.read_text())
-            if saved['version'] != 1 or saved['name'] != self.name or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', saved['id']):
+            if saved['version'] not in (1, 2) or saved['name'] != self.name or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', saved['id']):
                 raise ValueError()
             if any(type(saved[key]) is not bool for key in ('finished', 'committed', 'touched_previous', 'stop_confirmed')):
                 raise ValueError()
@@ -210,6 +226,9 @@ class Deployment:
             self.env.update(saved['health'])
             self.env['IMAGE'] = saved['image_ref']
             self.image_id, self.new, self.previous = saved['image_id'], saved['new'], saved['previous']
+            self.release = self.validate_release_path(saved['release']) if saved.get('release') else None
+            if self.previous and self.previous.get('Release'):
+                self.validate_release_path(self.previous['Release'])
             self.phase = saved['phase']
             self.touched_previous, self.stop_confirmed = saved['touched_previous'], saved['stop_confirmed']
             self.committed, self.finished = saved['committed'], saved['finished']
@@ -304,7 +323,10 @@ class Deployment:
                 receipt = {'id': self.id, 'previous': self.previous['Id'], 'exit_code': None}
                 atomic_json(self.stop_receipt, receipt)
                 try:
-                    self.docker('stop', '--time', '10', self.previous['Id'],
+                    # Pass the configured grace explicitly: a disconnected client
+                    # must not shorten Docker's stop request to its RPC deadline.
+                    grace = self.previous['Config'].get('StopTimeout', 10) if self.previous.get('Release') else 10
+                    self.docker('stop', '--time', str(grace), self.previous['Id'],
                                 seconds=self.command_seconds + self.health_seconds)
                     receipt['exit_code'] = 0
                 except Exception as error:
@@ -350,6 +372,8 @@ class Deployment:
             if not shutil.which(executable):
                 raise DeploymentError('missing_' + executable)
         self.image_id = json.loads(self.docker('image', 'inspect', self.env['IMAGE']))[0]['Id']
+        if self.image_id != self.env['IMAGE_ID']:
+            raise DeploymentError('loaded_image_id_mismatch')
         for key in ('REMOTE_ENV_FILE', 'REMOTE_FIREBASE_FILE', 'REMOTE_RELEASE_ENV_FILE'):
             path = Path(self.env[key])
             if not path.is_file() or path.stat().st_size == 0 or path.is_symlink():
@@ -365,6 +389,15 @@ class Deployment:
                 if mount['Destination'] == '/run/secrets/firebase-service-account.json':
                     if not Path(mount['Source']).is_file():
                         raise DeploymentError('previous_credential_missing')
+            labels = self.previous['Config'].get('Labels') or {}
+            if labels.get('com.docker.compose.project'):
+                if not self.current_release.is_symlink():
+                    raise UnsafeState('previous_compose_release_missing')
+                previous_release = self.validate_release_path(str(self.current_release.resolve()))
+                if not self.matches_release(self.previous, previous_release):
+                    raise UnsafeState('previous_compose_release_mismatch')
+                self.previous['Release'] = str(previous_release)
+                self.previous['Health'] = json.loads((previous_release / 'health.json').read_text())
         self.secret_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.secret_dir.chmod(0o700)
         with self.secret.open('xb') as target:
@@ -372,8 +405,74 @@ class Deployment:
             with Path(self.env['REMOTE_FIREBASE_FILE']).open('rb') as source:
                 shutil.copyfileobj(source, target)
         Path(self.env['RELEASE_HOST_DIR']).mkdir(parents=True, exist_ok=True, mode=0o750)
+        self.prepare_release()
         self.preflight_complete = True
         self.checkpoint('prepared')
+
+    @property
+    def current_release(self):
+        return self.state_dir / (self.name + '-current')
+
+    def validate_release_path(self, value):
+        path = Path(value)
+        if (path.parent != self.state_dir / (self.name + '-releases') or path.is_symlink()
+                or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', path.name)
+                or not (path / 'compose.json').is_file()):
+            raise UnsafeState('invalid_compose_release_path')
+        return path
+
+    def matches_release(self, container, release):
+        service = json.loads((release / 'compose.json').read_text())['services']['backend']
+        labels = container['Config'].get('Labels') or {}
+        return (container['Image'] == service['image']
+                and labels.get('app.hof.deployment') == service['labels']['app.hof.deployment']
+                and labels.get('com.docker.compose.project') == self.name
+                and labels.get('com.docker.compose.service') == 'backend')
+
+    def compose(self, release, *args):
+        return self.docker('compose', '--project-name', self.name, '--project-directory', str(release),
+                           '--env-file', '/dev/null', '--file', str(release / 'compose.json'), *args)
+
+    def prepare_release(self):
+        self.release = self.state_dir / (self.name + '-releases') / self.id
+        self.release.mkdir(parents=True, mode=0o700)
+        for variable, filename in (('REMOTE_ENV_FILE', 'backend.env'), ('REMOTE_RELEASE_ENV_FILE', 'release.env')):
+            with (self.release / filename).open('xb') as target, Path(self.env[variable]).open('rb') as source:
+                os.chmod(target.name, 0o600)
+                shutil.copyfileobj(source, target)
+                target.flush()
+                os.fsync(target.fileno())
+        service = {
+            'image': self.image_id, 'pull_policy': 'never', 'container_name': self.name,
+            'labels': {'app.hof.deployment': self.id},
+            'network_mode': 'bridge',
+            'ports': ['{BACKEND_BIND_ADDRESS}:{HOST_PORT}:{CONTAINER_PORT}'.format(**self.env)],
+            'env_file': [{'path': str(self.release / name), 'format': 'raw'} for name in ('backend.env', 'release.env')],
+            'environment': {
+                'GOOGLE_APPLICATION_CREDENTIALS': '/run/secrets/firebase-service-account.json',
+                'HOF_RELEASE_STORAGE_ROOT': self.env['RELEASE_CONTAINER_DIR'],
+                'SERVER_FORWARD_HEADERS_STRATEGY': self.env['SERVER_FORWARD_HEADERS_STRATEGY'],
+                'HOF_AUTH_ALLOWED_ORIGIN_PATTERNS': self.env['HOF_AUTH_ALLOWED_ORIGIN_PATTERNS'],
+            },
+            'volumes': [
+                {'type': 'bind', 'source': source, 'target': target, 'read_only': True,
+                 'bind': {'create_host_path': False}}
+                for source, target in ((str(self.secret), '/run/secrets/firebase-service-account.json'),
+                                       (self.env['RELEASE_HOST_DIR'], self.env['RELEASE_CONTAINER_DIR']))
+            ],
+            'restart': 'unless-stopped', 'stop_grace_period': '10s',
+            'logging': {'driver': 'json-file', 'options': {'max-size': '10m', 'max-file': '5'}},
+        }
+        atomic_json(self.release / 'compose.json', {'services': {'backend': service}})
+        atomic_json(self.release / 'health.json', {key: self.env[key] for key in
+                    ('BACKEND_BIND_ADDRESS', 'HOST_PORT', 'PUBLIC_HEALTH_URL')})
+        self.compose(self.release, 'config', '--quiet')
+
+    def publish_release(self, release):
+        temporary = self.current_release.with_name(self.current_release.name + '-' + self.id)
+        temporary.unlink(missing_ok=True)
+        temporary.symlink_to(release, target_is_directory=True)
+        os.replace(temporary, self.current_release)
 
     def acquire_lock(self):
         self.phase = 'locking'
@@ -389,35 +488,30 @@ class Deployment:
         self.lock_acquired = True
 
     def create(self):
-        self.new = self.docker('create', '--name', self.candidate,
-            '--label', 'app.hof.deployment=' + self.id,
-            '--publish', '{BACKEND_BIND_ADDRESS}:{HOST_PORT}:{CONTAINER_PORT}'.format(**self.env),
-            '--env-file', self.env['REMOTE_ENV_FILE'], '--env-file', self.env['REMOTE_RELEASE_ENV_FILE'],
-            '--mount', 'type=bind,src=' + str(self.secret) + ',dst=/run/secrets/firebase-service-account.json,readonly',
-            '--mount', 'type=bind,src={RELEASE_HOST_DIR},dst={RELEASE_CONTAINER_DIR},readonly'.format(**self.env),
-            '--env', 'GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/firebase-service-account.json',
-            '--env', 'HOF_RELEASE_STORAGE_ROOT=' + self.env['RELEASE_CONTAINER_DIR'],
-            '--env', 'SERVER_FORWARD_HEADERS_STRATEGY=' + self.env['SERVER_FORWARD_HEADERS_STRATEGY'],
-            '--env', 'HOF_AUTH_ALLOWED_ORIGIN_PATTERNS=' + self.env['HOF_AUTH_ALLOWED_ORIGIN_PATTERNS'],
-            '--log-driver', 'json-file', '--log-opt', 'max-size=10m', '--log-opt', 'max-file=5',
-            '--restart', 'unless-stopped', self.image_id)
+        self.compose(self.release, 'create', '--no-build', '--pull', 'never', 'backend')
+        candidate = self.find_candidate()
+        if not candidate:
+            raise UnsafeState('compose_candidate_missing')
+        self.new = candidate['Id']
 
     def replace(self):
-        # Create validates Docker options/mounts while the previous service runs.
-        # A created container cannot submit HOF actions until it is started.
-        self.checkpoint('create_candidate')
-        self.create()
-        self.checkpoint('candidate_created')
+        # Compose settings and immutable release files are validated before stop.
+        # The fixed project/service identity requires removing its old task first.
         if self.previous:
             self.touched_previous = True
             self.checkpoint('stop_previous')
             self.stop_previous()
             if self.inspect(self.previous['Id'])['State']['Running']:
                 raise DeploymentError('previous_still_running')
-            self.checkpoint('rename_previous')
-            self.docker('rename', self.previous['Id'], self.backup)
-        self.checkpoint('rename_candidate')
-        self.docker('rename', self.new, self.name)
+            if self.previous.get('Release'):
+                self.checkpoint('remove_previous')
+                self.docker('rm', self.previous['Id'])
+            else:
+                self.checkpoint('rename_previous')
+                self.docker('rename', self.previous['Id'], self.backup)
+        self.checkpoint('create_candidate')
+        self.create()
+        self.checkpoint('candidate_created')
         self.checkpoint('start_candidate')
         self.docker('start', self.new)
         self.checkpoint('health')
@@ -441,7 +535,8 @@ class Deployment:
         except (DeploymentError, subprocess.TimeoutExpired, ValueError):
             return False
 
-    def health(self, container_id, image_id):
+    def health(self, container_id, image_id, settings=None):
+        settings = self.env if settings is None else settings
         deadline = time.monotonic() + self.health_seconds
         internal = public = False
         while time.monotonic() < deadline:
@@ -454,8 +549,8 @@ class Deployment:
                     return False, False
             except (DeploymentError, subprocess.TimeoutExpired):
                 return False, False
-            internal = self.probe('http://{BACKEND_BIND_ADDRESS}:{HOST_PORT}/actuator/health'.format(**self.env), deadline, 5)
-            public = internal and self.probe(self.env['PUBLIC_HEALTH_URL'], deadline, 10)
+            internal = self.probe('http://{BACKEND_BIND_ADDRESS}:{HOST_PORT}/actuator/health'.format(**settings), deadline, 5)
+            public = internal and self.probe(settings['PUBLIC_HEALTH_URL'], deadline, 10)
             if internal and public:
                 return True, True
             time.sleep(max(0, min(2, deadline - time.monotonic())))
@@ -466,7 +561,7 @@ class Deployment:
             self.validate_ownership()
         self.reconcile_stop()
         # A create RPC may have completed even when its client failed to return ID.
-        candidate = self.find(container_id=self.new) if self.new else self.find(self.candidate)
+        candidate = self.find_candidate()
         if candidate:
             if (candidate['Config'].get('Labels') or {}).get('app.hof.deployment') != self.id or candidate['Image'] != self.image_id:
                 raise DeploymentError('candidate_ownership_mismatch')
@@ -484,7 +579,18 @@ class Deployment:
             occupant = self.find(self.name)
             if occupant and occupant['Id'] != self.previous['Id']:
                 raise DeploymentError('service_name_ownership_mismatch')
-            previous = self.inspect(self.previous['Id'])
+            previous = self.find(container_id=self.previous['Id'])
+            if self.previous.get('Release'):
+                release = Path(self.previous['Release'])
+                if not previous:
+                    self.checkpoint('restore_previous')
+                    self.compose(release, 'create', '--no-build', '--pull', 'never', 'backend')
+                    previous = self.find(self.name)
+                    if not previous or not self.matches_release(previous, release):
+                        raise UnsafeState('restored_release_ownership_mismatch')
+                    self.previous['Id'] = previous['Id']
+                    self.checkpoint('previous_recreated')
+                self.publish_release(release)
             if previous['Name'] != '/' + self.name:
                 self.docker('rename', self.previous['Id'], self.name)
             try:
@@ -492,7 +598,7 @@ class Deployment:
             except (DeploymentError, subprocess.TimeoutExpired):
                 if not self.inspect(self.previous['Id'])['State']['Running']:
                     raise DeploymentError('previous_start_unconfirmed') from None
-            internal, public = self.health(self.previous['Id'], self.previous['Image'])
+            internal, public = self.health(self.previous['Id'], self.previous['Image'], self.previous.get('Health'))
             report('rollback_healthy' if internal and public else 'rollback_unhealthy',
                    container_id=self.previous['Id'], internal=internal, public=public)
             if not (internal and public):
@@ -509,6 +615,8 @@ class Deployment:
             self.docker('image', 'tag', self.previous['Image'], self.env['IMAGE_REPOSITORY'] + ':rollback')
             if self.find(container_id=self.previous['Id']):
                 self.docker('rm', self.previous['Id'])
+        if self.release:
+            self.publish_release(self.release)
         # Retain previous versioned credentials and images; never prune shared
         # Docker storage or guess which old secrets other containers still mount.
         self.finished = True

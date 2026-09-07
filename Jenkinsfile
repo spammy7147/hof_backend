@@ -65,7 +65,6 @@ pipeline {
             steps {
                 sh '''
                     set -eu
-                    command -v docker
                     command -v bash
                     command -v python3
                     command -v gzip
@@ -73,7 +72,6 @@ pipeline {
                     command -v scp
                     command -v ssh-keygen
                     command -v curl
-                    docker info >/dev/null
                     test -x ./gradlew
                     test -r "$SSH_KNOWN_HOSTS_FILE"
                     ssh-keygen -F "$DEPLOY_HOST_IP" -f "$SSH_KNOWN_HOSTS_FILE" >/dev/null
@@ -136,7 +134,7 @@ pipeline {
                         ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes \
                           -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
                           "$DEPLOY_TARGET" \
-                          'command -v bash >/dev/null && command -v docker >/dev/null && command -v gunzip >/dev/null && command -v curl >/dev/null && command -v python3 >/dev/null && docker info >/dev/null'
+                          'command -v bash >/dev/null && command -v docker >/dev/null && command -v gunzip >/dev/null && command -v curl >/dev/null && command -v python3 >/dev/null && docker info >/dev/null && docker compose version >/dev/null'
                     '''
                 }
             }
@@ -147,7 +145,7 @@ pipeline {
                 // Run the complete test suite and package the exact tested classes.
                 // The persistent daemon, incremental compilation, and build cache
                 // make subsequent deployments avoid recompiling unchanged inputs.
-                sh './gradlew test bootJar --build-cache --console=plain'
+                sh './gradlew test --build-cache --console=plain'
             }
         }
 
@@ -155,13 +153,16 @@ pipeline {
             steps {
                 sh '''
                     set -eu
-                    docker build \
-                      --file Dockerfile.runtime \
-                      --label "org.opencontainers.image.revision=$GIT_REVISION" \
-                      --label "app.jenkins.build=$BUILD_NUMBER" \
-                      --tag "$IMAGE" \
-                      .
+                    ./gradlew jibBuildTar --no-configuration-cache --build-cache --console=plain \
+                      -Djib.baseImageCache="$GRADLE_USER_HOME/jib/base" \
+                      -Djib.applicationCache="$GRADLE_USER_HOME/jib/application"
                 '''
+                script {
+                    env.IMAGE_ID = readFile('build/jib-image.id').trim()
+                    if (!(env.IMAGE_ID ==~ /sha256:[a-f0-9]{64}/)) {
+                        error('Jib did not produce a valid image ID.')
+                    }
+                }
             }
         }
 
@@ -175,10 +176,17 @@ pipeline {
                 ]) {
                     sh '''#!/usr/bin/env bash
                         set -Eeuo pipefail
-                        docker save "$IMAGE" | gzip | \
+                        gzip -c build/jib-image.tar | \
                           ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes \
                             -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
-                            "$DEPLOY_TARGET" 'gunzip | docker load'
+                            "$DEPLOY_TARGET" 'bash -o pipefail -c "gunzip | docker load"'
+                        remote_image_id=$(ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes \
+                            -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
+                            "$DEPLOY_TARGET" "docker image inspect --format '{{.Id}}' '$IMAGE'")
+                        [ "$remote_image_id" = "$IMAGE_ID" ] || {
+                            echo 'Transferred image ID mismatch.' >&2
+                            exit 1
+                        }
                     '''
                 }
             }
@@ -247,7 +255,7 @@ pipeline {
                               -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 \
                               -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
                               "$DEPLOY_TARGET" \
-                              "IMAGE='$IMAGE' IMAGE_REPOSITORY='$IMAGE_REPOSITORY' CONTAINER_NAME='$CONTAINER_NAME' BACKEND_BIND_ADDRESS='$BACKEND_BIND_ADDRESS' HOST_PORT='$HOST_PORT' CONTAINER_PORT='$CONTAINER_PORT' SERVER_FORWARD_HEADERS_STRATEGY='$SERVER_FORWARD_HEADERS_STRATEGY' PUBLIC_HEALTH_URL='$PUBLIC_HEALTH_URL' HOF_AUTH_ALLOWED_ORIGIN_PATTERNS='$HOF_AUTH_ALLOWED_ORIGIN_PATTERNS' RELEASE_HOST_DIR='$RELEASE_HOST_DIR' RELEASE_CONTAINER_DIR='$RELEASE_CONTAINER_DIR' REMOTE_ENV_FILE='$REMOTE_ENV_FILE' REMOTE_FIREBASE_FILE='$REMOTE_FIREBASE_FILE' REMOTE_RELEASE_ENV_FILE='$REMOTE_RELEASE_ENV_FILE' BUILD_NUMBER='$BUILD_NUMBER' python3 -" < scripts/deploy_backend.py; then
+                              "IMAGE='$IMAGE' IMAGE_ID='$IMAGE_ID' IMAGE_REPOSITORY='$IMAGE_REPOSITORY' CONTAINER_NAME='$CONTAINER_NAME' BACKEND_BIND_ADDRESS='$BACKEND_BIND_ADDRESS' HOST_PORT='$HOST_PORT' CONTAINER_PORT='$CONTAINER_PORT' SERVER_FORWARD_HEADERS_STRATEGY='$SERVER_FORWARD_HEADERS_STRATEGY' PUBLIC_HEALTH_URL='$PUBLIC_HEALTH_URL' HOF_AUTH_ALLOWED_ORIGIN_PATTERNS='$HOF_AUTH_ALLOWED_ORIGIN_PATTERNS' RELEASE_HOST_DIR='$RELEASE_HOST_DIR' RELEASE_CONTAINER_DIR='$RELEASE_CONTAINER_DIR' REMOTE_ENV_FILE='$REMOTE_ENV_FILE' REMOTE_FIREBASE_FILE='$REMOTE_FIREBASE_FILE' REMOTE_RELEASE_ENV_FILE='$REMOTE_RELEASE_ENV_FILE' BUILD_NUMBER='$BUILD_NUMBER' python3 -" < scripts/deploy_backend.py; then
                                 exit 0
                               else
                                 deploy_code=$?
@@ -269,9 +277,7 @@ pipeline {
     post {
         always {
             script {
-                if (env.IMAGE?.trim()) {
-                    sh 'docker image rm "$IMAGE" >/dev/null 2>&1 || true'
-                }
+                sh 'rm -f -- build/jib-image.tar build/jib-image.id build/jib-image.digest build/jib-image.json'
                 // The server entry point owns transfer cleanup under its lock.
                 // Cancellation/SSH loss is not evidence that remote use has ended.
             }

@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import socket
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -39,6 +40,7 @@ class RealDockerDeploymentTest(unittest.TestCase):
     def setUpClass(cls):
         cls.label = 'hof-deployment-smoke-' + uuid.uuid4().hex
         cls.image = cls.label + ':test'
+        cls.next_image = cls.label + ':next'
         with tempfile.TemporaryDirectory(prefix=cls.label) as directory:
             context = Path(directory)
             (context / 'server.py').write_text(SERVER)
@@ -48,12 +50,14 @@ class RealDockerDeploymentTest(unittest.TestCase):
             try:
                 cls.docker('cp', str(context / 'server.py'), fixture + ':/server.py')
                 cls.docker('commit', '--change', 'CMD ["python3", "/server.py"]', fixture, cls.image)
+                cls.docker('commit', '--change', 'CMD ["python3", "/server.py"]',
+                           '--change', 'LABEL app.test.release=next', fixture, cls.next_image)
             finally:
                 cls.docker('rm', fixture)
 
     @classmethod
     def tearDownClass(cls):
-        cls.docker('image', 'rm', cls.image)
+        cls.docker('image', 'rm', cls.image, cls.next_image)
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix=self.label)
@@ -78,6 +82,7 @@ class RealDockerDeploymentTest(unittest.TestCase):
             '--mount', 'type=bind,src=' + str(self.old_secret) + ',dst=/run/secrets/firebase-service-account.json,readonly',
             self.image)
         self.env = {**os.environ, 'IMAGE': self.image, 'IMAGE_REPOSITORY': self.label,
+            'IMAGE_ID': self.docker('image', 'inspect', self.image, '--format', '{{.Id}}'),
             'CONTAINER_NAME': self.name, 'BACKEND_BIND_ADDRESS': '127.0.0.1',
             'HOST_PORT': str(self.port), 'CONTAINER_PORT': '8080', 'BUILD_NUMBER': 'smoke',
             'SERVER_FORWARD_HEADERS_STRATEGY': 'NONE', 'PUBLIC_HEALTH_URL': self.url,
@@ -176,6 +181,8 @@ class RealDockerDeploymentTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         current = json.loads(self.docker('container', 'inspect', self.name))[0]
         self.assertNotEqual(self.old, current['Id'])
+        self.assertEqual(self.name, current['Config']['Labels'].get('com.docker.compose.project'))
+        self.assertEqual('backend', current['Config']['Labels'].get('com.docker.compose.service'))
         self.assertEqual({'Type': 'json-file', 'Config': {'max-file': '5', 'max-size': '10m'}}, current['HostConfig']['LogConfig'])
         self.assertEqual('unless-stopped', current['HostConfig']['RestartPolicy']['Name'])
         mounts = {m['Destination']: m for m in current['Mounts']}
@@ -184,6 +191,76 @@ class RealDockerDeploymentTest(unittest.TestCase):
         self.assertEqual(0o600, Path(secret['Source']).stat().st_mode & 0o777)
         self.assertEqual(str(self.release), mounts['/var/lib/hof/releases']['Source'])
         self.assertFalse(mounts['/var/lib/hof/releases']['RW'])
+        self.wait_healthy()
+
+    def next_request(self, content='TEST_HEALTH=UP\n'):
+        transfers = tempfile.TemporaryDirectory(prefix='hof-deploy.', dir='/tmp')
+        self.addCleanup(transfers.cleanup)
+        for key, filename, value in [('REMOTE_ENV_FILE', 'backend.env', content),
+                                    ('REMOTE_FIREBASE_FILE', 'firebase.json', '{"test":"next"}'),
+                                    ('REMOTE_RELEASE_ENV_FILE', 'release.env', 'HOF_RELEASE_PUBLISH_TOKEN=next-only\n')]:
+            path = Path(transfers.name) / filename
+            path.write_text(value)
+            self.env[key] = str(path)
+        self.env['BUILD_NUMBER'] += '-next'
+        self.env['IMAGE'] = self.next_image
+        self.env['IMAGE_ID'] = self.docker('image', 'inspect', self.next_image, '--format', '{{.Id}}')
+
+    def test_real_compose_repeat_failure_restores_prior_release_configuration(self):
+        Path(self.env['REMOTE_ENV_FILE']).write_text('TEST_HEALTH=UP\nTEST_LITERAL=$UNCHANGED"quoted"\n')
+        first = self.deploy()
+        self.assertEqual(0, first.returncode, first.stdout + first.stderr)
+        previous = json.loads(self.docker('inspect', self.name))[0]
+        self.assertEqual(self.name, previous['Config']['Labels'].get('com.docker.compose.project'))
+        self.next_request('TEST_HEALTH=DOWN\nTEST_LITERAL=new-value\n')
+        result = self.deploy()
+        self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn('rollback_healthy', result.stdout)
+        restored = json.loads(self.docker('inspect', self.name))[0]
+        self.assertNotEqual(previous['Id'], restored['Id'])
+        self.assertEqual(previous['Image'], restored['Image'])
+        self.assertCountEqual(previous['Config']['Env'], restored['Config']['Env'])
+        self.assertCountEqual(previous['Mounts'], restored['Mounts'])
+        self.assertEqual(previous['HostConfig']['LogConfig'], restored['HostConfig']['LogConfig'])
+        self.assertIn('TEST_LITERAL=$UNCHANGED"quoted"', restored['Config']['Env'])
+        self.assertTrue(Path(restored['Config']['Labels']['com.docker.compose.project.config_files']).is_file())
+        self.wait_healthy()
+        self.next_request()
+        repeated = self.deploy()
+        self.assertEqual(0, repeated.returncode, repeated.stdout + repeated.stderr)
+        self.assertEqual(self.env['IMAGE_ID'], self.docker('inspect', self.name, '--format', '{{.Image}}'))
+        self.wait_healthy()
+
+    def test_real_killed_compose_replacement_restores_prior_release(self):
+        first = self.deploy()
+        self.assertEqual(0, first.returncode, first.stdout + first.stderr)
+        previous = json.loads(self.docker('inspect', self.name))[0]
+        self.next_request()
+        shim_dir = self.root / 'bin'
+        shim_dir.mkdir()
+        shim = shim_dir / 'docker'
+        shim.write_text('#!' + sys.executable + '\n' + '''import os, pathlib, signal, subprocess, sys
+args = sys.argv[1:]
+code = subprocess.call([os.environ['REAL_DOCKER'], *args])
+receipt = pathlib.Path(os.environ['TEST_KILL_RECEIPT'])
+if code == 0 and args[0] == 'compose' and 'create' in args and not receipt.exists():
+    receipt.write_text('created before parent termination')
+    os.kill(os.getppid(), signal.SIGKILL)
+sys.exit(code)
+''')
+        shim.chmod(0o700)
+        self.env.update(PATH=str(shim_dir) + os.pathsep + os.environ['PATH'],
+                        REAL_DOCKER=shutil.which('docker'), TEST_KILL_RECEIPT=str(self.root / 'killed'))
+        killed = self.deploy()
+        self.assertEqual(-signal.SIGKILL, killed.returncode, killed.stdout + killed.stderr)
+        resumed = self.deploy()
+        self.assertEqual(1, resumed.returncode, resumed.stdout + resumed.stderr)
+        self.assertIn('rollback_healthy', resumed.stdout)
+        restored = json.loads(self.docker('inspect', self.name))[0]
+        self.assertNotEqual(previous['Id'], restored['Id'])
+        self.assertEqual(previous['Image'], restored['Image'])
+        self.assertCountEqual(previous['Config']['Env'], restored['Config']['Env'])
+        self.assertCountEqual(previous['Mounts'], restored['Mounts'])
         self.wait_healthy()
 
     def test_real_killed_parent_keeps_stop_lock_and_resumes_after_response(self):

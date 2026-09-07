@@ -14,6 +14,20 @@ args = sys.argv[1:]
 command = Path(sys.argv[0]).name
 operation = '-'.join(args[:2]) if args[0] == 'image' else args[0]
 state.setdefault('calls', []).append([command, *args])
+compose_service = None
+if command == 'docker' and args[0] == 'compose':
+    definition = Path(args[args.index('--file') + 1])
+    compose_service = json.loads(definition.read_text())['services']['backend']
+    operation = args[args.index('--file') + 2]
+    if operation == 'create':
+        labels = {**compose_service['labels'], 'com.docker.compose.project': args[args.index('--project-name') + 1],
+                  'com.docker.compose.service': 'backend', 'com.docker.compose.project.config_files': str(definition)}
+        args = ['create', '--name', compose_service['container_name']]
+        for key, value in labels.items():
+            args += ['--label', key + '=' + value]
+        for mount in compose_service['volumes']:
+            args += ['--mount', 'type=bind,src=' + mount['source'] + ',dst=' + mount['target'] + ',readonly']
+        args += [compose_service['image']]
 
 
 def save():
@@ -50,6 +64,9 @@ def kill_at(point):
 
 kill_at(operation + '-before')
 
+if operation == 'config':
+    finish()
+
 
 if command == 'curl':
     if state.get('kill_at') == 'health' and not state.get('killed'):
@@ -59,7 +76,8 @@ if command == 'curl':
     running = next((c for c in state['containers'] if c['Name'] == '/hof-test' and c['State']['Running']), None)
     if not running:
         finish(code=7)
-    old = running['Id'] == 'old-id'
+    old = (running['Id'] == 'old-id' or (state.get('fault_deployment') and
+           running['Config']['Labels'].get('app.hof.deployment') != state['fault_deployment']))
     fault = state.get('fault')
     if not old and fault == 'signal':
         save()
@@ -102,6 +120,8 @@ if args[0] == 'create':
             key, value = args[i + 1].split('=', 1)
             labels[key] = value
     state['create_count'] = state.get('create_count', 0) + 1
+    if state.get('fault') and not state.get('fault_deployment'):
+        state['fault_deployment'] = labels['app.hof.deployment']
     created_id = 'new-id' if state['create_count'] == 1 else 'new-id-' + str(state['create_count'])
     state['containers'].append({'Id': created_id, 'Image': 'new-image-id',
         'Name': '/' + args[args.index('--name') + 1], 'State': {'Running': False},

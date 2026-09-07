@@ -41,7 +41,7 @@ class DeploymentTransportTest(unittest.TestCase):
                 executable.write_text('#!' + sys.executable + '\n' + FAKE)
                 executable.chmod(0o700)
             keys = ('SSH_KEY_FILE', 'SSH_KNOWN_HOSTS_FILE', 'DEPLOY_TARGET', 'HOF_ENV_FILE',
-                    'HOF_FIREBASE_FILE', 'IMAGE', 'IMAGE_REPOSITORY', 'CONTAINER_NAME',
+                    'HOF_FIREBASE_FILE', 'IMAGE', 'IMAGE_ID', 'IMAGE_REPOSITORY', 'CONTAINER_NAME',
                     'BACKEND_BIND_ADDRESS', 'HOST_PORT', 'CONTAINER_PORT', 'SERVER_FORWARD_HEADERS_STRATEGY',
                     'PUBLIC_HEALTH_URL', 'HOF_AUTH_ALLOWED_ORIGIN_PATTERNS', 'RELEASE_HOST_DIR',
                     'RELEASE_CONTAINER_DIR', 'BUILD_NUMBER')

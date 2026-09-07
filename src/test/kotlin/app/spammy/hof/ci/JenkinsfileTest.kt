@@ -37,7 +37,7 @@ class JenkinsfileTest {
                 .redirectErrorStream(true)
                 .redirectOutput(output.toFile())
                 .start()
-            if (!process.waitFor(120, TimeUnit.SECONDS)) {
+            if (!process.waitFor(180, TimeUnit.SECONDS)) {
                 process.destroyForcibly()
                 error("Deployment execution tests timed out: ${output.readText()}")
             }

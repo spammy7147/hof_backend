@@ -5,6 +5,7 @@ plugins {
 	id("org.springframework.boot") version "4.1.0"
 	id("io.spring.dependency-management") version "1.1.7"
 	kotlin("plugin.jpa") version "2.3.21"
+	id("com.google.cloud.tools.jib") version "3.5.4"
 }
 
 group = "app.spammy"
@@ -91,4 +92,28 @@ tasks.register<JavaExec>("generateBattleMapSeed") {
 	dependsOn(tasks.testClasses)
 	classpath = sourceSets["test"].runtimeClasspath
 	mainClass.set("app.spammy.hof.battle.seed.BattleMapSeedGenerator")
+}
+
+jib {
+	configurationName = "productionRuntimeClasspath"
+	from {
+		image = "eclipse-temurin:21-jre@sha256:7a65df4b22d2de92d4e04056e884f3b9122d70b21e2847fd66084278bd0ce037"
+		platforms {
+			platform {
+				architecture = "amd64"
+				os = "linux"
+			}
+		}
+	}
+	to { image = providers.environmentVariable("IMAGE").orElse("hof-backend:local").get() }
+	container {
+		mainClass = "app.spammy.hof.HofApplicationKt"
+		workingDirectory = "/app"
+		ports = listOf("8080")
+		environment = mapOf("JAVA_TOOL_OPTIONS" to "-Djdk.httpclient.keepalive.timeout=4")
+		labels = mapOf(
+			"org.opencontainers.image.revision" to providers.environmentVariable("GIT_REVISION").orElse("local").get(),
+			"app.jenkins.build" to providers.environmentVariable("BUILD_NUMBER").orElse("local").get(),
+		)
+	}
 }
