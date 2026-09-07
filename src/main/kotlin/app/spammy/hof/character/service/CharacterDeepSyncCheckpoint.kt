@@ -64,8 +64,8 @@ data class CharacterDeepSyncCheckpoint(
     fun requireExpected(current: CharacterRestoreState) {
         check(current.hofCharacterId == original.hofCharacterId) { "복원 원본과 현재 HOF 캐릭터가 다릅니다." }
         val latest = CharacterSyncObservation.from(current)
-        if (latest == observed || current == original) return
-        val unchangedConditions = latest.conditions == observed.conditions &&
+        if (latest.copy(conditionPrefixes = observed.conditionPrefixes) == observed || current == original) return
+        val unchangedConditions = latest.hasCompatibleEquipmentConditions(observed) &&
             latest.position == observed.position && latest.guard == observed.guard
         val expected = when (pendingChange) {
             CharacterSyncChange.LOAD_PATTERN -> latest.equipment == observed.equipment
@@ -95,7 +95,17 @@ data class CharacterSyncObservation(
     val conditions: String,
     val position: String,
     val guard: String,
+    val conditionPrefixes: List<String> = emptyList(),
 ) {
+    /** 장비의 패턴 추가 효과로 끝 행만 숨거나 다시 나타날 수 있다. 남은 행의 조건은 유지해야 한다. */
+    fun hasCompatibleEquipmentConditions(previous: CharacterSyncObservation): Boolean {
+        if (conditions == previous.conditions) return true
+        if (equipment == previous.equipment || conditionPrefixes.size == previous.conditionPrefixes.size) return false
+        if (conditionPrefixes.lastOrNull() != conditions || previous.conditionPrefixes.lastOrNull() != previous.conditions) return false
+        val sharedRows = minOf(conditionPrefixes.size, previous.conditionPrefixes.size)
+        return sharedRows > 0 && conditionPrefixes[sharedRows - 1] == previous.conditionPrefixes[sharedRows - 1]
+    }
+
     companion object {
         fun fingerprint(state: CharacterRestoreState): String = from(state).let {
             fingerprint(listOf(state.hofCharacterId, it.equipment, it.patterns, it.position, it.guard))
@@ -106,7 +116,12 @@ data class CharacterSyncObservation(
             fingerprint(state.patterns.flatMap { listOf(it.index.toString(), it.judge, it.quantity, it.skill) }),
             fingerprint(state.patterns.flatMap { listOf(it.index.toString(), it.judge, it.quantity) }),
             state.position, state.guard,
+            conditionPrefixes(state.patterns),
         )
+
+        fun conditionPrefixes(rows: List<HofActionPatternRow>): List<String> = rows.indices.map { index ->
+            fingerprint(rows.take(index + 1).flatMap { listOf(it.index.toString(), it.judge, it.quantity) })
+        }
 
         private fun fingerprint(fields: List<String>): String {
             val digest = MessageDigest.getInstance("SHA-256")

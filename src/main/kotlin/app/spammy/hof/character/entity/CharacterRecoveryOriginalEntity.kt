@@ -29,6 +29,7 @@ class CharacterRecoveryOriginalEntity(
     @Column(name = "observed_equipment", length = 64) var observedEquipment: String? = null,
     @Column(name = "observed_patterns", length = 64) var observedPatterns: String? = null,
     @Column(name = "observed_conditions", length = 64) var observedConditions: String? = null,
+    @Column(name = "observed_condition_prefixes", columnDefinition = "text") var observedConditionPrefixes: String? = null,
     @Column(name = "observed_position") var observedPosition: String? = null,
     @Column(name = "observed_guard") var observedGuard: String? = null,
     @Column(name = "pending_change", length = 32) var pendingChange: String? = null,

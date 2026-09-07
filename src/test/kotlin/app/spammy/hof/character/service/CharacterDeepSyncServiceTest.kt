@@ -34,6 +34,16 @@ import org.mockito.Mockito
 
 class CharacterDeepSyncServiceTest {
     @Test
+    fun `equipment granted pattern rows disappear and return during preset collection and restoration`() {
+        val fixture = Fixture(equipmentPatternRows = true)
+
+        val result = fixture.service.synchronize(1L, 7L, 17L)
+
+        fixture.assertOriginalRestored()
+        assertEquals(CharacterDeepSyncPhase.COMPLETED, result.progress.last().phase)
+    }
+
+    @Test
     fun `empty equipment presets restore the equipment dependent original pattern before completion`() {
         val fixture = Fixture()
 
@@ -92,6 +102,7 @@ class CharacterDeepSyncServiceTest {
         private val stateFile: java.nio.file.Path? = null,
         private val terminateAfter: String? = null,
         private var expireFirstCapture: Boolean = false,
+        private val equipmentPatternRows: Boolean = false,
     ) {
         private val now = Instant.parse("2026-09-07T05:00:00Z")
         private val account = HofAccountEntity(1L, "fixture", "encrypted", now)
@@ -255,6 +266,11 @@ class CharacterDeepSyncServiceTest {
                 <option value="0" ${if (selectedSkill == "0") "selected" else ""}>Attack</option>
                 ${if (equipped) "<option value='9564' ${if (selectedSkill == "9564") "selected" else ""}>Equipment Skill</option>" else ""}
               </select>
+              ${if (equipmentPatternRows && equipped) (1..2).joinToString("\n") { index -> """
+              <select name="judge$index"><option value="$index" selected>Condition $index</option></select>
+              <input name="quantity$index" value="$index">
+              <select name="skill$index"><option value="0" selected>Attack</option></select>
+              """ } else ""}
               <input type="submit" name="ChangePattern" value="Save">
             </form>
             <form action="?char=10" method="post">

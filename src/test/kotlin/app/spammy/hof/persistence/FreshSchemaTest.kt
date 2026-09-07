@@ -104,6 +104,7 @@ class FreshSchemaTest {
                 "53" to "persist character recovery originals",
                 "54" to "preserve character operation automation intent",
                 "55" to "support character recovery review",
+                "56" to "preserve equipment dependent pattern conditions",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -166,6 +167,7 @@ class FreshSchemaTest {
                 "V53__persist_character_recovery_originals.sql",
                 "V54__preserve_character_operation_automation_intent.sql",
                 "V55__support_character_recovery_review.sql",
+                "V56__preserve_equipment_dependent_pattern_conditions.sql",
                 "V5__track_character_detail_sync.sql",
                 "V6__learn_shared_battle_cooldowns.sql",
                 "V7__add_automation_wait_reason.sql",

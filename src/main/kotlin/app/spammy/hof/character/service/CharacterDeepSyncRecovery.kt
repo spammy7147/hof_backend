@@ -99,6 +99,7 @@ class CharacterDeepSyncRecovery(
                 requireNotNull(original.observedEquipment), requireNotNull(original.observedPatterns),
                 requireNotNull(original.observedConditions), requireNotNull(original.observedPosition),
                 requireNotNull(original.observedGuard),
+                original.observedConditionPrefixes?.split(',') ?: recoverConditionPrefixes(original, characterId),
             ),
             original.pendingChange?.let(CharacterSyncChange::valueOf),
             job.restoreAttemptLimit,
@@ -130,6 +131,7 @@ class CharacterDeepSyncRecovery(
         original.observedEquipment = checkpoint.observed.equipment
         original.observedPatterns = checkpoint.observed.patterns
         original.observedConditions = checkpoint.observed.conditions
+        original.observedConditionPrefixes = checkpoint.observed.conditionPrefixes.takeIf { it.isNotEmpty() }?.joinToString(",")
         original.observedPosition = checkpoint.observed.position
         original.observedGuard = checkpoint.observed.guard
         original.pendingChange = checkpoint.pendingChange?.name
@@ -143,6 +145,18 @@ class CharacterDeepSyncRecovery(
                 "복원 원본의 작업·계정·캐릭터가 일치하지 않습니다."
             }
         }
+
+    /** V55 작업은 전체 지문과 정확히 일치하는 보존 자료가 있을 때만 행별 비교 정보를 보강한다. */
+    private fun recoverConditionPrefixes(original: CharacterRecoveryOriginalEntity, characterId: Long): List<String> {
+        val originalPrefixes = CharacterSyncObservation.conditionPrefixes(original.toState().patterns)
+        if (originalPrefixes.lastOrNull() == original.observedConditions) return originalPrefixes
+        return originals.findSavedPatternRows(characterId).groupBy { it.patternSlot.id }.values
+            .asSequence().map { rows ->
+                CharacterSyncObservation.conditionPrefixes(rows.map {
+                    HofActionPatternRow(it.rowIndex, judge = it.judge, quantity = it.quantity, skill = it.skill)
+                })
+            }.firstOrNull { it.lastOrNull() == original.observedConditions } ?: emptyList()
+    }
 
     private fun CharacterRecoveryOriginalEntity.toState() = CharacterRestoreState(
         hofCharacterId,

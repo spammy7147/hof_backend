@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 @unittest.skipUnless(os.environ.get('HOF_JIB_IMAGE_TESTS') == '1', 'explicit built Jib image check only')
 class JibImageTest(unittest.TestCase):
     @unittest.skipUnless(os.environ.get('HOF_JIB_POSTGRES_TESTS') == '1', 'explicit PostgreSQL upgrade check only')
-    def test_postgres_51_upgrades_to_55_and_starts_with_existing_schema(self):
+    def test_postgres_51_upgrades_to_56_and_starts_with_existing_schema(self):
         image_id = (ROOT / 'build/jib-image.id').read_text().strip()
         name = 'hof-pg-upgrade-' + uuid.uuid4().hex
 
@@ -71,13 +71,17 @@ public class Baseline {
                        image_id, '-cp', '/check:/app/libs/*', 'Baseline', url)
                 self.assertEqual('51', sql('select max(version::int) from flyway_schema_history where success'))
                 self.assertEqual('', sql("select to_regclass('public.character_recovery_originals')"))
-                docker('run', '-d', '--name', name + '-app', '--platform', 'linux/amd64', '--network', name,
-                       '--mount', 'type=bind,src=' + str(ROOT / 'src/test/resources/application-test.properties') + ',dst=/smoke/application-test.properties,readonly',
-                       image_id, '--spring.profiles.active=test', '--spring.config.additional-location=file:/smoke/',
-                       '--spring.datasource.url=' + url, '--spring.datasource.driver-class-name=org.postgresql.Driver',
-                       '--spring.datasource.username=postgres', '--management.health.redis.enabled=false', '--management.health.kafka.enabled=false',
-                       '--spring.kafka.listener.auto-startup=false', '--hof.automation-convergence.automation-posts-enabled=false')
-                for attempt in range(2):
+                def start_app(application_image):
+                    docker('run', '-d', '--name', name + '-app', '--platform', 'linux/amd64', '--network', name,
+                           '--mount', 'type=bind,src=' + str(ROOT / 'src/test/resources/application-test.properties') + ',dst=/smoke/application-test.properties,readonly',
+                           application_image, '--spring.profiles.active=test', '--spring.config.additional-location=file:/smoke/',
+                           '--spring.datasource.url=' + url, '--spring.datasource.driver-class-name=org.postgresql.Driver',
+                           '--spring.datasource.username=postgres', '--management.health.redis.enabled=false', '--management.health.kafka.enabled=false',
+                           '--spring.kafka.listener.auto-startup=false', '--hof.automation-convergence.automation-posts-enabled=false')
+
+                rollback_image = os.environ.get('HOF_JIB_ROLLBACK_IMAGE')
+                start_app(image_id)
+                for attempt in range(3 if rollback_image else 2):
                     deadline = time.monotonic() + 120
                     response = ''
                     while time.monotonic() < deadline:
@@ -91,10 +95,13 @@ public class Baseline {
                         time.sleep(1)
                     self.assertIn('200 ', response, docker('logs', name + '-app'))
                     self.assertIn('"status":"UP"', response)
-                    self.assertEqual('55|55', sql('select max(version::int), count(*) from flyway_schema_history where success'))
+                    self.assertEqual('56|56', sql('select max(version::int), count(*) from flyway_schema_history where success'))
                     self.assertIn('Initialized JPA EntityManagerFactory', docker('logs', name + '-app'))
                     if attempt == 0:
                         docker('restart', name + '-app')
+                    elif attempt == 1 and rollback_image:
+                        docker('rm', '--force', name + '-app')
+                        start_app(rollback_image)
             finally:
                 for suffix in ('-app', '-db'):
                     subprocess.run(['docker', 'rm', '--force', name + suffix], capture_output=True)

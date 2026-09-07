@@ -26,6 +26,7 @@ import org.mockito.Mockito
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
 import org.springframework.context.annotation.Import
+import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.test.context.ActiveProfiles
 import org.springframework.test.context.bean.override.mockito.MockitoBean
 import org.springframework.transaction.annotation.Propagation
@@ -41,6 +42,7 @@ class CharacterDeepSyncRecoveryPersistenceTest {
     @Autowired private lateinit var accounts: HofAccountRepository
     @Autowired private lateinit var jobs: CharacterOperationJobCommandRepository
     @Autowired private lateinit var characters: CharacterRepository
+    @Autowired private lateinit var jdbc: JdbcTemplate
     @MockitoBean private lateinit var time: TimeProvider
     @MockitoBean private lateinit var automation: CharacterOperationAutomation
     private lateinit var job: CharacterOperationJobEntity
@@ -77,6 +79,47 @@ class CharacterDeepSyncRecoveryPersistenceTest {
         val restored = restoring.copy(status = CharacterRecoveryStatus.RESTORED)
         recovery.save(job.id, job.account.id, job.targetCharacterId, restored)
         assertEquals(restored, recovery.load(job.id, job.account.id, job.targetCharacterId))
+    }
+
+    @Test
+    fun `legacy checkpoint recovers condition prefixes only from a fully matching archived pattern`() {
+        val observed = saveLegacyEquipmentObservation()
+
+        val loaded = assertNotNull(recovery.load(job.id, job.account.id, job.targetCharacterId))
+
+        assertEquals(CharacterSyncObservation.from(observed), loaded.observed)
+        loaded.requireExpected(observed.copy(patterns = observed.patterns.take(1), equipment = emptyList()))
+        recovery.save(job.id, job.account.id, job.targetCharacterId, loaded)
+        assertEquals(loaded, recovery.load(job.id, job.account.id, job.targetCharacterId))
+    }
+
+    @Test
+    fun `legacy checkpoint with changed archive keeps rejecting reduced rows`() {
+        val observed = saveLegacyEquipmentObservation()
+        jdbc.update("UPDATE character_saved_pattern_rows SET judge='external' WHERE pattern_slot_id IN (SELECT id FROM character_pattern_slots WHERE character_id=?)", job.targetCharacterId)
+
+        val loaded = assertNotNull(recovery.load(job.id, job.account.id, job.targetCharacterId))
+
+        assertEquals(emptyList(), loaded.observed.conditionPrefixes)
+        assertFailsWith<IllegalStateException> {
+            loaded.requireExpected(observed.copy(patterns = observed.patterns.take(1), equipment = emptyList()))
+        }
+    }
+
+    private fun saveLegacyEquipmentObservation(): CharacterRestoreState {
+        val observed = original.copy(patterns = (0..2).map {
+            HofActionPatternRow(it, judge = "condition-$it", quantity = "$it", skill = "0")
+        })
+        recovery.save(job.id, job.account.id, job.targetCharacterId, CharacterDeepSyncCheckpoint(original,
+            observed = CharacterSyncObservation.from(observed), pendingChange = CharacterSyncChange.LOAD_EQUIPMENT))
+        jdbc.update("UPDATE character_recovery_originals SET observed_condition_prefixes=NULL WHERE job_id=?", job.id)
+        jdbc.update("INSERT INTO character_pattern_slots (character_id,slot_code,label,can_load) VALUES (?,'7','fixture',true)", job.targetCharacterId)
+        val slotId = jdbc.queryForObject("SELECT id FROM character_pattern_slots WHERE character_id=? AND slot_code='7'", Long::class.java, job.targetCharacterId)!!
+        observed.patterns.forEach {
+            jdbc.update("INSERT INTO character_saved_pattern_rows (pattern_slot_id,row_index,judge,judge_text,quantity,quantity_text,skill,skill_text) VALUES (?,?,?,'',?,'',?,'')",
+                slotId, it.index, it.judge, it.quantity, it.skill)
+        }
+        return observed
     }
 
     @Test

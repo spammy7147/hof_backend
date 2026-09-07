@@ -364,6 +364,7 @@ internal object FreshSchemaContract {
             requiredBoolean("collection_complete"), optionalText("collection_error"), requiredInteger("restore_attempts"),
             optionalVarchar("observed_equipment", 64), optionalVarchar("observed_patterns", 64),
             optionalVarchar("observed_conditions", 64), optionalVarchar("observed_position"), optionalVarchar("observed_guard"),
+            optionalText("observed_condition_prefixes"),
             optionalVarchar("pending_change", 32), requiredBigint("version"), primaryKey = listOf("job_id"),
         ),
         table(

@@ -183,6 +183,7 @@ object CharacterOperationCrashProcess {
                 automationGateOverride = automationGate,
                 beforePost = { check(typed.findRuntimeState(account.id)?.lifecycleStatus in setOf(TypedAutomationLifecycle.PAUSED, TypedAutomationLifecycle.STOPPED)) },
                 stateFile = directory.resolve("hof.json"), terminateAfter = args[1].substringAfter(':').takeUnless { isResume },
+                equipmentPatternRows = true,
             )
             context.registerBean(CharacterOperationJobService::class.java, java.util.function.Supplier {
                 CharacterOperationJobService(accountQuery, characterQuery, commands, queries, remote.service,
@@ -216,14 +217,17 @@ object CharacterOperationCrashProcess {
             val checkpoint = requireNotNull(recovery.load(result.id, account.id, character.id))
             java.nio.file.Files.writeString(directory.resolve("result.json"), jacksonObjectMapper().writeValueAsString(mapOf(
                 "status" to result.status, "recoveryStatus" to result.recoveryStatus,
-                "originalSkill" to checkpoint.original.patterns.single().skill, "message" to result.message,
+                "originalSkill" to checkpoint.original.patterns.single { it.index == 0 }.skill, "message" to result.message,
                 "automationReleased" to queries.findById(result.id)?.automationReleased,
                 "automationLifecycle" to typed.findRuntimeState(account.id)?.lifecycleStatus,
                 "restoreAttempts" to checkpoint.restoreAttempts, "restoreAttemptLimit" to checkpoint.restoreAttemptLimit,
             )))
             check(result.status == CharacterOperationStatus.COMPLETED) { "Job failed: ${result.message}" }
             check(result.recoveryStatus == CharacterRecoveryStatus.RESTORED)
-            check(characterQuery.findActionPatternsByCharacterIds(listOf(character.id)).single().skill == "9564")
+            val restoredPatterns = characterQuery.findActionPatternsByCharacterIds(listOf(character.id)).sortedBy { it.rowIndex }
+                .map { app.spammy.hof.external.model.HofActionPatternRow(it.rowIndex, judge = it.judge, quantity = it.quantity, skill = it.skill) }
+            check(restoredPatterns == checkpoint.original.patterns)
+            check(restoredPatterns.size == 3)
             check(characterQuery.findByAccountIdAndId(account.id, character.id)?.lifecycle == CharacterLifecycle.ACTIVE)
         }
     }

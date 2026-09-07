@@ -1,0 +1,1 @@
+ALTER TABLE character_recovery_originals ADD COLUMN observed_condition_prefixes TEXT;
