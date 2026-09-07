@@ -128,9 +128,10 @@ class CharacterDeepSyncService(
         }
 
         override fun restoreCurrent(original: CharacterPageParseResult): CharacterPageParseResult {
+            // 장비가 제공하는 스킬과 패턴 행을 먼저 복구해야 원래 행동 패턴을 선택할 수 있다.
+            restoreEquipment(original)
             restorePattern(original)
             restorePositionGuard(original)
-            restoreEquipment(original)
             return observe()
         }
 
