@@ -3,6 +3,8 @@ package app.spammy.hof.external.parser
 import app.spammy.hof.external.model.HofEquipmentCandidate
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
+import org.jsoup.nodes.Element
+import org.jsoup.nodes.TextNode
 
 /** JavaScript가 DOM에 삽입하는 장비 후보 HTML을 실행하지 않고 안전하게 추출한다. */
 object EquipmentCandidateScriptParser {
@@ -22,12 +24,11 @@ object EquipmentCandidateScriptParser {
                 val body = Jsoup.parseBodyFragment(fragment, document.baseUri()).body()
                 val input = body.selectFirst("input[name=item_no]") ?: return@forEach
                 val text = body.text().trim()
-                val name = text.substringBefore(" (").substringBefore(" x").trim()
                 add(
                     HofEquipmentCandidate(
                         value = input.attr("value").trim(),
                         typeCode = typeCode,
-                        name = name,
+                        name = readName(body),
                         iconUrl = body.selectFirst("img")?.absUrl("src").orEmpty(),
                         description = text,
                         quantity = quantityRegex.find(text)?.groupValues?.get(1)?.toIntOrNull(),
@@ -80,10 +81,26 @@ object EquipmentCandidateScriptParser {
         return HofEquipmentCandidate(
             value = input.attr("value").trim(),
             typeCode = typeCode,
-            name = text.substringBefore(" (").substringBefore(" x").trim(),
+            name = readName(body),
             iconUrl = body.selectFirst("img")?.absUrl("src").orEmpty(),
             description = text,
             quantity = quantityRegex.find(text)?.groupValues?.get(1)?.toIntOrNull(),
         )
+    }
+
+    private fun readName(body: Element): String {
+        // 괄호는 카드 이름에도 쓰이므로 실제 장비 분류 표시 앞까지만 이름으로 읽는다.
+        val classification = body.selectFirst("span.light")
+        if (classification != null) {
+            return generateSequence(classification.previousSibling()) { it.previousSibling() }
+                .toList().asReversed().joinToString("") { node ->
+                    when (node) {
+                        is TextNode -> node.text()
+                        is Element -> node.text()
+                        else -> ""
+                    }
+                }.trim()
+        }
+        return body.text().substringBefore(" (").substringBefore(" x").trim()
     }
 }

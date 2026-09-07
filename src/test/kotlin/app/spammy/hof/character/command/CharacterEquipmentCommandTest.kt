@@ -1,11 +1,40 @@
 package app.spammy.hof.character.command
 
 import app.spammy.hof.external.model.HofEquipmentCandidate
+import app.spammy.hof.external.parser.CharacterDetailParser
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
 class CharacterEquipmentCommandTest {
+    @Test
+    fun `deep sync restores the same card variant from equipped and stock HTML`() {
+        val snapshot = CharacterDetailParser().parsePage("10", """
+            <form><table><tr><td class="align-right">Armor :</td><td>
+              <input name="spot" value="armor"><img src="/SinkArmor.gif">
+              +9 Studded Sink Armor (Crocodile)<span class="light"> (Armor)</span>
+              / <span style="font-size:80%">MAXHP+250, STR+30</span>
+            </td></tr></table></form>
+            <script>
+              function Listtype_equip(mode) {
+                switch(mode) {
+                case "armor":
+                html = '<input type="radio" name="item_no" value="crocodile"><img src="/SinkArmor.gif">+9 Studded Sink Armor (Crocodile)<span class="light"> (Armor)</span> x2 / MAXHP+250, STR+30<br />' +
+                '<input type="radio" name="item_no" value="eel"><img src="/SinkArmor.gif">+9 Studded Sink Armor (Eel)<span class="light"> (Armor)</span> x1 / MAXSP+250, INT+30<br />';
+                }
+              }
+            </script>
+        """.trimIndent()).snapshot
+        val original = snapshot.equipment.single()
+
+        assertEquals(
+            "crocodile",
+            CharacterEquipmentCommandRules.requireRestoreCandidate(
+                original.name, original.iconUrl, original.description, snapshot.equipmentCandidates,
+            ).value,
+        )
+    }
+
     @Test
     fun `equipment uses exact source id so duplicate display names stay separate`() {
         val values = listOf("1000", "100003")
