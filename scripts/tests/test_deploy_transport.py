@@ -41,7 +41,7 @@ class DeploymentTransportTest(unittest.TestCase):
                 executable.write_text('#!' + sys.executable + '\n' + FAKE)
                 executable.chmod(0o700)
             keys = ('SSH_KEY_FILE', 'SSH_KNOWN_HOSTS_FILE', 'DEPLOY_TARGET', 'HOF_ENV_FILE',
-                    'HOF_FIREBASE_FILE', 'IMAGE', 'IMAGE_ID', 'IMAGE_REPOSITORY', 'CONTAINER_NAME',
+                    'HOF_FIREBASE_FILE', 'IMAGE', 'IMAGE_ID', 'IMAGE_DIGEST', 'IMAGE_REPOSITORY', 'CONTAINER_NAME',
                     'BACKEND_BIND_ADDRESS', 'HOST_PORT', 'CONTAINER_PORT', 'SERVER_FORWARD_HEADERS_STRATEGY',
                     'PUBLIC_HEALTH_URL', 'HOF_AUTH_ALLOWED_ORIGIN_PATTERNS', 'RELEASE_HOST_DIR',
                     'RELEASE_CONTAINER_DIR', 'BUILD_NUMBER')
@@ -63,6 +63,7 @@ class DeploymentTransportTest(unittest.TestCase):
         commands = [call[-1] for call in state['calls'] if call[-1].endswith('python3 -')]
         self.assertEqual(3, len(commands))
         self.assertEqual(1, len(set(commands)))
+        self.assertIn("IMAGE_DIGEST='test-only'", commands[0])
 
     def test_exhausted_rechecks_report_unknown_instead_of_confirmed_failure(self):
         result, state = self.run_transport([255, 75, 255])

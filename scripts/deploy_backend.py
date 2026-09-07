@@ -372,7 +372,8 @@ class Deployment:
             if not shutil.which(executable):
                 raise DeploymentError('missing_' + executable)
         self.image_id = json.loads(self.docker('image', 'inspect', self.env['IMAGE']))[0]['Id']
-        if self.image_id != self.env['IMAGE_ID']:
+        # Pin the daemon's immutable ID after checking the Jib config or manifest digest.
+        if self.image_id not in (self.env['IMAGE_ID'], self.env.get('IMAGE_DIGEST')):
             raise DeploymentError('loaded_image_id_mismatch')
         for key in ('REMOTE_ENV_FILE', 'REMOTE_FIREBASE_FILE', 'REMOTE_RELEASE_ENV_FILE'):
             path = Path(self.env[key])

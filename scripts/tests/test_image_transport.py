@@ -25,7 +25,8 @@ if name == 'docker':
             sys.exit(22)
         sys.exit(23 if fault == 'load' else 0)
     if args[:2] == ['image', 'inspect']:
-        print('wrong-image' if fault == 'mismatch' else os.environ['IMAGE_ID'])
+        print('wrong-image' if fault == 'mismatch' else os.environ[
+            'IMAGE_DIGEST' if os.environ['IMAGE_STORE'] == 'containerd' else 'IMAGE_ID'])
         sys.exit(0)
     sys.exit(99)
 if name == 'gzip':
@@ -42,7 +43,7 @@ sys.exit(99)
 
 
 class ImageTransportTest(unittest.TestCase):
-    def transfer(self, fault=''):
+    def transfer(self, fault='', store='classic'):
         import shutil
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -63,6 +64,7 @@ class ImageTransportTest(unittest.TestCase):
             env = {**os.environ, 'PATH': str(root) + os.pathsep + os.environ['PATH'],
                    'REAL_GZIP': shutil.which('gzip'), 'TRANSFER_FAULT': fault,
                    'IMAGE': 'hof-test:42-revision', 'IMAGE_ID': 'sha256:' + 'a' * 64,
+                   'IMAGE_DIGEST': 'sha256:' + 'b' * 64, 'IMAGE_STORE': store,
                    'SSH_KEY_FILE': 'test-key', 'SSH_KNOWN_HOSTS_FILE': 'known-hosts',
                    'DEPLOY_TARGET': 'test@invalid'}
             result = subprocess.run(['bash', '-c', TRANSFER], env=env, cwd=root,
@@ -78,6 +80,10 @@ class ImageTransportTest(unittest.TestCase):
     def test_loaded_id_must_match_local_jib_image_id(self):
         self.transfer()
         self.transfer('mismatch')
+
+    def test_containerd_manifest_digest_matches_the_built_image(self):
+        self.transfer(store='containerd')
+        self.transfer('mismatch', store='containerd')
 
     def test_compression_transport_load_and_missing_tar_fail_the_stage(self):
         for fault in ('gzip', 'corrupt-gzip', 'ssh', 'load', 'missing-tar', 'truncated-tar'):

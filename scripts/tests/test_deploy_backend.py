@@ -107,11 +107,22 @@ class DeploymentTest(unittest.TestCase):
 
     def test_loaded_image_id_mismatch_does_not_touch_previous_service(self):
         self.env['IMAGE_ID'] = 'unexpected-image-id'
+        self.env['IMAGE_DIGEST'] = 'unexpected-manifest-digest'
         before = self.state()['containers']
         result = self.deploy()
         self.assertNotEqual(0, result.returncode)
         self.assertIn('loaded_image_id_mismatch', result.stdout)
         self.assertEqual(before, self.state()['containers'])
+
+    def test_containerd_manifest_identity_is_pinned_for_compose_and_health(self):
+        self.env['IMAGE_ID'] = 'jib-config-id'
+        self.env['IMAGE_DIGEST'] = 'new-image-id'
+        result = self.deploy()
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        current = next(c for c in self.state()['containers'] if c['Name'] == '/hof-test')
+        self.assertEqual('new-image-id', current['Image'])
+        compose = json.loads((self.root / 'deployment-state/hof-test-current/compose.json').read_text())
+        self.assertEqual('new-image-id', compose['services']['backend']['image'])
 
     def test_docker_create_failure_leaves_previous_service_and_secret_unchanged(self):
         self.configure(fault='create')

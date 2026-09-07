@@ -48,6 +48,11 @@ public class Baseline {
                           if not path.name.endswith('-sources.jar'))
             subprocess.run(['javac', '--release', '21', '-cp', str(flyway), str(source)], check=True, timeout=30)
             docker('load', '--input', str(ROOT / 'build/jib-image.tar'))
+            with tarfile.open(ROOT / 'build/jib-image.tar') as archive:
+                tag = json.load(archive.extractfile('manifest.json'))[0]['RepoTags'][0]
+            loaded_id = docker('image', 'inspect', tag, '--format', '{{.Id}}')
+            self.assertIn(loaded_id, (image_id, (ROOT / 'build/jib-image.digest').read_text().strip()))
+            image_id = loaded_id
             docker('network', 'create', '--internal', name)
             try:
                 docker('run', '-d', '--pull=never', '--name', name + '-db', '--network', name, '--network-alias', 'database',
@@ -129,7 +134,9 @@ public class Baseline {
             truncated = subprocess.run(['docker', 'load'], input=archive.read(65536), capture_output=True, timeout=30)
         self.assertNotEqual(0, truncated.returncode, 'Docker must reject an incomplete production archive')
         docker('load', '--input', str(ROOT / 'build/jib-image.tar'))
-        self.assertEqual(image_id, docker('image', 'inspect', manifest['RepoTags'][0], '--format', '{{.Id}}'))
+        loaded_id = docker('image', 'inspect', manifest['RepoTags'][0], '--format', '{{.Id}}')
+        self.assertIn(loaded_id, (image_id, (ROOT / 'build/jib-image.digest').read_text().strip()))
+        image_id = loaded_id
         name = 'hof-jib-smoke-' + uuid.uuid4().hex
         docker('run', '-d', '--name', name, '--platform', 'linux/amd64', '--network', 'none',
                '--mount', 'type=bind,src=' + str(ROOT / 'src/test/resources/application-test.properties') + ',dst=/smoke/application-test.properties,readonly',

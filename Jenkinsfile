@@ -161,8 +161,10 @@ pipeline {
                 '''
                 script {
                     env.IMAGE_ID = readFile('build/jib-image.id').trim()
-                    if (!(env.IMAGE_ID ==~ /sha256:[a-f0-9]{64}/)) {
-                        error('Jib did not produce a valid image ID.')
+                    env.IMAGE_DIGEST = readFile('build/jib-image.digest').trim()
+                    if (!(env.IMAGE_ID ==~ /sha256:[a-f0-9]{64}/) ||
+                        !(env.IMAGE_DIGEST ==~ /sha256:[a-f0-9]{64}/)) {
+                        error('Jib did not produce valid config and manifest digests.')
                     }
                 }
             }
@@ -185,7 +187,8 @@ pipeline {
                         remote_image_id=$(ssh -i "$SSH_KEY_FILE" -o IdentitiesOnly=yes -o BatchMode=yes \
                             -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
                             "$DEPLOY_TARGET" "docker image inspect --format '{{.Id}}' '$IMAGE'")
-                        [ "$remote_image_id" = "$IMAGE_ID" ] || {
+                        # Classic Docker exposes the config ID; containerd exposes the manifest digest.
+                        [ "$remote_image_id" = "$IMAGE_ID" ] || [ "$remote_image_id" = "$IMAGE_DIGEST" ] || {
                             echo 'Transferred image ID mismatch.' >&2
                             exit 1
                         }
@@ -257,7 +260,7 @@ pipeline {
                               -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 \
                               -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o StrictHostKeyChecking=yes \
                               "$DEPLOY_TARGET" \
-                              "IMAGE='$IMAGE' IMAGE_ID='$IMAGE_ID' IMAGE_REPOSITORY='$IMAGE_REPOSITORY' CONTAINER_NAME='$CONTAINER_NAME' BACKEND_BIND_ADDRESS='$BACKEND_BIND_ADDRESS' HOST_PORT='$HOST_PORT' CONTAINER_PORT='$CONTAINER_PORT' SERVER_FORWARD_HEADERS_STRATEGY='$SERVER_FORWARD_HEADERS_STRATEGY' PUBLIC_HEALTH_URL='$PUBLIC_HEALTH_URL' HOF_AUTH_ALLOWED_ORIGIN_PATTERNS='$HOF_AUTH_ALLOWED_ORIGIN_PATTERNS' RELEASE_HOST_DIR='$RELEASE_HOST_DIR' RELEASE_CONTAINER_DIR='$RELEASE_CONTAINER_DIR' REMOTE_ENV_FILE='$REMOTE_ENV_FILE' REMOTE_FIREBASE_FILE='$REMOTE_FIREBASE_FILE' REMOTE_RELEASE_ENV_FILE='$REMOTE_RELEASE_ENV_FILE' BUILD_NUMBER='$BUILD_NUMBER' python3 -" < scripts/deploy_backend.py; then
+                              "IMAGE='$IMAGE' IMAGE_ID='$IMAGE_ID' IMAGE_DIGEST='$IMAGE_DIGEST' IMAGE_REPOSITORY='$IMAGE_REPOSITORY' CONTAINER_NAME='$CONTAINER_NAME' BACKEND_BIND_ADDRESS='$BACKEND_BIND_ADDRESS' HOST_PORT='$HOST_PORT' CONTAINER_PORT='$CONTAINER_PORT' SERVER_FORWARD_HEADERS_STRATEGY='$SERVER_FORWARD_HEADERS_STRATEGY' PUBLIC_HEALTH_URL='$PUBLIC_HEALTH_URL' HOF_AUTH_ALLOWED_ORIGIN_PATTERNS='$HOF_AUTH_ALLOWED_ORIGIN_PATTERNS' RELEASE_HOST_DIR='$RELEASE_HOST_DIR' RELEASE_CONTAINER_DIR='$RELEASE_CONTAINER_DIR' REMOTE_ENV_FILE='$REMOTE_ENV_FILE' REMOTE_FIREBASE_FILE='$REMOTE_FIREBASE_FILE' REMOTE_RELEASE_ENV_FILE='$REMOTE_RELEASE_ENV_FILE' BUILD_NUMBER='$BUILD_NUMBER' python3 -" < scripts/deploy_backend.py; then
                                 exit 0
                               else
                                 deploy_code=$?
