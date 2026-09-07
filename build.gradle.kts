@@ -105,15 +105,16 @@ jib {
 			}
 		}
 	}
-	to { image = providers.environmentVariable("IMAGE").orElse("hof-backend:local").get() }
+	// CI supplies release identity only to jibBuildTar, preserving the test configuration cache.
+	to { image = "hof-backend:local" }
 	container {
 		mainClass = "app.spammy.hof.HofApplicationKt"
 		workingDirectory = "/app"
 		ports = listOf("8080")
 		environment = mapOf("JAVA_TOOL_OPTIONS" to "-Djdk.httpclient.keepalive.timeout=4")
 		labels = mapOf(
-			"org.opencontainers.image.revision" to providers.environmentVariable("GIT_REVISION").orElse("local").get(),
-			"app.jenkins.build" to providers.environmentVariable("BUILD_NUMBER").orElse("local").get(),
+			"org.opencontainers.image.revision" to "local",
+			"app.jenkins.build" to "local",
 		)
 	}
 }

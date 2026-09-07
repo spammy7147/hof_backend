@@ -154,6 +154,8 @@ pipeline {
                 sh '''
                     set -eu
                     ./gradlew jibBuildTar --no-configuration-cache --build-cache --console=plain \
+                      -Djib.to.image="$IMAGE" \
+                      -Djib.container.labels="org.opencontainers.image.revision=$GIT_REVISION,app.jenkins.build=$BUILD_NUMBER" \
                       -Djib.baseImageCache="$GRADLE_USER_HOME/jib/base" \
                       -Djib.applicationCache="$GRADLE_USER_HOME/jib/application"
                 '''
