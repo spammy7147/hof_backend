@@ -17,7 +17,10 @@ state.setdefault('calls', []).append([command, *args])
 
 
 def save():
-    path.write_text(json.dumps(state))
+    # The parent may inspect state while a surviving command finishes after SIGKILL.
+    temporary = path.with_name(path.name + '.' + str(os.getpid()) + '.tmp')
+    temporary.write_text(json.dumps(state))
+    temporary.replace(path)
 
 
 def finish(value='', code=0):
