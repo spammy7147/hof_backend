@@ -20,6 +20,7 @@ import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.head
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.content
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.header
@@ -81,6 +82,41 @@ class AppReleaseApiTest(
             .andExpect(content().bytes(apkBytes))
             .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
             .andExpect(header().string(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"$fileName\""))
+    }
+
+    @Test
+    fun chromeExtensionDownloadIsPublicAndFollowsTheLatestPublishedFile() {
+        val latest = storageRoot.resolve("hof-chrome-extension-latest.zip")
+        for (version in 1..2) {
+            val name = "hof-chrome-extension-$version.zip"
+            val bytes = "extension-zip-$version".toByteArray()
+            Files.write(storageRoot.resolve(name), bytes)
+            Files.deleteIfExists(latest)
+            Files.createSymbolicLink(latest, Path.of(name))
+
+            mockMvc.perform(get("/extension/lastest"))
+                .andExpect(status().isOk)
+                .andExpect(content().contentType("application/zip"))
+                .andExpect(content().bytes(bytes))
+                .andExpect(header().longValue(HttpHeaders.CONTENT_LENGTH, bytes.size.toLong()))
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                .andExpect(header().string(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"$name\""))
+            mockMvc.perform(head("/extension/lastest"))
+                .andExpect(status().isOk)
+                .andExpect(header().longValue(HttpHeaders.CONTENT_LENGTH, bytes.size.toLong()))
+        }
+    }
+
+    @Test
+    fun chromeExtensionDownloadRejectsMissingFilesAndLinksOutsideReleaseStorage() {
+        mockMvc.perform(get("/extension/lastest")).andExpect(status().isNotFound)
+        val outside = Files.createTempFile("private-extension-", ".zip")
+        try {
+            Files.createSymbolicLink(storageRoot.resolve("hof-chrome-extension-latest.zip"), outside)
+            mockMvc.perform(get("/extension/lastest")).andExpect(status().isNotFound)
+        } finally {
+            Files.deleteIfExists(outside)
+        }
     }
 
     @Test

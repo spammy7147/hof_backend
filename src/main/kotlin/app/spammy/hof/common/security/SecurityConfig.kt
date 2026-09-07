@@ -45,7 +45,9 @@ class SecurityConfig(
                         HttpMethod.GET,
                         "/api/app-releases/android/latest",
                         "/api/app-releases/android/*/download",
+                        "/extension/lastest",
                     ).permitAll()
+                    .requestMatchers(HttpMethod.HEAD, "/extension/lastest").permitAll()
                     .requestMatchers("/actuator/health", "/error").permitAll()
                     .anyRequest().authenticated()
             }
