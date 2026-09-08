@@ -1987,14 +1987,6 @@ class AutomationActionLifecycleModuleTest {
             ),
         )
             .thenReturn(response)
-        Mockito.`when`(raidObservationAdapter.from(response)).thenReturn(observation)
-        Mockito.`when`(
-            raidCycleModule.recordObservedResult(
-                7L,
-                RaidAttempt(13L, RaidIntentKind.REWARD, "RaidGoblin", null),
-                RaidResultObservation.Page(observation),
-            ),
-        ).thenReturn(RaidRecordResult.Recorded(completion))
         val managed = assertNotNull(
             module.prepare(
                 7L,
@@ -2003,6 +1995,14 @@ class AutomationActionLifecycleModuleTest {
             ),
         )
 
+        Mockito.`when`(raidObservationAdapter.from(response)).thenReturn(observation)
+        Mockito.`when`(
+            raidCycleModule.recordObservedResult(
+                7L,
+                RaidAttempt(13L, RaidIntentKind.REWARD, "RaidGoblin", null, executionIdentity = managed.storedAction.executionIdentity),
+                RaidResultObservation.Page(observation),
+            ),
+        ).thenReturn(RaidRecordResult.Recorded(completion))
         val observedExecution = assertIs<TypedAutomationExecution.ActionCompleted>(managed.execute())
         val acceptedExecution = assertIs<TypedAutomationExecution.ActionCompleted>(
             managed.applyPolicyAcceptedExecution(observedExecution),

@@ -22,6 +22,7 @@ class RaidPubParser {
         page: ParsedTownPage,
         result: ParsedTownResult? = null,
         availableRaidCodes: Set<String> = emptySet(),
+        rewardResponse: Boolean = false,
     ): RaidPubSnapshot {
         val pageTerminatorComplete = HofHtmlParser.hasCompletePageTerminator(html, finalUrl)
         val doc = HofHtmlParser.parse(html, finalUrl)
@@ -31,7 +32,8 @@ class RaidPubParser {
             RaidRegistrationResultEvidence.findStaleBattleConflict(pageText)?.let { add(it) }
         }
         val normalizedResult = when {
-            result != null -> result.copy(messages = (result.messages + additionalResultMessages).distinct())
+            // 보상 없음 표식은 완전한 보상 직접 응답의 결과 영역에서만 다시 추가한다.
+            result != null -> result.copy(messages = (result.messages.filterNot(::isRaidNothingAvailableMessage) + additionalResultMessages).distinct())
             additionalResultMessages.isNotEmpty() -> ParsedTownResult(additionalResultMessages, emptyList())
             else -> null
         }
@@ -172,10 +174,33 @@ class RaidPubParser {
             applyWaitSeconds = applyWait,
             myStatus = MY_STATUS.find(boundedPageText)?.value?.take(MAX_TEXT),
             globalActions = global.keys,
-            result = normalizedResult,
+            result = if (rewardResponse && hasNothingAvailableResult(form, contents)) {
+                (normalizedResult ?: ParsedTownResult(emptyList(), emptyList())).let {
+                    it.copy(messages = (it.messages + RAID_NOTHING_AVAILABLE_MESSAGE).distinct())
+                }
+            } else normalizedResult,
             globalActionIds = global,
             pageComplete = true,
         )
+    }
+
+    private fun hasNothingAvailableResult(form: Element, contents: Element): Boolean {
+        // 전역 버튼 뒤부터 첫 레이드 제목 전까지가 계정의 보상 결과 영역이다.
+        val globalResultNodes = form.childNodes()
+            .takeWhile { it !is Element || it.tagName() != "h4" }
+            .dropWhile { it !is Element || !isSubmit(it) }
+        val outsideResults = contents.select("#result, [data-town-result], .result, .message, .notice, .success, .error, .warning")
+            .filter { it.closest("form") == null && it.closest(RESULT_EXCLUSIONS) == null }
+        return (globalResultNodes + outsideResults).any { node ->
+            val texts = when (node) {
+                is TextNode -> listOf(node.wholeText)
+                is Element -> if (node.`is`(RESULT_EXCLUSIONS)) emptyList() else listOf(node.clone().apply {
+                    select(RESULT_EXCLUSIONS).remove()
+                }.text())
+                else -> emptyList()
+            }
+            texts.any(::isRaidNothingAvailableMessage)
+        }
     }
 
     private fun empty(result: ParsedTownResult?) = RaidPubSnapshot(emptyList(), false, false, null, null, emptySet(), result, emptyMap(), false)
@@ -244,6 +269,7 @@ class RaidPubParser {
     }
 
     private companion object {
+        const val RESULT_EXCLUSIONS = "input, button, select, textarea, script, style, noscript, blockquote, q, code, pre, label, [hidden], [aria-hidden=true]"
         const val RESET_SUCCESS_MESSAGE = "전투가 신청 가능 상태로 바뀌었습니다."
         val RESET_SUCCEEDED = Regex("전투가\\s*신청\\s*가능\\s*상태로\\s*바뀌었습니다\\.?")
         val RAID_ACTIONS = setOf(RaidAction.REGISTER, RaidAction.LEAVE, RaidAction.START, RaidAction.RESET)

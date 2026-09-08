@@ -13,6 +13,7 @@ import app.spammy.hof.town.raid.model.RaidBattleObservationStatus
 import app.spammy.hof.town.raid.model.RaidStatus
 import app.spammy.hof.town.raid.model.RaidRewardWindowStatus
 import app.spammy.hof.town.raid.model.RaidCooldownObservationSource
+import app.spammy.hof.town.raid.model.isRaidNothingAvailableMessage
 import app.spammy.hof.town.raid.service.RaidPubService
 import org.springframework.stereotype.Component
 
@@ -125,10 +126,7 @@ object RaidRewardResultEvidence {
     fun from(result: TownActionResultResponse?): RaidRewardResultKind? {
         val actionResult = result ?: return null
         if (actionResult.items.isNotEmpty()) return RaidRewardResultKind.RECEIVED
-        if (actionResult.messages.any { message ->
-                message.trim().removeSuffix(".") == "수령 가능한 보상이 없습니다"
-            }
-        ) {
+        if (actionResult.messages.any(::isRaidNothingAvailableMessage)) {
             return RaidRewardResultKind.NOTHING_AVAILABLE
         }
         return null

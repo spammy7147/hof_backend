@@ -105,7 +105,10 @@ class RaidPubService(
                 }
                 observed.pageComplete
             },
-        ) { html, finalUrl, result, page -> parser.parse(html, finalUrl, page, result) }
+        ) { html, finalUrl, result, page, directActionResponse ->
+            parser.parse(html, finalUrl, page, result,
+                rewardResponse = directActionResponse && request.action == RaidAction.REWARD)
+        }
         if (!projected.pageComplete) incompletePage()
         rememberAutomationTargets(accountId, projected)
         return RaidPubResponse.from(withBattleAvailability(accountId, projected, origin))

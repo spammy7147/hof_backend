@@ -12,6 +12,12 @@ enum class RaidRewardWindowStatus { AVAILABLE, CLAIM_WINDOW, ABSENT, INCOMPLETE 
 
 enum class RaidCooldownObservationSource { HOF_DIRECT, HOF_SINGLE_TARGET_INFERENCE }
 
+const val RAID_NOTHING_AVAILABLE_MESSAGE = "수령 가능한 보상이 없습니다."
+
+fun isRaidNothingAvailableMessage(message: String): Boolean =
+    message.replace(Regex("[\\s\\u00a0]+"), " ").trim().removeSuffix(".").trim() ==
+        RAID_NOTHING_AVAILABLE_MESSAGE.removeSuffix(".")
+
 data class RaidBattleObservationEvidence(
     val caseId: String,
     val reasonCode: String,

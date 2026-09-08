@@ -410,6 +410,7 @@ class TownAuthenticatedExecutor(
             finalUrl: String,
             result: app.spammy.hof.town.common.model.ParsedTownResult,
             page: ParsedTownPage,
+            directActionResponse: Boolean,
         ) -> T,
     ): T = withAccountActionFence(accountId) {
         val context = authenticatedContext(accountId)
@@ -428,7 +429,7 @@ class TownAuthenticatedExecutor(
         )
         val result = resultParser.parse(actionResponse.body)
         val actionPage = formParser.parse(actionResponse.body, actionResponse.finalUrl)
-        val projected = projector(actionResponse.body, actionResponse.finalUrl, result, actionPage)
+        val projected = projector(actionResponse.body, actionResponse.finalUrl, result, actionPage, true)
         if (acceptsActionResponse(projected)) return@withAccountActionFence projected
 
         val refreshed = executeAuthenticated(
@@ -437,7 +438,7 @@ class TownAuthenticatedExecutor(
             context.cookies + current.setCookies + actionResponse.setCookies,
         )
         val refreshedPage = formParser.parse(refreshed.body, refreshed.finalUrl)
-        projector(refreshed.body, refreshed.finalUrl, result, refreshedPage)
+        projector(refreshed.body, refreshed.finalUrl, result, refreshedPage, false)
     }
 
     /**

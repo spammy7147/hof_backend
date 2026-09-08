@@ -666,7 +666,8 @@ class UnifiedAutomationActionLifecycleModule(
                     submittedResponse = null
                     val projection = recordRaidResult(
                         accountId,
-                        payload.toRaidAttempt(stored.entryId),
+                        payload.toRaidAttempt(stored.entryId,
+                            stored.executionIdentity.takeIf { payload.action == RaidAction.REWARD }),
                         RaidResultObservation.Page(raidObservationAdapter.from(response)),
                     )
                     return (execution as TypedAutomationExecution.ActionCompleted).copy(

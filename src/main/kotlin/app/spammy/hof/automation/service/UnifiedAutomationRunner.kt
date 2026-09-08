@@ -5,6 +5,8 @@ import app.spammy.hof.automation.convergence.AutomationConvergenceBudget
 import app.spammy.hof.automation.convergence.ConvergenceDirective
 import app.spammy.hof.automation.convergence.LegacyConvergenceDecision
 import app.spammy.hof.automation.convergence.SelectedAutomationAction
+import app.spammy.hof.automation.convergence.RaidObservedState
+import app.spammy.hof.automation.raid.RaidRewardResultKind
 import app.spammy.hof.automation.entity.AutomationWaitReason
 import app.spammy.hof.automation.history.*
 import app.spammy.hof.automation.port.AutomationWakeupPort
@@ -15,6 +17,8 @@ import app.spammy.hof.external.client.HofAutomationDeferredException
 import app.spammy.hof.battle.service.BattleNotSubmittedException
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.town.fishing.model.FishingAction
+import app.spammy.hof.town.raid.model.RaidAction
+import app.spammy.hof.town.raid.model.RAID_NOTHING_AVAILABLE_MESSAGE
 import app.spammy.hof.town.common.service.AccountHofObservationInvalidatedException
 import app.spammy.hof.town.common.service.ObservedTownActionPreconditionChangedException
 import org.slf4j.LoggerFactory
@@ -979,6 +983,9 @@ class UnifiedAutomationRunner @Autowired constructor(
             results.finishDirect(accountId, stored.executionIdentity, appliedEvidence, convergenceAttemptId, domainExecution)
             typedRuntime.complete(execution, outcome)
             decisionCycleId?.let { cycleId ->
+                val noReward = (stored.payload as? StoredTypedActionPayload.RaidTown)?.action == RaidAction.REWARD &&
+                    ((acceptedExecution as? TypedAutomationExecution.ActionCompleted)?.observedState as? RaidObservedState)
+                        ?.rewardResult == RaidRewardResultKind.NOTHING_AVAILABLE
                 val resultTrace = when (domainExecution) {
                     is TypedAutomationExecution.RaidCycleFinished -> raidCycleTrace(domainExecution.outcome)
                     is TypedAutomationExecution.RaidWaiting -> raidWaitTrace(domainExecution)
@@ -1001,7 +1008,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                     else -> trace(
                         AutomationHistoryEventKind.ACTION_SUCCEEDED,
                         wakeReason,
-                        "자동화 행동을 완료했습니다.",
+                        if (noReward) RAID_NOTHING_AVAILABLE_MESSAGE else "자동화 행동을 완료했습니다.",
                     )
                 }
                 decisionJournal?.appendActionResult(cycleId, resultTrace)

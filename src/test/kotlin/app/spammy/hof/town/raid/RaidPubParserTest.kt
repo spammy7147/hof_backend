@@ -36,6 +36,22 @@ class RaidPubParserTest {
     private val forms = HofFormParser()
     private val parser = RaidPubParser()
 
+    @Test fun `폼 내부 보상 없음 직접 응답은 수동과 자동화 결과에 보존한다`() {
+        val before = fixture().replace("현재 상태 : 모집 중", "현재 상태 : 보상 확인 시간 (남은 시간 앞으로 0시간 29분 56초)")
+        val after = before.replaceFirst("  <h4>", "  <font color=\"#88ee88\">수령 가능한 보상이 없습니다.</font><br>\n  <h4>")
+        for (automation in listOf(false, true)) {
+            val context = service(before, after)
+            val request = RaidPubActionRequest(RaidAction.REWARD)
+            val response = if (automation) context.service.actionForAutomation(7L, request, "RaidGoblin")
+                else context.service.action(7L, request)
+
+            assertTrue(response.pageComplete)
+            assertEquals(listOf("수령 가능한 보상이 없습니다."), response.result?.messages)
+            assertEquals(emptyList(), response.result?.items)
+            assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.POST), context.requests().map { it.method })
+        }
+    }
+
     @Test fun `APK raidpub 경계로 상태 신청자 버튼과 대기시간을 파싱한다`() {
         val html = fixture()
         val page = parser.parse(html, URL, forms.parse(html, URL))
@@ -52,6 +68,72 @@ class RaidPubParserTest {
         assertTrue(RaidAction.WAIT_RESET in page.globalActions)
         assertEquals(418, page.applyWaitSeconds)
         assertTrue(page.applyWait)
+    }
+
+    @Test fun `보상 없음 문장은 결과 영역에서 공백과 줄바꿈을 정규화한다`() {
+        val before = fixture().replace("현재 상태 : 모집 중", "현재 상태 : 보상 확인 시간 (남은 시간 앞으로 0시간 29분 56초)")
+        for (markup in listOf(
+            "<font>수령&nbsp; 가능한<br>보상이 없습니다</font>",
+            "<div class=\"notice\"> 수령 가능한 보상이 없습니다. </div>",
+            "수령 가능한 보상이 없습니다.<br>",
+            "수령 가능한\n보상이 없습니다.<br>",
+            "수령\r\n가능한&nbsp;\n보상이 없습니다<br>",
+        )) {
+            val after = before.replaceFirst("  <h4>", "  <br>$markup\n  <h4>")
+            val response = service(before, after).service.actionForAutomation(7L, RaidPubActionRequest(RaidAction.REWARD), "RaidGoblin")
+            assertEquals(listOf("수령 가능한 보상이 없습니다."), response.result?.messages, markup)
+        }
+        val outside = before.replace("</form>", "</form><div class=\"notice\">수령 가능한 보상이 없습니다.</div>")
+        assertEquals(listOf("수령 가능한 보상이 없습니다."),
+            service(before, outside).service.action(7L, RaidPubActionRequest(RaidAction.REWARD)).result?.messages)
+    }
+
+    @Test fun `필드 버튼 인용 설명과 다른 레이드의 보상 없음 문구는 결과 증거가 아니다`() {
+        val before = fixture().replace("현재 상태 : 모집 중", "현재 상태 : 보상 확인 시간 (남은 시간 앞으로 0시간 29분 56초)")
+        val message = "수령 가능한 보상이 없습니다."
+        for (markup in listOf(
+            "<input type=\"hidden\" name=\"help\" value=\"$message\">",
+            "<button type=\"button\">$message</button>",
+            "<script>document.write('$message')</script>",
+            "<style>/* $message */</style>",
+            "<blockquote><div class=\"notice\">$message</div></blockquote>",
+            "<p>안내: <q>$message</q></p>",
+            "<p>보상이 없으면 $message 라고 나옵니다.</p>",
+            "<br>보상이 없으면\n$message\n라고 나옵니다.<br>",
+            "<span hidden>$message</span>",
+        )) {
+            val after = before.replaceFirst("  <h4>", "  $markup\n  <h4>")
+            val response = service(before, after).service.action(7L, RaidPubActionRequest(RaidAction.REWARD))
+            assertTrue(response.result?.messages.orEmpty().none { it == message }, markup)
+        }
+        val otherRaid = before.replace("현재 상태 : 418초 후 출발", "<div class=\"notice\">$message</div>현재 상태 : 418초 후 출발")
+        assertTrue(service(before, otherRaid).service.action(7L, RaidPubActionRequest(RaidAction.REWARD)).result?.messages.orEmpty().isEmpty())
+    }
+
+    @Test fun `불완전 직접 응답과 보충 GET의 보상 없음 문구를 직접 결과로 승격하지 않는다`() {
+        val before = fixture().replace("현재 상태 : 모집 중", "현재 상태 : 보상 확인 시간 (남은 시간 앞으로 0시간 29분 56초)")
+        val after = before.replace("</form>", "</form><div class=\"notice\">수령 가능한 보상이 없습니다.</div>")
+        for (direct in listOf(before.substringBefore("<div id=\"foot\""), after.substringBefore("<div id=\"foot\""))) {
+            val context = service(before, direct, after)
+            val response = context.service.actionForAutomation(7L, RaidPubActionRequest(RaidAction.REWARD), "RaidGoblin")
+            assertTrue(response.pageComplete)
+            assertTrue(response.result?.messages.orEmpty().isEmpty())
+            assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.POST, HofHttpMethod.GET), context.requests().map { it.method })
+        }
+        assertTrue(service(after).service.load(7L).result?.messages.orEmpty().isEmpty())
+        val wrongPage = parser.parse(after, "https://hof.zerosic.com/index.php?menu=housing", forms.parse(after, URL),
+            HofResultParser().parse(after), rewardResponse = true)
+        assertFalse(wrongPage.pageComplete)
+        assertTrue(wrongPage.result?.messages.orEmpty().isEmpty())
+    }
+
+    @Test fun `보상 없음 문구 보강은 기존 직접 응답의 수령 아이템을 지우지 않는다`() {
+        val before = fixture().replace("현재 상태 : 모집 중", "현재 상태 : 보상 확인 시간 (남은 시간 앞으로 0시간 29분 56초)")
+        val after = before.replace("</form>", "</form><div id=\"result\"><span class=\"result-item\">레이드 보상 아이템</span></div>")
+        val response = service(before, after).service.actionForAutomation(7L, RaidPubActionRequest(RaidAction.REWARD), "RaidGoblin")
+        assertEquals(listOf("레이드 보상 아이템"), response.result?.items?.map { it.name })
+        assertEquals(app.spammy.hof.automation.raid.RaidRewardResultKind.RECEIVED,
+            app.spammy.hof.automation.raid.RaidRewardResultEvidence.from(response.result))
     }
 
     @Test fun `출발 가능 문구가 있어도 남은 모집 시간이 있으면 대기 상태로 파싱한다`() {
