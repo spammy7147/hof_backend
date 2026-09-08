@@ -1,11 +1,18 @@
 package app.spammy.hof.automation.convergence
 
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.automation.service.QuestAutomationSnapshot
 import java.time.Duration
 import java.time.Instant
 import org.springframework.stereotype.Service
 
 interface AutomationActionConvergenceModule {
+    fun openSelection(
+        accountId: Long,
+        entryId: Long,
+        quest: QuestAutomationSnapshot? = null,
+        mode: AutomationConvergenceMode? = null,
+    ): AutomationConvergenceSelection
     fun prepare(accountId: Long, selection: SelectedAutomationAction): ConvergenceDirective
     fun record(attemptId: Long, evidence: AutomationActionEvidence): ConvergenceDirective
     fun observeGap(
@@ -71,6 +78,13 @@ class DefaultAutomationActionConvergenceModule(
     private val timeProvider: TimeProvider,
     private val evidenceCaseRecorder: EvidenceCaseRecorder = NoOpEvidenceCaseRecorder,
 ) : AutomationActionConvergenceModule {
+    override fun openSelection(
+        accountId: Long,
+        entryId: Long,
+        quest: QuestAutomationSnapshot?,
+        mode: AutomationConvergenceMode?,
+    ) = AutomationConvergenceSelection(accountId, entryId, quest, mode, this, store, timeProvider)
+
     override fun prepare(accountId: Long, selection: SelectedAutomationAction): ConvergenceDirective {
         store.activeBattleGate(accountId)?.takeIf { selection.actionKind.battle }?.let { gate ->
             return ConvergenceDirective.BattleGateWait(gate.openedAt, gate.reason)

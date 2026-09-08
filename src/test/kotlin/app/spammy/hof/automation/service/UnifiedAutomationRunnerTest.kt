@@ -6,8 +6,6 @@ import app.spammy.hof.automation.convergence.AutomationActionKind
 import app.spammy.hof.automation.convergence.AutomationConvergenceMode
 import app.spammy.hof.automation.convergence.AutomationConvergenceProperties
 import app.spammy.hof.automation.convergence.AutomationConvergenceRollout
-import app.spammy.hof.automation.convergence.AutomationConvergenceSelectionConstraints
-import app.spammy.hof.automation.convergence.AutomationConvergenceSelectionGuard
 import app.spammy.hof.automation.convergence.AutomationConvergenceShadowEvaluator
 import app.spammy.hof.automation.convergence.AutomationIsolationScope
 import app.spammy.hof.automation.convergence.AutomationIsolationScopeKind
@@ -1063,6 +1061,12 @@ class UnifiedAutomationRunnerTest {
             raidName = "고블린 레이드",
         )
         val raidPreview = convergenceFactory.preview(raidEntry.id, raidPrepared)
+        val heldConvergence = DefaultAutomationActionConvergenceModule(InMemoryConvergenceStore(), TimeProvider { currentTime })
+        val heldAttempt = assertIs<ConvergenceDirective.Submit>(heldConvergence.prepare(7,
+            SelectedAutomationAction(raidEntry.id, "held-selection", raidPreview.actionKind, raidPreview.scope,
+                StoredActionConvergenceSelectionFactory.POLICY_VERSION, requireNotNull(raidPreview.baselineFingerprint)),
+        )).attemptId
+        heldConvergence.record(heldAttempt, AutomationActionEvidence.ResultUnobserved(currentTime, "response lost"))
         val selector = AutomationTargetSelector(
             typed = typedQueries,
             work = workQueries,
@@ -1076,16 +1080,7 @@ class UnifiedAutomationRunnerTest {
             union = AutomationHandler { HandlerEvaluation.Skipped },
             fishing = AutomationHandler { HandlerEvaluation.Skipped },
             homeQuest = AutomationHandler { HandlerEvaluation.Skipped },
-            convergenceGuard = AutomationConvergenceSelectionGuard {
-                AutomationConvergenceSelectionConstraints(
-                    blockedScopes = emptySet(),
-                    battleGateActive = false,
-                    suppressedBaselines = mapOf(
-                        raidPreview.scope to setOf(requireNotNull(raidPreview.baselineFingerprint)),
-                    ),
-                )
-            },
-            convergenceSelectionFactory = convergenceFactory,
+            convergenceModule = heldConvergence,
             convergenceRollout = AutomationConvergenceRollout(
                 AutomationConvergenceProperties(mode = AutomationConvergenceMode.SHADOW),
             ),

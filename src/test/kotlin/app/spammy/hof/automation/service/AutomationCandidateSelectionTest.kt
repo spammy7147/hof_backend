@@ -40,8 +40,6 @@ class AutomationCandidateSelectionTest {
         AutomationHandler { HandlerEvaluation.Runnable(lowerAction) },
         AutomationHandler { HandlerEvaluation.Skipped }, AutomationHandler { HandlerEvaluation.Skipped },
         AutomationHandler { HandlerEvaluation.Skipped }, HomeQuestAutomationHandler(),
-        convergenceGuard = StoreBackedAutomationConvergenceSelectionGuard(store),
-        convergenceSelectionFactory = factory,
         convergenceRollout = AutomationConvergenceRollout(AutomationConvergenceProperties(mode = AutomationConvergenceMode.ACTIVE)),
         convergenceModule = DefaultAutomationActionConvergenceModule(store, TimeProvider { now }))
 

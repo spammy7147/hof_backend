@@ -1,7 +1,5 @@
 package app.spammy.hof.automation.service
 
-import app.spammy.hof.automation.convergence.AutomationConvergenceSelectionConstraints
-import app.spammy.hof.automation.convergence.AutomationConvergenceSelectionGuard
 import app.spammy.hof.automation.convergence.AutomationActionEvidence
 import app.spammy.hof.automation.convergence.AutomationActionKind
 import app.spammy.hof.automation.convergence.AutomationConvergenceMode
@@ -12,7 +10,6 @@ import app.spammy.hof.automation.convergence.AutomationIsolationScope
 import app.spammy.hof.automation.convergence.AutomationIsolationScopeKind
 import app.spammy.hof.automation.convergence.DefaultAutomationActionConvergenceModule
 import app.spammy.hof.automation.convergence.InMemoryConvergenceStore
-import app.spammy.hof.automation.convergence.StoreBackedAutomationConvergenceSelectionGuard
 import app.spammy.hof.automation.convergence.StoredActionConvergenceSelectionFactory
 import app.spammy.hof.automation.convergence.SelectedAutomationAction
 import app.spammy.hof.account.entity.HofAccountEntity
@@ -417,10 +414,10 @@ class AutomationTargetSelectorTest {
             union = AutomationHandler { HandlerEvaluation.Skipped },
             fishing = AutomationHandler { HandlerEvaluation.Skipped },
             homeQuest = AutomationHandler { HandlerEvaluation.Skipped },
-            convergenceGuard = AutomationConvergenceSelectionGuard {
-                AutomationConvergenceSelectionConstraints(emptySet(), battleGateActive = true)
-            },
-            convergenceSelectionFactory = StoredActionConvergenceSelectionFactory(),
+            convergenceModule = DefaultAutomationActionConvergenceModule(
+                InMemoryConvergenceStore().apply { openBattleGate(7, null, "CAPTCHA_REQUIRED", now) },
+                TimeProvider { now },
+            ),
             convergenceRollout = AutomationConvergenceRollout(
                 AutomationConvergenceProperties(mode = AutomationConvergenceMode.SHADOW),
             ),
@@ -482,8 +479,7 @@ class AutomationTargetSelectorTest {
             union = AutomationHandler { HandlerEvaluation.Skipped },
             fishing = AutomationHandler { HandlerEvaluation.Skipped },
             homeQuest = AutomationHandler { HandlerEvaluation.Skipped },
-            convergenceGuard = StoreBackedAutomationConvergenceSelectionGuard(store),
-            convergenceSelectionFactory = factory,
+            convergenceModule = convergence,
             convergenceRollout = AutomationConvergenceRollout(
                 AutomationConvergenceProperties(mode = AutomationConvergenceMode.SHADOW),
             ),
@@ -547,8 +543,6 @@ class AutomationTargetSelectorTest {
             fishing = AutomationHandler { HandlerEvaluation.Skipped },
             homeQuest = AutomationHandler { HandlerEvaluation.Skipped },
             convergenceModule = convergence,
-            convergenceGuard = StoreBackedAutomationConvergenceSelectionGuard(store),
-            convergenceSelectionFactory = factory,
             convergenceRollout = AutomationConvergenceRollout(
                 AutomationConvergenceProperties(mode = AutomationConvergenceMode.SHADOW),
             ),
@@ -645,8 +639,6 @@ class AutomationTargetSelectorTest {
             fishing = AutomationHandler { HandlerEvaluation.Skipped },
             homeQuest = AutomationHandler { HandlerEvaluation.Skipped },
             convergenceModule = convergence,
-            convergenceGuard = StoreBackedAutomationConvergenceSelectionGuard(store),
-            convergenceSelectionFactory = factory,
             convergenceRollout = AutomationConvergenceRollout(
                 AutomationConvergenceProperties(mode = AutomationConvergenceMode.SHADOW),
             ),
@@ -694,6 +686,12 @@ class AutomationTargetSelectorTest {
             battleCount = 1,
             executionIdentity = "after-blocked-work-sessions",
         )
+        val heldConvergence = DefaultAutomationActionConvergenceModule(InMemoryConvergenceStore(), TimeProvider { now })
+        val heldAttempt = assertIs<ConvergenceDirective.Submit>(heldConvergence.prepare(7,
+            SelectedAutomationAction(questEntry.id, "held-selection", preview.actionKind, preview.scope,
+                StoredActionConvergenceSelectionFactory.POLICY_VERSION, requireNotNull(preview.baselineFingerprint)),
+        )).attemptId
+        heldConvergence.record(heldAttempt, AutomationActionEvidence.ResultUnobserved(now, "response lost"))
         val guarded = AutomationTargetSelector(
             typed = typed,
             work = work,
@@ -707,16 +705,7 @@ class AutomationTargetSelectorTest {
             union = AutomationHandler { HandlerEvaluation.Skipped },
             fishing = AutomationHandler { HandlerEvaluation.Skipped },
             homeQuest = AutomationHandler { HandlerEvaluation.Skipped },
-            convergenceGuard = AutomationConvergenceSelectionGuard {
-                AutomationConvergenceSelectionConstraints(
-                    blockedScopes = emptySet(),
-                    battleGateActive = false,
-                    suppressedBaselines = mapOf(
-                        preview.scope to setOf(requireNotNull(preview.baselineFingerprint)),
-                    ),
-                )
-            },
-            convergenceSelectionFactory = factory,
+            convergenceModule = heldConvergence,
             convergenceRollout = AutomationConvergenceRollout(
                 AutomationConvergenceProperties(mode = AutomationConvergenceMode.SHADOW),
             ),
@@ -775,7 +764,6 @@ class AutomationTargetSelectorTest {
                     authoritative = true,
                 )
             },
-            convergenceSelectionFactory = StoredActionConvergenceSelectionFactory(),
             convergenceRollout = AutomationConvergenceRollout(
                 AutomationConvergenceProperties(mode = AutomationConvergenceMode.ACTIVE),
             ),
@@ -851,8 +839,6 @@ class AutomationTargetSelectorTest {
                     HandlerEvaluation.Runnable(runnable)
                 }
             },
-            convergenceGuard = StoreBackedAutomationConvergenceSelectionGuard(store),
-            convergenceSelectionFactory = StoredActionConvergenceSelectionFactory(),
             convergenceRollout = AutomationConvergenceRollout(
                 AutomationConvergenceProperties(mode = AutomationConvergenceMode.ACTIVE),
             ),

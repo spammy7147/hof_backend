@@ -1,12 +1,9 @@
 package app.spammy.hof.automation.service
 
+import app.spammy.hof.automation.convergence.AutomationConvergenceSelection
 import app.spammy.hof.automation.convergence.AutomationActionConvergenceModule
-import app.spammy.hof.automation.convergence.AutomationActionEvidence
 import app.spammy.hof.automation.convergence.AutomationConvergenceRollout
-import app.spammy.hof.automation.convergence.AutomationConvergenceSelectionGuard
-import app.spammy.hof.automation.convergence.AutomationIsolationScope
 import app.spammy.hof.automation.convergence.ConvergenceDirective
-import app.spammy.hof.automation.convergence.StoredActionConvergenceSelectionFactory
 import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.entity.AutomationWorkStatus
@@ -48,8 +45,6 @@ class AutomationTargetSelector(
     private val union: AutomationHandler<UnionAutomationSnapshot>,
     private val fishing: AutomationHandler<FishingAutomationSnapshot>,
     private val homeQuest: AutomationHandler<HomeQuestAutomationSnapshot>,
-    private val convergenceGuard: AutomationConvergenceSelectionGuard? = null,
-    private val convergenceSelectionFactory: StoredActionConvergenceSelectionFactory? = null,
     private val convergenceRollout: AutomationConvergenceRollout? = null,
     private val convergenceModule: AutomationActionConvergenceModule? = null,
     private val progressTelemetry: AutomationProgressTelemetry? = null,
@@ -274,7 +269,7 @@ class AutomationTargetSelector(
                     when (directive) {
                         is RaidDirective.Execute -> {
                             val action = directive.intent.toPreparedAction(accountId)
-                            val block = selectionBlock(accountId, entry.id, action)
+                            val block = convergenceModule?.openSelection(accountId, entry.id, mode = convergenceRollout?.mode)?.block(action)
                             if (block != null) {
                                 warnings += block.message
                                 trace += AutomationEvaluationTrace(
@@ -490,20 +485,19 @@ class AutomationTargetSelector(
     ): AutomationCoordination {
         val exclusions = linkedSetOf<AutomationCandidateExclusion>()
         val messages = linkedSetOf<String>()
-        val observedScopes = mutableSetOf<AutomationIsolationScope>()
-        val questBattleBaselines = entry.quest?.let { convergenceSelectionFactory?.authoritativeQuestBattleBaselines(it) }.orEmpty()
+        val selection = convergenceModule?.openSelection(accountId, entry.id, entry.quest, convergenceRollout?.mode)
         val accepts: (PreparedAutomationAction) -> Boolean = { action ->
-            val block = selectionBlock(accountId, entry.id, action, observedScopes, questBattleBaselines)
+            val block = selection?.block(action)
+
             if (block != null) {
-                val preview = requireNotNull(convergenceSelectionFactory).preview(entry.id, action)
                 exclusions += AutomationCandidateExclusion(block.scope.key, block.scope.kind.name,
-                    preview.actionKind.name, block.reasonCode, timeProvider.now(), block.message)
+                    block.actionKind.name, block.reasonCode, timeProvider.now(), block.message)
                 messages += block.message
             }
             block == null
         }
         val result = evaluateEntry(entry, quest, battle, adventure, union, fishing, homeQuest, accepts) { gap ->
-            coordinateObservationGap(accountId, entry, gap)
+            coordinateObservationGap(entry, gap, selection)
         }
         if (result is AutomationCoordination.Runnable && accepts(result.action)) return result.copy(
             warnings = result.warnings + messages,
@@ -540,29 +534,11 @@ class AutomationTargetSelector(
     }
 
     private fun coordinateObservationGap(
-        accountId: Long,
         entry: AutomationEntrySnapshot,
         gap: HandlerEvaluation.ObservationGap,
+        selection: AutomationConvergenceSelection?,
     ): AutomationCoordination {
-        if (convergenceRollout?.active != true) return gap.toUnavailable(entry)
-        val module = convergenceModule ?: return gap.toUnavailable(entry)
-        val factory = convergenceSelectionFactory ?: return gap.toUnavailable(entry)
-        val selection = factory.createObservationGap(
-            entryId = entry.id,
-            actionKind = gap.actionKind,
-            scopeKind = gap.scopeKind,
-            scopeKey = gap.scopeKey ?: entry.id.toString(),
-            baseline = gap.baseline,
-        )
-        val directive = module.observeGap(
-            accountId,
-            selection,
-            AutomationActionEvidence.IncompleteObservation(
-                capturedAt = timeProvider.now(),
-                reason = gap.reasonCode,
-                authoritative = gap.authoritative,
-            ),
-        )
+        val directive = selection?.observeGap(gap) ?: return gap.toUnavailable(entry)
         return when (directive) {
             is ConvergenceDirective.WaitUntil -> gap.toUnavailable(entry, directive.at)
             ConvergenceDirective.ContinueSelection -> AutomationCoordination.Idle(
@@ -610,46 +586,6 @@ class AutomationTargetSelector(
         waitScope = AutomationWaitScope.RELEASE_OTHER_AUTOMATIONS,
     )
 
-    private fun selectionBlock(
-        accountId: Long,
-        entryId: Long,
-        action: PreparedAutomationAction,
-        observedScopes: MutableSet<AutomationIsolationScope>? = null,
-        questBattleBaselines: Map<String, Set<String>> = emptyMap(),
-    ): SelectionBlock? {
-        val guard = convergenceGuard ?: return null
-        val factory = convergenceSelectionFactory ?: return null
-        val preview = factory.preview(entryId, action)
-        // 같은 관측에서 다른 미션을 탐색한 사실은 이전 미션의 상태 변경 증거가 아니다.
-        val firstObservation = observedScopes?.add(preview.scope) != false
-        if (firstObservation && (action !is RaidTownAutomationAction || action.action != RaidAction.REFRESH)) {
-            preview.baselineFingerprint?.let { baselineFingerprint ->
-                val currentBaselines = (action as? QuestAction.Battle)?.let { questBattleBaselines[it.questKey] }
-                    ?.takeIf { it.isNotEmpty() } ?: setOf(baselineFingerprint)
-                observeAuthoritativeBaselines(accountId, preview.scope, currentBaselines)
-            }
-        }
-        val constraints = guard.constraints(accountId)
-        // Captcha gates and terminal legacy baseline suppression are safety controls, not policy rollout decisions.
-        if (constraints.battleGateActive && preview.actionKind.battle) {
-            return SelectionBlock(CAPTCHA_BATTLE_GATE_REASON, CAPTCHA_BATTLE_GATE_MESSAGE, preview.scope)
-        }
-        if (
-            preview.baselineFingerprint?.let {
-                it in constraints.suppressedBaselines[preview.scope].orEmpty()
-            } == true
-        ) return SelectionBlock(CONVERGENCE_BLOCKED_REASON, CONVERGENCE_HELD_MESSAGE, preview.scope)
-        if (convergenceRollout?.active == false) return null
-        if (convergenceRollout?.active == true) {
-            convergenceModule?.resolveObservationGap(accountId, preview.scope, timeProvider.now())
-        }
-        return if (guard.constraints(accountId).blocks(preview)) {
-            SelectionBlock(CONVERGENCE_BLOCKED_REASON, CONVERGENCE_BLOCKED_MESSAGE, preview.scope)
-        } else {
-            null
-        }
-    }
-
     private fun decideRaid(
         accountId: Long,
         entryId: Long,
@@ -658,53 +594,11 @@ class AutomationTargetSelector(
     ): RaidDecision {
         return try {
             val decision = raidModule.decide(accountId)
-            val registration = (decision.directive as? RaidDirective.Execute)?.intent as? RaidIntent.Town
-            if (registration?.kind == RaidIntentKind.REGISTER) {
-                val preview = convergenceSelectionFactory?.preview(
-                    registration.entryId, registration.toPreparedAction(accountId),
-                )
-                val suppressed = convergenceGuard?.constraints(accountId)?.suppressedBaselines
-                if (preview != null && preview.baselineFingerprint in suppressed?.get(preview.scope).orEmpty()) {
-                    return RaidDecision(RaidDirective.Execute(
-                        registration.copy(kind = RaidIntentKind.REFRESH, requestRaidId = null),
-                        reasonCode = "RAID_REGISTRATION_RECOVERY_REFRESH",
-                        message = "기존 신청 보류를 재평가하기 위해 레이드 상태를 갱신합니다.",
-                    ), decision.authoritativeState)
-                }
-            }
-            observeRaidAuthoritativeState(accountId, decision)
-            decision
+            convergenceModule?.openSelection(accountId, entryId, mode = convergenceRollout?.mode)
+                ?.observeRaidDecision(decision) ?: decision
         } catch (error: Exception) {
             recordSelectionFailure(accountId, entryId, AutomationType.RAID, "RAID_EVALUATION", previousTrace, error, session = session)
             throw error
-        }
-    }
-
-    private fun observeRaidAuthoritativeState(accountId: Long, decision: RaidDecision) {
-        val state = decision.authoritativeState ?: return
-        val baseline = convergenceSelectionFactory?.authoritativeRaidBaseline(state) ?: return
-        observeAuthoritativeBaselines(accountId, baseline.scope, setOf(baseline.fingerprint))
-    }
-
-    private fun observeAuthoritativeBaselines(
-        accountId: Long,
-        scope: AutomationIsolationScope,
-        baselineFingerprints: Set<String>,
-    ) {
-        val released = convergenceModule?.observeAuthoritativeBaselines(
-            accountId,
-            scope,
-            baselineFingerprints,
-            timeProvider.now(),
-        ) ?: 0
-        if (released > 0) {
-            log.info(
-                "Automation convergence suppression released accountId={} scopeKind={} scopeKey={} count={}",
-                accountId,
-                scope.kind,
-                scope.key,
-                released,
-            )
         }
     }
 
@@ -749,7 +643,7 @@ class AutomationTargetSelector(
         return when (directive) {
             is RaidDirective.Execute -> {
                 val action = directive.intent.toPreparedAction(accountId)
-                val block = selectionBlock(accountId, session.entryId, action)
+                val block = convergenceModule?.openSelection(accountId, session.entryId, mode = convergenceRollout?.mode)?.block(action)
                 if (block != null) {
                     lifecycle.waitForCooldown(
                         accountId,
@@ -1006,12 +900,6 @@ class AutomationTargetSelector(
         }
     }
 
-    private data class SelectionBlock(
-        val reasonCode: String,
-        val message: String,
-        val scope: AutomationIsolationScope,
-    )
-
     private companion object {
         val DIAGNOSTIC_OUTCOMES = setOf(
             AutomationDecisionOutcome.SKIPPED, AutomationDecisionOutcome.WAITING,
@@ -1020,10 +908,7 @@ class AutomationTargetSelector(
         val log = LoggerFactory.getLogger(AutomationTargetSelector::class.java)
         val SEOUL: ZoneId = ZoneId.of("Asia/Seoul")
         const val CONVERGENCE_BLOCKED_REASON = "CONVERGENCE_SCOPE_BLOCKED"
-        const val CONVERGENCE_HELD_MESSAGE = "이전 행동 결과를 확정하지 못해 해당 범위를 보류했습니다. 최신 상태의 복구 조건을 확인하면 해제합니다."
-        const val CONVERGENCE_BLOCKED_MESSAGE = "이전 행동 결과를 확인 중이라 해당 범위만 잠시 건너뜁니다."
         const val CAPTCHA_BATTLE_GATE_REASON = "CAPTCHA_BATTLE_GATE_BLOCKED"
-        const val CAPTCHA_BATTLE_GATE_MESSAGE = "캡차 해결 전까지 전투 범위만 잠시 건너뜁니다."
         const val OBSERVATION_GAP_HELD_REASON = "OBSERVATION_GAP_HELD"
         const val QUEST_PROGRESS_STALE_REASON = "QUEST_PROGRESS_STALE"
         const val SCOPE_SUPPRESSION_RECHECK_SECONDS = 30L
