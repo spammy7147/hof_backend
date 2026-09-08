@@ -34,6 +34,102 @@ import org.mockito.Mockito
 
 class CharacterDeepSyncServiceTest {
     @Test
+    fun `정상 장비 해제 응답 뒤 조회 실패도 원본 복구를 다시 이어간다`() {
+        val fixture = Fixture(equipmentRewritesPattern = true, foreignSecondPreset = true, failGetAfterEquipmentRestore = "remove_all")
+        assertFailsWith<IllegalStateException> { fixture.service.synchronize(1L, 7L, 17L) }
+        fixture.service.synchronize(1L, 7L, 17L)
+        fixture.assertOriginalRestored(expectedCurrentWrites = 3)
+        assertEquals(1, fixture.posts.count { "remove_all" in it })
+        assertEquals(1, fixture.posts.count { "equip_item" in it })
+    }
+
+    @Test
+    fun `정상 장비 복구 응답 뒤 조회 실패는 원본 복구 재시도를 막지 않는다`() {
+        val fixture = Fixture(equipmentRewritesPattern = true, failGetAfterEquipmentRestore = "equip_item")
+        assertFailsWith<IllegalStateException> { fixture.service.synchronize(1L, 7L, 17L) }
+        fixture.service.synchronize(1L, 7L, 17L)
+        fixture.assertOriginalRestored(expectedCurrentWrites = 3)
+        assertEquals(1, fixture.posts.count { "equip_item" in it })
+    }
+
+    @Test
+    fun `장비 저장 뒤쪽을 읽지 못한 화면을 슬롯 미제공으로 확정하지 않는다`() {
+        val fixture = Fixture(incompleteEquipmentSlots = true)
+        assertFailsWith<IllegalStateException> { fixture.service.synchronize(1L, 7L, 17L) }
+        assertTrue(fixture.posts.isEmpty())
+        assertTrue(fixture.equipmentSnapshots.isEmpty())
+    }
+
+    @Test
+    fun `완전한 화면에 명시된 불러오기 거부를 수집 성공으로 기록하지 않는다`() {
+        val fixture = Fixture(rejectedSecondPreset = true)
+        assertFailsWith<IllegalStateException> { fixture.service.synchronize(1L, 7L, 17L) }
+        fixture.assertOriginalRestored()
+        assertEquals(1, fixture.equipmentSnapshots.size)
+    }
+
+    @Test
+    fun `정상 장비 응답 이후 조회가 실패해도 채택한 설정으로 원본 복구를 이어간다`() {
+        val fixture = Fixture(equipmentRewritesPattern = true, failGetAfterFirstPreset = true)
+        assertFailsWith<IllegalStateException> { fixture.service.synchronize(1L, 7L, 17L) }
+        fixture.assertOriginalRestored()
+        assertEquals("2", fixture.equipmentSnapshots.single().snapshot.actionPatterns.single().quantity)
+    }
+
+    @Test
+    fun `다른 캐릭터 화면으로 이동한 응답은 원본으로 저장하거나 변경하지 않는다`() {
+        val fixture = Fixture(wrongCharacterResponse = true)
+
+        assertFailsWith<IllegalStateException> { fixture.service.synchronize(1L, 7L, 17L) }
+
+        assertTrue(fixture.posts.isEmpty())
+    }
+
+    @Test
+    fun `저장 패턴 구역을 확인하지 못하면 슬롯이 없다고 추정하지 않는다`() {
+        val fixture = Fixture(incompletePatternSlots = true)
+
+        assertFailsWith<IllegalStateException> { fixture.service.synchronize(1L, 7L, 17L) }
+
+        assertTrue(fixture.posts.isEmpty())
+    }
+
+    @Test
+    fun `장비 불러오기의 불완전한 직접 응답을 후속 조회 성공으로 덮지 않는다`() {
+        val fixture = Fixture(incompleteSecondPresetResponse = true)
+
+        assertFailsWith<IllegalStateException> { fixture.service.synchronize(1L, 7L, 17L) }
+
+        fixture.assertOriginalRestored()
+        assertEquals(1, fixture.equipmentSnapshots.size)
+    }
+
+    @Test
+    fun `완전한 서버 화면이 제공하는 장비 저장만 수집한다`() {
+        val fixture = Fixture(unavailableSecondPreset = true)
+
+        val result = fixture.service.synchronize(1L, 7L, 17L)
+
+        fixture.assertOriginalRestored()
+        assertEquals(1, fixture.equipmentSnapshots.size)
+        assertFalse(fixture.posts.any { "Equip_L_2" in it })
+        assertEquals(CharacterDeepSyncPhase.COMPLETED, result.progress.last().phase)
+        assertEquals(4, result.progress.last().totalSteps)
+    }
+
+    @Test
+    fun `정상 장비 응답의 기준값 변경을 수집하고 원래 패턴으로 복구한다`() {
+        val fixture = Fixture(equipmentRewritesPattern = true)
+
+        val result = fixture.service.synchronize(1L, 7L, 17L)
+
+        fixture.assertOriginalRestored()
+        assertEquals(listOf("2", "3"), fixture.equipmentSnapshots.map { it.snapshot.actionPatterns.single().quantity })
+        assertTrue(fixture.equipmentSnapshots.all { page -> page.snapshot.equipment.none { it.name.isNotBlank() } })
+        assertEquals(CharacterDeepSyncPhase.COMPLETED, result.progress.last().phase)
+    }
+
+    @Test
     fun `equipment granted pattern rows disappear and return during preset collection and restoration`() {
         val fixture = Fixture(equipmentPatternRows = true)
 
@@ -103,6 +199,16 @@ class CharacterDeepSyncServiceTest {
         private val terminateAfter: String? = null,
         private var expireFirstCapture: Boolean = false,
         private val equipmentPatternRows: Boolean = false,
+        private val equipmentRewritesPattern: Boolean = false,
+        private val unavailableSecondPreset: Boolean = false,
+        private val incompleteSecondPresetResponse: Boolean = false,
+        private val incompletePatternSlots: Boolean = false,
+        private val wrongCharacterResponse: Boolean = false,
+        private val rejectedSecondPreset: Boolean = false,
+        private var failGetAfterFirstPreset: Boolean = false,
+        private val incompleteEquipmentSlots: Boolean = false,
+        private val foreignSecondPreset: Boolean = false,
+        private var failGetAfterEquipmentRestore: String? = null,
     ) {
         private val now = Instant.parse("2026-09-07T05:00:00Z")
         private val account = HofAccountEntity(1L, "fixture", "encrypted", now)
@@ -120,7 +226,9 @@ class CharacterDeepSyncServiceTest {
             stateMapper.readTree(java.nio.file.Files.readString(it))
         }
         private var equipped = previous?.get("equipped")?.asBoolean() ?: true
+        private var foreignEquipped = false
         private var selectedSkill = previous?.get("skill")?.asString() ?: "9564"
+        private var selectedQuantity = "0"
         private var selectedPosition = previous?.get("position")?.asString() ?: "front"
         private var selectedGuard = previous?.get("guard")?.asString() ?: "1"
         private var gateOwned = false
@@ -130,6 +238,7 @@ class CharacterDeepSyncServiceTest {
         val sessionRecovery = app.spammy.hof.account.service.HofSessionRecoveryService(accountService)
         private val stored = mutableListOf<CharacterPageParseResult>()
         val posts = mutableListOf<Map<String, String>>()
+        val equipmentSnapshots = mutableListOf<CharacterPageParseResult>()
         val service: CharacterDeepSyncService
 
         init {
@@ -154,6 +263,17 @@ class CharacterDeepSyncServiceTest {
             Mockito.`when`(gateway.execute(Mockito.eq(1L), anyRequest(), Mockito.anyMap<String, String>()))
                 .thenAnswer { invocation ->
                     val request = invocation.getArgument<HofRequest>(1)
+                    if (failGetAfterEquipmentRestore != null && request.method == HofHttpMethod.GET && posts.lastOrNull()?.containsKey(failGetAfterEquipmentRestore) == true) {
+                        failGetAfterEquipmentRestore = null
+                        error("fixture restore follow-up GET failed")
+                    }
+                    if (failGetAfterFirstPreset && request.method == HofHttpMethod.GET && posts.lastOrNull()?.containsKey("Equip_L_1") == true) {
+                        failGetAfterFirstPreset = false
+                        error("fixture follow-up GET failed")
+                    }
+                    if (wrongCharacterResponse) return@thenAnswer HofHttpResponse(
+                        200, request.url.replace("char=10", "char=11"), page().replace("char=10", "char=11"), emptyMap(),
+                    )
                     if (expireFirstCapture && request.method == HofHttpMethod.GET) {
                         expireFirstCapture = false
                         throw app.spammy.hof.common.error.ApiException(app.spammy.hof.common.error.ErrorCode.HOF_SESSION_EXPIRED, "fixture session expired")
@@ -163,6 +283,12 @@ class CharacterDeepSyncServiceTest {
                         beforePost()
                         val fields = request.formFields
                         posts += fields
+                        if (rejectedSecondPreset && "Equip_L_2" in fields) {
+                            return@thenAnswer HofHttpResponse(200, request.url, page() + "<div class='error'>Load rejected</div>", emptyMap())
+                        }
+                        if (incompleteSecondPresetResponse && "Equip_L_2" in fields) {
+                            return@thenAnswer HofHttpResponse(200, request.url, "<div class='error'>Load rejected</div>", emptyMap())
+                        }
                         when {
                             "loadpattern" in fields -> {
                                 selectedSkill = "0"
@@ -170,19 +296,28 @@ class CharacterDeepSyncServiceTest {
                                 selectedGuard = "0"
                             }
                             "Equip_L_1" in fields || "Equip_L_2" in fields -> {
-                                equipped = false
+                                foreignEquipped = foreignSecondPreset && "Equip_L_2" in fields
+                                equipped = foreignEquipped
+                                if (equipmentRewritesPattern) selectedQuantity = if ("Equip_L_1" in fields) "2" else "3"
                                 if (failSecondPreset && "Equip_L_2" in fields) {
                                     error("fixture preset response failed")
                                 }
                             }
-                            "remove_all" in fields -> equipped = false
+                            "remove_all" in fields -> {
+                                equipped = false
+                                foreignEquipped = false
+                                if (equipmentRewritesPattern) selectedQuantity = "5"
+                            }
                             "equip_item" in fields -> {
                                 assertEquals("seal", fields["item_no"])
                                 equipped = true
+                                foreignEquipped = false
+                                if (equipmentRewritesPattern) selectedQuantity = "4"
                             }
                             "ChangePattern" in fields -> {
                                 assertTrue(equipped, "The original skill is only selectable with its equipment")
                                 selectedSkill = requireNotNull(fields["skill0"])
+                                selectedQuantity = requireNotNull(fields["quantity0"])
                             }
                             "ChangePosition" in fields -> {
                                 selectedPosition = requireNotNull(fields["position"])
@@ -203,6 +338,14 @@ class CharacterDeepSyncServiceTest {
                     HofHttpResponse(200, request.url, page(), emptyMap())
                 }
             if (archiveOverride == null) {
+            Mockito.doAnswer { invocation ->
+                equipmentSnapshots += invocation.getArgument<CharacterPageParseResult>(2)
+                null
+            }.`when`(archive).saveEquipmentPreset(
+                Mockito.eq(character) ?: character, Mockito.anyInt(),
+                Mockito.any(CharacterPageParseResult::class.java) ?: parser.parsePage("10", page()),
+                Mockito.eq(now) ?: now,
+            )
             Mockito.doAnswer { invocation ->
                 stored += invocation.getArgument<CharacterPageParseResult>(1)
                 null
@@ -238,9 +381,10 @@ class CharacterDeepSyncServiceTest {
             )
         }
 
-        fun assertOriginalRestored() {
+        fun assertOriginalRestored(expectedCurrentWrites: Int = 2) {
             assertTrue(equipped)
             assertEquals("9564", selectedSkill)
+            assertEquals("0", selectedQuantity)
             assertEquals("front", selectedPosition)
             assertEquals("1", selectedGuard)
             assertFalse(gateOwned)
@@ -248,7 +392,7 @@ class CharacterDeepSyncServiceTest {
                 mapOf("position" to "front", "guard" to "1", "ChangePosition" to "Save"),
                 posts.single { "ChangePosition" in it },
             )
-            assertEquals(2, stored.size)
+            assertEquals(expectedCurrentWrites, stored.size)
             assertEquals(stored.first().snapshot.actionPatterns, stored.last().snapshot.actionPatterns)
             assertEquals(stored.first().snapshot.equipment, stored.last().snapshot.equipment)
             assertEquals(stored.first().snapshot.positionGuard, stored.last().snapshot.positionGuard)
@@ -257,11 +401,11 @@ class CharacterDeepSyncServiceTest {
         fun page(): String = """
             <div class="carpet_frame">fixture Lv.60 Knight</div>
             <form action="?char=10" method="post">
-              <input type="hidden" name="patternno" value="0"><input type="submit" name="loadpattern" value="Load">
+              ${if (incompletePatternSlots) "" else """<input type="hidden" name="patternno" value="0"><input type="submit" name="loadpattern" value="Load">"""}
             </form>
             <form action="?char=10" method="post">
               <select name="judge0"><option value="0" selected>Always</option></select>
-              <input name="quantity0" value="0">
+              <input name="quantity0" value="$selectedQuantity">
               <select name="skill0">
                 <option value="0" ${if (selectedSkill == "0") "selected" else ""}>Attack</option>
                 ${if (equipped) "<option value='9564' ${if (selectedSkill == "9564") "selected" else ""}>Equipment Skill</option>" else ""}
@@ -283,12 +427,12 @@ class CharacterDeepSyncServiceTest {
               <input type="submit" name="ChangePosition" value="Save">
             </form>
             <form action="?char=10" method="post"><input type="submit" name="Equip_L_1" value="Load"></form>
-            <form action="?char=10" method="post"><input type="submit" name="Equip_L_2" value="Load"></form>
+            ${if (unavailableSecondPreset) "" else """<form action="?char=10" method="post"><input type="submit" name="Equip_L_2" value="Load"></form>"""}
             <form action="?char=10" method="post">
               <table>
               ${(1..11).joinToString("\n") { "<tr><td class='align-right'>Empty$it</td><td><input name='spot' value='empty$it'></td></tr>" }}
               <tr><td class="align-right">SkillSeal</td><td><input name="spot" value="skillseal">
-              ${if (equipped) "<img src='/seal.gif'>Skill Seal" else ""}</td></tr></table>
+              ${if (equipped) "<img src='/seal.gif'>${if (foreignEquipped) "Other Seal" else "Skill Seal"}" else ""}</td></tr></table>
               <input type="submit" name="remove_all" value="Remove">
             </form>
             <script>
@@ -301,7 +445,11 @@ class CharacterDeepSyncServiceTest {
             </script>
             <form id="equip"><select name="type_equip"><option value="skillseal">SkillSeal</option></select></form>
             <form action="?char=10" method="post"><div id="list0">None.</div><input type="submit" name="equip_item" value="Equip"></form>
-        """.trimIndent()
+        """.trimIndent().let { html ->
+            if (incompleteEquipmentSlots) html.substringBefore("<script>")
+                .replace(Regex("<form[^>]*><input[^>]*name=\"Equip_L_[12]\"[^>]*></form>"), "")
+            else html
+        }
     }
 
     private companion object {

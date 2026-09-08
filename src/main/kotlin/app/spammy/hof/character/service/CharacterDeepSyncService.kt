@@ -18,12 +18,14 @@ import app.spammy.hof.external.parser.CharacterDetailParser
 import app.spammy.hof.external.parser.CharacterPageParseResult
 import app.spammy.hof.external.parser.CharacterPageSection
 import app.spammy.hof.external.parser.CharacterSectionParseResult
+import app.spammy.hof.external.parser.HofHtmlParser
 import app.spammy.hof.town.common.model.ParsedTownForm
 import app.spammy.hof.town.common.model.ParsedTownPage
 import app.spammy.hof.town.common.model.TownActionRequest
 import app.spammy.hof.town.common.model.TownActionSelection
 import app.spammy.hof.town.common.model.TownFieldValue
 import app.spammy.hof.town.common.service.TownAuthenticatedExecutor
+import java.net.URI
 import org.springframework.stereotype.Service
 
 data class CharacterDeepSyncResponse(
@@ -49,8 +51,8 @@ class CharacterDeepSyncService(
 ) {
     fun observeCurrent(accountId: Long, characterId: Long): CharacterPageParseResult {
         val character = query.findByAccountIdAndId(accountId, characterId) ?: error("캐릭터를 찾지 못했습니다.")
-        return executor.loadProjected(accountId, requestFactory.characterPage(character.hofCharacterId).url) { html, _, _ ->
-            parser.parsePage(character.hofCharacterId, html)
+        return executor.loadProjected(accountId, requestFactory.characterPage(character.hofCharacterId).url) { html, finalUrl, _ ->
+            parseObservation(character.hofCharacterId, html, finalUrl)
         }
     }
 
@@ -70,8 +72,8 @@ class CharacterDeepSyncService(
         val character = query.findByAccountIdAndId(accountId, characterId)
             ?: error("캐릭터를 찾지 못했습니다.")
         val parsed = sessionRecovery.execute(accountId) {
-            executor.loadProjected(accountId, requestFactory.characterPage(character.hofCharacterId).url) { html, _, _ ->
-                parser.parsePage(character.hofCharacterId, html)
+            executor.loadProjected(accountId, requestFactory.characterPage(character.hofCharacterId).url) { html, finalUrl, _ ->
+                parseObservation(character.hofCharacterId, html, finalUrl)
             }
         }
         if (parsed.sections[CharacterPageSection.PROFILE] !is CharacterSectionParseResult.Success) return null
@@ -128,6 +130,13 @@ class CharacterDeepSyncService(
         }
     }
 
+    private fun parseObservation(hofCharacterId: String, html: String, finalUrl: String): CharacterPageParseResult {
+        val observedIds = URI(finalUrl).query.orEmpty().split('&').filter { it.substringBefore('=') == "char" }
+            .map { it.substringAfter('=', "") }
+        check(observedIds == listOf(hofCharacterId)) { "원본 서버 응답의 HOF 캐릭터가 다릅니다." }
+        return parser.parsePage(hofCharacterId, html)
+    }
+
     private inner class Remote(
         private val accountId: Long,
         private val characterId: Long,
@@ -137,50 +146,49 @@ class CharacterDeepSyncService(
         override fun captureCurrent(): CharacterPageParseResult = observe()
 
         override fun loadSavedPattern(slotCode: String, beforeChange: CharacterSyncBeforeChange): CharacterPageParseResult {
-            execute(CharacterSyncChange.LOAD_PATTERN, beforeChange) { page ->
+            return execute(CharacterSyncChange.LOAD_PATTERN, beforeChange) { page ->
                 val form = page.forms.singleOrNull { form ->
                     form.submitSource.equals("loadpattern", true) &&
                         form.hiddenFields.singleOrNull { it.name.equals("patternno", true) }?.value == slotCode
                 } ?: error("저장 패턴 슬롯을 찾지 못했습니다: $slotCode")
                 TownActionRequest(form.actionId)
             }
-            return observe()
         }
 
         override fun loadEquipmentPreset(slotNumber: Int, beforeChange: CharacterSyncBeforeChange): CharacterPageParseResult {
-            execute(CharacterSyncChange.LOAD_EQUIPMENT, beforeChange) { page ->
+            return execute(CharacterSyncChange.LOAD_EQUIPMENT, beforeChange) { page ->
                 val form = page.forms.singleOrNull { it.submitSource.equals("Equip_L_$slotNumber", true) }
                     ?: error("장비 저장 슬롯 $slotNumber 불러오기를 찾지 못했습니다.")
                 TownActionRequest(form.actionId)
             }
-            return observe()
         }
 
-        override fun restoreCurrent(original: CharacterRestoreState, beforeChange: CharacterSyncBeforeChange): CharacterPageParseResult {
+        override fun restoreCurrent(
+            original: CharacterRestoreState,
+            beforeChange: CharacterSyncBeforeChange,
+            afterChange: (CharacterPageParseResult) -> Unit,
+        ): CharacterPageParseResult {
             var observed = observe()
             var current = CharacterRestoreState.capture(observed)
             check(current.hofCharacterId == original.hofCharacterId) { "복원 대상 HOF 캐릭터가 변경되었습니다." }
             // 장비가 제공하는 스킬을 복구한 뒤 최신 폼에서 행동 패턴을 선택한다.
             if (current.equipment != original.equipment) {
-                restoreEquipment(original, beforeChange)
-                observed = observe()
+                observed = restoreEquipment(original, observed, beforeChange, afterChange)
                 current = CharacterRestoreState.capture(observed)
             }
             if (current.patterns != original.patterns) {
-                restorePattern(original, beforeChange)
-                observed = observe()
+                observed = restorePattern(original, beforeChange).also(afterChange)
                 current = CharacterRestoreState.capture(observed)
             }
             if (current.position != original.position || current.guard != original.guard) {
-                restorePositionGuard(original, beforeChange)
-                observed = observe()
+                observed = restorePositionGuard(original, beforeChange).also(afterChange)
             }
-            return observed
+            return observe()
         }
 
-        private fun restorePattern(original: CharacterRestoreState, beforeChange: CharacterSyncBeforeChange) {
+        private fun restorePattern(original: CharacterRestoreState, beforeChange: CharacterSyncBeforeChange): CharacterPageParseResult {
             val rows = original.patterns
-            execute(CharacterSyncChange.RESTORE_PATTERN, beforeChange) { page ->
+            return execute(CharacterSyncChange.RESTORE_PATTERN, beforeChange) { page ->
                 val form = page.forms.singleOrNull { it.submitSource.equals("ChangePattern", true) }
                     ?: error("Action Pattern 저장 form을 찾지 못했습니다.")
                 val selections = rows.flatMap { row ->
@@ -195,8 +203,8 @@ class CharacterDeepSyncService(
             }
         }
 
-        private fun restorePositionGuard(original: CharacterRestoreState, beforeChange: CharacterSyncBeforeChange) {
-            execute(CharacterSyncChange.RESTORE_POSITION, beforeChange) { page ->
+        private fun restorePositionGuard(original: CharacterRestoreState, beforeChange: CharacterSyncBeforeChange): CharacterPageParseResult {
+            return execute(CharacterSyncChange.RESTORE_POSITION, beforeChange) { page ->
                 val form = page.forms.singleOrNull { candidateForm ->
                     val names = candidateForm.candidates.map { it.inputName.lowercase() }.toSet()
                     "position" in names && "guard" in names
@@ -208,16 +216,25 @@ class CharacterDeepSyncService(
             }
         }
 
-        private fun restoreEquipment(original: CharacterRestoreState, beforeChange: CharacterSyncBeforeChange) {
+        private fun restoreEquipment(
+            original: CharacterRestoreState,
+            initial: CharacterPageParseResult,
+            beforeChange: CharacterSyncBeforeChange,
+            afterChange: (CharacterPageParseResult) -> Unit,
+        ): CharacterPageParseResult {
             val context = CharacterCommandContext(accountId, characterId, hofCharacterId)
-            val observed = CharacterRestoreState.capture(observe())
+            var observed = initial
+            val acceptEquipmentChange: (String, String) -> Unit = { html, finalUrl ->
+                observed = parseAcceptedResponse(html, finalUrl).also(afterChange)
+            }
             val remaining = original.equipment.toMutableList()
-            val containsOtherEquipment = observed.equipment.map { remaining.remove(it) }.any { !it }
+            val containsOtherEquipment = CharacterRestoreState.capture(observed).equipment.map { remaining.remove(it) }.any { !it }
             if (containsOtherEquipment) {
-                beforeChange(observed, CharacterSyncChange.RESTORE_EQUIPMENT)
+                beforeChange(CharacterRestoreState.capture(observed), CharacterSyncChange.RESTORE_EQUIPMENT)
                 when (val removed = commandSession.execute(
                     context,
                     CharacterCommand.RemoveAllEquipment(characterId, timeProvider.now()),
+                    acceptEquipmentChange,
                 )) {
                     is CharacterCommandObservation.Applied -> Unit
                     is CharacterCommandObservation.Rejected -> if (removed.code != "FORM_NOT_OBSERVED") {
@@ -230,7 +247,6 @@ class CharacterDeepSyncService(
             }
             remaining.forEach { item ->
                 // 복원 도중 이미 장착한 항목은 유지하고 빠진 원본만 최신 Stock 후보에서 고른다.
-                val observed = observe()
                 val current = observed.snapshot
                 val candidate = CharacterEquipmentCommandRules.requireRestoreCandidate(
                     item.name,
@@ -242,24 +258,35 @@ class CharacterDeepSyncService(
                 val equipped = commandSession.execute(
                     context,
                     CharacterCommand.EquipItem(characterId, timeProvider.now(), candidate.value),
+                    acceptEquipmentChange,
                 )
                 if (equipped !is CharacterCommandObservation.Applied) {
                     error("원래 장비를 다시 장착하지 못했습니다: ${item.part} / ${item.name}")
                 }
             }
+            return observed
         }
 
-        private fun observe(): CharacterPageParseResult = executor.loadProjected(accountId, characterUrl()) { html, _, _ ->
-            parser.parsePage(hofCharacterId, html)
+        private fun observe(): CharacterPageParseResult = executor.loadProjected(accountId, characterUrl()) { html, finalUrl, _ ->
+            parseObservation(hofCharacterId, html, finalUrl)
         }
 
         private fun characterUrl(): String = requestFactory.characterPage(hofCharacterId).url
 
         /** 깊은 동기화 내부 form은 제출 직전 GET에서 다시 resolve해 stale action ID를 거부한다. */
-        private fun execute(change: CharacterSyncChange, beforeChange: CharacterSyncBeforeChange, resolve: (ParsedTownPage) -> TownActionRequest) {
-            internalForms.execute(accountId, hofCharacterId, beforeSubmit = { html ->
-                beforeChange(CharacterRestoreState.capture(parser.parsePage(hofCharacterId, html)), change)
+        private fun execute(change: CharacterSyncChange, beforeChange: CharacterSyncBeforeChange, resolve: (ParsedTownPage) -> TownActionRequest): CharacterPageParseResult =
+            internalForms.execute(accountId, hofCharacterId, beforeSubmit = { html, finalUrl ->
+                beforeChange(CharacterRestoreState.capture(parseObservation(hofCharacterId, html, finalUrl)), change)
+            }, afterSubmit = { html, finalUrl ->
+                // 오류/불완전 응답 뒤 GET이 정상이어도 슬롯 불러오기 성공으로 바꾸지 않는다.
+                parseAcceptedResponse(html, finalUrl)
             }, resolve = resolve)
+
+        private fun parseAcceptedResponse(html: String, finalUrl: String): CharacterPageParseResult {
+            check(HofHtmlParser.parse(html).select(".error").none { it.text().isNotBlank() }) {
+                "원본 서버가 캐릭터 설정 변경을 거부했습니다."
+            }
+            return parseObservation(hofCharacterId, html, finalUrl).also { CharacterRestoreState.capture(it) }
         }
 
         private fun ParsedTownForm.candidate(name: String, value: String) =

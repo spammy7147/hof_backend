@@ -113,7 +113,7 @@ class CharacterCommandExecutorTest {
                     operation(
                         object : CharacterCommandRemoteSession {
                             override fun observeRoster() = emptyList<CharacterCommandObservedIdentity>()
-                            override fun execute(context: CharacterCommandContext, command: CharacterCommand) =
+                            override fun execute(context: CharacterCommandContext, command: CharacterCommand, afterEquipmentChange: ((String, String) -> Unit)?) =
                                 CharacterCommandObservation.Applied()
                             override fun refreshSnapshot(hofCharacterId: String) = true
                         },
@@ -772,7 +772,7 @@ class CharacterCommandExecutorTest {
             operation(
                 object : CharacterCommandRemoteSession {
                     override fun observeRoster() = rosterBefore
-                    override fun execute(context: CharacterCommandContext, command: CharacterCommand) = execute(context, command)
+                    override fun execute(context: CharacterCommandContext, command: CharacterCommand, afterEquipmentChange: ((String, String) -> Unit)?) = execute(context, command)
                     override fun refreshSnapshot(hofCharacterId: String) = refresh(hofCharacterId)
                 },
             )

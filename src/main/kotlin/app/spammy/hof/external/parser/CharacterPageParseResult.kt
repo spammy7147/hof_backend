@@ -5,6 +5,8 @@ import app.spammy.hof.external.model.HofCharacter
 data class CharacterPageParseResult(
     val snapshot: HofCharacter,
     val sections: Map<CharacterPageSection, CharacterSectionParseResult>,
+    /** 현재 화면에서 실제 불러오기 form을 제공하는 장비 저장 번호. */
+    val equipmentPresetSlots: Set<Int> = emptySet(),
 )
 
 enum class CharacterPageSection {

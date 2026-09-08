@@ -13,22 +13,21 @@ class CharacterInternalFormExecutor(
     private val requestFactory: HofRequestFactory,
 ) {
     fun execute(accountId: Long, hofCharacterId: String, resolve: (ParsedTownPage) -> TownActionRequest) =
-        execute(accountId, hofCharacterId, {}, resolve)
+        execute(accountId, hofCharacterId, beforeSubmit = { _, _ -> }, afterSubmit = { _, _ -> }, resolve = resolve)
 
-    fun execute(
+    fun <T> execute(
         accountId: Long,
         hofCharacterId: String,
-        beforeSubmit: (String) -> Unit,
+        beforeSubmit: (String, String) -> Unit,
+        afterSubmit: (String, String) -> T,
         resolve: (ParsedTownPage) -> TownActionRequest,
-    ) {
-        executor.executeProjected(
+    ): T = executor.executeProjected(
             accountId = accountId,
             pageUrl = requestFactory.characterPage(hofCharacterId).url,
-            resolveAction = { html, _, page ->
-                resolve(page).also { page.requireSafeInternalAction(it); beforeSubmit(html) }
+            resolveAction = { html, finalUrl, page ->
+                resolve(page).also { page.requireSafeInternalAction(it); beforeSubmit(html, finalUrl) }
             },
-        ) { _, _, _, _ -> Unit }
-    }
+        ) { html, finalUrl, _, _ -> afterSubmit(html, finalUrl) }
 
     fun executeIfPresent(
         accountId: Long,

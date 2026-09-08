@@ -25,7 +25,13 @@ class CharacterDetailParser {
     fun parsePage(characterId: String, html: String): CharacterPageParseResult {
         val snapshot = parse(characterId, html)
         val document = HofHtmlParser.parse(html, HOF_BASE_URL)
-        return CharacterPageParseResult(snapshot, CharacterSectionParsers.validate(document, snapshot))
+        return CharacterPageParseResult(
+            snapshot,
+            CharacterSectionParsers.validate(document, snapshot),
+            (1..2).filterTo(linkedSetOf()) { slot ->
+                document.select("form input[name=Equip_L_$slot], form button[name=Equip_L_$slot]").isNotEmpty()
+            },
+        )
     }
 
     /**

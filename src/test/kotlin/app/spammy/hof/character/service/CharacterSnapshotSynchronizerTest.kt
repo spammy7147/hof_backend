@@ -413,7 +413,7 @@ class CharacterSnapshotSynchronizerTest {
             return page("equipment-$slotNumber").also { current = it; operations += "equipment:$slotNumber" }
         }
 
-        override fun restoreCurrent(original: CharacterRestoreState, beforeChange: CharacterSyncBeforeChange): CharacterPageParseResult {
+        override fun restoreCurrent(original: CharacterRestoreState, beforeChange: CharacterSyncBeforeChange, afterChange: (CharacterPageParseResult) -> Unit): CharacterPageParseResult {
             beforeChange(CharacterRestoreState.capture(current), CharacterSyncChange.RESTORE_PATTERN)
             return page(original.patterns.single().skill).also { current = it; operations += "restore" }
         }
@@ -447,6 +447,7 @@ class CharacterSnapshotSynchronizerTest {
                     actionPatterns = listOf(HofActionPatternRow(0, judge = "always", quantity = "0", skill = name)),
                     positionGuard = HofPositionGuard(selectedPosition = "front", guardValue = "0")),
                 CharacterPageSection.entries.associateWith { CharacterSectionParseResult.Success(1) },
+                equipmentPresetSlots = setOf(1, 2),
             )
 
         fun character(now: Instant): CharacterEntity {

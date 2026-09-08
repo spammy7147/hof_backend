@@ -17,6 +17,8 @@ import app.spammy.hof.external.model.HofCharacter
 import app.spammy.hof.external.model.HofEquipmentCandidate
 import app.spammy.hof.external.parser.CharacterDetailParser
 import app.spammy.hof.external.parser.CharacterPageParseResult
+import app.spammy.hof.external.parser.CharacterPageSection
+import app.spammy.hof.external.parser.CharacterSectionParseResult
 import app.spammy.hof.town.common.service.AccountHofMutationFence
 import java.time.Duration
 import java.time.Instant
@@ -143,7 +145,11 @@ interface CharacterDeepSyncRemote {
     fun captureCurrent(): CharacterPageParseResult
     fun loadSavedPattern(slotCode: String, beforeChange: CharacterSyncBeforeChange): CharacterPageParseResult
     fun loadEquipmentPreset(slotNumber: Int, beforeChange: CharacterSyncBeforeChange): CharacterPageParseResult
-    fun restoreCurrent(original: CharacterRestoreState, beforeChange: CharacterSyncBeforeChange): CharacterPageParseResult
+    fun restoreCurrent(
+        original: CharacterRestoreState,
+        beforeChange: CharacterSyncBeforeChange,
+        afterChange: (CharacterPageParseResult) -> Unit,
+    ): CharacterPageParseResult
 }
 
 /** 깊은 동기화에서 관측한 현재/저장 설정을 영속화하는 port. */
@@ -183,12 +189,14 @@ class CharacterDeepSyncOrchestrator {
         }
         fun recordObservation(page: CharacterPageParseResult) {
             val state = CharacterRestoreState.capture(page)
-            checkpoint.requireExpected(state)
+            // 정상 명령 뒤 완전하게 읽은 서버 값은 예측하지 않는다. 미확정 재시작 검사는 별도로 유지한다.
+            check(state.hofCharacterId == checkpoint.original.hofCharacterId) { "복원 원본과 현재 HOF 캐릭터가 다릅니다." }
             checkpoint = checkpoint.copy(observed = CharacterSyncObservation.from(state), pendingChange = null)
             store.saveCheckpoint(checkpoint)
         }
         val patternSlots = current.snapshot.patternSlots.filter { it.canLoad }
-        val total = 1 + patternSlots.size + 2 + 1
+        val equipmentSlots = current.equipmentPresetSlots.sorted()
+        val total = 1 + patternSlots.size + equipmentSlots.size + 1
         var completed = 0
         if (checkpoint.status == CharacterRecoveryStatus.RESTORED) {
             check(CharacterRestoreState.capture(current) == checkpoint.original) { "복원 완료 후 원본 서버의 설정이 변경되었습니다." }
@@ -207,13 +215,20 @@ class CharacterDeepSyncOrchestrator {
             store.saveCurrent(current)
             report(CharacterDeepSyncProgress(CharacterDeepSyncPhase.CURRENT, ++completed, total))
             if (checkpoint.status == CharacterRecoveryStatus.REQUIRED && !checkpoint.collectionComplete && checkpoint.collectionError == null) {
+                check(current.sections[CharacterPageSection.SAVED_PATTERNS] is CharacterSectionParseResult.Success) {
+                    "원본 서버의 저장 패턴 구역을 완전히 확인하지 못했습니다."
+                }
+                // Stock은 장비 저장 폼 다음 구역이다. 뒤쪽까지 읽지 못한 화면에서 폼 부재를 확정하지 않는다.
+                check(equipmentSlots.size == 2 || current.sections[CharacterPageSection.EQUIPMENT_CANDIDATES] is CharacterSectionParseResult.Success) {
+                    "원본 서버의 장비 저장 구역을 완전히 확인하지 못했습니다."
+                }
                 patternSlots.forEach { slot ->
                     val observed = remote.loadSavedPattern(slot.slot, beforeChange)
                     recordObservation(observed)
                     store.savePatternSlot(slot.slot, observed)
                     report(CharacterDeepSyncProgress(CharacterDeepSyncPhase.SAVED_PATTERN, ++completed, total, patternSlotCode = slot.slot))
                 }
-                (1..2).forEach { slot ->
+                equipmentSlots.forEach { slot ->
                     val observed = remote.loadEquipmentPreset(slot, beforeChange)
                     recordObservation(observed)
                     store.saveEquipmentPreset(slot, observed)
@@ -240,7 +255,7 @@ class CharacterDeepSyncOrchestrator {
                 restoreAttempts = checkpoint.restoreAttempts + 1,
             )
             store.saveCheckpoint(checkpoint)
-            remote.restoreCurrent(checkpoint.original, beforeChange)
+            remote.restoreCurrent(checkpoint.original, beforeChange, ::recordObservation)
         }
         check(CharacterRestoreState.capture(restored) == checkpoint.original) { "시작 전 현재 캐릭터 설정으로 복원됐는지 확인하지 못했습니다." }
         checkpoint = checkpoint.copy(

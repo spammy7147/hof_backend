@@ -35,7 +35,8 @@ class HofCharacterCommandAdapter(
                     override fun execute(
                         context: CharacterCommandContext,
                         command: CharacterCommand,
-                    ): CharacterCommandObservation = this@HofCharacterCommandAdapter.execute(context, command) {
+                        afterEquipmentChange: ((String, String) -> Unit)?,
+                    ): CharacterCommandObservation = this@HofCharacterCommandAdapter.execute(context, command, afterEquipmentChange) {
                         continuation = it
                     }
 
@@ -49,8 +50,10 @@ class HofCharacterCommandAdapter(
     private fun execute(
         context: CharacterCommandContext,
         command: CharacterCommand,
+        afterEquipmentChange: ((String, String) -> Unit)?,
         rememberContinuation: (TownRequestContinuation) -> Unit,
     ): CharacterCommandObservation {
+        require(afterEquipmentChange == null || command is CharacterCommand.EquipItem || command is CharacterCommand.RemoveAllEquipment)
         val messages = when (command) {
             is CharacterCommand.Rename -> executeRename(context, command.newName)
             is CharacterCommand.Kick -> return executeIdentitySequence(
@@ -70,9 +73,9 @@ class HofCharacterCommandAdapter(
             is CharacterCommand.ChangeClass -> executeChoice(context, "classchange", "job", command.classValue)
             is CharacterCommand.AllocateStat -> executeStat(context, command)
             is CharacterCommand.AllocateStats -> executeStats(context, command)
-            is CharacterCommand.EquipItem -> executeEquipment(context, command.itemValue)
+            is CharacterCommand.EquipItem -> executeEquipment(context, command.itemValue, afterEquipmentChange)
             is CharacterCommand.RemoveEquipment -> executeChoice(context, "remove", "spot", command.equipmentPart)
-            is CharacterCommand.RemoveAllEquipment -> executeSimple(context, "remove_all")
+            is CharacterCommand.RemoveAllEquipment -> executeSimpleSnapshot(context, "remove_all", afterEquipmentChange)
             is CharacterCommand.SaveEquipmentPreset -> {
                 CharacterEquipmentCommandRules.requirePresetSlot(command.slotNumber)
                 executeSimple(context, "Equip_S_${command.slotNumber}")
@@ -196,8 +199,8 @@ class HofCharacterCommandAdapter(
         return executeSimpleSnapshot(context, source)
     }
 
-    private fun executeSimpleSnapshot(context: CharacterCommandContext, source: String): List<String>? =
-        executeProjected(context) { _, page ->
+    private fun executeSimpleSnapshot(context: CharacterCommandContext, source: String, afterSubmit: ((String, String) -> Unit)? = null): List<String>? =
+        executeProjected(context, afterSubmit) { _, page ->
             page.semanticForm(source)?.let { form -> TownActionRequest(form.actionId) }
         }
 
@@ -219,7 +222,7 @@ class HofCharacterCommandAdapter(
         }
     }
 
-    private fun executeEquipment(context: CharacterCommandContext, itemValue: String): List<String>? = try {
+    private fun executeEquipment(context: CharacterCommandContext, itemValue: String, afterSubmit: ((String, String) -> Unit)? = null): List<String>? = try {
         executor.executeMaterializedResolvedProjectedWithScalars(
             accountId = context.accountId,
             pageUrl = characterUrl(context),
@@ -234,7 +237,8 @@ class HofCharacterCommandAdapter(
                 val candidate = form.uniqueCandidate("item_no", itemValue) ?: throw FormNotObserved()
                 TownActionRequest(form.actionId, selections = listOf(TownActionSelection(candidate.id))) to emptyMap()
             },
-        ) { html, _, result, _ ->
+        ) { html, finalUrl, result, _ ->
+            afterSubmit?.invoke(html, finalUrl)
             projectSnapshot(context, html)
             result.messages
         }
@@ -336,13 +340,15 @@ class HofCharacterCommandAdapter(
 
     private fun executeProjected(
         context: CharacterCommandContext,
+        afterSubmit: ((String, String) -> Unit)? = null,
         resolve: (html: String, page: ParsedTownPage) -> TownActionRequest?,
     ): List<String>? = try {
         executor.executeProjected(
             accountId = context.accountId,
             pageUrl = characterUrl(context),
             resolveAction = { html, _, page -> resolve(html, page) ?: throw FormNotObserved() },
-        ) { html, _, result, _ ->
+        ) { html, finalUrl, result, _ ->
+            afterSubmit?.invoke(html, finalUrl)
             projectSnapshot(context, html)
             result.messages
         }

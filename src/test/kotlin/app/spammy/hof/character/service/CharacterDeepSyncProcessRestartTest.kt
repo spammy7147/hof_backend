@@ -75,7 +75,7 @@ object DeepSyncCrashProcess {
                 return captureCurrent()
             }
             override fun loadEquipmentPreset(slotNumber: Int, beforeChange: CharacterSyncBeforeChange) = captureCurrent()
-            override fun restoreCurrent(original: CharacterRestoreState, beforeChange: CharacterSyncBeforeChange): CharacterPageParseResult {
+            override fun restoreCurrent(original: CharacterRestoreState, beforeChange: CharacterSyncBeforeChange, afterChange: (CharacterPageParseResult) -> Unit): CharacterPageParseResult {
                 beforeChange(CharacterRestoreState.capture(captureCurrent()), CharacterSyncChange.RESTORE_PATTERN)
                 state.writeText(original.patterns.single().skill)
                 directory.resolve("restored").writeText("yes")
@@ -106,5 +106,6 @@ object DeepSyncCrashProcess {
             patternSlots = listOf(HofPatternSlot("0", "fixture", canLoad = true)),
         ),
         CharacterPageSection.entries.associateWith { CharacterSectionParseResult.Success(1) },
+        equipmentPresetSlots = setOf(1, 2),
     )
 }

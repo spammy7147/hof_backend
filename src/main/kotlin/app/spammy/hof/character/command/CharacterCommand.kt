@@ -109,7 +109,12 @@ interface CharacterCommandRemote {
 interface CharacterCommandRemoteSession {
     fun observeRoster(): List<CharacterCommandObservedIdentity>
 
-    fun execute(context: CharacterCommandContext, command: CharacterCommand): CharacterCommandObservation
+    /** 장비 복구는 정상 직접 응답을 다음 원격 요청 전에 보존한다. */
+    fun execute(
+        context: CharacterCommandContext,
+        command: CharacterCommand,
+        afterEquipmentChange: ((html: String, finalUrl: String) -> Unit)? = null,
+    ): CharacterCommandObservation
 
     fun refreshSnapshot(hofCharacterId: String): Boolean
 }
