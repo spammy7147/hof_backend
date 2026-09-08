@@ -66,6 +66,7 @@ class NewAutomationHandlersTest {
                 listOf(FishingAutomationMapSetting("battle_map", "fish-1", PresetSelectionMode.EXPLICIT, 3, party)),
                 null,
                 now,
+                timeSnapshot = AutomationTimeSnapshot(100, 100, now),
             ),
         )).action
         assertEquals(BattleAutomationActionSource.FISHING_AUTOMATION, assertIs<BattleMapAutomationAction>(action).source)
@@ -103,6 +104,7 @@ class NewAutomationHandlersTest {
                 ),
                 null,
                 now,
+                timeSnapshot = AutomationTimeSnapshot(100, 100, now),
             )),
         ).action)
 
@@ -123,6 +125,7 @@ class NewAutomationHandlersTest {
                 emptyList(),
                 FishingAutomationPreset(PresetSelectionMode.PRIMARY, 11, party),
                 now,
+                timeSnapshot = AutomationTimeSnapshot(100, 100, now),
             )),
         ).action)
 

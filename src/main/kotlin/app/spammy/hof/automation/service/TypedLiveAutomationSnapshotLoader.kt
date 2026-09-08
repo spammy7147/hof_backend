@@ -285,7 +285,7 @@ class TypedLiveAutomationSnapshotLoader(
             AutomationType.ADVENTURE_MAP -> entry.adventure.map { it.categoryId }
             AutomationType.RAID -> emptyList()
             AutomationType.UNION -> entry.union.map { it.categoryId }
-            // 정상 START/CATCH에서는 낚시 응답만으로 완전하므로 방해 전투 map을 미리 읽지 않는다.
+            // 낚시 서비스가 현재 전투를 함께 관측하므로 카탈로그 분류 조회를 중복하지 않는다.
             AutomationType.FISHING -> emptyList()
         } }.filter { it.isNotBlank() }.distinct()
         return DetachedConfiguration(entries, primary, validPresetIds, parties, categories, version)
@@ -349,7 +349,7 @@ class TypedLiveAutomationSnapshotLoader(
                 FishingAutomationSnapshot(accountId, state, entry.fishingMaps.map { setting ->
                     val resolved = resolvePreset(setting.presetMode, setting.presetId, config)
                     FishingAutomationMapSetting(setting.categoryId, setting.mapCode, setting.presetMode, resolved, resolved?.let(config.parties::get))
-                }, primary, now, observation)
+                }, primary, now, observation, timeSnapshot)
             })
             AutomationType.RAID -> AutomationEntrySnapshot(entry.id, entry.type)
         } }

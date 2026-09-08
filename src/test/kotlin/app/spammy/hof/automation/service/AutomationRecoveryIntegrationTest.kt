@@ -541,7 +541,6 @@ class AutomationRecoveryIntegrationTest {
     @ParameterizedTest
     @ValueSource(strings = ["START_AUTOMATION", "START_GENERAL", "CATCH_AUTOMATION", "CATCH_GENERAL"])
     fun `일반 선택 복구 조회는 같은 현재 낚시 전투를 확인한다`(scenario: String) {
-        val header = "<div id='menu2'>Funds : $ 1 Time : 100/100</div>"
         val fixture = if (scenario.startsWith("START")) "reset" else "waiting"
         val fishingHtml = requireNotNull(javaClass.getResource("/fixtures/town/fishing/$fixture.html")).readText()
         Mockito.doAnswer { invocation ->
@@ -553,7 +552,7 @@ class AutomationRecoveryIntegrationTest {
                 request.url == "https://hof.zerosic.com/index.php?hunt" -> completeFishingMapPage("<a href='index.php?common=Fish03'>Fishing- 악어</a>")
                 else -> error("Unexpected query: ${request.url}")
             }
-            HofHttpResponse(200, request.url, header + body, emptyMap())
+            HofHttpResponse(200, request.url, "<div id='menu2'>Funds : $ 1 Time : 100/100</div>" + body, emptyMap())
         }.`when`(gateway).execute(Mockito.eq(accountId), anyRequest(), Mockito.anyMap())
         val paths = if (scenario.endsWith("AUTOMATION")) listOf("selection", "general", "recovery")
             else listOf("general", "recovery", "selection")
@@ -681,7 +680,7 @@ class AutomationRecoveryIntegrationTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = ["IO", "INCOMPLETE", "NO_PRESET", "INVALID_PRESET"])
+    @ValueSource(strings = ["IO", "INCOMPLETE", "NO_PRESET", "INVALID_PRESET", "TIME"])
     fun `낚시 전투 관측과 준비가 불가능해도 하위 항목은 진행한다`(failure: String) {
         var accepted = false
         val homeUrl = "https://hof.zerosic.com/index.php?menu=quest2"
@@ -705,6 +704,7 @@ class AutomationRecoveryIntegrationTest {
             entityManager.flush()
             entry.id
         }
+        if (failure == "TIME") fishingState.currentTime = 0
         if (failure == "NO_PRESET") jdbc.update("update party_presets set is_primary = false, primary_marker = null where account_id = ?", accountId)
         if (failure == "INVALID_PRESET") jdbc.update("update character_pattern_slots set can_load = false where character_id in (select id from characters where account_id = ?)", accountId)
         wakeups.wake(accountId, "FISHING_SCOPE_ISOLATION")
@@ -713,6 +713,21 @@ class AutomationRecoveryIntegrationTest {
         assertEquals(homeId, journal.page(accountId, AutomationHistoryQuery()).cycles.first().selectedEntryId)
         assertTrue(fishingPosts().isEmpty())
         assertEquals(0, requests.count { it.method == HofHttpMethod.POST && it.url.contains("common=fishing_12") })
+        if (failure == "TIME") {
+            val wait = journal.page(accountId, AutomationHistoryQuery()).cycles.flatMap { it.events }
+                .single { it.reasonCode == "TIME_INSUFFICIENT" }
+            assertEquals(clock.now().plusSeconds(160), wait.nextRunAt, "0→100 Time 회복은 기존 1.6초 규칙의 160초 이내다.")
+            clock.current = assertNotNull(wait.nextRunAt)
+            fishingState.currentTime = 100
+            consumeFishingWakeUntil { requests.any { it.method == HofHttpMethod.POST && it.url.contains("common=fishing_12") } }
+            assertEquals(1, requests.count { it.method == HofHttpMethod.POST && it.url.contains("common=fishing_12") })
+        }
+        if (failure in setOf("NO_PRESET", "INVALID_PRESET")) {
+            if (failure == "NO_PRESET") jdbc.update("update party_presets set is_primary = true, primary_marker = 1 where account_id = ?", accountId)
+            else jdbc.update("update character_pattern_slots set can_load = true where character_id in (select id from characters where account_id = ?)", accountId)
+            consumeFishingWakeUntil { requests.any { it.method == HofHttpMethod.POST && it.url.contains("common=fishing_12") } }
+            assertEquals(1, requests.count { it.method == HofHttpMethod.POST && it.url.contains("common=fishing_12") })
+        }
         if (failure in setOf("IO", "INCOMPLETE")) {
             clock.current = clock.now().plusSeconds(121)
             consumeNextWake()
@@ -849,6 +864,32 @@ class AutomationRecoveryIntegrationTest {
         assertEquals(listOf("FStart", "FCatch"), fishingPosts())
         assertEquals(1, requests.count { it.method == HofHttpMethod.POST && it.url.contains("common=fishing_12") })
         assertEquals(0, runningWorkCount())
+    }
+
+    @Test
+    fun `일반 다음 판단의 완전한 전투 부재는 이전 복구 반복을 끊는다`() {
+        val state = setupFishing(startObstruction = true, hiddenBattle = true)
+        wakeups.wake(accountId, "FISHING_EXTERNAL_RECOVERY")
+        publisher.publishBatch()
+        assertEquals(listOf("FStart"), fishingPosts())
+
+        // 원본 서버에서 이전 전투가 해소되고, 다음 START 이후 별개의 전투가 나타난다.
+        state.battle = false
+        state.phase = "reset"
+        state.revealOnStart = true
+        consumeNextWake()
+
+        val events = journal.page(accountId, AutomationHistoryQuery()).cycles.flatMap { it.events }.sortedBy { it.id }
+        val recovered = events.filter { it.reasonCode == "FISHING_BATTLE_RECOVERED_FROM_START" }
+        assertEquals(2, recovered.size)
+        assertEquals(listOf(1, 1), recovered.map {
+            jacksonObjectMapper().readTree(it.diagnosticContext).path("repetition").path("count").asInt()
+        }, "일반 선택 조회에서 확인한 부재도 새 반복 사건의 경계다.")
+        val resolved = events.single { it.reasonCode == "FISHING_RECOVERY_RESOLVED" }
+        assertTrue(resolved.id > recovered.first().id && resolved.id < recovered.last().id)
+        assertEquals("ENTRY_EVALUATION", jacksonObjectMapper().readTree(resolved.diagnosticContext).path("stage").asString())
+        assertEquals(listOf("FStart", "FStart"), fishingPosts())
+        assertTrue(events.none { it.reasonCode == "FISHING_RECOVERY_REPEATED" })
     }
 
     @Test
@@ -1096,6 +1137,8 @@ class AutomationRecoveryIntegrationTest {
     }
 
     private class FishingFixtureState(var phase: String = "reset", var battle: Boolean = false, var mapFailure: String? = null) {
+        var revealOnStart = false
+        var currentTime = 100
         val requestCookies = mutableListOf<Map<String, String>>()
     }
 
@@ -1124,14 +1167,15 @@ class AutomationRecoveryIntegrationTest {
             entityManager.persist(pattern)
             entityManager.persist(PartyPresetMemberEntity(preset, 0, character, pattern))
         }
-        val header = "<div id='menu2'>Funds : $ 1 Time : 100/100</div>"
         fun fixture(name: String) = requireNotNull(javaClass.getResource("/fixtures/town/fishing/$name.html")).readText()
         val state = FishingFixtureState(battle = initialBattle, mapFailure = mapFailure)
-        var revealOnStart = startObstruction
+        state.revealOnStart = startObstruction
         Mockito.doAnswer { invocation ->
             val request = invocation.arguments[1] as HofRequest
             @Suppress("UNCHECKED_CAST")
             val requestCookies = invocation.arguments[2] as Map<String, String>
+            val header = """<table id='menu2'><tr><td>《테스트》테스트</td>
+                <td>Funds : $ 1<br>Work : Nothing</td><td>Time : ${state.currentTime}/100<br>Auction : Nothing</td></tr></table>"""
             state.requestCookies += requestCookies.toMap()
             requests += request
             val body = when {
@@ -1139,8 +1183,8 @@ class AutomationRecoveryIntegrationTest {
                 request.url.contains("?char=") -> header
                 homeResponse != null && request.url.contains("menu=quest2") -> homeResponse(request)
                 "FStart" in request.formFields -> {
-                    state.battle = state.battle || revealOnStart
-                    revealOnStart = false
+                    state.battle = state.battle || state.revealOnStart
+                    state.revealOnStart = false
                     state.phase = if (state.battle) "monster" else "waiting"
                     if (lostFishingResponse == "FStart") throw IOException("Fishing START response lost")
                     fixture(state.phase)

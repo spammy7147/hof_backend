@@ -430,7 +430,7 @@ class AutomationTargetSelector(
                 val item = if (session == null && type in CANDIDATE_ARBITRATED_TYPES &&
                     original.outcome == AutomationDecisionOutcome.WAITING
                 ) original.copy(outcome = AutomationDecisionOutcome.SKIPPED) else original
-                if (item.outcome in DIAGNOSTIC_OUTCOMES || item.excludedCandidates.isNotEmpty()) item.copy(
+                if (type == AutomationType.FISHING || item.outcome in DIAGNOSTIC_OUTCOMES || item.excludedCandidates.isNotEmpty()) item.copy(
                     diagnosticContext = AutomationDecisionDiagnostics.capture(
                         stage, timeProvider.now(), snapshot, workSessionId = session?.id,
                         targetKey = item.targetKey ?: session?.targetKey, scope = item.scope,

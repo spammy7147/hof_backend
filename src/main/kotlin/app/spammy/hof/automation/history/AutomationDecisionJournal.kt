@@ -131,6 +131,21 @@ class JpaAutomationDecisionJournal(
             impactScope = item.impactScope, releaseCondition = item.releaseCondition,
             diagnosticContext = item.diagnosticContext,
         ) })
+        // 일반 다음 판단도 최신 전투 부재를 확인할 수 있다. probe를 거치지 않은 해소를 보존한다.
+        decision.trace.filter { it.type == AutomationType.FISHING }.distinctBy { it.entryId }.forEach { item ->
+            val observed = item.diagnosticContext?.let { diagnosticMapper.readTree(it).path("snapshot") }
+            if (observed?.path("battleObservationComplete")?.asBoolean(false) == true &&
+                observed.path("blockedByBattle").isBoolean && !observed.path("blockedByBattle").asBoolean() &&
+                latestFishingProgress(accountId, item.entryId)?.reasonCode == FISHING_RECOVERY_REASON
+            ) {
+                appendActionResult(cycle.id, AutomationActionTrace(
+                    kind = AutomationHistoryEventKind.SKIPPED, reasonCode = "FISHING_RECOVERY_RESOLVED",
+                    message = "최신 목록에서 이전 낚시 전투의 부재를 확인하고 다시 판단했습니다.",
+                    entryId = item.entryId, type = AutomationType.FISHING, actionKind = "OBSERVATION",
+                    diagnosticContext = item.diagnosticContext,
+                ))
+            }
+        }
         eventCommands.flush()
         afterCommitTelemetry { progressTelemetry?.recordDecision(accountId, decision) }
         return cycle.id
@@ -264,6 +279,18 @@ class JpaAutomationDecisionJournal(
         events: List<AutomationHistoryEvent>,
         selectedEntryId: Long?,
     ): List<AutomationHistoryStep> {
+        val attachedObservations = events.filter { observation ->
+            observation.reasonCode == "FISHING_RECOVERY_RESOLVED" && observation.actionKind == "OBSERVATION" &&
+                events.any { it.id < observation.id && it.entryId == observation.entryId &&
+                    it.reasonCode != "FISHING_RECOVERY_RESOLVED" }
+        }
+        if (attachedObservations.isNotEmpty()) {
+            return groupSteps(events - attachedObservations.toSet(), selectedEntryId).map { step ->
+                step.copy(executionEvents = (step.executionEvents + attachedObservations.filter {
+                    it.entryId == step.event.entryId
+                }).sortedBy { it.sequence })
+            }
+        }
         val selectedIndex = events.indexOfFirst { event ->
             event.kind == AutomationHistoryEventKind.SELECTED &&
                 (selectedEntryId == null || event.entryId == selectedEntryId)
@@ -319,22 +346,26 @@ class JpaAutomationDecisionJournal(
         return trace.copy(targetKey = trace.targetKey ?: target, diagnosticContext = AutomationDecisionDiagnostics.encode(node))
     }
 
+    private fun latestFishingProgress(accountId: Long, entryId: Long?): AutomationDecisionEventEntity? {
+        // 같은 낚시 항목의 마지막 복구 또는 진전만 읽는다. 다른 항목의 성공과 새 작업 ID는 경계가 아니다.
+        return entityManager.createQuery(
+            "select e from AutomationDecisionEventEntity e where e.cycle.accountId = :accountId " +
+                "and e.entryId = :entryId and e.type = :type and (e.reasonCode in :reasons " +
+                "or (e.kind = :success and e.actionKind <> 'START')) order by e.id desc",
+            AutomationDecisionEventEntity::class.java,
+        ).setParameter("accountId", accountId).setParameter("entryId", entryId)
+            .setParameter("type", AutomationType.FISHING)
+            .setParameter("reasons", listOf(FISHING_RECOVERY_REASON, "FISHING_DAILY_LIMIT", "FISHING_RECOVERY_RESOLVED"))
+            .setParameter("success", AutomationHistoryEventKind.ACTION_SUCCEEDED)
+            .setMaxResults(1).resultList.firstOrNull()
+    }
+
     private fun annotateFishingRepetition(
         cycle: AutomationDecisionCycleEntity,
         trace: AutomationActionTrace,
         node: ObjectNode,
     ) {
-        // 같은 낚시 항목의 마지막 복구 또는 진전만 읽는다. 다른 항목의 성공과 새 작업 ID는 경계가 아니다.
-        val previous = entityManager.createQuery(
-            "select e from AutomationDecisionEventEntity e where e.cycle.accountId = :accountId " +
-                "and e.entryId = :entryId and e.type = :type and (e.reasonCode in :reasons " +
-                "or (e.kind = :success and e.actionKind <> 'START')) order by e.id desc",
-            AutomationDecisionEventEntity::class.java,
-        ).setParameter("accountId", cycle.accountId).setParameter("entryId", trace.entryId)
-            .setParameter("type", AutomationType.FISHING)
-            .setParameter("reasons", listOf(FISHING_RECOVERY_REASON, "FISHING_DAILY_LIMIT", "FISHING_RECOVERY_RESOLVED"))
-            .setParameter("success", AutomationHistoryEventKind.ACTION_SUCCEEDED)
-            .setMaxResults(1).resultList.firstOrNull()
+        val previous = latestFishingProgress(cycle.accountId, trace.entryId)
         val prior = previous?.diagnosticContext?.let { runCatching { diagnosticMapper.readTree(it) }.getOrNull() }
         val continued = previous?.reasonCode == FISHING_RECOVERY_REASON && prior != null &&
             prior.path("settingsRevision").asLong() == node.path("settingsRevision").asLong() &&

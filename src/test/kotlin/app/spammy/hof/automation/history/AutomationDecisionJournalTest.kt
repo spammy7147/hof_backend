@@ -14,6 +14,8 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
 import org.springframework.test.context.ActiveProfiles
 import java.time.Instant
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -103,6 +105,38 @@ class AutomationDecisionJournalTest {
         assertEquals(3, warnings().size)
         recovery("after-external-resolution-3", remaining = 4)
         assertEquals(4, warnings().size)
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    fun `낚시 미선택의 해소 관측은 같은 평가 아래 한 번 표시된다`(selectOther: Boolean) {
+        val account = account("fishing-resolution-$selectOther")
+        val fishing = entry(account, AutomationType.FISHING, 0)
+        val other = entry(account, AutomationType.HOME_QUEST, 1)
+        val journal = journal()
+        val first = journal.appendDecision(account.id, AutomationCoordination.Idle(emptyList()))
+        journal.appendActionResult(first, AutomationActionTrace(
+            AutomationHistoryEventKind.SKIPPED, "FISHING_BATTLE_RECOVERED_FROM_START", "전투 재확인",
+            fishing.id, AutomationType.FISHING, "START",
+        ))
+        val trace = listOf(AutomationEvaluationTrace(
+            0, fishing.id, AutomationType.FISHING, AutomationDecisionOutcome.SKIPPED,
+            "FISHING_STATE_INCOMPLETE", "낚시 상태 대기",
+            diagnosticContext = """{"stage":"ENTRY_EVALUATION","snapshot":{"primaryAction":"NONE","battleObservationComplete":true,"blockedByBattle":false}}""",
+        ))
+        val decision = if (selectOther) AutomationCoordination.Runnable(
+            other.id, HomeQuestAutomationAction(account.id, "A", "하위 자택", "accept-A", HomeQuestAutomationActionType.ACCEPT), emptyList(), trace + AutomationEvaluationTrace(
+                1, other.id, AutomationType.HOME_QUEST, AutomationDecisionOutcome.SELECTED, "RUNNABLE", "수락",
+            ),
+        ) else AutomationCoordination.Idle(emptyList(), trace)
+        val id = journal.appendDecision(account.id, decision)
+        entityManager.flush(); entityManager.clear()
+        val cycle = journal.page(account.id, AutomationHistoryQuery()).cycles.single { it.id == id }
+        assertEquals(if (selectOther) 2 else 1, cycle.topLevelStepCount)
+        assertEquals(cycle.steps.size, cycle.steps.map { it.event.entryId }.distinct().size)
+        val step = cycle.steps.single { it.event.entryId == fishing.id }
+        assertEquals("FISHING_STATE_INCOMPLETE", step.event.reasonCode)
+        assertEquals("FISHING_RECOVERY_RESOLVED", step.executionEvents.single().reasonCode)
     }
 
     @Test

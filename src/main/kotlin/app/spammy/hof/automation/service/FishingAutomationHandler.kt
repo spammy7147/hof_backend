@@ -22,6 +22,7 @@ data class FishingAutomationSnapshot(
     val primaryPreset: FishingAutomationPreset?,
     val now: Instant,
     val observation: FishingAutomationObservation? = null,
+    val timeSnapshot: AutomationTimeSnapshot? = null,
 )
 
 data class FishingAutomationMapSetting(
@@ -40,7 +41,7 @@ data class FishingTownAutomationAction(
 ) : PreparedAutomationAction
 
 @Service
-class FishingAutomationHandler : AutomationHandler<FishingAutomationSnapshot> {
+class FishingAutomationHandler(private val timePolicy: BattleTimePolicy = BattleTimePolicy()) : AutomationHandler<FishingAutomationSnapshot> {
     override fun evaluate(context: FishingAutomationSnapshot): HandlerEvaluation {
         if (!context.state.battleObservationComplete) return HandlerEvaluation.ObservationGap(
             actionKind = AutomationActionKind.FISHING_OBSTRUCTION_BATTLE,
@@ -51,7 +52,7 @@ class FishingAutomationHandler : AutomationHandler<FishingAutomationSnapshot> {
             message = "현재 낚시 전투 목록을 완전하게 확인하지 못해 이 낚시 항목만 다시 확인합니다.",
             authoritative = false,
         )
-        fishingObstructionEvaluation(context)?.let { return it }
+        fishingObstructionEvaluation(context, timePolicy)?.let { return it }
         if (
             context.state.primaryAction == FishingPrimaryAction.START &&
             context.state.lastOutcome == app.spammy.hof.town.fishing.model.FishingOutcome.STARTED
@@ -93,7 +94,7 @@ class FishingAutomationHandler : AutomationHandler<FishingAutomationSnapshot> {
 
 }
 
-internal fun fishingObstructionEvaluation(context: FishingAutomationSnapshot): HandlerEvaluation? {
+internal fun fishingObstructionEvaluation(context: FishingAutomationSnapshot, timePolicy: BattleTimePolicy): HandlerEvaluation? {
     if (!context.state.blockedByBattle) return null
     val target = context.state.battleTarget ?: return HandlerEvaluation.ObservationGap(
         actionKind = AutomationActionKind.FISHING_OBSTRUCTION_BATTLE,
@@ -121,6 +122,9 @@ internal fun fishingObstructionEvaluation(context: FishingAutomationSnapshot): H
             "${target.name} 낚시 전투 프리셋 구성을 확인해 주세요.",
             "FISHING_PARTY_INVALID",
         )
+    val timeDecision = timePolicy.forBattleMap(context.timeSnapshot, context.now,
+        targetRemaining = 1, supportsThreeBattles = false, hasCapacityForThree = false)
+    if (timeDecision is BattleTimeDecision.Wait) return timeDecision.toUnavailable()
     return HandlerEvaluation.Runnable(BattleMapAutomationAction(
         context.accountId,
         context.now.atZone(FISHING_ZONE).toLocalDate(),

@@ -190,7 +190,7 @@ internal object AutomationDecisionDiagnostics {
             "maps" to state.states.take(TARGET_LIMIT).map { it.copy(mapName = null) },
         ) }
         fishing != null -> fishing.let { snapshot -> snapshot.state.let { state -> mapOf(
-            "observedAt" to snapshot.now, "primaryAction" to state.primaryAction,
+            "observedAt" to snapshot.now, "time" to snapshot.timeSnapshot, "primaryAction" to state.primaryAction,
             "availableActions" to state.availableActions, "remainingCasts" to state.remainingCasts,
             "baitCount" to state.baitCount, "escapeSeconds" to state.escapeSeconds,
             "blockedByBattle" to state.blockedByBattle,
