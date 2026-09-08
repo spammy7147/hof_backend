@@ -596,6 +596,69 @@ class AutomationRecoveryIntegrationTest {
         assertScheduledWake("TYPED_NEXT_ROUND", clock.now().plusSeconds(3))
     }
 
+    @ParameterizedTest
+    @EnumSource(value = AutomationType::class, names = ["BATTLE_MAP", "ADVENTURE_MAP", "UNION"])
+    fun `실제 맵 선택은 쿨다운을 건너뛰고 영속 후속 판단에서 전투한 뒤 다시 판단한다`(type: AutomationType) {
+        failedPattern = -1
+        Mockito.doCallRealMethod().`when`(decisions).select(accountId)
+        val category = when (type) {
+            AutomationType.BATTLE_MAP -> "battle_map"
+            AutomationType.ADVENTURE_MAP -> "adventure_map"
+            else -> "union"
+        }
+        val query = when (type) {
+            AutomationType.BATTLE_MAP -> "common"
+            AutomationType.ADVENTURE_MAP -> "sp_common"
+            else -> "union"
+        }
+        fun page(cooling: Boolean) = """<html><body><div id="menu2">Funds : $ 1 Time : 100/100</div>
+            <div id="contents"><div>공유 지역 (2)</div><div id="mapgroup1">
+            <p><a href='index.php?$query=0003'>도적소탕${if (cooling) " (1분) 남음" else ""}</a> 2 가능</p></div></div>
+            <div id="foot"><h5>Copy Right sanitized fixture</h5><h6>H.O.F Korean Ver sanitized fixture</h6>
+            <img src="image/zerohof.gif"></div></body></html>"""
+        TransactionTemplate(transactions).executeWithoutResult {
+            val entry = entityManager.find(AutomationEntryEntity::class.java, entryId)
+            entry.type = type
+            entry.singletonTypeMarker = type.takeIf { it == AutomationType.UNION }
+            val preset = PartyPresetEntity(account = entry.account, name = "실제 선택 파티", createdAt = clock.now(),
+                updatedAt = clock.now(), isPrimary = true)
+            entityManager.persist(preset)
+            entityManager.createQuery("select c from CharacterEntity c where c.account.id = :id order by c.id", CharacterEntity::class.java)
+                .setParameter("id", accountId).resultList.forEachIndexed { index, character ->
+                    val pattern = CharacterPatternSlotEntity(character = character, slotCode = "1", label = "기본", canLoad = true)
+                    entityManager.persist(pattern)
+                    entityManager.persist(PartyPresetMemberEntity(preset, index, character, pattern))
+                }
+            entityManager.persist(when (type) {
+                AutomationType.BATTLE_MAP -> BattleAutomationMapEntity(entry = entry, categoryId = category,
+                    mapCode = "0003", dailyTargetCount = 1, presetMode = PresetSelectionMode.PRIMARY, executionOrder = 0)
+                AutomationType.ADVENTURE_MAP -> AdventureAutomationMapEntity(entry = entry, categoryId = category,
+                    mapCode = "0003", presetMode = PresetSelectionMode.PRIMARY, executionOrder = 0)
+                else -> UnionAutomationMapEntity(entry = entry, categoryId = category,
+                    mapCode = "0003", presetMode = PresetSelectionMode.PRIMARY, executionOrder = 0)
+            })
+        }
+        mapPage = page(cooling = true)
+        wakeups.wake(accountId, "REAL_MAP_SELECTION_BASELINE")
+        publisher.publishBatch()
+        assertTrue(battleRequests().isEmpty(), "실제 선택기가 쿨다운 맵을 제출하면 안 된다.")
+        assertEquals(1, journal.page(accountId, AutomationHistoryQuery()).cycles.size)
+
+        clock.current = clock.now().plusSeconds(60)
+        mapPage = page(cooling = false)
+        consumeNextWake()
+        assertEquals("SUCCEEDED", runs().single()["status"], runs().toString())
+        assertEquals(1, battleRequests().size)
+        assertEquals(2, journal.page(accountId, AutomationHistoryQuery()).cycles.size)
+
+        mapPage = page(cooling = true)
+        consumeNextWake()
+        assertEquals(3, journal.page(accountId, AutomationHistoryQuery()).cycles.size)
+        assertEquals(1, battleRequests().size, "새 관측의 쿨다운 또는 완료한 목표를 다시 제출하면 안 된다.")
+        assertNull(jdbc.queryForObject("select lease_token from typed_automation_runtime_states where account_id = ?", String::class.java, accountId))
+        assertScheduledWake("TYPED_NEXT_ROUND", clock.now().plusSeconds(3))
+    }
+
     @Test
     fun `실제 전투 응답 유실은 미전송으로 바꾸거나 전투를 즉시 재제출하지 않는다`() {
         failedPattern = -1
