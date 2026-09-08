@@ -11,6 +11,8 @@ import app.spammy.hof.external.model.HofRequestOrigin
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import java.net.InetSocketAddress
+import java.net.ServerSocket
+import java.net.Socket
 import java.net.http.HttpRequest
 import java.time.Duration
 import java.time.Instant
@@ -19,6 +21,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -27,33 +30,60 @@ import kotlin.test.assertTrue
 
 class HofHttpClientTest {
     @Test
-    fun `a three second gap reuses the connection and four seconds of idle time retires it`() {
+    @org.junit.jupiter.api.Timeout(20)
+    fun `a three second gap reuses the connection and idle cleanup retires it`() {
+        assertEquals("4", System.getProperty("jdk.httpclient.keepalive.timeout"))
         val connections = CopyOnWriteArrayList<InetSocketAddress>()
         val methods = CopyOnWriteArrayList<String>()
-        val server = HttpServer.create(InetSocketAddress(0), 0)
-        server.createContext("/test") { exchange ->
-            connections += exchange.remoteAddress
-            methods += exchange.requestMethod
-            exchange.requestBody.use { it.readBytes() }
-            exchange.sendText("OK")
+        val retired = CountDownLatch(1)
+        val activeSocket = AtomicReference<Socket?>()
+        val server = ServerSocket().apply { bind(InetSocketAddress("127.0.0.1", 0)) }
+        val executor = Executors.newSingleThreadExecutor()
+        val serving = executor.submit {
+            while (methods.size < 3) {
+                server.accept().use { socket ->
+                    activeSocket.set(socket)
+                    socket.soTimeout = 10_000
+                    val reader = socket.getInputStream().bufferedReader(Charsets.US_ASCII)
+                    while (methods.size < 3) {
+                        val requestLine = reader.readLine()
+                        if (requestLine == null) {
+                            if (methods.size == 2) retired.countDown()
+                            break
+                        }
+                        // 이 fixture의 세 요청은 모두 본문이 없다.
+                        while (!requireNotNull(reader.readLine()).isEmpty()) { }
+                        connections += socket.remoteSocketAddress as InetSocketAddress
+                        methods += requestLine.substringBefore(' ')
+                        socket.getOutputStream().apply {
+                            write("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK".toByteArray(Charsets.US_ASCII))
+                            flush()
+                        }
+                    }
+                }
+            }
         }
-        server.start()
 
         try {
             val client = client()
-            val url = "http://localhost:${server.address.port}/test"
+            val url = "http://127.0.0.1:${server.localPort}/test"
             client.execute(ACCOUNT_ID, HofRequest(HofHttpMethod.GET, url))
             Thread.sleep(3_000)
             client.execute(ACCOUNT_ID, HofRequest(HofHttpMethod.POST, url))
             assertEquals(connections[0], connections[1], "3초 간격의 요청은 연결을 재사용한다")
 
-            Thread.sleep(4_500)
+            // JDK 21의 비동기 selector 정리는 만료 시각보다 늦게 실행될 수 있다.
+            // 4초 정책 + 기본 selector 대기 3초에 여유를 두고, 실제 EOF를 기다린다.
+            assertTrue(retired.await(8, TimeUnit.SECONDS), "유휴 연결은 추가 요청 없이 종료되어야 한다")
             client.execute(ACCOUNT_ID, HofRequest(HofHttpMethod.POST, url))
+            serving.get(2, TimeUnit.SECONDS)
 
             assertEquals(listOf("GET", "POST", "POST"), methods)
-            assertNotEquals(connections[1], connections[2], "유휴 4초가 지난 연결로 POST를 보내면 안 된다")
+            assertNotEquals(connections[1], connections[2], "유휴 연결 정리 후 POST는 새 연결을 사용한다")
         } finally {
-            server.stop(0)
+            server.close()
+            activeSocket.get()?.close()
+            executor.shutdownNow()
         }
     }
 
