@@ -747,6 +747,41 @@ class AutomationRecoveryIntegrationTest {
         if (recovery) assertEquals(1, requests.count { it.method == HofHttpMethod.POST && it.url.contains("common=fishing_12") })
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = ["AUTOMATION", "MANUAL"])
+    fun `전투 사전 조회의 쿠키 갱신은 다음 낚시 제출까지 이어진다`(path: String) {
+        val state = setupFishing(rotatingCookies = true)
+        if (path == "MANUAL") fishingService.act(accountId, app.spammy.hof.town.fishing.model.FishingAction.START)
+        else {
+            wakeups.wake(accountId, "FISHING_COOKIE_CHAIN")
+            publisher.publishBatch()
+        }
+        val hunt = requests.indexOfFirst { it.url.endsWith("?hunt") }
+        val start = requests.indexOfFirst { "FStart" in it.formFields }
+        assertTrue(hunt >= 0 && start > hunt)
+        assertEquals("fishing-cookie", state.requestCookies[hunt]["PHPSESSID"])
+        assertEquals("hunt-cookie", state.requestCookies[start]["PHPSESSID"])
+        if (path == "AUTOMATION") {
+            assertEquals("start-cookie", state.requestCookies[start + 1]["PHPSESSID"])
+            assertEquals(listOf("FStart", "FCatch"), fishingPosts())
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["FStart", "FCatch"])
+    fun `불확실한 직접 낚시 응답도 후속 관측 전에 당시 진단으로 보존한다`(action: String) {
+        val state = setupFishing(unconfirmedResponse = action)
+        if (action == "FCatch") state.phase = "waiting"
+        wakeups.wake(accountId, "FISHING_UNCONFIRMED_DIRECT")
+        publisher.publishBatch()
+        assertEquals(listOf(action), fishingPosts())
+        val event = journal.page(accountId, AutomationHistoryQuery()).cycles.flatMap { it.events }
+            .firstOrNull { it.reasonCode == "FISHING_DIRECT_RESULT_UNCONFIRMED" }
+        val node = jacksonObjectMapper().readTree(assertNotNull(assertNotNull(event).diagnosticContext))
+        assertEquals("DIRECT_RESPONSE", node["source"].asString())
+        assertTrue(node["fishing"].isObject)
+    }
+
     @Test
     fun `정상 낚시는 START CATCH 뒤 작업권을 놓고 후속 유휴 판단을 계속 소비한다`() {
         setupFishing()
@@ -1060,7 +1095,9 @@ class AutomationRecoveryIntegrationTest {
         action
     }
 
-    private class FishingFixtureState(var phase: String = "reset", var battle: Boolean = false, var mapFailure: String? = null)
+    private class FishingFixtureState(var phase: String = "reset", var battle: Boolean = false, var mapFailure: String? = null) {
+        val requestCookies = mutableListOf<Map<String, String>>()
+    }
 
     private fun setupFishing(
         obstruction: Boolean = false,
@@ -1071,6 +1108,8 @@ class AutomationRecoveryIntegrationTest {
         hiddenBattle: Boolean = false,
         castsAfterBattle: Int = 0,
         mapFailure: String? = null,
+        rotatingCookies: Boolean = false,
+        unconfirmedResponse: String? = null,
     ): FishingFixtureState {
         Mockito.doCallRealMethod().`when`(decisions).select(accountId)
         TransactionTemplate(transactions).executeWithoutResult {
@@ -1091,8 +1130,12 @@ class AutomationRecoveryIntegrationTest {
         var revealOnStart = startObstruction
         Mockito.doAnswer { invocation ->
             val request = invocation.arguments[1] as HofRequest
+            @Suppress("UNCHECKED_CAST")
+            val requestCookies = invocation.arguments[2] as Map<String, String>
+            state.requestCookies += requestCookies.toMap()
             requests += request
             val body = when {
+                unconfirmedResponse != null && unconfirmedResponse in request.formFields -> fixture(state.phase)
                 request.url.contains("?char=") -> header
                 homeResponse != null && request.url.contains("menu=quest2") -> homeResponse(request)
                 "FStart" in request.formFields -> {
@@ -1124,7 +1167,13 @@ class AutomationRecoveryIntegrationTest {
                 state.mapFailure == "INCOMPLETE" -> "<div>목록 일부만 도착했습니다.</div>"
                 else -> completeFishingMapPage(if (state.battle) "<a href='index.php?common=fishing_12'>Fishing- 악어</a>" else "")
             }
-            HofHttpResponse(200, request.url, header + body, emptyMap())
+            val responseCookies = if (rotatingCookies) mapOf("PHPSESSID" to when {
+                "FStart" in request.formFields -> "start-cookie"
+                "FCatch" in request.formFields -> "catch-cookie"
+                request.url.endsWith("?hunt") -> "hunt-cookie"
+                else -> "fishing-cookie"
+            }) else emptyMap()
+            HofHttpResponse(200, request.url, header + body, responseCookies)
         }.`when`(gateway).execute(Mockito.eq(accountId), anyRequest(), Mockito.anyMap())
         return state
     }

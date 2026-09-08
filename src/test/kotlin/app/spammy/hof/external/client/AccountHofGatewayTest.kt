@@ -28,6 +28,23 @@ class AccountHofGatewayTest {
     )
 
     @Test
+    fun `쿠키 갱신은 같은 명령과 계정에서만 이어지고 예외 뒤에는 남지 않는다`() {
+        raw.response = RESPONSE.copy(setCookies = mapOf("PHPSESSID" to "rotated"))
+        assertFailsWith<IllegalStateException> {
+            AccountHofGateway.withCookieChain(ACCOUNT_ID) {
+                gateway.execute(ACCOUNT_ID, REQUEST, COOKIES)
+                gateway.execute(ACCOUNT_ID + 1, REQUEST, mapOf("PHPSESSID" to "other-account"))
+                assertEquals(mapOf("PHPSESSID" to "other-account"), raw.cookies)
+                gateway.execute(ACCOUNT_ID, REQUEST, COOKIES)
+                assertEquals(COOKIES + raw.response.setCookies, raw.cookies)
+                throw IllegalStateException("sequence stopped")
+            }
+        }
+        gateway.execute(ACCOUNT_ID, REQUEST, COOKIES)
+        assertEquals(COOKIES, raw.cookies)
+    }
+
+    @Test
     fun `returns the raw response and records it with request start time`() {
         val actual = gateway.execute(ACCOUNT_ID, REQUEST, COOKIES)
 
@@ -140,6 +157,7 @@ class AccountHofGatewayTest {
         val accountIds = mutableListOf<Long>()
         var cookies: Map<String, String> = emptyMap()
         var failure: RuntimeException? = null
+        var response: HofHttpResponse = RESPONSE
 
         override fun execute(
             accountId: Long,
@@ -149,7 +167,7 @@ class AccountHofGatewayTest {
             accountIds += accountId
             this.cookies = cookies
             failure?.let { throw it }
-            return RESPONSE
+            return response
         }
     }
 

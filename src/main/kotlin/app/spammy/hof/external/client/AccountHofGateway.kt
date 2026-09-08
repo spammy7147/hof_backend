@@ -15,6 +15,23 @@ class AccountHofGateway(
     private val observations: AccountHofResponseObserver,
     private val timeProvider: TimeProvider,
 ) {
+    companion object {
+        private data class CookieChain(val accountId: Long, val updates: MutableMap<String, String> = linkedMapOf())
+        private val cookieChain = ThreadLocal<CookieChain>()
+
+        /** 같은 동기 관측/명령 안의 중첩 요청도 앞선 응답의 쿠키 갱신을 이어받는다. 범위 종료 시 폐기한다. */
+        internal fun <T> withCookieChain(accountId: Long, operation: (Map<String, String>) -> T): T {
+            val previous = cookieChain.get()
+            val current = previous?.takeIf { it.accountId == accountId } ?: CookieChain(accountId)
+            cookieChain.set(current)
+            return try {
+                operation(current.updates)
+            } finally {
+                if (previous == null) cookieChain.remove() else cookieChain.set(previous)
+            }
+        }
+    }
+
     fun execute(
         accountId: Long,
         request: HofRequest,
@@ -48,7 +65,9 @@ class AccountHofGateway(
         requestStartedAt: Instant,
         observeCharacterRoster: Boolean,
     ): DeferredCharacterRosterHofResponse {
-        val response = gateway.execute(accountId, request, cookies)
+        val chain = cookieChain.get()?.takeIf { it.accountId == accountId }
+        val response = gateway.execute(accountId, request, cookies + chain?.updates.orEmpty())
+        chain?.updates?.putAll(response.setCookies)
         val responseObservedAt = timeProvider.now()
         observe(accountId, response, requestStartedAt, responseObservedAt, observeCharacterRoster)
         return DeferredCharacterRosterHofResponse(response, requestStartedAt, responseObservedAt)

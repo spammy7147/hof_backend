@@ -1,6 +1,11 @@
 package app.spammy.hof.automation.service
 
 import app.spammy.hof.automation.raid.RaidAuthoritativeState
+import app.spammy.hof.automation.convergence.AutomationActionEvidence
+import app.spammy.hof.automation.convergence.ConvergenceDirective
+import app.spammy.hof.automation.entity.AutomationType
+import app.spammy.hof.automation.history.AutomationActionTrace
+import app.spammy.hof.automation.history.AutomationHistoryEventKind
 import java.time.Instant
 import app.spammy.hof.town.fishing.dto.FishingResponse
 import tools.jackson.databind.node.ObjectNode
@@ -67,6 +72,41 @@ internal object AutomationDecisionDiagnostics {
             ) },
             "recheckRequired" to (response == null || response.blockedByBattle || !response.battleObservationComplete),
         ))
+    }
+
+    fun fishingProbe(
+        stored: StoredTypedAutomationAction,
+        context: String?,
+        evidence: AutomationActionEvidence,
+        next: ConvergenceDirective,
+    ): AutomationActionTrace {
+        val observed = context ?: fishingAction(stored, null, "UNOBSERVED", evidence.capturedAt)
+        val fishing = mapper.readTree(observed).path("fishing")
+        val retryAt = (next as? ConvergenceDirective.WaitUntil)?.at
+        val complete = fishing.path("battleObservationComplete").asBoolean(false)
+        val recovered = complete && fishing.path("blockedByBattle").isBoolean && !fishing.path("blockedByBattle").asBoolean()
+        val advanced = evidence is AutomationActionEvidence.StateAdvanced || evidence is AutomationActionEvidence.DirectApplied
+        val reason = when {
+            recovered -> "FISHING_RECOVERY_RESOLVED"
+            advanced -> "FISHING_RESULT_STATE_ADVANCED"
+            retryAt != null -> "FISHING_RESULT_OBSERVATION"
+            else -> "FISHING_RESULT_UNOBSERVED"
+        }
+        val message = when {
+            recovered && retryAt != null -> "전투 부재를 확인했으며 이전 낚시 요청의 결과 확인은 계속합니다."
+            recovered -> "최신 목록에서 낚시 전투 부재를 확인했습니다. 이전 요청의 성공 여부와 구분해 다시 판단합니다."
+            advanced -> "최신 낚시 상태가 바뀌어 이전 요청을 대체하고 다시 판단합니다."
+            retryAt != null -> "낚시 요청의 결과를 확정하지 못해 다음 시각에 다시 확인합니다."
+            else -> "낚시 요청의 결과를 확정하지 못해 해당 상태를 보류하고 다른 항목을 판단합니다."
+        }
+        val node = mapper.readTree(actionResult(observed, reason, retryAt)) as ObjectNode
+        node.put("evidenceKind", evidence.javaClass.simpleName)
+        return AutomationActionTrace(
+            kind = if (retryAt == null) AutomationHistoryEventKind.SKIPPED else AutomationHistoryEventKind.WAITING,
+            reasonCode = reason, message = message, entryId = stored.entryId, type = AutomationType.FISHING,
+            actionKind = (stored.payload as StoredTypedActionPayload.FishingTown).action.name,
+            nextRunAt = retryAt, diagnosticContext = encode(node),
+        )
     }
 
     fun actionResult(context: String, reasonCode: String, nextRunAt: Instant?): String {

@@ -98,4 +98,27 @@ class AutomationDecisionDiagnosticsTest {
         assertEquals("ACTION_RESULT", node["stage"].asString())
     }
 
+
+    @Test
+    fun `다음 항목 선택 지시만으로 미관측이나 관측 예산 소진을 확인 완료라고 설명하지 않는다`() {
+        val now = Instant.parse("2026-09-08T00:00:00Z")
+        val stored = StoredTypedAutomationAction(2, "unobserved-result",
+            StoredTypedActionPayload.FishingTown(FishingAction.START, FishingPrimaryAction.START, 5))
+        val evidence = listOf(
+            app.spammy.hof.automation.convergence.AutomationActionEvidence.ResultUnobserved(now, "not-observed"),
+            app.spammy.hof.automation.convergence.AutomationActionEvidence.IncompleteObservation(now, "incomplete"),
+            app.spammy.hof.automation.convergence.AutomationActionEvidence.NetworkFailure(now, "network"),
+            app.spammy.hof.automation.convergence.AutomationActionEvidence.SameState(now, "same-state"),
+        )
+        evidence.forEach { observed ->
+            val trace = AutomationDecisionDiagnostics.fishingProbe(stored, null, observed,
+                app.spammy.hof.automation.convergence.ConvergenceDirective.ContinueSelection)
+            assertEquals("FISHING_RESULT_UNOBSERVED", trace.reasonCode)
+            assertTrue(trace.message.contains("확정하지 못해"))
+            assertFalse(trace.message.contains("확인했습니다"))
+            assertEquals(observed.javaClass.simpleName,
+                jacksonObjectMapper().readTree(trace.diagnosticContext!!)["evidenceKind"].asString())
+        }
+    }
+
 }

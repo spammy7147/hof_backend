@@ -87,6 +87,22 @@ class AutomationDecisionJournalTest {
         assertEquals(3, warnings().size)
         recovery("progress-1", remaining = 4); recovery("progress-2", remaining = 4)
         assertEquals(3, warnings().size)
+
+        val stored = StoredTypedAutomationAction(fishingId, "external-recovery",
+            StoredTypedActionPayload.FishingTown(app.spammy.hof.town.fishing.model.FishingAction.START,
+                app.spammy.hof.town.fishing.model.FishingPrimaryAction.START, 4))
+        val resolved = AutomationDecisionDiagnostics.fishingProbe(stored,
+            """{"stage":"ACTION_RESULT","source":"LATEST_OBSERVATION","fishing":{"blockedByBattle":false,"battleObservationComplete":true}}""",
+            app.spammy.hof.automation.convergence.AutomationActionEvidence.StateAdvanced(now, "external-battle-resolved"),
+            app.spammy.hof.automation.convergence.ConvergenceDirective.ContinueSelection)
+        assertEquals("FISHING_RECOVERY_RESOLVED", resolved.reasonCode)
+        journal().appendResultObservation(account.id, resolved)
+        entityManager.flush(); entityManager.clear()
+        recovery("after-external-resolution-1", remaining = 4)
+        recovery("after-external-resolution-2", remaining = 4)
+        assertEquals(3, warnings().size)
+        recovery("after-external-resolution-3", remaining = 4)
+        assertEquals(4, warnings().size)
     }
 
     @Test

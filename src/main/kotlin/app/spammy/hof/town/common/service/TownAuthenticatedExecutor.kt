@@ -93,7 +93,7 @@ class TownAuthenticatedExecutor(
         origin: HofRequestOrigin,
         projector: (html: String, finalUrl: String, page: ParsedTownPage) -> T,
     ): TownProjectedObservation<T> {
-        val observed = mutationFence.observe(accountId) {
+        val observed = mutationFence.observe(accountId) { AccountHofGateway.withCookieChain(accountId) { responseCookies ->
             val context = authenticatedContext(accountId)
             val response = executeAuthenticated(
                 context.account,
@@ -104,12 +104,12 @@ class TownAuthenticatedExecutor(
             ContinuableProjection(
                 value = projector(response.body, response.finalUrl, page),
                 account = context.account,
-                cookies = context.cookies + response.setCookies,
+                cookies = context.cookies + response.setCookies + responseCookies,
                 html = response.body,
                 finalUrl = response.finalUrl,
                 page = page,
             )
-        }
+        } }
         return TownProjectedObservation(
             observed.value.value,
             TownObservedPageContinuation(
@@ -375,7 +375,7 @@ class TownAuthenticatedExecutor(
             result: app.spammy.hof.town.common.model.ParsedTownResult,
             page: ParsedTownPage,
         ) -> T,
-    ): T = withAccountActionFence(accountId) {
+    ): T = withAccountActionFence(accountId) { AccountHofGateway.withCookieChain(accountId) {
         val context = authenticatedContext(accountId)
         val current = executeAuthenticated(context.account, requestFactory.townPage(pageUrl, origin), context.cookies)
         val currentPage = formParser.parse(current.body, current.finalUrl)
@@ -393,7 +393,7 @@ class TownAuthenticatedExecutor(
         val result = resultParser.parse(actionResponse.body)
         val page = formParser.parse(actionResponse.body, actionResponse.finalUrl)
         projector(actionResponse.body, actionResponse.finalUrl, result, page)
-    }
+    } }
 
     /**
      * action 응답이 원래 화면을 포함하지 않는 HOF 기능을 위해, 같은 계정 fence 안에서 최신 GET을 최대 한 번 보충한다.

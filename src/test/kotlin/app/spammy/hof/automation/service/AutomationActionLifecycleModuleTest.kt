@@ -2560,6 +2560,7 @@ class AutomationActionLifecycleModuleTest {
             Mockito.`when`(response.remainingCasts).thenReturn(remainingCasts)
             Mockito.`when`(response.lastOutcome).thenReturn(lastOutcome)
             Mockito.`when`(response.blockedByBattle).thenReturn(blockedByBattle)
+            Mockito.`when`(response.battleObservationComplete).thenReturn(true)
             Mockito.`when`(response.result).thenReturn(
                 resultStatus?.let { TownActionResultResponse(it, emptyList(), emptyList()) },
             )

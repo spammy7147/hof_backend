@@ -1,10 +1,7 @@
 package app.spammy.hof.automation.service
 
 import app.spammy.hof.automation.convergence.*
-import app.spammy.hof.automation.history.AutomationActionTrace
 import app.spammy.hof.automation.history.AutomationDecisionJournal
-import app.spammy.hof.automation.history.AutomationHistoryEventKind
-import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
@@ -237,29 +234,21 @@ class AutomationResultCoordinator(
         val convergence = convergenceModule ?: return null
         val observation = observeStoredConvergenceAction(accountId, directive)
         val next = convergence.record(directive.attemptId, observation.evidence)
+        journalFishingObservation(accountId, observation, next)
+        return next
+    }
+
+    private fun journalFishingObservation(accountId: Long, observation: StoredObservation, next: ConvergenceDirective) {
         val stored = observation.stored
         if (stored?.payload is StoredTypedActionPayload.FishingTown) {
-            val retryAt = (next as? ConvergenceDirective.WaitUntil)?.at
-            val reason = if (next == ConvergenceDirective.ContinueSelection) "FISHING_RESULT_RECONCILED" else "FISHING_RESULT_OBSERVATION"
             try {
-                decisionJournal?.appendResultObservation(accountId, AutomationActionTrace(
-                    kind = if (retryAt == null) AutomationHistoryEventKind.SKIPPED else AutomationHistoryEventKind.WAITING,
-                    reasonCode = reason,
-                    message = if (retryAt == null) "최신 낚시 상태로 이전 요청의 결과 확인을 마치고 다시 판단합니다."
-                        else "최신 낚시 상태를 확인했으며 이전 요청의 결과 확인을 계속합니다.",
-                    entryId = stored.entryId, type = AutomationType.FISHING, actionKind = stored.payload.action.name,
-                    nextRunAt = retryAt,
-                    diagnosticContext = AutomationDecisionDiagnostics.actionResult(
-                        observation.diagnosticContext ?: AutomationDecisionDiagnostics.fishingAction(stored, null, "UNOBSERVED", now()),
-                        reason, retryAt,
-                    ),
-                ))
+                decisionJournal?.appendResultObservation(accountId,
+                    AutomationDecisionDiagnostics.fishingProbe(stored, observation.diagnosticContext, observation.evidence, next))
             } catch (error: RuntimeException) {
                 log.warn("Fishing observation history unavailable accountId={} executionIdentity={} errorType={}",
                     accountId, stored.executionIdentity, error.javaClass.name)
             }
         }
-        return next
     }
 
     private data class CutoverResult(val warning: String, val directive: ConvergenceDirective?)
@@ -278,7 +267,9 @@ class AutomationResultCoordinator(
         val directive = when (val prepared = convergence.prepare(accountId, selection)) {
             is ConvergenceDirective.Submit -> {
                 val observation = observeReconciliation(accountId, managed, selection, stored.executionIdentity, ReconciliationSource.LEGACY_CHECKPOINT)
-                convergence.record(prepared.attemptId, observation)
+                convergence.record(prepared.attemptId, observation).also { next ->
+                    journalFishingObservation(accountId, StoredObservation(observation, stored, managed.diagnosticContext), next)
+                }
             }
             else -> prepared
         }

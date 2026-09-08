@@ -1248,19 +1248,8 @@ class UnifiedAutomationRunner @Autowired constructor(
         var attemptId: Long? = null
         var attemptTerminalized = false
 
-        fun append(kind: AutomationHistoryEventKind, code: String, message: String) {
-            decisionCycleId?.let { cycleId ->
-                try {
-                    decisionJournal?.appendActionResult(
-                        cycleId,
-                        actionTrace(stored, kind, code, message, descriptor = managed.descriptor,
-                            diagnosticContext = managed.diagnosticContext),
-                    )
-                } catch (error: RuntimeException) {
-                    log.warn("Fishing result history unavailable accountId={} executionIdentity={} errorType={}",
-                        accountId, stored.executionIdentity, error.javaClass.name)
-                }
-            }
+        fun append(kind: AutomationHistoryEventKind, code: String, message: String, nextRunAt: Instant? = null) {
+            appendFishingResult(accountId, decisionCycleId, stored, managed, kind, code, message, nextRunAt)
         }
 
         results.prepareFishing(accountId, selection, retryUnsubmitted)?.let { directive ->
@@ -1297,6 +1286,9 @@ class UnifiedAutomationRunner @Autowired constructor(
                 "낚시 CATCH 직접 응답이 적용을 확정하지 못했습니다.",
             )) {
                 is AutomationResultCoordinator.DirectResult.Unapplied -> {
+                    append(AutomationHistoryEventKind.WAITING, "FISHING_DIRECT_RESULT_UNCONFIRMED",
+                        "직접 낚시 응답의 적용을 확정하지 못해 결과 확인 규칙에 따라 처리합니다.",
+                        (result.directive as? ConvergenceDirective.WaitUntil)?.at)
                     typedRuntime.complete(execution, result.outcome)
                     result.directive?.let { scheduleConvergenceDirective(accountId, it) }
                     return
@@ -1412,19 +1404,9 @@ class UnifiedAutomationRunner @Autowired constructor(
             kind: AutomationHistoryEventKind,
             code: String,
             message: String,
+            nextRunAt: Instant? = null,
         ) {
-            decisionCycleId?.let { cycleId ->
-                try {
-                    decisionJournal?.appendActionResult(
-                        cycleId,
-                        actionTrace(stored, kind, code, message, descriptor = managed.descriptor,
-                            diagnosticContext = managed.diagnosticContext),
-                    )
-                } catch (error: RuntimeException) {
-                    log.warn("Fishing result history unavailable accountId={} executionIdentity={} errorType={}",
-                        accountId, stored.executionIdentity, error.javaClass.name)
-                }
-            }
+            appendFishingResult(accountId, decisionCycleId, stored, managed, kind, code, message, nextRunAt)
         }
 
         fun prepareConvergence(
@@ -1458,6 +1440,9 @@ class UnifiedAutomationRunner @Autowired constructor(
                 "낚시 직접 응답이 현재 단계를 확정하지 못했습니다.",
             )) {
                 is AutomationResultCoordinator.DirectResult.Unapplied -> {
+                    append(stored, managed, AutomationHistoryEventKind.WAITING, "FISHING_DIRECT_RESULT_UNCONFIRMED",
+                        "직접 낚시 응답의 적용을 확정하지 못해 결과 확인 규칙에 따라 처리합니다.",
+                        (result.directive as? ConvergenceDirective.WaitUntil)?.at)
                     typedRuntime.complete(execution, result.outcome)
                     result.directive?.let { scheduleConvergenceDirective(accountId, it) }
                     throw FishingCycleFlowStopped()
@@ -1907,6 +1892,27 @@ class UnifiedAutomationRunner @Autowired constructor(
                 item
             }
         })
+    }
+
+    private fun appendFishingResult(
+        accountId: Long,
+        decisionCycleId: Long?,
+        stored: StoredTypedAutomationAction,
+        managed: ManagedAutomationAction,
+        kind: AutomationHistoryEventKind,
+        code: String,
+        message: String,
+        nextRunAt: Instant?,
+    ) {
+        if (decisionCycleId == null) return
+        try {
+            decisionJournal?.appendActionResult(decisionCycleId,
+                actionTrace(stored, kind, code, message, nextRunAt, managed.descriptor,
+                    diagnosticContext = managed.diagnosticContext))
+        } catch (error: RuntimeException) {
+            log.warn("Fishing result history unavailable accountId={} executionIdentity={} errorType={}",
+                accountId, stored.executionIdentity, error.javaClass.name)
+        }
     }
 
     private fun actionTrace(
