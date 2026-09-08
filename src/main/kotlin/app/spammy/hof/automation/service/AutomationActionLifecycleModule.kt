@@ -83,6 +83,7 @@ interface AutomationActionLifecycleModule {
 interface ManagedAutomationAction {
     val storedAction: StoredTypedAutomationAction
     val descriptor: AutomationActionDescriptor
+    val diagnosticContext: String? get() = null
 
     /** Remote mutation 직전 최신 권위 상태를 다시 읽는 GET-only 검증 경계다. */
     fun validateBeforeSubmission() = Unit
@@ -576,6 +577,8 @@ class UnifiedAutomationActionLifecycleModule(
                 override val descriptor = payload.fishingDescriptor()
                 override val cycleObservation = fishingObservation
                 private var submittedResponse: app.spammy.hof.town.fishing.dto.FishingResponse? = null
+                override var diagnosticContext: String? = null
+                    private set
 
                 override fun validateBeforeSubmission() {
                     if (cycleObservation == null) validateFishingBeforeSubmission(accountId, payload)
@@ -603,6 +606,9 @@ class UnifiedAutomationActionLifecycleModule(
                     response: app.spammy.hof.town.fishing.dto.FishingResponse,
                 ): TypedAutomationExecution.ActionCompleted {
                     submittedResponse = response
+                    diagnosticContext = AutomationDecisionDiagnostics.fishingAction(
+                        stored, response, "DIRECT_RESPONSE", timeProvider.now(),
+                    )
                     return fishingActionCompleted(payload, response)
                 }
 
@@ -634,7 +640,11 @@ class UnifiedAutomationActionLifecycleModule(
                 override fun applyLegacyExecution(execution: TypedAutomationExecution) =
                     applyFishingExecution(execution)
 
-                override fun reconcile(): AmbiguousActionResolution = reconcileFishing(accountId, stored.entryId, payload)
+                override fun reconcile(): AmbiguousActionResolution = reconcileFishing(accountId, stored.entryId, payload) { latest ->
+                    diagnosticContext = AutomationDecisionDiagnostics.fishingAction(
+                        stored, latest, "LATEST_OBSERVATION", timeProvider.now(),
+                    )
+                }
             }
             is StoredTypedActionPayload.RaidTown -> object : ManagedAutomationAction {
                 override val storedAction = stored
@@ -868,6 +878,9 @@ class UnifiedAutomationActionLifecycleModule(
         val latest = sessionRecovery.execute(accountId) {
             fishingService.load(accountId, HofRequestOrigin.AUTOMATION)
         }
+        if (!latest.battleObservationComplete) throw AutomationPreSubmitObservationIncompleteException(
+            "최신 낚시 전투 목록의 완전성을 확인하지 못했습니다.",
+        )
         if (
             latest.primaryAction != payload.observedPrimaryAction ||
             payload.action !in latest.availableActions
@@ -1928,10 +1941,13 @@ class UnifiedAutomationActionLifecycleModule(
         accountId: Long,
         entryId: Long,
         payload: StoredTypedActionPayload.FishingTown,
+        observed: (app.spammy.hof.town.fishing.dto.FishingResponse) -> Unit,
     ): AmbiguousActionResolution {
         val latest = sessionRecovery.execute(accountId) {
             fishingService.load(accountId, HofRequestOrigin.AUTOMATION)
         }
+        observed(latest)
+        if (!latest.battleObservationComplete) return verifyLater("낚시 전투 목록을 완전하게 확인하지 못했습니다.")
         if (latest.blockedByBattle) {
             workLifecycle.completeFishingCycle(accountId, entryId)
             return AmbiguousActionResolution.Superseded(

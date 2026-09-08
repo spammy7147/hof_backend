@@ -229,23 +229,42 @@ class BattleMapParser {
         finalUrl: String,
         statusCode: Int,
         maps: List<HofBattleMap>,
+    ): Boolean = observesCompleteMapPage(html, finalUrl, statusCode, maps, "sp_common", "sp_hunt")
+
+    fun observesCompleteBattleMapPage(
+        html: String,
+        finalUrl: String,
+        statusCode: Int,
+        maps: List<HofBattleMap>,
+    ): Boolean = observesCompleteMapPage(html, finalUrl, statusCode, maps, "common", "hunt")
+
+    private fun observesCompleteMapPage(
+        html: String,
+        finalUrl: String,
+        statusCode: Int,
+        maps: List<HofBattleMap>,
+        queryName: String,
+        pageQuery: String,
     ): Boolean {
-        if (statusCode !in 200..299 || !ADVENTURE_PAGE_URL_PATTERN.containsMatchIn(finalUrl)) return false
+        val pagePattern = Regex("""/index[.]php[?](?:[^#&]*&)*$pageQuery(?:[=&][^#]*)?(?:#.*)?$""")
+        if (statusCode !in 200..299 || !pagePattern.containsMatchIn(finalUrl)) return false
         val document = HofHtmlParser.parse(html, HOF_BASE_URL)
         val contents = document.selectFirst("#contents") ?: return false
         if (!HofHtmlParser.hasCompletePageTerminator(html, HOF_BASE_URL)) return false
 
-        val queryPattern = Regex("""[?&]sp_common=([^&\"'#\s]+)""")
+        val queryPattern = Regex("""[?&]$queryName=([^&\"'#\s]+)""")
         val candidates = coalesceMapLinks(
-            contents.select("a[href*=sp_common=], div[id^=$MAP_GROUP_ID_PREFIX] a[href]"),
+            contents.select("a[href*=$queryName=], div[id^=$MAP_GROUP_ID_PREFIX] a[href]"),
             queryPattern,
         )
         val declaredIdentities = linkedSetOf<String>()
         candidates.forEach { candidate ->
             val group = candidate.link.parents().firstOrNull { it.id().startsWith(MAP_GROUP_ID_PREFIX) }
             val relevant = candidate.mapCode != null ||
-                (group != null && isRequestedPlaceholderHref(candidate.rawHref, setOf("sp_common", "sp_hunt")))
+                (group != null && isRequestedPlaceholderHref(candidate.rawHref, setOf(queryName, pageQuery)))
             if (!relevant) {
+                // hunt에는 일반 전투와 유니온 목록이 함께 있으며 유니온은 낚시 전투 판정 대상이 아니다.
+                if (pageQuery == "hunt" && Regex("""[?&]union=[^&#]+""").containsMatchIn(candidate.rawHref)) return@forEach
                 // A new/unknown action link inside a map group could be a target this parser cannot see yet.
                 // Treating it as decoration would make a stored target look absent from an otherwise complete page.
                 if (group != null && !isMapGroupDecoration(candidate.rawHref)) return false
@@ -680,9 +699,6 @@ class BattleMapParser {
             "(?:현재\\s*열린\\s*레이드가|진행\\s*중인\\s*전투가)\\s*없습니다[.]?",
         )
         val RAID_PAGE_URL_PATTERN = Regex("""/index[.]php[?](?:[^#&]*&)*raid_hunt(?:[=&][^#]*)?(?:#.*)?$""")
-        val ADVENTURE_PAGE_URL_PATTERN = Regex(
-            """/index[.]php[?](?:[^#&]*&)*sp_hunt(?:[=&][^#]*)?(?:#.*)?$""",
-        )
         val RAID_PAGE_MARKER = Regex("Special\\s*Battle", RegexOption.IGNORE_CASE)
         val RAID_BATTLE_LOG_MARKER = Regex("Battle\\s*Log", RegexOption.IGNORE_CASE)
     }

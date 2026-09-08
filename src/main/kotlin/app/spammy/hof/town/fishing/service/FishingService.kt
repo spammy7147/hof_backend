@@ -2,6 +2,7 @@ package app.spammy.hof.town.fishing.service
 
 import app.spammy.hof.battle.dto.BattleMapResponse
 import app.spammy.hof.battle.service.BattleMapService
+import java.io.IOException
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.model.HofRequestOrigin
@@ -50,13 +51,8 @@ class FishingService(
             url,
             HofRequestOrigin.AUTOMATION,
         ) { html, finalUrl, page ->
-            val snapshot = parser.parse(html, finalUrl, page)
             FishingResponse.from(
-                if (snapshot.primaryAction in setOf(FishingPrimaryAction.START, FishingPrimaryAction.CATCH)) {
-                    snapshot
-                } else {
-                    withObservedBattleTarget(accountId, snapshot, HofRequestOrigin.AUTOMATION)
-                },
+                withObservedBattleTarget(accountId, parser.parse(html, finalUrl, page), HofRequestOrigin.AUTOMATION),
             )
         }
         return FishingAutomationObservation(observed.value, observed.continuation)
@@ -72,7 +68,11 @@ class FishingService(
             accountId = accountId,
             pageUrl = url,
             origin = origin,
-            resolveAction = { html, finalUrl, page -> resolveFishingAction(html, finalUrl, page, action) },
+            resolveAction = { html, finalUrl, page ->
+                val state = withObservedBattleTarget(accountId, parser.parse(html, finalUrl, page), origin)
+                requireAvailable(FishingResponse.from(state), action)
+                resolveFishingAction(html, finalUrl, page, action)
+            },
         ) { html, finalUrl, result, page ->
             FishingResponse.from(withObservedBattleTarget(accountId, parser.parse(html, finalUrl, page, result), origin))
         }
@@ -85,12 +85,14 @@ class FishingService(
         beforeCatchSubmission: (FishingResponse) -> Unit,
     ): FishingOneCastRemoteResult {
         val url = locationResolver.resolve(TownFeatureId.FISHING).url
+        val current = observation ?: loadForAutomation(accountId)
+        requireAvailable(current.response, FishingAction.START)
         var started: FishingResponse? = null
         val caught = executor.executeObservedResponseTwoStepProjected(
             accountId = accountId,
             pageUrl = url,
             origin = HofRequestOrigin.AUTOMATION,
-            observation = observation?.continuation,
+            observation = current.continuation,
             entryAction = { html, finalUrl, page ->
                 resolveFishingAction(html, finalUrl, page, FishingAction.START)
             },
@@ -135,6 +137,7 @@ class FishingService(
         observation: FishingAutomationObservation,
     ): FishingResponse {
         val url = locationResolver.resolve(TownFeatureId.FISHING).url
+        requireAvailable(observation.response, action)
         return executor.executeObservedProjected(
             accountId = accountId,
             pageUrl = url,
@@ -193,6 +196,15 @@ class FishingService(
         return TownActionRequest(actionId = actionId)
     }
 
+    private fun requireAvailable(response: FishingResponse, action: FishingAction) {
+        if (!response.battleObservationComplete) {
+            throw ApiException(ErrorCode.HOF_REQUEST_FAILED, "현재 낚시 전투 목록을 완전하게 확인하지 못했습니다.")
+        }
+        if (response.blockedByBattle || action !in response.availableActions) {
+            unavailable("현재 낚시 상태에서는 ${action.name} 작업을 실행할 수 없습니다.")
+        }
+    }
+
     private fun resolveFishingActionOrNull(
         html: String,
         finalUrl: String,
@@ -237,7 +249,16 @@ class FishingService(
     ): FishingSnapshot {
         if (snapshot.battleTarget != null) return snapshot
 
-        val observed = battleMaps.findCurrentlyObservedMaps(accountId, BATTLE_CATEGORY_ID, origin)
+        val observation = try {
+            battleMaps.observeCurrentlyAvailableMaps(accountId, BATTLE_CATEGORY_ID, origin)
+        } catch (_: IOException) {
+            return incompleteBattleObservation(snapshot)
+        } catch (error: ApiException) {
+            if (error.errorCode != ErrorCode.HOF_REQUEST_FAILED) throw error
+            return incompleteBattleObservation(snapshot)
+        }
+        if (!observation.pageComplete) return incompleteBattleObservation(snapshot)
+        val observed = observation.maps
             .filter { it.enabled && it.resolved && !it.mapCode.isNullOrBlank() }
             .filter(::isFishingBattleMap)
             .firstOrNull() ?: return snapshot
@@ -252,6 +273,13 @@ class FishingService(
             ),
         )
     }
+
+    private fun incompleteBattleObservation(snapshot: FishingSnapshot) = snapshot.copy(
+        primaryAction = FishingPrimaryAction.NONE,
+        availableActions = emptyList(),
+        battleObservationComplete = false,
+        notice = "현재 전투 목록을 완전하게 확인하지 못했습니다. 다시 확인해 주세요.",
+    )
 
     private fun withMissingObservedBattleTarget(
         accountId: Long,

@@ -9,6 +9,9 @@ import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertTrue
+import app.spammy.hof.town.fishing.dto.*
+import app.spammy.hof.town.fishing.model.*
 import tools.jackson.module.kotlin.jacksonObjectMapper
 
 class AutomationDecisionDiagnosticsTest {
@@ -62,4 +65,37 @@ class AutomationDecisionDiagnosticsTest {
         assertFalse(json.contains("private-"))
         assertFalse(json.contains("accountId"))
     }
+
+    @Test
+    fun `낚시 실행 진단은 원문과 제출값을 제외하고 현재 상태와 복구 의도를 보존한다`() {
+        val now = Instant.parse("2026-09-08T00:00:00Z")
+        val response = FishingResponse(
+            notice = "private-cookie", remainingCasts = 5, waterStatus = "private-html",
+            baitCount = 1, shiningBaitCount = 0, escapeSeconds = null, combo = 0,
+            locationName = "private-location", primaryAction = FishingPrimaryAction.NONE,
+            availableActions = emptySet(), lastOutcome = null, blockedByBattle = true,
+            battleTarget = FishingBattleTargetResponse("battle_map", "Fish03", "private-name"),
+            catches = emptyList(), result = TownActionResultResponse("UNKNOWN", listOf("private-token"), emptyList()),
+        )
+        val stored = StoredTypedAutomationAction(2, "execution-3",
+            StoredTypedActionPayload.FishingTown(FishingAction.START, FishingPrimaryAction.START, 5))
+        val context = AutomationDecisionDiagnostics.actionResult(
+            AutomationDecisionDiagnostics.fishingAction(stored, response, "DIRECT_RESPONSE", now), "FISHING_BATTLE_RECOVERED_FROM_START", now.plusSeconds(3))
+        val node = jacksonObjectMapper().readTree(context)
+        assertEquals("Fish03", node["fishing"]["battleMapCode"].asString())
+        assertEquals(true, node["recheckRequired"].asBoolean())
+        assertEquals("execution-3", node["executionIdentity"].asString())
+        assertEquals(now.plusSeconds(3).toString(), node["nextCheckAt"].asString())
+        assertFalse(context.contains("private-"))
+    }
+
+    @Test
+    fun `큰 진단도 이스케이프한 뒤 저장 크기 제한과 잘림 표시를 지킨다`() {
+        val context = AutomationDecisionDiagnostics.encode(mapOf("stage" to "ACTION_RESULT", "mapCode" to "\\".repeat(20_000)))
+        assertTrue(context.length <= 16_384, "실제 JSON 크기: ${context.length}")
+        val node = jacksonObjectMapper().readTree(context)
+        assertTrue(node["truncated"].asBoolean())
+        assertEquals("ACTION_RESULT", node["stage"].asString())
+    }
+
 }

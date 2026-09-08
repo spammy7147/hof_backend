@@ -44,6 +44,7 @@ data class CurrentBattleMapObservation(
     val status: CurrentBattleMapObservationStatus,
     val maps: List<BattleMapResponse>,
     val raidCooldown: RaidCooldownPageObservation? = null,
+    val pageComplete: Boolean = status != CurrentBattleMapObservationStatus.INCOMPLETE,
 )
 
 @Service
@@ -151,6 +152,10 @@ class BattleMapService(
                 CurrentBattleMapObservationStatus.OBSERVED,
                 synchronizeCurrentSnapshot(snapshot),
                 raidCooldown,
+                pageComplete = snapshot.category != BattleCategoryId.BATTLE_MAP ||
+                    battleMapParser.observesCompleteBattleMapPage(
+                        snapshot.responseBody, snapshot.finalUrl, snapshot.statusCode, snapshot.observations,
+                    ),
             )
         }
         val authoritativeAbsence = snapshot.statusCode in 200..299 && when (snapshot.category) {

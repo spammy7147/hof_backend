@@ -5,6 +5,8 @@ import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.CookieQueryRepository
 import app.spammy.hof.battle.dto.BattleMapResponse
 import app.spammy.hof.battle.model.BattleMapKeyMode
+import app.spammy.hof.battle.service.CurrentBattleMapObservation
+import app.spammy.hof.battle.service.CurrentBattleMapObservationStatus
 import app.spammy.hof.battle.service.BattleMapService
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
@@ -50,8 +52,8 @@ class FishingServiceTest {
     fun `낚시 페이지에 전투 링크가 없어도 전투 탭에서 현재 출현한 낚시 맵을 연결한다`() {
         val html = fixture("monster.html").replace(Regex("<a href=\"\\?menu=hunt&amp;common=fishing_12\">전투</a>"), "")
         stubFishing(html)
-        Mockito.`when`(battleMaps.findCurrentlyObservedMaps(7L, "battle_map"))
-            .thenReturn(listOf(observedMap("fishing_eel", "Fishing- 전기 뱀장어", "낚시(적정 레벨: ??-??)")))
+        Mockito.`when`(battleMaps.observeCurrentlyAvailableMaps(7L, "battle_map"))
+            .thenReturn(CurrentBattleMapObservation(CurrentBattleMapObservationStatus.OBSERVED, listOf(observedMap("fishing_eel", "Fishing- 전기 뱀장어", "낚시(적정 레벨: ??-??)"))))
 
         val response = service.load(7L)
 
@@ -65,12 +67,12 @@ class FishingServiceTest {
     fun `낚시 맵은 현재 관측 순서의 첫 맵 하나를 사용한다`() {
         val html = fixture("monster.html").replace(Regex("<a href=\"\\?menu=hunt&amp;common=fishing_12\">전투</a>"), "")
         stubFishing(html)
-        Mockito.`when`(battleMaps.findCurrentlyObservedMaps(7L, "battle_map"))
-            .thenReturn(listOf(
+        Mockito.`when`(battleMaps.observeCurrentlyAvailableMaps(7L, "battle_map"))
+            .thenReturn(CurrentBattleMapObservation(CurrentBattleMapObservationStatus.OBSERVED, listOf(
                 observedMap("field", "고블린 부락", "일반"),
                 observedMap("fishing_eel", "Fishing- 전기 뱀장어", "낚시"),
                 observedMap("fishing_shark", "Fishing- 상어", "낚시"),
-            ))
+            )))
 
         val response = service.load(7L)
 
@@ -80,8 +82,8 @@ class FishingServiceTest {
     @Test
     fun `낚시 경고 문구가 없어도 전투 탭에 낚시 맵이 출현하면 전투 상태로 보완한다`() {
         stubFishing(fixture("reset.html"))
-        Mockito.`when`(battleMaps.findCurrentlyObservedMaps(7L, "battle_map"))
-            .thenReturn(listOf(observedMap("Fish03", "Fishing- 악어", "낚시")))
+        Mockito.`when`(battleMaps.observeCurrentlyAvailableMaps(7L, "battle_map"))
+            .thenReturn(CurrentBattleMapObservation(CurrentBattleMapObservationStatus.OBSERVED, listOf(observedMap("Fish03", "Fishing- 악어", "낚시"))))
 
         val response = service.load(7L)
 

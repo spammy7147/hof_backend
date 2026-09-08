@@ -71,6 +71,68 @@ abstract class AutomationModeContinuityTest {
     @Autowired private lateinit var characterRecovery: app.spammy.hof.character.service.CharacterDeepSyncRecovery
 
     @Test
+    fun `각 모드의 낚시는 CATCH 뒤 숨은 전투를 확인하고 새 START를 반복하지 않는다`() {
+        assertEquals(mode, properties.mode)
+        clock.current = Instant.parse("2026-09-08T00:00:00Z")
+        transport.delivered.clear()
+        val requests = mutableListOf<HofRequest>()
+        val accountId = TransactionTemplate(transactions).execute {
+            val account = HofAccountEntity(loginId = "fishing-mode-${UUID.randomUUID()}", encryptedPassword = "test", createdAt = clock.now())
+            entityManager.persist(account)
+            entityManager.persist(AutomationEntryEntity(account = account, type = AutomationType.FISHING, priority = 0,
+                enabled = true, createdAt = clock.now(), updatedAt = clock.now()))
+            entityManager.persist(HofCookieEntity(account = account, name = "PHPSESSID", value = "test-session", updatedAt = clock.now()))
+            entityManager.persist(HofStatusSnapshotEntity(account = account, playerName = "테스트", funds = 1,
+                timeCurrent = 100, timeMax = 100, work = "", auction = "", observedAt = clock.now()))
+            entityManager.persist(TypedAutomationRuntimeStateEntity(accountId = account.id, account = account,
+                lifecycleStatus = TypedAutomationLifecycle.RUNNING, createdAt = clock.now(), updatedAt = clock.now()))
+            account.id
+        }
+        fun fixture(name: String) = requireNotNull(javaClass.getResource("/fixtures/town/fishing/$name.html")).readText()
+        var battle = false
+        try {
+            Mockito.`when`(preflight.ensureReady(accountId)).thenReturn(AutomationDailyPreflight.Result.Ready)
+            Mockito.`when`(authorization.isExecutionAllowed(accountId)).thenReturn(true)
+            Mockito.doAnswer { invocation ->
+                val request = invocation.arguments[1] as HofRequest
+                requests += request
+                val body = when {
+                    "FStart" in request.formFields -> fixture("waiting")
+                    "FCatch" in request.formFields -> {
+                        battle = true
+                        fixture("caught").substringBefore("<form") + fixture("monster")
+                    }
+                    request.url.contains("menu=fishing") -> fixture("reset")
+                    else -> """<div id='contents'><a href='?common=0001'>일반 맵</a>
+                        ${if (battle) "<a href='?common=Fish03'>Fishing- 악어</a>" else ""}</div>
+                        <div id='foot'><h5>Copy Right sanitized</h5><h6>H.O.F Korean Ver sanitized</h6><img src='zerohof.gif'></div>"""
+                }
+                HofHttpResponse(200, request.url, "<div id='menu2'>Funds : $ 1 Time : 100/100</div>" + body, emptyMap())
+            }.`when`(gateway).execute(Mockito.eq(accountId), Mockito.any<HofRequest>()
+                ?: HofRequest(HofHttpMethod.GET, "https://example.test"), Mockito.anyMap())
+            wakeups.wake(accountId, "FISHING_MODE_CONTINUITY")
+            publisher.publishBatch()
+            assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.GET, HofHttpMethod.POST, HofHttpMethod.POST), requests.map { it.method })
+            repeat(2) {
+                clock.current = assertNotNull(jdbc.queryForObject(
+                    "select min(available_at) from automation_outbox where account_id = ? and published_at is null",
+                    java.time.OffsetDateTime::class.java, accountId)).toInstant()
+                publisher.publishBatch()
+            }
+            assertEquals(1, requests.count { "FStart" in it.formFields })
+            assertEquals(1, requests.count { "FCatch" in it.formFields })
+            assertEquals(2, requests.count { it.method == HofHttpMethod.POST })
+            val history = journal.page(accountId, AutomationHistoryQuery())
+            assertTrue(history.cycles.any { cycle -> cycle.events.any { it.reasonCode == "FISHING_PRESET_MISSING" } }, history.toString())
+            assertEquals(0, jdbc.queryForObject("select count(*) from automation_work_sessions where account_id = ? and status = 'RUNNING'", Int::class.java, accountId))
+            assertTrue(transport.delivered.all { outbox.consumed(it) })
+        } finally {
+            transport.delivered.forEach { jdbc.update("delete from automation_consumed_events where event_id = ?", it) }
+            jdbc.update("delete from hof_accounts where id = ?", accountId)
+        }
+    }
+
+    @Test
     fun `동기화 복구 뒤 같은 자택 응답은 한 번 제출하고 후속 판단에서 진행 대기로 양보한다`() {
         assertEquals(mode, properties.mode)
         clock.current = Instant.parse("2026-09-06T00:00:00Z")

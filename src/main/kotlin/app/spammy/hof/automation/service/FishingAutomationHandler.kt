@@ -42,6 +42,15 @@ data class FishingTownAutomationAction(
 @Service
 class FishingAutomationHandler : AutomationHandler<FishingAutomationSnapshot> {
     override fun evaluate(context: FishingAutomationSnapshot): HandlerEvaluation {
+        if (!context.state.battleObservationComplete) return HandlerEvaluation.ObservationGap(
+            actionKind = AutomationActionKind.FISHING_OBSTRUCTION_BATTLE,
+            scopeKind = AutomationIsolationScopeKind.FISHING_ENTRY,
+            baseline = "fishing|battle-observation-incomplete",
+            nextRunAt = context.now.plusSeconds(10),
+            reasonCode = "FISHING_BATTLE_OBSERVATION_INCOMPLETE",
+            message = "현재 낚시 전투 목록을 완전하게 확인하지 못해 이 낚시 항목만 다시 확인합니다.",
+            authoritative = false,
+        )
         fishingObstructionEvaluation(context)?.let { return it }
         if (
             context.state.primaryAction == FishingPrimaryAction.START &&

@@ -1,6 +1,10 @@
 package app.spammy.hof.automation.service
 
 import app.spammy.hof.automation.convergence.*
+import app.spammy.hof.automation.history.AutomationActionTrace
+import app.spammy.hof.automation.history.AutomationDecisionJournal
+import app.spammy.hof.automation.history.AutomationHistoryEventKind
+import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
@@ -21,6 +25,7 @@ class AutomationResultCoordinator(
     rollout: AutomationConvergenceRollout? = null,
     private val shadowEvaluator: AutomationConvergenceShadowEvaluator? = null,
     private val evidenceInterpreter: ProductionActionEvidenceInterpreter? = null,
+    private val decisionJournal: AutomationDecisionJournal? = null,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
     private val active = rollout?.active ?: (convergenceModule != null)
@@ -230,7 +235,31 @@ class AutomationResultCoordinator(
 
     fun probe(accountId: Long, directive: ConvergenceDirective.Probe): ConvergenceDirective? {
         val convergence = convergenceModule ?: return null
-        return convergence.record(directive.attemptId, observeStoredConvergenceAction(accountId, directive))
+        val observation = observeStoredConvergenceAction(accountId, directive)
+        val next = convergence.record(directive.attemptId, observation.evidence)
+        val stored = observation.stored
+        if (stored?.payload is StoredTypedActionPayload.FishingTown) {
+            val retryAt = (next as? ConvergenceDirective.WaitUntil)?.at
+            val reason = if (next == ConvergenceDirective.ContinueSelection) "FISHING_RESULT_RECONCILED" else "FISHING_RESULT_OBSERVATION"
+            try {
+                decisionJournal?.appendResultObservation(accountId, AutomationActionTrace(
+                    kind = if (retryAt == null) AutomationHistoryEventKind.SKIPPED else AutomationHistoryEventKind.WAITING,
+                    reasonCode = reason,
+                    message = if (retryAt == null) "최신 낚시 상태로 이전 요청의 결과 확인을 마치고 다시 판단합니다."
+                        else "최신 낚시 상태를 확인했으며 이전 요청의 결과 확인을 계속합니다.",
+                    entryId = stored.entryId, type = AutomationType.FISHING, actionKind = stored.payload.action.name,
+                    nextRunAt = retryAt,
+                    diagnosticContext = AutomationDecisionDiagnostics.actionResult(
+                        observation.diagnosticContext ?: AutomationDecisionDiagnostics.fishingAction(stored, null, "UNOBSERVED", now()),
+                        reason, retryAt,
+                    ),
+                ))
+            } catch (error: RuntimeException) {
+                log.warn("Fishing observation history unavailable accountId={} executionIdentity={} errorType={}",
+                    accountId, stored.executionIdentity, error.javaClass.name)
+            }
+        }
+        return next
     }
 
     private data class CutoverResult(val warning: String, val directive: ConvergenceDirective?)
@@ -287,22 +316,28 @@ class AutomationResultCoordinator(
         }
     }
 
+    private data class StoredObservation(
+        val evidence: AutomationActionEvidence,
+        val stored: StoredTypedAutomationAction? = null,
+        val diagnosticContext: String? = null,
+    )
+
     private fun observeStoredConvergenceAction(
         accountId: Long,
         directive: ConvergenceDirective.Probe,
-    ): AutomationActionEvidence {
+    ): StoredObservation {
         val stored = storedConvergenceActionLoader?.load(accountId, directive.executionIdentity)
-            ?: return AutomationActionEvidence.ResultUnobserved(now(), "STORED_ACTION_NOT_FOUND")
+            ?: return StoredObservation(AutomationActionEvidence.ResultUnobserved(now(), "STORED_ACTION_NOT_FOUND"))
         val managed = try {
             actionLifecycleModule.restoreVerified(stored, accountId)
         } catch (error: RuntimeException) {
-            return AutomationActionEvidence.ResultUnobserved(
-                now(),
-                error.message ?: "STORED_ACTION_INVALID",
-            )
+            return StoredObservation(AutomationActionEvidence.ResultUnobserved(
+                now(), error.message ?: "STORED_ACTION_INVALID",
+            ), stored)
         }
         val selection = convergenceSelectionFactory?.create(stored)
-        return observeReconciliation(accountId, managed, selection, directive.executionIdentity, ReconciliationSource.STORED_PROBE)
+        val evidence = observeReconciliation(accountId, managed, selection, directive.executionIdentity, ReconciliationSource.STORED_PROBE)
+        return StoredObservation(evidence, stored, managed.diagnosticContext)
     }
 
     private enum class ReconciliationSource { STORED_PROBE, LEGACY_CHECKPOINT }

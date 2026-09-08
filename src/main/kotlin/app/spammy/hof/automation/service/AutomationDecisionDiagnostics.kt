@@ -2,6 +2,8 @@ package app.spammy.hof.automation.service
 
 import app.spammy.hof.automation.raid.RaidAuthoritativeState
 import java.time.Instant
+import app.spammy.hof.town.fishing.dto.FishingResponse
+import tools.jackson.databind.node.ObjectNode
 import tools.jackson.module.kotlin.jacksonObjectMapper
 
 /** 재판단으로 덮어쓰지 않을 판단 입력. 원문 응답, form 값, 파티 요청 payload는 포함하지 않는다. */
@@ -40,9 +42,45 @@ internal object AutomationDecisionDiagnostics {
                 }.toList()
             },
         )
+        return encode(context)
+    }
+
+    fun fishingAction(
+        action: StoredTypedAutomationAction,
+        response: FishingResponse?,
+        source: String,
+        capturedAt: Instant,
+    ): String {
+        val baseline = action.payload as? StoredTypedActionPayload.FishingTown
+        return encode(linkedMapOf(
+            "version" to 1, "stage" to "ACTION_RESULT", "source" to source,
+            "capturedAt" to capturedAt, "executionIdentity" to action.executionIdentity,
+            "entryId" to action.entryId, "scope" to "FISHING_ENTRY",
+            "baseline" to baseline?.let { mapOf("action" to it.action,
+                "primaryAction" to it.observedPrimaryAction, "remainingCasts" to it.observedRemainingCasts) },
+            "fishing" to response?.let { mapOf(
+                "primaryAction" to it.primaryAction, "availableActions" to it.availableActions,
+                "remainingCasts" to it.remainingCasts, "lastOutcome" to it.lastOutcome,
+                "blockedByBattle" to it.blockedByBattle, "battleMapCode" to it.battleTarget?.mapCode,
+                "battleCategoryId" to it.battleTarget?.categoryId, "battleObservationComplete" to it.battleObservationComplete,
+                "escapeSeconds" to it.escapeSeconds,
+            ) },
+            "recheckRequired" to (response == null || response.blockedByBattle || !response.battleObservationComplete),
+        ))
+    }
+
+    fun actionResult(context: String, reasonCode: String, nextRunAt: Instant?): String {
+        val node = mapper.readTree(context) as ObjectNode
+        node.put("reasonCode", reasonCode)
+        node.put("nextCheckAt", nextRunAt?.toString())
+        return encode(node)
+    }
+
+    fun encode(context: Any): String {
         val json = mapper.writeValueAsString(context)
         return if (json.length <= 16_384) json else mapper.writeValueAsString(mapOf(
-            "version" to 1, "stage" to stage, "truncated" to true, "contextPrefix" to json.take(14_000),
+            "version" to 1, "stage" to mapper.readTree(json).path("stage").asString(),
+            "truncated" to true, "contextPrefix" to json.take(7_000),
         ))
     }
 
@@ -116,6 +154,7 @@ internal object AutomationDecisionDiagnostics {
             "availableActions" to state.availableActions, "remainingCasts" to state.remainingCasts,
             "baitCount" to state.baitCount, "escapeSeconds" to state.escapeSeconds,
             "blockedByBattle" to state.blockedByBattle,
+            "battleObservationComplete" to state.battleObservationComplete,
             "battleCategoryId" to state.battleTarget?.categoryId, "battleMapCode" to state.battleTarget?.mapCode,
             "primaryPresetId" to snapshot.primaryPreset?.presetId,
             "partyResolved" to (snapshot.primaryPreset?.resolvedParty != null),

@@ -358,6 +358,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             cooldownSource,
             impactScope,
             releaseCondition,
+            managedAction.diagnosticContext,
         )
         fun raidCycleTrace(outcome: app.spammy.hof.automation.raid.RaidCycleOutcome): AutomationActionTrace =
             outcome.toAutomationActionTrace().let { result ->
@@ -1249,10 +1250,16 @@ class UnifiedAutomationRunner @Autowired constructor(
 
         fun append(kind: AutomationHistoryEventKind, code: String, message: String) {
             decisionCycleId?.let { cycleId ->
-                decisionJournal?.appendActionResult(
-                    cycleId,
-                    actionTrace(stored, kind, code, message, descriptor = managed.descriptor),
-                )
+                try {
+                    decisionJournal?.appendActionResult(
+                        cycleId,
+                        actionTrace(stored, kind, code, message, descriptor = managed.descriptor,
+                            diagnosticContext = managed.diagnosticContext),
+                    )
+                } catch (error: RuntimeException) {
+                    log.warn("Fishing result history unavailable accountId={} executionIdentity={} errorType={}",
+                        accountId, stored.executionIdentity, error.javaClass.name)
+                }
             }
         }
 
@@ -1407,10 +1414,16 @@ class UnifiedAutomationRunner @Autowired constructor(
             message: String,
         ) {
             decisionCycleId?.let { cycleId ->
-                decisionJournal?.appendActionResult(
-                    cycleId,
-                    actionTrace(stored, kind, code, message, descriptor = managed.descriptor),
-                )
+                try {
+                    decisionJournal?.appendActionResult(
+                        cycleId,
+                        actionTrace(stored, kind, code, message, descriptor = managed.descriptor,
+                            diagnosticContext = managed.diagnosticContext),
+                    )
+                } catch (error: RuntimeException) {
+                    log.warn("Fishing result history unavailable accountId={} executionIdentity={} errorType={}",
+                        accountId, stored.executionIdentity, error.javaClass.name)
+                }
             }
         }
 
@@ -1907,6 +1920,7 @@ class UnifiedAutomationRunner @Autowired constructor(
         cooldownSource: app.spammy.hof.automation.raid.RaidCooldownSource? = null,
         impactScope: AutomationImpactScope? = null,
         releaseCondition: String? = null,
+        diagnosticContext: String? = null,
     ) = AutomationActionTrace(
         kind = kind,
         reasonCode = code,
@@ -1922,6 +1936,12 @@ class UnifiedAutomationRunner @Autowired constructor(
         cooldownSource = cooldownSource,
         impactScope = impactScope,
         releaseCondition = releaseCondition,
+        diagnosticContext = if (descriptor.source == app.spammy.hof.automation.entity.AutomationType.FISHING) {
+            AutomationDecisionDiagnostics.actionResult(
+                diagnosticContext ?: AutomationDecisionDiagnostics.fishingAction(action, null, "UNOBSERVED", now()),
+                code, nextRunAt,
+            )
+        } else diagnosticContext,
     )
 
     private companion object {

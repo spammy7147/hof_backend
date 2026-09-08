@@ -17,6 +17,9 @@ import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
+import kotlin.test.assertNotNull
+import tools.jackson.module.kotlin.jacksonObjectMapper
 
 @DataJpaTest
 @ActiveProfiles("test")
@@ -26,6 +29,65 @@ class AutomationDecisionJournalTest {
     @Autowired private lateinit var cycleCommands: AutomationDecisionCycleCommandRepository
     @Autowired private lateinit var eventCommands: AutomationDecisionEventCommandRepository
     private val now = Instant.parse("2026-08-12T01:00:00Z")
+
+    @Test
+    fun `낚시 반복은 다른 유형 성공과 재생성에 가려지지 않고 한 사건으로 보존된다`() {
+        val account = account("fishing-repetition")
+        val fishing = entry(account, AutomationType.FISHING, 0)
+        val fishingId = fishing.id
+        fun recovery(identity: String, remaining: Int = 5) {
+            val journal = journal()
+            val cycle = journal.appendDecision(account.id, AutomationCoordination.Idle(emptyList()))
+            journal.appendActionResult(cycle, AutomationActionTrace(
+                AutomationHistoryEventKind.SKIPPED, "FISHING_BATTLE_RECOVERED_FROM_START", "전투 재확인",
+                fishingId, AutomationType.FISHING, "START", diagnosticContext = """{
+                    "version":1,"source":"DIRECT_RESPONSE","executionIdentity":"$identity","recheckRequired":true,
+                    "fishing":{"primaryAction":"NONE","remainingCasts":$remaining,"blockedByBattle":true,
+                    "battleMapCode":"Fish03","battleObservationComplete":true}}
+                """.trimIndent(),
+            ))
+            journal.appendActionResult(cycle, AutomationActionTrace(
+                AutomationHistoryEventKind.ACTION_SUCCEEDED, "ACTION_SUCCEEDED", "유니온 성공", type = AutomationType.UNION,
+            ))
+            entityManager.flush()
+            entityManager.clear()
+        }
+        fun warnings() = journal().page(account.id, AutomationHistoryQuery()).cycles.flatMap { it.events }
+            .filter { it.reasonCode == "FISHING_RECOVERY_REPEATED" }
+        recovery("first")
+        recovery("second")
+        assertTrue(warnings().isEmpty())
+        recovery("third")
+        val warning = warnings().single()
+        assertEquals(AutomationHistoryEventKind.CONFIGURATION_WARNING, warning.kind)
+        assertEquals("Fish03", warning.targetKey)
+        val context = jacksonObjectMapper().readTree(assertNotNull(warning.diagnosticContext))
+        assertEquals(3, context["repetition"]["count"].asInt())
+        assertTrue(context["repetition"]["firstEventId"].asLong() > 0)
+        recovery("fourth")
+        assertEquals(listOf(warning.id), warnings().map { it.id })
+        val latest = journal().page(account.id, AutomationHistoryQuery()).cycles.first().events.first()
+        assertEquals(4, jacksonObjectMapper().readTree(assertNotNull(latest.diagnosticContext))["repetition"]["count"].asInt())
+
+        // 확인된 낚시 진전과 설정 세대 변경은 각각 새 반복 사건의 경계다.
+        val cycle = journal().appendDecision(account.id, AutomationCoordination.Idle(emptyList()))
+        journal().appendActionResult(cycle, AutomationActionTrace(
+            AutomationHistoryEventKind.ACTION_SUCCEEDED, "FISHING_CATCH_APPLIED", "잡기 완료", fishingId, AutomationType.FISHING, "CATCH",
+        ))
+        entityManager.flush(); entityManager.clear()
+        recovery("after-catch-1"); recovery("after-catch-2")
+        assertEquals(1, warnings().size)
+        recovery("after-catch-3")
+        assertEquals(2, warnings().size)
+        entityManager.find(AutomationEntryEntity::class.java, fishingId).settingsRevision += 1
+        entityManager.flush(); entityManager.clear()
+        recovery("new-generation-1"); recovery("new-generation-2")
+        assertEquals(2, warnings().size)
+        recovery("new-generation-3")
+        assertEquals(3, warnings().size)
+        recovery("progress-1", remaining = 4); recovery("progress-2", remaining = 4)
+        assertEquals(3, warnings().size)
+    }
 
     @Test
     fun `판단 불가 진단은 다음 판단 이후에도 같은 이력에서 조회된다`() {

@@ -25,6 +25,7 @@ data class FishingResponse(
     val battleTarget: FishingBattleTargetResponse?,
     val catches: List<FishingCatchItemResponse>,
     val result: TownActionResultResponse?,
+    val battleObservationComplete: Boolean = true,
 ) {
     companion object {
         fun from(snapshot: FishingSnapshot) = FishingResponse(
@@ -43,6 +44,7 @@ data class FishingResponse(
             battleTarget = snapshot.battleTarget?.let { FishingBattleTargetResponse(it.categoryId, it.mapCode, it.name) },
             catches = snapshot.catches.map { FishingCatchItemResponse(it.name, it.quantity, it.remainingUses, it.effect) },
             result = snapshot.result?.let(TownActionResultResponse::from),
+            battleObservationComplete = snapshot.battleObservationComplete,
         )
     }
 }

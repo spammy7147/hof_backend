@@ -29,6 +29,7 @@ data class FishingSnapshot(
     val battleTarget: FishingBattleTarget?,
     val catches: List<FishingCatchItem>,
     val result: ParsedTownResult?,
+    val battleObservationComplete: Boolean = true,
 )
 
 data class FishingBattleTarget(val categoryId: String, val mapCode: String, val name: String? = null)

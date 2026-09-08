@@ -16,6 +16,8 @@ import org.springframework.transaction.annotation.Transactional
 import org.springframework.transaction.support.TransactionSynchronization
 import org.springframework.transaction.support.TransactionSynchronizationManager
 import java.time.Instant
+import tools.jackson.module.kotlin.jacksonObjectMapper
+import tools.jackson.databind.node.ObjectNode
 
 data class AutomationActionTrace(
     val kind: AutomationHistoryEventKind, val reasonCode: String, val message: String,
@@ -27,6 +29,7 @@ data class AutomationActionTrace(
     val cooldownSource: RaidCooldownSource? = null,
     val impactScope: AutomationImpactScope? = null,
     val releaseCondition: String? = null,
+    val diagnosticContext: String? = null,
 )
 data class AutomationHistoryQuery(
     val beforeCycleId: Long? = null, val limit: Int = 20, val type: AutomationType? = null,
@@ -81,6 +84,7 @@ interface AutomationDecisionJournal {
     fun appendDecision(accountId: Long, decision: AutomationCoordination): Long
     fun appendPreparedActionAttempt(accountId: Long, result: AutomationActionTrace): Long
     fun appendActionResult(cycleId: Long, result: AutomationActionTrace)
+    fun appendResultObservation(accountId: Long, result: AutomationActionTrace): Long
     fun appendRaidCycleOutcome(accountId: Long, outcome: RaidCycleOutcome): Long
     fun page(accountId: Long, query: AutomationHistoryQuery): AutomationHistoryPage
 }
@@ -93,6 +97,7 @@ class JpaAutomationDecisionJournal(
     private val eventCommands: AutomationDecisionEventCommandRepository,
     private val progressTelemetry: AutomationProgressTelemetry? = null,
 ) : AutomationDecisionJournal {
+    private val diagnosticMapper = jacksonObjectMapper()
     @Transactional
     override fun appendDecision(accountId: Long, decision: AutomationCoordination): Long {
         val now = timeProvider.now()
@@ -142,8 +147,20 @@ class JpaAutomationDecisionJournal(
             finishedAt = now,
         )
         cycleCommands.save(cycle)
-        eventCommands.save(result.toEntity(cycle, 0, accountId, now))
+        eventCommands.save(fishingContext(cycle, result).toEntity(cycle, 0, accountId, now))
         eventCommands.flush()
+        return cycle.id
+    }
+
+    @Transactional
+    override fun appendResultObservation(accountId: Long, result: AutomationActionTrace): Long {
+        val now = timeProvider.now()
+        val cycle = cycleCommands.save(AutomationDecisionCycleEntity(
+            accountId = accountId,
+            result = if (result.nextRunAt != null) AutomationDecisionResult.WAITING else AutomationDecisionResult.IDLE,
+            selectedEntryId = null, startedAt = now, finishedAt = now,
+        ))
+        appendActionResult(cycle.id, result)
         return cycle.id
     }
 
@@ -163,7 +180,19 @@ class JpaAutomationDecisionJournal(
             .setMaxResults(1)
             .resultList
             .firstOrNull()
-        eventCommands.save(result.toEntity(cycle, next, cycle.accountId, timeProvider.now(), entryDisplayName))
+        val recorded = fishingContext(cycle, result)
+        eventCommands.save(recorded.toEntity(cycle, next, cycle.accountId, timeProvider.now(), entryDisplayName))
+        if (recorded.reasonCode == FISHING_RECOVERY_REASON &&
+            recorded.diagnosticContext?.let { diagnosticMapper.readTree(it).path("repetition").path("count").asInt() } == 3
+        ) {
+            eventCommands.save(recorded.copy(
+                kind = AutomationHistoryEventKind.CONFIGURATION_WARNING,
+                reasonCode = "FISHING_RECOVERY_REPEATED",
+                message = "같은 낚시 전투 복구가 진전 없이 세 번 반복됐습니다. 당시 상태와 전투 대상을 확인해 주세요.",
+            ).toEntity(cycle, next + 1, cycle.accountId, timeProvider.now(), entryDisplayName))
+            log.warn("Fishing recovery repeated accountId={} entryId={} decisionCycleId={} targetKey={}",
+                cycle.accountId, recorded.entryId, cycle.id, recorded.targetKey)
+        }
         if (result.kind == AutomationHistoryEventKind.ACTION_SUCCEEDED) {
             afterCommitTelemetry { progressTelemetry?.recordTerminalAction(cycle.accountId, result.type) }
         }
@@ -270,6 +299,59 @@ class JpaAutomationDecisionJournal(
         entityManager.find(PartyPresetEntity::class.java, it)?.takeIf { preset -> preset.account.id == accountId }?.name
     }
 
+    private fun fishingContext(cycle: AutomationDecisionCycleEntity, trace: AutomationActionTrace): AutomationActionTrace {
+        if (trace.type != AutomationType.FISHING || trace.diagnosticContext == null) return trace
+        val node = diagnosticMapper.readTree(trace.diagnosticContext) as? ObjectNode ?: return trace
+        val entry = trace.entryId?.let { entityManager.find(AutomationEntryEntity::class.java, it) }
+            ?.takeIf { it.account.id == cycle.accountId }
+        val workId = entityManager.createQuery(
+            "select w.id from AutomationWorkSessionEntity w where w.account.id = :accountId and w.entry.id = :entryId order by w.id desc",
+            Long::class.javaObjectType,
+        ).setParameter("accountId", cycle.accountId).setParameter("entryId", trace.entryId ?: -1L)
+            .setMaxResults(1).resultList.firstOrNull()?.toLong()
+        node.put("decisionCycleId", cycle.id)
+        node.put("workSessionId", workId)
+        node.put("settingsRevision", entry?.settingsRevision)
+        if (trace.reasonCode == FISHING_RECOVERY_REASON && node.path("fishing").isObject) {
+            annotateFishingRepetition(cycle, trace, node)
+        }
+        val target = node.path("fishing").path("battleMapCode").takeIf { it.isString }?.asString()
+        return trace.copy(targetKey = trace.targetKey ?: target, diagnosticContext = AutomationDecisionDiagnostics.encode(node))
+    }
+
+    private fun annotateFishingRepetition(
+        cycle: AutomationDecisionCycleEntity,
+        trace: AutomationActionTrace,
+        node: ObjectNode,
+    ) {
+        // 같은 낚시 항목의 마지막 복구 또는 진전만 읽는다. 다른 항목의 성공과 새 작업 ID는 경계가 아니다.
+        val previous = entityManager.createQuery(
+            "select e from AutomationDecisionEventEntity e where e.cycle.accountId = :accountId " +
+                "and e.entryId = :entryId and e.type = :type and (e.reasonCode in :reasons " +
+                "or (e.kind = :success and e.actionKind <> 'START')) order by e.id desc",
+            AutomationDecisionEventEntity::class.java,
+        ).setParameter("accountId", cycle.accountId).setParameter("entryId", trace.entryId)
+            .setParameter("type", AutomationType.FISHING)
+            .setParameter("reasons", listOf(FISHING_RECOVERY_REASON, "FISHING_DAILY_LIMIT", "FISHING_RECOVERY_RESOLVED"))
+            .setParameter("success", AutomationHistoryEventKind.ACTION_SUCCEEDED)
+            .setMaxResults(1).resultList.firstOrNull()
+        val prior = previous?.diagnosticContext?.let { runCatching { diagnosticMapper.readTree(it) }.getOrNull() }
+        val continued = previous?.reasonCode == FISHING_RECOVERY_REASON && prior != null &&
+            prior.path("settingsRevision").asLong() == node.path("settingsRevision").asLong() &&
+            prior.path("fishing") == node.path("fishing")
+        val old = prior?.path("repetition")
+        val count = if (continued) (old?.path("count")?.asInt() ?: 1).coerceAtLeast(1) + 1 else 1
+        val repetition = node.putObject("repetition")
+        repetition.put("count", count)
+        repetition.put("firstEventId", if (continued) old?.path("firstEventId")?.takeIf { it.isIntegralNumber }
+            ?.asLong() ?: previous?.id else null)
+        repetition.put("firstCycleId", if (continued) old?.path("firstCycleId")?.asLong() ?: previous?.cycle?.id else cycle.id)
+        repetition.put("firstSeenAt", if (continued) old?.path("firstSeenAt")?.takeIf { it.isString }?.asString()
+            ?: previous?.occurredAt?.toString() else timeProvider.now().toString())
+        repetition.put("lastSeenAt", timeProvider.now().toString())
+        repetition.put("lastCycleId", cycle.id)
+    }
+
     private fun AutomationActionTrace.toEntity(
         cycle: AutomationDecisionCycleEntity,
         sequence: Int,
@@ -296,6 +378,7 @@ class JpaAutomationDecisionJournal(
         cooldownSource = cooldownSource,
         impactScope = impactScope,
         releaseCondition = releaseCondition,
+        diagnosticContext = diagnosticContext,
     )
 
     private fun entryDisplayNames(accountId: Long): Map<Long, String> {
@@ -327,6 +410,7 @@ class JpaAutomationDecisionJournal(
     }
 
     private companion object {
+        const val FISHING_RECOVERY_REASON = "FISHING_BATTLE_RECOVERED_FROM_START"
         val log = LoggerFactory.getLogger(JpaAutomationDecisionJournal::class.java)
     }
 }
