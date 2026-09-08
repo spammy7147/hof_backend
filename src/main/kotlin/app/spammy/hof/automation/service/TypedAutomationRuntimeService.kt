@@ -298,12 +298,12 @@ class TypedAutomationRuntimeService(
     fun complete(
         execution: TypedRuntimeExecutionRight,
         outcome: TypedRuntimeOutcome,
+        convergenceRecheckAt: Instant? = null,
     ): TypedRuntimeProjection {
         val right = execution.persistedRight()
-        return when (outcome) {
+        val state = fencedState(right.accountId, right.leaseToken) ?: return TypedRuntimeProjection(false)
+        val projection = when (outcome) {
             is TypedRuntimeOutcome.RoundCompleted -> {
-                val state = fencedState(right.accountId, right.leaseToken)
-                    ?: return TypedRuntimeProjection(false)
                 val next = timeProvider.now().plus(
                     requestProperties.automationMinimumInterval.coerceAtLeast(Duration.ofMillis(100)),
                 )
@@ -334,7 +334,7 @@ class TypedAutomationRuntimeService(
                 outcome.nextRunAt,
                 outcome.waitReason,
                 outcome.warnings,
-            ).projection(outcome.nextRunAt)
+            ).projection(outcome.nextRunAt).enqueueNext(state, outcome.wakeReason)
             is TypedRuntimeOutcome.ConfigurationWait -> {
                 val next = timeProvider.now().plus(CONFIG_RECHECK)
                 releaseCore(
@@ -343,11 +343,11 @@ class TypedAutomationRuntimeService(
                     next,
                     AutomationWaitReason.SCHEDULED,
                     outcome.warnings,
-                ).projection(next)
+                ).projection(next).enqueueNext(state, "TYPED_CONFIG_RECHECK")
             }
             is TypedRuntimeOutcome.SafeRetry -> {
                 val retryAt = scheduleSafeRetry(right.accountId, right.leaseToken, outcome.message)
-                TypedRuntimeProjection(retryAt != null, retryAt)
+                TypedRuntimeProjection(retryAt != null, retryAt).enqueueNext(state, "TYPED_SAFE_RETRY")
             }
             is TypedRuntimeOutcome.RetryableFailure -> {
                 outcome.warnings?.let { recordWarnings(right.accountId, right.leaseToken, it) }
@@ -358,7 +358,7 @@ class TypedAutomationRuntimeService(
                     outcome.reason,
                     outcome.message,
                 )
-                TypedRuntimeProjection(retryAt != null, retryAt)
+                TypedRuntimeProjection(retryAt != null, retryAt).enqueueNext(state, "TYPED_AUTOMATIC_RETRY")
             }
             is TypedRuntimeOutcome.ActionSucceeded -> succeedAndEnqueueWake(
                 right.accountId,
@@ -387,8 +387,9 @@ class TypedAutomationRuntimeService(
                 right.requireActionId(),
                 outcome.retryAt,
                 outcome.message,
-            ).projection(outcome.retryAt)
+            ).projection(outcome.retryAt).enqueueNext(state, "HOF_503_COOLDOWN")
             is TypedRuntimeOutcome.UnsubmittedFailure -> failUnsubmittedAction(right, outcome.message)
+                .enqueueNext(state, "HOF_503_COOLDOWN")
             is TypedRuntimeOutcome.SubmissionAmbiguous -> markReconcilingAndEnqueueWake(
                 right.accountId,
                 right.leaseToken,
@@ -408,7 +409,7 @@ class TypedAutomationRuntimeService(
                 outcome.retryAt,
                 outcome.reason,
                 outcome.successfulObservation,
-            ).projection(outcome.retryAt)
+            ).projection(outcome.retryAt).enqueueNext(state, outcome.wakeReason)
             is TypedRuntimeOutcome.AmbiguousHandoff -> handoffAmbiguousAction(
                 right.accountId,
                 right.leaseToken,
@@ -438,10 +439,29 @@ class TypedAutomationRuntimeService(
                     right.requireActionId(),
                     outcome.message,
                 )
-                TypedRuntimeProjection(retryAt != null, retryAt)
+                TypedRuntimeProjection(retryAt != null, retryAt).enqueueNext(state, "TYPED_AUTOMATIC_RETRY")
             }
         }
+        if (projection.applied && convergenceRecheckAt != null && canScheduleFollowUp(state)) {
+            // 새 판단을 깨우는 예약과 특정 결과를 미래에 재확인하는 예약은 서로 대체하지 않는다.
+            outbox.enqueue(right.accountId, "TYPED_CONVERGENCE_PROBE", convergenceRecheckAt)
+        }
+        return projection
     }
+
+    private fun TypedRuntimeProjection.enqueueNext(
+        state: TypedAutomationRuntimeStateEntity,
+        reason: String,
+    ): TypedRuntimeProjection {
+        if (!applied) return this
+        val next = state.nextAttemptAt
+        if (next != null && canScheduleFollowUp(state)) outbox.enqueue(state.account.id, reason, next)
+        return copy(nextAttemptAt = next)
+    }
+
+    private fun canScheduleFollowUp(state: TypedAutomationRuntimeStateEntity): Boolean =
+        state.lifecycleStatus == TypedAutomationLifecycle.DRAINING ||
+            (state.lifecycleStatus == TypedAutomationLifecycle.RUNNING && !state.authSuspended)
 
     private fun failUnsubmittedAction(
         right: PersistedTypedRuntimeExecutionRight,

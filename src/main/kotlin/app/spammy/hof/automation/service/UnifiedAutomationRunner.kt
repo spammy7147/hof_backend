@@ -75,7 +75,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                     ConvergenceDirective.ContinueSelection,
                     -> runAcquired(accountId, acquisition.execution)
                     is ConvergenceDirective.Probe -> runAcquired(accountId, acquisition.execution, dueDirective)
-                    else -> releaseForConvergenceDirective(accountId, acquisition.execution, dueDirective)
+                    else -> releaseForConvergenceDirective(acquisition.execution, dueDirective)
                 }
             }
         }
@@ -87,26 +87,24 @@ class UnifiedAutomationRunner @Autowired constructor(
     ): Boolean = when (val preflight = dailyPreflight.ensureReady(accountId)) {
         AutomationDailyPreflight.Result.Ready -> true
         is AutomationDailyPreflight.Result.Busy -> {
-            completeAndSchedule(
-                accountId,
+            typedRuntime.complete(
                 execution,
                 TypedRuntimeOutcome.ScheduledWait(
                     preflight.retryAt,
                     AutomationWaitReason.SCHEDULED,
+                    wakeReason = "DAILY_PREFLIGHT_BUSY",
                 ),
-                "DAILY_PREFLIGHT_BUSY",
             )
             false
         }
         is AutomationDailyPreflight.Result.RetryScheduled -> {
-            completeAndSchedule(
-                accountId,
+            typedRuntime.complete(
                 execution,
                 TypedRuntimeOutcome.ScheduledWait(
                     preflight.nextAttemptAt,
                     AutomationWaitReason.HOF_CONNECTION,
+                    wakeReason = "DAILY_PREFLIGHT_RETRY",
                 ),
-                "DAILY_PREFLIGHT_RETRY",
             )
             false
         }
@@ -118,14 +116,12 @@ class UnifiedAutomationRunner @Autowired constructor(
                 AutomationDailyPreflight.StopReason.FATAL -> AutomationStopReason.FATAL
             }
             dailyPreflight.resume(accountId)
-            completeAndSchedule(
-                accountId,
+            typedRuntime.complete(
                 execution,
                 TypedRuntimeOutcome.RetryableFailure(
                     reason,
                     "Daily preflight failed: ${preflight.reason}",
                 ),
-                AUTOMATIC_RETRY_WAKE_REASON,
             )
             false
         }
@@ -156,11 +152,9 @@ class UnifiedAutomationRunner @Autowired constructor(
             managedAction = try {
                 actionLifecycleModule.restoreVerified(stored, accountId)
             } catch (error: RuntimeException) {
-                completeAndSchedule(
-                    accountId,
+                typedRuntime.complete(
                     execution,
                     TypedRuntimeOutcome.IntegrityFailure("Stored typed action integrity check failed."),
-                    AUTOMATIC_RETRY_WAKE_REASON,
                 )
                 return
             }
@@ -175,26 +169,23 @@ class UnifiedAutomationRunner @Autowired constructor(
                 )
                 return
             } catch (error: HofAutomationDeferredException) {
-                completeAndSchedule(
-                    accountId,
+                typedRuntime.complete(
                     execution,
                     TypedRuntimeOutcome.ScheduledWait(
                         error.retryAt,
                         AutomationWaitReason.HOF_CONNECTION,
+                        wakeReason = HOF_COOLDOWN_WAKE_REASON,
                     ),
-                    HOF_COOLDOWN_WAKE_REASON,
                 )
                 return
             } catch (error: SafeRetryableAutomationException) {
-                completeAndSchedule(
-                    accountId,
+                typedRuntime.complete(
                     execution,
                     TypedRuntimeOutcome.SafeRetry(error.message ?: "Safe snapshot retry"),
-                    "TYPED_SAFE_RETRY",
                 )
                 return
             } catch (error: AutomationLoginRequiredException) {
-                retryExecution(accountId, execution, AutomationStopReason.AUTHENTICATION, error.message)
+                retryExecution(execution, AutomationStopReason.AUTHENTICATION, error.message)
                 return
             } catch (error: ApiException) {
                 val reason = when (error.errorCode) {
@@ -202,11 +193,10 @@ class UnifiedAutomationRunner @Autowired constructor(
                     ErrorCode.HOF_LOGIN_FAILED, ErrorCode.HOF_SESSION_EXPIRED -> AutomationStopReason.AUTHENTICATION
                     else -> AutomationStopReason.FATAL
                 }
-                retryExecution(accountId, execution, reason, error.message)
+                retryExecution(execution, reason, error.message)
                 return
             } catch (error: FatalAutomationException) {
                 retryExecution(
-                    accountId,
                     execution,
                     AutomationStopReason.FATAL,
                     error.message ?: "Fatal live snapshot failure",
@@ -265,15 +255,13 @@ class UnifiedAutomationRunner @Autowired constructor(
                     }
                 }
                 is AutomationCoordination.Fatal -> {
-                    completeAndSchedule(
-                        accountId,
+                    typedRuntime.complete(
                         execution,
                         TypedRuntimeOutcome.RetryableFailure(
                             decision.reason,
                             decision.message,
                             decision.warnings,
                         ),
-                        AUTOMATIC_RETRY_WAKE_REASON,
                     )
                     return
                 }
@@ -282,15 +270,14 @@ class UnifiedAutomationRunner @Autowired constructor(
                         runConvergenceProbe(accountId, execution, fallbackConvergenceProbe)
                         return
                     }
-                    completeAndSchedule(
-                        accountId,
+                    typedRuntime.complete(
                         execution,
                         TypedRuntimeOutcome.ScheduledWait(
                             decision.nextRunAt,
                             AutomationWaitReason.SCHEDULED,
                             decision.warnings,
+                            wakeReason = "TYPED_UNAVAILABLE",
                         ),
-                        "TYPED_UNAVAILABLE",
                     )
                     return
                 }
@@ -385,13 +372,17 @@ class UnifiedAutomationRunner @Autowired constructor(
             impactScope = AutomationImpactScope.RAID_ONLY,
             releaseCondition = wait.releaseCondition,
         ).copy(targetKey = wait.raidId)
-        fun finishRaidBattleHandoff(resolution: AmbiguousActionResolution.HandedOff) {
+        fun finishRaidBattleHandoff(
+            resolution: AmbiguousActionResolution.HandedOff,
+            convergenceRecheckAt: Instant? = null,
+        ) {
             typedRuntime.complete(
                 execution,
                 TypedRuntimeOutcome.AmbiguousHandoff(
                     resolution.reason,
                     RAID_BATTLE_RECOVERY_WAKE_REASON,
                 ),
+                convergenceRecheckAt = convergenceRecheckAt,
             )
             decisionCycleId?.let { cycleId ->
                 decisionJournal?.appendActionResult(cycleId, trace(
@@ -436,6 +427,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                     warning = gate.warning,
                     wakeReason = TYPED_BATTLE_GATE_WAKE_REASON,
                 ),
+                convergenceRecheckAt = (gate.directive as? ConvergenceDirective.WaitUntil)?.at,
             )
             decisionCycleId?.let { cycleId -> runCatching {
                 decisionJournal?.appendActionResult(cycleId, trace(
@@ -444,7 +436,6 @@ class UnifiedAutomationRunner @Autowired constructor(
                     "캡차가 해결될 때까지 전투만 보류하고 저장된 전투는 폐기합니다.",
                 ))
             } }
-            scheduleConvergenceDirective(accountId, gate.directive)
             return true
         }
         if (decisionCycleId == null) {
@@ -499,8 +490,10 @@ class UnifiedAutomationRunner @Autowired constructor(
         }
         if (resumedLegacyCheckpoint) {
             results.recoverLegacyCheckpoint(accountId, managedAction, stored, activeCheckpoint)?.let { recovery ->
-                typedRuntime.complete(execution, recovery.outcome)
-                recovery.directive?.let { scheduleConvergenceDirective(accountId, it) }
+                typedRuntime.complete(
+                    execution, recovery.outcome,
+                    convergenceRecheckAt = (recovery.directive as? ConvergenceDirective.WaitUntil)?.at,
+                )
                 return
             }
         }
@@ -547,15 +540,14 @@ class UnifiedAutomationRunner @Autowired constructor(
                             deferred.retryAt,
                         ))
                     } }
-                    completeAndSchedule(
-                        accountId,
+                    typedRuntime.complete(
                         execution,
                         TypedRuntimeOutcome.ReconciliationDeferred(
                             deferred.retryAt,
                             message,
                             successfulObservation = false,
+                            wakeReason = HOF_COOLDOWN_WAKE_REASON,
                         ),
-                        HOF_COOLDOWN_WAKE_REASON,
                     )
                     return
                 }
@@ -586,7 +578,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                     )
                     return
                 }
-                retryExecution(accountId, execution, classifyActionStop(error), error.message ?: error.javaClass.simpleName)
+                retryExecution(execution, classifyActionStop(error), error.message ?: error.javaClass.simpleName)
                 return
             }
             when (resolution) {
@@ -653,15 +645,14 @@ class UnifiedAutomationRunner @Autowired constructor(
                             observedAt.plusSeconds(RECONCILIATION_RETRY_SECONDS),
                         ))
                     }
-                    completeAndSchedule(
-                        accountId,
+                    typedRuntime.complete(
                         execution,
                         TypedRuntimeOutcome.ReconciliationDeferred(
                             observedAt.plusSeconds(RECONCILIATION_RETRY_SECONDS),
                             reason,
                             successfulObservation = true,
+                            wakeReason = "TYPED_RECONCILE_RETRY",
                         ),
-                        "TYPED_RECONCILE_RETRY",
                     )
                 }
                 is AmbiguousActionResolution.Superseded -> {
@@ -746,15 +737,14 @@ class UnifiedAutomationRunner @Autowired constructor(
                             resolution.retryAt,
                         ))
                     }
-                    completeAndSchedule(
-                        accountId,
+                    typedRuntime.complete(
                         execution,
                         TypedRuntimeOutcome.ReconciliationDeferred(
                             resolution.retryAt,
                             resolution.reason,
                             successfulObservation = true,
+                            wakeReason = "TYPED_RECONCILE_RETRY",
                         ),
-                        "TYPED_RECONCILE_RETRY",
                     )
                 }
                 is AmbiguousActionResolution.Held -> holdAmbiguousScope(resolution)
@@ -773,11 +763,9 @@ class UnifiedAutomationRunner @Autowired constructor(
                     retryAt,
                 ))
             } }
-            completeAndSchedule(
-                accountId,
+            typedRuntime.complete(
                 execution,
-                TypedRuntimeOutcome.ScheduledWait(retryAt, AutomationWaitReason.SCHEDULED),
-                POST_KILL_SWITCH_WAKE_REASON,
+                TypedRuntimeOutcome.ScheduledWait(retryAt, AutomationWaitReason.SCHEDULED, wakeReason = POST_KILL_SWITCH_WAKE_REASON),
             )
             return
         }
@@ -820,7 +808,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             when (directive) {
                 is ConvergenceDirective.Submit -> convergenceAttemptId = directive.attemptId
                 else -> {
-                    releaseForConvergenceDirective(accountId, execution, directive)
+                    releaseForConvergenceDirective(execution, directive)
                     return
                 }
             }
@@ -848,8 +836,8 @@ class UnifiedAutomationRunner @Autowired constructor(
                     warning = changed.message ?: "최신 상태에서 저장 행동의 사전조건이 사라졌습니다.",
                     wakeReason = ACTION_SUPERSEDED_REASON,
                 ),
+                convergenceRecheckAt = (directive as? ConvergenceDirective.WaitUntil)?.at,
             )
-            directive?.let { scheduleConvergenceDirective(accountId, it) }
             return
         } catch (incomplete: AutomationPreSubmitObservationIncompleteException) {
             val message = incomplete.message ?: "제출 직전 최신 상태를 완전하게 관측하지 못했습니다."
@@ -867,10 +855,10 @@ class UnifiedAutomationRunner @Autowired constructor(
                 typedRuntime.complete(
                     execution,
                     TypedRuntimeOutcome.PreparedDiscarded(message, TYPED_CONVERGENCE_WAKE_REASON),
+                    convergenceRecheckAt = (directive as? ConvergenceDirective.WaitUntil)?.at,
                 )
-                scheduleConvergenceDirective(accountId, directive)
             } else {
-                retryExecution(accountId, execution, AutomationStopReason.NETWORK, message)
+                retryExecution(execution, AutomationStopReason.NETWORK, message)
             }
             return
         } catch (error: Throwable) {
@@ -886,8 +874,8 @@ class UnifiedAutomationRunner @Autowired constructor(
                 evidence,
                 LegacyConvergenceDecision.RECONCILING,
             )
-            retryExecution(accountId, execution, classifyActionStop(error), message)
-            directive?.let { scheduleConvergenceDirective(accountId, it) }
+            retryExecution(execution, classifyActionStop(error), message,
+                convergenceRecheckAt = (directive as? ConvergenceDirective.WaitUntil)?.at)
             return
         }
 
@@ -922,8 +910,10 @@ class UnifiedAutomationRunner @Autowired constructor(
             val acceptedExecution = when (val connected = results.applyDirect(managedAction, evidenceExecution, appliedEvidence, convergenceAttemptId)) {
                 is AutomationResultCoordinator.DirectResult.Accepted -> connected.execution
                 is AutomationResultCoordinator.DirectResult.Unapplied -> {
-                    typedRuntime.complete(execution, connected.outcome)
-                    connected.directive?.let { scheduleConvergenceDirective(accountId, it) }
+                    typedRuntime.complete(
+                        execution, connected.outcome,
+                        convergenceRecheckAt = (connected.directive as? ConvergenceDirective.WaitUntil)?.at,
+                    )
                     decisionCycleId?.let { cycleId ->
                         decisionJournal?.appendActionResult(cycleId, trace(
                             if (connected.superseded) AutomationHistoryEventKind.SKIPPED else AutomationHistoryEventKind.WAITING,
@@ -1044,8 +1034,8 @@ class UnifiedAutomationRunner @Autowired constructor(
                         warning = changed.message ?: "최신 상태에서 저장 행동의 사전조건이 사라졌습니다.",
                         wakeReason = ACTION_SUPERSEDED_REASON,
                     ),
+                    convergenceRecheckAt = (directive as? ConvergenceDirective.WaitUntil)?.at,
                 )
-                directive?.let { scheduleConvergenceDirective(accountId, it) }
                 return
             }
             if (closeBattleForCaptcha(error)) return
@@ -1066,7 +1056,6 @@ class UnifiedAutomationRunner @Autowired constructor(
                 )
                 val message = requireNotNull(failure.message)
                 val retryAt = typedRuntime.complete(execution, TypedRuntimeOutcome.UnsubmittedFailure(message)).nextAttemptAt
-                retryAt?.let { wakeupPort.schedule(accountId, it, HOF_COOLDOWN_WAKE_REASON) }
                 decisionCycleId?.let { cycleId ->
                     decisionJournal?.appendActionResult(cycleId, trace(
                         AutomationHistoryEventKind.WAITING, BattleNotSubmittedException.REASON_CODE, message, retryAt,
@@ -1129,17 +1118,15 @@ class UnifiedAutomationRunner @Autowired constructor(
                         TypedRuntimeOutcome.SubmissionAmbiguous(
                             deferred.message ?: "HOF submission result is ambiguous.",
                         ),
+                        convergenceRecheckAt = (directive as? ConvergenceDirective.WaitUntil)?.at,
                     )
-                    directive?.let { scheduleConvergenceDirective(accountId, it) }
                 } else {
-                    completeAndSchedule(
-                        accountId,
+                    typedRuntime.complete(
                         execution,
                         TypedRuntimeOutcome.SubmissionDeferred(
                             deferred.retryAt,
                             deferred.message ?: "HOF request spacing is deferred.",
                         ),
-                        HOF_COOLDOWN_WAKE_REASON,
                     )
                 }
                 return
@@ -1171,8 +1158,8 @@ class UnifiedAutomationRunner @Autowired constructor(
                         evidence,
                         LegacyConvergenceDecision.RECONCILING,
                     )
-                    finishRaidBattleHandoff(handedOff)
-                    directive?.let { scheduleConvergenceDirective(accountId, it) }
+                    finishRaidBattleHandoff(handedOff,
+                        convergenceRecheckAt = (directive as? ConvergenceDirective.WaitUntil)?.at)
                     return
                 }
                 convergenceAttemptId?.let { attemptId ->
@@ -1192,8 +1179,8 @@ class UnifiedAutomationRunner @Autowired constructor(
                                 warning = message,
                                 wakeReason = TYPED_CONVERGENCE_WAKE_REASON,
                             ),
+                            convergenceRecheckAt = (directive as? ConvergenceDirective.WaitUntil)?.at,
                         )
-                        scheduleConvergenceDirective(accountId, directive)
                         return
                     }
                 }
@@ -1238,7 +1225,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                     trace(AutomationHistoryEventKind.ACTION_FAILED, "ACTION_FAILED", error.message ?: error.javaClass.simpleName),
                 )
             } }
-            retryExecution(accountId, execution, classifyActionStop(error), error.message ?: error.javaClass.simpleName)
+            retryExecution(execution, classifyActionStop(error), error.message ?: error.javaClass.simpleName)
         }
     }
 
@@ -1263,7 +1250,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             when (directive) {
                 is ConvergenceDirective.Submit -> attemptId = directive.attemptId
                 else -> {
-                    releaseForConvergenceDirective(accountId, execution, directive)
+                    releaseForConvergenceDirective(execution, directive)
                     return
                 }
             }
@@ -1296,8 +1283,10 @@ class UnifiedAutomationRunner @Autowired constructor(
                     append(AutomationHistoryEventKind.WAITING, "FISHING_DIRECT_RESULT_UNCONFIRMED",
                         "직접 낚시 응답의 적용을 확정하지 못해 결과 확인 규칙에 따라 처리합니다.",
                         (result.directive as? ConvergenceDirective.WaitUntil)?.at)
-                    typedRuntime.complete(execution, result.outcome)
-                    result.directive?.let { scheduleConvergenceDirective(accountId, it) }
+                    typedRuntime.complete(
+                        execution, result.outcome,
+                        convergenceRecheckAt = (result.directive as? ConvergenceDirective.WaitUntil)?.at,
+                    )
                     return
                 }
                 is AutomationResultCoordinator.DirectResult.Accepted -> attemptTerminalized = attemptId != null
@@ -1348,14 +1337,12 @@ class UnifiedAutomationRunner @Autowired constructor(
                         reasonCode = deferred.reasonCode ?: "SUBMISSION_NOT_ATTEMPTED",
                     )
                 }
-                completeAndSchedule(
-                    accountId,
+                typedRuntime.complete(
                     execution,
                     TypedRuntimeOutcome.SubmissionDeferred(
                         deferred.retryAt,
                         deferred.message ?: "HOF 요청 간격을 기다립니다.",
                     ),
-                    HOF_COOLDOWN_WAKE_REASON,
                 )
                 return
             }
@@ -1427,7 +1414,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             return when (directive) {
                 is ConvergenceDirective.Submit -> directive.attemptId
                 else -> {
-                    releaseForConvergenceDirective(accountId, execution, directive)
+                    releaseForConvergenceDirective(execution, directive)
                     throw FishingCycleFlowStopped()
                 }
             }
@@ -1450,8 +1437,10 @@ class UnifiedAutomationRunner @Autowired constructor(
                     append(stored, managed, AutomationHistoryEventKind.WAITING, "FISHING_DIRECT_RESULT_UNCONFIRMED",
                         "직접 낚시 응답의 적용을 확정하지 못해 결과 확인 규칙에 따라 처리합니다.",
                         (result.directive as? ConvergenceDirective.WaitUntil)?.at)
-                    typedRuntime.complete(execution, result.outcome)
-                    result.directive?.let { scheduleConvergenceDirective(accountId, it) }
+                    typedRuntime.complete(
+                        execution, result.outcome,
+                        convergenceRecheckAt = (result.directive as? ConvergenceDirective.WaitUntil)?.at,
+                    )
                     throw FishingCycleFlowStopped()
                 }
                 is AutomationResultCoordinator.DirectResult.Accepted -> activeAttemptTerminalized = attemptId != null
@@ -1638,14 +1627,12 @@ class UnifiedAutomationRunner @Autowired constructor(
                         reasonCode = deferred.reasonCode ?: "SUBMISSION_NOT_ATTEMPTED",
                     )
                 }
-                completeAndSchedule(
-                    accountId,
+                typedRuntime.complete(
                     execution,
                     TypedRuntimeOutcome.SubmissionDeferred(
                         deferred.retryAt,
                         deferred.message ?: "HOF 요청 간격을 기다립니다.",
                     ),
-                    HOF_COOLDOWN_WAKE_REASON,
                 )
                 return
             }
@@ -1711,8 +1698,8 @@ class UnifiedAutomationRunner @Autowired constructor(
         typedRuntime.complete(
             execution,
             TypedRuntimeOutcome.SelectionChanged(TYPED_CONVERGENCE_WAKE_REASON),
+            convergenceRecheckAt = (next as? ConvergenceDirective.WaitUntil)?.at,
         )
-        scheduleConvergenceDirective(accountId, next)
     }
 
     private fun completeLegacyReconciliationBudget(
@@ -1754,47 +1741,28 @@ class UnifiedAutomationRunner @Autowired constructor(
     }
 
     private fun releaseForConvergenceDirective(
-        accountId: Long,
         execution: TypedRuntimeExecutionRight,
         directive: ConvergenceDirective,
     ) {
         typedRuntime.complete(
             execution,
             TypedRuntimeOutcome.SelectionChanged(TYPED_CONVERGENCE_WAKE_REASON),
+            convergenceRecheckAt = (directive as? ConvergenceDirective.WaitUntil)?.at,
         )
-        scheduleConvergenceDirective(accountId, directive)
-    }
-
-    private fun scheduleConvergenceDirective(accountId: Long, directive: ConvergenceDirective) {
-        if (directive is ConvergenceDirective.WaitUntil) {
-            wakeupPort.schedule(accountId, directive.at, TYPED_CONVERGENCE_PROBE_REASON)
-        }
     }
 
     private fun now(): Instant = timeProvider?.now() ?: Instant.now()
 
-    private fun completeAndSchedule(
-        accountId: Long,
-        execution: TypedRuntimeExecutionRight,
-        outcome: TypedRuntimeOutcome,
-        wakeReason: String,
-    ) {
-        typedRuntime.complete(execution, outcome).nextAttemptAt?.let { retryAt ->
-            wakeupPort.schedule(accountId, retryAt, wakeReason)
-        }
-    }
-
     private fun retryExecution(
-        accountId: Long,
         execution: TypedRuntimeExecutionRight,
         reason: AutomationStopReason,
         message: String?,
+        convergenceRecheckAt: Instant? = null,
     ) {
-        completeAndSchedule(
-            accountId,
+        typedRuntime.complete(
             execution,
             TypedRuntimeOutcome.RetryableFailure(reason, message ?: reason.name),
-            AUTOMATIC_RETRY_WAKE_REASON,
+            convergenceRecheckAt = convergenceRecheckAt,
         )
     }
 
@@ -1817,7 +1785,6 @@ class UnifiedAutomationRunner @Autowired constructor(
         )
         try {
             retryExecution(
-                accountId,
                 execution,
                 AutomationStopReason.FATAL,
                 error.message ?: error.javaClass.simpleName,
@@ -1969,7 +1936,6 @@ class UnifiedAutomationRunner @Autowired constructor(
         const val TYPED_CONVERGENCE_WAKE_REASON = "TYPED_CONVERGENCE_CONTINUE"
         const val FISHING_OBSERVATION_LOST_BEFORE_SUBMISSION =
             "FISHING_OBSERVATION_LOST_BEFORE_SUBMISSION"
-        const val TYPED_CONVERGENCE_PROBE_REASON = "TYPED_CONVERGENCE_PROBE"
         const val TYPED_BATTLE_GATE_WAKE_REASON = "TYPED_BATTLE_GATE_OPENED"
         const val WORK_CYCLE_BOUNDARY_WAKE_REASON = "WORK_CYCLE_BOUNDARY"
         const val ACTION_SUPERSEDED_REASON = "ACTION_SUPERSEDED_BY_FRESH_STATE"

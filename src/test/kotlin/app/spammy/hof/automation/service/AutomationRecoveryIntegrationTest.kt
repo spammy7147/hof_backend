@@ -106,6 +106,7 @@ class AutomationRecoveryIntegrationTest {
     private var selectedCharacters = characters
     private var raidPageTransform: (String) -> String = { it }
     private var incompleteRefreshPost = false
+    private var mapPage = "<a href='index.php?union=0003'>도적소탕</a>"
 
     @ParameterizedTest
     @ValueSource(strings = ["CURRENT", "RETRY", "STARTUP", "NOT_STARTED", "NOT_STARTED_RETRY", "USER_STOP"])
@@ -268,7 +269,7 @@ class AutomationRecoveryIntegrationTest {
                     if (patternCalls == failedPattern) throw IOException("HTTP/1.1 header parser received no bytes")
                     "<div>Funds : $ 1 Time : 100/100</div>"
                 }
-                request.method == HofHttpMethod.GET -> "<a href='index.php?union=0003'>도적소탕</a>"
+                request.method == HofHttpMethod.GET -> mapPage
                 failBattle -> throw IOException("battle response lost")
                 else -> """<div id="menu2">Funds : $ 1 Time : 100/100</div><h2>Show Detail( 1 turns. )</h2><h1>테스트은(는) 승리했다!</h1>
                     <div>남은 HP : 0/100 생존자 : 0/1 총 데미지 : 0</div>
@@ -523,6 +524,76 @@ class AutomationRecoveryIntegrationTest {
         assertTrue(transport.delivered.all { outbox.consumed(it) })
         assertEquals(0, jdbc.queryForObject("select count(*) from account_automation_leases where account_id = ?", Int::class.java, accountId))
         assertNull(jdbc.queryForObject("select lease_token from typed_automation_runtime_states where account_id = ?", String::class.java, accountId))
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = AutomationType::class, names = ["BATTLE_MAP", "ADVENTURE_MAP", "UNION"])
+    fun `영속 대기는 시각 전 제출을 막고 소비 뒤 전투와 다음 판단으로 이어진다`(type: AutomationType) {
+        failedPattern = -1
+        val deadline = clock.now().plusSeconds(30)
+        val category = when (type) {
+            AutomationType.BATTLE_MAP -> "battle_map"
+            AutomationType.ADVENTURE_MAP -> "adventure_map"
+            else -> "union"
+        }
+        val query = when (type) {
+            AutomationType.BATTLE_MAP -> "common"
+            AutomationType.ADVENTURE_MAP -> "sp_common"
+            else -> "union"
+        }
+        mapPage = """<html><body><div id="contents"><div>공유 지역 (2)</div><div id="mapgroup1">
+            <p><a href='index.php?$query=0003'>도적소탕</a> 2 가능</p></div></div>
+            <div id="foot"><h5>Copy Right sanitized fixture</h5><h6>H.O.F Korean Ver sanitized fixture</h6>
+            <img src="image/zerohof.gif"></div></body></html>"""
+        TransactionTemplate(transactions).executeWithoutResult {
+            entityManager.find(AutomationEntryEntity::class.java, entryId).apply {
+                this.type = type
+                singletonTypeMarker = type.takeIf { it == AutomationType.UNION }
+                if (type == AutomationType.BATTLE_MAP) {
+                    entityManager.persist(BattleAutomationMapEntity(entry = this, categoryId = category,
+                        mapCode = "0003", dailyTargetCount = 1, presetMode = PresetSelectionMode.PRIMARY, executionOrder = 0))
+                }
+            }
+        }
+        val party = ResolvedAutomationParty(characters, characters.map { BattlePatternLoadRequest(it, 1) })
+        val action: PreparedAutomationAction = if (type == AutomationType.ADVENTURE_MAP) {
+            AdventureMapAutomationAction(accountId, category, "0003", PresetSelectionMode.EXPLICIT, 1L,
+                settingIdentity = 1L, executionIdentity = UUID.randomUUID().toString(), resolvedParty = party)
+        } else battle().copy(categoryId = category, source = if (type == AutomationType.UNION)
+            BattleAutomationActionSource.UNION_AUTOMATION else BattleAutomationActionSource.BATTLE_MAP_AUTOMATION)
+        var selections = 0
+        Mockito.doAnswer {
+            when (++selections) {
+                1 -> AutomationCoordination.Unavailable(deadline, emptyList())
+                2 -> AutomationCoordination.Runnable(entryId, action, emptyList())
+                else -> AutomationCoordination.Idle(emptyList())
+            }
+        }.`when`(decisions).select(accountId)
+
+        wakeups.wake(accountId, "DURABLE_WAIT_BASELINE")
+        publisher.publishBatch()
+        assertScheduledWake("TYPED_UNAVAILABLE", deadline)
+        val due = outbox.findUnpublished(deadline).single { it.account.id == accountId }
+        clock.current = deadline.minusMillis(1)
+        publisher.publishBatch()
+        assertEquals(1, selections)
+        assertTrue(battleRequests().isEmpty())
+
+        clock.current = deadline
+        publisher.publishBatch()
+        assertEquals(2, selections)
+        assertEquals(1, battleRequests().size)
+        assertEquals("SUCCEEDED", runs().single()["status"])
+        assertEquals(2, journal.page(accountId, AutomationHistoryQuery()).cycles.size)
+        transport.publish(due)
+        assertEquals(2, selections, "중복 전달이 같은 행동을 다시 선택하면 안 된다.")
+        assertEquals(1, battleRequests().size)
+
+        consumeNextWake()
+        assertEquals(3, selections)
+        assertEquals(3, journal.page(accountId, AutomationHistoryQuery()).cycles.size)
+        assertEquals(1, battleRequests().size)
+        assertScheduledWake("TYPED_NEXT_ROUND", clock.now().plusSeconds(3))
     }
 
     @Test

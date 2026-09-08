@@ -120,21 +120,8 @@ class UnifiedAutomationRunnerTest {
         ).thenReturn(TypedRuntimePreparation.Ready(preparedExecution))
         Mockito.`when`(runtime.beginSubmission(preparedExecution))
             .thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
-        Mockito.`when`(runtime.complete(anyExecution(), anyOutcome())).thenAnswer { invocation ->
-            val outcome = invocation.arguments[1] as TypedRuntimeOutcome
-            val next = when (outcome) {
-                is TypedRuntimeOutcome.ScheduledWait -> outcome.nextRunAt
-                is TypedRuntimeOutcome.ConfigurationWait -> CONFIG_RECHECK_AT
-                is TypedRuntimeOutcome.SafeRetry,
-                is TypedRuntimeOutcome.RetryableFailure,
-                is TypedRuntimeOutcome.IntegrityFailure,
-                -> RETRY_AT
-                is TypedRuntimeOutcome.SubmissionDeferred -> outcome.retryAt
-                is TypedRuntimeOutcome.ReconciliationDeferred -> outcome.retryAt
-                else -> null
-            }
-            TypedRuntimeProjection(true, next)
-        }
+        Mockito.`when`(runtime.complete(anyExecution(), anyOutcome(), Mockito.nullable(Instant::class.java)))
+            .thenReturn(TypedRuntimeProjection(true))
     }
 
     @Test
@@ -271,7 +258,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.verify(runtime).advanceAppliedActionToPreparedFollowup(anyExecution(), anyStoredAction())
         Mockito.verify(runtime).beginSubmission(catchPrepared)
         val outcome = ArgumentCaptor.forClass(TypedRuntimeOutcome::class.java)
-        Mockito.verify(runtime).complete(anyExecution(), captureOutcome(outcome))
+        Mockito.verify(runtime).complete(anyExecution(), captureOutcome(outcome), Mockito.nullable(Instant::class.java))
         assertIs<TypedRuntimeOutcome.ActionSucceeded>(outcome.value)
         Mockito.verify(startManaged, Mockito.never()).execute()
     }
@@ -1729,7 +1716,6 @@ class UnifiedAutomationRunnerTest {
 
         val outcome = assertIs<TypedRuntimeOutcome.SubmissionDeferred>(capturedOutcome())
         assertEquals(retryAt, outcome.retryAt)
-        Mockito.verify(wakeup).schedule(7, retryAt, "HOF_503_COOLDOWN")
     }
 
     @Test
@@ -1808,7 +1794,7 @@ class UnifiedAutomationRunnerTest {
         scoped.runOne(7L)
 
         val outcomeCaptor = ArgumentCaptor.forClass(TypedRuntimeOutcome::class.java)
-        Mockito.verify(runtime, Mockito.times(2)).complete(anyExecution(), captureOutcome(outcomeCaptor))
+        Mockito.verify(runtime, Mockito.times(2)).complete(anyExecution(), captureOutcome(outcomeCaptor), Mockito.nullable(Instant::class.java))
         assertIs<TypedRuntimeOutcome.SubmissionDeferred>(outcomeCaptor.allValues[0])
         assertIs<TypedRuntimeOutcome.ActionSucceeded>(outcomeCaptor.allValues[1])
         assertEquals(
@@ -1817,7 +1803,7 @@ class UnifiedAutomationRunnerTest {
         )
         Mockito.verify(convergence).retryUnsubmitted(7L, selection, Instant.EPOCH)
         assertIs<AutomationActionEvidence.DirectApplied>(convergenceEvidence(convergence, 114L))
-        Mockito.verify(wakeup).schedule(7L, retryAt, "HOF_503_COOLDOWN")
+        assertEquals(retryAt, assertIs<TypedRuntimeOutcome.SubmissionDeferred>(outcomeCaptor.allValues[0]).retryAt)
     }
 
     @Test
@@ -1840,7 +1826,6 @@ class UnifiedAutomationRunnerTest {
         runner.runOne(7L)
 
         assertIs<TypedRuntimeOutcome.SubmissionAmbiguous>(capturedOutcome())
-        Mockito.verify(wakeup, Mockito.never()).schedule(7L, retryAt, "HOF_503_COOLDOWN")
     }
 
     @Test
@@ -1900,7 +1885,6 @@ class UnifiedAutomationRunnerTest {
         val outcome = assertIs<TypedRuntimeOutcome.RetryableFailure>(capturedOutcome())
         assertEquals(AutomationStopReason.AUTHENTICATION, outcome.reason)
         assertEquals(listOf("credential warning"), outcome.warnings)
-        Mockito.verify(wakeup).schedule(7, RETRY_AT, "TYPED_AUTOMATIC_RETRY")
     }
 
     @Test
@@ -1913,7 +1897,8 @@ class UnifiedAutomationRunnerTest {
 
         val outcome = assertIs<TypedRuntimeOutcome.ScheduledWait>(capturedOutcome())
         assertEquals(AutomationWaitReason.HOF_CONNECTION, outcome.waitReason)
-        Mockito.verify(wakeup).schedule(7, retryAt, "DAILY_PREFLIGHT_RETRY")
+        assertEquals(retryAt, outcome.nextRunAt)
+        assertEquals("DAILY_PREFLIGHT_RETRY", outcome.wakeReason)
         Mockito.verifyNoInteractions(decisions)
     }
 
@@ -1947,7 +1932,6 @@ class UnifiedAutomationRunnerTest {
         runner.runOne(7)
 
         assertIs<TypedRuntimeOutcome.IntegrityFailure>(capturedOutcome())
-        Mockito.verify(wakeup).schedule(7, RETRY_AT, "TYPED_AUTOMATIC_RETRY")
         Mockito.verify(managed, Mockito.never()).execute()
     }
 
@@ -2218,7 +2202,7 @@ class UnifiedAutomationRunnerTest {
 
         assertIs<AutomationActionEvidence.IncompleteObservation>(convergenceEvidence(convergence, 111L))
         assertIs<TypedRuntimeOutcome.AmbiguousHandoff>(capturedOutcome())
-        Mockito.verify(wakeup).schedule(7L, probeAt, "TYPED_CONVERGENCE_PROBE")
+        Mockito.verify(runtime).complete(anyExecution(), anyOutcome(), Mockito.eq(probeAt))
     }
 
     @Test
@@ -2461,7 +2445,7 @@ class UnifiedAutomationRunnerTest {
         assertEquals("b".repeat(64), evidence.responseShapeFingerprint)
         assertEquals("BattleHttpResponse|status=200|rounds=1|outcomes=UNKNOWN", evidence.sanitizedSnippet)
         assertIs<TypedRuntimeOutcome.AmbiguousHandoff>(capturedOutcome())
-        Mockito.verify(wakeup).schedule(7L, probeAt, "TYPED_CONVERGENCE_PROBE")
+        Mockito.verify(runtime).complete(anyExecution(), anyOutcome(), Mockito.eq(probeAt))
     }
 
     @Test
@@ -2511,7 +2495,7 @@ class UnifiedAutomationRunnerTest {
 
         assertIs<AutomationActionEvidence.IncompleteObservation>(convergenceEvidence(convergence, 102L))
         assertIs<TypedRuntimeOutcome.AmbiguousHandoff>(capturedOutcome())
-        Mockito.verify(wakeup).schedule(7L, Instant.EPOCH.plusSeconds(10), "TYPED_CONVERGENCE_PROBE")
+        Mockito.verify(runtime).complete(anyExecution(), anyOutcome(), Mockito.eq(Instant.EPOCH.plusSeconds(10)))
     }
 
     @Test
@@ -2692,7 +2676,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.verify(managed).reconcile()
         Mockito.verify(managed, Mockito.never()).execute()
         assertIs<TypedRuntimeOutcome.AmbiguousHandoff>(capturedOutcome())
-        Mockito.verify(wakeup).schedule(7L, probeAt, "TYPED_CONVERGENCE_PROBE")
+        Mockito.verify(runtime).complete(anyExecution(), anyOutcome(), Mockito.eq(probeAt))
     }
 
     @Test
@@ -2919,7 +2903,7 @@ class UnifiedAutomationRunnerTest {
 
     private fun capturedOutcome(): TypedRuntimeOutcome {
         val captor = ArgumentCaptor.forClass(TypedRuntimeOutcome::class.java)
-        Mockito.verify(runtime).complete(anyExecution(), captureOutcome(captor))
+        Mockito.verify(runtime).complete(anyExecution(), captureOutcome(captor), Mockito.nullable(Instant::class.java))
         return captor.value
     }
 
@@ -3198,7 +3182,5 @@ class UnifiedAutomationRunnerTest {
     )
 
     private companion object {
-        val RETRY_AT: Instant = Instant.parse("2026-07-25T00:05:00Z")
-        val CONFIG_RECHECK_AT: Instant = Instant.parse("2026-07-25T00:10:00Z")
     }
 }

@@ -54,6 +54,7 @@ sealed interface TypedRuntimeOutcome {
         val nextRunAt: Instant,
         val waitReason: AutomationWaitReason,
         val warnings: List<String> = emptyList(),
+        val wakeReason: String = "TYPED_UNAVAILABLE",
     ) : TypedRuntimeOutcome
     data class ConfigurationWait(val warnings: List<String>) : TypedRuntimeOutcome
     data class SafeRetry(val message: String) : TypedRuntimeOutcome
@@ -82,6 +83,7 @@ sealed interface TypedRuntimeOutcome {
         val retryAt: Instant,
         val reason: String,
         val successfulObservation: Boolean = true,
+        val wakeReason: String = "TYPED_RECONCILE_RETRY",
     ) : TypedRuntimeOutcome
     data class AmbiguousHandoff(
         val warning: String,
@@ -101,5 +103,6 @@ sealed interface TypedRuntimeOutcome {
 
 data class TypedRuntimeProjection(
     val applied: Boolean,
+    /** 이력에 표시할 다음 확인 시각이며 후속 예약은 complete가 같은 transaction에 저장한다. */
     val nextAttemptAt: Instant? = null,
 )
