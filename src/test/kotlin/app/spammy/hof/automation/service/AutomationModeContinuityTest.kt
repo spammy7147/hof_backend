@@ -19,6 +19,18 @@ import app.spammy.hof.status.entity.HofStatusSnapshotEntity
 import app.spammy.hof.town.common.parser.HofFormParser
 import app.spammy.hof.town.home.model.HomeMode
 import app.spammy.hof.town.home.parser.HomePageParser
+import app.spammy.hof.character.transfer.CharacterTransferFixture
+import app.spammy.hof.character.transfer.CharacterTransferRequest
+import app.spammy.hof.character.transfer.CharacterTransferOutcome
+import app.spammy.hof.character.transfer.CharacterSavedPatternMapping
+import app.spammy.hof.character.dto.CharacterTransferExecuteRequest
+import app.spammy.hof.character.entity.CharacterEntity
+import app.spammy.hof.character.pattern.CharacterPatternSetting
+import app.spammy.hof.character.pattern.CharacterPatternRowValue
+import app.spammy.hof.character.service.CharacterOperationJobService
+import app.spammy.hof.character.service.CharacterSnapshotSynchronizer
+import app.spammy.hof.character.service.CharacterSnapshotArchiveWriter
+import app.spammy.hof.external.parser.CharacterDetailParser
 import jakarta.persistence.EntityManager
 import java.time.Instant
 import java.util.UUID
@@ -69,6 +81,114 @@ abstract class AutomationModeContinuityTest {
     @MockitoBean private lateinit var authorization: AccountExecutionAuthorizationReader
     @Autowired private lateinit var characterGate: app.spammy.hof.character.command.CharacterAutomationGate
     @Autowired private lateinit var characterRecovery: app.spammy.hof.character.service.CharacterDeepSyncRecovery
+    @Autowired private lateinit var characterJobs: CharacterOperationJobService
+    @Autowired private lateinit var snapshots: CharacterSnapshotSynchronizer
+    @Autowired private lateinit var archive: CharacterSnapshotArchiveWriter
+    @Autowired private lateinit var characterParser: CharacterDetailParser
+    @Autowired private lateinit var automation: UnifiedAutomationService
+    @MockitoBean(name = "characterSyncTaskExecutor") private lateinit var characterTasks: org.springframework.core.task.TaskExecutor
+
+    @Test
+    fun `설정 가져오기의 최종 상태를 보존하고 영속 복귀 깨우기에서 낚시와 후속 판단을 이어간다`() {
+        assertEquals(mode, properties.mode)
+        clock.current = Instant.parse("2026-09-09T00:00:00Z")
+        transport.delivered.clear()
+        val requests = mutableListOf<HofRequest>()
+        val tasks = ArrayDeque<Runnable>()
+        lateinit var source: CharacterEntity
+        lateinit var target: CharacterEntity
+        val accountId = TransactionTemplate(transactions).execute {
+            val account = HofAccountEntity(loginId = "transfer-mode-${UUID.randomUUID()}", encryptedPassword = "test", createdAt = clock.now())
+            entityManager.persist(account)
+            entityManager.persist(AutomationEntryEntity(account = account, type = AutomationType.FISHING, priority = 0,
+                enabled = true, createdAt = clock.now(), updatedAt = clock.now()))
+            entityManager.persist(HofCookieEntity(account = account, name = "PHPSESSID", value = "test-session", updatedAt = clock.now()))
+            entityManager.persist(TypedAutomationRuntimeStateEntity(accountId = account.id, account = account,
+                lifecycleStatus = TypedAutomationLifecycle.RUNNING, createdAt = clock.now(), updatedAt = clock.now()))
+            source = CharacterEntity(account = account, hofCharacterId = "transfer-source", name = "원본", job = "Knight", updatedAt = clock.now())
+            target = CharacterEntity(account = account, hofCharacterId = "transfer-target", name = "대상", job = "Knight", updatedAt = clock.now())
+            entityManager.persist(source)
+            entityManager.persist(target)
+            account.id
+        }
+        var current = CharacterTransferFixture.setting("0")
+        val slots = mutableMapOf<String, CharacterPatternSetting?>("0" to null)
+        val sourceCurrent = CharacterTransferFixture.setting("1")
+        val sourceSaved = CharacterTransferFixture.setting("2")
+        var fishingBattle = false
+        fun fishingFixture(name: String) = requireNotNull(javaClass.getResource("/fixtures/town/fishing/$name.html")).readText()
+        try {
+            snapshots.writeParsed(accountId, source.hofCharacterId, characterParser.parsePage(source.hofCharacterId,
+                CharacterTransferFixture.page(source.hofCharacterId, sourceCurrent, mapOf("0" to sourceSaved))))
+            archive.savePatternSlot(source, "0", characterParser.parsePage(source.hofCharacterId,
+                CharacterTransferFixture.page(source.hofCharacterId, sourceSaved, mapOf("0" to sourceSaved))))
+            snapshots.writeParsed(accountId, target.hofCharacterId, characterParser.parsePage(target.hofCharacterId,
+                CharacterTransferFixture.page(target.hofCharacterId, current, slots)))
+            Mockito.doAnswer { tasks.addLast(it.getArgument(0)); null }
+                .`when`(characterTasks).execute(Mockito.any(Runnable::class.java))
+            Mockito.`when`(preflight.ensureReady(accountId)).thenReturn(AutomationDailyPreflight.Result.Ready)
+            Mockito.`when`(authorization.isExecutionAllowed(accountId)).thenReturn(true)
+            Mockito.doAnswer { invocation ->
+                val request = invocation.getArgument<HofRequest>(1)
+                requests += request
+                val fields = request.formFields
+                val body = if (request.url.contains("?char=")) {
+                    check(request.url.substringAfter("char=") == target.hofCharacterId)
+                    when {
+                        "ChangePattern" in fields -> current = current.copy(rows = listOf(CharacterPatternRowValue(
+                            fields.getValue("judge0"), fields.getValue("quantity0"), fields.getValue("skill0"))))
+                        "ChangePosition" in fields -> current = current.copy(position = fields.getValue("position"), guard = fields.getValue("guard"))
+                        "savepattern" in fields -> slots[fields.getValue("patternno")] = current
+                    }
+                    CharacterTransferFixture.page(target.hofCharacterId, current, slots)
+                } else {
+                    "<div id='menu2'>Funds : $ 1 Time : 100/100</div>" + when {
+                        "FStart" in fields -> fishingFixture("waiting")
+                        "FCatch" in fields -> {
+                            fishingBattle = true
+                            fishingFixture("caught").substringBefore("<form") + fishingFixture("monster")
+                        }
+                        request.url.contains("menu=fishing") -> fishingFixture("reset")
+                        else -> """<div id='contents'><a href='?common=0001'>일반 맵</a>
+                            ${if (fishingBattle) "<a href='?common=Fish03'>Fishing- 악어</a>" else ""}</div>
+                            <div id='foot'><h5>Copy Right sanitized</h5><h6>H.O.F Korean Ver sanitized</h6><img src='zerohof.gif'></div>"""
+                    }
+                }
+                HofHttpResponse(200, request.url, body, emptyMap())
+            }.`when`(gateway).execute(Mockito.eq(accountId), Mockito.any<HofRequest>()
+                ?: HofRequest(HofHttpMethod.GET, "https://example.test"), Mockito.anyMap())
+
+            val started = characterJobs.startTransfer(accountId, CharacterTransferExecuteRequest(source.id, target.id,
+                CharacterTransferRequest(includeCurrentPattern = true,
+                    savedPatternMappings = listOf(CharacterSavedPatternMapping("0", "0")))))
+            requests.clear()
+            wakeups.wake(accountId, "TRANSFER_PENDING")
+            publisher.publishBatch()
+            assertTrue(requests.isEmpty(), "가져오기 대기 중 새 자동화 행동을 실행하지 않는다.")
+            tasks.removeFirst().run()
+            assertEquals(CharacterTransferOutcome.COMPLETED, characterJobs.find(accountId, started.id).transfer?.outcome)
+            assertEquals(sourceCurrent, current)
+            assertEquals(sourceSaved, slots["0"])
+            assertEquals(TypedAutomationLifecycle.RUNNING, automation.getTyped(accountId).runtime.lifecycle)
+            publisher.publishBatch()
+            val firstCycles = journal.page(accountId, AutomationHistoryQuery()).cycles.map { it.id }.toSet()
+            assertEquals(1, requests.count { "FStart" in it.formFields })
+            assertEquals(1, requests.count { "FCatch" in it.formFields })
+            clock.current = assertNotNull(jdbc.queryForObject(
+                "select min(available_at) from automation_outbox where account_id = ? and published_at is null",
+                java.time.OffsetDateTime::class.java, accountId)).toInstant()
+            publisher.publishBatch()
+            val cycles = journal.page(accountId, AutomationHistoryQuery()).cycles
+            assertTrue(cycles.any { it.id !in firstCycles }, "복귀 행동 이후 새 판단을 실제 소비해야 한다.")
+            assertEquals(1, requests.count { "FStart" in it.formFields })
+            assertEquals(1, requests.count { "FCatch" in it.formFields })
+            assertEquals(sourceCurrent, current)
+            assertTrue(transport.delivered.all { outbox.consumed(it) })
+        } finally {
+            transport.delivered.forEach { jdbc.update("delete from automation_consumed_events where event_id = ?", it) }
+            jdbc.update("delete from hof_accounts where id = ?", accountId)
+        }
+    }
 
     @Test
     fun `각 모드의 낚시는 CATCH 뒤 숨은 전투를 확인하고 새 START를 반복하지 않는다`() {

@@ -5,6 +5,7 @@ import app.spammy.hof.account.service.HofSessionRecoveryService
 import app.spammy.hof.character.dto.CharacterOperationJobResponse
 import app.spammy.hof.character.dto.CharacterCollectionStatus
 import app.spammy.hof.character.dto.CharacterTransferExecuteRequest
+import app.spammy.hof.character.command.CharacterAutomationGate
 import app.spammy.hof.character.entity.CharacterOperationJobEntity
 import app.spammy.hof.character.entity.CharacterOperationStatus
 import app.spammy.hof.character.entity.CharacterOperationType
@@ -53,6 +54,7 @@ class CharacterOperationJobService(
     private val timeProvider: TimeProvider,
     @Qualifier("characterSyncTaskExecutor") private val taskExecutor: TaskExecutor,
     private val automation: CharacterOperationAutomation,
+    private val automationGate: CharacterAutomationGate,
 ) {
     private val running = ConcurrentHashMap.newKeySet<Long>()
 
@@ -93,7 +95,10 @@ class CharacterOperationJobService(
 
     fun findCurrent(accountId: Long, characterId: Long? = null): CharacterOperationJobResponse? {
         characterId?.let { requireOwnedCharacter(accountId, it) }
-        return (queries.findConflictingSync(accountId) ?: queries.findLatestSync(accountId, characterId))?.let(::reconcileRelease)?.toResponse()
+        val held = queries.findConflictingJob(accountId)?.let(::reconcileRelease)
+        // 이 조회는 깊은 동기화 복구 화면의 진입점이다. 가져오기 결과는 해당 작업 조회로 전달한다.
+        return (held?.takeUnless { it.operationType == CharacterOperationType.TRANSFER }
+            ?: queries.findLatestSync(accountId, characterId))?.let(::reconcileRelease)?.toResponse()
     }
 
     fun isExecuting(jobId: Long): Boolean = running.contains(jobId)
@@ -108,7 +113,7 @@ class CharacterOperationJobService(
         val attempts = queries.findRestoreAttempts(jobId)
         if (job.operationType == CharacterOperationType.TRANSFER || attempts == null ||
             job.recoveryStatus !in setOf(CharacterRecoveryStatus.REQUIRED, CharacterRecoveryStatus.RESTORING) ||
-            queries.findConflictingSync(accountId, jobId) != null) {
+            queries.findConflictingJob(accountId, jobId) != null) {
             throw ApiException(ErrorCode.CHARACTER_RECOVERY_REQUIRED, "같은 작업에 보존된 원본이 있어야 복구를 재시도할 수 있습니다. 현재 상태를 확인해 주세요.")
         }
         // 수집을 재시작하지 않고 최초 원본의 복구만 다시 시도한다. 누적 시도 횟수는 보존한다.
@@ -164,7 +169,7 @@ class CharacterOperationJobService(
     ): CharacterOperationJobEntity {
         val account = accounts.findByIdForUpdate(accountId)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "HOF 계정을 찾지 못했습니다.")
-        if (queries.findConflictingSync(accountId) != null) {
+        if (queries.findConflictingJob(accountId) != null) {
             throw ApiException(ErrorCode.CHARACTER_RECOVERY_REQUIRED, "진행 중이거나 복원이 필요한 캐릭터 작업을 먼저 확인해 주세요.")
         }
         val now = timeProvider.now()
@@ -229,18 +234,26 @@ class CharacterOperationJobService(
         job.updatedAt = timeProvider.now()
         commands.save(job)
         val accountId = job.account.id
-        val resultPayload = when (job.operationType) {
-            CharacterOperationType.DEEP_SYNC -> runDeepSync(job, accountId)
-            CharacterOperationType.RESTORE -> runRestore(job, accountId)
-            CharacterOperationType.TRANSFER -> sessionRecovery.execute(accountId) { runTransfer(job, accountId) }
+        fun executeAndComplete() {
+            val resultPayload = when (job.operationType) {
+                CharacterOperationType.DEEP_SYNC -> runDeepSync(job, accountId)
+                CharacterOperationType.RESTORE -> runRestore(job, accountId)
+                CharacterOperationType.TRANSFER -> sessionRecovery.execute(accountId) { runTransfer(job, accountId) }
+            }
+            // 복구 checkpoint를 저장한 이후의 상태를 읽어 detached job의 오래된 값으로 덮어쓰지 않는다.
+            val completedJob = queries.findById(jobId) ?: return
+            completedJob.status = CharacterOperationStatus.COMPLETED
+            completedJob.resultPayload = resultPayload
+            completedJob.updatedAt = timeProvider.now()
+            completedJob.finishedAt = completedJob.updatedAt
+            commands.save(completedJob)
         }
-        // 복구 checkpoint를 저장한 이후의 상태를 읽어 detached job의 오래된 값으로 덮어쓰지 않는다.
-        val completedJob = queries.findById(jobId) ?: return
-        completedJob.status = CharacterOperationStatus.COMPLETED
-        completedJob.resultPayload = resultPayload
-        completedJob.updatedAt = timeProvider.now()
-        completedJob.finishedAt = completedJob.updatedAt
-        commands.save(completedJob)
+        if (job.operationType == CharacterOperationType.TRANSFER) {
+            automationGate.executeJob(accountId, jobId,
+                { error("자동화 일시정지를 완료하지 못했습니다. 현재 상태를 확인해 주세요.") }, ::executeAndComplete)
+        } else {
+            executeAndComplete()
+        }
     }
 
     private fun runDeepSync(job: CharacterOperationJobEntity, accountId: Long): String =
@@ -298,11 +311,16 @@ class CharacterOperationJobService(
 
     private fun fail(jobId: Long, message: String) {
         val job = queries.findById(jobId) ?: return
+        // 완료 결과는 복귀 쓰기 실패와 별개다. 남은 보호 해제는 조회·재시작에서 재시도한다.
+        if (job.status == CharacterOperationStatus.COMPLETED) return
         job.status = CharacterOperationStatus.FAILED
         job.message = message
         job.updatedAt = timeProvider.now()
         job.finishedAt = job.updatedAt
         commands.save(job)
+        if (job.operationType == CharacterOperationType.TRANSFER && job.automationIntentRevision != null) {
+            automation.finish(job.account.id, jobId)
+        }
     }
 
     private fun load(accountId: Long, jobId: Long): CharacterOperationJobEntity =
@@ -310,10 +328,11 @@ class CharacterOperationJobService(
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "캐릭터 작업을 찾지 못했습니다.")
 
     private fun reconcileRelease(job: CharacterOperationJobEntity): CharacterOperationJobEntity {
-        if (job.operationType != CharacterOperationType.TRANSFER && !running.contains(job.id) &&
+        if (!running.contains(job.id) &&
             job.status !in setOf(CharacterOperationStatus.PENDING, CharacterOperationStatus.RUNNING) &&
             job.automationIntentRevision != null && !job.automationReleased &&
-            job.recoveryStatus in setOf(CharacterRecoveryStatus.NOT_STARTED, CharacterRecoveryStatus.RESTORED)) {
+            (job.operationType == CharacterOperationType.TRANSFER ||
+                job.recoveryStatus in setOf(CharacterRecoveryStatus.NOT_STARTED, CharacterRecoveryStatus.RESTORED))) {
             // 원격 복원은 이미 확정됐다. 일시 DB 오류로 남은 보호 해제만 재실행한다.
             automation.finish(job.account.id, job.id)
             return load(job.account.id, job.id)

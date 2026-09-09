@@ -3,6 +3,11 @@ package app.spammy.hof.character.transfer
 import app.spammy.hof.HofApplication
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.entity.HofCookieEntity
+import app.spammy.hof.auth.service.RefreshTokenService
+import app.spammy.hof.automation.entity.AutomationEntryEntity
+import app.spammy.hof.automation.entity.AutomationType
+import app.spammy.hof.automation.service.UnifiedAutomationService
+import app.spammy.hof.automation.service.TypedAutomationLifecycleBridge
 import app.spammy.hof.character.dto.CharacterTransferExecuteRequest
 import app.spammy.hof.character.entity.CharacterEntity
 import app.spammy.hof.character.entity.CharacterOperationStatus
@@ -33,6 +38,7 @@ import org.junit.jupiter.api.io.TempDir
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
 import org.springframework.boot.builder.SpringApplicationBuilder
+import org.springframework.boot.ApplicationRunner
 import org.springframework.boot.test.context.TestConfiguration
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Primary
@@ -43,6 +49,25 @@ import tools.jackson.module.kotlin.jacksonObjectMapper
 /** 별도 JVM과 파일 DB를 사용하며 HOF만 상태형 adapter로 대체한다. */
 class CharacterTransferProcessRestartTest {
     @TempDir lateinit var directory: Path
+
+    @ParameterizedTest
+    @ValueSource(strings = ["resume", "resume-stop", "resume-auth", "resume-auth-login"])
+    fun `별도 JVM의 가져오기는 최초 실행 의도를 보존하되 이후 사용자 정지와 인증 중단을 우선한다`(resume: String) {
+        assertEquals(71, runProcess("automation:savepattern"))
+        val mapper = jacksonObjectMapper()
+        val interrupted = mapper.readValue(directory.resolve("hof.json").readText(), TransferProcessState::class.java)
+        assertEquals(setting("2"), interrupted.current)
+        assertEquals(0, runProcess(resume))
+        val result = mapper.readTree(directory.resolve("automation.json").readText())
+        assertEquals("COMPLETED", result["outcome"].asString())
+        assertTrue(result["released"].asBoolean())
+        assertEquals(when (resume) { "resume" -> "RUNNING"; "resume-stop" -> "STOPPED"; else -> "PAUSED" },
+            result["lifecycle"].asString())
+        val current = mapper.readValue(directory.resolve("hof.json").readText(), TransferProcessState::class.java)
+        assertEquals(setting("0"), current.current)
+        assertEquals(setting("2"), current.slots["0"])
+        assertTrue(current.posts.all { it["character"] == "transfer-target" })
+    }
 
     @ParameterizedTest
     @ValueSource(strings = ["ChangePattern", "savepattern"])
@@ -159,6 +184,7 @@ internal data class TransferProcessState(
     val emptySecondPreset: Boolean = false,
     val unavailableCurrentEquipment: Boolean = false,
     val unavailableCurrentPattern: Boolean = false,
+    val automationRequested: Boolean = false,
 )
 
 object CharacterTransferCrashProcess {
@@ -172,7 +198,7 @@ object CharacterTransferCrashProcess {
         val directory = Path.of(args[0])
         statePath = directory.resolve("hof.json")
         stopAfter = args[1].substringAfter(":")
-        state = if (stopAfter == "resume") {
+        state = if (stopAfter.startsWith("resume")) {
             mapper.readValue(statePath.readText(), TransferProcessState::class.java).also {
                 if (it.equipment != null) it.equipmentCandidateValue = "ring-restarted"
             }
@@ -180,13 +206,14 @@ object CharacterTransferCrashProcess {
             TransferProcessState(current = setting("0").copy(rows = setting("0").rows + setting("0").rows),
                 equipment = true, emptySecondPreset = stopAfter in setOf("empty-probe", "unavailable-current"),
                 unavailableCurrentEquipment = stopAfter == "unavailable-current")
-        } else TransferProcessState(unavailableCurrentPattern = args[1].startsWith("unavailable-pattern:"))
+        } else TransferProcessState(unavailableCurrentPattern = args[1].startsWith("unavailable-pattern:"),
+            automationRequested = args[1].startsWith("automation:"))
         SpringApplicationBuilder(HofApplication::class.java, Remote::class.java).profiles("test").run(
             "--server.port=0",
             "--spring.datasource.url=jdbc:h2:file:${directory.resolve("database")};MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;WRITE_DELAY=0",
         ).use { context ->
             val jobs = context.getBean(CharacterOperationJobService::class.java)
-            if (stopAfter != "resume") {
+            if (!stopAfter.startsWith("resume")) {
                 val em = context.getBean(EntityManager::class.java)
                 val now = Instant.now()
                 lateinit var account: HofAccountEntity
@@ -200,6 +227,14 @@ object CharacterTransferCrashProcess {
                     target = CharacterEntity(account = account, hofCharacterId = "transfer-target", name = "대상", job = "Knight", updatedAt = now)
                     em.persist(source)
                     em.persist(target)
+                    if (state.automationRequested) {
+                        em.persist(AutomationEntryEntity(account = account, type = AutomationType.UNION, priority = 0,
+                            enabled = true, createdAt = now, updatedAt = now))
+                    }
+                }
+                if (state.automationRequested) {
+                    context.getBean(RefreshTokenService::class.java).issue(account, "NATIVE")
+                    context.getBean(UnifiedAutomationService::class.java).startTyped(account.id)
                 }
                 val parser = context.getBean(CharacterDetailParser::class.java)
                 val snapshots = context.getBean(CharacterSnapshotSynchronizer::class.java)
@@ -231,19 +266,40 @@ object CharacterTransferCrashProcess {
             // resume는 ApplicationReadyEvent의 실제 startup 진입점이 소비한다.
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20)
             var result = jobs.find(1L, 1L)
-            while (result.status in setOf(CharacterOperationStatus.PENDING, CharacterOperationStatus.RUNNING) && System.nanoTime() < deadline) {
+            val query = context.getBean(CharacterOperationJobQueryRepository::class.java)
+            while ((result.status in setOf(CharacterOperationStatus.PENDING, CharacterOperationStatus.RUNNING) ||
+                    (state.automationRequested && query.findById(1L)?.automationReleased != true)) && System.nanoTime() < deadline) {
                 Thread.sleep(50)
                 result = jobs.find(1L, 1L)
             }
             check(result.status == CharacterOperationStatus.COMPLETED) { "${result.status}: ${result.message}" }
             check(result.transfer!!.results.all { it.status == CharacterTransferStepStatus.COMPLETED }) { result.transfer.toString() }
-            val job = context.getBean(CharacterOperationJobQueryRepository::class.java).findById(1L)!!
+            val job = query.findById(1L)!!
             directory.resolve("checkpoint.json").writeText(job.requestPayload!!)
+            if (state.automationRequested) {
+                directory.resolve("automation.json").writeText(mapper.writeValueAsString(mapOf(
+                    "outcome" to result.transfer.outcome, "released" to job.automationReleased,
+                    "lifecycle" to context.getBean(UnifiedAutomationService::class.java).getTyped(1L).runtime.lifecycle,
+                )))
+            }
         }
     }
 
     @TestConfiguration
     class Remote {
+        /** 사용자/인증 전이는 실제 ApplicationReadyEvent의 작업 재개보다 먼저 도착한다. */
+        @Bean
+        fun resumedUserIntent(automation: UnifiedAutomationService, lifecycle: TypedAutomationLifecycleBridge,
+            transactions: PlatformTransactionManager) = ApplicationRunner {
+            when (stopAfter) {
+                "resume-stop" -> automation.stopTyped(1L)
+                "resume-auth", "resume-auth-login" -> TransactionTemplate(transactions).executeWithoutResult {
+                    lifecycle.suspendForAuthentication(1L, "LAST_APP_SESSION_ENDED")
+                    if (stopAfter == "resume-auth-login") lifecycle.resumeAfterAuthentication(1L, "APP_SESSION_ACTIVATED")
+                }
+            }
+        }
+
         @Bean @Primary
         fun transferProcessGateway(): HofGateway = object : HofGateway {
             override fun execute(accountId: Long, request: HofRequest, cookies: Map<String, String>): HofHttpResponse {

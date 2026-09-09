@@ -4,6 +4,12 @@ import app.spammy.hof.character.transfer.CharacterTransferFixture.page
 import app.spammy.hof.character.transfer.CharacterTransferFixture.setting
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.entity.HofCookieEntity
+import app.spammy.hof.auth.service.RefreshTokenService
+import app.spammy.hof.auth.service.AuthService
+import app.spammy.hof.automation.entity.AutomationEntryEntity
+import app.spammy.hof.automation.entity.AutomationType
+import app.spammy.hof.automation.entity.TypedAutomationLifecycle
+import app.spammy.hof.automation.service.UnifiedAutomationService
 import app.spammy.hof.character.entity.CharacterEntity
 import app.spammy.hof.character.entity.CharacterOperationStatus
 import app.spammy.hof.character.dto.CharacterTransferExecuteRequest
@@ -32,6 +38,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.test.assertFailsWith
 import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
@@ -43,6 +50,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean
 import org.springframework.transaction.PlatformTransactionManager
 import org.springframework.transaction.support.TransactionTemplate
 import org.springframework.core.task.TaskExecutor
+import org.springframework.jdbc.core.JdbcTemplate
 
 /** 사용자 선택부터 실제 HOF 현재 설정과 저장 슬롯까지 검증한다. */
 @SpringBootTest
@@ -59,6 +67,10 @@ class CharacterTransferStateIntegrationTest {
     @Autowired private lateinit var jobQueries: CharacterOperationJobQueryRepository
     @Autowired private lateinit var jobCommands: CharacterOperationJobCommandRepository
     @Autowired private lateinit var objectMapper: ObjectMapper
+    @Autowired private lateinit var automation: UnifiedAutomationService
+    @Autowired private lateinit var refreshTokens: RefreshTokenService
+    @Autowired private lateinit var auth: AuthService
+    @Autowired private lateinit var jdbc: JdbcTemplate
     @MockitoBean private lateinit var hof: HofGateway
     @MockitoBean(name = "characterSyncTaskExecutor") private lateinit var taskExecutor: TaskExecutor
 
@@ -87,6 +99,7 @@ class CharacterTransferStateIntegrationTest {
     private val targetEquipmentSlots = mutableMapOf<Int, String?>()
     private var changeEquipmentCandidateAfterClear = false
     private val tasks = ArrayDeque<Runnable>()
+    private var onFirstPost: (() -> Unit)? = null
 
     @BeforeEach
     fun prepare() {
@@ -118,6 +131,7 @@ class CharacterTransferStateIntegrationTest {
                     submittedCharacters += characterId
                     val fields = request.formFields
                     submittedFields += fields
+                    onFirstPost?.also { onFirstPost = null }?.invoke()
                     if (("savepattern" in fields && fields["patternno"] == rejectedSaveSlot) ||
                         ("ChangePattern" in fields && fields["skill0"] == rejectedCurrentSkill) ||
                         ("equip_item" in fields && rejectEquipment)) {
@@ -842,6 +856,117 @@ class CharacterTransferStateIntegrationTest {
         assertEquals(null, legacy.outcome)
         assertEquals(null, legacy.currentSettings)
         assertEquals(false, legacy.finalSettingsConfirmed)
+    }
+
+    @AfterEach
+    fun removeAccount() {
+        jdbc.update("delete from hof_accounts where id = ?", accountId)
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["JOB", "CURRENT", "STARTUP"])
+    fun `최종 결과 저장 뒤 복귀 DB 쓰기가 실패해도 결과를 보존하고 보호를 해제한다`(retry: String) {
+        val account = TransactionTemplate(transactions).execute {
+            val account = entityManager.find(HofAccountEntity::class.java, accountId)
+            entityManager.persist(AutomationEntryEntity(account = account, type = AutomationType.UNION,
+                priority = 0, enabled = true, createdAt = Instant.now(), updatedAt = Instant.now()))
+            account
+        }!!
+        refreshTokens.issue(account, "NATIVE")
+        automation.startTyped(accountId)
+        val started = jobs.startTransfer(accountId, CharacterTransferExecuteRequest(source.id, target.id,
+            CharacterTransferRequest(includeCurrentPattern = true)))
+        val columns = jdbc.queryForList("select column_name from information_schema.columns where table_name = 'character_operation_jobs' order by ordinal_position", String::class.java)
+        val released = columns.indexOf("automation_released")
+        val owner = columns.indexOf("account_id")
+        check(released >= 0 && owner >= 0)
+        // 실제 DB adapter가 복귀 기록의 첫 쓰기만 거부한다. 작업·runtime 구현은 그대로 실행한다.
+        jdbc.execute("""create trigger transfer_release_fault before update on character_operation_jobs for each row as ${'$'}${'$'}
+            org.h2.api.Trigger create() {
+                final java.util.concurrent.atomic.AtomicBoolean pending = new java.util.concurrent.atomic.AtomicBoolean(true);
+                return (connection, oldRow, newRow) -> {
+                    if (((Number)newRow[$owner]).longValue() == $accountId && Boolean.TRUE.equals(newRow[$released]) && pending.getAndSet(false)) {
+                        throw new java.sql.SQLException("fixture release unavailable");
+                    }
+                };
+            }
+            ${'$'}${'$'}""")
+        try {
+            tasks.removeFirst().run()
+            val posts = submittedFields.toList()
+            assertEquals(TypedAutomationLifecycle.PAUSED, automation.getTyped(accountId).runtime.lifecycle)
+            when (retry) {
+                "JOB" -> jobs.find(accountId, started.id)
+                "CURRENT" -> assertEquals(null, jobs.findCurrent(accountId))
+                "STARTUP" -> jobs.resumeIncompleteJobs()
+            }
+            assertEquals(TypedAutomationLifecycle.RUNNING, automation.getTyped(accountId).runtime.lifecycle)
+            val result = jobs.find(accountId, started.id)
+            assertEquals(CharacterOperationStatus.COMPLETED, result.status, result.toString())
+            assertEquals(CharacterTransferOutcome.COMPLETED, result.transfer?.outcome)
+            assertEquals(sourceCurrent, targetCurrent)
+            assertEquals(TypedAutomationLifecycle.RUNNING, automation.getTyped(accountId).runtime.lifecycle)
+            assertEquals(posts, submittedFields, "보호 해제 재시도는 원격 설정을 다시 제출하지 않는다.")
+        } finally {
+            jdbc.execute("drop trigger transfer_release_fault")
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["RUNNING", "USER_PAUSE", "USER_STOP", "AUTH", "AUTH_RELOGIN", "INITIAL_PAUSED",
+        "INITIAL_STOPPED", "FINAL_REJECTED", "SAVE_REJECTED", "FINAL_UNOBSERVED"])
+    fun `가져오기 완료 뒤 최종 설정과 사용자 실행 의도가 허용할 때만 자동화로 복귀한다`(control: String) {
+        val account = TransactionTemplate(transactions).execute {
+            val account = entityManager.find(HofAccountEntity::class.java, accountId)
+            entityManager.persist(AutomationEntryEntity(account = account, type = AutomationType.UNION,
+                priority = 0, enabled = true, createdAt = Instant.now(), updatedAt = Instant.now()))
+            account
+        }!!
+        val token = refreshTokens.issue(account, "NATIVE")
+        assertEquals(TypedAutomationLifecycle.RUNNING, automation.startTyped(accountId).runtime.lifecycle)
+        when (control) {
+            "INITIAL_PAUSED" -> automation.pauseTyped(accountId)
+            "INITIAL_STOPPED" -> automation.stopTyped(accountId)
+            "FINAL_REJECTED" -> rejectedCurrentSkill = "1"
+            "SAVE_REJECTED" -> rejectedSaveSlot = "0"
+        }
+        onFirstPost = {
+            when (control) {
+                "USER_PAUSE" -> automation.pauseTyped(accountId)
+                "USER_STOP" -> automation.stopTyped(accountId)
+                "AUTH", "AUTH_RELOGIN" -> {
+                    auth.logout(token.value)
+                    if (control == "AUTH_RELOGIN") refreshTokens.issue(account, "NATIVE")
+                }
+                "FINAL_UNOBSERVED" -> observationVariant = "ERROR"
+            }
+        }
+
+        val started = jobs.startTransfer(accountId, CharacterTransferExecuteRequest(source.id, target.id,
+            CharacterTransferRequest(includeCurrentPattern = true,
+                savedPatternMappings = listOf(CharacterSavedPatternMapping("0", "0")))))
+        tasks.removeFirst().run()
+
+        val completed = jobs.find(accountId, started.id)
+        val outcome = when (control) {
+            "FINAL_REJECTED", "SAVE_REJECTED" -> CharacterTransferOutcome.PARTIALLY_APPLIED
+            "FINAL_UNOBSERVED" -> CharacterTransferOutcome.RECHECK_REQUIRED
+            else -> CharacterTransferOutcome.COMPLETED
+        }
+        assertEquals(outcome, completed.transfer?.outcome, completed.toString())
+        if (control !in setOf("FINAL_REJECTED", "FINAL_UNOBSERVED")) assertEquals(sourceCurrent, targetCurrent)
+        if (control !in setOf("SAVE_REJECTED", "FINAL_UNOBSERVED")) assertEquals(sourceSaved, targetSlots["0"])
+        val lifecycle = when (control) {
+            "RUNNING", "SAVE_REJECTED" -> TypedAutomationLifecycle.RUNNING
+            "USER_STOP", "INITIAL_STOPPED" -> TypedAutomationLifecycle.STOPPED
+            else -> TypedAutomationLifecycle.PAUSED
+        }
+        assertEquals(lifecycle, automation.getTyped(accountId).runtime.lifecycle)
+        assertEquals(null, jobs.findCurrent(accountId), "가져오기를 깊은 동기화 복구 작업으로 표시하지 않는다.")
+        if (control in setOf("FINAL_REJECTED", "FINAL_UNOBSERVED")) {
+            assertEquals(TypedAutomationLifecycle.RUNNING, automation.resumeTyped(accountId).runtime.lifecycle,
+                "사용자가 현재 설정을 확인한 뒤 명시적으로 재개할 수 있어야 한다.")
+        }
     }
 
     private fun anyRequest(): HofRequest = Mockito.any(HofRequest::class.java)

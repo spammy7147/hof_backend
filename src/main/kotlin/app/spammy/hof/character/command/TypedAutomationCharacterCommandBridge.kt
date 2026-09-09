@@ -31,11 +31,22 @@ class TypedAutomationCharacterCommandBridge(
     private val jobs: CharacterOperationAutomation,
     private val mutationFence: AccountHofMutationFence,
 ) : CharacterAutomationGate {
+    // 동기 작업 내부 명령만 자기 작업의 보호를 통과한다. 복귀 자격은 DB 작업에 보존한다.
+    private val currentJob = ThreadLocal<Pair<Long, Long>>()
+
     override fun <T> executeJob(accountId: Long, jobId: Long, unavailable: () -> T, operation: () -> T): T {
         jobs.begin(accountId, jobId)
         try {
             repeat(MAX_POLLS) {
-                if (jobs.isReady(accountId)) return operation()
+                if (jobs.isReady(accountId)) {
+                    val previous = currentJob.get()
+                    currentJob.set(accountId to jobId)
+                    return try {
+                        operation()
+                    } finally {
+                        if (previous == null) currentJob.remove() else currentJob.set(previous)
+                    }
+                }
                 waiter.waitFor(POLL_INTERVAL)
             }
             return unavailable()
@@ -45,11 +56,13 @@ class TypedAutomationCharacterCommandBridge(
     }
 
     override fun <T> execute(accountId: Long, unavailable: () -> T, operation: () -> T): T {
-        jobs.requireAvailable(accountId)
+        val jobId = currentJob.get()?.takeIf { it.first == accountId }?.second
+        jobs.requireAvailable(accountId, jobId)
         fun guardedOperation(): T = mutationFence.execute(accountId) {
-            jobs.requireAvailable(accountId)
+            jobs.requireAvailable(accountId, jobId)
             operation()
         }
+        if (jobId != null) return guardedOperation()
         val initial = automation.getTyped(accountId).runtime.lifecycle
         if (initial !in setOf(TypedAutomationLifecycle.RUNNING, TypedAutomationLifecycle.DRAINING)) return guardedOperation()
 

@@ -40,13 +40,13 @@ class CharacterOperationJobQueryRepository(private val queryFactory: JPAQueryFac
 
     fun hasRecoveryHold(accountId: Long): Boolean = queryFactory.selectOne()
         .from(characterOperationJobEntity)
-        .where(characterOperationJobEntity.account.id.eq(accountId), syncTypes(), held())
+        .where(characterOperationJobEntity.account.id.eq(accountId), held())
         .fetchFirst() != null
 
-    fun findConflictingSync(accountId: Long, exceptJobId: Long? = null): CharacterOperationJobEntity? = queryFactory
+    fun findConflictingJob(accountId: Long, exceptJobId: Long? = null): CharacterOperationJobEntity? = queryFactory
         .selectFrom(characterOperationJobEntity)
         .where(
-            characterOperationJobEntity.account.id.eq(accountId), syncTypes(),
+            characterOperationJobEntity.account.id.eq(accountId),
             exceptJobId?.let { characterOperationJobEntity.id.ne(it) },
             held().or(characterOperationJobEntity.status.`in`(CharacterOperationStatus.PENDING, CharacterOperationStatus.RUNNING)),
         )
@@ -77,9 +77,10 @@ class CharacterOperationJobQueryRepository(private val queryFactory: JPAQueryFac
 
     fun findPendingAutomationRelease(): List<CharacterOperationJobEntity> = queryFactory
         .selectFrom(characterOperationJobEntity)
-        .where(syncTypes(), characterOperationJobEntity.automationIntentRevision.isNotNull,
+        .where(characterOperationJobEntity.automationIntentRevision.isNotNull,
             characterOperationJobEntity.automationReleased.isFalse,
-            characterOperationJobEntity.recoveryStatus.`in`(CharacterRecoveryStatus.NOT_STARTED, CharacterRecoveryStatus.RESTORED),
+            characterOperationJobEntity.operationType.eq(CharacterOperationType.TRANSFER).or(
+                characterOperationJobEntity.recoveryStatus.`in`(CharacterRecoveryStatus.NOT_STARTED, CharacterRecoveryStatus.RESTORED)),
             characterOperationJobEntity.status.notIn(CharacterOperationStatus.PENDING, CharacterOperationStatus.RUNNING))
         .orderBy(characterOperationJobEntity.id.asc())
         .fetch()

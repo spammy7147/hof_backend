@@ -479,8 +479,9 @@ class AutomationRecoveryIntegrationTest {
         }
     }
 
-    @Test
-    fun `동기화의 일시정지 대기는 기존 보호 행동의 깨우기와 결과 수렴을 막지 않는다`() {
+    @ParameterizedTest
+    @EnumSource(value = CharacterOperationType::class, names = ["DEEP_SYNC", "TRANSFER"])
+    fun `캐릭터 작업의 일시정지 대기는 기존 보호 행동의 깨우기와 결과 수렴을 막지 않는다`(type: CharacterOperationType) {
         setupFishing(obstruction = true, lostFishingResponse = "FCatch")
         wakeups.wake(accountId, "FISHING_BEFORE_SYNC")
         publisher.publishBatch()
@@ -488,8 +489,8 @@ class AutomationRecoveryIntegrationTest {
         val job = TransactionTemplate(transactions).execute {
             val target = entityManager.createQuery("select c from CharacterEntity c where c.account.id = :accountId", CharacterEntity::class.java)
                 .setParameter("accountId", accountId).resultList.first()
-            CharacterOperationJobEntity(account = target.account, operationType = CharacterOperationType.DEEP_SYNC,
-                targetCharacterId = target.id, recoveryStatus = CharacterRecoveryStatus.NOT_STARTED,
+            CharacterOperationJobEntity(account = target.account, operationType = type,
+                targetCharacterId = target.id, recoveryStatus = if (type == CharacterOperationType.TRANSFER) null else CharacterRecoveryStatus.NOT_STARTED,
                 startedAt = clock.now(), updatedAt = clock.now()).also(entityManager::persist)
         }
         var waits = 0
@@ -506,8 +507,9 @@ class AutomationRecoveryIntegrationTest {
         }
 
         assertTrue(waits > 0)
-        assertEquals("RUNNING", jdbc.queryForObject("select lifecycle_status from typed_automation_runtime_states where account_id = ?",
-            String::class.java, accountId))
+        val expected = if (type == CharacterOperationType.TRANSFER) "PAUSED" else "RUNNING"
+        assertEquals(expected, jdbc.queryForObject("select lifecycle_status from typed_automation_runtime_states where account_id = ?",
+            String::class.java, accountId), "가져오기는 최종 결과가 확정되기 전까지 복귀하지 않는다.")
     }
 
     @Test

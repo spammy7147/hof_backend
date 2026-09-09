@@ -189,7 +189,7 @@ object CharacterOperationCrashProcess {
                 CharacterOperationJobService(accountQuery, characterQuery, commands, queries, remote.service,
                     Mockito.mock(CharacterTransferService::class.java), HofSessionRecoveryService(Mockito.mock(HofAccountService::class.java)),
                     jacksonObjectMapper(), TimeProvider { now }, context.getBean("characterSyncTaskExecutor", TaskExecutor::class.java),
-                    context.getBean(CharacterOperationAutomation::class.java))
+                    context.getBean(CharacterOperationAutomation::class.java), automationGate)
             })
             val jobs = context.getBean(CharacterOperationJobService::class.java)
             when {
