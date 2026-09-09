@@ -31,6 +31,7 @@ class CaptchaAutomationHook(
 
     /** 캡차 답변 commit 뒤 typed 자동화가 최신 설정으로 재개할 수 있게 전달한다. */
     fun answered(challenge: CaptchaChallengeEntity, confirmPass: Boolean = true) {
+        challenge.automationResumePending = true
         afterCommit {
             deliverTypedResumeSafely(challenge.account.id)
             if (confirmPass && challenge.challengeKind == KIND_VIGILANTE_PASS) {
@@ -38,6 +39,9 @@ class CaptchaAutomationHook(
             }
         }
     }
+
+    /** 유효 통행증을 다시 관측하면 이미 저장된 답안의 미완료 재개만 재시도한다. */
+    fun retryPendingResume(accountId: Long) = afterCommit { deliverTypedResumeSafely(accountId) }
 
     /** 캡차와 automation 변경이 commit된 뒤에만 다음 스냅샷 판단을 요청한다. */
     private fun afterCommit(action: () -> Unit) {

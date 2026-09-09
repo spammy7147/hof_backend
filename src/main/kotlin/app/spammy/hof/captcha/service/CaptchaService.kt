@@ -300,8 +300,13 @@ class CaptchaService(
     fun resolveCurrentPassChallenge(accountId: Long): Boolean {
         captchaQueryRepository.findAccountByIdForUpdate(accountId) ?: return false
         val challenge = captchaQueryRepository.findLatestActiveByAccountId(accountId)
-            ?.takeIf { it.challengeKind == KIND_VIGILANTE_PASS }
-            ?: return false
+            ?: run {
+                val answered = captchaQueryRepository.findLatestAnsweredWithActiveBattleGate(accountId)
+                if (answered != null) automationHook?.answered(answered, confirmPass = false)
+                else automationHook?.retryPendingResume(accountId)
+                return false
+            }
+        if (challenge.challengeKind != KIND_VIGILANTE_PASS) return false
         challenge.status = STATUS_ANSWERED
         challenge.answer = null
         challenge.answeredAt = timeProvider.now()

@@ -227,6 +227,7 @@ class TypedAutomationLifecycleBridge(
         accounts.findByIdForUpdate(accountId) ?: error("Account $accountId does not exist.")
         if (characterJobs.hasRecoveryHold(accountId)) return false
         val state = typed.lockRuntimeState(accountId) ?: return false
+        if (state.authSuspended) return false
         if (state.lifecycleStatus != TypedAutomationLifecycle.RUNNING) return false
         val now = timeProvider.now()
         when (discardActiveBattleActionAfterCaptcha(accountId, now)) {

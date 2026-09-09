@@ -48,6 +48,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
 import org.junit.jupiter.params.provider.EnumSource
+import org.junit.jupiter.params.provider.CsvSource
 import org.mockito.Mockito
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
@@ -67,6 +68,13 @@ import tools.jackson.databind.ObjectMapper
 @ActiveProfiles("test")
 @Import(AutomationRecoveryIntegrationTest.Config::class)
 class AutomationRecoveryIntegrationTest {
+    @MockitoSpyBean private lateinit var battleRuns: app.spammy.hof.battle.service.BattleRunService
+    @MockitoBean private lateinit var captchaSolver: app.spammy.hof.captcha.service.CaptchaAutoSolveCoordinator
+    @Autowired private lateinit var passMaintenance: app.spammy.hof.captcha.service.CaptchaPassMaintenanceService
+    @Autowired private lateinit var captchaService: app.spammy.hof.captcha.service.CaptchaService
+    @Autowired private lateinit var captchaResumes: TypedCaptchaAutomationResumeService
+    @MockitoSpyBean private lateinit var convergenceProperties: AutomationConvergenceProperties
+    @MockitoSpyBean private lateinit var wakeOutbox: AutomationOutboxService
     @Autowired private lateinit var runner: UnifiedAutomationRunner
     @Autowired private lateinit var store: ConvergenceStore
     @MockitoSpyBean private lateinit var journal: AutomationDecisionJournal
@@ -104,6 +112,7 @@ class AutomationRecoveryIntegrationTest {
     private val requests = mutableListOf<HofRequest>()
     private var failedPattern = 2
     private var failBattle = false
+    private var captchaBattleResponse = false
     private var patternCalls = 0
     private val characters = listOf("recovery-1", "recovery-2", "recovery-3")
     private var selectedCharacters = characters
@@ -276,6 +285,7 @@ class AutomationRecoveryIntegrationTest {
                     "<div>Funds : $ 1 Time : 100/100</div>"
                 }
                 request.method == HofHttpMethod.GET -> mapPage
+                captchaBattleResponse -> "<div id='menu2'>Funds : $ 1 Time : 100/100</div><div>자경단에서 통행증을 발급받아주세요.</div>"
                 failBattle -> throw IOException("battle response lost")
                 else -> """<div id="menu2">Funds : $ 1 Time : 100/100</div><h2>Show Detail( 1 turns. )</h2><h1>테스트은(는) 승리했다!</h1>
                     <div>남은 HP : 0/100 생존자 : 0/1 총 데미지 : 0</div>
@@ -985,6 +995,140 @@ class AutomationRecoveryIntegrationTest {
         assertTrue(node["fishing"].isObject)
     }
 
+    @ParameterizedTest
+    @EnumSource(AutomationConvergenceMode::class)
+    fun `빠른 답안 해소 뒤 늦게 생성된 관문도 유효 통행증 재관측과 다음 판단에서 복구한다`(mode: AutomationConvergenceMode) {
+        Mockito.doReturn(mode).`when`(convergenceProperties).mode
+        failedPattern = -1
+        captchaBattleResponse = true
+        var answerCompletedBeforeError = false
+        var selections = 0
+        Mockito.doAnswer {
+            if (++selections <= 2) AutomationCoordination.Runnable(entryId, battle(), emptyList())
+            else AutomationCoordination.Idle(emptyList())
+        }.`when`(decisions).select(accountId)
+        Mockito.doAnswer { invocation ->
+            try { invocation.callRealMethod() }
+            catch (error: app.spammy.hof.common.error.ApiException) {
+                assertEquals(app.spammy.hof.common.error.ErrorCode.CAPTCHA_REQUIRED, error.errorCode)
+                // 실제 detectAndRecord commit 뒤, 오류를 runner에 전달하기 전에 빠른 답안 처리가 완료된다.
+                assertTrue(captchaService.resolveCurrentPassChallenge(accountId))
+                assertTrue(captchaResumes.findPendingAccountIds().isEmpty())
+                assertNull(store.activeBattleGate(accountId))
+                answerCompletedBeforeError = true
+                throw error
+            }
+        }.`when`(battleRuns).runBattle(Mockito.eq(accountId),
+            Mockito.any(app.spammy.hof.battle.dto.RunBattleRequest::class.java)
+                ?: app.spammy.hof.battle.dto.RunBattleRequest("union", "0003", characters),
+            Mockito.eq(app.spammy.hof.external.model.HofRequestOrigin.AUTOMATION)
+                ?: app.spammy.hof.external.model.HofRequestOrigin.AUTOMATION)
+        wakeups.wake(accountId, "FAST_CAPTCHA_ANSWER")
+        publisher.publishBatch()
+        assertEquals(1, battleRequests().size)
+        assertTrue(answerCompletedBeforeError, "답안 완료를 지연된 CAPTCHA_REQUIRED 전달보다 먼저 실행해야 한다.")
+        assertNotNull(store.activeBattleGate(accountId), "답안보다 늦은 실제 runner의 관문 생성 순서를 재현한다.")
+        val requestsBeforeObservation = requests.size
+        captchaBattleResponse = false
+        assertTrue(passMaintenance.observe(accountId, "<div id='menu'>인증 유효시간 0:30:00</div>", clock.now(), clock.now()))
+        assertNull(store.activeBattleGate(accountId))
+        assertEquals(requestsBeforeObservation, requests.size)
+        consumeNextWake()
+        assertEquals(2, battleRequests().size, "이전 캡차 응답 뒤 최신 실행에서 새 전투는 한 번만 제출한다.")
+        val decisionCount = journal.page(accountId, AutomationHistoryQuery()).cycles.size
+        repeat(3) {
+            if (journal.page(accountId, AutomationHistoryQuery()).cycles.size <= decisionCount) consumeNextWake()
+        }
+        assertTrue(journal.page(accountId, AutomationHistoryQuery()).cycles.size > decisionCount)
+        assertEquals(2, battleRequests().size)
+        assertEquals(0, runningWorkCount())
+    }
+
+    @ParameterizedTest
+    @CsvSource("LEGACY,NONE", "SHADOW,NONE", "ACTIVE,NONE",
+        "LEGACY,PAUSE", "SHADOW,PAUSE", "ACTIVE,PAUSE",
+        "LEGACY,STOP", "SHADOW,STOP", "ACTIVE,STOP",
+        "LEGACY,AUTH", "SHADOW,AUTH", "ACTIVE,AUTH")
+    fun `세 모드에서 캡차 관문 중 비전투를 진행하고 재개 실패 복구 뒤 새 전투와 후속 판단을 소비한다`(mode: AutomationConvergenceMode, control: String) {
+        Mockito.doReturn(mode).`when`(convergenceProperties).mode
+        setupFishing()
+        val challengeId = TransactionTemplate(transactions).execute {
+            val account = entityManager.find(HofAccountEntity::class.java, accountId)
+            entityManager.find(AutomationEntryEntity::class.java, entryId).priority = 1
+            val battleEntry = AutomationEntryEntity(account = account, type = AutomationType.BATTLE_MAP,
+                priority = 0, enabled = true, createdAt = clock.now(), updatedAt = clock.now())
+            entityManager.persist(battleEntry)
+            entityManager.persist(BattleAutomationMapEntity(entry = battleEntry, categoryId = "battle_map",
+                mapCode = "0001", dailyTargetCount = 1, presetMode = PresetSelectionMode.PRIMARY, executionOrder = 0))
+            val challenge = app.spammy.hof.captcha.entity.CaptchaChallengeEntity(
+                account = account, status = "READY", prompt = "captcha", challengeKind = "VIGILANTE_PASS",
+                imageUrl = null, sourceUrl = "https://example.test/captcha", answer = null,
+                createdAt = clock.now(), answeredAt = null)
+            entityManager.persist(challenge)
+            store.openBattleGate(accountId, null, "CAPTCHA_REQUIRED", clock.now())
+            challenge.id
+        }
+        fun battlePosts() = requests.filter {
+            it.method == HofHttpMethod.POST && !it.url.contains("?char=") && !it.url.contains("menu=fishing")
+        }
+        wakeups.wake(accountId, "CAPTCHA_GATE_NON_BATTLE")
+        publisher.publishBatch()
+        assertEquals(listOf("FStart", "FCatch"), fishingPosts())
+        assertTrue(battlePosts().isEmpty(), "상위 전투 관문이 하위 비전투를 막거나 전투를 제출하면 안 된다.")
+        assertNotNull(store.activeBattleGate(accountId))
+        val requestCount = requests.size
+        Mockito.doThrow(org.springframework.dao.DataAccessResourceFailureException("controlled wake storage failure"))
+            .doCallRealMethod().`when`(wakeOutbox).enqueue(accountId, "CAPTCHA_ANSWERED", null)
+        assertTrue(captchaService.resolveCurrentPassChallenge(accountId))
+        assertNotNull(store.activeBattleGate(accountId), "후속 예약 실패는 관문 해제도 rollback해야 한다.")
+        assertTrue(jdbc.queryForObject("select automation_resume_pending from captcha_challenges where id = ?",
+            Boolean::class.java, challengeId)!!)
+
+        when (control) {
+            "PAUSE" -> application.pauseTyped(accountId)
+            "STOP" -> application.stopTyped(accountId)
+            "AUTH" -> TransactionTemplate(transactions).executeWithoutResult {
+                lifecycle.suspendForAuthentication(accountId, "CAPTCHA_RETRY_AUTH")
+            }
+        }
+        val controlledState = jdbc.queryForMap("select * from typed_automation_runtime_states where account_id = ?", accountId)
+        app.spammy.hof.captcha.service.CaptchaAutomationResumeScheduler(captchaResumes).recoverOnStartup()
+        assertNull(store.activeBattleGate(accountId))
+        assertFalse(jdbc.queryForObject("select automation_resume_pending from captcha_challenges where id = ?",
+            Boolean::class.java, challengeId)!!)
+        assertEquals(requestCount, requests.size, "재개 복구는 HOF 답안이나 관측을 재요청하지 않는다.")
+        if (control != "NONE") {
+            assertEquals(controlledState, jdbc.queryForMap("select * from typed_automation_runtime_states where account_id = ?", accountId))
+            wakeups.wake(accountId, "STALE_CAPTCHA_WAKE")
+            publisher.publishBatch()
+            assertEquals(requestCount, requests.size, "사용자 제어 또는 인증 중단 중에는 지연 wake도 HOF를 호출하지 않는다.")
+            when (control) {
+                "PAUSE" -> application.resumeTyped(accountId)
+                "STOP" -> application.startTyped(accountId)
+                "AUTH" -> TransactionTemplate(transactions).executeWithoutResult {
+                    assertTrue(lifecycle.resumeAfterAuthentication(accountId, "CAPTCHA_RETRY_LOGIN"))
+                }
+            }
+        }
+        consumeNextWake()
+        assertEquals(1, battlePosts().size, "복구 뒤 최신 상태에서 전투를 한 번 제출해야 한다.")
+        assertEquals(1, jdbc.queryForObject("select successful_runs from battle_automation_daily_progress where account_id = ?",
+            Int::class.java, accountId))
+        val decisionCount = journal.page(accountId, AutomationHistoryQuery()).cycles.size
+        val nextDecisionDeadline = clock.now().plusSeconds(3)
+        // 이전 즉시 wake가 남아 있으면 runtime의 다음 판단 시각 전에는 소비만 하고,
+        // 이어서 예약된 유휴 판단 wake를 실제로 소비한다.
+        repeat(2) {
+            if (journal.page(accountId, AutomationHistoryQuery()).cycles.size <= decisionCount) consumeNextWake()
+        }
+        assertTrue(journal.page(accountId, AutomationHistoryQuery()).cycles.size > decisionCount)
+        assertTrue(clock.now() <= nextDecisionDeadline)
+        assertEquals(1, battlePosts().size)
+        assertEquals(listOf("FStart", "FCatch"), fishingPosts())
+        assertEquals(0, runningWorkCount())
+        assertTrue(requests.none { it.url.contains("example.test/captcha") })
+    }
+
     @Test
     fun `정상 낚시는 START CATCH 뒤 작업권을 놓고 후속 유휴 판단을 계속 소비한다`() {
         setupFishing()
@@ -1415,7 +1559,7 @@ class AutomationRecoveryIntegrationTest {
                 request.method == HofHttpMethod.POST -> {
                     state.battle = false
                     state.phase = if (castsAfterBattle > 0) "reset" else "exhausted"
-                    """$header<h2>Show Detail( 1 turns. )</h2><h1>테스트은(는) 승리했다!</h1>
+                    """$header<h2>Show Detail( 1 turns. )</h2><h1>《테스트》테스트은(는) 승리했다!</h1>
                     <div>남은 HP : 0/100 생존자 : 0/1 총 데미지 : 0</div>
                     <div>남은 HP : 100/100 생존자 : 1/1 총 데미지 : 100 턴 : 1/100 획득 경험치 : 1 획득 Funds : $ 1</div>"""
                 }

@@ -66,6 +66,10 @@ class CaptchaChallengeEntity(
 
     @Column(name = "preparation_version", nullable = false)
     var preparationVersion: Int = 0,
+
+    /** 답안 commit과 함께 남기고 관문 해제·후속 판단 예약 transaction에서 소비한다. */
+    @Column(name = "automation_resume_pending", nullable = false)
+    var automationResumePending: Boolean = false,
 ) {
     companion object {
         const val KIND_CAPTCHA = "CAPTCHA"

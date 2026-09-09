@@ -2,6 +2,7 @@ package app.spammy.hof.captcha.repository
 
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.entity.QHofAccountEntity.hofAccountEntity
+import app.spammy.hof.automation.convergence.QAccountBattleGateEntity.accountBattleGateEntity
 import app.spammy.hof.captcha.entity.CaptchaChallengeEntity
 import app.spammy.hof.captcha.entity.CaptchaFormFieldEntity
 import app.spammy.hof.captcha.entity.QCaptchaChallengeEntity.captchaChallengeEntity
@@ -60,6 +61,37 @@ class CaptchaQueryRepository(
             )
             .orderBy(captchaChallengeEntity.createdAt.desc(), captchaChallengeEntity.id.desc())
             .fetch()
+
+    fun findPendingAutomationResumes(accountId: Long): List<CaptchaChallengeEntity> =
+        queryFactory.selectFrom(captchaChallengeEntity)
+            .where(
+                captchaChallengeEntity.account.id.eq(accountId),
+                captchaChallengeEntity.status.eq("ANSWERED"),
+                captchaChallengeEntity.automationResumePending.isTrue,
+            )
+            .fetch()
+
+    fun findPendingAutomationResumeAccountIds(): List<Long> =
+        queryFactory.select(captchaChallengeEntity.account.id).distinct()
+            .from(captchaChallengeEntity)
+            .where(
+                captchaChallengeEntity.status.eq("ANSWERED"),
+                captchaChallengeEntity.automationResumePending.isTrue,
+            )
+            .fetch()
+
+    /** 유효 통행증 재관측에서만 사용한다. 답안 처리보다 늦게 생성된 관문도 재조정한다. */
+    fun findLatestAnsweredWithActiveBattleGate(accountId: Long): CaptchaChallengeEntity? =
+        queryFactory.select(captchaChallengeEntity)
+            .from(captchaChallengeEntity, accountBattleGateEntity)
+            .where(
+                captchaChallengeEntity.account.id.eq(accountId),
+                captchaChallengeEntity.status.eq("ANSWERED"),
+                accountBattleGateEntity.accountId.eq(accountId),
+                accountBattleGateEntity.resolvedAt.isNull,
+            )
+            .orderBy(captchaChallengeEntity.createdAt.desc(), captchaChallengeEntity.id.desc())
+            .fetchFirst()
 
     /** 테스트와 운영 무결성 확인을 위해 계정의 pending challenge 수를 DB에서 계산한다. */
     fun countActiveByAccountId(accountId: Long): Long =
