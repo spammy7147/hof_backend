@@ -51,6 +51,10 @@ import app.spammy.hof.external.client.HofAutomationDeferredException
 import app.spammy.hof.quest.model.QuestState
 import app.spammy.hof.town.raid.model.RaidAction
 import app.spammy.hof.town.fishing.dto.FishingBattleTargetResponse
+import app.spammy.hof.town.fishing.service.FishingService
+import app.spammy.hof.town.fishing.service.FishingAutomationObservation
+import app.spammy.hof.town.fishing.service.FishingOneCastRemoteResult
+import app.spammy.hof.town.common.service.TownSubmissionBoundary
 import app.spammy.hof.town.fishing.dto.FishingResponse
 import app.spammy.hof.town.fishing.model.FishingAction
 import app.spammy.hof.town.fishing.model.FishingOutcome
@@ -191,7 +195,7 @@ class UnifiedAutomationRunnerTest {
 
     @Test
     fun `낚시 START 선택은 같은 실행에서 CATCH checkpoint로 전이해 완료한다`() {
-        val cycleExecutor = Mockito.mock(FishingCycleExecutor::class.java)
+        val fishing = Mockito.mock(FishingService::class.java)
         val startManaged = Mockito.mock(ManagedFishingAutomationAction::class.java)
         val catchManaged = Mockito.mock(ManagedFishingAutomationAction::class.java)
         val startStored = StoredTypedAutomationAction(
@@ -247,16 +251,10 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(startManaged.applyLegacyExecution(anyTypedExecution())).thenAnswer { it.arguments[0] }
         Mockito.`when`(catchManaged.applyLegacyExecution(anyTypedExecution())).thenAnswer { it.arguments[0] }
         Mockito.`when`(
-            cycleExecutor.executeOneCast(anyFishingCommand(), anyFishingTransitions()),
+            fishing.executeOneCastForAutomation(Mockito.eq(7L), anyFishingObservation(), anyTownBoundary(), anyBeforeCatch()),
         ).thenAnswer { invocation ->
-            val command = invocation.arguments[0] as FishingCycleCommand
-            val transitions = invocation.arguments[1] as FishingCycleTransitions
-            val start = FishingCycleStepEvidence(command.startExecutionIdentity, FishingAction.START, startResponse)
-            val prepared = FishingCyclePreparedCatch(command.catchExecutionIdentity, startResponse)
-            transitions.startAppliedAndCatchPrepared(command, start, prepared)
-            val caught = FishingCycleStepEvidence(command.catchExecutionIdentity, FishingAction.CATCH, catchResponse)
-            transitions.catchApplied(command, caught)
-            FishingCycleResult.Completed(start, caught)
+            invocation.getArgument<(FishingResponse) -> Unit>(3).invoke(startResponse)
+            FishingOneCastRemoteResult.Completed(startResponse, catchResponse)
         }
         val scoped = buildRunner(
             preflight,
@@ -266,12 +264,12 @@ class UnifiedAutomationRunnerTest {
             sharedCooldowns,
             lifecycle,
             submissionGate,
-            fishingCycleExecutor = cycleExecutor,
+            fishingService = fishing,
         )
 
         scoped.runOne(7L)
 
-        Mockito.verify(cycleExecutor).executeOneCast(anyFishingCommand(), anyFishingTransitions())
+        Mockito.verify(fishing).executeOneCastForAutomation(Mockito.eq(7L), anyFishingObservation(), anyTownBoundary(), anyBeforeCatch())
         Mockito.verify(runtime).advanceAppliedActionToPreparedFollowup(anyExecution(), anyStoredAction())
         Mockito.verify(runtime).beginSubmission(catchPrepared)
         val outcome = ArgumentCaptor.forClass(TypedRuntimeOutcome::class.java)
@@ -283,7 +281,7 @@ class UnifiedAutomationRunnerTest {
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.EnumSource(AutomationConvergenceMode::class)
     fun `낚시 CATCH 응답의 방해 전투는 실행하지 않고 한 번 낚시를 완료한다`(mode: AutomationConvergenceMode) {
-        val cycleExecutor = Mockito.mock(FishingCycleExecutor::class.java)
+        val fishing = Mockito.mock(FishingService::class.java)
         val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
         val shadow = Mockito.mock(AutomationConvergenceShadowEvaluator::class.java)
         val startManaged = Mockito.mock(ManagedFishingAutomationAction::class.java)
@@ -325,19 +323,10 @@ class UnifiedAutomationRunnerTest {
         )
         Mockito.`when`(convergence.record(Mockito.anyLong(), anyConvergenceEvidence()))
             .thenReturn(ConvergenceDirective.ContinueSelection)
-        Mockito.`when`(cycleExecutor.executeOneCast(anyFishingCommand(), anyFishingTransitions()))
+        Mockito.`when`(fishing.executeOneCastForAutomation(Mockito.eq(7L), anyFishingObservation(), anyTownBoundary(), anyBeforeCatch()))
             .thenAnswer { invocation ->
-                val command = invocation.arguments[0] as FishingCycleCommand
-                val transitions = invocation.arguments[1] as FishingCycleTransitions
-                val start = FishingCycleStepEvidence(command.startExecutionIdentity, FishingAction.START, startResponse)
-                transitions.startAppliedAndCatchPrepared(
-                    command,
-                    start,
-                    FishingCyclePreparedCatch(command.catchExecutionIdentity, startResponse),
-                )
-                val caught = FishingCycleStepEvidence(command.catchExecutionIdentity, FishingAction.CATCH, catchResponse)
-                transitions.catchApplied(command, caught)
-                FishingCycleResult.Completed(start, caught)
+                invocation.getArgument<(FishingResponse) -> Unit>(3).invoke(startResponse)
+                FishingOneCastRemoteResult.Completed(startResponse, catchResponse)
             }
         val scoped = buildRunner(
             preflight,
@@ -353,7 +342,7 @@ class UnifiedAutomationRunnerTest {
             rollout = AutomationConvergenceRollout(
                 AutomationConvergenceProperties(mode = mode),
             ),
-            fishingCycleExecutor = cycleExecutor,
+            fishingService = fishing,
             shadowEvaluator = shadow,
         )
 
@@ -396,7 +385,7 @@ class UnifiedAutomationRunnerTest {
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.EnumSource(AutomationConvergenceMode::class)
     fun `START에서 발견한 방해 전투는 시작 성공으로 귀속하지 않고 새 판단으로 넘긴다`(mode: AutomationConvergenceMode) {
-        val cycleExecutor = Mockito.mock(FishingCycleExecutor::class.java)
+        val fishing = Mockito.mock(FishingService::class.java)
         val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
         val shadow = Mockito.mock(AutomationConvergenceShadowEvaluator::class.java)
         val startManaged = Mockito.mock(ManagedFishingAutomationAction::class.java)
@@ -421,12 +410,8 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(runtime.beginSubmission(startPrepared)).thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
         Mockito.`when`(convergence.prepare(Mockito.eq(7L), anyConvergenceSelection())).thenReturn(ConvergenceDirective.Submit(211L))
         Mockito.`when`(convergence.record(Mockito.anyLong(), anyConvergenceEvidence())).thenReturn(ConvergenceDirective.ContinueSelection)
-        Mockito.`when`(cycleExecutor.executeOneCast(anyFishingCommand(), anyFishingTransitions())).thenAnswer { invocation ->
-            val command = invocation.arguments[0] as FishingCycleCommand
-            val transitions = invocation.arguments[1] as FishingCycleTransitions
-            val start = FishingCycleStepEvidence(command.startExecutionIdentity, FishingAction.START, response)
-            transitions.battleRequired(command, start)
-            FishingCycleResult.BattleRequired(start)
+        Mockito.`when`(fishing.executeOneCastForAutomation(Mockito.eq(7L), anyFishingObservation(), anyTownBoundary(), anyBeforeCatch())).thenAnswer { invocation ->
+            FishingOneCastRemoteResult.WaitingForCatch(response)
         }
         val scoped = buildRunner(
             preflight, runtime, decisions, wakeup, sharedCooldowns, lifecycle, submissionGate,
@@ -434,7 +419,7 @@ class UnifiedAutomationRunnerTest {
             convergenceSelectionFactory = StoredActionConvergenceSelectionFactory(),
             evidenceInterpreter = productionEvidenceInterpreter,
             rollout = AutomationConvergenceRollout(AutomationConvergenceProperties(mode = mode)),
-            fishingCycleExecutor = cycleExecutor, shadowEvaluator = shadow,
+            fishingService = fishing, shadowEvaluator = shadow,
         )
 
         scoped.runOne(7L)
@@ -633,7 +618,7 @@ class UnifiedAutomationRunnerTest {
 
     @Test
     fun `프로세스 재개로 관측 form을 잃은 저장 START는 fallback GET 없이 최신 판단으로 넘긴다`() {
-        val cycleExecutor = Mockito.mock(FishingCycleExecutor::class.java)
+        val fishing = Mockito.mock(FishingService::class.java)
         val startManaged = Mockito.mock(ManagedFishingAutomationAction::class.java)
         val stored = fishingStartStored()
         val prepared = executionRight(
@@ -652,13 +637,13 @@ class UnifiedAutomationRunnerTest {
             sharedCooldowns,
             lifecycle,
             submissionGate,
-            fishingCycleExecutor = cycleExecutor,
+            fishingService = fishing,
         )
 
         scoped.runOne(7L)
 
         assertIs<TypedRuntimeOutcome.ActionSuperseded>(capturedOutcome())
-        Mockito.verifyNoInteractions(cycleExecutor, decisions)
+        Mockito.verifyNoInteractions(fishing, decisions)
     }
 
     @Test
@@ -767,7 +752,7 @@ class UnifiedAutomationRunnerTest {
     @Test
     fun `낚시 START의 503 응답은 같은 POST를 재시도하지 않고 불명확 checkpoint로 남긴다`() {
         val retryAt = Instant.parse("2026-08-24T00:00:05Z")
-        val cycleExecutor = Mockito.mock(FishingCycleExecutor::class.java)
+        val fishing = Mockito.mock(FishingService::class.java)
         val startManaged = Mockito.mock(ManagedFishingAutomationAction::class.java)
         val startStored = fishingStartStored()
         val startPrepared = executionRight(
@@ -782,7 +767,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(runtime.persistPrepared(freshExecution, startStored, emptyList()))
             .thenReturn(TypedRuntimePreparation.Ready(startPrepared))
         Mockito.`when`(runtime.beginSubmission(startPrepared)).thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
-        Mockito.`when`(cycleExecutor.executeOneCast(anyFishingCommand(), anyFishingTransitions()))
+        Mockito.`when`(fishing.executeOneCastForAutomation(Mockito.eq(7L), anyFishingObservation(), anyTownBoundary(), anyBeforeCatch()))
             .thenThrow(HofAutomationDeferredException(retryAt, 1, requestAttempted = true))
         val scoped = buildRunner(
             preflight,
@@ -793,19 +778,19 @@ class UnifiedAutomationRunnerTest {
             lifecycle,
             submissionGate,
             timeProvider = TimeProvider { Instant.EPOCH.plusSeconds(1) },
-            fishingCycleExecutor = cycleExecutor,
+            fishingService = fishing,
         )
 
         scoped.runOne(7L)
 
-        Mockito.verify(cycleExecutor, Mockito.times(1)).executeOneCast(anyFishingCommand(), anyFishingTransitions())
+        Mockito.verify(fishing, Mockito.times(1)).executeOneCastForAutomation(Mockito.eq(7L), anyFishingObservation(), anyTownBoundary(), anyBeforeCatch())
         assertIs<TypedRuntimeOutcome.SubmissionAmbiguous>(capturedOutcome())
         Mockito.verify(runtime, Mockito.never()).advanceAppliedActionToPreparedFollowup(anyExecution(), anyStoredAction())
     }
 
     @Test
     fun `낚시 START form 불일치는 결과 불명이 아니라 새 판단으로 넘긴다`() {
-        val cycleExecutor = Mockito.mock(FishingCycleExecutor::class.java)
+        val fishing = Mockito.mock(FishingService::class.java)
         val startManaged = Mockito.mock(ManagedFishingAutomationAction::class.java)
         val startStored = fishingStartStored()
         val startPrepared = executionRight(
@@ -820,7 +805,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(runtime.persistPrepared(freshExecution, startStored, emptyList()))
             .thenReturn(TypedRuntimePreparation.Ready(startPrepared))
         Mockito.`when`(runtime.beginSubmission(startPrepared)).thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
-        Mockito.`when`(cycleExecutor.executeOneCast(anyFishingCommand(), anyFishingTransitions()))
+        Mockito.`when`(fishing.executeOneCastForAutomation(Mockito.eq(7L), anyFishingObservation(), anyTownBoundary(), anyBeforeCatch()))
             .thenThrow(ObservedTownActionPreconditionChangedException("낚시 START form 변경"))
         val scoped = buildRunner(
             preflight,
@@ -830,20 +815,20 @@ class UnifiedAutomationRunnerTest {
             sharedCooldowns,
             lifecycle,
             submissionGate,
-            fishingCycleExecutor = cycleExecutor,
+            fishingService = fishing,
         )
 
         scoped.runOne(7L)
 
         assertIs<TypedRuntimeOutcome.ActionSuperseded>(capturedOutcome())
-        Mockito.verify(cycleExecutor).executeOneCast(anyFishingCommand(), anyFishingTransitions())
+        Mockito.verify(fishing).executeOneCastForAutomation(Mockito.eq(7L), anyFishingObservation(), anyTownBoundary(), anyBeforeCatch())
         Mockito.verify(runtime, Mockito.never()).advanceAppliedActionToPreparedFollowup(anyExecution(), anyStoredAction())
     }
 
     @Test
     fun `낚시 START 요청 전 cooldown 거절은 불명확 처리하지 않고 같은 prepared 행동을 예약한다`() {
         val retryAt = Instant.parse("2026-08-24T00:00:05Z")
-        val cycleExecutor = Mockito.mock(FishingCycleExecutor::class.java)
+        val fishing = Mockito.mock(FishingService::class.java)
         val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
         val startManaged = Mockito.mock(ManagedFishingAutomationAction::class.java)
         val startStored = fishingStartStored()
@@ -859,7 +844,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(runtime.persistPrepared(freshExecution, startStored, emptyList()))
             .thenReturn(TypedRuntimePreparation.Ready(startPrepared))
         Mockito.`when`(runtime.beginSubmission(startPrepared)).thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
-        Mockito.`when`(cycleExecutor.executeOneCast(anyFishingCommand(), anyFishingTransitions()))
+        Mockito.`when`(fishing.executeOneCastForAutomation(Mockito.eq(7L), anyFishingObservation(), anyTownBoundary(), anyBeforeCatch()))
             .thenThrow(HofAutomationDeferredException(retryAt, 1, requestAttempted = false))
         Mockito.`when`(convergence.prepare(Mockito.eq(7L), anyConvergenceSelection()))
             .thenReturn(ConvergenceDirective.Submit(204L))
@@ -878,13 +863,13 @@ class UnifiedAutomationRunnerTest {
             rollout = AutomationConvergenceRollout(
                 AutomationConvergenceProperties(mode = AutomationConvergenceMode.ACTIVE),
             ),
-            fishingCycleExecutor = cycleExecutor,
+            fishingService = fishing,
         )
 
         scoped.runOne(7L)
 
         assertIs<TypedRuntimeOutcome.SubmissionDeferred>(capturedOutcome())
-        Mockito.verify(cycleExecutor, Mockito.times(1)).executeOneCast(anyFishingCommand(), anyFishingTransitions())
+        Mockito.verify(fishing, Mockito.times(1)).executeOneCastForAutomation(Mockito.eq(7L), anyFishingObservation(), anyTownBoundary(), anyBeforeCatch())
         Mockito.verify(convergence).discardUnsubmitted(
             7L,
             convergenceFactory.create(startStored),
@@ -895,7 +880,7 @@ class UnifiedAutomationRunnerTest {
 
     @Test
     fun `불명확한 낚시 START 재개는 저장 POST를 보내지 않고 최신 상태만 확인한다`() {
-        val cycleExecutor = Mockito.mock(FishingCycleExecutor::class.java)
+        val fishing = Mockito.mock(FishingService::class.java)
         val startManaged = Mockito.mock(ManagedFishingAutomationAction::class.java)
         val startStored = fishingStartStored()
         val reconciling = executionRight(
@@ -922,13 +907,13 @@ class UnifiedAutomationRunnerTest {
             lifecycle,
             submissionGate,
             timeProvider = TimeProvider { Instant.EPOCH.plusSeconds(1) },
-            fishingCycleExecutor = cycleExecutor,
+            fishingService = fishing,
         )
 
         scoped.runOne(7L)
 
         Mockito.verify(startManaged).reconcile()
-        Mockito.verify(cycleExecutor, Mockito.never()).executeOneCast(anyFishingCommand(), anyFishingTransitions())
+        Mockito.verify(fishing, Mockito.never()).executeOneCastForAutomation(Mockito.eq(7L), anyFishingObservation(), anyTownBoundary(), anyBeforeCatch())
         assertIs<TypedRuntimeOutcome.AmbiguousHandoff>(capturedOutcome())
     }
 
@@ -2897,25 +2882,28 @@ class UnifiedAutomationRunnerTest {
         shadowEvaluator: AutomationConvergenceShadowEvaluator? = null,
         convergenceWorkPriority: AutomationConvergenceWorkPriority? = null,
         evidenceInterpreter: ProductionActionEvidenceInterpreter? = null,
-        fishingCycleExecutor: FishingCycleExecutor? = null,
-    ) = UnifiedAutomationRunner(
-        dailyPreflight = dailyPreflight,
-        typedRuntime = typedRuntime,
-        decisionSource = decisionSource,
-        wakeupPort = wakeupPort,
-        sharedBattleCooldowns = sharedBattleCooldowns,
-        actionLifecycleModule = actionLifecycleModule,
-        submissionGate = submissionGate,
-        decisionJournal = decisionJournal,
-        timeProvider = timeProvider,
-        convergenceWorkPriority = convergenceWorkPriority,
-        fishingCycleExecutor = fishingCycleExecutor,
-        results = AutomationResultCoordinator(
+        fishingService: FishingService = Mockito.mock(FishingService::class.java),
+    ) = AutomationResultCoordinator(
             actionLifecycleModule, sharedBattleCooldowns, convergenceModule,
             convergenceSelectionFactory, storedConvergenceActionLoader, timeProvider,
             rollout, shadowEvaluator, evidenceInterpreter,
-        ),
-    ).also {
+        ).let { resultCoordinator ->
+        UnifiedAutomationRunner(
+            dailyPreflight = dailyPreflight,
+            typedRuntime = typedRuntime,
+            decisionSource = decisionSource,
+            wakeupPort = wakeupPort,
+            sharedBattleCooldowns = sharedBattleCooldowns,
+            actionLifecycleModule = actionLifecycleModule,
+            submissionGate = submissionGate,
+            decisionJournal = decisionJournal,
+            timeProvider = timeProvider,
+            convergenceWorkPriority = convergenceWorkPriority,
+            fishingCycleModule = FishingCycleModule(fishingService, submissionGate, typedRuntime,
+                actionLifecycleModule, resultCoordinator, decisionJournal, timeProvider),
+            results = resultCoordinator,
+        )
+    }.also {
         convergenceModule?.takeIf { Mockito.mockingDetails(it).isMock }?.let { module ->
             Mockito.doAnswer { invocation ->
                 val next = module.record(invocation.getArgument(0), invocation.getArgument(1))
@@ -3116,25 +3104,14 @@ class UnifiedAutomationRunnerTest {
     private fun anyPreparedAction(): PreparedAutomationAction =
         Mockito.any(PreparedAutomationAction::class.java) ?: legacyBattleAction()
 
-    private fun anyFishingCommand(): FishingCycleCommand =
-        Mockito.any(FishingCycleCommand::class.java)
-            ?: FishingCycleCommand(7L, "matcher", "start", "catch")
+    private fun anyFishingObservation(): FishingAutomationObservation? =
+        Mockito.nullable(FishingAutomationObservation::class.java)
 
-    private fun anyFishingTransitions(): FishingCycleTransitions =
-        Mockito.any(FishingCycleTransitions::class.java)
-            ?: object : FishingCycleTransitions {
-                override fun startAppliedAndCatchPrepared(
-                    command: FishingCycleCommand,
-                    start: FishingCycleStepEvidence,
-                    catch: FishingCyclePreparedCatch,
-                ) = Unit
+    private fun anyTownBoundary(): TownSubmissionBoundary =
+        Mockito.any(TownSubmissionBoundary::class.java) ?: TownSubmissionBoundary { it() }
 
-                override fun catchApplied(command: FishingCycleCommand, catch: FishingCycleStepEvidence) = Unit
-
-                override fun waitingForCatch(command: FishingCycleCommand, start: FishingCycleStepEvidence) = Unit
-
-                override fun battleRequired(command: FishingCycleCommand, start: FishingCycleStepEvidence) = Unit
-            }
+    private fun anyBeforeCatch(): (FishingResponse) -> Unit =
+        Mockito.any<(FishingResponse) -> Unit>() ?: {}
 
     private fun anyCoordination(): AutomationCoordination =
         Mockito.any(AutomationCoordination::class.java) ?: AutomationCoordination.Idle(emptyList())

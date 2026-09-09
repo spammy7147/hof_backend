@@ -306,6 +306,29 @@ abstract class AutomationLateResultIntegrationTest {
         }
     }
 
+    @Test
+    fun `START 직접 응답에 CATCH form이 없으면 다음 wake의 관측으로 한 번만 잡는다`() {
+        setupFishing(initialBattle = false, startWithoutCatch = true, beforeResponse = {})
+        wakeups.wake(accountId, "FISHING_CATCH_FORM_PENDING")
+        publisher.publishBatch()
+
+        assertEquals(listOf("FStart"), fishingPosts())
+        assertEquals("SUCCEEDED", runs().single()["status"])
+        assertEquals(1, requests.count { it.method == HofHttpMethod.GET && it.url.contains("menu=fishing") },
+            "START 응답의 form 부재를 같은 실행의 추가 GET으로 우회하지 않는다.")
+        val firstCycle = journal.page(accountId, AutomationHistoryQuery()).cycles.single()
+        assertTrue(firstCycle.events.any { it.reasonCode == "FISHING_WAITING_FOR_CATCH" })
+
+        consumeFishingWakeUntil { "FCatch" in fishingPosts() }
+        assertEquals(listOf("FStart", "FCatch"), fishingPosts())
+        assertEquals(listOf("SUCCEEDED", "SUCCEEDED"), runs().map { it["status"] })
+        assertEquals(2, runs().map { it["execution_identity"] }.distinct().size)
+        assertEquals(0, runningWorkCount())
+        val completedCycle = journal.page(accountId, AutomationHistoryQuery()).cycles.maxOf { it.id }
+        consumeWakeUntilNextDecision(completedCycle)
+        assertEquals(listOf("FStart", "FCatch"), fishingPosts())
+    }
+
     @ParameterizedTest
     @ValueSource(strings = ["SAVE", "RESTORE"])
     fun `CATCH 준비가 실패해도 직접 적용된 START는 보존하고 최신 상태에서 잡기를 이어간다`(failure: String) {
@@ -1353,7 +1376,12 @@ abstract class AutomationLateResultIntegrationTest {
         }.`when`(runtime).completeRecordedAction(Mockito.any(TypedRuntimeExecutionRight::class.java) ?: right)
     }
 
-    private fun setupFishing(initialBattle: Boolean = true, battleAfterCatch: Boolean = false, beforeResponse: (HofRequest) -> Unit) {
+    private fun setupFishing(
+        initialBattle: Boolean = true,
+        battleAfterCatch: Boolean = false,
+        startWithoutCatch: Boolean = false,
+        beforeResponse: (HofRequest) -> Unit,
+    ) {
         var phase = "reset"
         var battle = initialBattle
         fun fixture(name: String) = requireNotNull(javaClass.getResource("/fixtures/town/fishing/$name.html")).readText()
@@ -1365,7 +1393,10 @@ abstract class AutomationLateResultIntegrationTest {
             val body = when {
                 request.url.contains("?char=") -> app.spammy.hof.character.service.currentPatternForm() +
                     app.spammy.hof.character.service.savedPatternLoadForm(1)
-                "FStart" in request.formFields -> { phase = "waiting"; fixture(phase) }
+                "FStart" in request.formFields -> {
+                    phase = "waiting"
+                    fixture(if (startWithoutCatch) "waiting-no-catch" else phase)
+                }
                 "FCatch" in request.formFields -> {
                     phase = "exhausted"
                     battle = battleAfterCatch
