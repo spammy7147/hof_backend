@@ -21,14 +21,6 @@ class CharacterTransferPlanner {
         if (request.includeStats) planStats(source, target, steps, issues)
         if (request.includeSkills) planSkills(source, target, steps, issues)
 
-        if (request.includeCurrentPattern) {
-            normalizePattern("current-pattern", source.currentPattern, target, issues)?.let { setting ->
-                patternDependencies("current-pattern", setting, source, target, request, issues)?.let { dependencies ->
-                    steps += CharacterTransferStep.ApplyCurrentPattern("current-pattern", setting, dependencies)
-                }
-            }
-        }
-
         request.savedPatternMappings.forEach { mapping ->
             val key = "saved-pattern:${mapping.sourceSlot}:${mapping.targetSlot}"
             val sourceSetting = source.savedPatterns[mapping.sourceSlot]
@@ -57,6 +49,15 @@ class CharacterTransferPlanner {
             }
             // 저장 슬롯을 만들며 바뀐 현재 장비는 마지막에 원본 캐릭터의 현재 장비로 되돌린다.
             planEquipmentSet("equipment-current", source.equipment, target, steps, issues)
+        }
+
+        // 저장 슬롯 생성과 장비 변경도 현재 패턴을 바꾸므로 선택한 최종 패턴을 마지막에 적용한다.
+        if (request.includeCurrentPattern) {
+            normalizePattern("current-pattern", source.currentPattern, target, issues)?.let { setting ->
+                patternDependencies("current-pattern", setting, source, target, request, issues)?.let { dependencies ->
+                    steps += CharacterTransferStep.ApplyCurrentPattern("current-pattern", setting, dependencies)
+                }
+            }
         }
 
         return CharacterTransferPreview(source.characterId, target.characterId, steps.distinctBy { it.id }, issues)

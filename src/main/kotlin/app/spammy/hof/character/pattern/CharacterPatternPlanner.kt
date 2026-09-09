@@ -86,7 +86,8 @@ class CharacterPatternPlanner {
         allowedGuards: Set<String>,
         force: Boolean = false,
     ): CharacterPatternPlanResult {
-        if (!force && (draft.baseRevision != baseRevision || currentRevision != baseRevision || current != base)) {
+        // revision은 원격 버전이 아닌 관측 시각이다. 재조회 후의 전체 설정을 초안의 기준과 비교한다.
+        if (!force && (draft.baseRevision != baseRevision || current != base)) {
             return CharacterPatternPlanResult.Conflict(currentRevision, diff(base.rows, current.rows))
         }
         if (draft.rows.size != capacity) {
