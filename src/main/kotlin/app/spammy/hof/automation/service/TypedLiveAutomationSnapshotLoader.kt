@@ -352,7 +352,7 @@ class TypedLiveAutomationSnapshotLoader(
                 }, primary, now, observation, timeSnapshot)
             })
             AutomationType.RAID -> AutomationEntrySnapshot(entry.id, entry.type)
-        } }
+        }.copy(settingsRevision = entry.settingsRevision) }
     }
 
     private fun resolvePreset(mode: PresetSelectionMode, presetId: Long?, config: DetachedConfiguration): Long? = when (mode) {

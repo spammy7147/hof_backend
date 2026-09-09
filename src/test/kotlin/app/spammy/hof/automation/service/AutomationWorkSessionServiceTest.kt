@@ -440,6 +440,27 @@ class AutomationWorkSessionServiceTest {
         Mockito.verify(commands, Mockito.never()).save(other)
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(AutomationWorkType::class)
+    fun `모든 유형은 수정 시각이 다른 보존 작업을 준비 경로에서도 이어간다`(type: AutomationWorkType) {
+        val preservedEntry = AutomationEntryEntity(11, account, AutomationType.valueOf(type.name), 0, true, now, now)
+        val session = AutomationWorkSessionEntity(id = 21, account = account, entry = preservedEntry,
+            workType = type, targetKey = "kept-target", status = AutomationWorkStatus.WAITING_RESOURCE,
+            configVersion = now.minusSeconds(86400).toString(), confirmedCount = 4,
+            questCycle = "kept-cycle", missionKey = "kept-mission", createdAt = now, updatedAt = now)
+        Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
+        Mockito.`when`(typed.findEntry(7, preservedEntry.id)).thenReturn(preservedEntry)
+        Mockito.`when`(queries.lockOpen(7)).thenReturn(listOf(session))
+
+        service.ensure(7, preservedEntry.id, AutomationWorkAssignment(type, session.targetKey, targetCount = 10))
+
+        assertEquals(AutomationWorkStatus.RUNNING, session.status)
+        assertEquals(4, session.confirmedCount)
+        assertEquals("kept-cycle", session.questCycle)
+        assertEquals("kept-mission", session.missionKey)
+        assertEquals(null, session.finishedAt)
+    }
+
     @Test
     fun `entry version change alone does not stop a parked target`() {
         val session = battleSession(status = AutomationWorkStatus.YIELDED_PRIORITY, confirmedCount = 4)

@@ -80,7 +80,22 @@ fun RaidCycleOutcome.toAutomationActionTrace(): AutomationActionTrace = Automati
     targetKey = raidId,
 )
 
+const val ACTION_PREPARATION_FAILED = "ACTION_PREPARATION_FAILED"
+
+data class AutomationPreparationFailure(
+    val entryId: Long,
+    val entryDisplayName: String?,
+    val targetKey: String?,
+    val targetName: String?,
+    val message: String,
+    val retryAt: Instant,
+) {
+    fun blocks(entryId: Long, targetKey: String?) = this.entryId == entryId &&
+        (this.targetKey == null || this.targetKey == targetKey)
+}
+
 interface AutomationDecisionJournal {
+    fun preparationFailures(accountId: Long): List<AutomationPreparationFailure> = emptyList()
     fun appendDecision(accountId: Long, decision: AutomationCoordination): Long
     fun appendPreparedActionAttempt(accountId: Long, result: AutomationActionTrace): Long
     fun appendActionResult(cycleId: Long, result: AutomationActionTrace)
@@ -98,6 +113,25 @@ class JpaAutomationDecisionJournal(
     private val progressTelemetry: AutomationProgressTelemetry? = null,
 ) : AutomationDecisionJournal {
     private val diagnosticMapper = jacksonObjectMapper()
+
+    /** 준비 오류는 전송 결과와 분리된 유한 후보 보류이며, 재접속·재시작 뒤에도 같은 이력을 사용한다. */
+    @Transactional(readOnly = true)
+    override fun preparationFailures(accountId: Long): List<AutomationPreparationFailure> = entityManager.createQuery(
+        """select e from AutomationDecisionEventEntity e, AutomationEntryEntity a
+            where e.cycle.accountId = :accountId and e.entryId = a.id and a.enabled = true
+              and e.reasonCode = :reason and e.kind = :kind and e.occurredAt >= a.updatedAt
+              and not exists (select r.id from AutomationDecisionEventEntity r
+                where r.cycle.accountId = :accountId and r.entryId = e.entryId and r.id > e.id
+                and r.reasonCode = 'ACTION_PREPARATION_RECOVERED'
+                and (e.targetKey is null or r.targetKey = e.targetKey))
+            order by e.occurredAt desc, e.id desc""", AutomationDecisionEventEntity::class.java,
+    ).setParameter("accountId", accountId).setParameter("reason", ACTION_PREPARATION_FAILED)
+        .setParameter("kind", AutomationHistoryEventKind.ACTION_FAILED)
+        .resultList
+        .distinctBy { it.entryId to it.targetKey }
+        .map { AutomationPreparationFailure(requireNotNull(it.entryId), it.entryDisplayName,
+            it.targetKey, it.targetName, it.message, requireNotNull(it.nextRunAt)) }
+
     @Transactional
     override fun appendDecision(accountId: Long, decision: AutomationCoordination): Long {
         val now = timeProvider.now()

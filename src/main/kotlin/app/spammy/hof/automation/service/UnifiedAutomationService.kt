@@ -1078,6 +1078,7 @@ class UnifiedAutomationService(
                 lastError = runtime?.lastError,
                 currentAction = currentAction,
                 dailyRefresh = dailyRefresh,
+                preparationFailures = decisionJournal.preparationFailures(accountId),
             ),
         )
     }

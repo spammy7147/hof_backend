@@ -24,6 +24,15 @@ class BattleMapAutomationHandlerTest {
     private val handler = BattleMapAutomationHandler(progressStore)
 
     @Test
+    fun `같은 묶음의 준비 실패 맵을 제외하고 독립 맵을 선택한다`() {
+        val context = snapshot(listOf(setting("A", 2, order = 0), setting("B", 2, order = 1)), emptyMap(), listOf(state("A"), state("B")))
+        val selected = assertIs<HandlerEvaluation.Runnable>(handler.evaluate(context) { action ->
+            assertIs<BattleMapAutomationAction>(action).mapCode != "A"
+        })
+        assertEquals("B", assertIs<BattleMapAutomationAction>(selected.action).mapCode)
+    }
+
+    @Test
     fun selectsThreeBattlesForRemainingThreeOrMoreAndOneForSmallerRemainders() {
         assertEquals(3, runnable(target = 10, progress = 7, supportsThree = true).battleCount)
         assertEquals(1, runnable(target = 10, progress = 8, supportsThree = true).battleCount)

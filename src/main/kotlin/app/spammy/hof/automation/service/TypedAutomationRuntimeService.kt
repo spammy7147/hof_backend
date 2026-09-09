@@ -175,7 +175,11 @@ class TypedAutomationRuntimeService(
             queryRepository.findEntryForUpdate(right.accountId, action.entryId)
                 ?: queryRepository.findEntry(right.accountId, action.entryId)
             ) ?: return TypedRuntimePreparation.Invalidated
-        val encoded = codec.encode(action)
+        if (!entry.enabled || (action.settingsRevision != null && action.settingsRevision != entry.settingsRevision)) {
+            return TypedRuntimePreparation.Invalidated
+        }
+        val currentAction = action.copy(settingsRevision = action.settingsRevision ?: entry.settingsRevision)
+        val encoded = codec.encode(currentAction)
         val now = timeProvider.now()
         state.warningText = warnings.takeIf { it.isNotEmpty() }?.joinToString("\n") { sanitizeDiagnostic(it) }
         state.updatedAt = now
@@ -201,7 +205,7 @@ class TypedAutomationRuntimeService(
                 right.accountId,
                 right.leaseToken,
                 saved.id,
-                TypedRuntimeCheckpoint(action, TypedRuntimeCheckpointPhase.PREPARED, null, null),
+                TypedRuntimeCheckpoint(currentAction, TypedRuntimeCheckpointPhase.PREPARED, null, null),
             ),
         )
     }
@@ -220,6 +224,16 @@ class TypedAutomationRuntimeService(
         val now = timeProvider.now()
         if (blocksNewSubmission(state)) {
             discardPreparedForLifecycle(state, action, now)
+            return TypedRuntimeSubmission.Invalidated
+        }
+        val configured = action.entry?.id?.let { queryRepository.findEntryForUpdate(right.accountId, it)
+            ?: queryRepository.findEntry(right.accountId, it) }
+        val selectedRevision = right.checkpoint?.storedAction?.settingsRevision
+        if (configured == null || !configured.enabled || selectedRevision == null || selectedRevision != configured.settingsRevision) {
+            action.status = TypedAutomationActionStatus.FAILED
+            action.lastError = "설정이 변경되어 전송 전 행동을 폐기하고 다시 판단합니다."
+            action.finishedAt = now
+            action.updatedAt = now
             return TypedRuntimeSubmission.Invalidated
         }
         action.status = TypedAutomationActionStatus.SUBMITTING
@@ -264,7 +278,8 @@ class TypedAutomationRuntimeService(
         }
         val entry = queryRepository.findEntry(right.accountId, followup.entryId)
             ?: return TypedRuntimePreparation.Invalidated
-        val encoded = codec.encode(followup)
+        val currentFollowup = followup.copy(settingsRevision = right.checkpoint?.storedAction?.settingsRevision)
+        val encoded = codec.encode(currentFollowup)
         current.status = TypedAutomationActionStatus.SUCCEEDED
         current.lastError = null
         current.finishedAt = now
@@ -289,7 +304,7 @@ class TypedAutomationRuntimeService(
                 right.accountId,
                 right.leaseToken,
                 saved.id,
-                TypedRuntimeCheckpoint(followup, TypedRuntimeCheckpointPhase.PREPARED, null, null),
+                TypedRuntimeCheckpoint(currentFollowup, TypedRuntimeCheckpointPhase.PREPARED, null, null),
             ),
         )
     }

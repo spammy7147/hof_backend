@@ -154,11 +154,6 @@ class AutomationWorkSessionService(
         } ?: open.firstOrNull {
             it.status != AutomationWorkStatus.RUNNING && it.matches(entryId, spec)
         }
-        if (selected != null && selected.status != AutomationWorkStatus.RUNNING) {
-            require(selected.configVersion == entry.updatedAt.toString()) {
-                "A parked work session belongs to an older automation configuration."
-            }
-        }
         val now = timeProvider.now()
         if (selected != null) {
             val transfer = releaseOwnership(open, selected, now)

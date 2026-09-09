@@ -297,7 +297,9 @@ class BattleMapAutomationHandler(
     private val progressStore: BattleMapAutomationProgressStore,
     private val timePolicy: BattleTimePolicy = BattleTimePolicy(),
 ) : AutomationHandler<BattleMapAutomationSnapshot> {
-    override fun evaluate(context: BattleMapAutomationSnapshot): HandlerEvaluation {
+    override fun evaluate(context: BattleMapAutomationSnapshot): HandlerEvaluation = evaluate(context) { true }
+
+    override fun evaluate(context: BattleMapAutomationSnapshot, accepts: (PreparedAutomationAction) -> Boolean): HandlerEvaluation {
         val states = context.mapStates.associateBy { BattleMapProgressIdentity(it.categoryId, it.mapCode) }
         val waits = mutableListOf<HandlerEvaluation.Unavailable>()
         context.settings
@@ -331,20 +333,23 @@ class BattleMapAutomationHandler(
                         waits += time.toUnavailable(context.minimumRemainingTime)
                         return@forEach
                     }
-                    is BattleTimeDecision.Run -> return HandlerEvaluation.Runnable(
-                        BattleMapAutomationAction(
-                            accountId = context.accountId,
-                            progressDate = context.evaluationInstant.atZone(KOREA_ZONE).toLocalDate(),
-                            categoryId = setting.categoryId,
-                            mapCode = setting.mapCode,
-                            presetMode = setting.preset.mode,
-                            presetId = presetId,
-                            battleCount = time.battleCount,
-                            executionIdentity = context.executionIdentity,
-                            resolvedParty = context.resolvedParties[presetId],
-                            mapName = state.mapName,
-                        ),
-                    )
+                    is BattleTimeDecision.Run -> {
+                        val candidate = HandlerEvaluation.Runnable(
+                            BattleMapAutomationAction(
+                                accountId = context.accountId,
+                                progressDate = context.evaluationInstant.atZone(KOREA_ZONE).toLocalDate(),
+                                categoryId = setting.categoryId,
+                                mapCode = setting.mapCode,
+                                presetMode = setting.preset.mode,
+                                presetId = presetId,
+                                battleCount = time.battleCount,
+                                executionIdentity = context.executionIdentity,
+                                resolvedParty = context.resolvedParties[presetId],
+                                mapName = state.mapName,
+                            ),
+                        )
+                        if (accepts(candidate.action)) return candidate
+                    }
                 }
             }
         return waits.minByOrNull { it.nextRunAt } ?: HandlerEvaluation.Skipped

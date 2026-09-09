@@ -185,6 +185,16 @@ class TypedAutomationRuntimeServiceTest {
     }
 
     @Test
+    fun `설정 revision 없는 과거 미전송 행동은 재전송하지 않고 새로 판단한다`() {
+        val state = state()
+        val fixture = action(TypedAutomationActionStatus.PREPARED, settingsRevision = null)
+        val execution = acquire(state, fixture.row)
+        assertIs<TypedRuntimeSubmission.Invalidated>(service.beginSubmission(execution))
+        assertEquals(TypedAutomationActionStatus.FAILED, fixture.row.status)
+        assertNull(fixture.row.submittedAt)
+    }
+
+    @Test
     fun `domain success completes submitted checkpoint and queues wake atomically`() {
         val state = state()
         val fixture = action(TypedAutomationActionStatus.PREPARED)
@@ -697,14 +707,16 @@ class TypedAutomationRuntimeServiceTest {
     ) {
         Mockito.`when`(query.lockRuntimeState(7)).thenReturn(state)
         Mockito.`when`(query.findActiveTypedAction(7)).thenReturn(row)
+        row?.entry?.let { entry -> Mockito.`when`(query.findEntry(7, entry.id)).thenReturn(entry) }
     }
 
-    private fun action(status: TypedAutomationActionStatus): ActionFixture {
+    private fun action(status: TypedAutomationActionStatus, settingsRevision: Long? = 0): ActionFixture {
         val entry = AutomationEntryEntity(9, account, AutomationType.QUEST, 0, true, now, now)
         val stored = StoredTypedAutomationAction(
             entryId = entry.id,
             executionIdentity = "quest-claim",
             payload = StoredTypedActionPayload.QuestClaim("quest-1", "claim-1"),
+            settingsRevision = settingsRevision,
         )
         val encoded = codec.encode(stored)
         return ActionFixture(

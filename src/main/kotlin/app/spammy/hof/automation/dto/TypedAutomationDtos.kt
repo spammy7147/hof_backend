@@ -293,6 +293,7 @@ data class TypedAutomationRuntimeResponse(
     val lastError: String? = null,
     val currentAction: TypedAutomationCurrentActionResponse? = null,
     val dailyRefresh: AdventureDailyRefreshResponse = AdventureDailyRefreshResponse(),
+    val preparationFailures: List<app.spammy.hof.automation.history.AutomationPreparationFailure> = emptyList(),
 )
 
 data class TypedAutomationCurrentActionResponse(

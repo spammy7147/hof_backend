@@ -250,7 +250,8 @@ class UnifiedAutomationRunner @Autowired constructor(
                         selectedWarnings = decision.warnings
                         managedAction = actionLifecycleModule.prepare(accountId, decision.entryId, decision.action)
                     } catch (error: Exception) {
-                        stopPreparationFailure(accountId, execution, decision.entryId, "BUILD", error)
+                        stopPreparationFailure(accountId, execution, decision.entryId, "BUILD", error, decisionCycleId,
+                            decisionDescriptor?.copy(targetKey = preparationTargetKey(decision.entryId, decision.action)))
                         return
                     }
                 }
@@ -297,7 +298,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                     return
                 }
             }
-            stored = managedAction.storedAction
+            stored = managedAction.storedAction.copy(settingsRevision = decision.settingsRevision)
             resultSelection = results.freshSelection(accountId, stored) ?: run {
                 stopPreparationFailure(accountId, execution, stored.entryId, "CONVERGENCE_MODULE",
                     IllegalStateException("Active convergence module is missing."))
@@ -306,7 +307,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             val preparation = try {
                 typedRuntime.persistPrepared(execution, stored, selectedWarnings.orEmpty())
             } catch (error: Exception) {
-                stopPreparationFailure(accountId, execution, stored.entryId, "PERSIST", error)
+                stopPreparationFailure(accountId, execution, stored.entryId, "PERSIST", error, decisionCycleId, preparationDescriptor(stored, managedAction.descriptor))
                 return
             }
             if (preparation !is TypedRuntimePreparation.Ready) {
@@ -863,6 +864,15 @@ class UnifiedAutomationRunner @Autowired constructor(
             return
         } catch (error: Throwable) {
             if (closeBattleForCaptcha(error)) return
+            val causes = generateSequence(error) { it.cause }.toList()
+            if (error is Exception && causes.none { it is java.io.IOException || it is ApiException ||
+                    it is AutomationLoginRequiredException || it is HofAutomationDeferredException ||
+                    it is SafeRetryableAutomationException }) {
+                resultSelection.policy?.let { results.discardUnsubmitted(accountId, it, now(), "PREPARATION_FAILED") }
+                stopPreparationFailure(accountId, execution, stored.entryId, "VALIDATE", error, decisionCycleId,
+                    preparationDescriptor(stored, actionDescriptor))
+                return
+            }
             val message = error.message ?: "제출 직전 최신 상태 확인에 실패했습니다."
             val evidence = AutomationActionEvidence.NetworkFailure(now(), message)
             val directive = convergenceAttemptId?.let { attemptId ->
@@ -879,6 +889,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             return
         }
 
+        recordPreparationRecovery(accountId, decisionCycleId, stored, actionDescriptor)
         val submission = typedRuntime.beginSubmission(execution)
         if (submission !is TypedRuntimeSubmission.Started) {
             convergenceAttemptId?.let { attemptId ->
@@ -1267,6 +1278,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             return
         }
         try {
+            recordPreparationRecovery(accountId, decisionCycleId, stored, managed.descriptor)
             append(AutomationHistoryEventKind.ACTION_STARTED, "ACTION_STARTED", "낚시 CATCH를 시작했습니다.")
             val authorizedExecution = executeAuthorized(accountId) { managed.executeObservedResponse() }
             if (!authorizedExecution.authorized) {
@@ -1468,6 +1480,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                 typedRuntime.complete(execution, TypedRuntimeOutcome.SelectionChanged("TYPED_CONFIG_RELOAD"))
                 return
             }
+            recordPreparationRecovery(accountId, decisionCycleId, startStored, startManaged.descriptor)
             append(startStored, startManaged, AutomationHistoryEventKind.ACTION_STARTED, "ACTION_STARTED", "낚시 START를 시작했습니다.")
             cycleExecutor.executeOneCast(command, object : FishingCycleTransitions {
                 override fun startAppliedAndCatchPrepared(
@@ -1504,6 +1517,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                     activeSelection = results.fishingSelection(catchStored)
                     activeAttemptTerminalized = false
                     activeAttemptId = prepareConvergence(catchStored, activeSelection)
+                    recordPreparationRecovery(accountId, decisionCycleId, catchStored, catchManaged.descriptor)
                     val catchSubmission = typedRuntime.beginSubmission(execution)
                     if (catchSubmission !is TypedRuntimeSubmission.Started) {
                         activeAttemptId?.let { attemptId ->
@@ -1766,13 +1780,50 @@ class UnifiedAutomationRunner @Autowired constructor(
         )
     }
 
+    private fun recordPreparationRecovery(
+        accountId: Long, cycleId: Long?, stored: StoredTypedAutomationAction, descriptor: AutomationActionDescriptor,
+    ) {
+        if (cycleId == null) return
+        val target = preparationDescriptor(stored, descriptor)
+        if (decisionJournal?.preparationFailures(accountId)?.any { it.blocks(stored.entryId, target.targetKey) } != true) return
+        runCatching { decisionJournal?.appendActionResult(cycleId, AutomationActionTrace(
+            AutomationHistoryEventKind.EVALUATED, "ACTION_PREPARATION_RECOVERED", "행동 준비를 마쳐 기존 준비 오류를 해제했습니다.",
+            entryId = stored.entryId, type = target.source, targetKey = target.targetKey, targetName = target.targetName))
+        }.onFailure { log.warn("Could not record preparation recovery accountId={}", accountId, it) }
+    }
+
+    private fun preparationDescriptor(stored: StoredTypedAutomationAction, descriptor: AutomationActionDescriptor) =
+        descriptor.copy(targetKey = when (val payload = stored.payload) {
+            is StoredTypedActionPayload.QuestAccept -> payload.questKey
+            is StoredTypedActionPayload.QuestClaim -> payload.questKey
+            is StoredTypedActionPayload.QuestBattle -> payload.questKey
+            is StoredTypedActionPayload.FishingTown -> FISHING_CYCLE_TARGET
+            is StoredTypedActionPayload.BattleMap -> when (payload.source) {
+                BattleAutomationActionSource.FISHING_AUTOMATION -> FISHING_CYCLE_TARGET
+                BattleAutomationActionSource.RAID_AUTOMATION -> payload.sourceTargetKey
+                else -> descriptor.targetKey
+            }
+            else -> descriptor.targetKey
+        })
+
     private fun stopPreparationFailure(
         accountId: Long,
         execution: TypedRuntimeExecutionRight,
         entryId: Long,
         stage: String,
         error: Exception,
+        cycleId: Long? = null,
+        descriptor: AutomationActionDescriptor? = null,
     ) {
+        if (error is TypedAutomationConfigurationChangedException || error.findActionPreconditionChanged() != null) {
+            typedRuntime.complete(execution, TypedRuntimeOutcome.SelectionChanged("TYPED_CONFIG_RELOAD"))
+            return
+        }
+        error.findHofAutomationDeferral()?.let { deferred ->
+            typedRuntime.complete(execution, TypedRuntimeOutcome.ScheduledWait(
+                deferred.retryAt, AutomationWaitReason.HOF_CONNECTION, wakeReason = HOF_COOLDOWN_WAKE_REASON))
+            return
+        }
         val interrupted = generateSequence<Throwable>(error) { it.cause }
             .any { it is InterruptedException }
         log.error(
@@ -1784,11 +1835,44 @@ class UnifiedAutomationRunner @Autowired constructor(
             error,
         )
         try {
-            retryExecution(
-                execution,
-                AutomationStopReason.FATAL,
-                error.message ?: error.javaClass.simpleName,
+            // RECONCILING은 이미 제출됐을 수 있으므로 전송 전 실패로 표시하거나 폐기하지 않는다.
+            if (execution.checkpoint?.phase == TypedRuntimeCheckpointPhase.RECONCILING || entryId <= 0 || decisionJournal == null) {
+                retryExecution(execution, AutomationStopReason.FATAL, "자동화 처리 중 오류가 발생해 다시 확인합니다.")
+                return
+            }
+            val retryAt = now().plusSeconds(60)
+            val phase = when (stage) {
+                "DESCRIBE" -> "행동 설명 확인"
+                "JOURNAL", "JOURNAL_RETRY" -> "판단 기록"
+                "BUILD" -> "행동 생성"
+                "PERSIST" -> "행동 저장"
+                "VALIDATE" -> "전송 전 조건 확인"
+                else -> "행동 준비"
+            }
+            val message = "$phase 중 오류가 발생해 HOF 요청을 전송하지 않았습니다. 해당 대상은 잠시 보류하고 다른 자동화를 계속 판단합니다."
+            val failure = AutomationActionTrace(
+                kind = AutomationHistoryEventKind.ACTION_FAILED,
+                reasonCode = app.spammy.hof.automation.history.ACTION_PREPARATION_FAILED,
+                message = message, entryId = entryId, type = descriptor?.source,
+                actionKind = descriptor?.actionKind, targetKey = descriptor?.targetKey,
+                targetName = descriptor?.targetName, nextRunAt = retryAt,
+                releaseCondition = "예정 시각에 최신 상태로 다시 판단",
+                diagnosticContext = AutomationDecisionDiagnostics.capture(stage, now(), error = error),
             )
+            try {
+                if (cycleId != null) decisionJournal.appendActionResult(cycleId, failure)
+                else decisionJournal.appendPreparedActionAttempt(accountId, failure)
+            } catch (journalError: Exception) {
+                log.error("Could not persist automation preparation failure accountId={}", accountId, journalError)
+                retryExecution(execution, AutomationStopReason.FATAL, "$phase 중 오류가 발생해 다시 확인합니다.")
+                return
+            }
+            val outcome = if (execution.checkpoint == null) {
+                TypedRuntimeOutcome.SelectionChanged("PREPARATION_FAILED_CONTINUE_SELECTION")
+            } else {
+                TypedRuntimeOutcome.ActionSuperseded(warning = message, wakeReason = "PREPARATION_FAILED_CONTINUE_SELECTION")
+            }
+            typedRuntime.complete(execution, outcome, convergenceRecheckAt = retryAt)
         } finally {
             if (interrupted) Thread.currentThread().interrupt()
         }

@@ -18,7 +18,9 @@ data class UnionAutomationSnapshot(
 
 @Service
 class UnionAutomationHandler : AutomationHandler<UnionAutomationSnapshot> {
-    override fun evaluate(context: UnionAutomationSnapshot): HandlerEvaluation {
+    override fun evaluate(context: UnionAutomationSnapshot): HandlerEvaluation = evaluate(context) { true }
+
+    override fun evaluate(context: UnionAutomationSnapshot, accepts: (PreparedAutomationAction) -> Boolean): HandlerEvaluation {
         val ordered = rotate(context.settings.sortedWith(compareBy(UnionAutomationSetting::executionOrder, UnionAutomationSetting::targetKey)), context.currentTargetKey)
         if (ordered.isEmpty()) return HandlerEvaluation.ConfigurationWarning("유니온 맵을 하나 이상 선택해 주세요.", "UNION_TARGET_MISSING")
         val states = context.states.associateBy { "${it.categoryId}:${it.mapCode}" }
@@ -32,11 +34,12 @@ class UnionAutomationHandler : AutomationHandler<UnionAutomationSnapshot> {
             if (!state.visible || !state.enabled) continue
             val presetId = setting.presetId ?: return HandlerEvaluation.ConfigurationWarning("유니온 전투 프리셋을 선택해 주세요.", "UNION_PRESET_MISSING")
             val party = setting.resolvedParty ?: return HandlerEvaluation.ConfigurationWarning("유니온 전투 프리셋 구성을 확인해 주세요.", "UNION_PARTY_INVALID")
-            return HandlerEvaluation.Runnable(BattleMapAutomationAction(
+            val candidate = HandlerEvaluation.Runnable(BattleMapAutomationAction(
                 context.accountId, context.now.atZone(SEOUL).toLocalDate(), setting.categoryId, setting.mapCode,
                 setting.presetMode, presetId, 1, UUID.randomUUID().toString(),
                 BattleAutomationActionSource.UNION_AUTOMATION, party, state.mapName,
             ))
+            if (accepts(candidate.action)) return candidate
         }
         return if (cooldownObserved) {
             HandlerEvaluation.SkippedReason(

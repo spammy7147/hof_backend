@@ -33,6 +33,7 @@ data class AutomationEntrySnapshot(
     val union: UnionAutomationSnapshot? = null,
     val fishing: FishingAutomationSnapshot? = null,
     val homeQuest: HomeQuestAutomationSnapshot? = null,
+    val settingsRevision: Long? = null,
 )
 
 enum class AutomationDecisionOutcome {
@@ -105,6 +106,7 @@ sealed interface AutomationCoordination {
         val action: PreparedAutomationAction,
         override val warnings: List<String>,
         override val trace: List<AutomationEvaluationTrace> = emptyList(),
+        val settingsRevision: Long? = null,
     ) : AutomationCoordination
 
     data class Fatal(
@@ -198,3 +200,17 @@ class AutomationPreSubmitObservationIncompleteException(
 class AutomationConfigurationException(
     override val message: String = "전투에 사용할 파티를 선택해 주세요.",
 ) : RuntimeException(message)
+
+/** 준비 오류의 격리는 표시용 맵 이름이나 공유 쿨다운이 아닌 실제 작업 대상을 따른다. */
+internal fun preparationTargetKey(entryId: Long, action: PreparedAutomationAction): String = when (action) {
+    is QuestAction -> action.questKey
+    is BattleMapAutomationAction -> when (action.source) {
+        BattleAutomationActionSource.FISHING_AUTOMATION -> FISHING_CYCLE_TARGET
+        BattleAutomationActionSource.RAID_AUTOMATION -> action.sourceTargetKey ?: entryId.toString()
+        BattleAutomationActionSource.QUEST_AUTOMATION -> action.sourceTargetKey ?: entryId.toString()
+        else -> "${action.categoryId}/${action.mapCode}"
+    }
+    is AdventureMapAutomationAction -> "${action.categoryId}/${action.mapCode}"
+    is FishingTownAutomationAction -> FISHING_CYCLE_TARGET
+    else -> app.spammy.hof.automation.convergence.StoredActionConvergenceSelectionFactory().preview(entryId, action).scope.key
+}

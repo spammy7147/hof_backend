@@ -78,6 +78,14 @@ class AutomationTargetSelector(
         evaluatedEntryIds: Set<Long> = emptySet(),
         snapshotLoader: TypedAutomationSnapshotLoader = loader,
     ): AutomationCoordination {
+        decisionJournal?.preparationFailures(accountId)?.filter { it.retryAt > timeProvider.now() }?.firstOrNull {
+            it.blocks(session.entryId, session.targetKey)
+        }?.let { failure ->
+            lifecycle.waitForCooldown(accountId, session.id, failure.retryAt)
+            return AutomationCoordination.CycleBoundary(warnings = initialWarnings,
+                trace = initialTrace + preparationFailureTrace(session.entryId,
+                    AutomationType.valueOf(session.workType.name), failure, initialTrace.size))
+        }
         val nextEvaluatedSessionIds = evaluatedSessionIds + session.id
         val nextEvaluatedEntryIds = evaluatedEntryIds + session.entryId
         if (session.workType == AutomationWorkType.RAID) {
@@ -180,6 +188,14 @@ class AutomationTargetSelector(
             .filter { it.id !in evaluatedEntries }
             .forEach { entry ->
                 evaluatedEntries += entry.id
+                val entryFailure = decisionJournal?.preparationFailures(accountId)?.filter { it.retryAt > timeProvider.now() }?.firstOrNull {
+                    it.entryId == entry.id && (entry.type !in PREPARATION_CANDIDATE_TYPES || it.targetKey == null)
+                }
+                if (entryFailure != null) {
+                    if (earliest == null || entryFailure.retryAt < earliest) earliest = entryFailure.retryAt
+                    trace += preparationFailureTrace(entry.id, entry.type, entryFailure, trace.size)
+                    return@forEach
+                }
                 val waiting = waitsByEntry[entry.id].orEmpty()
                 val blockedUntil = waiting.mapNotNull { it.nextCheckAt }.minOrNull()
                 val due = waiting.firstOrNull {
@@ -201,7 +217,8 @@ class AutomationTargetSelector(
                         if (message !in warnings) warnings += message
                     }
                     if (blockedUntil != null && (earliest == null || blockedUntil < earliest)) earliest = blockedUntil
-                    if (entry.type !in CANDIDATE_ARBITRATED_TYPES) {
+                    if (entry.type !in CANDIDATE_ARBITRATED_TYPES &&
+                        decisionJournal?.preparationFailures(accountId)?.none { it.entryId == entry.id && it.retryAt > now } != false) {
                         val parked = waiting.minBy { it.nextCheckAt ?: Instant.MAX }
                         trace += AutomationEvaluationTrace(
                             sequence = trace.size,
@@ -294,6 +311,7 @@ class AutomationTargetSelector(
                                     directive.warning ?: directive.intent.recoveryWarning(),
                                 ),
                                 trace.toList(),
+                                settingsRevision = entry.settingsRevision,
                             )
                         }
                         is RaidDirective.WaitUntil -> {
@@ -433,7 +451,8 @@ class AutomationTargetSelector(
                     ),
                 ) else item
             }
-            return result.withTrace(trace)
+            return if (result is AutomationCoordination.Runnable) result.copy(trace = trace,
+                settingsRevision = snapshot.settingsRevision) else result.withTrace(trace)
         } catch (error: Exception) {
             recordSelectionFailure(accountId, entryId, type, stage, previousTrace, error, snapshot, session)
             throw error
@@ -485,16 +504,24 @@ class AutomationTargetSelector(
     ): AutomationCoordination {
         val exclusions = linkedSetOf<AutomationCandidateExclusion>()
         val messages = linkedSetOf<String>()
+        val preparationFailures = decisionJournal?.preparationFailures(accountId).orEmpty().filter { it.entryId == entry.id && it.retryAt > timeProvider.now() }
+        val selectionFactory = app.spammy.hof.automation.convergence.StoredActionConvergenceSelectionFactory()
         val selection = convergenceModule?.openSelection(accountId, entry.id, entry.quest, convergenceRollout?.mode)
         val accepts: (PreparedAutomationAction) -> Boolean = { action ->
-            val block = selection?.block(action)
-
+            val preview = if (preparationFailures.isEmpty()) null else selectionFactory.preview(entry.id, action)
+            val failed = preparationFailures.firstOrNull { it.blocks(entry.id, preparationTargetKey(entry.id, action)) }
+            val block = if (failed == null) selection?.block(action) else null
+            if (failed != null) {
+                exclusions += AutomationCandidateExclusion(failed.targetKey.orEmpty(), "PREPARATION_TARGET",
+                    preview?.actionKind?.name.orEmpty(), app.spammy.hof.automation.history.ACTION_PREPARATION_FAILED,
+                    timeProvider.now(), failed.message)
+            }
             if (block != null) {
                 exclusions += AutomationCandidateExclusion(block.scope.key, block.scope.kind.name,
                     block.actionKind.name, block.reasonCode, timeProvider.now(), block.message)
                 messages += block.message
             }
-            block == null
+            block == null && failed == null
         }
         val result = evaluateEntry(entry, quest, battle, adventure, union, fishing, homeQuest, accepts) { gap ->
             coordinateObservationGap(entry, gap, selection)
@@ -508,12 +535,15 @@ class AutomationTargetSelector(
         // 다른 후보의 구체적인 관측·설정 사유는 보류 사유로 덮어쓰지 않는다.
         if (result is AutomationCoordination.Fatal || (!running && result !is AutomationCoordination.Runnable &&
                 result.trace.any { it.reasonCode != HandlerEvaluation.Skipped.reasonCode })) {
-            return result.withTrace(result.trace.map { it.copy(excludedCandidates = exclusions.toList()) })
+            val traced = result.withTrace(result.trace.map { it.copy(excludedCandidates = exclusions.toList()) })
+            return if (traced is AutomationCoordination.Idle) traced.copy(nextRunAt =
+                listOfNotNull(traced.nextRunAt, preparationFailures.minOfOrNull { it.retryAt }).minOrNull()) else traced
         }
         val first = exclusions.first()
         return AutomationCoordination.Idle(
             warnings = result.warnings + messages,
-            nextRunAt = (result as? AutomationCoordination.Unavailable)?.nextRunAt,
+            nextRunAt = listOfNotNull((result as? AutomationCoordination.Unavailable)?.nextRunAt,
+                preparationFailures.minOfOrNull { it.retryAt }).minOrNull(),
             trace = listOf(
                 AutomationEvaluationTrace(
                     sequence = 0,
@@ -532,6 +562,13 @@ class AutomationTargetSelector(
             ),
         )
     }
+
+    private fun preparationFailureTrace(
+        entryId: Long, type: AutomationType,
+        failure: app.spammy.hof.automation.history.AutomationPreparationFailure, sequence: Int,
+    ) = AutomationEvaluationTrace(sequence, entryId, type, AutomationDecisionOutcome.SKIPPED,
+        app.spammy.hof.automation.history.ACTION_PREPARATION_FAILED, failure.message,
+        nextRunAt = failure.retryAt, targetKey = failure.targetKey, targetName = failure.targetName)
 
     private fun coordinateObservationGap(
         entry: AutomationEntrySnapshot,
@@ -608,6 +645,7 @@ class AutomationTargetSelector(
                 CONVERGENCE_BLOCKED_REASON,
                 OBSERVATION_GAP_HELD_REASON,
                 CAPTCHA_BATTLE_GATE_REASON,
+                app.spammy.hof.automation.history.ACTION_PREPARATION_FAILED,
             )
         }
 
@@ -634,6 +672,7 @@ class AutomationTargetSelector(
         evaluatedEntryIds: Set<Long>,
         snapshotLoader: TypedAutomationSnapshotLoader,
     ): AutomationCoordination {
+        val settingsRevision = typed.findEntry(accountId, session.entryId)?.settingsRevision
         val decision = decideRaid(accountId, session.entryId, initialTrace, session)
         val directive = decision.directive
         val diagnosticContext = AutomationDecisionDiagnostics.capture(
@@ -671,6 +710,7 @@ class AutomationTargetSelector(
                         action,
                         initialWarnings + listOfNotNull(directive.warning ?: directive.intent.recoveryWarning()),
                         initialTrace + directive.toTrace(session.entryId, initialTrace.size, diagnosticContext),
+                        settingsRevision = settingsRevision,
                     )
                 }
             }
@@ -913,6 +953,7 @@ class AutomationTargetSelector(
         const val QUEST_PROGRESS_STALE_REASON = "QUEST_PROGRESS_STALE"
         const val SCOPE_SUPPRESSION_RECHECK_SECONDS = 30L
         val CANDIDATE_ARBITRATED_TYPES = setOf(AutomationType.QUEST, AutomationType.HOME_QUEST)
+        val PREPARATION_CANDIDATE_TYPES = CANDIDATE_ARBITRATED_TYPES + setOf(AutomationType.BATTLE_MAP, AutomationType.ADVENTURE_MAP, AutomationType.UNION)
     }
 }
 
@@ -932,10 +973,10 @@ private fun evaluateEntry(
             quest.decideNext(it, accepts).toEntryEvaluation(hasRunningWork = it.workSessionId != null)
         }
         AutomationType.HOME_QUEST -> entry.homeQuest?.let { homeQuest.evaluate(it, accepts) }
-        AutomationType.BATTLE_MAP -> entry.battle?.let(battle::evaluate)
-        AutomationType.ADVENTURE_MAP -> entry.adventure?.let(adventure::evaluate)
+        AutomationType.BATTLE_MAP -> entry.battle?.let { battle.evaluate(it, accepts) }
+        AutomationType.ADVENTURE_MAP -> entry.adventure?.let { adventure.evaluate(it, accepts) }
         AutomationType.RAID -> HandlerEvaluation.Skipped
-        AutomationType.UNION -> entry.union?.let(union::evaluate)
+        AutomationType.UNION -> entry.union?.let { union.evaluate(it, accepts) }
         AutomationType.FISHING -> entry.fishing?.let(fishing::evaluate)
     } ?: HandlerEvaluation.ConfigurationWarning("${entry.type} automation snapshot is missing.")
     val trace = when (evaluation) {

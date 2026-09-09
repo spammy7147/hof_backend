@@ -12,6 +12,15 @@ class AdventureMapAutomationHandlerTest {
     private val handler = AdventureMapAutomationHandler()
 
     @Test
+    fun `같은 묶음의 준비 실패 맵을 제외하고 독립 맵을 선택한다`() {
+        val context = snapshot(listOf(setting(1, "A", 0), setting(2, "B", 1)), listOf(state("A"), state("B")))
+        val selected = assertIs<HandlerEvaluation.Runnable>(handler.evaluate(context) { action ->
+            assertIs<AdventureMapAutomationAction>(action).mapCode != "A"
+        })
+        assertEquals("B", assertIs<AdventureMapAutomationAction>(selected.action).mapCode)
+    }
+
+    @Test
     fun `adventure waits for map cost and runs at the exact boundary`() {
         val waiting = handler.evaluate(snapshot(
             listOf(setting(1, "costly", 0)),

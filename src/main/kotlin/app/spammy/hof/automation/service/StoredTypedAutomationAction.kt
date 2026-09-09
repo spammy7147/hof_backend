@@ -18,6 +18,7 @@ data class StoredTypedAutomationAction(
     val entryId: Long,
     val executionIdentity: String,
     val payload: StoredTypedActionPayload,
+    val settingsRevision: Long? = null,
 ) {
     init {
         require(entryId > 0)

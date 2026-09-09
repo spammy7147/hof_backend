@@ -421,7 +421,7 @@ class TypedRuntimeWakeAtomicityIntegrationTest {
             createdAt = NOW,
             updatedAt = NOW,
         ))
-        val stored = StoredTypedAutomationAction(entry.id, "execution-$login", StoredTypedActionPayload.QuestClaim("quest", "claim"))
+        val stored = StoredTypedAutomationAction(entry.id, "execution-$login", StoredTypedActionPayload.QuestClaim("quest", "claim"), settingsRevision = entry.settingsRevision)
         val encoded = codec.encode(stored)
         val action = actions.save(TypedAutomationActionRunEntity(
             account = account, entry = entry, executionIdentity = stored.executionIdentity, actionKind = "QUEST_CLAIM",

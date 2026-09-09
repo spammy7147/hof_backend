@@ -161,11 +161,32 @@ class AutomationTargetSelectorTest {
     }
 
     @Test
+    fun `상위 준비 오류 보류는 하위 항목의 실행 가능한 행동을 막지 않는다`() {
+        val lower = battleDecisionEntry()
+        val action = BattleMapAutomationAction(7, java.time.LocalDate.parse("2026-07-23"),
+            "battle_map", "map-1", PresetSelectionMode.PRIMARY, 3, 1, "lower-after-failure")
+        Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(raidEntry, battleEntry))
+        Mockito.`when`(decisionJournal.preparationFailures(7)).thenReturn(listOf(
+            app.spammy.hof.automation.history.AutomationPreparationFailure(raidEntry.id, "레이드", "raid-1", "레이드",
+                "행동 생성 중 오류가 발생해 HOF 요청을 전송하지 않았습니다.", now.plusSeconds(60))))
+        Mockito.`when`(loader.loadEntry(7, battleEntry.id, null)).thenReturn(lower)
+        battleRules.returns(requireNotNull(lower.battle), HandlerEvaluation.Runnable(action))
+
+        val selected = assertIs<AutomationCoordination.Runnable>(selector.select(7))
+
+        assertEquals(battleEntry.id, selected.entryId)
+        assertEquals(action, selected.action)
+        assertEquals("ACTION_PREPARATION_FAILED", selected.trace.first().reasonCode)
+        assertEquals(now.plusSeconds(60), selected.trace.first().nextRunAt)
+    }
+
+    @Test
     fun `설정 변경 재판단은 오류 이력을 만들지 않는다`() {
         Mockito.`when`(typed.findEntries(7)).thenReturn(listOf(battleEntry))
         Mockito.`when`(loader.loadEntry(7, battleEntry.id, null)).thenThrow(TypedAutomationConfigurationChangedException())
         assertFailsWith<TypedAutomationConfigurationChangedException> { selector.select(7) }
-        Mockito.verifyNoInteractions(decisionJournal)
+        Mockito.verify(decisionJournal, Mockito.never()).appendDecision(Mockito.anyLong(),
+            Mockito.any(AutomationCoordination::class.java) ?: AutomationCoordination.Idle(emptyList()))
     }
 
     @Test

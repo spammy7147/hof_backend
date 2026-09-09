@@ -80,7 +80,9 @@ data class AdventureMapAutomationAction(
 class AdventureMapAutomationHandler(
     private val timePolicy: BattleTimePolicy = BattleTimePolicy(),
 ) : AutomationHandler<AdventureMapAutomationSnapshot> {
-    override fun evaluate(context: AdventureMapAutomationSnapshot): HandlerEvaluation {
+    override fun evaluate(context: AdventureMapAutomationSnapshot): HandlerEvaluation = evaluate(context) { true }
+
+    override fun evaluate(context: AdventureMapAutomationSnapshot, accepts: (PreparedAutomationAction) -> Boolean): HandlerEvaluation {
         val stateGroups = context.mapStates.groupBy { it.categoryId to it.mapCode }
         val duplicateStateIdentities = stateGroups.filterValues { it.size > 1 }.keys
         val states = stateGroups.mapNotNull { (identity, matches) ->
@@ -166,23 +168,26 @@ class AdventureMapAutomationHandler(
                         waits += time.toUnavailable()
                         return@forEach
                     }
-                    is BattleTimeDecision.Run -> return HandlerEvaluation.Runnable(
-                        AdventureMapAutomationAction(
-                            accountId = context.accountId,
-                            categoryId = setting.categoryId,
-                            mapCode = setting.mapCode,
-                            presetMode = setting.preset.mode,
-                            presetId = presetId,
-                            settingIdentity = setting.settingIdentity,
-                            executionIdentity = executionIdentity,
-                            resolvedParty = (context.presetResolutions[setting.settingIdentity] as? AdventureMapPresetResolution.Valid)?.resolvedParty,
-                            mapName = state.mapName,
-                            observedCooldownUntil = state.cooldownUntil,
-                            observedAttemptRemaining = state.attemptRemaining,
-                            observedWinRemaining = state.winRemaining,
-                            observedAvailableCount = state.availableCount,
-                        ),
-                    )
+                    is BattleTimeDecision.Run -> {
+                        val candidate = HandlerEvaluation.Runnable(
+                            AdventureMapAutomationAction(
+                                accountId = context.accountId,
+                                categoryId = setting.categoryId,
+                                mapCode = setting.mapCode,
+                                presetMode = setting.preset.mode,
+                                presetId = presetId,
+                                settingIdentity = setting.settingIdentity,
+                                executionIdentity = executionIdentity,
+                                resolvedParty = (context.presetResolutions[setting.settingIdentity] as? AdventureMapPresetResolution.Valid)?.resolvedParty,
+                                mapName = state.mapName,
+                                observedCooldownUntil = state.cooldownUntil,
+                                observedAttemptRemaining = state.attemptRemaining,
+                                observedWinRemaining = state.winRemaining,
+                                observedAvailableCount = state.availableCount,
+                            ),
+                        )
+                        if (accepts(candidate.action)) return candidate
+                    }
                 }
             }
 
