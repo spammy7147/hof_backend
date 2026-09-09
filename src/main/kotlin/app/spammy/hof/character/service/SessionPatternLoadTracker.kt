@@ -1,6 +1,10 @@
 package app.spammy.hof.character.service
 
 import app.spammy.hof.battle.dto.BattlePatternLoadRequest
+import app.spammy.hof.external.model.HofHttpMethod
+import app.spammy.hof.external.model.HofRequest
+import java.net.URI
+import java.net.URLDecoder
 import org.springframework.stereotype.Component
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
@@ -18,6 +22,19 @@ import kotlin.concurrent.withLock
 class SessionPatternLoadTracker {
     private val locks = Array(LOCK_STRIPE_COUNT) { ReentrantLock(true) }
     private val states = ConcurrentHashMap<Long, AccountState>()
+
+    /** 모든 캐릭터 변경 경로와 응답 유실에서 기존 슬롯의 재사용 근거를 제출 전에 폐기한다. */
+    fun beforeRequest(accountId: Long, request: HofRequest) {
+        if (request.method != HofHttpMethod.POST) return
+        val characterId = URI(request.url).rawQuery.orEmpty().split('&')
+            .map { field -> field.split('=', limit = 2) }
+            .firstOrNull { field -> field.size == 2 && field[0] == "char" }
+            ?.get(1)?.let { URLDecoder.decode(it, StandardCharsets.UTF_8) }
+            ?.takeIf(String::isNotBlank) ?: return
+        locks[Math.floorMod(accountId.hashCode(), locks.size)].withLock {
+            states[accountId]?.loadedSlots?.remove(characterId)
+        }
+    }
 
     /**
      * 같은 계정의 패턴 변경과 전투 제출이 서로 끼어들지 않도록 세션 작업을 직렬화한다.

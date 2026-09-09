@@ -1,6 +1,7 @@
 package app.spammy.hof.external.client
 
 import app.spammy.hof.character.service.CharacterRosterObservationService
+import app.spammy.hof.character.service.SessionPatternLoadTracker
 import app.spammy.hof.captcha.service.CaptchaPassMaintenanceService
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.model.HofHttpMethod
@@ -25,6 +26,7 @@ class AccountHofGatewayTest {
         raw,
         AccountHofResponseObserver(snapshots, characterRosters, passMaintenance),
         TimeProvider { REQUEST_STARTED_AT },
+        SessionPatternLoadTracker(),
     )
 
     @Test
@@ -78,7 +80,7 @@ class AccountHofGatewayTest {
     @Test
     fun `semantic command followup keeps status observation but defers generic roster mutation`() {
         val times = ArrayDeque(listOf(REQUEST_STARTED_AT, RESPONSE_OBSERVED_AT))
-        val timedGateway = AccountHofGateway(raw, AccountHofResponseObserver(snapshots, characterRosters, passMaintenance), TimeProvider { times.removeFirst() })
+        val timedGateway = AccountHofGateway(raw, AccountHofResponseObserver(snapshots, characterRosters, passMaintenance), TimeProvider { times.removeFirst() }, SessionPatternLoadTracker())
         val actual = timedGateway.executeWithoutCharacterRosterObservation(ACCOUNT_ID, REQUEST, COOKIES)
 
         assertSame(RESPONSE, actual.response)
@@ -95,7 +97,7 @@ class AccountHofGatewayTest {
         raw.failure = IllegalStateException("response lost")
 
         val times = ArrayDeque(listOf(REQUEST_STARTED_AT, RESPONSE_OBSERVED_AT))
-        val timedGateway = AccountHofGateway(raw, AccountHofResponseObserver(snapshots, characterRosters, passMaintenance), TimeProvider { times.removeFirst() })
+        val timedGateway = AccountHofGateway(raw, AccountHofResponseObserver(snapshots, characterRosters, passMaintenance), TimeProvider { times.removeFirst() }, SessionPatternLoadTracker())
         val error = assertFailsWith<DeferredCharacterRosterRequestException> {
             timedGateway.executeWithoutCharacterRosterObservation(ACCOUNT_ID, REQUEST, COOKIES)
         }
@@ -134,6 +136,7 @@ class AccountHofGatewayTest {
             raw,
             AccountHofResponseObserver(snapshots, characterRosters, passMaintenance),
             TimeProvider { times.removeFirst() },
+            SessionPatternLoadTracker(),
         )
         TransactionSynchronizationManager.initSynchronization()
         try {

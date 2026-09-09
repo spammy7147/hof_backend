@@ -101,7 +101,8 @@ class BattleRunServiceTest {
         timeProvider = TimeProvider { now },
     )
     private val gateway = FakeHofGateway()
-    private val accountGateway = testAccountHofGateway(gateway, TimeProvider { now })
+    private val sessionPatternLoadTracker = SessionPatternLoadTracker()
+    private val accountGateway = testAccountHofGateway(gateway, TimeProvider { now }, sessionPatternLoadTracker)
     private val mutationFence = AccountHofMutationFence()
     private val binaryGateway = FakeHofBinaryGateway()
     private val captchaImageFileStore = FakeCaptchaImageFileStore()
@@ -134,7 +135,7 @@ class BattleRunServiceTest {
         battleResultParser = BattleResultParser(),
         battleLogService = battleLogService,
         captchaService = captchaService,
-        sessionPatternLoadTracker = SessionPatternLoadTracker(),
+        sessionPatternLoadTracker = sessionPatternLoadTracker,
         mutationFence = mutationFence,
         timeProvider = TimeProvider { now },
     )

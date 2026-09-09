@@ -940,6 +940,7 @@ class CaptchaServicePersistenceTest {
                     org.mockito.Mockito.mock(app.spammy.hof.character.service.CharacterRosterObservationService::class.java),
                 ),
                 timeProvider,
+                app.spammy.hof.character.service.SessionPatternLoadTracker(),
             )
 
         @Bean

@@ -54,7 +54,7 @@ class CharacterPatternServiceTest {
         cookieQueryRepository = cookieQueryRepository,
         characterQueryRepository = characterQueryRepository,
         requestFactory = HofRequestFactory(),
-        gateway = testAccountHofGateway(gateway, app.spammy.hof.common.time.TimeProvider { now }),
+        gateway = testAccountHofGateway(gateway, app.spammy.hof.common.time.TimeProvider { now }, sessionPatternLoadTracker),
         loginStateParser = LoginStateParser(),
         detailParser = CharacterDetailParser(),
         characterService = characterService,

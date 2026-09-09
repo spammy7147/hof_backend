@@ -186,7 +186,8 @@ class HofAccountServiceTest {
         val snapshots = Mockito.mock(HofStatusSnapshotService::class.java)
         val rosters = Mockito.mock(CharacterRosterObservationService::class.java)
         val pass = Mockito.mock(CaptchaPassMaintenanceService::class.java)
-        val observingGateway = AccountHofGateway(gateway, AccountHofResponseObserver(snapshots, rosters, pass), clock)
+        val observingGateway = AccountHofGateway(gateway, AccountHofResponseObserver(snapshots, rosters, pass), clock,
+            app.spammy.hof.character.service.SessionPatternLoadTracker())
         val observedService = HofAccountService(
             accountRepository, cookieRepository, accountQueryRepository, cookieQueryRepository,
             accountIdentityService, credentialCipher, cookieCipher, HofRequestFactory(), gateway,

@@ -156,6 +156,7 @@ class AutomationDailyPreflightMapSyncTest {
                     Mockito.mock(app.spammy.hof.character.service.CharacterRosterObservationService::class.java),
                 ),
                 timeProvider,
+                app.spammy.hof.character.service.SessionPatternLoadTracker(),
             )
         @Bean fun loginStateParser(): LoginStateParser = LoginStateParser()
         @Bean fun captchaService(): CaptchaService = Mockito.mock(CaptchaService::class.java)

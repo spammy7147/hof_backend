@@ -1,6 +1,7 @@
 package app.spammy.hof.external.client
 
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.character.service.SessionPatternLoadTracker
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
 import java.time.Instant
@@ -14,6 +15,7 @@ class AccountHofGateway(
     private val gateway: HofGateway,
     private val observations: AccountHofResponseObserver,
     private val timeProvider: TimeProvider,
+    private val patternLoads: SessionPatternLoadTracker,
 ) {
     companion object {
         private data class CookieChain(val accountId: Long, val updates: MutableMap<String, String> = linkedMapOf())
@@ -66,6 +68,7 @@ class AccountHofGateway(
         observeCharacterRoster: Boolean,
     ): DeferredCharacterRosterHofResponse {
         val chain = cookieChain.get()?.takeIf { it.accountId == accountId }
+        patternLoads.beforeRequest(accountId, request)
         val response = gateway.execute(accountId, request, cookies + chain?.updates.orEmpty())
         chain?.updates?.putAll(response.setCookies)
         val responseObservedAt = timeProvider.now()
