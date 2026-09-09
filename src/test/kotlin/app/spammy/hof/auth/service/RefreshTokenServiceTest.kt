@@ -38,6 +38,7 @@ class RefreshTokenServiceTest {
 
     init {
         Mockito.`when`(accounts.findByIdForUpdate(ACCOUNT.id)).thenReturn(ACCOUNT)
+        Mockito.`when`(queryRepository.findAccountIdByTokenHash(Mockito.anyString())).thenReturn(ACCOUNT.id)
     }
 
     @Test

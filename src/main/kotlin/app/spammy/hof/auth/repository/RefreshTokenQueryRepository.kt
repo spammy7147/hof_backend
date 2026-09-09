@@ -25,10 +25,11 @@ class RefreshTokenQueryRepository(
             .setLockMode(LockModeType.PESSIMISTIC_WRITE)
             .fetchOne()
 
-    /** 로그아웃 제출 경계를 계정 단위로 잡기 전에 토큰이 속한 계정만 읽는다. */
-    fun findByTokenHash(tokenHash: String): RefreshTokenEntity? =
+    /** 토큰 entity를 미리 적재하지 않고 계정 잠금을 잡는 데 필요한 ID만 읽는다. */
+    fun findAccountIdByTokenHash(tokenHash: String): Long? =
         queryFactory
-            .selectFrom(refreshTokenEntity)
+            .select(refreshTokenEntity.account.id)
+            .from(refreshTokenEntity)
             .where(refreshTokenEntity.tokenHash.eq(tokenHash))
             .fetchOne()
 

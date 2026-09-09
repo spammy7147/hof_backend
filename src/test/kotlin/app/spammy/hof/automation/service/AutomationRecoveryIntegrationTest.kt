@@ -86,7 +86,9 @@ class AutomationRecoveryIntegrationTest {
     @MockitoSpyBean private lateinit var decisions: AutomationDecisionSource
     @MockitoSpyBean private lateinit var raidModule: RaidCycleModule
     @MockitoBean private lateinit var preflight: AutomationDailyPreflight
-    @MockitoBean private lateinit var authorization: AccountExecutionAuthorizationReader
+    @MockitoSpyBean private lateinit var authorization: AccountExecutionAuthorizationReader
+    @Autowired private lateinit var refreshTokens: app.spammy.hof.auth.service.RefreshTokenService
+    @Autowired private lateinit var auth: app.spammy.hof.auth.service.AuthService
     @Autowired private lateinit var wakeups: AutomationWakeupPort
     @Autowired private lateinit var characterGate: app.spammy.hof.character.command.CharacterAutomationGate
     @Autowired private lateinit var characterRecovery: app.spammy.hof.character.service.CharacterDeepSyncRecovery
@@ -1268,6 +1270,35 @@ class AutomationRecoveryIntegrationTest {
                 }
             }
         }
+        consumeNextWake()
+        assertEquals(listOf("FStart", "FCatch"), fishingPosts())
+        assertEquals(listOf("SUCCEEDED", "SUCCEEDED"), runs().map { it["status"] })
+        assertEquals(0, runningWorkCount())
+        assertTrue(journal.page(accountId, AutomationHistoryQuery()).cycles.size > beforeResume)
+        val beforeIdle = journal.page(accountId, AutomationHistoryQuery()).cycles.size
+        consumeNextWake()
+        assertEquals(beforeIdle + 1, journal.page(accountId, AutomationHistoryQuery()).cycles.size)
+        assertEquals(listOf("FStart", "FCatch"), fishingPosts())
+    }
+
+    @Test
+    fun `실제 마지막 token 폐기 뒤 깨우기는 제출하지 않고 새 family에서 낚시와 다음 판단을 이어간다`() {
+        setupFishing()
+        Mockito.doCallRealMethod().`when`(authorization).isExecutionAllowed(accountId)
+        val account = TransactionTemplate(transactions).execute {
+            entityManager.find(HofAccountEntity::class.java, accountId)
+        }
+        val original = refreshTokens.issue(account, "NATIVE")
+        wakeups.wake(accountId, "BEFORE_REAL_LOGOUT")
+        auth.logout(original.value)
+
+        consumeNextWake()
+        assertTrue(fishingPosts().isEmpty())
+        assertFalse(authorization.isExecutionAllowed(accountId))
+        val beforeResume = journal.page(accountId, AutomationHistoryQuery()).cycles.size
+
+        refreshTokens.issue(account, "NATIVE")
+        assertTrue(authorization.isExecutionAllowed(accountId))
         consumeNextWake()
         assertEquals(listOf("FStart", "FCatch"), fishingPosts())
         assertEquals(listOf("SUCCEEDED", "SUCCEEDED"), runs().map { it["status"] })

@@ -53,9 +53,8 @@ class RefreshTokenService(
      */
     @Transactional(noRollbackFor = [ApiException::class])
     fun rotate(rawToken: String): IssuedRefreshToken {
+        val token = lockToken(hash(rawToken)) ?: throw invalidToken()
         val now = timeProvider.now()
-        val token = queryRepository.findByTokenHashForUpdate(hash(rawToken))
-            ?: throw invalidToken()
 
         if (token.revokedAt != null || !token.expiresAt.isAfter(now)) throw invalidToken()
 
@@ -74,11 +73,9 @@ class RefreshTokenService(
         }
 
         rateLimiter.checkRefresh(token.familyId, token.account.id)
-        val lockedAccount = accounts.findByIdForUpdate(token.account.id)
-            ?: throw invalidToken()
         token.rotatedAt = now
-        val issued = issue(lockedAccount, token.clientType, token.familyId, now)
-        accountLifecycle.activate(lockedAccount.id, newLoginFamily = false)
+        val issued = issue(token.account, token.clientType, token.familyId, now)
+        accountLifecycle.activate(token.account.id, newLoginFamily = false)
         return issued
     }
 
@@ -92,7 +89,7 @@ class RefreshTokenService(
     @Transactional
     fun logout(rawToken: String?, afterRevocation: (Long) -> Unit): Long? {
         if (rawToken.isNullOrBlank()) return null
-        val token = queryRepository.findByTokenHashForUpdate(hash(rawToken)) ?: return null
+        val token = lockToken(hash(rawToken)) ?: return null
         revokeFamily(token.familyId, timeProvider.now())
         accountLifecycle.suspendIfNoActiveSessions(token.account.id)
         afterRevocation(token.account.id)
@@ -105,9 +102,14 @@ class RefreshTokenService(
         rawToken
             ?.takeIf(String::isNotBlank)
             ?.let(::hash)
-            ?.let(queryRepository::findByTokenHash)
-            ?.account
-            ?.id
+            ?.let(queryRepository::findAccountIdByTokenHash)
+
+    /** 계정 → 토큰 순서를 통일해 회전의 자식 생성과 family 전체 폐기를 직렬화한다. */
+    private fun lockToken(tokenHash: String): RefreshTokenEntity? {
+        val accountId = queryRepository.findAccountIdByTokenHash(tokenHash) ?: return null
+        accounts.findByIdForUpdate(accountId) ?: return null
+        return queryRepository.findByTokenHashForUpdate(tokenHash)
+    }
 
     private fun issue(
         account: HofAccountEntity,

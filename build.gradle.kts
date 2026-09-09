@@ -75,6 +75,8 @@ tasks.withType<Test> {
 	// JenkinsfileTest executes these files; changes must invalidate Gradle's test cache.
 	inputs.files("Jenkinsfile", fileTree("scripts") { include("**/*.py") })
 		.withPathSensitivity(PathSensitivity.RELATIVE)
+	// 선택적 PostgreSQL 경합 검사의 실행/생략이 이전 DB 환경의 결과를 재사용하지 않게 한다.
+	inputs.property("postgresTestUrl", providers.environmentVariable("HOF_TEST_POSTGRES_URL").orElse(""))
 	// Keep the complete Spring suite within the 4 GB Jenkins agent while avoiding the default 512 MB test OOM.
 	maxHeapSize = "1g"
 	systemProperty("spring.test.context.cache.maxSize", "8")
