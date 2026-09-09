@@ -22,6 +22,8 @@ import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
 import app.spammy.hof.external.parser.CharacterDetailParser
+import tools.jackson.databind.JsonNode
+import tools.jackson.databind.ObjectMapper
 import jakarta.persistence.EntityManager
 import java.time.Instant
 import java.util.UUID
@@ -56,6 +58,7 @@ class CharacterTransferStateIntegrationTest {
     @Autowired private lateinit var jobs: CharacterOperationJobService
     @Autowired private lateinit var jobQueries: CharacterOperationJobQueryRepository
     @Autowired private lateinit var jobCommands: CharacterOperationJobCommandRepository
+    @Autowired private lateinit var objectMapper: ObjectMapper
     @MockitoBean private lateinit var hof: HofGateway
     @MockitoBean(name = "characterSyncTaskExecutor") private lateinit var taskExecutor: TaskExecutor
 
@@ -197,6 +200,10 @@ class CharacterTransferStateIntegrationTest {
         assertEquals(expectedRows, targetCurrent.rows.map { it.skill })
         assertEquals("back", targetCurrent.position)
         assertEquals("always", targetCurrent.guard)
+        assertEquals(CharacterTransferOutcome.COMPLETED, result.outcome)
+        assertEquals(true, result.finalSettingsConfirmed)
+        assertEquals(targetCurrent, result.currentSettings?.pattern)
+        assertEquals(listOf("Focus Ring"), result.currentSettings?.equipment?.map { it.name })
         assertTrue(submittedCharacters.all { it == target.hofCharacterId })
     }
 
@@ -336,6 +343,10 @@ class CharacterTransferStateIntegrationTest {
         assertEquals("Guard Ring", targetEquipmentName)
         assertEquals(originalPattern, targetCurrent)
 
+        assertEquals(CharacterTransferOutcome.PARTIALLY_APPLIED, failed.outcome)
+        assertEquals(true, failed.finalSettingsConfirmed, "저장 실패와 현재 설정 보존 성공은 구분한다.")
+        assertEquals(listOf("Guard Ring"), failed.currentSettings?.equipment?.map { it.name })
+
         targetEquipmentName = "Focus Ring"
         ignoreEquipmentLoad = false
         val resumed = transfers.execute(accountId, selection,
@@ -346,6 +357,9 @@ class CharacterTransferStateIntegrationTest {
         assertEquals(true, targetEquipment)
         assertEquals("Guard Ring", targetEquipmentName)
         assertEquals(originalPattern, targetCurrent)
+        assertEquals(CharacterTransferOutcome.COMPLETED, resumed.outcome)
+        assertEquals(true, resumed.finalSettingsConfirmed)
+        assertEquals(listOf("Guard Ring"), resumed.currentSettings?.equipment?.map { it.name })
         assertTrue(submittedCharacters.all { it == target.hofCharacterId })
 
         submittedFields.clear()
@@ -739,6 +753,95 @@ class CharacterTransferStateIntegrationTest {
         assertEquals(originalCurrent, targetCurrent)
         assertEquals(null, targetSlots["0"])
         assertTrue(submittedCharacters.all { it == target.hofCharacterId })
+    }
+
+    @Test
+    fun `가져오기 작업의 마지막 적용이 거부되면 부분 반영 결과와 실제 현재 설정을 함께 반환한다`() {
+        rejectedCurrentSkill = "1"
+        val started = jobs.startTransfer(accountId, CharacterTransferExecuteRequest(source.id, target.id,
+            CharacterTransferRequest(includeCurrentPattern = true,
+                savedPatternMappings = listOf(CharacterSavedPatternMapping("0", "0")))))
+
+        tasks.removeFirst().run()
+
+        val response = objectMapper.valueToTree<JsonNode>(jobs.find(accountId, started.id)).path("transfer")
+        assertEquals("PARTIALLY_APPLIED", response.path("outcome").asText())
+        assertEquals("2", response.path("currentSettings").path("pattern").path("rows").path(0).path("skill").asText())
+        assertEquals("front", response.path("currentSettings").path("pattern").path("position").asText())
+        assertEquals("never", response.path("currentSettings").path("pattern").path("guard").asText())
+        assertEquals(false, response.path("finalSettingsConfirmed").asBoolean())
+        assertEquals(sourceSaved, targetCurrent)
+        assertEquals(sourceSaved, targetSlots["0"])
+        assertTrue(submittedCharacters.all { it == target.hofCharacterId })
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["OTHER_CHARACTER", "MISSING_QUANTITY", "ERROR"])
+    fun `단계가 모두 완료돼도 마지막 관측이 불완전하면 재확인 필요로 반환한다`(variant: String) {
+        val result = transfers.execute(accountId, CharacterTransferSelection(source.id, target.id,
+            CharacterTransferRequest(includeCurrentPattern = true)), onStepResult = {
+            if (it.stepId == "current-pattern") observationVariant = variant
+        })
+
+        assertTrue(result.results.all { it.status == CharacterTransferStepStatus.COMPLETED }, result.toString())
+        assertEquals(sourceCurrent, targetCurrent)
+        assertEquals(CharacterTransferOutcome.RECHECK_REQUIRED, result.outcome)
+        assertEquals(null, result.currentSettings, "이전 단계의 관측을 마지막 현재 설정으로 재사용하지 않는다.")
+        assertEquals(false, result.finalSettingsConfirmed)
+        assertTrue(result.message.orEmpty().contains("확인하지 못했습니다"))
+        assertTrue(submittedCharacters.all { it == target.hofCharacterId })
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["PATTERN", "EQUIPMENT"])
+    fun `모든 단계 완료 뒤 최종 현재 설정이 계획과 달라지면 실제 관측과 불일치를 반환한다`(changed: String) {
+        targetEquipment = false
+        snapshots.writeParsed(accountId, source.hofCharacterId, parser.parsePage(source.hofCharacterId,
+            page(source.hofCharacterId, sourceCurrent, mapOf("0" to sourceSaved), equipment = true)))
+        snapshots.writeParsed(accountId, target.hofCharacterId, parser.parsePage(target.hofCharacterId,
+            page(target.hofCharacterId, targetCurrent, targetSlots, equipment = false)))
+
+        val result = transfers.execute(accountId, CharacterTransferSelection(source.id, target.id,
+            CharacterTransferRequest(includeCurrentPattern = true, includeEquipment = true)), onStepResult = {
+            if (it.stepId == "current-pattern") {
+                if (changed == "PATTERN") targetCurrent = targetCurrent.copy(position = "back")
+                else targetEquipmentName = "Guard Ring"
+            }
+        })
+
+        assertTrue(result.results.all { it.status == CharacterTransferStepStatus.COMPLETED }, result.toString())
+        assertEquals(CharacterTransferOutcome.PARTIALLY_APPLIED, result.outcome)
+        assertEquals(false, result.finalSettingsConfirmed)
+        assertEquals(targetCurrent, result.currentSettings?.pattern)
+        assertEquals(listOf(if (changed == "EQUIPMENT") "Guard Ring" else "Focus Ring"),
+            result.currentSettings?.equipment?.map { it.name })
+        assertTrue(result.message.orEmpty().contains("계획과 다릅니다"))
+        assertTrue(submittedCharacters.all { it == target.hofCharacterId })
+    }
+
+    @Test
+    fun `공개 작업은 현재와 저장 패턴을 함께 확인한 완료 결과를 보존하고 구형 결과도 읽는다`() {
+        val started = jobs.startTransfer(accountId, CharacterTransferExecuteRequest(source.id, target.id,
+            CharacterTransferRequest(includeCurrentPattern = true,
+                savedPatternMappings = listOf(CharacterSavedPatternMapping("0", "0")))))
+        tasks.removeFirst().run()
+
+        val completed = jobs.find(accountId, started.id)
+        assertEquals(CharacterOperationStatus.COMPLETED, completed.status)
+        assertEquals(CharacterTransferOutcome.COMPLETED, completed.transfer?.outcome)
+        assertEquals(true, completed.transfer?.finalSettingsConfirmed)
+        assertEquals(sourceCurrent, completed.transfer?.currentSettings?.pattern)
+        assertEquals(sourceSaved, targetSlots["0"])
+        assertEquals(null, completed.transfer?.currentSettings?.equipment)
+
+        val old = jobQueries.findByAccountIdAndId(accountId, started.id)!!
+        old.resultPayload = """{"targetCharacterId":${target.id},"results":[{"stepId":"current-pattern","status":"COMPLETED","message":""}],"nextStepIndex":1}"""
+        jobCommands.save(old)
+        val legacy = jobs.find(accountId, started.id).transfer!!
+        assertEquals(CharacterTransferStepStatus.COMPLETED, legacy.results.single().status)
+        assertEquals(null, legacy.outcome)
+        assertEquals(null, legacy.currentSettings)
+        assertEquals(false, legacy.finalSettingsConfirmed)
     }
 
     private fun anyRequest(): HofRequest = Mockito.any(HofRequest::class.java)

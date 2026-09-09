@@ -94,10 +94,60 @@ class CharacterTransferService(
             }
             // 완료 ID만 있는 구형 작업의 임시 패턴·장비를 최초 원본으로 영속화하지 않는다.
             if (snapshot == null) onSnapshot(original)
-            CharacterTransferExecutor { targetCharacterId, step ->
+            val result = CharacterTransferExecutor { targetCharacterId, step ->
                 runCatching { executeStep(accountId, targetCharacterId, step) }
             }.execute(preview, completedStepIds, onStepResult)
+            observeResult(accountId, selection, original, source, preview, result)
         }
+    }
+
+    private fun observeResult(
+        accountId: Long,
+        selection: CharacterTransferSelection,
+        original: CharacterTransferSnapshot,
+        source: CharacterTransferSource,
+        preview: CharacterTransferPreview,
+        result: CharacterTransferExecutionResult,
+    ): CharacterTransferExecutionResult = runCatching {
+        val (observed, defaultRow) = if (selection.request.includeEquipment) {
+            val current = observeSettings(accountId, selection.targetCharacterId)
+            val options = query.findPatternOptions(selection.targetCharacterId)
+            CharacterTransferCurrentSettings(
+                CharacterPatternSetting(current.patterns.map { CharacterPatternRowValue(it.judge, it.quantity, it.skill) },
+                    current.position, current.guard), current.equipment,
+            ) to CharacterPatternRowValue(
+                options.first { it.optionType == CharacterPatternOptionType.CONDITION }.sourceValue,
+                "0", options.first { it.optionType == CharacterPatternOptionType.SKILL }.sourceValue,
+            )
+        } else {
+            val current = patternRemotes.withRemote(accountId, selection.targetCharacterId) { it.observe() }
+            CharacterTransferCurrentSettings(current.setting) to
+                CharacterPatternRowValue(current.judgeValues.first(), "0", current.skillValues.first())
+        }
+        val intended = preview.steps.filterIsInstance<CharacterTransferStep.ApplyCurrentPattern>().lastOrNull()?.setting
+            ?: original.originalCurrentPattern
+        val expectedPattern = intended.copy(rows = intended.rows +
+            List((observed.pattern.rows.size - intended.rows.size).coerceAtLeast(0)) { defaultRow })
+        val expectedEquipment = if (preview.steps.any { it.id == "equipment-current:clear" }) source.equipment
+            else original.originalEquipment
+        val equipmentMatches = !selection.request.includeEquipment ||
+            (expectedEquipment?.map { it.identity?.copy(slot = "", checked = false) }?.groupingBy { it }?.eachCount() ==
+                observed.equipment?.map { it.copy(slot = "", checked = false) }?.groupingBy { it }?.eachCount())
+        val confirmed = observed.pattern == expectedPattern && equipmentMatches
+        val completed = confirmed && result.results.all { it.status == CharacterTransferStepStatus.COMPLETED }
+        result.copy(
+            outcome = if (completed) CharacterTransferOutcome.COMPLETED else CharacterTransferOutcome.PARTIALLY_APPLIED,
+            currentSettings = observed,
+            finalSettingsConfirmed = confirmed,
+            message = when {
+                !confirmed -> "현재 캐릭터 설정이 가져오기 계획과 다릅니다. 현재 설정을 확인해 주세요."
+                !completed -> "일부 항목을 완료하지 못했습니다. 실제 현재 캐릭터 설정은 확인했습니다."
+                else -> null
+            },
+        )
+    }.getOrElse {
+        result.copy(outcome = CharacterTransferOutcome.RECHECK_REQUIRED,
+            message = "단계별 결과는 보존했지만 현재 캐릭터 설정을 확인하지 못했습니다. 다시 확인해 주세요.")
     }
 
     private fun executeStep(accountId: Long, targetCharacterId: Long, step: CharacterTransferStep) {

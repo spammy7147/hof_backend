@@ -1,6 +1,16 @@
 package app.spammy.hof.character.transfer
 
+import app.spammy.hof.character.pattern.CharacterPatternSetting
+import app.spammy.hof.external.model.HofEquipment
+
 enum class CharacterTransferStepStatus { COMPLETED, FAILED, SKIPPED }
+enum class CharacterTransferOutcome { COMPLETED, PARTIALLY_APPLIED, RECHECK_REQUIRED }
+
+data class CharacterTransferCurrentSettings(
+    val pattern: CharacterPatternSetting,
+    /** 장비를 가져오지 않은 작업은 이 영역을 최종 검증 대상으로 삼지 않는다. */
+    val equipment: List<HofEquipment>? = null,
+)
 
 data class CharacterTransferStepResult(
     val stepId: String,
@@ -12,6 +22,11 @@ data class CharacterTransferExecutionResult(
     val targetCharacterId: Long,
     val results: List<CharacterTransferStepResult>,
     val nextStepIndex: Int,
+    /** null은 진행 중인 결과 또는 최종 관측을 지원하기 전의 작업 기록이다. */
+    val outcome: CharacterTransferOutcome? = null,
+    val currentSettings: CharacterTransferCurrentSettings? = null,
+    val finalSettingsConfirmed: Boolean = false,
+    val message: String? = null,
 )
 
 fun interface CharacterTransferTargetPort {
