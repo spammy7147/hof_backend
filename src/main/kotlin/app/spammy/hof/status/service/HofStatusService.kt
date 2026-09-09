@@ -60,9 +60,13 @@ class HofStatusService(
         }
         val parsed = statusParser.parse(response.body)
         val remoteIds = rosterParser.parse(response.body).mapTo(linkedSetOf()) { it.id }
+        if (remoteIds.isEmpty()) {
+            throw ApiException(ErrorCode.HOF_REQUEST_FAILED, "HOF 홈에서 캐릭터 명단을 확인하지 못했습니다.")
+        }
         val localByHofId = characterQueryRepository.findAllByAccountId(account.id).associateBy { it.hofCharacterId }
         val synchronizedCount = remoteIds.count { localByHofId[it]?.detailSyncedAt != null }
-        val characterSyncRequired = remoteIds != localByHofId.keys || synchronizedCount != remoteIds.size
+        // 보관·사라짐 기록은 남겨 두고, 현재 HOF 명단에서 상세가 없는 대상만 동기화한다.
+        val characterSyncRequired = synchronizedCount != remoteIds.size
         log.info(
             "HOF status parsed accountId={} status={} playerName={} funds={} time={}/{} work={} auction={}",
             account.id,
