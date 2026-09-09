@@ -29,9 +29,10 @@ class AutomationOutboxQueryRepository(
         .where(automationOutboxEntity.id.eq(id))
         .fetchOne()
 
-    fun deleteUnpublishedForAccount(accountId: Long): Long = queryFactory.delete(automationOutboxEntity)
+    fun deleteUnpublishedWakesForAccount(accountId: Long): Long = queryFactory.delete(automationOutboxEntity)
         .where(
             automationOutboxEntity.account.id.eq(accountId),
+            automationOutboxEntity.topic.eq(AutomationOutboxService.WAKEUP_TOPIC),
             automationOutboxEntity.publishedAt.isNull,
         )
         .execute()

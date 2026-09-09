@@ -274,7 +274,7 @@ class TypedAutomationLifecycleBridge(
             updatedAt = now
         }
         stopOpenWorkSessions(accountId, now)
-        outboxQuery.deleteUnpublishedForAccount(accountId)
+        outboxQuery.deleteUnpublishedWakesForAccount(accountId)
     }
 
     private fun discardPreparedActionForPause(accountId: Long, now: java.time.Instant) {
