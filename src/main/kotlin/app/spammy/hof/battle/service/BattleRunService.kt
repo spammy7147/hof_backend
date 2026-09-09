@@ -83,7 +83,9 @@ class BattleRunService(
         request: RunBattleRequest,
         origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
     ): BattleResultResponse = mutationFence.execute(accountId) {
-        runBattleFenced(accountId, request, origin)
+        AccountHofGateway.withCookieChain(accountId) {
+            runBattleFenced(accountId, request, origin)
+        }
     }
 
     private fun runBattleFenced(

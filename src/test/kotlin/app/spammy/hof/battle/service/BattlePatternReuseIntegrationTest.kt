@@ -14,9 +14,11 @@ import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
 import app.spammy.hof.external.model.HofRequestOrigin
 import jakarta.persistence.EntityManager
+import java.io.IOException
 import java.time.Instant
 import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import app.spammy.hof.character.pattern.CharacterPatternMutationReceipt
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -45,6 +47,10 @@ class BattlePatternReuseIntegrationTest {
     private val battlePatterns = mutableListOf<String>()
     private val loadedSlots = mutableListOf<String>()
     private var loseNextLoadResponse = false
+    private var rotateLoadCookie = false
+    private var expectedCookie = "same-session"
+    private val sentCookies = mutableListOf<String>()
+    private var loseBattleResponse = false
 
     @BeforeEach
     fun prepare() {
@@ -57,6 +63,8 @@ class BattlePatternReuseIntegrationTest {
             val character = CharacterEntity(account = account, hofCharacterId = HOF_CHARACTER, name = "검증", job = "Knight", updatedAt = NOW)
             entityManager.persist(character)
             characterId = character.id
+            entityManager.persist(CharacterEntity(account = account, hofCharacterId = SECOND_CHARACTER,
+                name = "두 번째", job = "Knight", updatedAt = NOW))
             val map = BattleMapEntity(categoryId = "battle_map", mapCode = mapCode, name = mapCode,
                 normalizedName = mapCode, createdAt = NOW, updatedAt = NOW)
             entityManager.persist(map)
@@ -66,11 +74,19 @@ class BattlePatternReuseIntegrationTest {
         Mockito.`when`(hof.execute(Mockito.eq(accountId), anyRequest(), Mockito.anyMap<String, String>()))
             .thenAnswer { invocation ->
                 val request = invocation.getArgument<HofRequest>(1)
+                val cookies = invocation.getArgument<Map<String, String>>(2)
+                sentCookies += requireNotNull(cookies["PHPSESSID"])
+                check(cookies["PHPSESSID"] == expectedCookie) { "이전 응답의 쿠키로 이어지지 않았습니다." }
+                var responseCookies = emptyMap<String, String>()
                 val characterRequest = request.url.contains("char=$HOF_CHARACTER")
                 if (characterRequest && request.method == HofHttpMethod.POST) {
                     request.formFields["patternno"]?.let { slot ->
                         currentPattern = if (slot == "0") "A" else "B"
                         loadedSlots += slot
+                        if (rotateLoadCookie) {
+                            expectedCookie = "rotated-${loadedSlots.size}"
+                            responseCookies = mapOf("PHPSESSID" to expectedCookie)
+                        }
                         if (loseNextLoadResponse) {
                             loseNextLoadResponse = false
                             throw IllegalStateException("applied but response lost")
@@ -78,8 +94,9 @@ class BattlePatternReuseIntegrationTest {
                     }
                 } else if (!characterRequest && request.method == HofHttpMethod.POST) {
                     battlePatterns += currentPattern
+                    if (loseBattleResponse) throw IOException("battle response lost")
                 }
-                HofHttpResponse(200, request.url, if (characterRequest) characterPage() else battlePage(), emptyMap())
+                HofHttpResponse(200, request.url, if (characterRequest) characterPage() else battlePage(), responseCookies)
             }
     }
 
@@ -120,6 +137,45 @@ class BattlePatternReuseIntegrationTest {
         assertEquals(listOf("0"), loadedSlots)
     }
 
+    @Test
+    fun `패턴 로드에서 갱신한 쿠키로 같은 사이클의 전투를 제출한다`() {
+        rotateLoadCookie = true
+
+        battle()
+
+        assertEquals(listOf("A"), battlePatterns)
+    }
+
+    @Test
+    fun `두 캐릭터의 패턴 로드가 각각 갱신한 쿠키를 다음 요청에 전달한다`() {
+        rotateLoadCookie = true
+
+        battles.runBattle(accountId, RunBattleRequest("battle_map", mapCode,
+            listOf(HOF_CHARACTER, SECOND_CHARACTER),
+            listOf(BattlePatternLoadRequest(HOF_CHARACTER, 0), BattlePatternLoadRequest(SECOND_CHARACTER, 0))),
+            HofRequestOrigin.AUTOMATION)
+
+        assertEquals(listOf("same-session", "rotated-1", "rotated-2"), sentCookies)
+        assertEquals(listOf("A"), battlePatterns)
+    }
+
+    @Test
+    fun `전투 제출 후 응답을 잃어도 다음 사이클에 이전 쿠키 범위가 남지 않는다`() {
+        rotateLoadCookie = true
+        loseBattleResponse = true
+        assertFailsWith<IOException> { battle() }
+        assertEquals(listOf("A"), battlePatterns, "전투 미전송으로 분류하지 않는다.")
+
+        // 다음 호출의 저장 쿠키를 새 기준으로 사용해야 한다.
+        expectedCookie = "same-session"
+        rotateLoadCookie = false
+        loseBattleResponse = false
+        battle()
+
+        assertEquals(listOf("same-session", "rotated-1", "same-session"), sentCookies)
+        assertEquals(listOf("A", "A"), battlePatterns)
+    }
+
     private fun battle() = battles.runBattle(accountId, RunBattleRequest("battle_map", mapCode,
         listOf(HOF_CHARACTER), listOf(BattlePatternLoadRequest(HOF_CHARACTER, 0))), HofRequestOrigin.AUTOMATION)
 
@@ -150,5 +206,6 @@ class BattlePatternReuseIntegrationTest {
     private companion object {
         val NOW: Instant = Instant.parse("2026-09-09T00:00:00Z")
         const val HOF_CHARACTER = "pattern-reuse-character"
+        const val SECOND_CHARACTER = "pattern-reuse-character-2"
     }
 }

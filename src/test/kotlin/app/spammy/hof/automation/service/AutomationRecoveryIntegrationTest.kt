@@ -106,6 +106,8 @@ class AutomationRecoveryIntegrationTest {
     private var selectedCharacters = characters
     private var raidPageTransform: (String) -> String = { it }
     private var incompleteRefreshPost = false
+    private var rotatePatternCookies = false
+    private val requestCookies = mutableListOf<Map<String, String>>()
     private var mapPage = "<a href='index.php?union=0003'>도적소탕</a>"
 
     @ParameterizedTest
@@ -263,6 +265,7 @@ class AutomationRecoveryIntegrationTest {
         Mockito.doAnswer { invocation ->
             val request = invocation.arguments[1] as HofRequest
             requests += request
+            requestCookies += invocation.getArgument<Map<String, String>>(2)
             val body = when {
                 request.url.contains("?char=") -> {
                     patternCalls++
@@ -275,7 +278,10 @@ class AutomationRecoveryIntegrationTest {
                     <div>남은 HP : 0/100 생존자 : 0/1 총 데미지 : 0</div>
                     <div>남은 HP : 100/100 생존자 : 1/1 총 데미지 : 100 턴 : 1/100 획득 경험치 : 1 획득 Funds : $ 1</div>"""
             }
-            HofHttpResponse(200, request.url, body, emptyMap())
+            val updatedCookies = if (rotatePatternCookies && request.url.contains("?char=")) {
+                mapOf("PHPSESSID" to "rotated-$patternCalls")
+            } else emptyMap()
+            HofHttpResponse(200, request.url, body, updatedCookies)
         }.`when`(gateway).execute(Mockito.eq(accountId), anyRequest(), Mockito.anyMap())
     }
 
@@ -488,6 +494,26 @@ class AutomationRecoveryIntegrationTest {
         assertTrue(waits > 0)
         assertEquals("RUNNING", jdbc.queryForObject("select lifecycle_status from typed_automation_runtime_states where account_id = ?",
             String::class.java, accountId))
+    }
+
+    @Test
+    fun `깨우기로 실행한 전투도 패턴 응답 쿠키를 이어받고 후속 판단을 소비한다`() {
+        failedPattern = -1
+        rotatePatternCookies = true
+
+        wakeups.wake(accountId, "PATTERN_COOKIE_ROTATION")
+        publisher.publishBatch()
+
+        assertEquals(listOf("test-session", "rotated-1", "rotated-2", "rotated-3"),
+            requests.zip(requestCookies).filter { (request, _) -> request.method == HofHttpMethod.POST }
+                .map { (_, cookies) -> cookies["PHPSESSID"]!! })
+        assertEquals("SUCCEEDED", runs().single()["status"])
+
+        consumeNextWake()
+
+        assertEquals(2, battleRequests().size)
+        assertTrue(runs().all { it["status"] == "SUCCEEDED" })
+        Mockito.verify(decisions, Mockito.atLeast(2)).select(accountId)
     }
 
     @Test
