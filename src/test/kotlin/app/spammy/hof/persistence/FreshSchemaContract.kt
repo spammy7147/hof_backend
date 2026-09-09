@@ -740,7 +740,7 @@ internal object FreshSchemaContract {
             optionalText("image_url"), requiredText("source_url"), optionalText("answer"),
             requiredInstant("created_at"), optionalInstant("answered_at"), optionalText("submit_url"),
             requiredVarchar("submit_method", 10), requiredVarchar("answer_field_name", 100),
-            requiredInteger("preparation_version"),
+            requiredInteger("preparation_version"), requiredBoolean("automation_resume_pending"),
         ),
         table(
             "captcha_pass_maintenance",
@@ -1315,6 +1315,10 @@ internal object FreshSchemaContract {
         index(
             "captcha_challenges", "idx_captcha_challenges_account_status_created",
             "account_id", "status", "created_at", "id",
+        ),
+        index(
+            "captcha_challenges", "idx_captcha_pending_automation_resume",
+            "status", "automation_resume_pending", "account_id",
         ),
         index(
             "captcha_pass_maintenance", "idx_captcha_pass_maintenance_due",
