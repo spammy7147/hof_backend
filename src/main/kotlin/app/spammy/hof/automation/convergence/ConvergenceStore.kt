@@ -11,6 +11,8 @@ interface ConvergenceStore {
     fun findDue(accountId: Long, now: Instant): ActionConvergenceRecord?
     fun normalizeOrphans(accountId: Long, now: Instant): Int
     fun get(attemptId: Long): ActionConvergenceRecord?
+    fun get(accountId: Long, executionIdentity: String): ActionConvergenceRecord?
+    fun <T> withLockedAttempt(attemptId: Long, update: (ActionConvergenceRecord) -> T): T?
     fun save(record: ActionConvergenceRecord)
     fun releaseSupersededSuppressions(
         accountId: Long,
@@ -99,6 +101,15 @@ class InMemoryConvergenceStore : ConvergenceStore {
 
     @Synchronized
     override fun get(attemptId: Long): ActionConvergenceRecord? = records[attemptId]
+
+    @Synchronized
+    override fun get(accountId: Long, executionIdentity: String): ActionConvergenceRecord? = records.values.singleOrNull {
+        it.accountId == accountId && it.selection.executionIdentity == executionIdentity
+    }
+
+    @Synchronized
+    override fun <T> withLockedAttempt(attemptId: Long, update: (ActionConvergenceRecord) -> T): T? =
+        records[attemptId]?.let(update)
 
     @Synchronized
     override fun save(record: ActionConvergenceRecord) {

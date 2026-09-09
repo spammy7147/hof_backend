@@ -619,7 +619,7 @@ class UnifiedAutomationActionLifecycleModule(
                     submittedResponse = null
                     requireFishingDirectApplied(payload, response)
                     if (payload.action == FishingAction.CATCH) {
-                        workLifecycle.completeFishingCycle(accountId, stored.entryId)
+                        workLifecycle.completeFishingCycle(accountId, stored.entryId, stored.executionIdentity)
                     }
                     return execution
                 }
@@ -630,7 +630,7 @@ class UnifiedAutomationActionLifecycleModule(
                 ) {
                     if (evidence is AutomationActionEvidence.StateAdvanced && submittedResponse?.blockedByBattle == true) {
                         submittedResponse = null
-                        workLifecycle.completeFishingCycle(accountId, stored.entryId)
+                        workLifecycle.completeFishingCycle(accountId, stored.entryId, stored.executionIdentity)
                     }
                 }
 
@@ -1673,6 +1673,7 @@ class UnifiedAutomationActionLifecycleModule(
                     stored.entryId,
                     payload.categoryId,
                     payload.mapCode,
+                    stored.executionIdentity,
                 )
                 null
             }
@@ -1683,11 +1684,11 @@ class UnifiedAutomationActionLifecycleModule(
                     payload.categoryId,
                     payload.mapCode,
                 )
-                workLifecycle.completeUnionCycle(accountId, stored.entryId)
+                workLifecycle.completeUnionCycle(accountId, stored.entryId, stored.executionIdentity)
                 null
             }
             BattleAutomationActionSource.FISHING_AUTOMATION -> {
-                workLifecycle.completeFishingCycle(accountId, stored.entryId)
+                workLifecycle.completeFishingCycle(accountId, stored.entryId, stored.executionIdentity)
                 null
             }
             BattleAutomationActionSource.RAID_AUTOMATION -> {
@@ -1793,6 +1794,7 @@ class UnifiedAutomationActionLifecycleModule(
                     stored.entryId,
                     payload.categoryId,
                     payload.mapCode,
+                    stored.executionIdentity,
                 )
                 TypedAutomationExecution.BattleCompleted(
                     payload.categoryId,
@@ -2085,7 +2087,7 @@ class UnifiedAutomationActionLifecycleModule(
     ): RaidRecordProjection = when (val result = raidCycleModule.recordObservedResult(accountId, attempt, observation)) {
         is RaidRecordResult.Recorded -> RaidRecordProjection(
             completion = result.completion?.also {
-                workLifecycle.completeRaidCycle(accountId, attempt.entryId)
+                workLifecycle.completeRaidCycle(accountId, attempt.entryId, attempt.executionIdentity)
             },
         )
         is RaidRecordResult.EntryWait -> {
@@ -2096,7 +2098,7 @@ class UnifiedAutomationActionLifecycleModule(
             )
         }
         is RaidRecordResult.EntrySkipped -> {
-            workLifecycle.completeRaidCycle(accountId, attempt.entryId)
+            workLifecycle.completeRaidCycle(accountId, attempt.entryId, attempt.executionIdentity)
             RaidRecordProjection()
         }
         is RaidRecordResult.NotApplied -> throw AmbiguousAutomationSubmissionException(result.message)

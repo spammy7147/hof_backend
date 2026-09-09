@@ -830,7 +830,7 @@ class AutomationActionLifecycleModuleTest {
             ),
             battleOutcome,
         )
-        Mockito.verify(workLifecycle).completeBattleMapAction(7L, 12L, "battle_map", "map-1")
+        Mockito.verify(workLifecycle).completeBattleMapAction(7L, 12L, "battle_map", "map-1", managed.storedAction.executionIdentity)
     }
 
     @Test
@@ -1074,7 +1074,7 @@ class AutomationActionLifecycleModuleTest {
         assertEquals(AutomationType.UNION, managed.descriptor.source)
         assertTerminalBattle(managed.execute())
         Mockito.verify(unionProgress).battleCompleted(7L, 13L, "battle_map", "map-1")
-        Mockito.verify(workLifecycle).completeUnionCycle(7L, 13L)
+        Mockito.verify(workLifecycle).completeUnionCycle(7L, 13L, managed.storedAction.executionIdentity)
         Mockito.verifyNoInteractions(battleHandler)
     }
 
@@ -1099,7 +1099,7 @@ class AutomationActionLifecycleModuleTest {
             AutomationWorkAssignment(AutomationWorkType.ADVENTURE_MAP, "battle_map/map-1"),
         )
         assertTerminalBattle(managed.execute())
-        Mockito.verify(workLifecycle).completeAdventureAction(7L, 14L, "battle_map", "map-1")
+        Mockito.verify(workLifecycle).completeAdventureAction(7L, 14L, "battle_map", "map-1", managed.storedAction.executionIdentity)
     }
 
     @Test
@@ -1350,6 +1350,9 @@ class AutomationActionLifecycleModuleTest {
             assertEquals(managed.descriptor, module.describe(prepared))
             val execution = assertIs<TypedAutomationExecution.ActionCompleted>(managed.execute())
             managed.applyLegacyExecution(execution)
+            if (action == FishingAction.CATCH) {
+                Mockito.verify(workLifecycle).completeFishingCycle(7L, 15L, managed.storedAction.executionIdentity)
+            }
             Mockito.verify(fishingService).act(7L, action, HofRequestOrigin.AUTOMATION)
         }
         Mockito.verify(workOwnership, Mockito.times(2)).ensure(
@@ -1357,7 +1360,6 @@ class AutomationActionLifecycleModuleTest {
             15L,
             AutomationWorkAssignment(AutomationWorkType.FISHING, "DAILY_FISHING"),
         )
-        Mockito.verify(workLifecycle).completeFishingCycle(7L, 15L)
     }
 
     @Test
@@ -1396,7 +1398,7 @@ class AutomationActionLifecycleModuleTest {
         val execution = assertIs<TypedAutomationExecution.ActionCompleted>(managed.execute())
         managed.applyLegacyExecution(execution)
 
-        Mockito.verify(workLifecycle).completeFishingCycle(7L, 15L)
+        Mockito.verify(workLifecycle).completeFishingCycle(7L, 15L, managed.storedAction.executionIdentity)
     }
 
     @Test
@@ -1513,7 +1515,7 @@ class AutomationActionLifecycleModuleTest {
             15L,
             AutomationWorkAssignment(AutomationWorkType.FISHING, "DAILY_FISHING"),
         )
-        Mockito.verify(workLifecycle).completeFishingCycle(7L, 15L)
+        Mockito.verify(workLifecycle).completeFishingCycle(7L, 15L, managed.storedAction.executionIdentity)
         Mockito.verifyNoInteractions(battleHandler, unionProgress)
     }
 
@@ -1709,7 +1711,7 @@ class AutomationActionLifecycleModuleTest {
             retryAt,
             "10분 뒤 다시 확인",
         )
-        Mockito.verify(workLifecycle, Mockito.never()).completeRaidCycle(7L, 13L)
+        Mockito.verify(workLifecycle, Mockito.never()).completeRaidCycle(Mockito.eq(7L), Mockito.eq(13L), Mockito.nullable(String::class.java))
     }
 
     @Test
@@ -1767,7 +1769,7 @@ class AutomationActionLifecycleModuleTest {
             retryAt,
             null,
         )
-        Mockito.verify(workLifecycle, Mockito.never()).completeRaidCycle(7L, 13L)
+        Mockito.verify(workLifecycle, Mockito.never()).completeRaidCycle(Mockito.eq(7L), Mockito.eq(13L), Mockito.nullable(String::class.java))
     }
 
     @Test
@@ -2011,7 +2013,7 @@ class AutomationActionLifecycleModuleTest {
             completion,
             acceptedExecution.raidOutcome,
         )
-        Mockito.verify(workLifecycle).completeRaidCycle(7L, 13L)
+        Mockito.verify(workLifecycle).completeRaidCycle(7L, 13L, managed.storedAction.executionIdentity)
     }
 
     @Test

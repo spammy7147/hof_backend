@@ -56,11 +56,10 @@ class JpaEvidenceCaseRecorder(
         )
         entityManager.persist(evidenceCase)
         entityManager.createQuery(
-            "update ActionConvergenceEntity convergence set convergence.evidenceCaseId = :caseId " +
-                "where convergence.attempt.id = :attemptId",
-        ).setParameter("caseId", evidenceCase.id)
-            .setParameter("attemptId", record.attemptId)
-            .executeUpdate()
+            "select convergence from ActionConvergenceEntity convergence where convergence.attempt.id = :attemptId",
+            ActionConvergenceEntity::class.java,
+        ).setParameter("attemptId", record.attemptId)
+            .singleResult.evidenceCaseId = evidenceCase.id
     }
 
     private fun AutomationActionEvidence.sourceName(): String = when (this) {

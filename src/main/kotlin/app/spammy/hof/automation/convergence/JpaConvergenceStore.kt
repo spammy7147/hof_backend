@@ -3,6 +3,7 @@ package app.spammy.hof.automation.convergence
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.automation.entity.AutomationEntryEntity
 import jakarta.persistence.EntityManager
+import jakarta.persistence.LockModeType
 import java.time.Instant
 import org.springframework.stereotype.Repository
 import org.springframework.transaction.annotation.Transactional
@@ -181,6 +182,21 @@ class JpaConvergenceStore(
     override fun get(attemptId: Long): ActionConvergenceRecord? = findConvergence(attemptId)
         ?.takeIf { it.attempt.entry != null }
         ?.toRecord()
+
+    @Transactional(readOnly = true)
+    override fun get(accountId: Long, executionIdentity: String): ActionConvergenceRecord? =
+        findAttempt(accountId, executionIdentity)?.toRecord()
+
+    override fun <T> withLockedAttempt(attemptId: Long, update: (ActionConvergenceRecord) -> T): T? {
+        val entity = entityManager.createQuery(
+            "select convergence from ActionConvergenceEntity convergence where convergence.attempt.id = :attemptId",
+            ActionConvergenceEntity::class.java,
+        ).setParameter("attemptId", attemptId).resultList.firstOrNull() ?: return null
+        // 같은 transaction의 이전 조회가 영속성 컨텍스트에 있어도 잠금 이후 상태로 판정한다.
+        entityManager.refresh(entity, LockModeType.PESSIMISTIC_WRITE)
+        entityManager.refresh(entity.attempt)
+        return entity.takeIf { it.attempt.entry != null }?.toRecord()?.let(update)
+    }
 
     override fun save(record: ActionConvergenceRecord) {
         val entity = requireNotNull(findConvergence(record.attemptId)) {

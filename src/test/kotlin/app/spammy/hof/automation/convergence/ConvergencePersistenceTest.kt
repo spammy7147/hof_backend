@@ -13,10 +13,21 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
 import org.springframework.context.annotation.Import
 import org.springframework.test.context.ActiveProfiles
+import org.springframework.test.context.transaction.TestTransaction
+import org.springframework.transaction.PlatformTransactionManager
+import org.springframework.transaction.annotation.Propagation
+import org.springframework.transaction.annotation.Transactional
+import org.springframework.transaction.support.TransactionTemplate
 
 @DataJpaTest
 @ActiveProfiles("test")
@@ -27,6 +38,78 @@ class ConvergencePersistenceTest {
     @Autowired private lateinit var store: JpaConvergenceStore
     @Autowired private lateinit var shadowRecorder: JpaAutomationConvergenceShadowRecorder
     @Autowired private lateinit var entityManager: EntityManager
+    @Autowired private lateinit var transactions: PlatformTransactionManager
+
+    @ParameterizedTest
+    @ValueSource(strings = ["MANUAL", "BASELINE", "RAID"])
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    fun `보류 해제와 직접 적용이 경합해도 확정 결과를 옛 entity로 덮어쓰지 않는다`(release: String) {
+        val now = Instant.parse("2026-09-10T00:00:00Z")
+        val transaction = TransactionTemplate(transactions)
+        val module = DefaultAutomationActionConvergenceModule(store, TimeProvider { now.plusSeconds(2) })
+        val (account, entry, attempt) = transaction.execute {
+            val (account, entry) = fixture("release-race-$release", now)
+            val selected = SelectedAutomationAction(entry.id, "release-race-$release", AutomationActionKind.RAID_REGISTER,
+                AutomationIsolationScope(AutomationIsolationScopeKind.RAID_ENTRY, "raid-a"), "v1", "old-baseline")
+            val attempt = store.createOrGet(account.id, selected, now)
+            attempt.result = ActionConvergenceResult.HELD
+            attempt.submittedAt = now
+            attempt.finishedAt = now
+            attempt.reasonCode = "RESULT_UNOBSERVED"
+            store.save(attempt)
+            Triple(account, entry, attempt)
+        }
+        val releaseRead = CountDownLatch(1)
+        val commitRelease = CountDownLatch(1)
+        try {
+            Executors.newFixedThreadPool(2).use { executor ->
+                val releasing = executor.submit {
+                    transaction.executeWithoutResult {
+                        when (release) {
+                            "MANUAL" -> assertTrue(module.allowFreshDecision(account.id, attempt.attemptId, now.plusSeconds(1)))
+                            "BASELINE" -> assertEquals(1, module.observeAuthoritativeBaselines(account.id,
+                                attempt.selection.scope, setOf("new-baseline"), now.plusSeconds(1)))
+                            else -> assertEquals(1, module.allowRaidRegistrationFreshDecision(account.id, entry.id, "raid-a", now.plusSeconds(1)))
+                        }
+                        releaseRead.countDown()
+                        check(commitRelease.await(15, TimeUnit.SECONDS))
+                    }
+                }
+                var applying: java.util.concurrent.Future<*>? = null
+                try {
+                    assertTrue(releaseRead.await(10, TimeUnit.SECONDS))
+                    applying = executor.submit {
+                        module.record(attempt.attemptId, AutomationActionEvidence.DirectApplied(now.plusSeconds(2), "applied"))
+                    }
+                    try {
+                        applying.get(2, TimeUnit.SECONDS)
+                    } catch (_: java.util.concurrent.TimeoutException) {
+                        // 보류 해제가 잠금을 보유하면 직접 결과는 그 commit 다음에 저장된다.
+                    }
+                } finally {
+                    commitRelease.countDown()
+                    try {
+                        releasing.get(10, TimeUnit.SECONDS)
+                    } catch (error: java.util.concurrent.ExecutionException) {
+                        // 기존 @Version은 오래된 보류 해제의 flush를 거절해 직접 결과를 보존한다.
+                        if (error.cause !is org.springframework.orm.ObjectOptimisticLockingFailureException) throw error
+                    }
+                    applying?.get(10, TimeUnit.SECONDS)
+                }
+            }
+            val result = assertNotNull(store.get(attempt.attemptId))
+            assertEquals(ActionConvergenceResult.APPLIED, result.result)
+            assertEquals("DIRECT_RESPONSE_APPLIED", result.reasonCode)
+            assertEquals(now.plusSeconds(2), result.finishedAt)
+            assertEquals(false, result.active)
+            assertTrue(store.findSuppressedBaselines(account.id).isEmpty())
+        } finally {
+            transaction.executeWithoutResult {
+                entityManager.createNativeQuery("delete from hof_accounts where id = :accountId")
+                    .setParameter("accountId", account.id).executeUpdate()
+            }
+        }
+    }
 
     @Test
     fun `행동 시도와 결과 판정을 분리해 저장하고 실행 identity replay를 같은 시도로 복원한다`() {
@@ -181,33 +264,45 @@ class ConvergencePersistenceTest {
     fun `shadow 비교는 redacted 차원을 내구 저장하고 삼십일 뒤 정리한다`() {
         val now = Instant.parse("2026-08-23T00:00:00Z")
         val (account) = fixture("shadow-durable", now)
-        val current = shadowEvaluation(account.id, now.minusSeconds(60))
-        val expired = shadowEvaluation(account.id, now.minusSeconds(31L * 24 * 60 * 60))
+        TestTransaction.flagForCommit()
+        TestTransaction.end()
+        TestTransaction.start()
+        try {
+            val current = shadowEvaluation(account.id, now.minusSeconds(60))
+            val expired = shadowEvaluation(account.id, now.minusSeconds(31L * 24 * 60 * 60))
 
-        shadowRecorder.record(current)
-        shadowRecorder.record(expired)
-        entityManager.flush()
-        assertEquals(
-            2L,
-            entityManager.createQuery(
-                "select count(shadow) from AutomationConvergenceShadowEvaluationEntity shadow",
-                Long::class.javaObjectType,
-            ).singleResult,
-        )
+            shadowRecorder.record(current)
+            shadowRecorder.record(expired)
+            entityManager.flush()
+            assertEquals(
+                2L,
+                entityManager.createQuery(
+                    "select count(shadow) from AutomationConvergenceShadowEvaluationEntity shadow",
+                    Long::class.javaObjectType,
+                ).singleResult,
+            )
 
-        val deleted = AutomationEvidenceRetentionScheduler(entityManager, TimeProvider { now })
-            .deleteExpiredEvidence()
-        entityManager.flush()
+            val deleted = AutomationEvidenceRetentionScheduler(entityManager, TimeProvider { now })
+                .deleteExpiredEvidence()
+            entityManager.flush()
 
-        assertEquals(1, deleted)
-        val remaining = entityManager.createQuery(
-            "select shadow from AutomationConvergenceShadowEvaluationEntity shadow",
-            AutomationConvergenceShadowEvaluationEntity::class.java,
-        ).singleResult
-        assertEquals(current.executionIdentityHash, remaining.executionIdentityHash)
-        assertEquals(current.responseShapeFingerprint, remaining.responseShapeFingerprint)
-        assertEquals(current.sanitizedSnippet, remaining.sanitizedSnippet)
-        assertEquals(36, remaining.id.length)
+            assertEquals(1, deleted)
+            val remaining = entityManager.createQuery(
+                "select shadow from AutomationConvergenceShadowEvaluationEntity shadow",
+                AutomationConvergenceShadowEvaluationEntity::class.java,
+            ).singleResult
+            assertEquals(current.executionIdentityHash, remaining.executionIdentityHash)
+            assertEquals(current.responseShapeFingerprint, remaining.responseShapeFingerprint)
+            assertEquals(current.sanitizedSnippet, remaining.sanitizedSnippet)
+            assertEquals(36, remaining.id.length)
+        } finally {
+            TestTransaction.end()
+            TestTransaction.start()
+            entityManager.createNativeQuery("delete from hof_accounts where id = :accountId")
+                .setParameter("accountId", account.id).executeUpdate()
+            TestTransaction.flagForCommit()
+            TestTransaction.end()
+        }
     }
 
     @Test

@@ -25,6 +25,7 @@ import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Service
 import org.springframework.transaction.support.TransactionSynchronizationManager
+import org.springframework.transaction.support.TransactionSynchronization
 import java.time.Instant
 
 /** 최신 타입별 스냅샷 결정 또는 저장된 prepared payload 중 action 하나만 실행하는 자동화 루프다. */
@@ -137,6 +138,7 @@ class UnifiedAutomationRunner @Autowired constructor(
     ) {
         var execution = initialExecution
         var checkpoint = execution.checkpoint
+        if (checkpoint != null && typedRuntime.completeRecordedAction(execution)) return
         val restoredCheckpoint = checkpoint != null && !continuedPreparedFollowup
         val resumedDeferredSubmission = restoredCheckpoint && checkpoint.deferredSubmissionRetry
         val resumedLegacyCheckpoint = restoredCheckpoint && !resumedDeferredSubmission
@@ -377,24 +379,25 @@ class UnifiedAutomationRunner @Autowired constructor(
             resolution: AmbiguousActionResolution.HandedOff,
             convergenceRecheckAt: Instant? = null,
         ) {
-            typedRuntime.complete(
+            completeReconciliation(
                 execution,
                 TypedRuntimeOutcome.AmbiguousHandoff(
                     resolution.reason,
                     RAID_BATTLE_RECOVERY_WAKE_REASON,
                 ),
                 convergenceRecheckAt = convergenceRecheckAt,
-            )
-            decisionCycleId?.let { cycleId ->
-                decisionJournal?.appendActionResult(cycleId, trace(
-                    AutomationHistoryEventKind.WAITING,
-                    "RAID_BATTLE_RECOVERY_STARTED",
-                    "레이드 전투 결과가 불확실해 레이드 전용 복구로 인계했습니다. ${resolution.reason}",
-                    resolution.retryAt,
-                    diagnosticKind = AutomationDiagnosticKind.RAID_BATTLE_RESULT_UNKNOWN,
-                    impactScope = AutomationImpactScope.RAID_ONLY,
-                    releaseCondition = "최신 레이드 상태 또는 쿨타임 관측으로 결과 재확인",
-                ))
+            ) {
+                decisionCycleId?.let { cycleId ->
+                    decisionJournal?.appendActionResult(cycleId, trace(
+                        AutomationHistoryEventKind.WAITING,
+                        "RAID_BATTLE_RECOVERY_STARTED",
+                        "레이드 전투 결과가 불확실해 레이드 전용 복구로 인계했습니다. ${resolution.reason}",
+                        resolution.retryAt,
+                        diagnosticKind = AutomationDiagnosticKind.RAID_BATTLE_RESULT_UNKNOWN,
+                        impactScope = AutomationImpactScope.RAID_ONLY,
+                        releaseCondition = "최신 레이드 상태 또는 쿨타임 관측으로 결과 재확인",
+                    ))
+                }
             }
         }
         fun holdAmbiguousScope(resolution: AmbiguousActionResolution.Held) {
@@ -402,21 +405,24 @@ class UnifiedAutomationRunner @Autowired constructor(
             val successfulObservationCount = activeCheckpoint.successfulObservationCount + 1
             val firstPendingAt = activeCheckpoint.firstPendingAt ?: activeCheckpoint.submittedAt ?: observedAt
             val evidence = AutomationActionEvidence.ResultUnobserved(observedAt, resolution.reason)
-            results.holdUnresolved(accountId, stored, activeCheckpoint, evidence, successfulObservationCount, firstPendingAt)
-            typedRuntime.complete(
+            completeReconciliation(
                 execution,
                 TypedRuntimeOutcome.AmbiguousHandoff(
                     resolution.reason,
                     "TYPED_FISHING_AMBIGUITY_HELD",
                     successfulObservationCount,
                 ),
-            )
-            decisionCycleId?.let { cycleId ->
-                decisionJournal?.appendActionResult(cycleId, trace(
-                    AutomationHistoryEventKind.WAITING,
-                    "FISHING_AMBIGUITY_HELD",
-                    resolution.reason,
-                ))
+                persistResult = {
+                    results.holdUnresolved(accountId, stored, activeCheckpoint, evidence, successfulObservationCount, firstPendingAt)
+                },
+            ) {
+                decisionCycleId?.let { cycleId ->
+                    decisionJournal?.appendActionResult(cycleId, trace(
+                        AutomationHistoryEventKind.WAITING,
+                        "FISHING_AMBIGUITY_HELD",
+                        resolution.reason,
+                    ))
+                }
             }
         }
         fun closeBattleForCaptcha(error: Throwable): Boolean {
@@ -534,15 +540,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                         )
                         return
                     }
-                    decisionCycleId?.let { cycleId -> runCatching {
-                        decisionJournal?.appendActionResult(cycleId, trace(
-                            AutomationHistoryEventKind.WAITING,
-                            "RECONCILIATION_HOF_DEFERRED",
-                            "적용 여부를 확인하는 중 HOF 응답이 지연되어 다시 확인합니다. 사유: $message",
-                            deferred.retryAt,
-                        ))
-                    } }
-                    typedRuntime.complete(
+                    completeReconciliation(
                         execution,
                         TypedRuntimeOutcome.ReconciliationDeferred(
                             deferred.retryAt,
@@ -550,7 +548,16 @@ class UnifiedAutomationRunner @Autowired constructor(
                             successfulObservation = false,
                             wakeReason = HOF_COOLDOWN_WAKE_REASON,
                         ),
-                    )
+                    ) {
+                        decisionCycleId?.let { cycleId ->
+                            decisionJournal?.appendActionResult(cycleId, trace(
+                                AutomationHistoryEventKind.WAITING,
+                                "RECONCILIATION_HOF_DEFERRED",
+                                "적용 여부를 확인하는 중 HOF 응답이 지연되어 다시 확인합니다. 사유: $message",
+                                deferred.retryAt,
+                            ))
+                        }
+                    }
                     return
                 }
                 log.warn(
@@ -583,30 +590,36 @@ class UnifiedAutomationRunner @Autowired constructor(
                 retryExecution(execution, classifyActionStop(error), error.message ?: error.javaClass.simpleName)
                 return
             }
+            // 원격 관측 중 이전 worker의 직접 결과가 저장됐다면 그 종결 사실을
+            // 사용한다. 오래된 관측으로 보류나 미관측 이력을 새로 만들지 않는다.
+            if (typedRuntime.completeRecordedAction(execution)) return
             when (resolution) {
                 is AmbiguousActionResolution.Applied -> {
-                    results.observeShadow(
-                        accountId,
-                        stored.executionIdentity,
-                        AutomationActionEvidence.StateAdvanced(now(), "advanced:${stored.executionIdentity}"),
-                        LegacyConvergenceDecision.APPLIED,
-                    )
                     results.applyRecoveredExecution(accountId, resolution.execution)
-                    typedRuntime.complete(
+                    completeReconciliation(
                         execution,
                         TypedRuntimeOutcome.ReconciliationApplied(recoveredWakeReason(resolution.execution)),
-                    )
-                    decisionCycleId?.let { cycleId ->
-                        val resultTrace = when (val recovered = resolution.execution) {
-                            is TypedAutomationExecution.RaidCycleFinished -> raidCycleTrace(recovered.outcome)
-                            is TypedAutomationExecution.RaidWaiting -> raidWaitTrace(recovered)
-                            else -> trace(
-                                AutomationHistoryEventKind.ACTION_SUCCEEDED,
-                                "AMBIGUOUS_RESULT_APPLIED",
-                                "상태 재확인 결과 이전 요청이 이미 적용된 것으로 확인했습니다.",
+                        persistResult = {
+                            results.observeShadow(
+                                accountId,
+                                stored.executionIdentity,
+                                AutomationActionEvidence.StateAdvanced(now(), "advanced:${stored.executionIdentity}"),
+                                LegacyConvergenceDecision.APPLIED,
                             )
+                        },
+                    ) {
+                        decisionCycleId?.let { cycleId ->
+                            val resultTrace = when (val recovered = resolution.execution) {
+                                is TypedAutomationExecution.RaidCycleFinished -> raidCycleTrace(recovered.outcome)
+                                is TypedAutomationExecution.RaidWaiting -> raidWaitTrace(recovered)
+                                else -> trace(
+                                    AutomationHistoryEventKind.ACTION_SUCCEEDED,
+                                    "AMBIGUOUS_RESULT_APPLIED",
+                                    "상태 재확인 결과 이전 요청이 이미 적용된 것으로 확인했습니다.",
+                                )
+                            }
+                            decisionJournal?.appendActionResult(cycleId, resultTrace)
                         }
-                        decisionJournal?.appendActionResult(cycleId, resultTrace)
                     }
                 }
                 AmbiguousActionResolution.Resubmit -> {
@@ -633,21 +646,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                         )
                         return
                     }
-                    results.observeShadow(
-                        accountId,
-                        stored.executionIdentity,
-                        AutomationActionEvidence.SameState(observedAt, "same:${stored.executionIdentity}"),
-                        LegacyConvergenceDecision.RESUBMIT,
-                    )
-                    decisionCycleId?.let { cycleId ->
-                        decisionJournal?.appendActionResult(cycleId, trace(
-                            AutomationHistoryEventKind.WAITING,
-                            "AMBIGUOUS_RESULT_UNCHANGED",
-                            "$reason 저장 행동은 다시 제출하지 않습니다.",
-                            observedAt.plusSeconds(RECONCILIATION_RETRY_SECONDS),
-                        ))
-                    }
-                    typedRuntime.complete(
+                    completeReconciliation(
                         execution,
                         TypedRuntimeOutcome.ReconciliationDeferred(
                             observedAt.plusSeconds(RECONCILIATION_RETRY_SECONDS),
@@ -655,52 +654,75 @@ class UnifiedAutomationRunner @Autowired constructor(
                             successfulObservation = true,
                             wakeReason = "TYPED_RECONCILE_RETRY",
                         ),
-                    )
+                        persistResult = {
+                            results.observeShadow(
+                                accountId,
+                                stored.executionIdentity,
+                                AutomationActionEvidence.SameState(observedAt, "same:${stored.executionIdentity}"),
+                                LegacyConvergenceDecision.RESUBMIT,
+                            )
+                        },
+                    ) {
+                        decisionCycleId?.let { cycleId ->
+                            decisionJournal?.appendActionResult(cycleId, trace(
+                                AutomationHistoryEventKind.WAITING,
+                                "AMBIGUOUS_RESULT_UNCHANGED",
+                                "$reason 저장 행동은 다시 제출하지 않습니다.",
+                                observedAt.plusSeconds(RECONCILIATION_RETRY_SECONDS),
+                            ))
+                        }
+                    }
                 }
                 is AmbiguousActionResolution.Superseded -> {
-                    results.observeShadow(
-                        accountId,
-                        stored.executionIdentity,
-                        AutomationActionEvidence.StateAdvanced(now(), "superseded:${stored.executionIdentity}"),
-                        LegacyConvergenceDecision.SUPERSEDED,
-                    )
-                    decisionCycleId?.let { cycleId ->
-                        decisionJournal?.appendActionResult(cycleId, trace(
-                            AutomationHistoryEventKind.SKIPPED,
-                            ACTION_SUPERSEDED_REASON,
-                            resolution.reason,
-                        ))
-                    }
-                    typedRuntime.complete(
+                    completeReconciliation(
                         execution,
                         TypedRuntimeOutcome.ActionSuperseded(resolution.reason, ACTION_SUPERSEDED_REASON),
-                    )
+                        persistResult = {
+                            results.observeShadow(
+                                accountId,
+                                stored.executionIdentity,
+                                AutomationActionEvidence.StateAdvanced(now(), "superseded:${stored.executionIdentity}"),
+                                LegacyConvergenceDecision.SUPERSEDED,
+                            )
+                        },
+                    ) {
+                        decisionCycleId?.let { cycleId ->
+                            decisionJournal?.appendActionResult(cycleId, trace(
+                                AutomationHistoryEventKind.SKIPPED,
+                                ACTION_SUPERSEDED_REASON,
+                                resolution.reason,
+                            ))
+                        }
+                    }
                 }
                 is AmbiguousActionResolution.FreshDecision -> {
                     val evidence = AutomationActionEvidence.ResultUnobservedFreshDecision(
                         capturedAt = now(),
                         reason = resolution.reason,
                     )
-                    results.observeShadow(
-                        accountId,
-                        stored.executionIdentity,
-                        evidence,
-                        LegacyConvergenceDecision.RESULT_UNOBSERVED,
-                    )
-                    decisionCycleId?.let { cycleId ->
-                        decisionJournal?.appendActionResult(cycleId, trace(
-                            AutomationHistoryEventKind.SKIPPED,
-                            QUEST_PROGRESS_FRESH_DECISION,
-                            resolution.reason,
-                        ))
-                    }
-                    typedRuntime.complete(
+                    completeReconciliation(
                         execution,
                         TypedRuntimeOutcome.ActionSuperseded(
                             resolution.reason,
                             QUEST_PROGRESS_FRESH_DECISION,
                         ),
-                    )
+                        persistResult = {
+                            results.observeShadow(
+                                accountId,
+                                stored.executionIdentity,
+                                evidence,
+                                LegacyConvergenceDecision.RESULT_UNOBSERVED,
+                            )
+                        },
+                    ) {
+                        decisionCycleId?.let { cycleId ->
+                            decisionJournal?.appendActionResult(cycleId, trace(
+                                AutomationHistoryEventKind.SKIPPED,
+                                QUEST_PROGRESS_FRESH_DECISION,
+                                resolution.reason,
+                            ))
+                        }
+                    }
                 }
                 is AmbiguousActionResolution.VerifyLater -> {
                     val observedAt = now()
@@ -725,21 +747,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                         )
                         return
                     }
-                    results.observeShadow(
-                        accountId,
-                        stored.executionIdentity,
-                        AutomationActionEvidence.IncompleteObservation(observedAt, resolution.reason),
-                        LegacyConvergenceDecision.RECONCILING,
-                    )
-                    decisionCycleId?.let { cycleId ->
-                        decisionJournal?.appendActionResult(cycleId, trace(
-                            AutomationHistoryEventKind.WAITING,
-                            "AMBIGUOUS_RESULT_VERIFY_LATER",
-                            "아직 적용 여부를 확정할 수 없어 다음 확인 시각까지 기다립니다. 사유: ${resolution.reason}",
-                            resolution.retryAt,
-                        ))
-                    }
-                    typedRuntime.complete(
+                    completeReconciliation(
                         execution,
                         TypedRuntimeOutcome.ReconciliationDeferred(
                             resolution.retryAt,
@@ -747,7 +755,24 @@ class UnifiedAutomationRunner @Autowired constructor(
                             successfulObservation = true,
                             wakeReason = "TYPED_RECONCILE_RETRY",
                         ),
-                    )
+                        persistResult = {
+                            results.observeShadow(
+                                accountId,
+                                stored.executionIdentity,
+                                AutomationActionEvidence.IncompleteObservation(observedAt, resolution.reason),
+                                LegacyConvergenceDecision.RECONCILING,
+                            )
+                        },
+                    ) {
+                        decisionCycleId?.let { cycleId ->
+                            decisionJournal?.appendActionResult(cycleId, trace(
+                                AutomationHistoryEventKind.WAITING,
+                                "AMBIGUOUS_RESULT_VERIFY_LATER",
+                                "아직 적용 여부를 확정할 수 없어 다음 확인 시각까지 기다립니다. 사유: ${resolution.reason}",
+                                resolution.retryAt,
+                            ))
+                        }
+                    }
                 }
                 is AmbiguousActionResolution.Held -> holdAmbiguousScope(resolution)
                 is AmbiguousActionResolution.HandedOff -> finishRaidBattleHandoff(resolution)
@@ -982,40 +1007,43 @@ class UnifiedAutomationRunner @Autowired constructor(
             } else {
                 TypedRuntimeOutcome.ActionSucceeded(wakeReason, finalWarnings)
             }
-            results.finishDirect(accountId, stored.executionIdentity, appliedEvidence, convergenceAttemptId, domainExecution)
-            typedRuntime.complete(execution, outcome)
-            decisionCycleId?.let { cycleId ->
-                val noReward = (stored.payload as? StoredTypedActionPayload.RaidTown)?.action == RaidAction.REWARD &&
-                    ((acceptedExecution as? TypedAutomationExecution.ActionCompleted)?.observedState as? RaidObservedState)
-                        ?.rewardResult == RaidRewardResultKind.NOTHING_AVAILABLE
-                val resultTrace = when (domainExecution) {
-                    is TypedAutomationExecution.RaidCycleFinished -> raidCycleTrace(domainExecution.outcome)
-                    is TypedAutomationExecution.RaidWaiting -> raidWaitTrace(domainExecution)
-                    is TypedAutomationExecution.BattleCompleted if recoveryAppliedByTerminalResult -> trace(
-                        AutomationHistoryEventKind.ACTION_SUCCEEDED,
-                        RAID_BATTLE_APPLIED_TERMINAL_RESULT,
-                        "정확한 전투 단말 결과로 레이드 전투 적용을 확인하고 복구를 종료했습니다.",
-                    )
-                    is TypedAutomationExecution.SharedCooldown if
-                        (stored.payload as? StoredTypedActionPayload.BattleMap)?.source ==
-                            BattleAutomationActionSource.RAID_AUTOMATION -> trace(
-                        AutomationHistoryEventKind.ACTION_SUCCEEDED,
-                        wakeReason,
-                        "HOF가 명시한 쿨타임까지 레이드 전투만 기다립니다.",
-                        domainExecution.retryAt,
-                        diagnosticKind = AutomationDiagnosticKind.RAID_EXPLICIT_COOLDOWN_WAIT,
-                        impactScope = AutomationImpactScope.RAID_ONLY,
-                        releaseCondition = "HOF가 준 시각 뒤 최신 레이드 상태 재확인",
-                    )
-                    else -> trace(
-                        AutomationHistoryEventKind.ACTION_SUCCEEDED,
-                        wakeReason,
-                        if (noReward) RAID_NOTHING_AVAILABLE_MESSAGE else "자동화 행동을 완료했습니다.",
-                    )
-                }
-                decisionJournal?.appendActionResult(cycleId, resultTrace)
-            }
+            commitDirectResult(stored.executionIdentity,
+                persistResult = { results.finishDirect(accountId, stored, appliedEvidence, convergenceAttemptId, domainExecution) },
+                appendHistory = {
+                    decisionCycleId?.let { cycleId ->
+                        val noReward = (stored.payload as? StoredTypedActionPayload.RaidTown)?.action == RaidAction.REWARD &&
+                            ((acceptedExecution as? TypedAutomationExecution.ActionCompleted)?.observedState as? RaidObservedState)
+                                ?.rewardResult == RaidRewardResultKind.NOTHING_AVAILABLE
+                        val resultTrace = when (domainExecution) {
+                            is TypedAutomationExecution.RaidCycleFinished -> raidCycleTrace(domainExecution.outcome)
+                            is TypedAutomationExecution.RaidWaiting -> raidWaitTrace(domainExecution)
+                            is TypedAutomationExecution.BattleCompleted if recoveryAppliedByTerminalResult -> trace(
+                                AutomationHistoryEventKind.ACTION_SUCCEEDED,
+                                RAID_BATTLE_APPLIED_TERMINAL_RESULT,
+                                "정확한 전투 단말 결과로 레이드 전투 적용을 확인하고 복구를 종료했습니다.",
+                            )
+                            is TypedAutomationExecution.SharedCooldown if
+                                (stored.payload as? StoredTypedActionPayload.BattleMap)?.source ==
+                                    BattleAutomationActionSource.RAID_AUTOMATION -> trace(
+                                AutomationHistoryEventKind.ACTION_SUCCEEDED,
+                                wakeReason,
+                                "HOF가 명시한 쿨타임까지 레이드 전투만 기다립니다.",
+                                domainExecution.retryAt,
+                                diagnosticKind = AutomationDiagnosticKind.RAID_EXPLICIT_COOLDOWN_WAIT,
+                                impactScope = AutomationImpactScope.RAID_ONLY,
+                                releaseCondition = "HOF가 준 시각 뒤 최신 레이드 상태 재확인",
+                            )
+                            else -> trace(
+                                AutomationHistoryEventKind.ACTION_SUCCEEDED,
+                                wakeReason,
+                                if (noReward) RAID_NOTHING_AVAILABLE_MESSAGE else "자동화 행동을 완료했습니다.",
+                            )
+                        }
+                        decisionJournal?.appendActionResult(cycleId, resultTrace)
+                    }
+            }) { persist -> typedRuntime.complete(execution, outcome, persist) }
         } catch (error: Throwable) {
+            if (error is DirectResultPersistenceFailure) throw error
             error.findActionPreconditionChanged()?.let { changed ->
                 val evidence = AutomationActionEvidence.StateAdvanced(
                     capturedAt = now(),
@@ -1304,24 +1332,16 @@ class UnifiedAutomationRunner @Autowired constructor(
                 }
                 is AutomationResultCoordinator.DirectResult.Accepted -> attemptTerminalized = attemptId != null
             }
-            evidence?.let { observed ->
-                results.observeShadow(
-                    accountId,
-                    stored.executionIdentity,
-                    observed,
-                    LegacyConvergenceDecision.APPLIED,
-                )
-            }
-            typedRuntime.complete(
-                execution,
-                TypedRuntimeOutcome.ActionSucceeded("TYPED_FISHING_CYCLE_COMPLETED", selectedWarnings),
-            )
-            append(
-                AutomationHistoryEventKind.ACTION_SUCCEEDED,
-                "FISHING_CATCH_APPLIED",
-                "낚시 CATCH 적용을 확인해 한 번 낚시를 완료했습니다.",
-            )
+            commitDirectResult(stored.executionIdentity,
+                persistResult = { results.finishDirect(accountId, stored, evidence, attemptId, direct.execution) },
+                appendHistory = {
+                    recordFishingResult(decisionCycleId, stored, managed,
+                        AutomationHistoryEventKind.ACTION_SUCCEEDED, "FISHING_CATCH_APPLIED",
+                        "낚시 CATCH 적용을 확인해 한 번 낚시를 완료했습니다.")
+            }) { persist -> typedRuntime.complete(execution,
+                TypedRuntimeOutcome.ActionSucceeded("TYPED_FISHING_CYCLE_COMPLETED", selectedWarnings), persist) }
         } catch (error: Throwable) {
+            if (error is DirectResultPersistenceFailure) throw error
             error.findActionPreconditionChanged()?.let { changed ->
                 attemptId?.let { id ->
                     results.record(
@@ -1439,7 +1459,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             selection: SelectedAutomationAction?,
             attemptId: Long?,
             response: app.spammy.hof.town.fishing.dto.FishingResponse,
-        ) {
+        ): () -> Unit {
             val direct = managed.observeDirectResponse(response)
             val evidence = results.directEvidence(selection, direct)
             when (val result = results.applyFishingDirect(
@@ -1458,14 +1478,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                 }
                 is AutomationResultCoordinator.DirectResult.Accepted -> activeAttemptTerminalized = attemptId != null
             }
-            evidence?.let { observed ->
-                results.observeShadow(
-                    accountId,
-                    stored.executionIdentity,
-                    observed,
-                    LegacyConvergenceDecision.APPLIED,
-                )
-            }
+            return { results.finishDirect(accountId, stored, evidence, attemptId, direct) }
         }
 
         try {
@@ -1489,7 +1502,13 @@ class UnifiedAutomationRunner @Autowired constructor(
                     start: FishingCycleStepEvidence,
                     catch: FishingCyclePreparedCatch,
                 ) {
-                    acceptStep(startManaged, startStored, activeSelection, activeAttemptId, start.response)
+                    val persistDirectResult = acceptStep(startManaged, startStored, activeSelection, activeAttemptId, start.response)
+                    val outcome = TypedRuntimeOutcome.ActionSucceeded("TYPED_FISHING_START_APPLIED", selectedWarnings)
+                    val appendStartHistory = {
+                        recordFishingResult(decisionCycleId, startStored, startManaged,
+                            AutomationHistoryEventKind.ACTION_SUCCEEDED, "FISHING_START_APPLIED",
+                            "낚시 START 적용을 확인했습니다.")
+                    }
                     val catchStored = StoredTypedAutomationAction(
                         entryId = startStored.entryId,
                         executionIdentity = catch.executionIdentity,
@@ -1500,18 +1519,27 @@ class UnifiedAutomationRunner @Autowired constructor(
                             progressDate = startPayload.progressDate,
                         ),
                     )
-                    val catchManaged = actionLifecycleModule.restoreVerified(catchStored, accountId)
-                        as? ManagedFishingAutomationAction
-                        ?: throw IllegalStateException("Stored fishing CATCH is not managed as a fishing action.")
-                    val preparation = typedRuntime.advanceAppliedActionToPreparedFollowup(execution, catchStored)
-                    if (preparation !is TypedRuntimePreparation.Ready) {
-                        typedRuntime.complete(
-                            execution,
-                            TypedRuntimeOutcome.SubmissionAmbiguous("START 적용 뒤 CATCH 준비 상태를 저장하지 못했습니다."),
-                        )
-                        throw FishingCycleFlowStopped()
+                    lateinit var catchManaged: ManagedFishingAutomationAction
+                    val preparation = commitDirectResult(startStored.executionIdentity, persistDirectResult, appendStartHistory) { persist ->
+                        try {
+                            catchManaged = actionLifecycleModule.restoreVerified(catchStored, accountId)
+                                as? ManagedFishingAutomationAction
+                                ?: throw IllegalStateException("Stored fishing CATCH is not managed as a fishing action.")
+                            typedRuntime.advanceAppliedActionToPreparedFollowup(execution, catchStored, outcome, persist)
+                        } catch (error: Exception) {
+                            // 다음 단계의 저장 실패는 이미 확인한 START 직접 적용을 취소하지 않는다.
+                            log.warn(
+                                "Fishing CATCH preparation failed after START applied accountId={} executionIdentity={}",
+                                accountId,
+                                startStored.executionIdentity,
+                                error,
+                            )
+                            typedRuntime.complete(execution, outcome, persist)
+                            TypedRuntimePreparation.Invalidated
+                        }
                     }
-                    append(startStored, startManaged, AutomationHistoryEventKind.ACTION_SUCCEEDED, "FISHING_START_APPLIED", "낚시 START 적용을 확인했습니다.")
+                    // START 직접 적용과 다음 CATCH의 제출 허용은 서로 다른 사실이다.
+                    if (preparation !is TypedRuntimePreparation.Ready) throw FishingCycleFlowStopped()
                     execution = preparation.execution
                     activeStored = catchStored
                     activeManaged = catchManaged
@@ -1539,18 +1567,13 @@ class UnifiedAutomationRunner @Autowired constructor(
                 ) {
                     val catchManaged = activeManaged as? ManagedFishingAutomationAction
                         ?: error("Prepared fishing CATCH is not managed as a fishing action.")
-                    acceptStep(catchManaged, activeStored, activeSelection, activeAttemptId, catch.response)
-                    typedRuntime.complete(
-                        execution,
-                        TypedRuntimeOutcome.ActionSucceeded("TYPED_FISHING_CYCLE_COMPLETED", selectedWarnings),
-                    )
-                    append(
-                        activeStored,
-                        activeManaged,
-                        AutomationHistoryEventKind.ACTION_SUCCEEDED,
-                        "FISHING_CATCH_APPLIED",
-                        "낚시 CATCH 적용을 확인해 한 번 낚시를 완료했습니다.",
-                    )
+                    val persistDirectResult = acceptStep(catchManaged, activeStored, activeSelection, activeAttemptId, catch.response)
+                    commitDirectResult(activeStored.executionIdentity, persistDirectResult, appendHistory = {
+                        recordFishingResult(decisionCycleId, activeStored, activeManaged,
+                            AutomationHistoryEventKind.ACTION_SUCCEEDED, "FISHING_CATCH_APPLIED",
+                            "낚시 CATCH 적용을 확인해 한 번 낚시를 완료했습니다.")
+                    }) { persist -> typedRuntime.complete(execution,
+                        TypedRuntimeOutcome.ActionSucceeded("TYPED_FISHING_CYCLE_COMPLETED", selectedWarnings), persist) }
                     handled = true
                 }
 
@@ -1592,18 +1615,13 @@ class UnifiedAutomationRunner @Autowired constructor(
                     command: FishingCycleCommand,
                     start: FishingCycleStepEvidence,
                 ) {
-                    acceptStep(startManaged, startStored, activeSelection, activeAttemptId, start.response)
-                    typedRuntime.complete(
-                        execution,
-                        TypedRuntimeOutcome.ActionSucceeded("TYPED_FISHING_WAITING_FOR_CATCH", selectedWarnings),
-                    )
-                    append(
-                        startStored,
-                        startManaged,
-                        AutomationHistoryEventKind.WAITING,
-                        "FISHING_WAITING_FOR_CATCH",
-                        "START 응답에 CATCH form이 없어 다음 판단에서 한 번만 다시 확인합니다.",
-                    )
+                    val persistDirectResult = acceptStep(startManaged, startStored, activeSelection, activeAttemptId, start.response)
+                    commitDirectResult(startStored.executionIdentity, persistDirectResult, appendHistory = {
+                        recordFishingResult(decisionCycleId, startStored, startManaged,
+                            AutomationHistoryEventKind.WAITING, "FISHING_WAITING_FOR_CATCH",
+                            "START 응답에 CATCH form이 없어 다음 판단에서 한 번만 다시 확인합니다.")
+                    }) { persist -> typedRuntime.complete(execution,
+                        TypedRuntimeOutcome.ActionSucceeded("TYPED_FISHING_WAITING_FOR_CATCH", selectedWarnings), persist) }
                     handled = true
                 }
             })
@@ -1614,6 +1632,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             discardUnauthorizedSubmission(accountId, execution, activeAttemptId)
             return
         } catch (error: Throwable) {
+            if (error is DirectResultPersistenceFailure) throw error
             error.findActionPreconditionChanged()?.let { changed ->
                 activeAttemptId?.let { attemptId ->
                     results.record(
@@ -1735,24 +1754,27 @@ class UnifiedAutomationRunner @Autowired constructor(
         val warning = "이전 요청 결과를 최대 5회 또는 2분 안에 확정하지 못해 해당 상태만 보류합니다. " +
             "성공 관측 ${successfulObservationCount}회 · 마지막 사유: $sanitizedReason"
         val evidence = AutomationActionEvidence.ResultUnobserved(observedAt, sanitizedReason)
-        results.holdUnresolved(accountId, stored, activeCheckpoint, evidence, successfulObservationCount, firstPendingAt)
-        decisionCycleId?.let { cycleId ->
-            decisionJournal?.appendActionResult(cycleId, actionTrace(
-                stored,
-                AutomationHistoryEventKind.SKIPPED,
-                TYPED_RECONCILIATION_BUDGET_EXHAUSTED,
-                warning,
-                descriptor = actionDescriptor,
-            ))
-        }
-        typedRuntime.complete(
+        completeReconciliation(
             execution,
             TypedRuntimeOutcome.AmbiguousHandoff(
                 warning,
                 TYPED_RECONCILIATION_BUDGET_EXHAUSTED,
                 successfulObservationCount,
             ),
-        )
+            persistResult = {
+                results.holdUnresolved(accountId, stored, activeCheckpoint, evidence, successfulObservationCount, firstPendingAt)
+            },
+        ) {
+            decisionCycleId?.let { cycleId ->
+                decisionJournal?.appendActionResult(cycleId, actionTrace(
+                    stored,
+                    AutomationHistoryEventKind.SKIPPED,
+                    TYPED_RECONCILIATION_BUDGET_EXHAUSTED,
+                    warning,
+                    descriptor = actionDescriptor,
+                ))
+            }
+        }
     }
 
     private fun releaseForConvergenceDirective(
@@ -1963,15 +1985,102 @@ class UnifiedAutomationRunner @Autowired constructor(
         message: String,
         nextRunAt: Instant?,
     ) {
-        if (decisionCycleId == null) return
         try {
-            decisionJournal?.appendActionResult(decisionCycleId,
-                actionTrace(stored, kind, code, message, nextRunAt, managed.descriptor,
-                    diagnosticContext = managed.diagnosticContext))
+            recordFishingResult(decisionCycleId, stored, managed, kind, code, message, nextRunAt)
         } catch (error: RuntimeException) {
             log.warn("Fishing result history unavailable accountId={} executionIdentity={} errorType={}",
                 accountId, stored.executionIdentity, error.javaClass.name)
         }
+    }
+
+    private fun completeReconciliation(
+        execution: TypedRuntimeExecutionRight,
+        outcome: TypedRuntimeOutcome,
+        convergenceRecheckAt: Instant? = null,
+        persistResult: () -> Unit = {},
+        appendHistory: () -> Unit,
+    ): TypedRuntimeProjection {
+        var accepted = false
+        val projection = typedRuntime.completeReconciliation(execution, outcome, convergenceRecheckAt) {
+            persistResult()
+            accepted = true
+        }
+        if (accepted) try {
+            typedRuntime.persistReconciliationHistory(execution, outcome, appendHistory)
+        } catch (error: RuntimeException) {
+            log.warn("Reconciliation history unavailable after result commit executionIdentity={} errorType={}",
+                execution.checkpoint?.storedAction?.executionIdentity, error.javaClass.name)
+        }
+        return projection
+    }
+
+    /** 직접 사실의 commit이 성공한 뒤에만 진단 이력을 파생한다. */
+    private fun <T> commitDirectResult(
+        executionIdentity: String,
+        persistResult: () -> Unit,
+        appendHistory: () -> Unit,
+        commit: (() -> Unit) -> T,
+    ): T {
+        var accepted = false
+        fun commitAttempt(attempt: Int): T {
+            accepted = false
+            var callbackFailure: RuntimeException? = null
+            var rollbackConfirmed = false
+            try {
+                return commit {
+                    var callbackSucceeded = false
+                    val synchronized = TransactionSynchronizationManager.isSynchronizationActive()
+                    if (synchronized) {
+                        TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
+                            override fun afterCompletion(status: Int) {
+                                rollbackConfirmed = status == TransactionSynchronization.STATUS_ROLLED_BACK
+                                if (callbackSucceeded && status == TransactionSynchronization.STATUS_COMMITTED) accepted = true
+                            }
+                        })
+                    }
+                    try {
+                        persistResult()
+                        callbackSucceeded = true
+                        if (!synchronized) accepted = true
+                    } catch (error: RuntimeException) {
+                        callbackFailure = error
+                        throw error
+                    }
+                }
+            } catch (error: Exception) {
+                if (attempt == 0 && callbackFailure === error && rollbackConfirmed) {
+                    log.warn("Retrying direct result DB write after confirmed rollback executionIdentity={}", executionIdentity)
+                    return commitAttempt(1)
+                }
+                throw DirectResultPersistenceFailure(error)
+            }
+        }
+        val result = commitAttempt(0)
+        // projection=false라도 원래 행동의 늦은 직접 사실은 수용될 수 있다.
+        if (accepted) try {
+            appendHistory()
+        } catch (error: RuntimeException) {
+            log.warn("Direct result history unavailable after commit executionIdentity={} errorType={}",
+                executionIdentity, error.javaClass.name)
+        }
+        return result
+    }
+
+    private class DirectResultPersistenceFailure(cause: Exception) : RuntimeException("Known direct result persistence failed.", cause)
+
+    private fun recordFishingResult(
+        decisionCycleId: Long?,
+        stored: StoredTypedAutomationAction,
+        managed: ManagedAutomationAction,
+        kind: AutomationHistoryEventKind,
+        code: String,
+        message: String,
+        nextRunAt: Instant? = null,
+    ) {
+        if (decisionCycleId == null) return
+        decisionJournal?.appendActionResult(decisionCycleId,
+            actionTrace(stored, kind, code, message, nextRunAt, managed.descriptor,
+                diagnosticContext = managed.diagnosticContext))
     }
 
     private fun actionTrace(

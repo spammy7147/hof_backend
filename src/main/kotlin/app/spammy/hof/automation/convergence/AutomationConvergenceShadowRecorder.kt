@@ -5,6 +5,7 @@ import java.time.Duration
 import java.time.Instant
 import java.util.UUID
 import org.springframework.stereotype.Repository
+import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 
 data class DurableShadowEvaluation(
@@ -38,7 +39,7 @@ object NoOpAutomationConvergenceShadowRecorder : AutomationConvergenceShadowReco
 }
 
 @Repository
-@Transactional
+@Transactional(propagation = Propagation.REQUIRES_NEW)
 class JpaAutomationConvergenceShadowRecorder(
     private val entityManager: EntityManager,
 ) : AutomationConvergenceShadowRecorder {

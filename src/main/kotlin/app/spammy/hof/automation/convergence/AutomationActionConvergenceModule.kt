@@ -5,6 +5,8 @@ import app.spammy.hof.automation.service.QuestAutomationSnapshot
 import java.time.Duration
 import java.time.Instant
 import org.springframework.stereotype.Service
+import org.slf4j.LoggerFactory
+import org.springframework.transaction.support.TransactionSynchronizationManager
 
 interface AutomationActionConvergenceModule {
     fun openSelection(
@@ -15,6 +17,8 @@ interface AutomationActionConvergenceModule {
     ): AutomationConvergenceSelection
     fun prepare(accountId: Long, selection: SelectedAutomationAction): ConvergenceDirective
     fun record(attemptId: Long, evidence: AutomationActionEvidence): ConvergenceDirective
+    fun record(attemptId: Long, evidence: AutomationActionEvidence, persistObservation: (ConvergenceDirective) -> Unit): ConvergenceDirective
+    fun recordLateApplication(accountId: Long, executionIdentity: String, evidence: AutomationActionEvidence.DirectApplied)
     fun observeGap(
         accountId: Long,
         selection: SelectedAutomationAction,
@@ -104,9 +108,57 @@ class DefaultAutomationActionConvergenceModule(
         return ConvergenceDirective.Submit(attempt.attemptId)
     }
 
-    override fun record(attemptId: Long, evidence: AutomationActionEvidence): ConvergenceDirective {
-        val record = requireNotNull(store.get(attemptId)) { "Convergence attempt $attemptId does not exist." }
-        check(record.active) { "Convergence attempt $attemptId is already terminal." }
+    override fun recordLateApplication(accountId: Long, executionIdentity: String, evidence: AutomationActionEvidence.DirectApplied) {
+        val existing = store.get(accountId, executionIdentity) ?: return
+        if (existing.active || existing.result in LATE_APPLICATION_RESULTS) {
+            record(existing.attemptId, evidence)
+        }
+    }
+
+    override fun record(attemptId: Long, evidence: AutomationActionEvidence): ConvergenceDirective =
+        requireNotNull(store.withLockedAttempt(attemptId) { record -> recordEvidence(record, evidence) }) {
+            "Convergence attempt $attemptId does not exist."
+        }
+
+    override fun record(
+        attemptId: Long,
+        evidence: AutomationActionEvidence,
+        persistObservation: (ConvergenceDirective) -> Unit,
+    ): ConvergenceDirective {
+        check(!TransactionSynchronizationManager.isActualTransactionActive()) {
+            "Observation persistence must start outside a transaction."
+        }
+        val (next, persisted) = requireNotNull(store.withLockedAttempt(attemptId) { record ->
+            if (record.result == ActionConvergenceResult.APPLIED) {
+                ConvergenceDirective.ContinueSelection to null
+            } else {
+                recordEvidence(record, evidence) to record.copy()
+            }
+        }) {
+            "Convergence attempt $attemptId does not exist."
+        }
+        // 판정을 먼저 commit한다. 이력 transaction 실패가 수렴 결과를 취소하지 않는다.
+        if (persisted != null) try {
+            store.withLockedAttempt(attemptId) { current ->
+                if (current.result == persisted.result && current.reasonCode == persisted.reasonCode &&
+                    current.successfulObservationCount == persisted.successfulObservationCount
+                ) persistObservation(next)
+            }
+        } catch (error: RuntimeException) {
+            LoggerFactory.getLogger(javaClass).warn(
+                "Convergence observation history unavailable after result commit attemptId={} errorType={}",
+                attemptId, error.javaClass.name,
+            )
+        }
+        return next
+    }
+
+    private fun recordEvidence(record: ActionConvergenceRecord, evidence: AutomationActionEvidence): ConvergenceDirective {
+        if (record.result == ActionConvergenceResult.APPLIED) return ConvergenceDirective.ContinueSelection
+        // 관측 예산 종료나 최신 상태에 따른 대체는 원래 행동의 직접 적용을 부정하지 않는다.
+        val lateDirectApplication = evidence is AutomationActionEvidence.DirectApplied &&
+            record.result in LATE_APPLICATION_RESULTS
+        check(record.active || lateDirectApplication) { "Convergence attempt ${record.attemptId} is already terminal." }
         val unsubmittedGate = evidence is AutomationActionEvidence.BattleGateRequired && !evidence.submissionAttempted
         if (record.submittedAt == null && !record.selection.observationOnly && !unsubmittedGate) {
             record.submittedAt = evidence.capturedAt
@@ -253,13 +305,14 @@ class DefaultAutomationActionConvergenceModule(
         reasonCode: String,
     ): Boolean {
         val active = store.findActive(accountId, selection.scope)
-            ?.takeIf { record ->
-                record.selection.executionIdentity == selection.executionIdentity &&
-                    record.submittedAt == null
-            }
             ?: return false
-        terminal(active, ActionConvergenceResult.NOT_APPLIED, reasonCode, discardedAt)
-        return true
+        return store.withLockedAttempt(active.attemptId) { current ->
+            if (!current.active || current.selection.executionIdentity != selection.executionIdentity || current.submittedAt != null) {
+                return@withLockedAttempt false
+            }
+            terminal(current, ActionConvergenceResult.NOT_APPLIED, reasonCode, discardedAt)
+            true
+        } ?: false
     }
 
     override fun retryUnsubmitted(
@@ -280,21 +333,23 @@ class DefaultAutomationActionConvergenceModule(
                 selection.scope,
             )
         }
-        val existing = store.createOrGet(accountId, selection, retriedAt)
-        if (
-            existing.selection.executionIdentity != selection.executionIdentity ||
-            existing.result != ActionConvergenceResult.NOT_APPLIED ||
-            existing.submittedAt != null
-        ) return ConvergenceDirective.ContinueSelection
-        existing.result = ActionConvergenceResult.PENDING
-        existing.successfulObservationCount = 0
-        existing.firstPendingAt = null
-        existing.nextProbeAt = null
-        existing.reasonCode = "UNSUBMITTED_RETRY_PREPARED"
-        existing.finishedAt = null
-        existing.updatedAt = retriedAt
-        store.save(existing)
-        return ConvergenceDirective.Submit(existing.attemptId)
+        val attempt = store.createOrGet(accountId, selection, retriedAt)
+        return store.withLockedAttempt(attempt.attemptId) { existing ->
+            if (
+                existing.selection.executionIdentity != selection.executionIdentity ||
+                existing.result != ActionConvergenceResult.NOT_APPLIED ||
+                existing.submittedAt != null
+            ) return@withLockedAttempt ConvergenceDirective.ContinueSelection
+            existing.result = ActionConvergenceResult.PENDING
+            existing.successfulObservationCount = 0
+            existing.firstPendingAt = null
+            existing.nextProbeAt = null
+            existing.reasonCode = "UNSUBMITTED_RETRY_PREPARED"
+            existing.finishedAt = null
+            existing.updatedAt = retriedAt
+            store.save(existing)
+            ConvergenceDirective.Submit(existing.attemptId)
+        } ?: ConvergenceDirective.ContinueSelection
     }
 
     override fun holdUnresolved(
@@ -308,21 +363,19 @@ class DefaultAutomationActionConvergenceModule(
             selection.baselineFingerprint in
             store.findSuppressedBaselines(accountId)[selection.scope].orEmpty()
         ) return ConvergenceDirective.ContinueSelection
-        val record = store.createOrGet(accountId, selection, evidence.capturedAt)
-        if (!record.active) return ConvergenceDirective.ContinueSelection
-        evidenceCaseRecorder.record(record, evidence, "PENDING_BUDGET_EXHAUSTED")
-        record.successfulObservationCount = successfulObservationCount
-        record.firstPendingAt = firstPendingAt
-        return terminal(
-            record,
-            if (selection.actionKind.battle) {
-                ActionConvergenceResult.RESULT_UNOBSERVED
-            } else {
-                ActionConvergenceResult.HELD
-            },
-            "PENDING_BUDGET_EXHAUSTED",
-            evidence.capturedAt,
-        )
+        val attempt = store.createOrGet(accountId, selection, evidence.capturedAt)
+        return store.withLockedAttempt(attempt.attemptId) { record ->
+            if (!record.active) return@withLockedAttempt ConvergenceDirective.ContinueSelection
+            evidenceCaseRecorder.record(record, evidence, "PENDING_BUDGET_EXHAUSTED")
+            record.successfulObservationCount = successfulObservationCount
+            record.firstPendingAt = firstPendingAt
+            terminal(
+                record,
+                if (selection.actionKind.battle) ActionConvergenceResult.RESULT_UNOBSERVED else ActionConvergenceResult.HELD,
+                "PENDING_BUDGET_EXHAUSTED",
+                evidence.capturedAt,
+            )
+        } ?: ConvergenceDirective.ContinueSelection
     }
 
     override fun requireBattleGate(
@@ -339,14 +392,15 @@ class DefaultAutomationActionConvergenceModule(
         val now = timeProvider.now()
         store.normalizeOrphans(accountId, now)
         val due = store.findDue(accountId, now) ?: return ConvergenceDirective.ContinueSelection
-        if (budgetExhausted(due, now)) {
-            return terminal(due, ActionConvergenceResult.HELD, "PENDING_BUDGET_EXHAUSTED", now)
-        }
-        return ConvergenceDirective.Probe(
-            due.attemptId,
-            due.selection.executionIdentity,
-            due.selection.entryId,
-        )
+        return store.withLockedAttempt(due.attemptId) { current ->
+            if (!current.active || current.result != ActionConvergenceResult.PENDING || current.nextProbeAt?.isAfter(now) == true) {
+                return@withLockedAttempt ConvergenceDirective.ContinueSelection
+            }
+            if (budgetExhausted(current, now)) {
+                return@withLockedAttempt terminal(current, ActionConvergenceResult.HELD, "PENDING_BUDGET_EXHAUSTED", now)
+            }
+            ConvergenceDirective.Probe(current.attemptId, current.selection.executionIdentity, current.selection.entryId)
+        } ?: ConvergenceDirective.ContinueSelection
     }
 
     override fun releaseBattleGate(accountId: Long, resolvedAt: Instant): Boolean =
@@ -428,5 +482,10 @@ class DefaultAutomationActionConvergenceModule(
 
     private companion object {
         val PROBE_INTERVAL: Duration = Duration.ofSeconds(10)
+        val LATE_APPLICATION_RESULTS = setOf(
+            ActionConvergenceResult.HELD,
+            ActionConvergenceResult.RESULT_UNOBSERVED,
+            ActionConvergenceResult.SUPERSEDED,
+        )
     }
 }

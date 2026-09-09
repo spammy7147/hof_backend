@@ -230,14 +230,14 @@ class TypedAutomationLifecycleBridge(
         if (state.authSuspended) return false
         if (state.lifecycleStatus != TypedAutomationLifecycle.RUNNING) return false
         val now = timeProvider.now()
-        when (discardActiveBattleActionAfterCaptcha(accountId, now)) {
+        when (discardActiveBattleActionAfterCaptcha(state, now)) {
             CaptchaActionDisposition.BATTLE_DISCARDED -> clearRuntime(state, now)
             CaptchaActionDisposition.NO_ACTIVE_ACTION -> {
                 state.nextAttemptAt = null
                 state.waitReason = null
                 state.updatedAt = now
             }
-            CaptchaActionDisposition.NON_BATTLE_PRESERVED -> Unit
+            CaptchaActionDisposition.ACTIVE_ACTION_PRESERVED -> Unit
         }
         clearPreflight(accountId, now)
         makeParkedRaidCheckDue(accountId, now)
@@ -315,13 +315,14 @@ class TypedAutomationLifecycleBridge(
     }
 
     private fun discardActiveBattleActionAfterCaptcha(
-        accountId: Long,
+        state: TypedAutomationRuntimeStateEntity,
         now: java.time.Instant,
     ): CaptchaActionDisposition {
+        val accountId = state.accountId
         val active = typed.findActiveTypedAction(accountId)
             ?: return CaptchaActionDisposition.NO_ACTIVE_ACTION
         if (active.actionKind !in BATTLE_ACTION_KINDS) {
-            return CaptchaActionDisposition.NON_BATTLE_PRESERVED
+            return CaptchaActionDisposition.ACTIVE_ACTION_PRESERVED
         }
         val action = typed.lockTypedAction(active.id)
             ?.takeIf {
@@ -334,11 +335,25 @@ class TypedAutomationLifecycleBridge(
                     )
             }
             ?: return CaptchaActionDisposition.NO_ACTIVE_ACTION
+        // 답안 해소는 이미 전송 중인 전투의 결과가 아니다. 유효한 실행권의 직접 응답을
+        // 기다리고, 해당 실행이 기존 수렴·종료 경로에서 후속 판단을 결정하게 한다.
+        if (action.status == TypedAutomationActionStatus.SUBMITTING &&
+            state.leaseToken == action.leaseToken && state.leaseUntil?.isAfter(now) == true
+        ) return CaptchaActionDisposition.ACTIVE_ACTION_PRESERVED
         action.status = TypedAutomationActionStatus.FAILED
         action.nextAttemptAt = null
         action.lastError = "캡차 해소 뒤 저장된 전투를 종료했습니다. 최신 HOF 상태에서 다시 판단합니다."
         action.finishedAt = now
         action.updatedAt = now
+        // 실행권을 폐기한 행동은 작업권도 놓고, 진행 정보는 새 판단을 위해 보존한다.
+        workSessions.lockOpen(accountId)
+            .filter { it.entry.id == action.entry?.id && it.status == AutomationWorkStatus.RUNNING }
+            .forEach { session ->
+                session.transitionTo(AutomationWorkStatus.YIELDED_PRIORITY)
+                session.nextCheckAt = now
+                session.updatedAt = now
+                workSessionCommands.save(session)
+            }
         return CaptchaActionDisposition.BATTLE_DISCARDED
     }
 
@@ -413,7 +428,7 @@ class TypedAutomationLifecycleBridge(
     private companion object {
         enum class CaptchaActionDisposition {
             BATTLE_DISCARDED,
-            NON_BATTLE_PRESERVED,
+            ACTIVE_ACTION_PRESERVED,
             NO_ACTIVE_ACTION,
         }
 

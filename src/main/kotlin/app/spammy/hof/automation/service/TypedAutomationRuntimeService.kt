@@ -309,14 +309,57 @@ class TypedAutomationRuntimeService(
         )
     }
 
+    /** 다음 단계 준비와 원래 START의 직접 증거를 함께 commit한다. */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun advanceAppliedActionToPreparedFollowup(
+        execution: TypedRuntimeExecutionRight,
+        followup: StoredTypedAutomationAction,
+        outcome: TypedRuntimeOutcome.ActionSucceeded,
+        persistDirectResult: () -> Unit,
+    ): TypedRuntimePreparation {
+        val preparation = advanceAppliedActionToPreparedFollowup(execution, followup)
+        if (preparation is TypedRuntimePreparation.Ready) {
+            persistDirectResult()
+        } else {
+            // 중단 요청으로 START만 종결한 경우에도 직접 사실은 한 번 저장한다.
+            completeResult(execution, outcome, null, persistDirectResult)
+        }
+        return preparation
+    }
+
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun complete(
         execution: TypedRuntimeExecutionRight,
         outcome: TypedRuntimeOutcome,
         convergenceRecheckAt: Instant? = null,
+    ): TypedRuntimeProjection = completeResult(execution, outcome, convergenceRecheckAt, null)
+
+    /** 직접 응답의 귀속을 행동 상태와 같은 runtime 잠금 안에서 저장한다. */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun complete(
+        execution: TypedRuntimeExecutionRight,
+        outcome: TypedRuntimeOutcome,
+        persistDirectResult: () -> Unit,
+    ): TypedRuntimeProjection {
+        require(outcome is TypedRuntimeOutcome.ActionSucceeded || outcome is TypedRuntimeOutcome.SharedCooldownHandled)
+        return completeResult(execution, outcome, null, persistDirectResult)
+    }
+
+    private fun completeResult(
+        execution: TypedRuntimeExecutionRight,
+        outcome: TypedRuntimeOutcome,
+        convergenceRecheckAt: Instant?,
+        persistDirectResult: (() -> Unit)?,
     ): TypedRuntimeProjection {
         val right = execution.persistedRight()
-        val state = fencedState(right.accountId, right.leaseToken) ?: return TypedRuntimeProjection(false)
+        val state = fencedState(right.accountId, right.leaseToken) ?: run {
+            if (recordLateActionResult(right, outcome)) persistDirectResult?.invoke()
+            return TypedRuntimeProjection(false)
+        }
+        if (completeRecordedAction(execution)) {
+            persistDirectResult?.invoke()
+            return TypedRuntimeProjection(true)
+        }
         val projection = when (outcome) {
             is TypedRuntimeOutcome.RoundCompleted -> {
                 val next = timeProvider.now().plus(
@@ -462,7 +505,85 @@ class TypedAutomationRuntimeService(
             // 새 판단을 깨우는 예약과 특정 결과를 미래에 재확인하는 예약은 서로 대체하지 않는다.
             outbox.enqueue(right.accountId, "TYPED_CONVERGENCE_PROBE", convergenceRecheckAt)
         }
+        if (persistDirectResult != null && (projection.applied || recordLateActionResult(right, outcome))) {
+            persistDirectResult()
+        }
         return projection
+    }
+
+    /**
+     * 재관측의 종결 상태와 보류 쓰기를 같은 실행권 잠금에서 확정한다.
+     * persistResult는 DB 결과 쓰기만 수행한다. 원격 조회와 작업 진전은 이 호출 전에 끝낸다.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun completeReconciliation(
+        execution: TypedRuntimeExecutionRight,
+        outcome: TypedRuntimeOutcome,
+        convergenceRecheckAt: Instant? = null,
+        persistResult: () -> Unit,
+    ): TypedRuntimeProjection {
+        val right = execution.persistedRight()
+        fencedState(right.accountId, right.leaseToken) ?: return TypedRuntimeProjection(false)
+        if (completeRecordedAction(execution)) return TypedRuntimeProjection(true)
+        val projection = complete(execution, outcome, convergenceRecheckAt)
+        if (projection.applied) persistResult()
+        return projection
+    }
+
+    /** commit된 재관측 결과가 여전히 유효할 때 진단 이력만 별도로 저장한다. */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun persistReconciliationHistory(
+        execution: TypedRuntimeExecutionRight,
+        outcome: TypedRuntimeOutcome,
+        persistHistory: () -> Unit,
+    ) {
+        val right = execution.persistedRight()
+        queryRepository.lockRuntimeState(right.accountId) ?: return
+        val action = right.actionId?.let(queryRepository::lockTypedAction) ?: return
+        val expected = when (outcome) {
+            is TypedRuntimeOutcome.ReconciliationApplied -> TypedAutomationActionStatus.SUCCEEDED
+            is TypedRuntimeOutcome.ReconciliationDeferred -> TypedAutomationActionStatus.RECONCILING
+            is TypedRuntimeOutcome.AmbiguousHandoff -> TypedAutomationActionStatus.AMBIGUOUS
+            is TypedRuntimeOutcome.ActionSuperseded -> TypedAutomationActionStatus.FAILED
+            else -> return
+        }
+        if (action.account.id != right.accountId || action.leaseToken != right.leaseToken ||
+            action.executionIdentity != right.checkpoint?.storedAction?.executionIdentity || action.status != expected
+        ) return
+        persistHistory()
+    }
+
+    /** 복구 worker가 실행권을 얻은 뒤 도착한 직접 결과도 원래 행동에 보존한다. */
+    private fun recordLateActionResult(right: PersistedTypedRuntimeExecutionRight, outcome: TypedRuntimeOutcome): Boolean {
+        if (outcome !is TypedRuntimeOutcome.ActionSucceeded && outcome !is TypedRuntimeOutcome.SharedCooldownHandled) return false
+        val action = right.actionId?.let(queryRepository::lockTypedAction) ?: return false
+        if (action.account.id != right.accountId ||
+            action.executionIdentity != right.checkpoint?.storedAction?.executionIdentity || action.submittedAt == null ||
+            action.status !in setOf(TypedAutomationActionStatus.RECONCILING, TypedAutomationActionStatus.FAILED, TypedAutomationActionStatus.AMBIGUOUS, TypedAutomationActionStatus.SUCCEEDED)
+        ) return false
+        if (action.status == TypedAutomationActionStatus.SUCCEEDED) return true
+        val now = timeProvider.now()
+        action.status = TypedAutomationActionStatus.SUCCEEDED
+        action.lastError = null
+        action.nextAttemptAt = null
+        action.finishedAt = now
+        action.updatedAt = now
+        return true
+    }
+
+    /** 저장된 직접 성공을 재관측으로 되돌리지 않고 현재 복구 실행권만 놓는다. */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun completeRecordedAction(execution: TypedRuntimeExecutionRight): Boolean {
+        val right = execution.persistedRight()
+        val actionId = right.actionId ?: return false
+        fencedState(right.accountId, right.leaseToken) ?: return false
+        val action = queryRepository.lockTypedAction(actionId) ?: return false
+        if (action.account.id != right.accountId || action.leaseToken != right.leaseToken ||
+            action.status != TypedAutomationActionStatus.SUCCEEDED
+        ) return false
+        val active = queryRepository.findActiveTypedAction(right.accountId)
+        if (active != null && active.id != actionId) return false
+        return releaseAndEnqueueWake(right.accountId, right.leaseToken, "TYPED_DIRECT_RESULT_RECOVERED")
     }
 
     private fun TypedRuntimeProjection.enqueueNext(

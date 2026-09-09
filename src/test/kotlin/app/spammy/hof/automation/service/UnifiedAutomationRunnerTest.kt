@@ -120,6 +120,25 @@ class UnifiedAutomationRunnerTest {
             .thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
         Mockito.`when`(runtime.complete(anyExecution(), anyOutcome(), Mockito.nullable(Instant::class.java)))
             .thenReturn(TypedRuntimeProjection(true))
+        Mockito.doAnswer { invocation ->
+            invocation.getArgument<() -> Unit>(2).invoke()
+            runtime.complete(invocation.getArgument(0), invocation.getArgument(1))
+        }.`when`(runtime).complete(anyExecution(), anyOutcome(), Mockito.any<() -> Unit>() ?: {})
+        Mockito.doAnswer { invocation ->
+            invocation.getArgument<() -> Unit>(3).invoke()
+            runtime.complete(invocation.getArgument(0), invocation.getArgument(1), invocation.getArgument<Instant?>(2))
+        }.`when`(runtime).completeReconciliation(anyExecution(), anyOutcome(), Mockito.any(), Mockito.any<() -> Unit>() ?: {})
+        Mockito.doAnswer { invocation ->
+            invocation.getArgument<() -> Unit>(2).invoke()
+            null
+        }.`when`(runtime).persistReconciliationHistory(anyExecution(), anyOutcome(), Mockito.any<() -> Unit>() ?: {})
+        Mockito.doAnswer { invocation ->
+            val preparation = runtime.advanceAppliedActionToPreparedFollowup(invocation.getArgument(0), invocation.getArgument(1))
+            invocation.getArgument<() -> Unit>(3).invoke()
+            preparation
+        }.`when`(runtime).advanceAppliedActionToPreparedFollowup(anyExecution(), anyStoredAction(),
+            Mockito.any(TypedRuntimeOutcome.ActionSucceeded::class.java) ?: TypedRuntimeOutcome.ActionSucceeded("test"),
+            Mockito.any<() -> Unit>() ?: {})
     }
 
     @Test
@@ -359,7 +378,9 @@ class UnifiedAutomationRunnerTest {
             Mockito.verify(catchManaged).applyLegacyExecution(anyTypedExecution())
             Mockito.verify(startManaged, Mockito.never()).applyPolicyAcceptedExecution(anyTypedExecution())
             Mockito.verify(catchManaged, Mockito.never()).applyPolicyAcceptedExecution(anyTypedExecution())
-            Mockito.verifyNoInteractions(convergence)
+            // 기존 미관측 결과의 늦은 귀속은 허용하지만 새 ACTIVE 선택은 만들지 않는다.
+            Mockito.verify(convergence, Mockito.never()).prepare(Mockito.eq(7L), anyConvergenceSelection())
+            Mockito.verify(convergence, Mockito.never()).record(Mockito.anyLong(), anyConvergenceEvidence())
         }
         if (mode == AutomationConvergenceMode.SHADOW) {
             Mockito.verify(shadow, Mockito.times(2)).observe(
@@ -2894,7 +2915,16 @@ class UnifiedAutomationRunnerTest {
             convergenceSelectionFactory, storedConvergenceActionLoader, timeProvider,
             rollout, shadowEvaluator, evidenceInterpreter,
         ),
-    )
+    ).also {
+        convergenceModule?.takeIf { Mockito.mockingDetails(it).isMock }?.let { module ->
+            Mockito.doAnswer { invocation ->
+                val next = module.record(invocation.getArgument(0), invocation.getArgument(1))
+                invocation.getArgument<(ConvergenceDirective) -> Unit>(2).invoke(next)
+                next
+            }.`when`(module).record(Mockito.anyLong(), anyConvergenceEvidence(),
+                Mockito.any<(ConvergenceDirective) -> Unit>() ?: {})
+        }
+    }
 
     private fun capturedOutcome(): TypedRuntimeOutcome {
         val captor = ArgumentCaptor.forClass(TypedRuntimeOutcome::class.java)

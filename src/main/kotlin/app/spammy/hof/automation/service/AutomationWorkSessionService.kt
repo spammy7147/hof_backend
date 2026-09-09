@@ -33,17 +33,17 @@ interface AutomationWorkLifecycle {
         holdMessage: String? = null,
     )
     fun triggerRaidConfigurationCheck(accountId: Long)
-    fun completeBattleMapAction(accountId: Long, entryId: Long, categoryId: String, mapCode: String)
-    fun completeAdventureAction(accountId: Long, entryId: Long, categoryId: String, mapCode: String)
+    fun completeBattleMapAction(accountId: Long, entryId: Long, categoryId: String, mapCode: String, executionIdentity: String? = null)
+    fun completeAdventureAction(accountId: Long, entryId: Long, categoryId: String, mapCode: String, executionIdentity: String? = null)
     fun waitFishingCycle(
         accountId: Long,
         entryId: Long,
         nextCheckAt: java.time.Instant?,
         holdMessage: String,
     )
-    fun completeFishingCycle(accountId: Long, entryId: Long)
-    fun completeUnionCycle(accountId: Long, entryId: Long)
-    fun completeRaidCycle(accountId: Long, entryId: Long)
+    fun completeFishingCycle(accountId: Long, entryId: Long, executionIdentity: String? = null)
+    fun completeUnionCycle(accountId: Long, entryId: Long, executionIdentity: String? = null)
+    fun completeRaidCycle(accountId: Long, entryId: Long, executionIdentity: String? = null)
     fun stopForConfigurationChange(
         accountId: Long,
         entryId: Long,
@@ -340,8 +340,9 @@ class AutomationWorkSessionService(
         entryId: Long,
         categoryId: String,
         mapCode: String,
+        executionIdentity: String?,
     ) {
-        requireRunningRuntime(accountId)
+        if (!isRunningRuntime(accountId, executionIdentity)) return
         val targetKey = "$categoryId/$mapCode"
         val session = queries.lockOpen(accountId).singleOrNull {
             it.status == AutomationWorkStatus.RUNNING &&
@@ -365,8 +366,9 @@ class AutomationWorkSessionService(
         entryId: Long,
         categoryId: String,
         mapCode: String,
+        executionIdentity: String?,
     ) {
-        requireRunningRuntime(accountId)
+        if (!isRunningRuntime(accountId, executionIdentity)) return
         val targetKey = "$categoryId/$mapCode"
         val session = queries.lockOpen(accountId).singleOrNull {
             it.status == AutomationWorkStatus.RUNNING &&
@@ -412,8 +414,8 @@ class AutomationWorkSessionService(
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    override fun completeFishingCycle(accountId: Long, entryId: Long) {
-        requireRunningRuntime(accountId)
+    override fun completeFishingCycle(accountId: Long, entryId: Long, executionIdentity: String?) {
+        if (!isRunningRuntime(accountId, executionIdentity)) return
         // 결과 확인을 위해 작업권을 놓은 낚시도 최신 종료 관측으로 닫는다.
         val session = queries.lockOpen(accountId).singleOrNull {
             it.entry.id == entryId &&
@@ -431,8 +433,8 @@ class AutomationWorkSessionService(
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    override fun completeUnionCycle(accountId: Long, entryId: Long) {
-        requireRunningRuntime(accountId)
+    override fun completeUnionCycle(accountId: Long, entryId: Long, executionIdentity: String?) {
+        if (!isRunningRuntime(accountId, executionIdentity)) return
         val session = queries.lockOpen(accountId).singleOrNull {
             it.status == AutomationWorkStatus.RUNNING &&
                 it.entry.id == entryId &&
@@ -449,8 +451,8 @@ class AutomationWorkSessionService(
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    override fun completeRaidCycle(accountId: Long, entryId: Long) {
-        requireRunningRuntime(accountId)
+    override fun completeRaidCycle(accountId: Long, entryId: Long, executionIdentity: String?) {
+        if (!isRunningRuntime(accountId, executionIdentity)) return
         val session = queries.lockOpen(accountId).singleOrNull {
             it.status == AutomationWorkStatus.RUNNING &&
                 it.entry.id == entryId &&
@@ -487,11 +489,19 @@ class AutomationWorkSessionService(
     }
 
     private fun requireRunningRuntime(accountId: Long) {
+        check(isRunningRuntime(accountId)) { "Automation runtime is not running for account $accountId." }
+    }
+
+    private fun isRunningRuntime(accountId: Long, executionIdentity: String? = null): Boolean {
         val runtime = typed.lockRuntimeState(accountId)
             ?: throw IllegalStateException("Automation runtime does not exist for account $accountId.")
-        check(runtime.lifecycleStatus in setOf(TypedAutomationLifecycle.RUNNING, TypedAutomationLifecycle.DRAINING)) {
-            "Automation runtime is not running for account $accountId."
-        }
+        if (runtime.lifecycleStatus !in setOf(TypedAutomationLifecycle.RUNNING, TypedAutomationLifecycle.DRAINING)) return false
+        // 직접 결과는 해당 행동이 아직 작업권을 가진 경우에만 작업을 닫는다.
+        // identity 없는 호출은 현재 권위 관측으로 대기 작업을 닫는 기존 경로다.
+        if (executionIdentity == null) return true
+        val action = typed.findActiveTypedAction(accountId) ?: return false
+        return action.executionIdentity == executionIdentity &&
+            runtime.leaseToken != null && action.leaseToken == runtime.leaseToken
     }
 
     private fun requireSession(accountId: Long, sessionId: Long): AutomationWorkSessionEntity =

@@ -184,7 +184,7 @@ class AutomationResultCoordinator(
         return DirectResult.Accepted(applyAccepted(managed, execution, attemptId))
     }
 
-    /** 낚시는 직접 적용만 허용하고 단계 projection 직후 증거를 종결한다. */
+    /** 낚시는 직접 적용만 허용한다. 단계 projection 뒤 finishDirect로 증거를 종결한다. */
     fun applyFishingDirect(
         managed: ManagedFishingAutomationAction,
         execution: TypedAutomationExecution,
@@ -196,7 +196,6 @@ class AutomationResultCoordinator(
             return DirectResult.Unapplied(unconfirmedWarning, false, record(attemptId, requireNotNull(evidence)))
         }
         val applied = applyAccepted(managed, execution, attemptId)
-        attemptId?.let { record(it, requireNotNull(evidence)) }
         return DirectResult.Accepted(applied)
     }
 
@@ -217,38 +216,39 @@ class AutomationResultCoordinator(
     /** 호출자가 도메인 후처리를 마친 뒤에만 적용 증거를 종결한다. */
     fun finishDirect(
         accountId: Long,
-        identity: String,
+        stored: StoredTypedAutomationAction,
         evidence: AutomationActionEvidence?,
         attemptId: Long?,
         domain: TypedAutomationExecution,
     ) {
         evidence?.let {
-            observeShadow(accountId, identity, it,
+            observeShadow(accountId, stored.executionIdentity, it,
                 if (domain is TypedAutomationExecution.SharedCooldown) LegacyConvergenceDecision.SUPERSEDED else LegacyConvergenceDecision.APPLIED)
         }
         attemptId?.let {
             convergenceModule?.record(it, requireNotNull(evidence) { "Active convergence execution is missing production evidence." })
+        }
+        if (attemptId == null) {
+            val applied = evidence ?: directEvidence(convergenceSelectionFactory?.create(stored), domain)
+            if (applied is AutomationActionEvidence.DirectApplied) {
+                convergenceModule?.recordLateApplication(accountId, stored.executionIdentity, applied)
+            }
         }
     }
 
     fun probe(accountId: Long, directive: ConvergenceDirective.Probe): ConvergenceDirective? {
         val convergence = convergenceModule ?: return null
         val observation = observeStoredConvergenceAction(accountId, directive)
-        val next = convergence.record(directive.attemptId, observation.evidence)
-        journalFishingObservation(accountId, observation, next)
-        return next
+        return convergence.record(directive.attemptId, observation.evidence) { next ->
+            journalFishingObservation(accountId, observation, next)
+        }
     }
 
     private fun journalFishingObservation(accountId: Long, observation: StoredObservation, next: ConvergenceDirective) {
         val stored = observation.stored
         if (stored?.payload is StoredTypedActionPayload.FishingTown) {
-            try {
-                decisionJournal?.appendResultObservation(accountId,
-                    AutomationDecisionDiagnostics.fishingProbe(stored, observation.diagnosticContext, observation.evidence, next))
-            } catch (error: RuntimeException) {
-                log.warn("Fishing observation history unavailable accountId={} executionIdentity={} errorType={}",
-                    accountId, stored.executionIdentity, error.javaClass.name)
-            }
+            decisionJournal?.appendResultObservation(accountId,
+                AutomationDecisionDiagnostics.fishingProbe(stored, observation.diagnosticContext, observation.evidence, next))
         }
     }
 
@@ -268,7 +268,7 @@ class AutomationResultCoordinator(
         val directive = when (val prepared = convergence.prepare(accountId, selection)) {
             is ConvergenceDirective.Submit -> {
                 val observation = observeReconciliation(accountId, managed, selection, stored.executionIdentity, ReconciliationSource.LEGACY_CHECKPOINT)
-                convergence.record(prepared.attemptId, observation).also { next ->
+                convergence.record(prepared.attemptId, observation) { next ->
                     journalFishingObservation(accountId, StoredObservation(observation, stored, managed.diagnosticContext), next)
                 }
             }
