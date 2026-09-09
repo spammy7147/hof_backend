@@ -380,8 +380,9 @@ class AutomationActionConvergenceModuleTest {
         assertEquals(ActionConvergenceResult.SUPERSEDED, store.get(supersededId)?.result)
     }
 
-    @Test
-    fun `전투 캡차는 전투 관문을 열고 비전투 제출은 계속 허용한다`() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = [false, true])
+    fun `전투 캡차는 전송 여부를 보존하며 관문을 열고 비전투 제출은 계속 허용한다`(submissionAttempted: Boolean) {
         val battle = battleSelection("union-entry")
         val attemptId = assertIs<ConvergenceDirective.Submit>(module.prepare(7L, battle)).attemptId
 
@@ -392,10 +393,12 @@ class AutomationActionConvergenceModuleTest {
                     capturedAt = clock.now(),
                     challengeId = 44L,
                     reason = "CAPTCHA_REQUIRED",
+                    submissionAttempted = submissionAttempted,
                 ),
             ),
         )
         assertEquals(ActionConvergenceResult.NOT_APPLIED, store.get(attemptId)?.result)
+        assertEquals(if (submissionAttempted) clock.now() else null, store.get(attemptId)?.submittedAt)
         assertIs<ConvergenceDirective.BattleGateWait>(module.prepare(7L, battleSelection("map-entry")))
         assertIs<ConvergenceDirective.Submit>(module.prepare(7L, questSelection("quest-noncombat")))
 

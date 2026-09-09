@@ -1,6 +1,7 @@
 package app.spammy.hof.battle.service
 
 import app.spammy.hof.account.entity.HofCookieEntity
+import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.CookieQueryRepository
 import app.spammy.hof.battle.dto.BattleResultResponse
@@ -38,14 +39,17 @@ import org.springframework.stereotype.Service
 import org.springframework.transaction.support.TransactionSynchronizationManager
 
 /** 패턴 요청은 실패했지만 전투 요청 호출에는 아직 도달하지 않았다는 증거다. */
-class BattleNotSubmittedException(cause: IOException) : RuntimeException(
-    "패턴 불러오기 중 통신에 실패했습니다. 전투는 보내지 않았으며 최신 상태에서 다시 판단합니다.",
+class BattleNotSubmittedException(cause: Throwable) : RuntimeException(
+    "패턴 불러오기 결과를 확인하지 못했습니다. 전투는 보내지 않았으며 최신 상태에서 다시 판단합니다.",
     cause,
 ) {
     companion object {
         const val REASON_CODE = "BATTLE_PATTERN_PRELOAD_FAILED"
     }
 }
+
+/** 답안 요청은 유지하되 실제 전투 호출 전에 발생한 관문임을 전달한다. */
+class BattlePreloadCaptchaException : ApiException(ErrorCode.CAPTCHA_REQUIRED, "캡차 또는 통행증 입력이 필요합니다.")
 
 @Service
 /**
@@ -178,8 +182,11 @@ class BattleRunService(
                     response = preloadResponse,
                     message = "HOF 로그인 세션이 만료되어 패턴을 로드하지 못했습니다.",
                 )
-                if (preloadResponse.statusCode in 200..399) {
-                    session.recordLoaded(patternLoad)
+                requireNoCaptcha(account, preloadResponse, preload = true)
+                if (!session.recordLoaded(patternLoad, preloadResponse)) {
+                    throw BattleNotSubmittedException(ApiException(
+                        ErrorCode.HOF_REQUEST_FAILED, "원본 서버의 패턴 불러오기 응답을 확인하지 못했습니다.",
+                    ))
                 }
             }
             gateway.execute(
@@ -198,21 +205,7 @@ class BattleRunService(
             response = battleResponse,
             message = "HOF 로그인 세션이 만료되어 전투를 진행하지 못했습니다.",
         )
-        val captchaChallenge = captchaService.detectAndRecord(
-            account = account,
-            html = battleResponse.body,
-            sourceUrl = battleResponse.finalUrl,
-        )
-        if (captchaChallenge != null) {
-            log.warn(
-                "Battle run paused by captcha accountId={} categoryId={} mapCode={} captchaId={}",
-                account.id,
-                category.value,
-                mapCode,
-                captchaChallenge.id,
-            )
-            throw ApiException(ErrorCode.CAPTCHA_REQUIRED, "캡차 또는 통행증 입력이 필요합니다.")
-        }
+        requireNoCaptcha(account, battleResponse)
 
         sharedBattleCooldownParser.parse(battleResponse.body)?.let { notice ->
             if (origin == HofRequestOrigin.AUTOMATION) {
@@ -341,9 +334,13 @@ class BattleRunService(
         }
     }
 
-    /**
-     * HOF 응답이 로그인 화면으로 돌아간 상태인지 확인한다.
-     */
+    private fun requireNoCaptcha(account: HofAccountEntity, response: HofHttpResponse, preload: Boolean = false) {
+        val challenge = captchaService.detectAndRecord(account, response.body, response.finalUrl) ?: return
+        log.warn("Battle preparation blocked by captcha accountId={} captchaId={}", account.id, challenge.id)
+        if (preload) throw BattlePreloadCaptchaException()
+        throw ApiException(ErrorCode.CAPTCHA_REQUIRED, "캡차 또는 통행증 입력이 필요합니다.")
+    }
+
     private fun ensureActiveSession(
         response: HofHttpResponse,
         message: String,

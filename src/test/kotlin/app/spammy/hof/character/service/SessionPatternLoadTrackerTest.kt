@@ -15,8 +15,8 @@ class SessionPatternLoadTrackerTest {
 
         tracker.withSession(1L, cookies) { session ->
             assertEquals(listOf(first, second), session.requiredLoads(listOf(first, second)))
-            session.recordLoaded(first)
-            session.recordLoaded(second)
+            session.recordLoaded(first, acceptedPatternLoadResponse(first.characterId, first.slot))
+            session.recordLoaded(second, acceptedPatternLoadResponse(second.characterId, second.slot))
         }
 
         tracker.withSession(1L, cookies) { session ->
@@ -28,8 +28,8 @@ class SessionPatternLoadTrackerTest {
     fun onlyChangedCharacterSlotsAreRequired() {
         val cookies = mapOf("PHPSESSID" to "session-a")
         tracker.withSession(1L, cookies) { session ->
-            session.recordLoaded(first)
-            session.recordLoaded(second)
+            session.recordLoaded(first, acceptedPatternLoadResponse(first.characterId, first.slot))
+            session.recordLoaded(second, acceptedPatternLoadResponse(second.characterId, second.slot))
         }
         val changed = second.copy(slot = 3)
 
@@ -41,7 +41,7 @@ class SessionPatternLoadTrackerTest {
     @Test
     fun changedSessionsAndDifferentAccountsDoNotReuseLoads() {
         tracker.withSession(1L, mapOf("PHPSESSID" to "session-a")) { session ->
-            session.recordLoaded(first)
+            session.recordLoaded(first, acceptedPatternLoadResponse(first.characterId, first.slot))
         }
 
         tracker.withSession(1L, mapOf("PHPSESSID" to "session-b")) { session ->

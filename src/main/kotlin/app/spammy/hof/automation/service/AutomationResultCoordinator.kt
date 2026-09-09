@@ -97,7 +97,7 @@ class AutomationResultCoordinator(
         observeShadow(accountId, stored.executionIdentity, evidence, LegacyConvergenceDecision.RESULT_UNOBSERVED)
     }
 
-    data class BattleGate(val warning: String, val directive: ConvergenceDirective)
+    data class BattleGate(val warning: String, val directive: ConvergenceDirective, val submissionAttempted: Boolean)
 
     fun closeBattleForCaptcha(
         accountId: Long,
@@ -112,11 +112,12 @@ class AutomationResultCoordinator(
         val selection = selected.policy ?: selected.evidence ?: convergenceSelectionFactory?.create(stored) ?: return null
         if (!selection.actionKind.battle) return null
         val convergence = convergenceModule ?: return null
-        val evidence = AutomationActionEvidence.BattleGateRequired(now(), null, "CAPTCHA_REQUIRED")
+        val evidence = AutomationActionEvidence.BattleGateRequired(now(), null, "CAPTCHA_REQUIRED",
+            submissionAttempted = captcha !is app.spammy.hof.battle.service.BattlePreloadCaptchaException)
         val directive = attemptId?.let { convergence.record(it, evidence) }
             ?: convergence.requireBattleGate(accountId, null, "CAPTCHA_REQUIRED", evidence.capturedAt)
         observeShadow(accountId, stored.executionIdentity, evidence, LegacyConvergenceDecision.HELD)
-        return BattleGate(captcha.message, directive)
+        return BattleGate(captcha.message, directive, evidence.submissionAttempted)
     }
 
     data class CheckpointRecovery(val outcome: TypedRuntimeOutcome, val directive: ConvergenceDirective? = null)

@@ -609,8 +609,9 @@ class BattleRunServiceTest {
         assertEquals(listOf(102450, 90686, 93937), battleLogRepository.savedEntities.map { it.allyTotalDamage })
     }
 
-    @Test
-    fun runBattleStopsAndDoesNotRecordLogWhenVigilanteCaptchaAppears() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = [false, true])
+    fun runBattleStopsAndDoesNotRecordLogWhenVigilanteCaptchaAppears(preload: Boolean) {
         Mockito.`when`(accountQueryRepository.findById(1L)).thenReturn(account)
         Mockito.`when`(cookieQueryRepository.findValueMapByAccountId(1L))
             .thenReturn(mapOf("PHPSESSID" to "abc"))
@@ -638,6 +639,7 @@ class BattleRunServiceTest {
               <p>자경단에서 통행증을 발급받아주세요.</p>
             </body></html>
         """.trimIndent()
+        if (preload) gateway.nextPatternBody = gateway.nextBattleBody
         val exception = assertFailsWith<ApiException> {
             service.runBattle(
                 accountId = 1L,
@@ -654,6 +656,8 @@ class BattleRunServiceTest {
         }
 
         assertEquals(ErrorCode.CAPTCHA_REQUIRED, exception.errorCode)
+        assertEquals(preload, exception is BattlePreloadCaptchaException)
+        assertEquals(if (preload) 0 else 1, gateway.requests.count { !it.url.contains("?char=") })
         assertTrue(battleLogRepository.savedEntities.isEmpty())
         val savedCaptcha = captchaChallengeRepository.savedEntities.single()
         assertEquals("DETECTED", savedCaptcha.status)
@@ -888,6 +892,7 @@ class BattleRunServiceTest {
         val requests = mutableListOf<HofRequest>()
         val cookies = mutableListOf<Map<String, String>>()
         var nextBattleBody: String? = null
+        var nextPatternBody: String? = null
         var policeBody: String? = null
         var failPatternRequestNumber: Int? = null
         private var patternRequestCount = 0
@@ -910,7 +915,8 @@ class BattleRunServiceTest {
                 }
             }
             val body = if (request.url.contains("?char=")) {
-                """<div>Funds : $ 1 Time : 10/10</div>"""
+                nextPatternBody ?: ("""<div>Funds : $ 1 Time : 10/10</div>""" + app.spammy.hof.character.service.currentPatternForm() +
+                    app.spammy.hof.character.service.savedPatternLoadForm(request.formFields.getValue("patternno").toInt()))
             } else if (request.url.contains("menu=police")) {
                 policeBody ?: "<html><body>OK</body></html>"
             } else {

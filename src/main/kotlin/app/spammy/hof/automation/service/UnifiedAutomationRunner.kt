@@ -427,6 +427,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                 TypedRuntimeOutcome.BattleGateBlocked(
                     warning = gate.warning,
                     wakeReason = TYPED_BATTLE_GATE_WAKE_REASON,
+                    submissionAttempted = gate.submissionAttempted,
                 ),
                 convergenceRecheckAt = (gate.directive as? ConvergenceDirective.WaitUntil)?.at,
             )

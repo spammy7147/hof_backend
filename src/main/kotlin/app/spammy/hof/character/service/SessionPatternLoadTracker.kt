@@ -3,6 +3,9 @@ package app.spammy.hof.character.service
 import app.spammy.hof.battle.dto.BattlePatternLoadRequest
 import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofRequest
+import app.spammy.hof.external.model.HofHttpResponse
+import app.spammy.hof.external.parser.CharacterDetailParser
+import app.spammy.hof.external.parser.HofHtmlParser
 import java.net.URI
 import java.net.URLDecoder
 import org.springframework.stereotype.Component
@@ -19,7 +22,9 @@ import kotlin.concurrent.withLock
  * 원본 쿠키 값은 보관하지 않고 세션 경계를 판별하기 위한 해시만 메모리에 유지한다.
  */
 @Component
-class SessionPatternLoadTracker {
+class SessionPatternLoadTracker(
+    private val detailParser: CharacterDetailParser = CharacterDetailParser(),
+) {
     private val locks = Array(LOCK_STRIPE_COUNT) { ReentrantLock(true) }
     private val states = ConcurrentHashMap<Long, AccountState>()
 
@@ -49,19 +54,35 @@ class SessionPatternLoadTracker {
             current?.takeIf { state -> state.fingerprint == fingerprint }
                 ?: AccountState(fingerprint = fingerprint, loadedSlots = mutableMapOf())
         }!!
-        operation(SessionState(accountState.loadedSlots))
+        operation(SessionState(accountState.loadedSlots, detailParser))
     }
 
     class SessionState internal constructor(
         private val loadedSlots: MutableMap<String, Int>,
+        private val detailParser: CharacterDetailParser,
     ) {
         /** 현재 세션 상태와 다른 캐릭터 패턴만 요청 순서대로 반환한다. */
         fun requiredLoads(requested: List<BattlePatternLoadRequest>): List<BattlePatternLoadRequest> =
             requested.filter { pattern -> loadedSlots[pattern.characterId] != pattern.slot }
 
-        /** HOF가 성공으로 응답한 패턴만 현재 상태로 기록한다. */
-        fun recordLoaded(pattern: BattlePatternLoadRequest) {
+        /** 정상 직접 응답의 현재 패턴·위치·호위를 확인한 경우에만 같은 세션에서 재사용한다. */
+        fun recordLoaded(pattern: BattlePatternLoadRequest, response: HofHttpResponse): Boolean {
+            loadedSlots.remove(pattern.characterId)
+            if (response.statusCode !in 200..299) return false
+            val characterIds = runCatching { URI(response.finalUrl).query.orEmpty() }.getOrNull()
+                ?.split('&')?.filter { it.substringBefore('=') == "char" }?.map { it.substringAfter('=', "") }
+            if (characterIds != listOf(pattern.characterId)) return false
+            val document = HofHtmlParser.parse(response.body)
+            if (document.select(".error").any { it.text().isNotBlank() }) return false
+            val current = detailParser.parse(pattern.characterId, response.body)
+            if (current.patternSlots.none { it.slot == pattern.slot.toString() && it.canLoad }) return false
+            if (current.actionPatterns.isEmpty() || current.actionPatterns.any {
+                    it.judge.isBlank() || it.skill.isBlank() || document.selectFirst("[name=quantity${it.index}]") == null
+                } || current.positionGuard.positions.size != 2 || current.positionGuard.selectedPosition.isBlank() ||
+                current.positionGuard.guardValue.isBlank()
+            ) return false
             loadedSlots[pattern.characterId] = pattern.slot
+            return true
         }
     }
 

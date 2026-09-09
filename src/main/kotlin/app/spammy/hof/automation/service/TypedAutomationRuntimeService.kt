@@ -395,6 +395,7 @@ class TypedAutomationRuntimeService(
                 right.requireActionId(),
                 outcome.warning,
                 outcome.wakeReason,
+                clearSubmission = !outcome.submissionAttempted,
             ).projection()
             is TypedRuntimeOutcome.SubmissionDeferred -> deferSubmittedAction(
                 right.accountId,
@@ -672,6 +673,7 @@ class TypedAutomationRuntimeService(
         actionId: Long,
         warning: String,
         wakeReason: String,
+        clearSubmission: Boolean = false,
     ): Boolean {
         val state = fencedState(accountId, token) ?: return false
         val action = queryRepository.lockTypedAction(actionId) ?: return false
@@ -686,6 +688,7 @@ class TypedAutomationRuntimeService(
         ) return false
         val now = timeProvider.now()
         val diagnostic = sanitizeDiagnostic(warning)
+        if (clearSubmission) action.submittedAt = null
         action.status = TypedAutomationActionStatus.FAILED
         action.nextAttemptAt = null
         action.finishedAt = now

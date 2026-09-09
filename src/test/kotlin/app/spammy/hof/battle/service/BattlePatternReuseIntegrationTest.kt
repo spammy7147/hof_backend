@@ -18,8 +18,27 @@ import java.io.IOException
 import java.time.Instant
 import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import kotlin.test.assertFailsWith
 import app.spammy.hof.character.pattern.CharacterPatternMutationReceipt
+import app.spammy.hof.character.pattern.CharacterPatternDraft
+import app.spammy.hof.character.pattern.CharacterPatternOperationResult
+import app.spammy.hof.character.pattern.CharacterPatternRowValue
+import app.spammy.hof.character.service.CharacterPatternService
+import app.spammy.hof.character.service.CharacterSnapshotSynchronizer
+import app.spammy.hof.character.service.CharacterDeepSyncService
+import app.spammy.hof.character.service.CharacterDeepSyncPhase
+import app.spammy.hof.character.entity.CharacterOperationJobEntity
+import app.spammy.hof.character.entity.CharacterOperationType
+import app.spammy.hof.character.entity.CharacterRecoveryStatus
+import app.spammy.hof.character.transfer.CharacterTransferService
+import app.spammy.hof.character.transfer.CharacterTransferSelection
+import app.spammy.hof.character.transfer.CharacterTransferRequest
+import app.spammy.hof.character.transfer.CharacterTransferStepStatus
+import app.spammy.hof.external.parser.CharacterDetailParser
+import kotlin.test.assertIs
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito
@@ -36,12 +55,17 @@ import org.springframework.transaction.support.TransactionTemplate
 class BattlePatternReuseIntegrationTest {
     @Autowired private lateinit var battles: BattleRunService
     @Autowired private lateinit var patterns: CharacterPatternRemoteFactory
+    @Autowired private lateinit var patternCommands: CharacterPatternService
+    @Autowired private lateinit var snapshots: CharacterSnapshotSynchronizer
+    @Autowired private lateinit var deepSync: CharacterDeepSyncService
+    @Autowired private lateinit var transfers: CharacterTransferService
     @Autowired private lateinit var entityManager: EntityManager
     @Autowired private lateinit var transactionManager: PlatformTransactionManager
     @MockitoBean private lateinit var hof: HofGateway
 
     private var accountId = 0L
     private var characterId = 0L
+    private var secondCharacterId = 0L
     private lateinit var mapCode: String
     private var currentPattern = "unconfigured"
     private val battlePatterns = mutableListOf<String>()
@@ -51,6 +75,7 @@ class BattlePatternReuseIntegrationTest {
     private var expectedCookie = "same-session"
     private val sentCookies = mutableListOf<String>()
     private var loseBattleResponse = false
+    private var rejectNextLoad: String? = null
 
     @BeforeEach
     fun prepare() {
@@ -63,8 +88,10 @@ class BattlePatternReuseIntegrationTest {
             val character = CharacterEntity(account = account, hofCharacterId = HOF_CHARACTER, name = "검증", job = "Knight", updatedAt = NOW)
             entityManager.persist(character)
             characterId = character.id
-            entityManager.persist(CharacterEntity(account = account, hofCharacterId = SECOND_CHARACTER,
-                name = "두 번째", job = "Knight", updatedAt = NOW))
+            val second = CharacterEntity(account = account, hofCharacterId = SECOND_CHARACTER,
+                name = "두 번째", job = "Knight", updatedAt = NOW)
+            entityManager.persist(second)
+            secondCharacterId = second.id
             val map = BattleMapEntity(categoryId = "battle_map", mapCode = mapCode, name = mapCode,
                 normalizedName = mapCode, createdAt = NOW, updatedAt = NOW)
             entityManager.persist(map)
@@ -80,9 +107,24 @@ class BattlePatternReuseIntegrationTest {
                 var responseCookies = emptyMap<String, String>()
                 val characterRequest = request.url.contains("char=$HOF_CHARACTER")
                 if (characterRequest && request.method == HofHttpMethod.POST) {
+                    if ("ChangePattern" in request.formFields) {
+                        currentPattern = if (request.formFields.getValue("skill0") == "9564") "A" else "B"
+                    }
                     request.formFields["patternno"]?.let { slot ->
-                        currentPattern = if (slot == "0") "A" else "B"
                         loadedSlots += slot
+                        rejectNextLoad?.let { rejection ->
+                            rejectNextLoad = null
+                            return@thenAnswer HofHttpResponse(
+                                if (rejection == "HTTP_500") 500 else 200,
+                                if (rejection == "OTHER_CHARACTER") "https://hof.zerosic.com/index.php?char=other" else request.url,
+                                when (rejection) {
+                                    "INCOMPLETE" -> "<div id='menu2'>Funds : $ 100 Time : 6000/6000</div>"
+                                    "REJECTED" -> characterPage() + "<div class='error'>패턴 불러오기가 거부되었습니다.</div>"
+                                    "MISSING_SLOT" -> characterPage().replace("name=\"loadpattern\"", "name=\"unavailable\"")
+                                    else -> characterPage()
+                                }, emptyMap())
+                        }
+                        currentPattern = if (slot == "0") "A" else "B"
                         if (rotateLoadCookie) {
                             expectedCookie = "rotated-${loadedSlots.size}"
                             responseCookies = mapOf("PHPSESSID" to expectedCookie)
@@ -98,6 +140,25 @@ class BattlePatternReuseIntegrationTest {
                 }
                 HofHttpResponse(200, request.url, if (characterRequest) characterPage() else battlePage(), responseCookies)
             }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["REJECTED", "INCOMPLETE", "OTHER_CHARACTER", "HTTP_500", "MISSING_SLOT"])
+    fun `확인하지 못한 패턴 로드를 기억하거나 전투에 사용하지 않고 다음 실행에서 다시 로드한다`(rejection: String) {
+        patterns.withRemote(accountId, characterId) { it.loadSlot("1") }
+        assertEquals("B", currentPattern)
+        rejectNextLoad = rejection
+
+        val failure = runCatching { battle() }.exceptionOrNull()
+        assertTrue(failure is BattleNotSubmittedException,
+            "선로드를 확인하지 못하면 실제 전투 전송 전에 종료해야 한다: $failure")
+        assertEquals(emptyList(), battlePatterns)
+        assertEquals("B", currentPattern)
+
+        battle()
+
+        assertEquals(listOf("A"), battlePatterns)
+        assertEquals(listOf("1", "0", "0"), loadedSlots)
     }
 
     @Test
@@ -135,6 +196,61 @@ class BattlePatternReuseIntegrationTest {
 
         assertEquals(listOf("A", "A"), battlePatterns)
         assertEquals(listOf("0"), loadedSlots)
+    }
+
+    @Test
+    fun `두 전투 사이 직접 편집한 B를 다음 전투의 선택 패턴 A로 되돌린다`() {
+        battle()
+        val base = patterns.withRemote(accountId, characterId) { it.observe() }
+        val edited = patternCommands.applyDraft(accountId, characterId, base.setting, base.revision,
+            CharacterPatternDraft(base.revision, listOf(CharacterPatternRowValue("0", "0", "7777")),
+                base.setting.position, base.setting.guard))
+        assertIs<CharacterPatternOperationResult.Completed>(edited)
+        assertEquals("B", currentPattern)
+
+        battle()
+
+        assertEquals(listOf("A", "A"), battlePatterns)
+        assertEquals(listOf("0", "0"), loadedSlots)
+    }
+
+    @Test
+    fun `설정 가져오기로 B가 된 뒤 다음 전투는 A를 다시 로드한다`() {
+        battle()
+        snapshots.writeParsed(accountId, SECOND_CHARACTER,
+            CharacterDetailParser().parsePage(SECOND_CHARACTER, characterPage("B", SECOND_CHARACTER)))
+        snapshots.refresh(accountId, characterId)
+        val result = transfers.execute(accountId, CharacterTransferSelection(secondCharacterId, characterId,
+            CharacterTransferRequest(includeCurrentPattern = true)))
+        assertTrue(result.results.isNotEmpty())
+        assertTrue(result.results.all { it.status == CharacterTransferStepStatus.COMPLETED }, result.toString())
+        assertEquals("B", currentPattern)
+
+        battle()
+
+        assertEquals(listOf("A", "A"), battlePatterns)
+        assertEquals(listOf("0", "0"), loadedSlots)
+    }
+
+    @Test
+    fun `전체 설정 동기화가 원본을 복구해도 다음 전투는 패턴을 새로 확인한다`() {
+        battle()
+        val jobId = TransactionTemplate(transactionManager).execute {
+            val job = CharacterOperationJobEntity(account = entityManager.getReference(HofAccountEntity::class.java, accountId),
+                operationType = CharacterOperationType.DEEP_SYNC, targetCharacterId = characterId,
+                recoveryStatus = CharacterRecoveryStatus.NOT_STARTED, startedAt = NOW, updatedAt = NOW)
+            entityManager.persist(job)
+            job.id
+        }
+        val result = deepSync.synchronize(accountId, characterId, jobId)
+        assertEquals(CharacterDeepSyncPhase.COMPLETED, result.progress.last().phase)
+        assertEquals("A", currentPattern)
+        assertEquals(listOf("0", "0", "1"), loadedSlots, "깊은 동기화에서 A와 B를 실제로 불러온다.")
+
+        battle()
+
+        assertEquals(listOf("A", "A"), battlePatterns)
+        assertEquals(listOf("0", "0", "1", "0"), loadedSlots)
     }
 
     @Test
@@ -179,17 +295,24 @@ class BattlePatternReuseIntegrationTest {
     private fun battle() = battles.runBattle(accountId, RunBattleRequest("battle_map", mapCode,
         listOf(HOF_CHARACTER), listOf(BattlePatternLoadRequest(HOF_CHARACTER, 0))), HofRequestOrigin.AUTOMATION)
 
-    private fun characterPage(): String = """
+    private fun characterPage(pattern: String = currentPattern, id: String = HOF_CHARACTER): String = """
         <html><body><div id="menu2">Funds : ${'$'} 100 Time : 6000/6000</div>
         <div class="carpet_frame">검증 Lv.60 Knight</div>
-        <form action="index.php?char=$HOF_CHARACTER" method="post">
+        ${app.spammy.hof.character.service.currentPatternForm(if (pattern == "A") "9564" else "7777")}
+        <form action="index.php?char=$id" method="post">
           <input type="button" value="A"><input type="hidden" name="patternno" value="0">
           <input type="submit" name="loadpattern" value="LOAD">
         </form>
-        <form action="index.php?char=$HOF_CHARACTER" method="post">
+        <form action="index.php?char=$id" method="post">
           <input type="button" value="B"><input type="hidden" name="patternno" value="1">
           <input type="submit" name="loadpattern" value="LOAD">
-        </form></body></html>
+        </form>
+        <form method="post"><table>
+          ${(1..12).joinToString("") { "<tr><td class='align-right'>Empty$it</td><td><input name='spot' value='empty$it'></td></tr>" }}
+        </table><input type="submit" name="remove_all" value="Remove"></form>
+        <script>function Listtype_equip(mode) {}</script>
+        <form method="post"><div id="list0">None.</div><input type="submit" name="equip_item" value="Equip"></form>
+        </body></html>
     """.trimIndent()
 
     private fun battlePage(): String = """

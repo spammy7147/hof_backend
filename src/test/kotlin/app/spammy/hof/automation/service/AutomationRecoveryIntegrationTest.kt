@@ -282,7 +282,8 @@ class AutomationRecoveryIntegrationTest {
                 request.url.contains("?char=") -> {
                     patternCalls++
                     if (patternCalls == failedPattern) throw IOException("HTTP/1.1 header parser received no bytes")
-                    "<div>Funds : $ 1 Time : 100/100</div>"
+                    "<div>Funds : $ 1 Time : 100/100</div>" + app.spammy.hof.character.service.currentPatternForm() +
+                        app.spammy.hof.character.service.savedPatternLoadForm(request.formFields.getValue("patternno").toInt())
                 }
                 request.method == HofHttpMethod.GET -> mapPage
                 captchaBattleResponse -> "<div id='menu2'>Funds : $ 1 Time : 100/100</div><div>자경단에서 통행증을 발급받아주세요.</div>"
@@ -587,6 +588,65 @@ class AutomationRecoveryIntegrationTest {
         assertEquals(2, transport.delivered.size)
         assertTrue(transport.delivered.all { outbox.consumed(it) })
         assertEquals(0, jdbc.queryForObject("select count(*) from account_automation_leases where account_id = ?", Int::class.java, accountId))
+        assertNull(jdbc.queryForObject("select lease_token from typed_automation_runtime_states where account_id = ?", String::class.java, accountId))
+    }
+
+    @ParameterizedTest
+    @CsvSource("LEGACY,REJECTED", "SHADOW,REJECTED", "ACTIVE,REJECTED",
+        "LEGACY,INCOMPLETE", "SHADOW,INCOMPLETE", "ACTIVE,INCOMPLETE",
+        "LEGACY,CAPTCHA", "SHADOW,CAPTCHA", "ACTIVE,CAPTCHA")
+    fun `패턴 불러오기를 확인하지 못한 세 모드는 전투 없이 끝내고 새 판단에서 복구한다`(mode: AutomationConvergenceMode, failure: String) {
+        Mockito.doReturn(mode).`when`(convergenceProperties).mode
+        val state = setupFishing(initialBattle = true, hiddenBattle = true)
+        state.preloadFailure = failure
+        fun patternPosts() = requests.filter { it.method == HofHttpMethod.POST && it.url.contains("?char=") }
+        fun fishingBattles() = requests.filter { it.method == HofHttpMethod.POST && it.url.contains("common=fishing_12") }
+
+        wakeups.wake(accountId, "PATTERN_LOAD_UNCONFIRMED")
+        publisher.publishBatch()
+
+        assertEquals(1, patternPosts().size)
+        assertTrue(fishingBattles().isEmpty(), "선로드의 거부·불완전·캡차 응답 뒤 실제 전투를 보내면 안 된다.")
+        assertTrue(fishingPosts().isEmpty())
+        val first = runs().single()
+        assertEquals("FAILED", first["status"])
+        assertNull(first["submitted_at"])
+        assertEquals(0, jdbc.queryForObject(
+            "select count(*) from automation_action_attempts where account_id = ? and submitted_at is not null", Int::class.java, accountId))
+        assertTrue(store.findSuppressedBaselines(accountId).isEmpty(), "전투 미전송을 결과 미관측으로 보류하면 안 된다.")
+        if (failure == "CAPTCHA") {
+            assertNotNull(captchaService.findCurrent(accountId), "선로드 캡차도 실제 답안 요청으로 기록한다.")
+            assertNotNull(store.activeBattleGate(accountId))
+            consumeNextWake()
+            assertTrue(fishingBattles().isEmpty(), "관문 해소 전의 후속 판단도 전투를 보내면 안 된다.")
+            assertEquals(0, runningWorkCount(), "관문 판단에서 대기 작업의 작업권을 양보해야 한다.")
+            val count = requests.size
+            assertTrue(captchaService.resolveCurrentPassChallenge(accountId))
+            assertNull(store.activeBattleGate(accountId))
+            assertEquals(count, requests.size, "관문 해소는 저장 전투를 재전송하지 않는다.")
+        } else {
+            assertEquals(0, runningWorkCount())
+            assertNull(store.activeBattleGate(accountId))
+            val events = journal.page(accountId, AutomationHistoryQuery()).cycles.flatMap { it.events }
+            assertTrue(events.any { it.reasonCode == "BATTLE_PATTERN_PRELOAD_FAILED" })
+        }
+
+        // 관문에 보류된 작업은 기존 30초 재확인 간격을 유지한다. 그동안의 유휴 wake도 실제로 소비한다.
+        val recoveryDeadline = clock.now().plusSeconds(30)
+        repeat(12) { if (fishingBattles().isEmpty()) consumeNextWake() }
+        assertTrue(fishingBattles().isNotEmpty(), "기존 재확인 시각 안에 새 전투를 선택해야 한다.")
+        assertTrue(clock.now() <= recoveryDeadline)
+
+        assertEquals(2, patternPosts().size, "실패한 로드를 재사용하지 않고 최신 파티에서 다시 준비한다.")
+        assertEquals(1, fishingBattles().size)
+        assertEquals("SUCCEEDED", runs().last()["status"])
+        assertNotEquals(first["execution_identity"], runs().last()["execution_identity"])
+        val count = journal.page(accountId, AutomationHistoryQuery()).cycles.size
+        consumeNextWake()
+        assertTrue(journal.page(accountId, AutomationHistoryQuery()).cycles.size > count)
+        assertEquals(1, fishingBattles().size)
+        assertTrue(fishingPosts().isEmpty())
+        assertEquals(0, runningWorkCount())
         assertNull(jdbc.queryForObject("select lease_token from typed_automation_runtime_states where account_id = ?", String::class.java, accountId))
     }
 
@@ -1499,6 +1559,7 @@ class AutomationRecoveryIntegrationTest {
 
     private class FishingFixtureState(var phase: String = "reset", var battle: Boolean = false, var mapFailure: String? = null) {
         var revealOnStart = false
+        var preloadFailure: String? = null
         var currentTime = 100
         val requestCookies = mutableListOf<Map<String, String>>()
     }
@@ -1541,7 +1602,16 @@ class AutomationRecoveryIntegrationTest {
             requests += request
             val body = when {
                 unconfirmedResponse != null && unconfirmedResponse in request.formFields -> fixture(state.phase)
-                request.url.contains("?char=") -> header
+                request.url.contains("?char=") -> {
+                    val failure = state.preloadFailure
+                    state.preloadFailure = null
+                    header + when (failure) {
+                        "REJECTED" -> app.spammy.hof.character.service.currentPatternForm() + "<div class='error'>패턴 로드가 거부되었습니다.</div>"
+                        "INCOMPLETE" -> "<div>현재 설정을 읽지 못했습니다.</div>"
+                        "CAPTCHA" -> "<div>자경단에서 통행증을 발급받아주세요.</div>"
+                        else -> app.spammy.hof.character.service.currentPatternForm() + app.spammy.hof.character.service.savedPatternLoadForm(1)
+                    }
+                }
                 homeResponse != null && request.url.contains("menu=quest2") -> homeResponse(request)
                 "FStart" in request.formFields -> {
                     state.battle = state.battle || state.revealOnStart

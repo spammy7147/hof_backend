@@ -5,7 +5,7 @@ package app.spammy.hof.common.error
  *
  * ErrorCode에 HTTP status가 연결되어 있어 GlobalExceptionHandler가 표준 에러 응답으로 바꾼다.
  */
-class ApiException(
+open class ApiException(
     val errorCode: ErrorCode,
     override val message: String,
     override val cause: Throwable? = null,

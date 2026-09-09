@@ -74,6 +74,7 @@ sealed interface TypedRuntimeOutcome {
     data class BattleGateBlocked(
         val warning: String,
         val wakeReason: String,
+        val submissionAttempted: Boolean = true,
     ) : TypedRuntimeOutcome
     data class SubmissionDeferred(val retryAt: Instant, val message: String) : TypedRuntimeOutcome
     data class UnsubmittedFailure(val message: String) : TypedRuntimeOutcome

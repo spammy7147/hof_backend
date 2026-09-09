@@ -21,6 +21,7 @@ import org.mockito.Mockito
 import java.time.Instant
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.test.assertFalse
 
 class CharacterPatternServiceTest {
     private val now = Instant.parse("2026-07-08T00:00:00Z")
@@ -98,7 +99,7 @@ class CharacterPatternServiceTest {
         gateway.responseBody = """
             <div class="carpet_frame"><img src="image/char/sknight02.gif">소셜 Lv.60 Social Knight</div>
             <form><input name="patternno" value="0"><input name="loadpattern" value="LOAD"></form>
-        """.trimIndent()
+        """.trimIndent() + currentPatternForm()
         val refreshed = Mockito.mock(CharacterDetailResponse::class.java)
         Mockito.`when`(
             snapshotSynchronizer.writeParsed(
@@ -134,10 +135,34 @@ class CharacterPatternServiceTest {
         }
     }
 
+    @Test
+    fun `HTTP 200 명령 거부 뒤에는 완료를 반환하거나 기존 로드 기록을 재사용하지 않는다`() {
+        val cookies = mapOf("PHPSESSID" to "abc")
+        val pattern = BattlePatternLoadRequest(character.hofCharacterId, 0)
+        Mockito.`when`(accountQueryRepository.findById(1L)).thenReturn(account)
+        Mockito.`when`(cookieQueryRepository.findValueMapByAccountId(1L)).thenReturn(cookies)
+        Mockito.`when`(characterQueryRepository.findByAccountIdAndHofCharacterId(1L, character.hofCharacterId))
+            .thenReturn(character)
+        assertTrue(service.loadPattern(1L, character.hofCharacterId, 0).loaded)
+        Mockito.clearInvocations(snapshotSynchronizer)
+        gateway.responseBody += "<div class='error'>저장 패턴을 불러올 수 없습니다.</div>"
+
+        val response = service.loadPattern(1L, character.hofCharacterId, 0)
+
+        assertFalse(response.loaded)
+        assertFalse(response.characterSynchronized)
+        assertEquals("패턴 불러오기 결과를 확인하지 못했습니다. 현재 설정을 새로고침해 주세요.", response.message)
+        sessionPatternLoadTracker.withSession(1L, cookies) {
+            assertEquals(listOf(pattern), it.requiredLoads(listOf(pattern)))
+        }
+        Mockito.verifyNoInteractions(snapshotSynchronizer)
+    }
+
     private class FakeHofGateway : HofGateway {
         val requests = mutableListOf<HofRequest>()
         val cookies = mutableListOf<Map<String, String>>()
-        var responseBody = """<div>Funds : $ 1 Time : 10/10</div>"""
+        var responseBody = """<div>Funds : $ 1 Time : 10/10</div>""" + currentPatternForm() +
+            (0..4).joinToString("") { savedPatternLoadForm(it) }
 
         override fun execute(
             accountId: Long,

@@ -145,6 +145,7 @@ sealed interface AutomationActionEvidence {
         val reason: String,
         override val responseShapeFingerprint: String? = null,
         override val sanitizedSnippet: String? = null,
+        val submissionAttempted: Boolean = true,
     ) : AutomationActionEvidence
 }
 

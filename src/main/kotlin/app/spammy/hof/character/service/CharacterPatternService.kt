@@ -107,7 +107,7 @@ class CharacterPatternService(
             slot,
             cookies.keys.sorted(),
         )
-        val response = sessionPatternLoadTracker.withSession(account.id, cookies) { session ->
+        val (response, loaded) = sessionPatternLoadTracker.withSession(account.id, cookies) { session ->
             val hofResponse = gateway.execute(account.id, requestFactory.loadPattern(hofCharacterId, slot), cookies)
             val loginState = loginStateParser.parse(hofResponse.body)
             if (loginState.hasLoginForm && !loginState.isLoggedIn) {
@@ -120,13 +120,9 @@ class CharacterPatternService(
                 )
                 throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "HOF 로그인 세션이 만료되었습니다.")
             }
-            if (hofResponse.statusCode in 200..399) {
-                session.recordLoaded(BattlePatternLoadRequest(hofCharacterId, slot))
-            }
-            hofResponse
+            hofResponse to session.recordLoaded(BattlePatternLoadRequest(hofCharacterId, slot), hofResponse)
         }
 
-        val loaded = response.statusCode in 200..399
         val refreshedCharacter = if (loaded) {
             runCatching {
                 snapshotSynchronizer.writeParsed(
@@ -160,7 +156,7 @@ class CharacterPatternService(
             hofCharacterId = hofCharacterId,
             slot = slot,
             loaded = loaded,
-            message = if (loaded) "패턴 로드 완료" else "HOF 응답 상태 ${response.statusCode}",
+            message = if (loaded) "패턴 로드 완료" else "패턴 불러오기 결과를 확인하지 못했습니다. 현재 설정을 새로고침해 주세요.",
             characterSynchronized = refreshedCharacter != null,
             character = refreshedCharacter,
         )

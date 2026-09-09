@@ -107,7 +107,8 @@ class DefaultAutomationActionConvergenceModule(
     override fun record(attemptId: Long, evidence: AutomationActionEvidence): ConvergenceDirective {
         val record = requireNotNull(store.get(attemptId)) { "Convergence attempt $attemptId does not exist." }
         check(record.active) { "Convergence attempt $attemptId is already terminal." }
-        if (record.submittedAt == null && !record.selection.observationOnly) {
+        val unsubmittedGate = evidence is AutomationActionEvidence.BattleGateRequired && !evidence.submissionAttempted
+        if (record.submittedAt == null && !record.selection.observationOnly && !unsubmittedGate) {
             record.submittedAt = evidence.capturedAt
         }
         val evidenceReasonCode = if (
