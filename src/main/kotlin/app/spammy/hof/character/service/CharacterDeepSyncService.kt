@@ -13,6 +13,8 @@ import app.spammy.hof.character.repository.CharacterQueryRepository
 import app.spammy.hof.character.entity.CharacterHofIdLinkReason
 import app.spammy.hof.character.identity.CharacterLifecycleService
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.common.error.ApiException
+import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.parser.CharacterDetailParser
 import app.spammy.hof.external.parser.CharacterPageParseResult
@@ -52,7 +54,13 @@ class CharacterDeepSyncService(
     fun observeCurrent(accountId: Long, characterId: Long): CharacterPageParseResult {
         val character = query.findByAccountIdAndId(accountId, characterId) ?: error("캐릭터를 찾지 못했습니다.")
         return executor.loadProjected(accountId, requestFactory.characterPage(character.hofCharacterId).url) { html, finalUrl, _ ->
-            parseObservation(character.hofCharacterId, html, finalUrl)
+            try {
+                checkNotNull(parser.parseCompletePatternPage(character.hofCharacterId, html, finalUrl)) {
+                    "요청한 캐릭터의 현재 설정을 완전히 확인하지 못했습니다."
+                }.also { CharacterRestoreState.capture(it) }
+            } catch (error: IllegalStateException) {
+                throw ApiException(ErrorCode.CHARACTER_RECOVERY_REQUIRED, "현재 서버의 설정을 완전히 확인하지 못했습니다. 다시 확인해 주세요.", error)
+            }
         }
     }
 

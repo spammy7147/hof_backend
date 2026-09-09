@@ -68,9 +68,21 @@ class CharacterTransferStateIntegrationTest {
     private var targetCurrent = setting("0")
     private val targetSlots = mutableMapOf<String, CharacterPatternSetting?>("0" to null, "1" to null)
     private val submittedCharacters = mutableListOf<String>()
+    private val submittedFields = mutableListOf<Map<String, String>>()
     private var rejectedSaveSlot: String? = null
     private var rejectedCurrentSkill: String? = null
     private var observationVariant: String? = null
+    private var targetEquipment: Boolean? = null
+    private var rejectEquipment = false
+    private var ignoreEquipment = false
+    private var ignoredEquipmentSave: Int? = null
+    private var ignoreEquipmentLoad = false
+    private var equipmentCapacity = 2
+    private var equipmentGrantsSkill = true
+    private var equipmentCandidateValue = "ring"
+    private var targetEquipmentName = "Focus Ring"
+    private val targetEquipmentSlots = mutableMapOf<Int, String?>()
+    private var changeEquipmentCandidateAfterClear = false
     private val tasks = ArrayDeque<Runnable>()
 
     @BeforeEach
@@ -102,22 +114,59 @@ class CharacterTransferStateIntegrationTest {
                 if (request.method == HofHttpMethod.POST) {
                     submittedCharacters += characterId
                     val fields = request.formFields
+                    submittedFields += fields
                     if (("savepattern" in fields && fields["patternno"] == rejectedSaveSlot) ||
-                        ("ChangePattern" in fields && fields["skill0"] == rejectedCurrentSkill)) {
+                        ("ChangePattern" in fields && fields["skill0"] == rejectedCurrentSkill) ||
+                        ("equip_item" in fields && rejectEquipment)) {
                         return@thenAnswer HofHttpResponse(200, request.url,
-                            page(target.hofCharacterId, targetCurrent, targetSlots) + "<div class='error'>저장을 거부했습니다.</div>", emptyMap())
+                            page(target.hofCharacterId, targetCurrent, targetSlots, targetEquipment) + "<div class='error'>저장을 거부했습니다.</div>", emptyMap())
                     }
                     when {
-                        "ChangePattern" in fields -> targetCurrent = targetCurrent.copy(rows = listOf(CharacterPatternRowValue(
-                            fields.getValue("judge0"), fields.getValue("quantity0"), fields.getValue("skill0"))))
+                        "ChangePattern" in fields -> targetCurrent = targetCurrent.copy(rows = targetCurrent.rows.indices.map { index ->
+                            CharacterPatternRowValue(fields.getValue("judge$index"), fields.getValue("quantity$index"), fields.getValue("skill$index")) })
                         "ChangePosition" in fields -> targetCurrent = targetCurrent.copy(
                             position = fields.getValue("position"), guard = fields.getValue("guard"))
                         "savepattern" in fields -> targetSlots[fields.getValue("patternno")] = targetCurrent
                         "delpattern" in fields -> targetSlots[fields.getValue("patternno")] = null
+                        "remove_all" in fields -> {
+                            targetEquipment = false
+                            if (changeEquipmentCandidateAfterClear) equipmentCandidateValue = "ring-after-clear"
+                            targetCurrent = targetCurrent.copy(rows = targetCurrent.rows.take(1).map {
+                                if (it.skill == "2") it.copy(skill = "0") else it
+                            })
+                        }
+                        "equip_item" in fields -> {
+                            val itemName = when (fields["item_no"]) {
+                                equipmentCandidateValue -> "Focus Ring"
+                                "guard-ring" -> "Guard Ring"
+                                else -> error("관측하지 않은 장비를 장착했습니다.")
+                            }
+                            if (!ignoreEquipment) {
+                                targetEquipment = true
+                                targetEquipmentName = itemName
+                                targetCurrent = targetCurrent.copy(rows = targetCurrent.rows.take(equipmentCapacity) +
+                                    List((equipmentCapacity - targetCurrent.rows.size).coerceAtLeast(0)) { setting("0").rows.single() })
+                            }
+                        }
+                        "Equip_S_1" in fields || "Equip_S_2" in fields -> {
+                            val slot = if ("Equip_S_1" in fields) 1 else 2
+                            if (slot != ignoredEquipmentSave) targetEquipmentSlots[slot] = targetEquipmentName.takeIf { targetEquipment == true }
+                        }
+                        "Equip_L_1" in fields || "Equip_L_2" in fields -> {
+                            val name = targetEquipmentSlots[if ("Equip_L_1" in fields) 1 else 2]
+                            if (!ignoreEquipmentLoad) {
+                                targetEquipment = name != null
+                                targetEquipmentName = name.orEmpty()
+                                targetCurrent = targetCurrent.copy(rows = if (name == null) targetCurrent.rows.take(1)
+                                    else targetCurrent.rows.take(2) + List((2 - targetCurrent.rows.size).coerceAtLeast(0)) { setting("0").rows.single() })
+                            }
+                        }
                         else -> error("예상하지 않은 설정 변경: ${fields.keys}")
                     }
                 }
-                val body = page(target.hofCharacterId, targetCurrent, targetSlots)
+                val body = page(target.hofCharacterId, targetCurrent, targetSlots, targetEquipment,
+                    skills = if (targetEquipment == false || !equipmentGrantsSkill) 0..1 else 0..2,
+                    equipmentCandidateValue = equipmentCandidateValue, equipmentName = targetEquipmentName)
                 val observed = when (observationVariant) {
                     "MISSING_QUANTITY" -> body.replace(Regex("<input[^>]*name=\"quantity0\"[^>]*>"), "")
                     "ERROR" -> body + "<div class='error'>캐릭터 관측을 완료하지 못했습니다.</div>"
@@ -127,6 +176,283 @@ class CharacterTransferStateIntegrationTest {
                     if (observationVariant == "OTHER_CHARACTER") request.url.replace("transfer-target", "other-character") else request.url,
                     observed, emptyMap())
             }
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = [1, 2])
+    fun `장비가 늘리는 용량과 스킬을 장착 후 확인해 현재 패턴을 가져온다`(sourceRows: Int) {
+        targetEquipment = false
+        val desired = CharacterPatternSetting((setting("2").rows + setting("1").rows).take(sourceRows), "back", "always")
+        snapshots.writeParsed(accountId, source.hofCharacterId, parser.parsePage(source.hofCharacterId,
+            page(source.hofCharacterId, desired, mapOf("0" to sourceSaved), equipment = true)))
+        snapshots.writeParsed(accountId, target.hofCharacterId, parser.parsePage(target.hofCharacterId,
+            page(target.hofCharacterId, targetCurrent, targetSlots, equipment = false)))
+
+        val result = transfers.execute(accountId, CharacterTransferSelection(source.id, target.id,
+            CharacterTransferRequest(includeCurrentPattern = true, includeEquipment = true)))
+
+        assertTrue(result.results.all { it.status == CharacterTransferStepStatus.COMPLETED }, result.toString())
+        assertEquals(true, targetEquipment)
+        val expectedRows = if (sourceRows == 1) listOf("2", "0") else listOf("2", "1")
+        assertEquals(expectedRows, targetCurrent.rows.map { it.skill })
+        assertEquals("back", targetCurrent.position)
+        assertEquals("always", targetCurrent.guard)
+        assertTrue(submittedCharacters.all { it == target.hofCharacterId })
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["UNCHANGED", "BEFORE_RESUME", "AFTER_CLEAR"])
+    fun `완료 장비 checkpoint도 재개 시 실제 현재 장비와 최신 후보 값을 다시 확인한다`(candidateChange: String) {
+        targetEquipment = false
+        val desired = setting("2").copy(position = "back", guard = "always")
+        snapshots.writeParsed(accountId, source.hofCharacterId, parser.parsePage(source.hofCharacterId,
+            page(source.hofCharacterId, desired, mapOf("0" to sourceSaved), equipment = true)))
+        snapshots.writeParsed(accountId, target.hofCharacterId, parser.parsePage(target.hofCharacterId,
+            page(target.hofCharacterId, targetCurrent, targetSlots, equipment = false)))
+        val selection = CharacterTransferSelection(source.id, target.id,
+            CharacterTransferRequest(includeCurrentPattern = true, includeEquipment = true))
+        var snapshot: CharacterTransferSnapshot? = null
+        val first = transfers.execute(accountId, selection, onSnapshot = { snapshot = it })
+        assertTrue(first.results.all { it.status == CharacterTransferStepStatus.COMPLETED }, first.toString())
+
+        // 완료 저장 뒤 HOF에서 현재 장비가 바뀌어도 과거 완료 ID를 최종 상태로 믿지 않는다.
+        targetEquipment = false
+        targetCurrent = setting("0")
+        if (candidateChange == "BEFORE_RESUME") equipmentCandidateValue = "ring-new"
+        changeEquipmentCandidateAfterClear = candidateChange == "AFTER_CLEAR"
+        val resumed = transfers.execute(accountId, selection, first.results.map { it.stepId }.toSet(), snapshot)
+
+        assertTrue(resumed.results.all { it.status == CharacterTransferStepStatus.COMPLETED }, resumed.toString())
+        assertEquals(true, targetEquipment)
+        assertEquals(listOf("2", "0"), targetCurrent.rows.map { it.skill })
+        assertEquals("back", targetCurrent.position)
+        assertEquals("always", targetCurrent.guard)
+        assertTrue(submittedCharacters.all { it == target.hofCharacterId })
+    }
+
+    @Test
+    fun `장비 식별 근거가 없는 기존 작업 기록으로 후보 값을 다시 제출하지 않는다`() {
+        targetEquipment = false
+        snapshots.writeParsed(accountId, source.hofCharacterId, parser.parsePage(source.hofCharacterId,
+            page(source.hofCharacterId, sourceCurrent, mapOf("0" to sourceSaved), equipment = true)))
+        snapshots.writeParsed(accountId, target.hofCharacterId, parser.parsePage(target.hofCharacterId,
+            page(target.hofCharacterId, targetCurrent, targetSlots, equipment = false)))
+        val selection = CharacterTransferSelection(source.id, target.id, CharacterTransferRequest(includeEquipment = true))
+        var snapshot: CharacterTransferSnapshot? = null
+        val first = transfers.execute(accountId, selection, onSnapshot = { snapshot = it })
+        assertTrue(first.results.all { it.status == CharacterTransferStepStatus.COMPLETED }, first.toString())
+        val original = checkNotNull(snapshot)
+        val legacy = original.copy(source = original.source.copy(equipment = original.source.equipment.map { it.copy(identity = null) }))
+        submittedFields.clear()
+
+        assertFailsWith<IllegalArgumentException> {
+            transfers.execute(accountId, selection, first.results.map { it.stepId }.toSet(), legacy)
+        }
+
+        assertTrue(submittedFields.isEmpty(), "기존 후보 값만으로 해제·장착을 시작하지 않는다.")
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    fun `장비 저장의 성공 응답만으로 저장 결과를 완료 처리하지 않고 최종 현재 설정을 복원한다`(loadAlsoIgnored: Boolean) {
+        targetEquipment = false
+        ignoredEquipmentSave = 2
+        ignoreEquipmentLoad = loadAlsoIgnored
+        targetEquipmentSlots[2] = "Focus Ring"
+        snapshots.writeParsed(accountId, source.hofCharacterId, parser.parsePage(source.hofCharacterId,
+            page(source.hofCharacterId, sourceCurrent, mapOf("0" to sourceSaved), equipment = false)))
+        archive.saveEquipmentPreset(source, 2, parser.parsePage(source.hofCharacterId,
+            page(source.hofCharacterId, sourceCurrent, mapOf("0" to sourceSaved), equipment = true, equipmentName = "Guard Ring")), Instant.now())
+        snapshots.writeParsed(accountId, target.hofCharacterId, parser.parsePage(target.hofCharacterId,
+            page(target.hofCharacterId, targetCurrent, targetSlots, equipment = false)))
+
+        val result = transfers.execute(accountId, CharacterTransferSelection(source.id, target.id,
+            CharacterTransferRequest(includeEquipment = true)))
+
+        assertEquals(CharacterTransferStepStatus.FAILED, result.results.single { it.stepId == "equipment-preset:2:save" }.status)
+        assertEquals("Focus Ring", targetEquipmentSlots[2])
+        assertEquals(false, targetEquipment)
+        assertEquals(setting("0"), targetCurrent)
+        assertTrue(submittedCharacters.all { it == target.hofCharacterId })
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["SUBMISSIONS_IGNORED", "PROBE_IGNORED", "PROBE_REJECTED"])
+    fun `빈 장비 저장도 불러오기 전후 변화가 없으면 완료로 오인하지 않는다`(outcome: String) {
+        targetEquipment = false
+        ignoredEquipmentSave = if (outcome == "SUBMISSIONS_IGNORED") 2 else null
+        ignoreEquipmentLoad = outcome == "SUBMISSIONS_IGNORED"
+        ignoreEquipment = outcome == "PROBE_IGNORED"
+        rejectEquipment = outcome == "PROBE_REJECTED"
+        targetEquipmentSlots[2] = "Guard Ring"
+        val emptySource = parser.parsePage(source.hofCharacterId,
+            page(source.hofCharacterId, sourceCurrent, mapOf("0" to sourceSaved), equipment = false))
+        snapshots.writeParsed(accountId, source.hofCharacterId, emptySource)
+        archive.saveEquipmentPreset(source, 2, emptySource, Instant.now())
+        snapshots.writeParsed(accountId, target.hofCharacterId, parser.parsePage(target.hofCharacterId,
+            page(target.hofCharacterId, targetCurrent, targetSlots, equipment = false)))
+        val selection = CharacterTransferSelection(source.id, target.id, CharacterTransferRequest(includeEquipment = true))
+
+        val failed = transfers.execute(accountId, selection)
+
+        assertEquals(CharacterTransferStepStatus.FAILED, failed.results.single { it.stepId == "equipment-preset:2:save" }.status)
+        assertEquals(if (outcome == "SUBMISSIONS_IGNORED") "Guard Ring" else null, targetEquipmentSlots[2])
+        assertEquals(false, targetEquipment)
+        assertEquals(setting("0"), targetCurrent)
+
+        ignoredEquipmentSave = null
+        ignoreEquipmentLoad = false
+        ignoreEquipment = false
+        rejectEquipment = false
+        val completed = transfers.execute(accountId, selection)
+
+        assertTrue(completed.results.all { it.status == CharacterTransferStepStatus.COMPLETED }, completed.toString())
+        assertTrue(2 in targetEquipmentSlots && targetEquipmentSlots[2] == null)
+        assertEquals(false, targetEquipment)
+        assertEquals(setting("0"), targetCurrent)
+        assertTrue(submittedCharacters.all { it == target.hofCharacterId })
+    }
+
+    @Test
+    fun `원본 현재 장비를 제외해도 실패와 재진입 뒤 대상의 최초 장비를 보존한다`() {
+        targetEquipment = true
+        targetEquipmentName = "Guard Ring"
+        val originalPattern = setting("0").copy(rows = setting("0").rows + setting("0").rows)
+        targetCurrent = originalPattern
+        ignoreEquipmentLoad = true
+        snapshots.writeParsed(accountId, source.hofCharacterId, parser.parsePage(source.hofCharacterId,
+            page(source.hofCharacterId, sourceCurrent, mapOf("0" to sourceSaved), equipment = true, equipmentName = "Unavailable Ring")))
+        archive.saveEquipmentPreset(source, 2, parser.parsePage(source.hofCharacterId,
+            page(source.hofCharacterId, sourceCurrent, mapOf("0" to sourceSaved), equipment = false)), Instant.now())
+        snapshots.writeParsed(accountId, target.hofCharacterId, parser.parsePage(target.hofCharacterId,
+            page(target.hofCharacterId, targetCurrent, targetSlots, equipment = true, equipmentName = "Guard Ring")))
+        val selection = CharacterTransferSelection(source.id, target.id, CharacterTransferRequest(includeEquipment = true))
+        var snapshot: CharacterTransferSnapshot? = null
+
+        val failed = transfers.execute(accountId, selection, onSnapshot = { snapshot = it })
+
+        assertEquals(CharacterTransferStepStatus.FAILED, failed.results.single { it.stepId == "equipment-preset:2:save" }.status)
+        assertEquals(true, targetEquipment)
+        assertEquals("Guard Ring", targetEquipmentName)
+        assertEquals(originalPattern, targetCurrent)
+
+        targetEquipmentName = "Focus Ring"
+        ignoreEquipmentLoad = false
+        val resumed = transfers.execute(accountId, selection,
+            failed.results.filter { it.status == CharacterTransferStepStatus.COMPLETED }.map { it.stepId }.toSet(), snapshot)
+
+        assertTrue(resumed.results.all { it.status == CharacterTransferStepStatus.COMPLETED }, resumed.toString())
+        assertTrue(2 in targetEquipmentSlots && targetEquipmentSlots[2] == null)
+        assertEquals(true, targetEquipment)
+        assertEquals("Guard Ring", targetEquipmentName)
+        assertEquals(originalPattern, targetCurrent)
+        assertTrue(submittedCharacters.all { it == target.hofCharacterId })
+
+        submittedFields.clear()
+        assertFailsWith<IllegalArgumentException> {
+            transfers.execute(accountId, selection, snapshot = checkNotNull(snapshot).copy(originalEquipment = null))
+        }
+        assertTrue(submittedFields.isEmpty(), "최초 대상 장비가 없는 기존 기록은 임시 장비를 원래 장비로 취급하지 않는다.")
+    }
+
+    @Test
+    fun `장비 저장 두 개의 임시 설정이 완료 기록 재개 뒤에도 최종 현재 장비로 남지 않는다`() {
+        targetEquipment = false
+        snapshots.writeParsed(accountId, source.hofCharacterId, parser.parsePage(source.hofCharacterId,
+            page(source.hofCharacterId, sourceCurrent, mapOf("0" to sourceSaved), equipment = false)))
+        for ((slot, name) in mapOf(1 to "Focus Ring", 2 to "Guard Ring")) {
+            archive.saveEquipmentPreset(source, slot, parser.parsePage(source.hofCharacterId,
+                page(source.hofCharacterId, sourceCurrent, mapOf("0" to sourceSaved), equipment = true, equipmentName = name)), Instant.now())
+        }
+        snapshots.writeParsed(accountId, target.hofCharacterId, parser.parsePage(target.hofCharacterId,
+            page(target.hofCharacterId, targetCurrent, targetSlots, equipment = false)))
+        val selection = CharacterTransferSelection(source.id, target.id, CharacterTransferRequest(includeEquipment = true))
+        val preview = transfers.preview(accountId, selection)
+        assertTrue(preview.issues.isEmpty(), preview.toString())
+        var snapshot: CharacterTransferSnapshot? = null
+        val first = transfers.execute(accountId, selection, onSnapshot = { snapshot = it })
+        assertTrue(first.results.all { it.status == CharacterTransferStepStatus.COMPLETED }, first.toString())
+        assertEquals(mapOf<Int, String?>(1 to "Focus Ring", 2 to "Guard Ring"), targetEquipmentSlots)
+        assertEquals(false, targetEquipment)
+        assertEquals(setting("0"), targetCurrent)
+
+        targetEquipment = true
+        targetEquipmentName = "Guard Ring"
+        targetEquipmentSlots[1] = "Guard Ring"
+        targetEquipmentSlots[2] = "Focus Ring"
+        val resumed = transfers.execute(accountId, selection, first.results.map { it.stepId }.toSet(), snapshot)
+
+        assertTrue(resumed.results.all { it.status == CharacterTransferStepStatus.COMPLETED }, resumed.toString())
+        assertEquals(mapOf<Int, String?>(1 to "Focus Ring", 2 to "Guard Ring"), targetEquipmentSlots)
+        assertEquals(false, targetEquipment)
+        assertEquals(setting("0"), targetCurrent)
+        assertTrue(submittedCharacters.all { it == target.hofCharacterId })
+    }
+
+    @Test
+    fun `장비만 가져올 때 정상 응답이어도 실제 미장착이면 완료로 기록하지 않는다`() {
+        targetEquipment = false
+        ignoreEquipment = true
+        snapshots.writeParsed(accountId, source.hofCharacterId, parser.parsePage(source.hofCharacterId,
+            page(source.hofCharacterId, sourceCurrent, mapOf("0" to sourceSaved), equipment = true)))
+        snapshots.writeParsed(accountId, target.hofCharacterId, parser.parsePage(target.hofCharacterId,
+            page(target.hofCharacterId, targetCurrent, targetSlots, equipment = false)))
+
+        val result = transfers.execute(accountId, CharacterTransferSelection(source.id, target.id,
+            CharacterTransferRequest(includeEquipment = true)))
+
+        assertEquals(CharacterTransferStepStatus.FAILED, result.results.single { it.stepId == "equipment-current:item:0" }.status)
+        assertEquals(false, targetEquipment)
+        assertEquals(setting("0"), targetCurrent)
+        assertTrue(submittedCharacters.all { it == target.hofCharacterId })
+    }
+
+    @Test
+    fun `장비 적용 뒤 저장 패턴을 복사해도 대상의 기존 현재 행동 패턴을 유지한다`() {
+        targetEquipment = false
+        targetCurrent = setting("1").copy(position = "back", guard = "always")
+        val saved = CharacterPatternSetting(setting("2").rows + setting("1").rows, "front", "never")
+        snapshots.writeParsed(accountId, source.hofCharacterId, parser.parsePage(source.hofCharacterId,
+            page(source.hofCharacterId, sourceCurrent, mapOf("0" to saved), equipment = true)))
+        archive.savePatternSlot(source, "0", parser.parsePage(source.hofCharacterId,
+            page(source.hofCharacterId, saved, mapOf("0" to saved), equipment = true)))
+        snapshots.writeParsed(accountId, target.hofCharacterId, parser.parsePage(target.hofCharacterId,
+            page(target.hofCharacterId, targetCurrent, targetSlots, equipment = false)))
+
+        val result = transfers.execute(accountId, CharacterTransferSelection(source.id, target.id,
+            CharacterTransferRequest(includeEquipment = true,
+                savedPatternMappings = listOf(CharacterSavedPatternMapping("0", "0")))))
+
+        assertTrue(result.results.all { it.status == CharacterTransferStepStatus.COMPLETED }, result.toString())
+        assertEquals(saved, targetSlots["0"])
+        assertEquals(listOf("1", "0"), targetCurrent.rows.map { it.skill })
+        assertEquals("back", targetCurrent.position)
+        assertEquals("always", targetCurrent.guard)
+        assertEquals(true, targetEquipment)
+        assertTrue(submittedCharacters.all { it == target.hofCharacterId })
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["EQUIPMENT_REJECTED", "CAPACITY_UNAVAILABLE", "SKILL_UNAVAILABLE"])
+    fun `장비 적용 후에도 호환되지 않는 패턴은 자르거나 제출하지 않는다`(outcome: String) {
+        targetEquipment = false
+        rejectEquipment = outcome == "EQUIPMENT_REJECTED"
+        equipmentCapacity = if (outcome == "CAPACITY_UNAVAILABLE") 1 else 2
+        equipmentGrantsSkill = outcome != "SKILL_UNAVAILABLE"
+        val desired = CharacterPatternSetting(setting("2").rows + setting("1").rows, "back", "always")
+        snapshots.writeParsed(accountId, source.hofCharacterId, parser.parsePage(source.hofCharacterId,
+            page(source.hofCharacterId, desired, mapOf("0" to sourceSaved), equipment = true)))
+        snapshots.writeParsed(accountId, target.hofCharacterId, parser.parsePage(target.hofCharacterId,
+            page(target.hofCharacterId, targetCurrent, targetSlots, equipment = false)))
+
+        val result = transfers.execute(accountId, CharacterTransferSelection(source.id, target.id,
+            CharacterTransferRequest(includeCurrentPattern = true, includeEquipment = true)))
+
+        assertEquals(CharacterTransferStepStatus.FAILED, result.results.last().status)
+        assertTrue(submittedFields.none { "ChangePattern" in it || "ChangePosition" in it }, "호환되지 않는 패턴은 POST하지 않는다.")
+        assertEquals(outcome != "EQUIPMENT_REJECTED", targetEquipment)
+        assertTrue(targetCurrent.rows.all { it.skill == "0" })
+        assertTrue(submittedCharacters.all { it == target.hofCharacterId })
     }
 
     @Test

@@ -29,7 +29,11 @@ class CharacterTransferExecutor(private val target: CharacterTransferTargetPort)
         val results = mutableListOf<CharacterTransferStepResult>()
         val failed = mutableSetOf<String>()
         preview.steps.forEach { step ->
-            val result = if (step.id in completedStepIds && step !is CharacterTransferStep.ApplyCurrentPattern) {
+            // 현재 설정은 다른 슬롯 생성·외부 변경으로 달라질 수 있다. 장비 묶음도
+            // 해제부터 저장까지 다시 확인해야 중간 checkpoint의 일부 장비만 남지 않는다.
+            val canReuseCompletion = step is CharacterTransferStep.AllocateStats ||
+                step is CharacterTransferStep.LearnSkill || step is CharacterTransferStep.SavePatternSlot
+            val result = if (step.id in completedStepIds && canReuseCompletion) {
                 CharacterTransferStepResult(step.id, CharacterTransferStepStatus.COMPLETED, "이전 실행에서 완료됨")
             } else if (step.dependsOn.any { it in failed }) {
                 CharacterTransferStepResult(step.id, CharacterTransferStepStatus.SKIPPED, "실패한 의존 항목 때문에 건너뛰었습니다.")

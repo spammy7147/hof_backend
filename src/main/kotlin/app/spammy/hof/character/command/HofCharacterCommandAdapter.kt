@@ -2,6 +2,7 @@ package app.spammy.hof.character.command
 
 import app.spammy.hof.character.service.CharacterSnapshotSynchronizer
 import app.spammy.hof.external.client.HofRequestFactory
+import app.spammy.hof.external.model.HofEquipment
 import app.spammy.hof.external.parser.CharacterDetailParser
 import app.spammy.hof.external.parser.CharacterRosterParser
 import app.spammy.hof.external.parser.EquipmentCandidateScriptParser
@@ -73,7 +74,7 @@ class HofCharacterCommandAdapter(
             is CharacterCommand.ChangeClass -> executeChoice(context, "classchange", "job", command.classValue)
             is CharacterCommand.AllocateStat -> executeStat(context, command)
             is CharacterCommand.AllocateStats -> executeStats(context, command)
-            is CharacterCommand.EquipItem -> executeEquipment(context, command.itemValue, afterEquipmentChange)
+            is CharacterCommand.EquipItem -> executeEquipment(context, command, afterEquipmentChange)
             is CharacterCommand.RemoveEquipment -> executeChoice(context, "remove", "spot", command.equipmentPart)
             is CharacterCommand.RemoveAllEquipment -> executeSimpleSnapshot(context, "remove_all", afterEquipmentChange)
             is CharacterCommand.SaveEquipmentPreset -> {
@@ -222,7 +223,7 @@ class HofCharacterCommandAdapter(
         }
     }
 
-    private fun executeEquipment(context: CharacterCommandContext, itemValue: String, afterSubmit: ((String, String) -> Unit)? = null): List<String>? = try {
+    private fun executeEquipment(context: CharacterCommandContext, command: CharacterCommand.EquipItem, afterSubmit: ((String, String) -> Unit)? = null): List<String>? = try {
         executor.executeMaterializedResolvedProjectedWithScalars(
             accountId = context.accountId,
             pageUrl = characterUrl(context),
@@ -231,10 +232,11 @@ class HofCharacterCommandAdapter(
             requiredSyntheticFields = setOf("list_type"),
             requiredReplacedFields = setOf("item_no"),
             allowedAbsentRawReplacedFields = setOf("item_no"),
-            materialize = { html, finalUrl -> materializeEquipmentForm(html, finalUrl, itemValue) },
+            materialize = { html, finalUrl -> materializeEquipmentForm(html, finalUrl, command.itemValue, command.identity) },
             resolve = { _, _, page ->
                 val form = page.semanticForm("equip_item") ?: throw FormNotObserved()
-                val candidate = form.uniqueCandidate("item_no", itemValue) ?: throw FormNotObserved()
+                // 제출 직전 화면에서 고유하게 찾고 materialize한 후보 하나만 사용한다.
+                val candidate = form.candidates.singleOrNull { it.inputName.equals("item_no", true) } ?: throw FormNotObserved()
                 TownActionRequest(form.actionId, selections = listOf(TownActionSelection(candidate.id))) to emptyMap()
             },
         ) { html, finalUrl, result, _ ->
@@ -248,14 +250,15 @@ class HofCharacterCommandAdapter(
         null
     }
 
-    private fun materializeEquipmentForm(html: String, finalUrl: String, itemValue: String): String {
+    private fun materializeEquipmentForm(html: String, finalUrl: String, itemValue: String, identity: HofEquipment?): String {
         val document = HofHtmlParser.parse(html, finalUrl)
         val candidates = EquipmentCandidateScriptParser.parseEquipmentCatalog(document)
-        val exactValue = CharacterEquipmentCommandRules.requireExactCandidate(
-            itemValue,
-            candidates.map { it.value },
-        )
-        val candidate = candidates.single { it.value == exactValue }
+        val candidate = if (identity != null) {
+            CharacterEquipmentCommandRules.requireRestoreCandidate(identity.name, identity.iconUrl, identity.description, candidates)
+        } else {
+            val exactValue = CharacterEquipmentCommandRules.requireExactCandidate(itemValue, candidates.map { it.value })
+            candidates.single { it.value == exactValue }
+        }
         require(candidate.typeCode.isNotBlank() && candidate.typeCode.length <= 80) {
             "현재 장비 분류를 안전하게 확인하지 못했습니다."
         }

@@ -1,5 +1,7 @@
 package app.spammy.hof.character.command
 
+import app.spammy.hof.external.model.HofEquipment
+
 import com.fasterxml.jackson.annotation.JsonSubTypes
 import com.fasterxml.jackson.annotation.JsonTypeInfo
 import java.time.Instant
@@ -45,7 +47,12 @@ sealed interface CharacterCommand {
         val amounts: Map<CharacterStat, Int>,
     ) : CharacterCommand
     data class ChangeClass(override val characterId: Long, override val expectedRevision: Instant, val classValue: String) : CharacterCommand
-    data class EquipItem(override val characterId: Long, override val expectedRevision: Instant, val itemValue: String) : CharacterCommand
+    data class EquipItem(
+        override val characterId: Long,
+        override val expectedRevision: Instant,
+        val itemValue: String,
+        val identity: HofEquipment? = null,
+    ) : CharacterCommand
     data class RemoveEquipment(override val characterId: Long, override val expectedRevision: Instant, val equipmentPart: String) : CharacterCommand
     data class RemoveAllEquipment(override val characterId: Long, override val expectedRevision: Instant) : CharacterCommand
     data class SaveEquipmentPreset(override val characterId: Long, override val expectedRevision: Instant, val slotNumber: Int) : CharacterCommand

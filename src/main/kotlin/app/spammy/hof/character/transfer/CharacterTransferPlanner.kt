@@ -21,6 +21,27 @@ class CharacterTransferPlanner {
         if (request.includeStats) planStats(source, target, steps, issues)
         if (request.includeSkills) planSkills(source, target, steps, issues)
 
+        if (request.includeEquipment) {
+            source.equipmentPresets.toSortedMap().forEach { (slotNumber, items) ->
+                planEquipmentSet("equipment-preset:$slotNumber", items, target, steps, issues, slotNumber)
+            }
+            // 저장 슬롯을 만들며 바뀐 현재 장비는 마지막에 원본 캐릭터의 현재 장비로 되돌린다.
+            val currentPlanned = planEquipmentSet("equipment-current", source.equipment, target, steps, issues)
+            if (!currentPlanned && steps.any { it is CharacterTransferStep.RemoveAllEquipment }) {
+                val original = target.currentEquipment
+                if (original == null || !planEquipmentSet("preserve-current-equipment", original, target, steps, issues)) {
+                    issues += blocking("ORIGINAL_EQUIPMENT_UNAVAILABLE", "current-equipment",
+                        "원본 장비를 제외한 뒤 대상의 최초 장비를 보존할 수 없어 장비 저장을 시작하지 않습니다.")
+                }
+            }
+        }
+
+        val recheckAfterEquipment = steps.any { it is CharacterTransferStep.RemoveAllEquipment }
+        if (recheckAfterEquipment && (request.includeCurrentPattern || request.savedPatternMappings.isNotEmpty())) {
+            issues += CharacterTransferIssue("PATTERN_RECHECK_AFTER_EQUIPMENT", "current-pattern",
+                "장비 변경 후 패턴 행 수와 사용 가능한 스킬을 다시 확인합니다.", CharacterTransferIssueSeverity.WARNING)
+        }
+
         request.savedPatternMappings.forEach { mapping ->
             val key = "saved-pattern:${mapping.sourceSlot}:${mapping.targetSlot}"
             val sourceSetting = source.savedPatterns[mapping.sourceSlot]
@@ -28,8 +49,8 @@ class CharacterTransferPlanner {
                 issues += selection("SOURCE_SLOT_MISSING", key, "가져올 저장 패턴 슬롯을 찾지 못했습니다.")
                 return@forEach
             }
-            normalizePattern(key, sourceSetting, target, issues)?.let { setting ->
-                patternDependencies(key, setting, source, target, request, issues)?.let { dependencies ->
+            normalizePattern(key, sourceSetting, target, issues, recheckAfterEquipment)?.let { setting ->
+                patternDependencies(key, setting, source, target, request, issues, recheckAfterEquipment)?.let { dependencies ->
                     steps += CharacterTransferStep.SavePatternSlot(
                         id = key,
                         sourceSlot = mapping.sourceSlot,
@@ -43,18 +64,10 @@ class CharacterTransferPlanner {
             }
         }
 
-        if (request.includeEquipment) {
-            source.equipmentPresets.toSortedMap().forEach { (slotNumber, items) ->
-                planEquipmentSet("equipment-preset:$slotNumber", items, target, steps, issues, slotNumber)
-            }
-            // 저장 슬롯을 만들며 바뀐 현재 장비는 마지막에 원본 캐릭터의 현재 장비로 되돌린다.
-            planEquipmentSet("equipment-current", source.equipment, target, steps, issues)
-        }
-
         // 저장 슬롯 생성과 장비 변경도 현재 패턴을 바꾸므로 선택한 최종 패턴을 마지막에 적용한다.
         if (request.includeCurrentPattern) {
-            normalizePattern("current-pattern", source.currentPattern, target, issues)?.let { setting ->
-                patternDependencies("current-pattern", setting, source, target, request, issues)?.let { dependencies ->
+            normalizePattern("current-pattern", source.currentPattern, target, issues, recheckAfterEquipment)?.let { setting ->
+                patternDependencies("current-pattern", setting, source, target, request, issues, recheckAfterEquipment)?.let { dependencies ->
                     steps += CharacterTransferStep.ApplyCurrentPattern("current-pattern", setting, dependencies)
                 }
             }
@@ -72,7 +85,7 @@ class CharacterTransferPlanner {
         steps: MutableList<CharacterTransferStep>,
         issues: MutableList<CharacterTransferIssue>,
         saveSlotNumber: Int? = null,
-    ) {
+    ): Boolean {
         val missing = items.filter { it.sourceValue !in target.equipmentCandidateValues }
         if (missing.isNotEmpty()) {
             missing.forEach { item ->
@@ -82,13 +95,13 @@ class CharacterTransferPlanner {
                     "대상 캐릭터에서 고유하게 확인할 수 없는 장비가 있어 이 장비 묶음은 제외했습니다.",
                 )
             }
-            return
+            return false
         }
         val clearId = "$key:clear"
         steps += CharacterTransferStep.RemoveAllEquipment(clearId)
         val itemStepIds = items.mapIndexed { index, item ->
             val itemId = "$key:item:$index"
-            steps += CharacterTransferStep.EquipItem(itemId, item.equipmentPart, item.sourceValue, setOf(clearId))
+            steps += CharacterTransferStep.EquipItem(itemId, item.equipmentPart, item.sourceValue, setOf(clearId), item.identity)
             itemId
         }.toSet()
         if (saveSlotNumber != null) {
@@ -98,6 +111,7 @@ class CharacterTransferPlanner {
                 itemStepIds + clearId,
             )
         }
+        return true
     }
 
     private fun planStats(
@@ -136,8 +150,9 @@ class CharacterTransferPlanner {
         source: CharacterPatternSetting,
         target: CharacterTransferTarget,
         issues: MutableList<CharacterTransferIssue>,
+        recheckAfterEquipment: Boolean,
     ): CharacterPatternSetting? {
-        if (source.rows.size > target.patternCapacity) {
+        if (!recheckAfterEquipment && source.rows.size > target.patternCapacity) {
             issues += blocking(
                 "PATTERN_OVERFLOW",
                 key,
@@ -153,7 +168,8 @@ class CharacterTransferPlanner {
             issues += selection("CONDITION_UNAVAILABLE", key, "대상 캐릭터에서 선택할 수 없는 조건이 포함되어 있습니다.")
             return null
         }
-        return source.copy(rows = source.rows + List(target.patternCapacity - source.rows.size) { target.defaultPatternRow })
+        return if (recheckAfterEquipment) source
+        else source.copy(rows = source.rows + List(target.patternCapacity - source.rows.size) { target.defaultPatternRow })
     }
 
     private fun patternDependencies(
@@ -163,7 +179,9 @@ class CharacterTransferPlanner {
         target: CharacterTransferTarget,
         request: CharacterTransferRequest,
         issues: MutableList<CharacterTransferIssue>,
+        recheckAfterEquipment: Boolean,
     ): Set<String>? {
+        if (recheckAfterEquipment) return emptySet()
         val missing = setting.rows.map { it.skill }.filter { it !in target.allowedSkills }.toSet()
         if (missing.isEmpty()) return emptySet()
         val learnableDuringTransfer = if (request.includeSkills) {

@@ -3,6 +3,7 @@ package app.spammy.hof.character.transfer
 import app.spammy.hof.character.command.CharacterStat
 import app.spammy.hof.character.pattern.CharacterPatternRowValue
 import app.spammy.hof.character.pattern.CharacterPatternSetting
+import app.spammy.hof.external.model.HofEquipment
 
 /** 같은 HOF 계정 안에서 복사할 수 있는 캐릭터 설정 스냅샷. */
 data class CharacterTransferSource(
@@ -17,16 +18,18 @@ data class CharacterTransferSource(
     val equipmentPresets: Map<Int, List<CharacterTransferEquipment>> = emptyMap(),
 )
 
-/** 슬롯 생성 전의 복사 원본과 대상의 행동 패턴을 재시작 뒤에도 같은 값으로 사용한다. */
+/** 슬롯 생성 전의 복사 원본과 대상 설정을 재시작 뒤에도 같은 값으로 사용한다. */
 data class CharacterTransferSnapshot(
     val source: CharacterTransferSource,
     val originalCurrentPattern: CharacterPatternSetting,
+    val originalEquipment: List<CharacterTransferEquipment>? = null,
 )
 
 data class CharacterTransferEquipment(
     val equipmentPart: String,
-    /** 이름이 중복될 수 있으므로 화면 문자열이 아닌 HOF 후보 값을 사용한다. */
+    /** 현재 관측에서만 유효한 HOF 후보 값. 재시작 때는 identity로 다시 찾는다. */
     val sourceValue: String,
+    val identity: HofEquipment? = null,
 )
 
 data class CharacterTransferTarget(
@@ -45,6 +48,7 @@ data class CharacterTransferTarget(
     val learnableSkills: Set<String> = emptySet(),
     val equipmentCandidateValues: Set<String> = emptySet(),
     val currentPattern: CharacterPatternSetting,
+    val currentEquipment: List<CharacterTransferEquipment>? = null,
 )
 
 data class CharacterTransferRequest(
@@ -103,6 +107,7 @@ sealed interface CharacterTransferStep {
         val equipmentPart: String,
         val itemValue: String,
         override val dependsOn: Set<String> = emptySet(),
+        val identity: HofEquipment? = null,
     ) : CharacterTransferStep
 
     data class RemoveAllEquipment(
