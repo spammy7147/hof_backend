@@ -18,6 +18,7 @@ data class CharacterPatternRemoteState(
 enum class CharacterPatternMutationReceipt { RESPONSE_RECEIVED, RESPONSE_LOST }
 
 interface CharacterPatternRemote {
+    /** 요청 캐릭터의 전체 현재 패턴·위치·호위를 확인할 수 없으면 관측을 실패시킨다. */
     fun observe(): CharacterPatternRemoteState
     fun changeAllRows(rows: List<CharacterPatternRowValue>): CharacterPatternMutationReceipt
     fun changePositionGuard(position: String, guard: String): CharacterPatternMutationReceipt

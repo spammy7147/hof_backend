@@ -42,12 +42,14 @@ class HofCharacterPatternRemoteFactory(
         private val characterId: Long,
         private val hofCharacterId: String,
     ) : CharacterPatternRemote {
-        override fun observe(): CharacterPatternRemoteState = executor.loadProjected(accountId, characterUrl()) { html, _, page ->
-            val parsed = detailParser.parsePage(hofCharacterId, html)
+        override fun observe(): CharacterPatternRemoteState = executor.loadProjected(accountId, characterUrl()) { html, finalUrl, page ->
+            val parsed = checkNotNull(detailParser.parseCompletePatternPage(hofCharacterId, html, finalUrl)) {
+                "요청한 캐릭터의 패턴·위치·호위를 완전히 확인하지 못했습니다."
+            }
+            val snapshot = parsed.snapshot
             snapshots.writeParsed(accountId, hofCharacterId, parsed)
             val character = characters.findByAccountIdAndId(accountId, characterId)
                 ?: error("캐릭터를 찾지 못했습니다.")
-            val snapshot = parsed.snapshot
             CharacterPatternRemoteState(
                 revision = character.updatedAt,
                 setting = CharacterPatternSetting(

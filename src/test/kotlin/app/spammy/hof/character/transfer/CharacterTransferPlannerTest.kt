@@ -62,7 +62,7 @@ class CharacterTransferPlannerTest {
         val replacement = planner.preview(
             source(saved = saved), target(occupied = setOf("1")),
             CharacterTransferRequest(savedPatternMappings = listOf(CharacterSavedPatternMapping("5", "1"))),
-        ).steps.single() as CharacterTransferStep.SavePatternSlot
+        ).steps.filterIsInstance<CharacterTransferStep.SavePatternSlot>().single()
         assertTrue(replacement.replacesExisting)
     }
 
@@ -111,7 +111,7 @@ class CharacterTransferPlannerTest {
             listOf(
                 "equipment-preset:1:clear", "equipment-preset:1:item:0", "equipment-preset:1:save",
                 "equipment-preset:2:clear", "equipment-preset:2:item:0", "equipment-preset:2:save",
-                "equipment-current:clear", "equipment-current:item:0",
+                "equipment-current:clear", "equipment-current:item:0", "preserve-current-pattern",
             ),
             preview.steps.map { it.id },
         )
@@ -155,6 +155,7 @@ class CharacterTransferPlannerTest {
         allowedPositions = setOf("front", "back"), allowedGuards = setOf("always", "never"),
         occupiedPatternSlots = occupied, statusPoints = points, realStats = stats,
         learnableSkills = learnable, equipmentCandidateValues = equipment,
+        currentPattern = setting(List(capacity) { defaultRow }),
     )
 
     private fun setting(rows: List<CharacterPatternRowValue>) = CharacterPatternSetting(rows, "front", "always")

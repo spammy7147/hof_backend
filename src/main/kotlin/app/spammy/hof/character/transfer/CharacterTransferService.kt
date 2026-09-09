@@ -12,6 +12,7 @@ import app.spammy.hof.character.pattern.CharacterPatternDraft
 import app.spammy.hof.character.pattern.CharacterPatternOperationResult
 import app.spammy.hof.character.pattern.CharacterPatternRowValue
 import app.spammy.hof.character.pattern.CharacterPatternSetting
+import app.spammy.hof.character.pattern.CharacterPatternRemoteFactory
 import app.spammy.hof.character.pattern.PatternSlotAfterApply
 import app.spammy.hof.character.repository.CharacterQueryRepository
 import app.spammy.hof.character.service.CharacterPatternService
@@ -33,6 +34,7 @@ class CharacterTransferService(
     private val patterns: CharacterPatternService,
     private val automationGate: CharacterAutomationGate,
     private val executor: TownAuthenticatedExecutor,
+    private val patternRemotes: CharacterPatternRemoteFactory,
 ) {
     private val planner = CharacterTransferPlanner()
 
@@ -46,13 +48,23 @@ class CharacterTransferService(
         accountId: Long,
         selection: CharacterTransferSelection,
         completedStepIds: Set<String> = emptySet(),
+        snapshot: CharacterTransferSnapshot? = null,
+        onSnapshot: (CharacterTransferSnapshot) -> Unit = {},
         onStepResult: (CharacterTransferStepResult) -> Unit = {},
     ): CharacterTransferExecutionResult = automationGate.execute(
         accountId,
         unavailable = { error("자동화 일시정지를 기다리고 있습니다.") },
     ) {
         executor.executeAccountSequence(accountId) {
-            val preview = preview(accountId, selection)
+            // 임시 슬롯 복사 이전의 실제 현재 설정과 선택지를 같은 계정 실행 범위에서 확인한다.
+            val current = patternRemotes.withRemote(accountId, selection.targetCharacterId) { it.observe() }
+            check(snapshot != null || completedStepIds.isEmpty() || selection.request.includeCurrentPattern) {
+                "중단 전 대상의 현재 패턴 기록이 없어 임시 설정을 원래 설정으로 사용할 수 없습니다."
+            }
+            val pair = readPair(accountId, selection.sourceCharacterId, selection.targetCharacterId)
+            val original = snapshot ?: CharacterTransferSnapshot(pair.first, current.setting).also(onSnapshot)
+            require(original.source.accountId == accountId && original.source.characterId == selection.sourceCharacterId)
+            val preview = planner.preview(original.source, pair.second.copy(currentPattern = original.originalCurrentPattern), selection.request)
             CharacterTransferExecutor { targetCharacterId, step ->
                 runCatching { executeStep(accountId, targetCharacterId, step) }
             }.execute(preview, completedStepIds, onStepResult)
@@ -98,6 +110,8 @@ class CharacterTransferService(
         setting: CharacterPatternSetting,
         slotAfterApply: PatternSlotAfterApply,
     ) {
+        if (slotAfterApply == PatternSlotAfterApply.None &&
+            patternRemotes.withRemote(accountId, characterId) { it.observe().setting } == setting) return
         val character = query.findByAccountIdAndId(accountId, characterId) ?: error("대상 캐릭터를 찾지 못했습니다.")
         val current = currentPattern(characterId)
         val result = patterns.applyDraft(
@@ -213,6 +227,7 @@ class CharacterTransferService(
             learnedSkills = targetLearnedNames.map { "learned:$it" }.toSet(),
             learnableSkills = targetLearnableByName.values.filter { it.size == 1 }.map { it.single().sourceValue }.toSet(),
             equipmentCandidateValues = targetCandidates.map { it.sourceValue }.toSet(),
+            currentPattern = currentPattern(targetCharacterId),
         )
     }
 

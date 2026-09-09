@@ -17,6 +17,12 @@ data class CharacterTransferSource(
     val equipmentPresets: Map<Int, List<CharacterTransferEquipment>> = emptyMap(),
 )
 
+/** 슬롯 생성 전의 복사 원본과 대상의 행동 패턴을 재시작 뒤에도 같은 값으로 사용한다. */
+data class CharacterTransferSnapshot(
+    val source: CharacterTransferSource,
+    val originalCurrentPattern: CharacterPatternSetting,
+)
+
 data class CharacterTransferEquipment(
     val equipmentPart: String,
     /** 이름이 중복될 수 있으므로 화면 문자열이 아닌 HOF 후보 값을 사용한다. */
@@ -38,6 +44,7 @@ data class CharacterTransferTarget(
     val learnedSkills: Set<String> = emptySet(),
     val learnableSkills: Set<String> = emptySet(),
     val equipmentCandidateValues: Set<String> = emptySet(),
+    val currentPattern: CharacterPatternSetting,
 )
 
 data class CharacterTransferRequest(

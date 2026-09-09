@@ -16,12 +16,30 @@ import org.jsoup.nodes.Element
 import org.jsoup.nodes.Node
 import org.jsoup.nodes.TextNode
 import org.springframework.stereotype.Component
+import java.net.URI
 
 @Component
 /**
  * HOF 캐릭터 상세 HTML을 내부 캐릭터 스냅샷 모델로 변환한다.
  */
 class CharacterDetailParser {
+    /** 요청 캐릭터의 현재 패턴·위치·호위를 정상 관측한 경우에만 반환한다. */
+    fun parseCompletePatternPage(characterId: String, html: String, finalUrl: String): CharacterPageParseResult? {
+        val observedIds = runCatching { URI(finalUrl).query.orEmpty() }.getOrNull()?.split('&')
+            ?.filter { it.substringBefore('=') == "char" }?.map { it.substringAfter('=', "") }
+        if (observedIds != listOf(characterId)) return null
+        val document = HofHtmlParser.parse(html)
+        if (document.select(".error").any { it.text().isNotBlank() }) return null
+        val parsed = parsePage(characterId, html)
+        val current = parsed.snapshot
+        if (current.actionPatterns.isEmpty() || current.actionPatterns.any {
+                it.judge.isBlank() || it.skill.isBlank() || document.selectFirst("[name=quantity${it.index}]") == null
+            } || current.positionGuard.positions.size != 2 || current.positionGuard.selectedPosition.isBlank() ||
+            current.positionGuard.guardValue.isBlank()
+        ) return null
+        return parsed
+    }
+
     fun parsePage(characterId: String, html: String): CharacterPageParseResult {
         val snapshot = parse(characterId, html)
         val document = HofHtmlParser.parse(html, HOF_BASE_URL)

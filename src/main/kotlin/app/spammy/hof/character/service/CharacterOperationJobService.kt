@@ -15,6 +15,7 @@ import app.spammy.hof.character.repository.CharacterQueryRepository
 import app.spammy.hof.character.transfer.CharacterTransferExecutionResult
 import app.spammy.hof.character.transfer.CharacterTransferSelection
 import app.spammy.hof.character.transfer.CharacterTransferService
+import app.spammy.hof.character.transfer.CharacterTransferSnapshot
 import app.spammy.hof.character.transfer.CharacterTransferStepResult
 import app.spammy.hof.character.transfer.CharacterTransferStepStatus
 import app.spammy.hof.common.error.ApiException
@@ -31,6 +32,12 @@ import org.springframework.transaction.support.TransactionSynchronization
 import org.springframework.transaction.support.TransactionSynchronizationManager
 import tools.jackson.core.type.TypeReference
 import tools.jackson.databind.ObjectMapper
+
+/** 외부 요청과 내부 재시작 기록을 분리하며 기존 request_payload 컬럼을 사용한다. */
+private data class CharacterTransferJobRequest(
+    val request: CharacterTransferExecuteRequest,
+    val snapshot: CharacterTransferSnapshot? = null,
+)
 
 /** 깊은 동기화와 설정 가져오기를 HTTP 수명과 분리하고 단계 결과를 영속화한다. */
 @Service
@@ -74,7 +81,7 @@ class CharacterOperationJobService(
             CharacterOperationType.TRANSFER,
             request.sourceCharacterId,
             request.targetCharacterId,
-            objectMapper.writeValueAsString(request),
+            objectMapper.writeValueAsString(CharacterTransferJobRequest(request)),
         )
         job.completedStepIds = objectMapper.writeValueAsString(request.completedStepIds)
         commands.save(job)
@@ -124,6 +131,11 @@ class CharacterOperationJobService(
     fun resumeIncompleteJobs() {
         queries.findPendingAutomationRelease().forEach(::reconcileRelease)
         queries.findIncomplete().forEach { job ->
+            if (job.operationType == CharacterOperationType.TRANSFER && job.status == CharacterOperationStatus.RUNNING &&
+                !objectMapper.readTree(job.requestPayload).has("request")) {
+                fail(job.id, "중단 전 대상의 원래 설정 기록이 없습니다. 원본 서버의 현재 캐릭터 설정을 확인해 주세요.")
+                return@forEach
+            }
             if (job.operationType != CharacterOperationType.TRANSFER && job.recoveryStatus == null) {
                 job.recoveryStatus = CharacterRecoveryStatus.UNAVAILABLE
                 job.status = CharacterOperationStatus.FAILED
@@ -259,17 +271,27 @@ class CharacterOperationJobService(
     }
 
     private fun runTransfer(job: CharacterOperationJobEntity, accountId: Long): String {
-        val request = objectMapper.readValue(job.requestPayload, CharacterTransferExecuteRequest::class.java)
+        val payload = objectMapper.readTree(job.requestPayload)
+        val stored = if (payload.has("request")) objectMapper.treeToValue(payload, CharacterTransferJobRequest::class.java)
+        else CharacterTransferJobRequest(objectMapper.treeToValue(payload, CharacterTransferExecuteRequest::class.java))
+        val request = stored.request
         val completed = readStrings(job.completedStepIds).toMutableSet()
         val results = mutableListOf<CharacterTransferStepResult>()
-        val result = transfers.execute(accountId, request.selection(), completed) { step ->
+        val result = transfers.execute(accountId, request.selection(), completed, stored.snapshot, onSnapshot = { snapshot ->
+            val latest = queries.findById(job.id) ?: error("캐릭터 작업을 찾지 못했습니다.")
+            latest.requestPayload = objectMapper.writeValueAsString(stored.copy(snapshot = snapshot))
+            latest.updatedAt = timeProvider.now()
+            commands.save(latest)
+        }) { step ->
             results.removeAll { it.stepId == step.stepId }
             results += step
             if (step.status == CharacterTransferStepStatus.COMPLETED) completed += step.stepId
-            job.completedStepIds = objectMapper.writeValueAsString(completed)
-            job.progressPayload = objectMapper.writeValueAsString(results)
-            job.updatedAt = timeProvider.now()
-            commands.save(job)
+            else completed -= step.stepId
+            val latest = queries.findById(job.id) ?: error("캐릭터 작업을 찾지 못했습니다.")
+            latest.completedStepIds = objectMapper.writeValueAsString(completed)
+            latest.progressPayload = objectMapper.writeValueAsString(results)
+            latest.updatedAt = timeProvider.now()
+            commands.save(latest)
         }
         return objectMapper.writeValueAsString(result)
     }

@@ -157,6 +157,29 @@ class CharacterOperationJobServiceTest {
     }
 
     @Test
+    fun `기존 형식의 실행 중 가져오기는 원래 패턴을 추정해 재전송하지 않는다`() {
+        val request = app.spammy.hof.character.dto.CharacterTransferExecuteRequest(8L, 9L,
+            app.spammy.hof.character.transfer.CharacterTransferRequest(
+                savedPatternMappings = listOf(app.spammy.hof.character.transfer.CharacterSavedPatternMapping("0", "0"))))
+        val job = CharacterOperationJobEntity(id = 17, account = account, operationType = CharacterOperationType.TRANSFER,
+            status = CharacterOperationStatus.RUNNING, sourceCharacterId = 8L, targetCharacterId = 9L,
+            requestPayload = mapper.writeValueAsString(request), startedAt = now, updatedAt = now)
+        Mockito.`when`(queries.findIncomplete()).thenReturn(listOf(job))
+        Mockito.`when`(queries.findById(job.id)).thenReturn(job)
+        Mockito.`when`(queries.findByAccountIdAndId(account.id, job.id)).thenReturn(job)
+        val tasks = mutableListOf<Runnable>()
+        val service = CharacterOperationJobService(accounts, characters, commands, queries, deepSync, transfers,
+            sessionRecovery, mapper, TimeProvider { now }, TaskExecutor(tasks::add), automation)
+
+        service.resumeIncompleteJobs()
+
+        assertTrue(tasks.isEmpty())
+        assertEquals(CharacterOperationStatus.FAILED, service.find(account.id, job.id).status)
+        assertTrue(job.message.orEmpty().contains("원래"))
+        Mockito.verifyNoInteractions(transfers)
+    }
+
+    @Test
     fun `application restart resumes a deep sync before its first mutation and persists its progress`() {
         val job = CharacterOperationJobEntity(
             id = 7,

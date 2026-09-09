@@ -58,6 +58,8 @@ class CharacterTransferPlanner {
                     steps += CharacterTransferStep.ApplyCurrentPattern("current-pattern", setting, dependencies)
                 }
             }
+        } else if (steps.any { it is CharacterTransferStep.SavePatternSlot || it is CharacterTransferStep.RemoveAllEquipment }) {
+            steps += CharacterTransferStep.ApplyCurrentPattern("preserve-current-pattern", target.currentPattern)
         }
 
         return CharacterTransferPreview(source.characterId, target.characterId, steps.distinctBy { it.id }, issues)

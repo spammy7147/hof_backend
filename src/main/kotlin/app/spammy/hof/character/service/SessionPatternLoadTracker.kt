@@ -5,7 +5,6 @@ import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofRequest
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.parser.CharacterDetailParser
-import app.spammy.hof.external.parser.HofHtmlParser
 import java.net.URI
 import java.net.URLDecoder
 import org.springframework.stereotype.Component
@@ -69,18 +68,9 @@ class SessionPatternLoadTracker(
         fun recordLoaded(pattern: BattlePatternLoadRequest, response: HofHttpResponse): Boolean {
             loadedSlots.remove(pattern.characterId)
             if (response.statusCode !in 200..299) return false
-            val characterIds = runCatching { URI(response.finalUrl).query.orEmpty() }.getOrNull()
-                ?.split('&')?.filter { it.substringBefore('=') == "char" }?.map { it.substringAfter('=', "") }
-            if (characterIds != listOf(pattern.characterId)) return false
-            val document = HofHtmlParser.parse(response.body)
-            if (document.select(".error").any { it.text().isNotBlank() }) return false
-            val current = detailParser.parse(pattern.characterId, response.body)
+            val current = detailParser.parseCompletePatternPage(pattern.characterId, response.body, response.finalUrl)?.snapshot
+                ?: return false
             if (current.patternSlots.none { it.slot == pattern.slot.toString() && it.canLoad }) return false
-            if (current.actionPatterns.isEmpty() || current.actionPatterns.any {
-                    it.judge.isBlank() || it.skill.isBlank() || document.selectFirst("[name=quantity${it.index}]") == null
-                } || current.positionGuard.positions.size != 2 || current.positionGuard.selectedPosition.isBlank() ||
-                current.positionGuard.guardValue.isBlank()
-            ) return false
             loadedSlots[pattern.characterId] = pattern.slot
             return true
         }

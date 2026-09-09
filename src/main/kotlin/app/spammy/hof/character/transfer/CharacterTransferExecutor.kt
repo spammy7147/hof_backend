@@ -29,7 +29,7 @@ class CharacterTransferExecutor(private val target: CharacterTransferTargetPort)
         val results = mutableListOf<CharacterTransferStepResult>()
         val failed = mutableSetOf<String>()
         preview.steps.forEach { step ->
-            val result = if (step.id in completedStepIds) {
+            val result = if (step.id in completedStepIds && step !is CharacterTransferStep.ApplyCurrentPattern) {
                 CharacterTransferStepResult(step.id, CharacterTransferStepStatus.COMPLETED, "이전 실행에서 완료됨")
             } else if (step.dependsOn.any { it in failed }) {
                 CharacterTransferStepResult(step.id, CharacterTransferStepStatus.SKIPPED, "실패한 의존 항목 때문에 건너뛰었습니다.")
