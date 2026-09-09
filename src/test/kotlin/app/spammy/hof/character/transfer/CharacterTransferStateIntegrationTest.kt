@@ -496,6 +496,149 @@ class CharacterTransferStateIntegrationTest {
         assertTrue(submittedCharacters.all { it == target.hofCharacterId })
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = ["SKILL", "CONDITION", "POSITION", "GUARD"])
+    fun `선택한 현재 패턴이 제외되어도 저장 복사와 재진입 뒤 최초 대상 패턴을 보존한다`(unavailable: String) {
+        targetCurrent = setting("0").copy(position = "back", guard = "always")
+        val original = targetCurrent
+        snapshots.writeParsed(accountId, target.hofCharacterId, parser.parsePage(target.hofCharacterId,
+            page(target.hofCharacterId, targetCurrent, targetSlots)))
+        val sourcePage = page(source.hofCharacterId, setting(if (unavailable == "SKILL") "9" else "1"),
+            mapOf("0" to sourceSaved), skills = 0..9)
+        val incompatiblePage = when (unavailable) {
+            "CONDITION" -> sourcePage.replace("<option value=\"0\" selected>Always", "<option value=\"9\" selected>Other")
+            "POSITION" -> sourcePage.replace("value=\"front\"", "value=\"side\"")
+            "GUARD" -> sourcePage.replace("value=\"never\"", "value=\"other\"")
+            else -> sourcePage
+        }
+        snapshots.writeParsed(accountId, source.hofCharacterId, parser.parsePage(source.hofCharacterId, incompatiblePage))
+        val selection = CharacterTransferSelection(source.id, target.id,
+            CharacterTransferRequest(includeCurrentPattern = true,
+                savedPatternMappings = listOf(CharacterSavedPatternMapping("0", "0"))))
+        assertTrue(transfers.preview(accountId, selection).issues.any {
+            it.itemKey == "current-pattern" && it.severity == CharacterTransferIssueSeverity.NEEDS_SELECTION
+        })
+        var snapshot: CharacterTransferSnapshot? = null
+
+        val first = transfers.execute(accountId, selection, onSnapshot = { snapshot = it })
+
+        assertTrue(first.results.all { it.status == CharacterTransferStepStatus.COMPLETED }, first.toString())
+        assertEquals(sourceSaved, targetSlots["0"])
+        assertEquals(original, targetCurrent, "제외된 현재 패턴 대신 슬롯 복사용 임시 패턴을 남기지 않는다.")
+
+        targetCurrent = sourceSaved
+        snapshots.writeParsed(accountId, source.hofCharacterId, parser.parsePage(source.hofCharacterId,
+            page(source.hofCharacterId, sourceCurrent, mapOf("0" to sourceSaved))))
+        val resumed = transfers.execute(accountId, selection, first.results.map { it.stepId }.toSet(), snapshot)
+
+        assertTrue(resumed.results.all { it.status == CharacterTransferStepStatus.COMPLETED }, resumed.toString())
+        assertEquals(original, targetCurrent, "재진입 때 새 원본이나 임시 현재 패턴으로 최초 의도를 바꾸지 않는다.")
+        assertEquals(sourceSaved, targetSlots["0"])
+        assertTrue(submittedCharacters.all { it == target.hofCharacterId })
+    }
+
+    @Test
+    fun `최초 snapshot 없는 완료 기록에서 현재 패턴이 제외되면 임시 패턴을 원본으로 채택하지 않는다`() {
+        targetCurrent = sourceSaved
+        targetSlots["0"] = sourceSaved
+        snapshots.writeParsed(accountId, source.hofCharacterId, parser.parsePage(source.hofCharacterId,
+            page(source.hofCharacterId, setting("9"), mapOf("0" to sourceSaved), skills = 0..9)))
+        val selection = CharacterTransferSelection(source.id, target.id,
+            CharacterTransferRequest(includeCurrentPattern = true,
+                savedPatternMappings = listOf(CharacterSavedPatternMapping("0", "0"))))
+        var captured: CharacterTransferSnapshot? = null
+
+        assertFailsWith<IllegalStateException> {
+            transfers.execute(accountId, selection, setOf("saved-pattern:0:0"),
+                onSnapshot = { captured = it })
+        }
+
+        assertEquals(null, captured, "원래 설정을 모르는 기록에 임시 설정을 새 원본으로 영속화하지 않는다.")
+        assertTrue(submittedCharacters.isEmpty())
+        assertEquals(sourceSaved, targetCurrent)
+        assertEquals(sourceSaved, targetSlots["0"])
+    }
+
+    @Test
+    fun `공개 가져오기 작업도 최초 snapshot 없는 보존 재개를 거절하고 다시 시작해도 원본을 만들지 않는다`() {
+        targetCurrent = sourceSaved
+        targetSlots["0"] = sourceSaved
+        snapshots.writeParsed(accountId, source.hofCharacterId, parser.parsePage(source.hofCharacterId,
+            page(source.hofCharacterId, setting("9"), mapOf("0" to sourceSaved), skills = 0..9)))
+        val started = jobs.startTransfer(accountId, CharacterTransferExecuteRequest(source.id, target.id,
+            CharacterTransferRequest(includeCurrentPattern = true,
+                savedPatternMappings = listOf(CharacterSavedPatternMapping("0", "0"))),
+            completedStepIds = setOf("saved-pattern:0:0")))
+
+        tasks.removeFirst().run()
+
+        assertEquals(CharacterOperationStatus.FAILED, jobs.find(accountId, started.id).status)
+        assertTrue(jobs.find(accountId, started.id).message!!.contains("현재 설정 기록"))
+        assertTrue(submittedCharacters.isEmpty())
+
+        // 거절한 시도에서 임시 원본을 저장했다면 다음 startup은 그 값을 신뢰하게 된다.
+        val interrupted = jobQueries.findByAccountIdAndId(accountId, started.id)!!
+        interrupted.status = CharacterOperationStatus.RUNNING
+        interrupted.finishedAt = null
+        jobCommands.save(interrupted)
+        jobs.resumeIncompleteJobs()
+        tasks.removeFirst().run()
+
+        assertEquals(CharacterOperationStatus.FAILED, jobs.find(accountId, started.id).status)
+        assertEquals(sourceSaved, targetCurrent)
+        assertEquals(sourceSaved, targetSlots["0"])
+        assertTrue(submittedCharacters.isEmpty())
+    }
+
+    @Test
+    fun `현재 패턴을 선택해도 최초 snapshot 없는 장비 보존 재개는 임시 장비를 원본으로 채택하지 않는다`() {
+        targetEquipment = true
+        snapshots.writeParsed(accountId, source.hofCharacterId, parser.parsePage(source.hofCharacterId,
+            page(source.hofCharacterId, sourceCurrent, mapOf("0" to sourceSaved), equipment = true,
+                equipmentName = "Unavailable Ring")))
+        archive.saveEquipmentPreset(source, 2, parser.parsePage(source.hofCharacterId,
+            page(source.hofCharacterId, sourceCurrent, mapOf("0" to sourceSaved), equipment = false)), Instant.now())
+        snapshots.writeParsed(accountId, target.hofCharacterId, parser.parsePage(target.hofCharacterId,
+            page(target.hofCharacterId, targetCurrent, targetSlots, equipment = true)))
+        var captured: CharacterTransferSnapshot? = null
+
+        assertFailsWith<IllegalStateException> {
+            transfers.execute(accountId, CharacterTransferSelection(source.id, target.id,
+                CharacterTransferRequest(includeCurrentPattern = true, includeEquipment = true)),
+                setOf("equipment-preset:2:save"), onSnapshot = { captured = it })
+        }
+
+        assertEquals(null, captured)
+        assertEquals(true, targetEquipment)
+        assertEquals("Focus Ring", targetEquipmentName)
+        assertTrue(submittedCharacters.isEmpty())
+    }
+
+    @Test
+    fun `장비 후보 부재로 차단된 재개도 최초 snapshot에 임시 장비를 저장하지 않는다`() {
+        targetEquipment = true
+        targetEquipmentName = "Retired Ring"
+        snapshots.writeParsed(accountId, source.hofCharacterId, parser.parsePage(source.hofCharacterId,
+            page(source.hofCharacterId, sourceCurrent, mapOf("0" to sourceSaved), equipment = true,
+                equipmentName = "Unavailable Ring")))
+        archive.saveEquipmentPreset(source, 2, parser.parsePage(source.hofCharacterId,
+            page(source.hofCharacterId, sourceCurrent, mapOf("0" to sourceSaved), equipment = false)), Instant.now())
+        snapshots.writeParsed(accountId, target.hofCharacterId, parser.parsePage(target.hofCharacterId,
+            page(target.hofCharacterId, targetCurrent, targetSlots, equipment = true, equipmentName = targetEquipmentName)))
+        var captured: CharacterTransferSnapshot? = null
+
+        assertFailsWith<IllegalArgumentException> {
+            transfers.execute(accountId, CharacterTransferSelection(source.id, target.id,
+                CharacterTransferRequest(includeCurrentPattern = true, includeEquipment = true)),
+                setOf("equipment-preset:2:save"), onSnapshot = { captured = it })
+        }
+
+        assertEquals(null, captured, "실행 차단을 확인하기 전에 임시 장비를 원본으로 영속화하지 않는다.")
+        assertEquals(true, targetEquipment)
+        assertEquals("Retired Ring", targetEquipmentName)
+        assertTrue(submittedCharacters.isEmpty())
+    }
+
     @Test
     fun `저장 패턴 두 개만 가져오면 현재 패턴은 대상의 원래 설정을 유지한다`() {
         val originalCurrent = targetCurrent

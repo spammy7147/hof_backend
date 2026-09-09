@@ -68,12 +68,9 @@ class CharacterTransferService(
                 CharacterPatternSetting(observed.patterns.map { CharacterPatternRowValue(it.judge, it.quantity, it.skill) },
                     observed.position, observed.guard)
             } else patternRemotes.withRemote(accountId, selection.targetCharacterId) { it.observe().setting }
-            check(snapshot != null || completedStepIds.isEmpty() || selection.request.includeCurrentPattern) {
-                "중단 전 대상의 현재 패턴 기록이 없어 임시 설정을 원래 설정으로 사용할 수 없습니다."
-            }
             val pair = readPair(accountId, selection.sourceCharacterId, selection.targetCharacterId)
             val original = snapshot ?: CharacterTransferSnapshot(pair.first, current,
-                pair.second.currentEquipment.takeIf { selection.request.includeEquipment }).also(onSnapshot)
+                pair.second.currentEquipment.takeIf { selection.request.includeEquipment })
             require(original.source.accountId == accountId && original.source.characterId == selection.sourceCharacterId)
             if (selection.request.includeEquipment) {
                 require((original.source.equipment + original.source.equipmentPresets.values.flatten())
@@ -90,6 +87,13 @@ class CharacterTransferService(
             )
             val preview = planner.preview(source, pair.second.copy(currentPattern = original.originalCurrentPattern,
                 currentEquipment = original.originalEquipment?.map { resolveEquipment(it, candidates) }), selection.request)
+            require(preview.executable) { "차단된 항목을 해결한 뒤 실행해 주세요." }
+            check(snapshot != null || completedStepIds.isEmpty() ||
+                (selection.request.includeCurrentPattern && preview.steps.none { it.id.startsWith("preserve-current-") })) {
+                "중단 전 대상의 현재 설정 기록이 없어 임시 설정을 원래 설정으로 사용할 수 없습니다."
+            }
+            // 완료 ID만 있는 구형 작업의 임시 패턴·장비를 최초 원본으로 영속화하지 않는다.
+            if (snapshot == null) onSnapshot(original)
             CharacterTransferExecutor { targetCharacterId, step ->
                 runCatching { executeStep(accountId, targetCharacterId, step) }
             }.execute(preview, completedStepIds, onStepResult)

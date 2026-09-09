@@ -82,6 +82,21 @@ class CharacterTransferProcessRestartTest {
     }
 
     @Test
+    fun `선택한 현재 패턴이 제외된 작업도 저장 직후 종료와 재시작 뒤 최초 대상 패턴을 보존한다`() {
+        assertEquals(71, runProcess("unavailable-pattern:savepattern"))
+        val mapper = jacksonObjectMapper()
+        val interrupted = mapper.readValue(directory.resolve("hof.json").readText(), TransferProcessState::class.java)
+        assertEquals(setting("2"), interrupted.current)
+        assertEquals(setting("2"), interrupted.slots["0"])
+
+        assertEquals(0, runProcess("resume"))
+        val resumed = mapper.readValue(directory.resolve("hof.json").readText(), TransferProcessState::class.java)
+        assertEquals(setting("0"), resumed.current)
+        assertEquals(setting("2"), resumed.slots["0"])
+        assertTrue(resumed.posts.all { it["character"] == "transfer-target" })
+    }
+
+    @Test
     fun `빈 장비 저장 검증의 임시 장착 중 종료되어도 최종 장비로 남기지 않는다`() {
         assertEquals(71, runProcess("equipment:empty-probe"))
         val mapper = jacksonObjectMapper()
@@ -143,6 +158,7 @@ internal data class TransferProcessState(
     var equipmentCandidateValue: String = "ring",
     val emptySecondPreset: Boolean = false,
     val unavailableCurrentEquipment: Boolean = false,
+    val unavailableCurrentPattern: Boolean = false,
 )
 
 object CharacterTransferCrashProcess {
@@ -164,7 +180,7 @@ object CharacterTransferCrashProcess {
             TransferProcessState(current = setting("0").copy(rows = setting("0").rows + setting("0").rows),
                 equipment = true, emptySecondPreset = stopAfter in setOf("empty-probe", "unavailable-current"),
                 unavailableCurrentEquipment = stopAfter == "unavailable-current")
-        } else TransferProcessState()
+        } else TransferProcessState(unavailableCurrentPattern = args[1].startsWith("unavailable-pattern:"))
         SpringApplicationBuilder(HofApplication::class.java, Remote::class.java).profiles("test").run(
             "--server.port=0",
             "--spring.datasource.url=jdbc:h2:file:${directory.resolve("database")};MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;WRITE_DELAY=0",
@@ -187,9 +203,12 @@ object CharacterTransferCrashProcess {
                 }
                 val parser = context.getBean(CharacterDetailParser::class.java)
                 val snapshots = context.getBean(CharacterSnapshotSynchronizer::class.java)
+                val sourceEquipment = if (state.equipment != null) state.unavailableCurrentEquipment else null
                 snapshots.writeParsed(account.id, source.hofCharacterId,
-                    parser.parsePage(source.hofCharacterId, page(source.hofCharacterId, setting("1"), mapOf("0" to setting("2")),
-                        equipment = if (state.equipment != null) state.unavailableCurrentEquipment else null,
+                    parser.parsePage(source.hofCharacterId, page(source.hofCharacterId,
+                        setting(if (state.unavailableCurrentPattern) "9" else "1"), mapOf("0" to setting("2")),
+                        equipment = sourceEquipment,
+                        skills = if (state.unavailableCurrentPattern) 0..9 else if (sourceEquipment == false) 0..1 else 0..2,
                         equipmentName = if (state.unavailableCurrentEquipment) "Unavailable Ring" else "Focus Ring")))
                 val archive = context.getBean(CharacterSnapshotArchiveWriter::class.java)
                 archive.savePatternSlot(source, "0",
@@ -206,7 +225,8 @@ object CharacterTransferCrashProcess {
                         state.equipment, equipmentName = state.equipmentName)))
                 jobs.startTransfer(account.id, CharacterTransferExecuteRequest(source.id, target.id,
                     if (state.equipment != null) CharacterTransferRequest(includeCurrentPattern = true, includeEquipment = true)
-                    else CharacterTransferRequest(savedPatternMappings = listOf(CharacterSavedPatternMapping("0", "0")))))
+                    else CharacterTransferRequest(includeCurrentPattern = state.unavailableCurrentPattern,
+                        savedPatternMappings = listOf(CharacterSavedPatternMapping("0", "0")))))
             }
             // resume는 ApplicationReadyEvent의 실제 startup 진입점이 소비한다.
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20)
