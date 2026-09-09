@@ -95,6 +95,7 @@ class AutomationRecoveryIntegrationTest {
     @Autowired private lateinit var characterAutomation: app.spammy.hof.character.service.CharacterOperationAutomation
     @Autowired private lateinit var recoveryActions: app.spammy.hof.character.service.CharacterOperationRecoveryService
     @Autowired private lateinit var accountMutations: app.spammy.hof.town.common.service.AccountHofMutationFence
+    @Autowired private lateinit var dueStore: DatabaseAutomationDueStore
 
     private var accountId = 0L
     private var entryId = 0L
@@ -494,6 +495,31 @@ class AutomationRecoveryIntegrationTest {
         assertTrue(waits > 0)
         assertEquals("RUNNING", jdbc.queryForObject("select lifecycle_status from typed_automation_runtime_states where account_id = ?",
             String::class.java, accountId))
+    }
+
+    @Test
+    fun `Redis 장애 중 시작 복구가 DB의 due 작업을 깨우고 다음 판단까지 이어진다`() {
+        failedPattern = -1
+        TransactionTemplate(transactions).executeWithoutResult {
+            entityManager.persist(AutomationWorkSessionEntity(
+                account = entityManager.getReference(HofAccountEntity::class.java, accountId),
+                entry = entityManager.getReference(AutomationEntryEntity::class.java, entryId),
+                workType = AutomationWorkType.UNION, targetKey = "0003", status = AutomationWorkStatus.WAITING_COOLDOWN,
+                configVersion = "fixture", nextCheckAt = clock.now(), createdAt = clock.now(), updatedAt = clock.now()))
+        }
+        val redis = Mockito.mock(org.springframework.data.redis.core.StringRedisTemplate::class.java)
+        Mockito.`when`(redis.opsForZSet()).thenThrow(org.springframework.data.redis.RedisConnectionFailureException("fixture outage"))
+        val index = app.spammy.hof.automation.redis.RedisAutomationDueIndex(dueStore, redis)
+        val scheduler = app.spammy.hof.automation.recovery.AutomationSessionReconciliationScheduler(index, wakeups, clock)
+
+        scheduler.recoverOnStartup()
+        publisher.publishBatch()
+
+        assertEquals(1, battleRequests().size)
+        assertEquals("SUCCEEDED", runs().single()["status"])
+        consumeNextWake()
+        assertEquals(2, battleRequests().size)
+        Mockito.verify(decisions, Mockito.atLeast(2)).select(accountId)
     }
 
     @Test
