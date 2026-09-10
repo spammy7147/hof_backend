@@ -1277,9 +1277,18 @@ class UnifiedAutomationRunner @Autowired constructor(
         execution: TypedRuntimeExecutionRight,
         directive: ConvergenceDirective,
     ) {
+        // 제출이 허용되지 않은 미전송 행동은 닫아야 다음 깨우기가 새 판단으로 진행한다.
+        val outcome = if (execution.checkpoint?.phase == TypedRuntimeCheckpointPhase.PREPARED) {
+            TypedRuntimeOutcome.PreparedDiscarded(
+                "행동 결과 수렴 규칙이 제출을 허용하지 않아 미전송 행동을 닫고 새로 판단합니다.",
+                TYPED_CONVERGENCE_WAKE_REASON,
+            )
+        } else {
+            TypedRuntimeOutcome.SelectionChanged(TYPED_CONVERGENCE_WAKE_REASON)
+        }
         typedRuntime.complete(
             execution,
-            TypedRuntimeOutcome.SelectionChanged(TYPED_CONVERGENCE_WAKE_REASON),
+            outcome,
             convergenceRecheckAt = (directive as? ConvergenceDirective.WaitUntil)?.at,
         )
     }

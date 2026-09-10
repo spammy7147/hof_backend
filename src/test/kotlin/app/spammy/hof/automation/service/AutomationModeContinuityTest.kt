@@ -74,6 +74,10 @@ class ActiveAutomationContinuityTest : AutomationModeContinuityTest() {
     @Test
     fun `미지원 정책의 저장 시도만 보류하고 독립 자택과 다음 판단을 실행한다`() =
         storedAttemptContextContinuity(unsupportedPolicy = true)
+
+    @Test
+    fun `미지원 미전송 체크포인트를 복원해 재제출 없이 독립 자택과 후속 판단을 실행한다`() =
+        storedAttemptContextContinuity(unsupportedPolicy = true, unsubmittedRetry = true)
 }
 
 /** Each supported mode is assembled from its real startup property, without mocking rollout. */
@@ -119,7 +123,11 @@ abstract class AutomationModeContinuityTest {
         publisher.publishBatch()
     }
 
-    protected fun storedAttemptContextContinuity(externalAdvance: Boolean = false, unsupportedPolicy: Boolean = false) {
+    protected fun storedAttemptContextContinuity(
+        externalAdvance: Boolean = false,
+        unsupportedPolicy: Boolean = false,
+        unsubmittedRetry: Boolean = false,
+    ) {
         clock.current = Instant.parse("2026-09-10T08:00:00Z")
         transport.delivered.clear()
         val requests = mutableListOf<HofRequest>()
@@ -149,18 +157,25 @@ abstract class AutomationModeContinuityTest {
             entityManager.persist(TypedAutomationActionRunEntity(account = account, entry = entry,
                 executionIdentity = stored.executionIdentity, actionKind = stored.payload.kind(),
                 payloadJson = encoded.json, actionFingerprint = encoded.fingerprint,
-                status = TypedAutomationActionStatus.AMBIGUOUS, leaseToken = "finished-fixture",
-                createdAt = clock.now().minusSeconds(10), submittedAt = clock.now().minusSeconds(10),
-                finishedAt = clock.now().minusSeconds(1), updatedAt = clock.now()))
+                status = if (unsubmittedRetry) TypedAutomationActionStatus.PREPARED else TypedAutomationActionStatus.AMBIGUOUS,
+                leaseToken = "finished-fixture", retryAttempt = if (unsubmittedRetry) 1 else 0,
+                nextAttemptAt = if (unsubmittedRetry) clock.now() else null,
+                createdAt = clock.now().minusSeconds(10), submittedAt = if (unsubmittedRetry) null else clock.now().minusSeconds(10),
+                finishedAt = if (unsubmittedRetry) null else clock.now().minusSeconds(1), updatedAt = clock.now()))
             val selected = app.spammy.hof.automation.convergence.StoredActionConvergenceSelectionFactory()
                 .create(stored).let { it.copy(
                     baselineFingerprint = baseline,
                     policyVersion = if (unsupportedPolicy) "unsupported-fixture-version" else it.policyVersion,
                 ) }
             val attempt = convergenceStore.createOrGet(account.id, selected, clock.now().minusSeconds(10))
-            attempt.submittedAt = clock.now().minusSeconds(10)
+            attempt.submittedAt = if (unsubmittedRetry) null else clock.now().minusSeconds(10)
             attempt.firstPendingAt = attempt.submittedAt
-            attempt.nextProbeAt = clock.now()
+            attempt.nextProbeAt = if (unsubmittedRetry) null else clock.now()
+            if (unsubmittedRetry) {
+                attempt.result = app.spammy.hof.automation.convergence.ActionConvergenceResult.NOT_APPLIED
+                attempt.reasonCode = "SUBMISSION_NOT_ATTEMPTED"
+                attempt.finishedAt = clock.now().minusSeconds(1)
+            }
             convergenceStore.save(attempt)
             entityManager.flush()
             entityManager.clear()
@@ -184,7 +199,7 @@ abstract class AutomationModeContinuityTest {
                 assertEquals(app.spammy.hof.automation.convergence.ActionConvergenceResult.HELD, held.result)
                 assertEquals("POLICY_VERSION_UNSUPPORTED", held.reasonCode)
                 assertEquals("unsupported-fixture-version", held.selection.policyVersion)
-                assertEquals(Instant.parse("2026-09-10T07:59:50Z"), held.submittedAt)
+                assertEquals(if (unsubmittedRetry) null else Instant.parse("2026-09-10T07:59:50Z"), held.submittedAt)
                 assertEquals(0, held.successfulObservationCount)
                 val evidence = jdbc.queryForMap("select evidence_source, observation_completeness, observation_freshness, policy_version from automation_evidence_cases where attempt_id = ?", attemptId)
                 assertEquals("POLICY_UNAVAILABLE", evidence["EVIDENCE_SOURCE"] ?: evidence["evidence_source"])
@@ -197,8 +212,16 @@ abstract class AutomationModeContinuityTest {
                     String::class.java, attemptId))
             }
             assertEquals(baseline, convergenceStore.get(attemptId)?.selection?.baselineFingerprint)
+            if (unsubmittedRetry) {
+                assertEquals(listOf("FAILED"), jdbc.queryForList(
+                    "select status from typed_automation_action_runs where account_id = ?", String::class.java, accountId))
+                assertEquals(0, jdbc.queryForObject(
+                    "select count(*) from typed_automation_action_runs where account_id = ? and submitted_at is not null",
+                    Int::class.java, accountId))
+            }
             externallyAccepted = externalAdvance
             if (externalAdvance) clock.current = assertNotNull(convergenceStore.get(attemptId)?.nextProbeAt)
+            val initialCycleIds = journal.page(accountId, AutomationHistoryQuery()).cycles.map { it.id }.toSet()
             repeat(3) { nextWake(accountId) }
             if (externalAdvance) {
                 assertEquals(app.spammy.hof.automation.convergence.ActionConvergenceResult.SUPERSEDED,
@@ -207,9 +230,13 @@ abstract class AutomationModeContinuityTest {
             assertTrue(accepted, requests.map { it.method to it.formFields }.toString())
             assertTrue(requests.none { it.formFields["action"] == "get" && it.formFields["no"] == "A" })
             assertEquals(1, requests.count { it.formFields["action"] == "get" && it.formFields["no"] == "B" })
-            assertTrue(journal.page(accountId, AutomationHistoryQuery()).cycles.size >= 2)
+            val followingCycles = journal.page(accountId, AutomationHistoryQuery()).cycles.filter { it.id !in initialCycleIds }
+            assertTrue(followingCycles.size >= 2, "최초 복원·처리 이후 새 판단이 두 번 이상 실행되어야 한다: $followingCycles")
             assertTrue(transport.delivered.all { outbox.consumed(it) })
             assertEquals(0, jdbc.queryForObject("select count(*) from automation_work_sessions where account_id = ? and running_slot is not null", Int::class.java, accountId))
+            assertEquals(0, jdbc.queryForObject(
+                "select count(*) from typed_automation_runtime_states where account_id = ? and (lease_token is not null or lease_until is not null)",
+                Int::class.java, accountId))
             assertEquals(0, jdbc.queryForObject("select count(*) from account_automation_leases where account_id = ?", Int::class.java, accountId))
         } finally {
             transport.delivered.forEach { jdbc.update("delete from automation_consumed_events where event_id = ?", it) }
