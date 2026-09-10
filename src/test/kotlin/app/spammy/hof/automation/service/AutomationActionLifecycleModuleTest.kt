@@ -2022,6 +2022,27 @@ class AutomationActionLifecycleModuleTest {
     }
 
     @Test
+    fun `레이드 시작의 같은 READY 직접 응답은 상태 진전이 아닌 결과 확인 대기다`() {
+        val ready = checkNotNull(javaClass.classLoader.getResource("fixtures/town/raid/raidpub.html")).readText()
+            .replace("현재 상태는 신청 대기 (신청 가능까지 6분 58초)", "현재 상태는 신청 가능")
+            .replace("현재 상태 : 모집 중", "현재 상태 : 출발 가능")
+            .replace("name=\"register_goblin\" value=\"등록한다\"", "name=\"start_goblin\" value=\"전투를 시작한다\"")
+        val managed = assertNotNull(lifecycleModule(raidPubOverride = realRaidPubService(ready, ready, ready))
+            .prepare(7L, 13L, RaidTownAutomationAction(7L, RaidAction.START, "RaidGoblin", "RaidGoblin")))
+        managed.validateBeforeSubmission()
+
+        val evidence = policyEvidence(managed, managed.execute())
+
+        assertIs<AutomationActionEvidence.SameState>(evidence)
+        val store = InMemoryConvergenceStore()
+        val convergence = DefaultAutomationActionConvergenceModule(store, TimeProvider { now })
+        val selection = StoredActionConvergenceSelectionFactory().create(managed.storedAction)
+        val attemptId = assertIs<ConvergenceDirective.Submit>(convergence.prepare(7L, selection)).attemptId
+        assertIs<ConvergenceDirective.WaitUntil>(convergence.record(attemptId, evidence))
+        assertEquals(ActionConvergenceResult.PENDING, store.get(attemptId)?.result)
+    }
+
+    @Test
     fun `수령 가능한 보상 없음 응답은 실패 문자열이어도 레이드 보상 완료다`() {
         val base = raidBattleResponse(status = RaidStatus.COMPLETED, targetPresent = false)
         val response = base.copy(
@@ -2675,6 +2696,9 @@ class AutomationActionLifecycleModuleTest {
     private fun realRaidPubService(vararg responseBodies: String): RaidPubService {
         val locations = Mockito.mock(TownLocationResolver::class.java)
         val battleMaps = Mockito.mock(BattleMapService::class.java)
+        Mockito.`when`(battleMaps.observeCurrentlyAvailableMaps(7L, "raid", HofRequestOrigin.AUTOMATION))
+            .thenReturn(CurrentBattleMapObservation(CurrentBattleMapObservationStatus.OBSERVED,
+                listOf(mapResponse(null, "raid", "RaidGoblin"))))
         Mockito.`when`(locations.resolve(TownFeatureId.RAID_INFO, null)).thenReturn(
             ResolvedTownLocation(TownFeatureId.RAID_INFO, RAID_PUB_URL),
         )

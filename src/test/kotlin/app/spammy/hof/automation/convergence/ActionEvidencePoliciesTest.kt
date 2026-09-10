@@ -161,6 +161,13 @@ class ActionEvidencePoliciesTest {
     fun `레이드 시작은 전용 표식과 전투 중 상태가 함께 있어야 Applied다`() {
         val start = selection(AutomationActionKind.RAID_START, "raid-a")
         val inBattle = RaidObservedState("in-battle", joined = true, sharedStatus = "IN_BATTLE")
+        val ready = RaidObservedState("ready-response", joined = true, sharedStatus = "READY")
+
+        assertIs<AutomationActionEvidence.SameState>(policies.evaluate(start, direct(ready)))
+        assertIs<AutomationActionEvidence.SameState>(policies.evaluate(start, direct(ready, actionSuccessMarker = true)))
+        assertIs<AutomationActionEvidence.SameState>(policies.evaluate(start, fresh(ready)))
+        assertIs<AutomationActionEvidence.DirectRejected>(policies.evaluate(start,
+            direct(ready).copy(explicitRejected = true, rejectionReason = "START_REJECTED")))
 
         assertIs<AutomationActionEvidence.DirectApplied>(
             policies.evaluate(start, direct(inBattle, actionSuccessMarker = true)),

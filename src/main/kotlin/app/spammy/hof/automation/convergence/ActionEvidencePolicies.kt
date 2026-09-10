@@ -317,6 +317,10 @@ class DefaultActionEvidencePolicies : ActionEvidencePolicies {
         if (state.sharedStatus == "COMPLETED") {
             return stateAdvanced(observation, state)
         }
+        // START는 참가 중 READY에서만 제출하므로, 같은 단계는 응답 지문이 달라도 미확정이다.
+        if (selection.actionKind == AutomationActionKind.RAID_START && state.joined && state.sharedStatus == "READY") {
+            return sameState(observation, state)
+        }
         return changedOrSame(selection, observation, state)
     }
 
@@ -327,13 +331,18 @@ class DefaultActionEvidencePolicies : ActionEvidencePolicies {
     ): AutomationActionEvidence = if (state.fingerprint != selection.baselineFingerprint) {
         stateAdvanced(observation, state)
     } else {
-        AutomationActionEvidence.SameState(
-            observation.capturedAt,
-            state.fingerprint,
-            observation.responseShapeFingerprint,
-            observation.sanitizedSnippet,
-        )
+        sameState(observation, state)
     }
+
+    private fun sameState(
+        observation: ActionPolicyObservation,
+        state: ActionObservedState,
+    ) = AutomationActionEvidence.SameState(
+        observation.capturedAt,
+        state.fingerprint,
+        observation.responseShapeFingerprint,
+        observation.sanitizedSnippet,
+    )
 
     private fun stateAdvanced(
         observation: ActionPolicyObservation,
