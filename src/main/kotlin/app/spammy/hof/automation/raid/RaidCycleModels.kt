@@ -145,6 +145,8 @@ data class RaidObservation(
     val fresh: Boolean = true,
     val actionSuccessMarker: Boolean = false,
     val rewardResult: RaidRewardResultKind? = null,
+    val registrationStateObserved: Boolean = false,
+    val directRefreshResponse: Boolean = false,
 )
 
 enum class RaidRewardResultKind {

@@ -165,14 +165,22 @@ class RaidPubParser {
             )
         }
         if (raids.size != sections.size) return empty(normalizedResult)
-        val applyWaiting = APPLY_WAIT_STATE.containsMatchIn(boundedPageText)
-        val applyWait = APPLY_WAIT.find(boundedPageText)?.let(::boundedDurationSeconds)
+        val registrationText = clean(form.childNodes()
+            .takeWhile { it !is Element || it.tagName() != "h4" }
+            .joinToString(" ") { node ->
+                if (node is Element) {
+                    if (node.`is`(RESULT_EXCLUSIONS)) ""
+                    else node.clone().apply { select(RESULT_EXCLUSIONS).remove() }.text()
+                } else nodeText(node)
+            }).take(MAX_PAGE_TEXT)
+        val applyWaiting = APPLY_WAIT_STATE.containsMatchIn(registrationText)
+        val applyWait = APPLY_WAIT.find(registrationText)?.let(::boundedDurationSeconds)
         return RaidPubSnapshot(
             raids = raids,
-            applied = APPLIED.containsMatchIn(boundedPageText),
+            applied = APPLIED.containsMatchIn(registrationText),
             applyWait = applyWaiting,
             applyWaitSeconds = applyWait,
-            myStatus = MY_STATUS.find(boundedPageText)?.value?.take(MAX_TEXT),
+            myStatus = MY_STATUS.find(registrationText)?.value?.take(MAX_TEXT),
             globalActions = global.keys,
             result = if (rewardResponse && hasNothingAvailableResult(form, contents)) {
                 (normalizedResult ?: ParsedTownResult(emptyList(), emptyList())).let {
@@ -181,6 +189,10 @@ class RaidPubParser {
             } else normalizedResult,
             globalActionIds = global,
             pageComplete = true,
+            registrationStateObserved = playerName.isNotBlank() && (
+                applyWaiting && applyWait != null ||
+                    REGISTRATION_STATE.containsMatchIn(registrationText)
+                ),
         )
     }
 
@@ -292,6 +304,7 @@ class RaidPubParser {
         val APPLICANT = Regex("-\\s*\\[([^]]+)]")
         val APPLY_WAIT = Regex("신청\\s*가능\\s*까지\\s*(?:(\\d+)\\s*시간)?\\s*(?:(\\d+)\\s*분)?\\s*(?:(\\d+)\\s*초)?")
         val APPLY_WAIT_STATE = Regex("신청\\s*대기|신청\\s*가능\\s*까지")
+        val REGISTRATION_STATE = Regex("현재\\s*(?:상태는|전투)\\s*(?:신청\\s*가능|신청한\\s*상태|신청\\s*완료)(?=\\s*(?:[.(]|$))")
         val MY_STATUS = Regex("현재\\s*(?:상태는|전투)[^)]*\\)")
         val APPLIED = Regex("신청한\\s*상태|신청\\s*완료")
         val UNPLAYABLE = Regex("플레이\\s*불가|시험\\s*중")

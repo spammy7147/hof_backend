@@ -73,4 +73,5 @@ data class RaidPubSnapshot(
     internal val pageComplete: Boolean,
     val battleObservationStatus: RaidBattleObservationStatus = RaidBattleObservationStatus.INCOMPLETE,
     val battleObservationEvidence: RaidBattleObservationEvidence? = null,
+    val registrationStateObserved: Boolean = false,
 )

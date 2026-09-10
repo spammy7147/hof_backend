@@ -2,6 +2,7 @@ package app.spammy.hof.town.raid.dto
 
 import app.spammy.hof.town.fishing.dto.TownActionResultResponse
 import app.spammy.hof.town.raid.model.*
+import com.fasterxml.jackson.annotation.JsonIgnore
 import jakarta.validation.constraints.Size
 
 data class RaidBattleTargetResponse(
@@ -38,6 +39,8 @@ data class RaidPubResponse(
     val pageComplete: Boolean = false,
     val battleObservationStatus: RaidBattleObservationStatus = RaidBattleObservationStatus.INCOMPLETE,
     val battleObservationEvidence: RaidBattleObservationEvidence? = null,
+    @get:JsonIgnore
+    val registrationStateObserved: Boolean = false,
 ) {
     // 조회 응답과 공용 SUCCESS는 START 전용 성공 표식이 아니다.
     // 검증된 START 표식이 확보되기 전에는 현재 공유 단계의 진전만 반영한다.
@@ -72,6 +75,7 @@ data class RaidPubResponse(
             pageComplete = value.pageComplete,
             battleObservationStatus = value.battleObservationStatus,
             battleObservationEvidence = value.battleObservationEvidence,
+            registrationStateObserved = value.registrationStateObserved,
         )
     }
 }

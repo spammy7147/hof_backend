@@ -753,7 +753,7 @@ class DefaultRaidCycleModule(
             accountState.configuration?.takeIf { it.enabled && it.entryId == attempt.entryId }
                 ?.targets?.any { it.raidId == attempt.raidId } == true &&
             (accountState.openCycle == null || accountState.openCycle.raidId == attempt.raidId)
-        if (attempt.kind == RaidIntentKind.REFRESH && registrationAvailable) {
+        if (attempt.kind == RaidIntentKind.REFRESH && page.directRefreshResponse && registrationAvailable) {
             convergence?.allowRaidRegistrationFreshDecision(
                 accountId, attempt.entryId, attempt.raidId, timeProvider.now(),
             )

@@ -91,9 +91,11 @@ import java.io.IOException
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.CsvSource
@@ -2022,6 +2024,77 @@ class AutomationActionLifecycleModuleTest {
     }
 
     @Test
+    fun `레이드 상태 갱신의 완전한 등록 대기 직접 응답은 공용 안내 없이 적용된다`() {
+        val page = raidRefreshPage()
+        val before = page.replace("현재 상태 : 모집 중", "현재 상태 : 보상 확인 종료(리셋 가능)")
+        val after = page.replace("현재 상태는 신청 대기 (신청 가능까지 6분 58초)",
+            "현재 상태는 신청 대기입니다.(신청 가능 까지 1시간 37분 58초)")
+        val evidence = refreshEvidence(before, after)
+
+        assertIs<AutomationActionEvidence.DirectApplied>(evidence)
+    }
+
+    @Test
+    fun `레이드 상태 갱신의 등록 가능 직접 응답은 공용 안내 없이 적용된다`() {
+        val page = raidRefreshPage()
+        val before = page.replace("현재 상태 : 모집 중", "현재 상태 : 보상 확인 종료(리셋 가능)")
+        val after = page.replace("현재 상태는 신청 대기 (신청 가능까지 6분 58초)", "현재 상태는 신청 가능")
+        val evidence = refreshEvidence(before, after)
+
+        assertIs<AutomationActionEvidence.DirectApplied>(evidence)
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["MISSING_REGISTRATION", "INVALID_WAIT", "UNKNOWN_OTHER_RAID", "QUOTED_REGISTRATION"])
+    fun `레이드 갱신의 불완전 상태는 공용 SUCCESS가 있어도 직접 응답으로 받지 않는다`(variant: String) {
+        val page = raidRefreshPage()
+        val header = "현재 상태는 신청 대기 (신청 가능까지 6분 58초)"
+        val incomplete = when (variant) {
+            "MISSING_REGISTRATION" -> page.replace(header, "")
+            "INVALID_WAIT" -> page.replace(header, "현재 상태는 신청 대기 (신청 가능까지 확인 중)")
+            "UNKNOWN_OTHER_RAID" -> page.replace("418초 후 출발", "확인되지 않은 단계")
+            "QUOTED_REGISTRATION" -> page.replace(header, "<blockquote>$header</blockquote>")
+            else -> error(variant)
+        }.replace("</body>", "<div class=\"notice\">전투 정보실 안내를 확인했습니다.</div></body>")
+        val managed = assertNotNull(lifecycleModule(raidPubOverride = realRaidPubService(page, page, incomplete))
+            .prepare(7L, 13L, RaidTownAutomationAction(7L, RaidAction.REFRESH, null, "RaidGoblin")))
+        managed.validateBeforeSubmission()
+
+        val failure = assertFailsWith<AmbiguousAutomationSubmissionException> { managed.execute() }
+        assertEquals(ErrorCode.HOF_REQUEST_FAILED, assertIs<ApiException>(failure.cause).errorCode)
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["BLOCKQUOTE", "HIDDEN", "RAID_SECTION"])
+    fun `레이드 갱신은 계정 영역 밖 문구로 등록 대기를 만들지 않는다`(location: String) {
+        val page = raidRefreshPage()
+            .replace("현재 상태는 신청 대기 (신청 가능까지 6분 58초)", "현재 상태는 신청 가능")
+        val unrelated = "신청 완료. 신청 대기 (신청 가능까지 99분)"
+        val after = when (location) {
+            "BLOCKQUOTE" -> page.replace("현재 상태는 신청 가능", "현재 상태는 신청 가능 <blockquote>$unrelated</blockquote>")
+            "HIDDEN" -> page.replace("현재 상태는 신청 가능", "현재 상태는 신청 가능 <span hidden>$unrelated</span>")
+            "RAID_SECTION" -> page.replace("현재 상태 : 모집 중", "$unrelated 현재 상태 : 모집 중")
+            else -> error(location)
+        }
+
+        val response = realRaidPubService(page, after).actionForAutomation(7L, RaidPubActionRequest(RaidAction.REFRESH), "RaidGoblin")
+
+        assertFalse(response.applyWait)
+        assertNull(response.applyWaitSeconds)
+        assertFalse(response.applied)
+        assertTrue(response.registrationStateObserved)
+    }
+
+    @Test
+    fun `레이드 상태 갱신은 이미 신청한 현재 계정의 직접 상태도 적용한다`() {
+        val page = raidRefreshPage(joined = true)
+            .replace("현재 상태는 신청 대기 (신청 가능까지 6분 58초)", "현재 상태는 신청한 상태")
+        val evidence = refreshEvidence(page, page)
+
+        assertIs<AutomationActionEvidence.DirectApplied>(evidence)
+    }
+
+    @Test
     fun `레이드 시작의 같은 READY 직접 응답은 상태 진전이 아닌 결과 확인 대기다`() {
         val ready = checkNotNull(javaClass.classLoader.getResource("fixtures/town/raid/raidpub.html")).readText()
             .replace("현재 상태는 신청 대기 (신청 가능까지 6분 58초)", "현재 상태는 신청 가능")
@@ -2709,6 +2782,19 @@ class AutomationActionLifecycleModuleTest {
     private fun anyQuestObservation(): QuestResultObservation =
         Mockito.any(QuestResultObservation::class.java)
             ?: QuestResultObservation.Page(emptyList(), complete = false)
+
+    private fun raidRefreshPage(joined: Boolean = false): String =
+        checkNotNull(javaClass.classLoader.getResource("fixtures/town/raid/raidpub.html")).readText()
+            .replace("<input type=\"submit\" name=\"reward_nonce\" value=\"보상 확인\">",
+                "<input type=\"submit\" name=\"refresh_nonce\" value=\"상태 갱신\">")
+            .let { if (joined) it else it.replace("[《테스트 길드》현재사용자]", "[다른 신청자]") }
+
+    private fun refreshEvidence(before: String, after: String): AutomationActionEvidence {
+        val managed = assertNotNull(lifecycleModule(raidPubOverride = realRaidPubService(before, before, after))
+            .prepare(7L, 13L, RaidTownAutomationAction(7L, RaidAction.REFRESH, null, "RaidGoblin")))
+        managed.validateBeforeSubmission()
+        return policyEvidence(managed, managed.execute())
+    }
 
     private fun realRaidPubService(vararg responseBodies: String): RaidPubService {
         val locations = Mockito.mock(TownLocationResolver::class.java)

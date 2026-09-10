@@ -82,6 +82,7 @@ data class RaidObservedState(
     val rewardAvailable: Boolean? = null,
     val rewardResult: RaidRewardResultKind? = null,
     val terminalOutcomes: List<String> = emptyList(),
+    val registrationStateObserved: Boolean = false,
 ) : ActionObservedState
 
 data class ActionPolicyObservation(
@@ -304,7 +305,7 @@ class DefaultActionEvidencePolicies : ActionEvidencePolicies {
             AutomationActionKind.RAID_RESET -> !state.joined &&
                 state.sharedStatus in setOf("ABSENT", "RECRUITING", "READY", "WAITING")
             AutomationActionKind.RAID_REWARD -> state.rewardResult != null
-            AutomationActionKind.RAID_REFRESH -> observation.actionSuccessMarker
+            AutomationActionKind.RAID_REFRESH -> state.registrationStateObserved
             AutomationActionKind.RAID_BATTLE -> state.terminalOutcomes.isNotEmpty() &&
                 state.terminalOutcomes.all(::terminalBattleOutcome)
             AutomationActionKind.RAID_CYCLE_ABORT -> observation.actionSuccessMarker

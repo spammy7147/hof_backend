@@ -1139,7 +1139,7 @@ class UnifiedAutomationActionLifecycleModule(
             RaidAction.RESET,
             RaidAction.REWARD,
             -> raid == null || raid.status != RaidStatus.UNKNOWN
-            RaidAction.REFRESH -> response.raids.all { it.status != RaidStatus.UNKNOWN }
+            RaidAction.REFRESH -> response.registrationStateObserved && response.raids.all { it.status != RaidStatus.UNKNOWN }
             else -> false
         }
         return TypedAutomationExecution.ActionCompleted(
@@ -1150,6 +1150,7 @@ class UnifiedAutomationActionLifecycleModule(
                 personalCooldown = raid?.battleTarget?.cooldownRemainingSeconds?.let { it > 0L } == true,
                 rewardAvailable = rewardAvailable,
                 rewardResult = rewardResult,
+                registrationStateObserved = response.registrationStateObserved,
             ),
             responseShapeMaterial = responseShapeMaterial(
                 ProductionEvidenceShapes.RAID_RESPONSE,
@@ -2033,10 +2034,17 @@ class UnifiedAutomationActionLifecycleModule(
             stored.executionIdentity.takeIf { payload.action == RaidAction.REWARD },
         )
             ?: return verifyLater("저장된 레이드 대상이 없어 결과를 안전하게 확인할 수 없습니다.")
-        val observation = if (payload.action in setOf(RaidAction.REGISTER, RaidAction.REFRESH)) {
+        val observation = if (payload.action == RaidAction.REGISTER) {
             raidObservationAdapter.refresh(accountId, attempt.raidId)
         } else {
             raidObservationAdapter.read(accountId)
+        }
+        if (
+            payload.action == RaidAction.REFRESH &&
+            (!observation.fresh || !observation.registrationStateObserved ||
+                observation.raids.any { it.status == RaidObservedStatus.UNKNOWN })
+        ) {
+            return verifyLater("레이드 신청 상태가 완전하지 않아 갱신 결과를 다시 확인합니다.")
         }
         if (
             payload.action == RaidAction.START &&
@@ -2114,46 +2122,48 @@ class UnifiedAutomationActionLifecycleModule(
         attempt: RaidAttempt,
         observation: RaidResultObservation,
         defaultExecution: TypedAutomationExecution = TypedAutomationExecution.Completed,
-    ): AmbiguousActionResolution = when (
-        val result = raidCycleModule.recordObservedResult(accountId, attempt, observation)
-    ) {
-        is RaidRecordResult.Recorded -> {
-            result.completion?.let { workLifecycle.completeRaidCycle(accountId, attempt.entryId) }
-            if (attempt.kind == RaidIntentKind.REGISTER) {
-                AmbiguousActionResolution.Superseded("현재 레이드 참가 상태에서 이어갑니다. 이전 신청 결과는 귀속하지 않습니다.")
-            } else {
-                AmbiguousActionResolution.Applied(
-                    result.completion?.let(TypedAutomationExecution::RaidCycleFinished) ?: defaultExecution,
-                )
+    ): AmbiguousActionResolution {
+        val sharedState = attempt.kind in setOf(RaidIntentKind.REGISTER, RaidIntentKind.REFRESH) &&
+            observation is RaidResultObservation.Page
+        return when (val result = raidCycleModule.recordObservedResult(accountId, attempt, observation)) {
+            is RaidRecordResult.Recorded -> {
+                result.completion?.let { workLifecycle.completeRaidCycle(accountId, attempt.entryId) }
+                if (sharedState) {
+                    AmbiguousActionResolution.Superseded("현재 레이드 상태에서 이어갑니다. 이전 행동 결과는 귀속하지 않습니다.")
+                } else {
+                    AmbiguousActionResolution.Applied(
+                        result.completion?.let(TypedAutomationExecution::RaidCycleFinished) ?: defaultExecution,
+                    )
+                }
             }
-        }
-        is RaidRecordResult.EntryWait -> {
-            workLifecycle.waitForRaid(accountId, attempt.entryId, result.raidId, result.at, result.warning)
-            if (attempt.kind == RaidIntentKind.REGISTER) {
+            is RaidRecordResult.EntryWait -> {
+                workLifecycle.waitForRaid(accountId, attempt.entryId, result.raidId, result.at, result.warning)
+                if (sharedState) {
+                    AmbiguousActionResolution.Superseded(result.message)
+                } else {
+                    AmbiguousActionResolution.Applied(result.toExecution())
+                }
+            }
+            is RaidRecordResult.EntrySkipped -> {
+                workLifecycle.completeRaidCycle(accountId, attempt.entryId)
+                if (sharedState) {
+                    AmbiguousActionResolution.Superseded(result.message)
+                } else {
+                    AmbiguousActionResolution.Applied(defaultExecution)
+                }
+            }
+            is RaidRecordResult.NotApplied -> if (attempt.kind == RaidIntentKind.REWARD) {
                 AmbiguousActionResolution.Superseded(result.message)
             } else {
-                AmbiguousActionResolution.Applied(result.toExecution())
+                AmbiguousActionResolution.Resubmit
             }
+            is RaidRecordResult.FreshDecision -> AmbiguousActionResolution.FreshDecision(result.message)
+            is RaidRecordResult.NeedsRecheck -> AmbiguousActionResolution.VerifyLater(result.at, result.message)
+            is RaidRecordResult.BattleRecoveryStarted ->
+                AmbiguousActionResolution.HandedOff(result.at, result.message)
+            is RaidRecordResult.RewardRetryReady -> AmbiguousActionResolution.Superseded(result.message)
+            is RaidRecordResult.RewardHeld -> AmbiguousActionResolution.Superseded(result.message)
         }
-        is RaidRecordResult.EntrySkipped -> {
-            workLifecycle.completeRaidCycle(accountId, attempt.entryId)
-            if (attempt.kind == RaidIntentKind.REGISTER) {
-                AmbiguousActionResolution.Superseded(result.message)
-            } else {
-                AmbiguousActionResolution.Applied(defaultExecution)
-            }
-        }
-        is RaidRecordResult.NotApplied -> if (attempt.kind == RaidIntentKind.REWARD) {
-            AmbiguousActionResolution.Superseded(result.message)
-        } else {
-            AmbiguousActionResolution.Resubmit
-        }
-        is RaidRecordResult.FreshDecision -> AmbiguousActionResolution.FreshDecision(result.message)
-        is RaidRecordResult.NeedsRecheck -> AmbiguousActionResolution.VerifyLater(result.at, result.message)
-        is RaidRecordResult.BattleRecoveryStarted ->
-            AmbiguousActionResolution.HandedOff(result.at, result.message)
-        is RaidRecordResult.RewardRetryReady -> AmbiguousActionResolution.Superseded(result.message)
-        is RaidRecordResult.RewardHeld -> AmbiguousActionResolution.Superseded(result.message)
     }
 
     private fun RaidRecordResult.EntryWait.toExecution() = TypedAutomationExecution.RaidWaiting(

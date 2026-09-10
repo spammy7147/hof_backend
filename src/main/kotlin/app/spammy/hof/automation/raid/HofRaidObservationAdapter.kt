@@ -92,6 +92,8 @@ class HofRaidObservationAdapter(
         actionSuccessMarker = response.hasActionSuccessMarker(submittedAction),
         registrationWait = response.applyWait,
         registrationWaitSeconds = response.applyWaitSeconds,
+        registrationStateObserved = response.registrationStateObserved,
+        directRefreshResponse = submittedAction == RaidAction.REFRESH,
         globalActions = response.globalActions.mapNotNull { action -> action.toIntentKind() }.toSet(),
         resultMessages = response.result?.messages.orEmpty(),
         observedAt = timeProvider.now(),
