@@ -45,13 +45,24 @@ class StoredActionConvergenceSelectionFactory {
         stored: StoredTypedAutomationAction,
         legacySuppressionEpoch: String? = null,
     ): SelectedAutomationAction {
+        stored.policyContext?.let { return it.selection(stored.entryId, stored.executionIdentity) }
+        return mappedSelection(stored, legacySuppressionEpoch, POLICY_VERSION)
+    }
+
+    /** 과거 요청의 격리 범위를 복구할 뿐 현재 증거 정책을 부여하지 않는다. */
+    fun unrecorded(stored: StoredTypedAutomationAction, legacySuppressionEpoch: String? = null): SelectedAutomationAction {
+        require(stored.policyContext == null)
+        return mappedSelection(stored, legacySuppressionEpoch, "legacy-unrecorded")
+    }
+
+    private fun mappedSelection(stored: StoredTypedAutomationAction, legacySuppressionEpoch: String?, policyVersion: String): SelectedAutomationAction {
         val mapping = map(stored, legacySuppressionEpoch)
         return SelectedAutomationAction(
             entryId = stored.entryId,
             executionIdentity = stored.executionIdentity,
             actionKind = mapping.actionKind,
             scope = mapping.scope,
-            policyVersion = POLICY_VERSION,
+            policyVersion = policyVersion,
             baselineFingerprint = fingerprint(mapping.baseline),
         )
     }

@@ -13,17 +13,38 @@ import java.nio.charset.StandardCharsets
 import org.springframework.stereotype.Component
 import tools.jackson.databind.ObjectMapper
 import app.spammy.hof.automation.entity.TypedAutomationActionRunEntity
+import app.spammy.hof.automation.convergence.AutomationActionKind
+import app.spammy.hof.automation.convergence.AutomationIsolationScope
+import app.spammy.hof.automation.convergence.SelectedAutomationAction
 
 data class StoredTypedAutomationAction(
     val entryId: Long,
     val executionIdentity: String,
     val payload: StoredTypedActionPayload,
     val settingsRevision: Long? = null,
+    /** null은 생성 당시 정책을 기록하지 않은 과거 행동이며 현재 버전의 별칭이 아니다. */
+    val policyContext: StoredActionPolicyContext? = null,
 ) {
     init {
         require(entryId > 0)
         require(executionIdentity.isNotBlank() && executionIdentity.length <= 128)
     }
+}
+
+data class StoredActionPolicyContext(
+    val policyVersion: String,
+    val actionKind: AutomationActionKind,
+    val scope: AutomationIsolationScope,
+    val baselineFingerprint: String,
+) {
+    init {
+        require(policyVersion.isNotBlank())
+        require(baselineFingerprint.isNotBlank())
+    }
+
+    fun selection(entryId: Long, executionIdentity: String) = SelectedAutomationAction(
+        entryId, executionIdentity, actionKind, scope, policyVersion, baselineFingerprint,
+    )
 }
 
 @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, include = JsonTypeInfo.As.PROPERTY, property = "kind")

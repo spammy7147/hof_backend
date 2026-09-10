@@ -16,6 +16,8 @@ interface AutomationActionConvergenceModule {
         mode: AutomationConvergenceMode? = null,
     ): AutomationConvergenceSelection
     fun prepare(accountId: Long, selection: SelectedAutomationAction): ConvergenceDirective
+    fun storedSelection(accountId: Long, executionIdentity: String): SelectedAutomationAction?
+    fun restoreCheckpoint(accountId: Long, selection: SelectedAutomationAction, checkpoint: RestoredActionCheckpoint): ConvergenceDirective
     fun record(attemptId: Long, evidence: AutomationActionEvidence): ConvergenceDirective
     fun record(attemptId: Long, evidence: AutomationActionEvidence, persistObservation: (ConvergenceDirective) -> Unit): ConvergenceDirective
     fun recordLateApplication(accountId: Long, executionIdentity: String, evidence: AutomationActionEvidence.DirectApplied)
@@ -116,6 +118,39 @@ class DefaultAutomationActionConvergenceModule(
         if (existing.active || existing.result in LATE_APPLICATION_RESULTS) {
             record(existing.attemptId, evidence)
         }
+    }
+
+    override fun storedSelection(accountId: Long, executionIdentity: String): SelectedAutomationAction? =
+        store.get(accountId, executionIdentity)?.selection
+
+    override fun restoreCheckpoint(
+        accountId: Long,
+        selection: SelectedAutomationAction,
+        checkpoint: RestoredActionCheckpoint,
+    ): ConvergenceDirective {
+        val now = timeProvider.now()
+        val existing = store.get(accountId, selection.executionIdentity)
+        val attempt = existing ?: store.createOrGet(accountId, selection, now)
+        return requireNotNull(store.withLockedAttempt(attempt.attemptId) { current ->
+            if (!current.active) {
+                if (current.result == ActionConvergenceResult.NOT_APPLIED && current.submittedAt == null &&
+                    !ProductionActionEvidenceInterpreter.supportsVersion(current.selection.policyVersion)
+                ) return@withLockedAttempt holdUnsupportedPolicy(current, now)
+                return@withLockedAttempt ConvergenceDirective.ContinueSelection
+            }
+            // prepare와 실제 제출 기록은 별도 전이다. 재시작 때 typed에만 남은 사실도 보존한다.
+            current.submittedAt = current.submittedAt ?: checkpoint.submittedAt
+            current.successfulObservationCount = maxOf(current.successfulObservationCount, checkpoint.successfulObservationCount)
+            current.firstPendingAt = current.firstPendingAt ?: checkpoint.firstPendingAt ?: current.submittedAt
+            current.nextProbeAt = current.nextProbeAt ?: now
+            store.save(current)
+            when {
+                !ProductionActionEvidenceInterpreter.supportsVersion(current.selection.policyVersion) -> holdUnsupportedPolicy(current, now)
+                budgetExhausted(current, now) -> terminal(current, ActionConvergenceResult.HELD, "PENDING_BUDGET_EXHAUSTED", now)
+                current.nextProbeAt?.isAfter(now) == true -> ConvergenceDirective.WaitUntil(requireNotNull(current.nextProbeAt), current.selection.scope)
+                else -> ConvergenceDirective.Probe(current.attemptId, current.selection)
+            }
+        })
     }
 
     override fun record(attemptId: Long, evidence: AutomationActionEvidence): ConvergenceDirective =
@@ -339,6 +374,7 @@ class DefaultAutomationActionConvergenceModule(
         selection: SelectedAutomationAction,
         retriedAt: Instant,
     ): ConvergenceDirective {
+        if (store.get(accountId, selection.executionIdentity) == null) return prepare(accountId, selection)
         store.activeBattleGate(accountId)?.takeIf { selection.actionKind.battle }?.let { gate ->
             return ConvergenceDirective.BattleGateWait(gate.openedAt, gate.reason)
         }

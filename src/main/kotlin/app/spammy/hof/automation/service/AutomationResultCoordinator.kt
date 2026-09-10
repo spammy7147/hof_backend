@@ -29,7 +29,11 @@ class AutomationResultCoordinator(
     private val shadow = rollout?.shadow == true
     val postsEnabled = rollout?.automationPostsEnabled != false
 
-    class ActionSelection internal constructor(policy: SelectedAutomationAction? = null, evidence: SelectedAutomationAction? = null) {
+    class ActionSelection internal constructor(
+        val stored: StoredTypedAutomationAction,
+        policy: SelectedAutomationAction? = null,
+        evidence: SelectedAutomationAction? = null,
+    ) {
         var policy: SelectedAutomationAction? = policy
             private set
         var evidence: SelectedAutomationAction? = evidence
@@ -43,46 +47,67 @@ class AutomationResultCoordinator(
     }
 
     /** null은 활성 모드의 필수 수렴 연결 누락이며, 호출자는 기존 준비 실패 경로로 종료한다. */
-    fun freshSelection(accountId: Long, stored: StoredTypedAutomationAction): ActionSelection? {
-        val factory = convergenceSelectionFactory ?: return ActionSelection()
+    fun newSelection(draft: StoredTypedAutomationAction): ActionSelection? {
+        require(draft.policyContext == null) { "A new action must not replace a stored policy context." }
+        val factory = convergenceSelectionFactory ?: return ActionSelection(draft)
+        val selection = factory.create(draft)
+        val stored = draft.copy(policyContext = StoredActionPolicyContext(
+            selection.policyVersion, selection.actionKind, selection.scope, selection.baselineFingerprint,
+        ))
         if (active) {
             if (convergenceModule == null) return null
-            val selection = factory.create(stored)
-            return ActionSelection(selection, selection)
+            return ActionSelection(stored, selection, selection)
         }
-        return restoredSelection(accountId, stored)
+        return ActionSelection(stored, evidence = selection)
     }
 
-    fun restoredSelection(accountId: Long, stored: StoredTypedAutomationAction): ActionSelection {
-        val evidence = if (shadow) convergenceSelectionFactory?.create(stored)?.also {
-            selectShadow(accountId, it)
-        } else null
-        return ActionSelection(evidence = evidence)
+    sealed interface RestoredSelection {
+        data class Ready(val context: ActionSelection) : RestoredSelection
+        data class Closed(val recovery: CheckpointRecovery) : RestoredSelection
     }
 
-    fun continuationSelection(stored: StoredTypedAutomationAction, previous: ActionSelection): ActionSelection? {
-        if (!active) return previous
-        if (convergenceModule == null) return null
-        val selection = convergenceSelectionFactory?.create(stored)
-        return ActionSelection(selection, selection)
+    /** 저장 시도의 문맥을 lifecycle 복원과 원격 관측보다 먼저 확인한다. */
+    fun restoreSelection(accountId: Long, checkpoint: TypedRuntimeCheckpoint): RestoredSelection {
+        val stored = checkpoint.storedAction
+        val original = convergenceModule?.storedSelection(accountId, stored.executionIdentity)
+        val embedded = stored.policyContext?.selection(stored.entryId, stored.executionIdentity)
+        if ((original != null && embedded != null && original != embedded) ||
+            (original != null && (original.entryId != stored.entryId || original.executionIdentity != stored.executionIdentity))
+        ) return RestoredSelection.Closed(CheckpointRecovery(
+            TypedRuntimeOutcome.IntegrityFailure("Stored action policy context does not match its original attempt.")))
+        if (active && original == null && embedded == null && checkpoint.phase == TypedRuntimeCheckpointPhase.PREPARED) {
+            return RestoredSelection.Closed(CheckpointRecovery(TypedRuntimeOutcome.PreparedDiscarded(
+                "Unsubmitted action without a recorded policy requires a fresh decision.", "TYPED_CONVERGENCE_CONTINUE")))
+        }
+        val selection = original ?: embedded ?: convergenceSelectionFactory?.unrecorded(stored, checkpoint.legacySuppressionEpoch)
+        val bound = if (selection == null) stored else stored.copy(policyContext = StoredActionPolicyContext(
+            selection.policyVersion, selection.actionKind, selection.scope, selection.baselineFingerprint,
+        ))
+        if (active && selection != null && !ProductionActionEvidenceInterpreter.supportsVersion(selection.policyVersion)) {
+            val directive = requireNotNull(convergenceModule).restoreCheckpoint(accountId, selection, RestoredActionCheckpoint(
+                checkpoint.submittedAt, checkpoint.successfulObservationCount, checkpoint.firstPendingAt,
+            ))
+            val message = "Stored action policy is unsupported; only its original scope is held."
+            val outcome = if (checkpoint.phase == TypedRuntimeCheckpointPhase.PREPARED) {
+                TypedRuntimeOutcome.PreparedDiscarded(message, "TYPED_CONVERGENCE_CONTINUE")
+            } else TypedRuntimeOutcome.AmbiguousHandoff(message, "TYPED_CONVERGENCE_CONTINUE")
+            return RestoredSelection.Closed(CheckpointRecovery(outcome, directive))
+        }
+        if (shadow && selection != null) selectShadow(accountId, selection)
+        return RestoredSelection.Ready(ActionSelection(bound, selection.takeIf { active }, selection))
     }
 
     fun discardLostFishingObservation(accountId: Long, stored: StoredTypedAutomationAction, reasonCode: String) {
         if (!active) return
-        freshSelection(accountId, stored)?.policy?.let {
+        convergenceSelectionFactory?.create(stored)?.let {
             discardUnsubmitted(accountId, it, now(), reasonCode)
         }
-    }
-
-    /** 낚시는 기존 LEGACY 경로에서도 단계별 직접 응답 증거를 만든다. */
-    fun fishingSelection(stored: StoredTypedAutomationAction): ActionSelection {
-        val selected = convergenceSelectionFactory?.create(stored)
-        return ActionSelection(policy = if (active) selected else null, evidence = selected)
     }
 
     fun resumeDue(accountId: Long): ConvergenceDirective? = if (active) convergenceModule?.resumeDue(accountId) else null
 
     fun prepare(accountId: Long, context: ActionSelection, retryUnsubmitted: Boolean): ConvergenceDirective? {
+        if (shadow) context.evidence?.let { selectShadow(accountId, it) }
         val selection = context.policy ?: return null
         val convergence = requireNotNull(convergenceModule)
         val directive = if (retryUnsubmitted) convergence.retryUnsubmitted(accountId, selection, now())
@@ -175,7 +200,7 @@ class AutomationResultCoordinator(
         evidence: AutomationActionEvidence?,
         attemptId: Long?,
     ): DirectResult {
-        if (evidence is AutomationActionEvidence.PolicyUnavailable) {
+        if (active && evidence is AutomationActionEvidence.PolicyUnavailable) {
             return DirectResult.Unapplied("저장된 정책을 지원하지 않아 행동 결과 판정과 재제출을 보류합니다.",
                 false, attemptId?.let { record(it, evidence) })
         }
@@ -214,7 +239,7 @@ class AutomationResultCoordinator(
         attemptId: Long?,
         unconfirmedWarning: String,
     ): DirectResult {
-        if (evidence is AutomationActionEvidence.PolicyUnavailable) {
+        if (active && evidence is AutomationActionEvidence.PolicyUnavailable) {
             return DirectResult.Unapplied("저장된 정책을 지원하지 않아 행동 결과 판정과 재제출을 보류합니다.",
                 false, attemptId?.let { record(it, evidence) })
         }
@@ -286,13 +311,15 @@ class AutomationResultCoordinator(
         activeCheckpoint: TypedRuntimeCheckpoint,
     ): CutoverResult {
         val convergence = convergenceModule
-        val factory = convergenceSelectionFactory
-        if (convergence == null || factory == null) {
+        val selection = stored.policyContext?.selection(stored.entryId, stored.executionIdentity)
+        if (convergence == null || selection == null) {
             return CutoverResult("Active convergence cutover dependencies are missing.", null)
         }
-        val selection = factory.create(stored, activeCheckpoint.legacySuppressionEpoch)
-        val directive = when (val prepared = convergence.prepare(accountId, selection)) {
-            is ConvergenceDirective.Submit -> {
+        val restored = convergence.restoreCheckpoint(accountId, selection, RestoredActionCheckpoint(
+            activeCheckpoint.submittedAt, activeCheckpoint.successfulObservationCount, activeCheckpoint.firstPendingAt,
+        ))
+        val directive = when (val prepared = restored) {
+            is ConvergenceDirective.Probe -> {
                 val observation = observeReconciliation(accountId, managed, prepared.selection, stored.executionIdentity, ReconciliationSource.LEGACY_CHECKPOINT)
                 convergence.record(prepared.attemptId, observation) { next ->
                     journalFishingObservation(accountId, StoredObservation(observation, stored, managed.diagnosticContext), next)

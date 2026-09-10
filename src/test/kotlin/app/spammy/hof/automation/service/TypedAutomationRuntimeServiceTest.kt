@@ -115,6 +115,29 @@ class TypedAutomationRuntimeServiceTest {
         )
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = ["automation-action-convergence-v1", "unsupported-fixture-version"])
+    fun `정책을 기록한 체크포인트는 현재 퀘스트 사이클을 주입하지 않는다`(version: String) {
+        val context = StoredActionPolicyContext(version,
+            app.spammy.hof.automation.convergence.AutomationActionKind.QUEST_CLAIM,
+            app.spammy.hof.automation.convergence.AutomationIsolationScope(
+                app.spammy.hof.automation.convergence.AutomationIsolationScopeKind.QUEST_TARGET, "quest-1"),
+            "a".repeat(64))
+        val fixture = action(TypedAutomationActionStatus.RECONCILING, policyContext = context)
+        val originalJson = fixture.row.payloadJson
+        val originalFingerprint = fixture.row.actionFingerprint
+        Mockito.`when`(query.findQuestCycle(7, "quest-1")).thenReturn(
+            QuestAutomationCycleEntity(31L, account, "quest-1", 4L))
+        stubActive(state(), fixture.row)
+
+        val restored = assertIs<TypedRuntimeAcquisition.Acquired>(service.acquire(7)).execution.checkpoint!!
+
+        assertEquals(fixture.stored, restored.storedAction)
+        assertNull(restored.legacySuppressionEpoch)
+        assertEquals(originalJson, fixture.row.payloadJson)
+        assertEquals(originalFingerprint, fixture.row.actionFingerprint)
+    }
+
     @Test
     fun `acquisition enriches a legacy fishing suppression with its submitted Korea date`() {
         now = Instant.parse("2026-08-23T00:10:00Z")
@@ -713,13 +736,14 @@ class TypedAutomationRuntimeServiceTest {
         row?.entry?.let { entry -> Mockito.`when`(query.findEntry(7, entry.id)).thenReturn(entry) }
     }
 
-    private fun action(status: TypedAutomationActionStatus, settingsRevision: Long? = 0): ActionFixture {
+    private fun action(status: TypedAutomationActionStatus, settingsRevision: Long? = 0, policyContext: StoredActionPolicyContext? = null): ActionFixture {
         val entry = AutomationEntryEntity(9, account, AutomationType.QUEST, 0, true, now, now)
         val stored = StoredTypedAutomationAction(
             entryId = entry.id,
             executionIdentity = "quest-claim",
             payload = StoredTypedActionPayload.QuestClaim("quest-1", "claim-1"),
             settingsRevision = settingsRevision,
+            policyContext = policyContext,
         )
         val encoded = codec.encode(stored)
         return ActionFixture(

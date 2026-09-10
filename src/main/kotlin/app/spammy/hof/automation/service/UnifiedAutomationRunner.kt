@@ -127,25 +127,30 @@ class UnifiedAutomationRunner @Autowired constructor(
         accountId: Long,
         initialExecution: TypedRuntimeExecutionRight,
         fallbackConvergenceProbe: ConvergenceDirective.Probe? = null,
-        continuedDecisionCycleId: Long? = null,
-        continuedWarnings: List<String>? = null,
-        continuedPreparedFollowup: Boolean = false,
     ) {
         var execution = initialExecution
         var checkpoint = execution.checkpoint
         if (checkpoint != null && typedRuntime.completeRecordedAction(execution)) return
-        val restoredCheckpoint = checkpoint != null && !continuedPreparedFollowup
+        val restoredCheckpoint = checkpoint != null
         val resumedDeferredSubmission = restoredCheckpoint && checkpoint.deferredSubmissionRetry
         val resumedLegacyCheckpoint = restoredCheckpoint && !resumedDeferredSubmission
-        var decisionCycleId: Long? = continuedDecisionCycleId
-        var selectedWarnings: List<String>? = continuedWarnings
+        var decisionCycleId: Long? = null
+        var selectedWarnings: List<String>? = null
         var convergenceAttemptId: Long? = null
-        var resultSelection = AutomationResultCoordinator.ActionSelection()
+        lateinit var resultSelection: AutomationResultCoordinator.ActionSelection
         lateinit var managedAction: ManagedAutomationAction
         val stored: StoredTypedAutomationAction
 
         if (checkpoint != null) {
-            stored = checkpoint.storedAction
+            when (val restored = results.restoreSelection(accountId, checkpoint)) {
+                is AutomationResultCoordinator.RestoredSelection.Closed -> {
+                    typedRuntime.complete(execution, restored.recovery.outcome,
+                        convergenceRecheckAt = (restored.recovery.directive as? ConvergenceDirective.WaitUntil)?.at)
+                    return
+                }
+                is AutomationResultCoordinator.RestoredSelection.Ready -> resultSelection = restored.context
+            }
+            stored = resultSelection.stored
             managedAction = try {
                 actionLifecycleModule.restoreVerified(stored, accountId)
             } catch (error: RuntimeException) {
@@ -155,7 +160,6 @@ class UnifiedAutomationRunner @Autowired constructor(
                 )
                 return
             }
-            resultSelection = results.restoredSelection(accountId, stored)
         } else {
             val decision = try {
                 decisionSource.select(accountId)
@@ -295,12 +299,13 @@ class UnifiedAutomationRunner @Autowired constructor(
                     return
                 }
             }
-            stored = managedAction.storedAction.copy(settingsRevision = decision.settingsRevision)
-            resultSelection = results.freshSelection(accountId, stored) ?: run {
-                stopPreparationFailure(accountId, execution, stored.entryId, "CONVERGENCE_MODULE",
+            val draft = managedAction.storedAction.copy(settingsRevision = decision.settingsRevision)
+            resultSelection = results.newSelection(draft) ?: run {
+                stopPreparationFailure(accountId, execution, draft.entryId, "CONVERGENCE_MODULE",
                     IllegalStateException("Active convergence module is missing."))
                 return
             }
+            stored = resultSelection.stored
             val preparation = try {
                 typedRuntime.persistPrepared(execution, stored, selectedWarnings.orEmpty())
             } catch (error: Exception) {
@@ -319,13 +324,6 @@ class UnifiedAutomationRunner @Autowired constructor(
         }
 
         val activeCheckpoint = requireNotNull(checkpoint)
-        if (continuedPreparedFollowup || resumedDeferredSubmission) {
-            resultSelection = results.continuationSelection(stored, resultSelection) ?: run {
-                stopPreparationFailure(accountId, execution, stored.entryId, "CONVERGENCE_MODULE",
-                    IllegalStateException("Active convergence module is missing."))
-                return
-            }
-        }
         val actionDescriptor = managedAction.descriptor
         fun trace(
             kind: AutomationHistoryEventKind,
@@ -777,7 +775,7 @@ class UnifiedAutomationRunner @Autowired constructor(
         }
 
         if (managedAction is ManagedFishingAutomationAction &&
-            fishingCycleModule?.executePrepared(accountId, execution, managedAction, stored,
+            fishingCycleModule?.executePrepared(accountId, execution, managedAction, resultSelection,
                 decisionCycleId, selectedWarnings, resumedDeferredSubmission) == true
         ) return
 

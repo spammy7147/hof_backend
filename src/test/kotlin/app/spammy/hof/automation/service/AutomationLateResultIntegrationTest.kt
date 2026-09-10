@@ -515,6 +515,15 @@ abstract class AutomationLateResultIntegrationTest {
     }
 
     protected fun verifyLateCatchWithFailedObservation(failure: String, afterRecoveryCompletes: Boolean = false, afterGuard: Boolean = false, staleObservation: Boolean = false, duringCanonicalCreation: Boolean = false, staleHistory: Boolean = false, beforeReconciliationHistory: Boolean = false) {
+        val recoverWithinObservationBudget = mode == AutomationConvergenceMode.ACTIVE && failure in setOf("ADVANCED", "CASTS_EXHAUSTED")
+        if (recoverWithinObservationBudget) {
+            val firstPreflight = java.util.concurrent.atomic.AtomicBoolean(true)
+            Mockito.`when`(preflight.ensureReady(accountId)).thenAnswer {
+                // 실행권 획득 뒤 준비에 시간을 쓰되 START/CATCH의 실제 제출 시각은 보존한다.
+                if (firstPreflight.compareAndSet(true, false)) clock.current = clock.now().plusSeconds(240)
+                AutomationDailyPreflight.Result.Ready
+            }
+        }
         val catchReturned = CountDownLatch(1)
         val returnCatch = CountDownLatch(1)
         val observationRead = CountDownLatch(1)
@@ -628,18 +637,36 @@ abstract class AutomationLateResultIntegrationTest {
                         Mockito.any(AutomationActionEvidence::class.java) ?: evidencePlaceholder,
                         Mockito.anyString())
                 }
-                clock.current = clock.now().plusSeconds(301)
+                if (recoverWithinObservationBudget) {
+                    val typedLeaseUntil = assertNotNull(jdbc.queryForObject(
+                        "select lease_until from typed_automation_runtime_states where account_id = ?",
+                        java.sql.Timestamp::class.java, accountId,
+                    )).toInstant()
+                    val accountLeaseUntil = assertNotNull(jdbc.queryForObject(
+                        "select lease_until from account_automation_leases where account_id = ?",
+                        java.sql.Timestamp::class.java, accountId,
+                    )).toInstant()
+                    clock.current = maxOf(typedLeaseUntil, accountLeaseUntil).plusSeconds(1)
+                    val submittedAt = assertNotNull(jdbc.queryForObject(
+                        "select submitted_at from typed_automation_action_runs where account_id = ? and execution_identity = ?",
+                        java.sql.Timestamp::class.java, accountId, identity,
+                    )).toInstant()
+                    assertEquals(61L, java.time.Duration.between(submittedAt, clock.now()).seconds,
+                        "두 실행권은 만료되지만 CATCH 관측의 2분 예산은 남아 있어야 한다.")
+                } else {
+                    clock.current = clock.now().plusSeconds(301)
+                }
                 wakeups.wake(accountId, "EXPIRED_CATCH_LEASE_RECOVERY")
                 recoveryWorker = executor.submit {
                     repeat(4) {
                         otherPublisher.publishBatch()
                         if (observing.count == 0L) return@submit
-                        // ACTIVE는 만료 checkpoint 인계 다음의 실제 wake에서 관측한다.
+                        // 실제 예약을 소비하며 저장 행동의 재관측에 도달한다.
                         advanceToNextWake()
                     }
                 }
                 assertTrue(observing.await(10, TimeUnit.SECONDS), "실제 낚시 재조회가 외부 HOF adapter에 도달해야 한다.")
-                assertEquals(if (mode == AutomationConvergenceMode.ACTIVE) "AMBIGUOUS" else "RECONCILING", runs().last()["status"])
+                assertEquals("RECONCILING", runs().last()["status"])
                 val newLease = jdbc.queryForObject("select lease_token from typed_automation_runtime_states where account_id = ?",
                     String::class.java, accountId)
                 assertNotNull(newLease)
@@ -650,29 +677,18 @@ abstract class AutomationLateResultIntegrationTest {
                 }
                 if (afterRecoveryCompletes) {
                     failObservation.countDown()
-                    recoveryWorker.get(10, TimeUnit.SECONDS)
-                    assertEquals("AMBIGUOUS", runs().single { it["execution_identity"] == identity }["status"])
-                    if (failure in setOf("ADVANCED", "CASTS_EXHAUSTED")) {
-                        // ACTIVE의 첫 복구는 typed checkpoint를 넘긴다. 그 다음 예약을
-                        // 실제 소비해 수렴 probe가 최신 상태를 판정할 때까지 진행한다.
-                        val consumeProbes = {
-                            repeat(3) {
-                                if (store.get(accountId, identity as String)?.active == true) {
-                                    advanceToNextWake()
-                                    otherPublisher.publishBatch()
-                                }
-                            }
-                        }
-                        if (staleObservation || staleHistory) {
-                            recoveryWorker = executor.submit { consumeProbes() }
-                            assertTrue(observationRead.await(10, TimeUnit.SECONDS), "실제 probe가 현재 수렴을 읽고 상태 진전을 판정해야 한다.")
-                        } else {
-                            consumeProbes()
+                    if (staleObservation || staleHistory) {
+                        // 첫 복구 wake가 이미 probe를 실행한다. 관측 저장을 멈춘 채 직접 응답을 반환한다.
+                        assertTrue(observationRead.await(10, TimeUnit.SECONDS), "실제 probe가 현재 수렴을 읽고 상태 진전을 판정해야 한다.")
+                    } else {
+                        recoveryWorker.get(10, TimeUnit.SECONDS)
+                        assertEquals("AMBIGUOUS", runs().single { it["execution_identity"] == identity }["status"])
+                        if (failure in setOf("ADVANCED", "CASTS_EXHAUSTED")) {
                             assertEquals(ActionConvergenceResult.SUPERSEDED, assertNotNull(store.get(accountId, identity as String)).result,
                                 "실제 후속 probe의 관측 결과를 먼저 저장해야 한다: ${store.get(accountId, identity)}")
+                        } else {
+                            assertTrue(store.findSuppressedBaselines(accountId).isNotEmpty())
                         }
-                    } else {
-                        assertTrue(store.findSuppressedBaselines(accountId).isNotEmpty())
                     }
                 }
                 if (duringCanonicalCreation) {

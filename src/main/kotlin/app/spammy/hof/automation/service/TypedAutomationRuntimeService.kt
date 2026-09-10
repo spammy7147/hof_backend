@@ -130,7 +130,7 @@ class TypedAutomationRuntimeService(
                     scheduleAutomaticRetry(state, AutomationStopReason.FATAL, row.lastError!!),
                 )
             }
-            val legacySuppressionEpoch = if (row.status == TypedAutomationActionStatus.RECONCILING) {
+            val legacySuppressionEpoch = if (decoded.policyContext == null && row.status == TypedAutomationActionStatus.RECONCILING) {
                 decoded.legacySuppressionEpoch(accountId, row)
             } else {
                 null

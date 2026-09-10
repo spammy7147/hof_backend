@@ -52,17 +52,17 @@ class FishingCycleModule(
         accountId: Long,
         execution: TypedRuntimeExecutionRight,
         managed: ManagedFishingAutomationAction,
-        stored: StoredTypedAutomationAction,
+        selection: AutomationResultCoordinator.ActionSelection,
         decisionCycleId: Long?,
         selectedWarnings: List<String>?,
         retryUnsubmitted: Boolean,
     ): Boolean {
-        when ((stored.payload as? StoredTypedActionPayload.FishingTown)?.action) {
-            FishingAction.START -> runFishingCycle(accountId, execution, managed, stored,
+        when ((selection.stored.payload as? StoredTypedActionPayload.FishingTown)?.action) {
+            FishingAction.START -> runFishingCycle(accountId, execution, managed, selection,
                 decisionCycleId, selectedWarnings, retryUnsubmitted)
             FishingAction.CATCH -> {
                 if (managed.cycleObservation == null) return false
-                runObservedFishingCatch(accountId, execution, managed, stored,
+                runObservedFishingCatch(accountId, execution, managed, selection,
                     decisionCycleId, selectedWarnings, retryUnsubmitted)
             }
             else -> return false
@@ -74,12 +74,12 @@ class FishingCycleModule(
         accountId: Long,
         execution: TypedRuntimeExecutionRight,
         managed: ManagedFishingAutomationAction,
-        stored: StoredTypedAutomationAction,
+        selection: AutomationResultCoordinator.ActionSelection,
         decisionCycleId: Long?,
         selectedWarnings: List<String>?,
         retryUnsubmitted: Boolean,
     ) {
-        val selection = results.fishingSelection(stored)
+        val stored = selection.stored
         var attemptId: Long? = null
         var attemptTerminalized = false
 
@@ -203,11 +203,12 @@ class FishingCycleModule(
         accountId: Long,
         initialExecution: TypedRuntimeExecutionRight,
         startManaged: ManagedFishingAutomationAction,
-        startStored: StoredTypedAutomationAction,
+        startSelection: AutomationResultCoordinator.ActionSelection,
         decisionCycleId: Long?,
         selectedWarnings: List<String>?,
         retryUnsubmitted: Boolean,
     ) {
+        val startStored = startSelection.stored
         val startPayload = startStored.payload as StoredTypedActionPayload.FishingTown
         val catchExecutionIdentity = java.util.UUID.randomUUID().toString()
         var execution = initialExecution
@@ -215,7 +216,7 @@ class FishingCycleModule(
         var activeManaged: ManagedAutomationAction = startManaged
         var activeAttemptId: Long? = null
         var activeAttemptTerminalized = false
-        var activeSelection = results.fishingSelection(startStored)
+        var activeSelection = startSelection
 
         fun append(
             stored: StoredTypedAutomationAction,
@@ -296,7 +297,7 @@ class FishingCycleModule(
                         AutomationHistoryEventKind.ACTION_SUCCEEDED, "FISHING_START_APPLIED",
                         "낚시 START 적용을 확인했습니다.")
                 }
-                val catchStored = StoredTypedAutomationAction(
+                val catchDraft = StoredTypedAutomationAction(
                     entryId = startStored.entryId,
                     executionIdentity = catchExecutionIdentity,
                     payload = StoredTypedActionPayload.FishingTown(
@@ -306,9 +307,15 @@ class FishingCycleModule(
                         progressDate = startPayload.progressDate,
                     ),
                 )
+                lateinit var catchSelection: AutomationResultCoordinator.ActionSelection
+                lateinit var catchStored: StoredTypedAutomationAction
                 lateinit var catchManaged: ManagedFishingAutomationAction
                 val preparation = commitDirectResult(startStored.executionIdentity, persistDirectResult, appendStartHistory) { persist ->
                     try {
+                        catchSelection = requireNotNull(results.newSelection(catchDraft)) {
+                            "Active convergence module is missing."
+                        }
+                        catchStored = catchSelection.stored
                         catchManaged = actionLifecycleModule.restoreVerified(catchStored, accountId)
                             as? ManagedFishingAutomationAction
                             ?: throw IllegalStateException("Stored fishing CATCH is not managed as a fishing action.")
@@ -330,7 +337,7 @@ class FishingCycleModule(
                 execution = preparation.execution
                 activeStored = catchStored
                 activeManaged = catchManaged
-                activeSelection = results.fishingSelection(catchStored)
+                activeSelection = catchSelection
                 activeAttemptTerminalized = false
                 activeAttemptId = prepareConvergence(catchStored, activeSelection)
                 recordPreparationRecovery(decisionJournal, accountId, decisionCycleId, catchStored, catchManaged.descriptor)

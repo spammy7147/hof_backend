@@ -91,6 +91,12 @@ class DefaultAutomationConvergenceShadowEvaluator(
         val directive = engine.prepare(accountId, selection)
         if (directive is ConvergenceDirective.Submit) {
             attempts[accountId to selection.executionIdentity] = directive.attemptId
+        } else if (!ProductionActionEvidenceInterpreter.supportsVersion(selection.policyVersion)) {
+            store.get(accountId, selection.executionIdentity)?.let { held ->
+                attempts[accountId to selection.executionIdentity] = held.attemptId
+                // SHADOW의 진단 보류가 실제로 선택된 후속 행동의 비교를 막지는 않는다.
+                store.releaseSuppression(accountId, held.attemptId, timeProvider.now())
+            }
         }
     }
 
@@ -104,7 +110,7 @@ class DefaultAutomationConvergenceShadowEvaluator(
         val key = accountId to executionIdentity
         val attemptId = attempts[key] ?: return null
         val before = store.get(attemptId) ?: return null
-        if (!before.active) return null
+        if (!before.active && ProductionActionEvidenceInterpreter.supportsVersion(before.selection.policyVersion)) return null
         engine.record(attemptId, evidence)
         val after = requireNotNull(store.get(attemptId))
         val newResult = after.result ?: ActionConvergenceResult.PENDING

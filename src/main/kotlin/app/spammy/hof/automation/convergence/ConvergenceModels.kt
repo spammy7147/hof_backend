@@ -180,6 +180,13 @@ sealed interface ConvergenceDirective {
     data object ContinueSelection : ConvergenceDirective
 }
 
+/** typed 실행 기록에서 확인한 사실만 옮기며 새 제출을 뜻하지 않는다. */
+data class RestoredActionCheckpoint(
+    val submittedAt: Instant?,
+    val successfulObservationCount: Int,
+    val firstPendingAt: Instant?,
+)
+
 data class ActionConvergenceRecord(
     val attemptId: Long,
     val accountId: Long,

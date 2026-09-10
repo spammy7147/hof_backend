@@ -1047,8 +1047,8 @@ class AutomationRecoveryIntegrationTest : AutomationRecoveryFixture() {
         assertNotNull(runs().last()["submitted_at"])
         assertEquals(0, requests.count { it.method == HofHttpMethod.POST && it.url.contains("common=fishing_12") })
 
+        // 저장 시도 복원은 이 깨우기에서 원래 시각·예산으로 재확인한다.
         nextRun()
-        consumeNextWake()
 
         assertEquals(expectedPosts, fishingPosts())
         val results = jdbc.queryForList(
@@ -1074,11 +1074,9 @@ class AutomationRecoveryIntegrationTest : AutomationRecoveryFixture() {
         assertEquals(unresolvedRuns + "SUCCEEDED", runs().map { it["status"] })
         assertScheduledWake("TYPED_ACTION_COMPLETED", clock.now())
         val before = journal.page(accountId, AutomationHistoryQuery()).cycles.size
-        val nextIdleAt = clock.now().plusSeconds(3)
-        assertScheduledWake("TYPED_NEXT_ROUND", nextIdleAt)
-        clock.current = nextIdleAt
         consumeNextWake()
         assertEquals(before + 1, journal.page(accountId, AutomationHistoryQuery()).cycles.size)
+        assertScheduledWake("TYPED_NEXT_ROUND", clock.now().plusSeconds(3))
         assertEquals(expectedPosts, fishingPosts())
         assertEquals(1, requests.count { it.method == HofHttpMethod.POST && it.url.contains("common=fishing_12") })
     }

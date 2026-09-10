@@ -14,6 +14,33 @@ class AutomationActionConvergenceModuleTest {
         DefaultAutomationActionConvergenceModule(store, clock)
 
     @Test
+    fun `체크포인트 복원은 알려진 시각과 관측 횟수를 되돌리지 않고 소진된 횟수 예산을 닫는다`() {
+        val selection = questSelection("restored-budget")
+        val submittedAt = clock.now()
+        val id = assertIs<ConvergenceDirective.Submit>(module.prepare(7L, selection)).attemptId
+        repeat(2) {
+            module.record(id, AutomationActionEvidence.SameState(clock.now(), "unchanged"))
+            clock.advanceSeconds(1)
+        }
+        val nextProbeAt = requireNotNull(store.get(id)?.nextProbeAt)
+
+        val restored = module.restoreCheckpoint(7L, selection, RestoredActionCheckpoint(clock.now(), 1, clock.now()))
+
+        assertEquals(nextProbeAt, assertIs<ConvergenceDirective.WaitUntil>(restored).at)
+        assertEquals(submittedAt, store.get(id)?.submittedAt)
+        assertEquals(submittedAt, store.get(id)?.firstPendingAt)
+        assertEquals(2, store.get(id)?.successfulObservationCount)
+
+        assertIs<ConvergenceDirective.ContinueSelection>(module.restoreCheckpoint(
+            7L, selection, RestoredActionCheckpoint(submittedAt, 5, submittedAt),
+        ))
+        assertEquals(ActionConvergenceResult.HELD, store.get(id)?.result)
+        assertEquals("PENDING_BUDGET_EXHAUSTED", store.get(id)?.reasonCode)
+        assertEquals(5, store.get(id)?.successfulObservationCount)
+        assertIs<ConvergenceDirective.Submit>(module.prepare(7L, questSelection("independent-after-budget")))
+    }
+
+    @Test
     fun `미지원 미전송 시도는 현재 정책으로 재제출하지 않고 원래 문맥으로 보류한다`() {
         val saved = questSelection("unsupported-retry").copy(policyVersion = "unsupported-fixture-version")
         val record = store.createOrGet(7L, saved, clock.now())

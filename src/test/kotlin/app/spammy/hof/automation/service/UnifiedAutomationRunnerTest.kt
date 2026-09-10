@@ -20,6 +20,7 @@ import app.spammy.hof.automation.convergence.ProductionEvidenceShapes
 import app.spammy.hof.automation.convergence.FishingObservedState
 import app.spammy.hof.automation.convergence.QuestObservedState
 import app.spammy.hof.automation.convergence.SelectedAutomationAction
+import app.spammy.hof.automation.convergence.RestoredActionCheckpoint
 import app.spammy.hof.automation.convergence.StoredActionConvergenceSelectionFactory
 import app.spammy.hof.automation.convergence.StoredConvergenceActionLoader
 import app.spammy.hof.automation.entity.AutomationType
@@ -613,7 +614,7 @@ class UnifiedAutomationRunnerTest {
             15L,
             "catch-restored",
             StoredTypedActionPayload.FishingTown(FishingAction.CATCH, FishingPrimaryAction.CATCH, 17),
-        )
+        ).withRecordedPolicy()
         val prepared = executionRight(
             TypedRuntimeCheckpoint(stored, TypedRuntimeCheckpointPhase.PREPARED, null, null),
         )
@@ -1376,7 +1377,9 @@ class UnifiedAutomationRunnerTest {
             ),
         )
         Mockito.`when`(runtime.acquire(7)).thenReturn(TypedRuntimeAcquisition.Acquired(reconciling))
-        Mockito.`when`(lifecycle.restoreVerified(stored, 7)).thenReturn(managed)
+        Mockito.`when`(lifecycle.restoreVerified(
+            stored.withRecordedPolicy(StoredActionConvergenceSelectionFactory().unrecorded(stored)), 7,
+        )).thenReturn(managed)
         Mockito.`when`(managed.storedAction).thenReturn(stored)
         Mockito.`when`(managed.reconcile()).thenReturn(
             AmbiguousActionResolution.VerifyLater(observedAt.plusSeconds(10), "still unchanged"),
@@ -1431,7 +1434,9 @@ class UnifiedAutomationRunnerTest {
             ),
         )
         Mockito.`when`(runtime.acquire(7)).thenReturn(TypedRuntimeAcquisition.Acquired(reconciling))
-        Mockito.`when`(lifecycle.restoreVerified(stored, 7)).thenReturn(managed)
+        Mockito.`when`(lifecycle.restoreVerified(
+            stored.withRecordedPolicy(StoredActionConvergenceSelectionFactory().unrecorded(stored)), 7,
+        )).thenReturn(managed)
         Mockito.`when`(managed.storedAction).thenReturn(stored)
         Mockito.`when`(managed.reconcile()).thenThrow(HofAutomationDeferredException(retryAt, 1))
         val store = InMemoryConvergenceStore()
@@ -1769,7 +1774,7 @@ class UnifiedAutomationRunnerTest {
             TypedRuntimeCheckpointPhase.PREPARED, null, "HOF_CONNECTION", deferredSubmissionRetry = true))
         Mockito.`when`(runtime.acquire(7L)).thenReturn(TypedRuntimeAcquisition.Acquired(resumed))
         Mockito.`when`(runtime.beginSubmission(resumed)).thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
-        Mockito.`when`(lifecycle.restoreVerified(defaultStored, 7L)).thenReturn(managed)
+        Mockito.`when`(lifecycle.restoreVerified(defaultStored.withRecordedPolicy(selection), 7L)).thenReturn(managed)
         Mockito.`when`(managed.execute()).thenReturn(questClaimExecution().copy(observedState = QuestObservedState(
             fingerprint = selection.baselineFingerprint, present = true, state = QuestState.CLAIMABLE, actionNo = "claim")))
         val scoped = buildRunner(
@@ -1795,19 +1800,20 @@ class UnifiedAutomationRunnerTest {
         val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
         val factory = StoredActionConvergenceSelectionFactory()
         val stored = raidStoredAction()
+        val selection = factory.create(stored)
+        val boundStored = stored.withRecordedPolicy(selection)
         val firstPrepared = executionRight(
-            TypedRuntimeCheckpoint(stored, TypedRuntimeCheckpointPhase.PREPARED, null, null),
+            TypedRuntimeCheckpoint(boundStored, TypedRuntimeCheckpointPhase.PREPARED, null, null),
         )
         val resumedPrepared = executionRight(
             TypedRuntimeCheckpoint(
-                storedAction = stored,
+                storedAction = boundStored,
                 phase = TypedRuntimeCheckpointPhase.PREPARED,
                 submittedAt = null,
                 diagnostic = "BATTLE_PATTERN_PRELOAD_DEFERRED",
                 deferredSubmissionRetry = true,
             ),
         )
-        val selection = factory.create(stored)
         val remoteRequests = mutableListOf<String>()
         var executionCount = 0
         Mockito.`when`(runtime.acquire(7L)).thenReturn(
@@ -1820,8 +1826,8 @@ class UnifiedAutomationRunnerTest {
         )
         Mockito.`when`(managed.storedAction).thenReturn(stored)
         Mockito.`when`(managed.descriptor).thenReturn(defaultDescriptor())
-        Mockito.`when`(lifecycle.restoreVerified(stored, 7L)).thenReturn(managed)
-        Mockito.`when`(runtime.persistPrepared(freshExecution, stored, emptyList()))
+        Mockito.`when`(lifecycle.restoreVerified(boundStored, 7L)).thenReturn(managed)
+        Mockito.`when`(runtime.persistPrepared(freshExecution, boundStored, emptyList()))
             .thenReturn(TypedRuntimePreparation.Ready(firstPrepared))
         Mockito.`when`(runtime.beginSubmission(firstPrepared)).thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
         Mockito.`when`(runtime.beginSubmission(resumedPrepared))
@@ -2695,7 +2701,7 @@ class UnifiedAutomationRunnerTest {
     }
 
     @Test
-    fun `active 전환은 epoch가 보완된 legacy 동일 상태를 pending으로 넘기고 재제출하지 않는다`() {
+    fun `active 전환은 원래 시도의 동일 상태를 pending으로 넘기고 재제출하지 않는다`() {
         val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
         val factory = StoredActionConvergenceSelectionFactory()
         val runtimeEnrichedStored = defaultStored.copy(
@@ -2714,9 +2720,13 @@ class UnifiedAutomationRunnerTest {
         )
         val probeAt = Instant.parse("2026-07-25T00:00:10Z")
         Mockito.`when`(runtime.acquire(7)).thenReturn(TypedRuntimeAcquisition.Acquired(legacyExecution))
-        Mockito.`when`(lifecycle.restoreVerified(runtimeEnrichedStored, 7L)).thenReturn(managed)
+        val boundStored = runtimeEnrichedStored.copy(policyContext = StoredActionPolicyContext(
+            selection.policyVersion, selection.actionKind, selection.scope, selection.baselineFingerprint))
+        Mockito.`when`(convergence.storedSelection(7L, runtimeEnrichedStored.executionIdentity)).thenReturn(selection)
+        Mockito.`when`(lifecycle.restoreVerified(boundStored, 7L)).thenReturn(managed)
         Mockito.`when`(managed.reconcile()).thenReturn(AmbiguousActionResolution.Resubmit)
-        Mockito.`when`(convergence.prepare(7L, selection)).thenAnswer { ConvergenceDirective.Submit(101L, it.getArgument(1)) }
+        Mockito.`when`(convergence.restoreCheckpoint(7L, selection, RestoredActionCheckpoint(Instant.EPOCH, 0, null)))
+            .thenAnswer { ConvergenceDirective.Probe(101L, it.getArgument(1)) }
         Mockito.`when`(convergence.record(Mockito.eq(101L), anyConvergenceEvidence())).thenReturn(
             ConvergenceDirective.WaitUntil(probeAt, selection.scope),
         )
@@ -3162,6 +3172,12 @@ class UnifiedAutomationRunnerTest {
         captor.capture() ?: TypedRuntimeOutcome.Idle
 
     private fun anyWarnings(): List<String> = Mockito.anyList<String>() ?: emptyList()
+
+    private fun StoredTypedAutomationAction.withRecordedPolicy(
+        selection: SelectedAutomationAction = StoredActionConvergenceSelectionFactory().create(this),
+    ) = copy(policyContext = StoredActionPolicyContext(
+        selection.policyVersion, selection.actionKind, selection.scope, selection.baselineFingerprint,
+    ))
 
     private fun anyStoredAction(): StoredTypedAutomationAction =
         Mockito.any(StoredTypedAutomationAction::class.java) ?: defaultStored

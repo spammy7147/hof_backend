@@ -58,6 +58,11 @@ class LegacyAutomationContinuityTest : AutomationModeContinuityTest() {
 @SpringBootTest(properties = ["hof.automation-convergence.mode=SHADOW"])
 class ShadowAutomationContinuityTest : AutomationModeContinuityTest() {
     override val mode = AutomationConvergenceMode.SHADOW
+
+    @Test
+    fun `미지원 SHADOW 복원 뒤 같은 자택의 새 지원 행동과 후속 판단도 비교한다`() =
+        storedAttemptContextContinuity(unsupportedPolicy = true, unsubmittedRetry = true,
+            typedPolicyOnly = true, supportedSameScopeFollowup = true)
 }
 
 @SpringBootTest(properties = ["hof.automation-convergence.mode=ACTIVE"])
@@ -78,6 +83,24 @@ class ActiveAutomationContinuityTest : AutomationModeContinuityTest() {
     @Test
     fun `미지원 미전송 체크포인트를 복원해 재제출 없이 독립 자택과 후속 판단을 실행한다`() =
         storedAttemptContextContinuity(unsupportedPolicy = true, unsubmittedRetry = true)
+
+    @ParameterizedTest
+    @ValueSource(booleans = [true, false])
+    fun `수렴 시도가 없는 typed 정책 문맥도 미지원이면 보존하고 독립 판단을 실행한다`(unsubmitted: Boolean) =
+        storedAttemptContextContinuity(unsupportedPolicy = true, unsubmittedRetry = unsubmitted, typedPolicyOnly = true)
+
+    @ParameterizedTest
+    @ValueSource(booleans = [true, false])
+    fun `미지원 최초 PREPARED도 재판단 전에 원래 범위에 보류한다`(typedPolicyOnly: Boolean) =
+        storedAttemptContextContinuity(unsupportedPolicy = true, typedPolicyOnly = typedPolicyOnly, preparedWithoutRetry = true)
+
+    @Test
+    fun `정책을 기록하지 않은 제출은 현재 정책으로 추정하지 않고 해당 범위만 보류한다`() =
+        storedAttemptContextContinuity(typedPolicyOnly = true, unrecordedPolicy = true)
+
+    @Test
+    fun `제출 뒤 결과 기록 전 재시작은 typed 제출 시각으로 예산을 닫고 독립 판단을 실행한다`() =
+        storedAttemptContextContinuity(missingSubmissionFacts = true)
 }
 
 /** Each supported mode is assembled from its real startup property, without mocking rollout. */
@@ -88,6 +111,7 @@ abstract class AutomationModeContinuityTest {
     @Autowired private lateinit var properties: AutomationConvergenceProperties
     @Autowired private lateinit var convergenceStore: app.spammy.hof.automation.convergence.ConvergenceStore
     @Autowired private lateinit var actionCodec: StoredTypedAutomationActionCodec
+    @Autowired private lateinit var objectMapper: tools.jackson.databind.ObjectMapper
     @Autowired private lateinit var entityManager: EntityManager
     @Autowired private lateinit var transactions: PlatformTransactionManager
     @Autowired private lateinit var jdbc: JdbcTemplate
@@ -123,11 +147,22 @@ abstract class AutomationModeContinuityTest {
         publisher.publishBatch()
     }
 
+    @Test
+    fun `미지원 저장 정책의 실행 차단은 ACTIVE에만 적용하고 SHADOW는 비교 근거를 남긴다`() =
+        storedAttemptContextContinuity(unsupportedPolicy = true, unsubmittedRetry = true, typedPolicyOnly = true)
+
     protected fun storedAttemptContextContinuity(
         externalAdvance: Boolean = false,
         unsupportedPolicy: Boolean = false,
         unsubmittedRetry: Boolean = false,
+        typedPolicyOnly: Boolean = false,
+        preparedWithoutRetry: Boolean = false,
+        unrecordedPolicy: Boolean = false,
+        missingSubmissionFacts: Boolean = false,
+        supportedSameScopeFollowup: Boolean = false,
     ) {
+        val unsubmitted = unsubmittedRetry || preparedWithoutRetry
+        val legacyProduction = mode != AutomationConvergenceMode.ACTIVE
         clock.current = Instant.parse("2026-09-10T08:00:00Z")
         transport.delivered.clear()
         val requests = mutableListOf<HofRequest>()
@@ -137,8 +172,10 @@ abstract class AutomationModeContinuityTest {
         fun page() = independentHomePage(externallyAccepted) + independentHomePage(accepted)
             .replace("[A] 독립 자택", "[B] 독립 자택").replace("no=A", "no=B")
         val quests = HomePageParser().parse(HomeMode.HOME, page(), url, HofFormParser().parse(page(), url)).quests
-        val baseline = "b".repeat(64)
-        val (accountId, attemptId) = requireNotNull(TransactionTemplate(transactions).execute {
+        var baseline = "b".repeat(64)
+        val submittedAt = clock.now().minusSeconds(if (missingSubmissionFacts) 121 else 10)
+        val executionIdentity = "stored-policy-${UUID.randomUUID()}"
+        val (accountId, existingAttemptId) = requireNotNull(TransactionTemplate(transactions).execute {
             val account = HofAccountEntity(loginId = "stored-policy-${UUID.randomUUID()}", encryptedPassword = "test", createdAt = clock.now())
             entityManager.persist(account)
             val entry = AutomationEntryEntity(account = account, type = AutomationType.HOME_QUEST, priority = 0,
@@ -151,35 +188,49 @@ abstract class AutomationModeContinuityTest {
                 timeCurrent = 100, timeMax = 100, work = "", auction = "", observedAt = clock.now()))
             entityManager.persist(TypedAutomationRuntimeStateEntity(accountId = account.id, account = account,
                 lifecycleStatus = TypedAutomationLifecycle.RUNNING, createdAt = clock.now(), updatedAt = clock.now()))
-            val stored = StoredTypedAutomationAction(entry.id, "stored-policy-${UUID.randomUUID()}",
-                StoredTypedActionPayload.HomeQuest(quests.first().id, requireNotNull(quests.first().actionId), HomeQuestAutomationActionType.ACCEPT))
+            val draft = StoredTypedAutomationAction(entry.id, executionIdentity,
+                StoredTypedActionPayload.HomeQuest(quests.first().id, requireNotNull(quests.first().actionId), HomeQuestAutomationActionType.ACCEPT),
+                settingsRevision = entry.settingsRevision)
+            val selected = app.spammy.hof.automation.convergence.StoredActionConvergenceSelectionFactory()
+                .create(draft).let {
+                    if (missingSubmissionFacts) baseline = it.baselineFingerprint
+                    it.copy(
+                    baselineFingerprint = baseline,
+                    policyVersion = if (unsupportedPolicy) "unsupported-fixture-version" else it.policyVersion,
+                ) }
+            val stored = if ((typedPolicyOnly && !unrecordedPolicy) || missingSubmissionFacts) draft.copy(policyContext = StoredActionPolicyContext(
+                selected.policyVersion, selected.actionKind, selected.scope, selected.baselineFingerprint,
+            )) else draft
             val encoded = actionCodec.encode(stored)
             entityManager.persist(TypedAutomationActionRunEntity(account = account, entry = entry,
                 executionIdentity = stored.executionIdentity, actionKind = stored.payload.kind(),
                 payloadJson = encoded.json, actionFingerprint = encoded.fingerprint,
-                status = if (unsubmittedRetry) TypedAutomationActionStatus.PREPARED else TypedAutomationActionStatus.AMBIGUOUS,
+                status = when {
+                    missingSubmissionFacts -> TypedAutomationActionStatus.SUBMITTING
+                    unsubmitted -> TypedAutomationActionStatus.PREPARED
+                    typedPolicyOnly -> TypedAutomationActionStatus.RECONCILING
+                    else -> TypedAutomationActionStatus.AMBIGUOUS
+                },
                 leaseToken = "finished-fixture", retryAttempt = if (unsubmittedRetry) 1 else 0,
                 nextAttemptAt = if (unsubmittedRetry) clock.now() else null,
-                createdAt = clock.now().minusSeconds(10), submittedAt = if (unsubmittedRetry) null else clock.now().minusSeconds(10),
-                finishedAt = if (unsubmittedRetry) null else clock.now().minusSeconds(1), updatedAt = clock.now()))
-            val selected = app.spammy.hof.automation.convergence.StoredActionConvergenceSelectionFactory()
-                .create(stored).let { it.copy(
-                    baselineFingerprint = baseline,
-                    policyVersion = if (unsupportedPolicy) "unsupported-fixture-version" else it.policyVersion,
-                ) }
-            val attempt = convergenceStore.createOrGet(account.id, selected, clock.now().minusSeconds(10))
-            attempt.submittedAt = if (unsubmittedRetry) null else clock.now().minusSeconds(10)
-            attempt.firstPendingAt = attempt.submittedAt
-            attempt.nextProbeAt = if (unsubmittedRetry) null else clock.now()
-            if (unsubmittedRetry) {
-                attempt.result = app.spammy.hof.automation.convergence.ActionConvergenceResult.NOT_APPLIED
-                attempt.reasonCode = "SUBMISSION_NOT_ATTEMPTED"
-                attempt.finishedAt = clock.now().minusSeconds(1)
+                createdAt = submittedAt, submittedAt = if (unsubmitted) null else submittedAt,
+                finishedAt = if (unsubmitted || typedPolicyOnly || missingSubmissionFacts) null else clock.now().minusSeconds(1),
+                updatedAt = clock.now()))
+            val attempt = if (typedPolicyOnly) null else convergenceStore.createOrGet(account.id, selected, clock.now().minusSeconds(10))
+            if (attempt != null) {
+                attempt.submittedAt = if (unsubmitted || missingSubmissionFacts) null else submittedAt
+                attempt.firstPendingAt = attempt.submittedAt
+                attempt.nextProbeAt = if (unsubmitted) null else clock.now()
+                if (unsubmittedRetry) {
+                    attempt.result = app.spammy.hof.automation.convergence.ActionConvergenceResult.NOT_APPLIED
+                    attempt.reasonCode = "SUBMISSION_NOT_ATTEMPTED"
+                    attempt.finishedAt = clock.now().minusSeconds(1)
+                }
+                convergenceStore.save(attempt)
             }
-            convergenceStore.save(attempt)
             entityManager.flush()
             entityManager.clear()
-            account.id to attempt.attemptId
+            account.id to attempt?.attemptId
         })
         try {
             Mockito.`when`(preflight.ensureReady(accountId)).thenReturn(AutomationDailyPreflight.Result.Ready)
@@ -188,48 +239,83 @@ abstract class AutomationModeContinuityTest {
                 val request = invocation.getArgument<HofRequest>(1)
                 requests += request
                 if (request.formFields["action"] == "get" && request.formFields["no"] == "B") accepted = true
+                if (legacyProduction && request.formFields["action"] == "get" && request.formFields["no"] == "A") externallyAccepted = true
                 HofHttpResponse(200, url, page(), emptyMap())
             }.`when`(gateway).execute(Mockito.eq(accountId), Mockito.any<HofRequest>()
                 ?: HofRequest(HofHttpMethod.GET, "https://example.test"), Mockito.anyMap())
 
             wakeups.wake(accountId, "STORED_POLICY_CONTEXT")
             publisher.publishBatch()
-            if (unsupportedPolicy) {
+            val attemptId = existingAttemptId ?: convergenceStore.get(accountId, executionIdentity)?.attemptId
+            if (legacyProduction) {
+                assertEquals(listOf("SUCCEEDED"), jdbc.queryForList(
+                    "select status from typed_automation_action_runs where account_id = ?", String::class.java, accountId),
+                    jdbc.queryForList("select status, last_error from typed_automation_action_runs where account_id = ?", accountId).toString() +
+                        requests.map { it.method to it.formFields })
+                assertEquals(if (mode == AutomationConvergenceMode.SHADOW) listOf("HELD") else emptyList(), jdbc.queryForList(
+                    "select new_result from automation_convergence_shadow_evaluations where account_id = ? and policy_version = 'unsupported-fixture-version' and legacy_decision = 'APPLIED' and evidence_kind = 'PolicyUnavailable'",
+                    String::class.java, accountId))
+            } else {
+            assertNotNull(attemptId)
+            if (missingSubmissionFacts) {
+                val held = assertNotNull(convergenceStore.get(attemptId))
+                assertEquals(app.spammy.hof.automation.convergence.ActionConvergenceResult.HELD, held.result)
+                assertEquals("PENDING_BUDGET_EXHAUSTED", held.reasonCode)
+                assertEquals(submittedAt, held.submittedAt)
+                assertEquals(submittedAt, held.firstPendingAt)
+                assertEquals(0, held.successfulObservationCount)
+                assertTrue(requests.isEmpty(), "이미 끝난 관측 예산으로 HOF 요청을 새로 시작하면 안 된다.")
+            } else if (unsupportedPolicy || unrecordedPolicy) {
+                val expectedPolicy = if (unrecordedPolicy) "legacy-unrecorded" else "unsupported-fixture-version"
                 val held = assertNotNull(convergenceStore.get(attemptId))
                 assertEquals(app.spammy.hof.automation.convergence.ActionConvergenceResult.HELD, held.result)
                 assertEquals("POLICY_VERSION_UNSUPPORTED", held.reasonCode)
-                assertEquals("unsupported-fixture-version", held.selection.policyVersion)
-                assertEquals(if (unsubmittedRetry) null else Instant.parse("2026-09-10T07:59:50Z"), held.submittedAt)
+                assertEquals(expectedPolicy, held.selection.policyVersion)
+                assertEquals(if (unsubmitted) null else Instant.parse("2026-09-10T07:59:50Z"), held.submittedAt)
                 assertEquals(0, held.successfulObservationCount)
                 val evidence = jdbc.queryForMap("select evidence_source, observation_completeness, observation_freshness, policy_version from automation_evidence_cases where attempt_id = ?", attemptId)
                 assertEquals("POLICY_UNAVAILABLE", evidence["EVIDENCE_SOURCE"] ?: evidence["evidence_source"])
-                assertEquals("unsupported-fixture-version", evidence["POLICY_VERSION"] ?: evidence["policy_version"])
+                assertEquals(expectedPolicy, evidence["POLICY_VERSION"] ?: evidence["policy_version"])
                 assertEquals(null, evidence["OBSERVATION_COMPLETENESS"] ?: evidence["observation_completeness"])
                 assertEquals(null, evidence["OBSERVATION_FRESHNESS"] ?: evidence["observation_freshness"])
+                if (unrecordedPolicy) assertTrue(requests.isEmpty(), "원래 정책을 모르는 제출은 HOF 재관측도 판정 전에 하지 않는다.")
             } else {
                 assertEquals(listOf(baseline), jdbc.queryForList(
                     "select state_fingerprint from automation_evidence_cases where attempt_id = ? and reason_code = 'AUTHORITATIVE_STATE_UNCHANGED'",
                     String::class.java, attemptId))
             }
-            assertEquals(baseline, convergenceStore.get(attemptId)?.selection?.baselineFingerprint)
-            if (unsubmittedRetry) {
+            if (!unrecordedPolicy) assertEquals(baseline, convergenceStore.get(attemptId)?.selection?.baselineFingerprint)
+            if (unsubmitted) {
                 assertEquals(listOf("FAILED"), jdbc.queryForList(
                     "select status from typed_automation_action_runs where account_id = ?", String::class.java, accountId))
                 assertEquals(0, jdbc.queryForObject(
                     "select count(*) from typed_automation_action_runs where account_id = ? and submitted_at is not null",
                     Int::class.java, accountId))
             }
-            externallyAccepted = externalAdvance
-            if (externalAdvance) clock.current = assertNotNull(convergenceStore.get(attemptId)?.nextProbeAt)
+            }
+            externallyAccepted = externallyAccepted || externalAdvance
+            if (supportedSameScopeFollowup) externallyAccepted = false
+            if (externalAdvance) clock.current = assertNotNull(convergenceStore.get(assertNotNull(attemptId))?.nextProbeAt)
             val initialCycleIds = journal.page(accountId, AutomationHistoryQuery()).cycles.map { it.id }.toSet()
-            repeat(3) { nextWake(accountId) }
+            repeat(if (supportedSameScopeFollowup) 4 else 3) { nextWake(accountId) }
             if (externalAdvance) {
                 assertEquals(app.spammy.hof.automation.convergence.ActionConvergenceResult.SUPERSEDED,
-                    convergenceStore.get(attemptId)?.result)
+                    convergenceStore.get(assertNotNull(attemptId))?.result)
             }
             assertTrue(accepted, requests.map { it.method to it.formFields }.toString())
-            assertTrue(requests.none { it.formFields["action"] == "get" && it.formFields["no"] == "A" })
+            assertEquals(if (supportedSameScopeFollowup) 2 else if (legacyProduction) 1 else 0,
+                requests.count { it.formFields["action"] == "get" && it.formFields["no"] == "A" })
             assertEquals(1, requests.count { it.formFields["action"] == "get" && it.formFields["no"] == "B" })
+            if (supportedSameScopeFollowup) {
+                assertEquals(listOf("APPLIED"), jdbc.queryForList("""
+                    select new_result from automation_convergence_shadow_evaluations
+                    where account_id = ? and policy_version = ? and scope_key_hash in (
+                        select scope_key_hash from automation_convergence_shadow_evaluations
+                        where account_id = ? and policy_version = 'unsupported-fixture-version'
+                    )
+                """.trimIndent(), String::class.java, accountId,
+                    app.spammy.hof.automation.convergence.ProductionActionEvidenceInterpreter.VERSION_1, accountId))
+            }
             val followingCycles = journal.page(accountId, AutomationHistoryQuery()).cycles.filter { it.id !in initialCycleIds }
             assertTrue(followingCycles.size >= 2, "최초 복원·처리 이후 새 판단이 두 번 이상 실행되어야 한다: $followingCycles")
             assertTrue(transport.delivered.all { outbox.consumed(it) })
@@ -405,6 +491,16 @@ abstract class AutomationModeContinuityTest {
             assertEquals(1, requests.count { "FCatch" in it.formFields },
                 "requests=${requests.map { it.url to it.formFields }}; history=${journal.page(accountId, AutomationHistoryQuery())}")
             assertEquals(2, requests.count { it.method == HofHttpMethod.POST })
+            val savedPolicies = jdbc.queryForList(
+                "select payload_json from typed_automation_action_runs where account_id = ? order by id",
+                String::class.java, accountId,
+            ).map { objectMapper.readTree(it).path("policyContext") }
+            assertEquals(listOf("FISHING_START", "FISHING_CATCH"), savedPolicies.map { it.path("actionKind").asText() })
+            savedPolicies.forEach { policy ->
+                assertEquals("automation-action-convergence-v1", policy.path("policyVersion").asText())
+                assertEquals("FISHING_ENTRY", policy.path("scope").path("kind").asText())
+                assertEquals(64, policy.path("baselineFingerprint").asText().length)
+            }
             val history = journal.page(accountId, AutomationHistoryQuery())
             assertTrue(history.cycles.any { cycle -> cycle.events.any { it.reasonCode == "FISHING_PRESET_MISSING" } }, history.toString())
             if (lostResponse != "NONE") {
@@ -420,6 +516,11 @@ abstract class AutomationModeContinuityTest {
                         String::class.java, accountId, "FISHING_$lostResponse")
                     assertTrue("SUPERSEDED" in results && "APPLIED" !in results, results.toString())
                 }
+            }
+            if (mode == AutomationConvergenceMode.SHADOW && lostResponse == "NONE") {
+                assertEquals(listOf("FISHING_CATCH:APPLIED", "FISHING_START:APPLIED"), jdbc.queryForList(
+                    "select action_kind || ':' || new_result from automation_convergence_shadow_evaluations where account_id = ? order by action_kind",
+                    String::class.java, accountId))
             }
             assertEquals(0, jdbc.queryForObject("select count(*) from automation_work_sessions where account_id = ? and status = 'RUNNING'", Int::class.java, accountId))
             assertTrue(transport.delivered.all { outbox.consumed(it) })
