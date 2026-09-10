@@ -3,6 +3,7 @@ package app.spammy.hof.automation.service
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.entity.HofCookieEntity
 import app.spammy.hof.auth.service.AccountExecutionAuthorizationReader
+import app.spammy.hof.automation.convergence.*
 import app.spammy.hof.automation.dto.QuestSelectionRequest
 import app.spammy.hof.automation.dto.UpdateQuestAutomationRequest
 import app.spammy.hof.automation.entity.*
@@ -52,6 +53,8 @@ abstract class AutomationPreservedWorkIntegrationTest {
     @Autowired private lateinit var application: UnifiedAutomationService
     @Autowired private lateinit var journal: AutomationDecisionJournal
     @Autowired private lateinit var work: AutomationWorkSessionQueryRepository
+    @Autowired private lateinit var convergence: ConvergenceStore
+    @Autowired private lateinit var convergenceProperties: AutomationConvergenceProperties
     @MockitoBean private lateinit var gateway: HofGateway
     @MockitoBean private lateinit var preflight: AutomationDailyPreflight
     @MockitoBean private lateinit var authorization: AccountExecutionAuthorizationReader
@@ -139,8 +142,28 @@ abstract class AutomationPreservedWorkIntegrationTest {
 
         assertEquals(1, claimRequests().size, "보존한 대기 작업이 최신 보상 수령 행동을 실제로 제출해야 한다.")
         assertNull(application.getTyped(accountId).runtime.lastError)
-        assertTrue(journal.page(accountId, AutomationHistoryQuery()).cycles.flatMap { it.events }
-            .any { it.kind == AutomationHistoryEventKind.ACTION_SUCCEEDED && it.actionKind == "QUEST_CLAIM" })
+        val identity = assertNotNull(jdbc.queryForObject(
+            "select execution_identity from typed_automation_action_runs where account_id = ? and action_kind = 'QUEST_CLAIM'",
+            String::class.java, accountId))
+        fun assertClaimApplied() {
+            assertEquals("SUCCEEDED", jdbc.queryForObject(
+                "select status from typed_automation_action_runs where account_id = ? and execution_identity = ?",
+                String::class.java, accountId, identity))
+            val record = convergence.get(accountId, identity)
+            if (convergenceProperties.mode == AutomationConvergenceMode.ACTIVE) {
+                assertNotNull(record)
+                assertEquals(AutomationActionKind.QUEST_CLAIM, record.selection.actionKind)
+                assertEquals(ActionConvergenceResult.APPLIED, record.result)
+                assertEquals("DIRECT_RESPONSE_APPLIED", record.reasonCode)
+            } else assertNull(record)
+            assertEquals(if (convergenceProperties.mode == AutomationConvergenceMode.SHADOW) listOf("APPLIED") else emptyList(),
+                jdbc.queryForList("select new_result from automation_convergence_shadow_evaluations where account_id = ? and execution_identity_hash = ?",
+                    String::class.java, accountId, ProductionEvidenceShapes.fingerprint(identity)))
+        }
+        assertClaimApplied()
+        val claimEvent = journal.page(accountId, AutomationHistoryQuery()).cycles.flatMap { it.events }
+            .single { it.kind == AutomationHistoryEventKind.ACTION_SUCCEEDED && it.actionKind == "QUEST_CLAIM" }
+        assertEquals(selection.questKey, claimEvent.targetKey)
         val previousCycles = journal.page(accountId, AutomationHistoryQuery()).cycles.map { it.id }.toSet()
 
         consumeUntil { savedWork().first == AutomationWorkStatus.COMPLETED }
@@ -149,6 +172,9 @@ abstract class AutomationPreservedWorkIntegrationTest {
         assertEquals(1, claimRequests().size)
         assertEquals(AutomationWorkStatus.COMPLETED to 3, savedWork())
         assertNull(work.findRunning(accountId))
+        assertClaimApplied()
+        assertEquals(claimEvent, journal.page(accountId, AutomationHistoryQuery()).cycles.flatMap { it.events }
+            .single { it.id == claimEvent.id })
     }
 
     @ParameterizedTest

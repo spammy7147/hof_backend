@@ -359,6 +359,28 @@ class AutomationResultCoordinator(
         }
     }
 
+    fun observeRecoveredShadow(
+        accountId: Long,
+        context: ActionSelection,
+        resolution: AmbiguousActionResolution.Applied,
+    ) {
+        if (!shadow) return
+        try {
+            val capturedAt = now()
+            val evidence = if (context.stored.payload is StoredTypedActionPayload.RaidCycleAbort) {
+                // 로컬 중단은 방금 저장한 확정 결과다. SHADOW 비교를 위해 다시 실행하지 않는다.
+                context.evidence?.let { evidenceInterpreter?.fromReconciliation(it, resolution, capturedAt) }
+                    ?: AutomationActionEvidence.IncompleteObservation(capturedAt, "PRODUCTION_EVIDENCE_INTERPRETER_MISSING")
+            } else {
+                AutomationActionEvidence.StateAdvanced(capturedAt, "advanced:${context.stored.executionIdentity}")
+            }
+            observeShadow(accountId, context.stored.executionIdentity, evidence, LegacyConvergenceDecision.APPLIED)
+        } catch (error: RuntimeException) {
+            log.warn("Automation convergence SHADOW recovery interpretation failed accountId={} errorType={}",
+                accountId, error.javaClass.name)
+        }
+    }
+
     private fun selectShadow(accountId: Long, selection: SelectedAutomationAction) {
         try {
             shadowEvaluator?.selected(accountId, selection)

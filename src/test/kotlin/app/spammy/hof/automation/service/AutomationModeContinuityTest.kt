@@ -778,9 +778,10 @@ abstract class AutomationModeContinuityTest {
     }
 
     @ParameterizedTest
-    @CsvSource("RESET,LATER_COMPLETE", "RESET,STAYS_INCOMPLETE", "REWARD,LATER_COMPLETE", "REWARD,STAYS_INCOMPLETE")
-    fun `잘린 레이드 행동 응답 뒤 공유 관측은 성공 귀속 없이 독립 항목과 다음 판단을 이어간다`(action: String, observationCase: String) {
+    @CsvSource("REGISTER,COMPLETE", "RESET,COMPLETE", "RESET,REGISTER_AVAILABLE", "RESET,LATER_COMPLETE", "RESET,STAYS_INCOMPLETE", "REWARD,LATER_COMPLETE", "REWARD,STAYS_INCOMPLETE")
+    fun `레이드 직접 응답의 완전성에 따라 결과를 수렴하고 독립 항목과 다음 판단을 이어간다`(action: String, observationCase: String) {
         assertEquals(mode, properties.mode)
+        val directComplete = observationCase in setOf("COMPLETE", "REGISTER_AVAILABLE")
         clock.current = Instant.parse("2026-09-10T06:00:00Z")
         val startedAt = clock.now()
         transport.delivered.clear()
@@ -790,17 +791,29 @@ abstract class AutomationModeContinuityTest {
         val fixture = requireNotNull(javaClass.getResource("/fixtures/town/raid/raidpub.html")).readText()
             .replace("Funds : $ 1,000", "Funds : $ 1,000 Time : 100/100")
             .replace("현재 상태는 신청 대기 (신청 가능까지 6분 58초)", "현재 상태는 신청 가능")
-        val before = if (action == "RESET") fixture
-            .replace("[《테스트 길드》현재사용자]", "[다른 신청자]")
-            .replace("현재 상태 : 모집 중", "현재 상태 : 보상 확인 종료(리셋 가능)")
-            .replace("name=\"register_goblin\" value=\"등록한다\"", "name=\"reset_goblin\" value=\"전투를 리셋한다\"")
-        else fixture.replace("현재 상태 : 모집 중", "현재 상태 : 보상 확인 시간 (남은 시간 앞으로 0시간 29분 56초)")
+        val before = when (action) {
+            "REGISTER" -> fixture
+                .replace("[《테스트 길드》현재사용자]", "[다른 신청자]")
+                .replace("현재 상태 : 모집 중", "현재 상태 : 파티 모집 중 (신청 안됨)")
+            "RESET" -> fixture
+                .replace("[《테스트 길드》현재사용자]", "[다른 신청자]")
+                .replace("현재 상태 : 모집 중", "현재 상태 : 보상 확인 종료(리셋 가능)")
+                .replace("name=\"register_goblin\" value=\"등록한다\"", "name=\"reset_goblin\" value=\"전투를 리셋한다\"")
+            else -> fixture.replace("현재 상태 : 모집 중", "현재 상태 : 보상 확인 시간 (남은 시간 앞으로 0시간 29분 56초)")
+        }
         val noBattle = requireNotNull(javaClass.getResource("/fixtures/raid/raid-complete-absent.html")).readText()
-        val actionField = if (action == "RESET") "reset_goblin" else "reward_nonce"
+        val actionField = when (action) {
+            "REGISTER" -> "register_goblin"
+            "RESET" -> "reset_goblin"
+            else -> "reward_nonce"
+        }
+        var followupRegistrations = 0
+        fun registered() = action == "REGISTER" || followupRegistrations > 0
         fun after() = fixture
-            .replace("[《테스트 길드》현재사용자]", "[다른 신청자]")
-            .replace("현재 상태 : 모집 중", "현재 상태 : 파티 모집 중 (신청 안됨)")
-            .replace("현재 상태는 신청 가능", "현재 상태는 신청 대기입니다.(신청 가능 까지 600초)")
+            .replace("[《테스트 길드》현재사용자]", if (registered()) "[《테스트 길드》현재사용자]" else "[다른 신청자]")
+            .replace("현재 상태 : 모집 중", if (registered()) "현재 상태 : 418초 후 출발" else "현재 상태 : 파티 모집 중 (신청 안됨)")
+            .let { if (observationCase == "REGISTER_AVAILABLE" && !registered()) it else
+                it.replace("현재 상태는 신청 가능", "현재 상태는 신청 대기입니다.(신청 가능 까지 600초)") }
             .replace("name=\"reward_nonce\" value=\"보상 확인\"", "name=\"refresh_nonce\" value=\"상태 갱신\"")
         var actionCount = 0
         var homeAccepted = false
@@ -816,7 +829,7 @@ abstract class AutomationModeContinuityTest {
                 presetMode = PresetSelectionMode.PRIMARY, executionOrder = 0))
             entityManager.persist(RaidAutomationCycleEntity(account = account, entry = raidEntry,
                 raidId = "RaidGoblin", raidName = "고블린 전투 마차",
-                status = if (action == "RESET") RaidAutomationCycleStatus.PREPARING else RaidAutomationCycleStatus.REWARD_PENDING,
+                status = if (action == "REWARD") RaidAutomationCycleStatus.REWARD_PENDING else RaidAutomationCycleStatus.PREPARING,
                 startedAt = clock.now(), updatedAt = clock.now()))
             val homeEntry = AutomationEntryEntity(account = account, type = AutomationType.HOME_QUEST, priority = 1,
                 enabled = true, createdAt = clock.now(), updatedAt = clock.now())
@@ -839,11 +852,14 @@ abstract class AutomationModeContinuityTest {
                 if (request.formFields["action"] == "get") homeAccepted = true
                 val submitted = request.method == HofHttpMethod.POST && request.formFields.containsKey(actionField)
                 if (submitted) actionCount++
+                val followupRegistration = observationCase == "REGISTER_AVAILABLE" && request.method == HofHttpMethod.POST &&
+                    request.formFields.containsKey("register_goblin")
+                if (followupRegistration) followupRegistrations++
                 if (request.url.contains("raid_hunt")) {
                     HofHttpResponse(200, "https://hof.zerosic.com/index.php?raid_hunt", noBattle, emptyMap())
-                } else if (request.url.contains("raidpub") || submitted || request.formFields.containsKey("refresh_nonce")) {
+                } else if (request.url.contains("raidpub") || submitted || followupRegistration || request.formFields.containsKey("refresh_nonce")) {
                     val html = if (actionCount == 0) before else after().let {
-                        if (submitted || observationCase == "STAYS_INCOMPLETE") it.substringBefore("<div id=\"foot\"") else it
+                        if (submitted && !directComplete || observationCase == "STAYS_INCOMPLETE") it.substringBefore("<div id=\"foot\"") else it
                     }
                     HofHttpResponse(200, raidUrl, html, emptyMap())
                 } else HofHttpResponse(200, homeUrl, independentHomePage(homeAccepted), emptyMap())
@@ -851,10 +867,60 @@ abstract class AutomationModeContinuityTest {
                 ?: HofRequest(HofHttpMethod.GET, "https://example.test"), Mockito.anyMap())
             fun results() = jdbc.queryForList("select c.result from automation_action_convergences c join automation_action_attempts a on a.id = c.attempt_id where a.account_id = ? and a.action_kind = ? order by c.id", String::class.java, accountId, "RAID_$action")
 
-            wakeups.wake(accountId, "RAID_ACTION_RESPONSE_LOST")
+            wakeups.wake(accountId, "RAID_ACTION_RESPONSE_CONTINUITY")
             publisher.publishBatch()
             assertEquals(1, actionCount, requests.map { it.url to it.formFields.keys }.toString())
-            assertEquals(if (mode == AutomationConvergenceMode.ACTIVE) listOf("PENDING") else emptyList(), results())
+            val firstResult = if (directComplete) "APPLIED" else "PENDING"
+            assertEquals(if (mode == AutomationConvergenceMode.ACTIVE) listOf(firstResult) else emptyList(), results())
+            if (directComplete) {
+                val stored = actionCodec.decode(assertNotNull(jdbc.queryForObject(
+                    "select payload_json from typed_automation_action_runs where account_id = ?", String::class.java, accountId)))
+                val payload = assertIs<StoredTypedActionPayload.RaidTown>(stored.payload)
+                assertEquals(action, payload.action.name)
+                assertEquals("RaidGoblin", payload.targetRaidId)
+                fun assertApplied() {
+                    assertEquals("SUCCEEDED", jdbc.queryForObject(
+                        "select status from typed_automation_action_runs where account_id = ? and execution_identity = ?",
+                        String::class.java, accountId, stored.executionIdentity))
+                    assertEquals(if (mode == AutomationConvergenceMode.ACTIVE) listOf("APPLIED") else emptyList(), results())
+                    if (mode == AutomationConvergenceMode.SHADOW) assertEquals(listOf("APPLIED"), jdbc.queryForList(
+                        "select new_result from automation_convergence_shadow_evaluations where account_id = ? and execution_identity_hash = ?",
+                        String::class.java, accountId,
+                        app.spammy.hof.automation.convergence.ProductionEvidenceShapes.fingerprint(stored.executionIdentity)))
+                }
+                assertApplied()
+                val eventKind = if (action == "REGISTER") AutomationHistoryEventKind.WAITING else AutomationHistoryEventKind.ACTION_SUCCEEDED
+                val originalCycle = journal.page(accountId, AutomationHistoryQuery()).cycles.single { cycle ->
+                    cycle.events.any { it.actionKind == action && it.kind == eventKind }
+                }
+                val originalResult = originalCycle.events.single {
+                    it.actionKind == action && it.kind == eventKind
+                }
+                assertEquals("RaidGoblin", originalResult.targetKey)
+                if (action == "REGISTER") {
+                    assertEquals("RAID_WAITING_TO_START", originalResult.reasonCode)
+                    assertEquals(clock.now().plusSeconds(418), originalResult.nextRunAt)
+                }
+                repeat(6) { nextWake(accountId) }
+                assertApplied()
+                assertEquals(1, actionCount)
+                if (observationCase == "REGISTER_AVAILABLE") {
+                    assertEquals(1, followupRegistrations)
+                    assertEquals(listOf("reset_goblin", "register_goblin"), requests.flatMap { request ->
+                        listOf("reset_goblin", "register_goblin").filter { it in request.formFields && request.method == HofHttpMethod.POST }
+                    })
+                }
+                assertEquals(1, requests.count { it.formFields["action"] == "get" && it.formFields["no"] == "A" })
+                val cycles = journal.page(accountId, AutomationHistoryQuery()).cycles
+                assertTrue(cycles.size >= 3)
+                assertEquals(originalResult, cycles.single { it.id == originalCycle.id }.events.single {
+                    it.actionKind == action && it.kind == eventKind
+                })
+                assertTrue(transport.delivered.all { outbox.consumed(it) })
+                assertEquals(0, jdbc.queryForObject("select count(*) from automation_work_sessions where account_id = ? and running_slot is not null", Int::class.java, accountId))
+                assertEquals(0, jdbc.queryForObject("select count(*) from account_automation_leases where account_id = ?", Int::class.java, accountId))
+                return
+            }
             clock.current = startedAt.plusSeconds(31)
             repeat(3) { nextWake(accountId) }
             if (observationCase == "STAYS_INCOMPLETE") clock.current = maxOf(clock.now(), startedAt.plusSeconds(121))

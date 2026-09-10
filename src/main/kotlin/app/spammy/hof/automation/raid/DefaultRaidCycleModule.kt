@@ -1020,10 +1020,16 @@ class DefaultRaidCycleModule(
                 raidId = attempt.raidId,
                 message = "설정된 레이드의 최신 상태를 확인하지 못해 10분 뒤 다시 갱신합니다.",
             )
+        if (observed.status == RaidObservedStatus.CLOSED) {
+            return RaidRecordResult.EntryWait(
+                at = timeProvider.now().plusSeconds(DEFAULT_RECHECK_SECONDS),
+                raidId = observed.id,
+                message = "닫힌 레이드는 잠시 뒤 다시 확인하고 다른 자동화 판단을 이어갑니다.",
+                reasonCode = "RAID_CLOSED_RECHECK",
+                warning = null,
+            )
+        }
         if (!observed.joined) {
-            if (observed.status == RaidObservedStatus.CLOSED) {
-                return RaidRecordResult.EntrySkipped("현재 순환 레이드가 닫혀 있어 이번 판단에서 건너뜁니다.")
-            }
             if (observed.status in setOf(RaidObservedStatus.TESTING, RaidObservedStatus.UNKNOWN)) {
                 return RaidRecordResult.EntryWait(
                     at = timeProvider.now().plusSeconds(DEFAULT_RECHECK_SECONDS),

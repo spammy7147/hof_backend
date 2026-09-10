@@ -722,12 +722,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                         execution,
                         TypedRuntimeOutcome.ReconciliationApplied(recoveredWakeReason(resolution.execution)),
                         persistResult = {
-                            results.observeShadow(
-                                accountId,
-                                stored.executionIdentity,
-                                AutomationActionEvidence.StateAdvanced(now(), "advanced:${stored.executionIdentity}"),
-                                LegacyConvergenceDecision.APPLIED,
-                            )
+                            results.observeRecoveredShadow(accountId, resultSelection, resolution)
                         },
                     ) {
                         decisionCycleId?.let { cycleId ->
