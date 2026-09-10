@@ -121,6 +121,14 @@ class HomePageParser {
                     else -> HomeQuestState.ACTIVE
                 }
                 val actionId = observed?.let { opaque("${it.action}\u0000${it.no}") }
+                // 표시용 ACTIVE 기본값과 실제로 확인한 상태를 구분한다.
+                val completeInactiveAction = cells.size >= 5 && links.isEmpty() && clean(cells.last().text()) == "-"
+                val stateObserved = groupedRows.size == rowSpan && when (state) {
+                    HomeQuestState.AVAILABLE -> observed?.action == "get"
+                    HomeQuestState.CLAIMABLE -> observed?.action == "complete"
+                    HomeQuestState.ACTIVE -> Regex("진행\\s*중").containsMatchIn(heading) && completeInactiveAction
+                    HomeQuestState.WAITING, HomeQuestState.COMPLETED -> observed != null || completeInactiveAction
+                }
                 add(
                     HomeQuest(
                         // 상태가 바뀌면 작업이 다른 섹션으로 이동한다. 작업명(HQ 코드 포함)을
@@ -134,6 +142,7 @@ class HomePageParser {
                         actionId = actionId,
                         action = observed?.action,
                         actionNo = observed?.no,
+                        stateObserved = stateObserved,
                     ),
                 )
                 rowIndex += rowSpan

@@ -17,6 +17,7 @@ data class HomeQuest(
     val actionId: String?,
     internal val action: String? = null,
     internal val actionNo: String? = null,
+    internal val stateObserved: Boolean = false,
 )
 
 data class HomeAction(

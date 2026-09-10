@@ -2,6 +2,7 @@ package app.spammy.hof.town.home.dto
 
 import app.spammy.hof.town.fishing.dto.TownActionResultResponse
 import app.spammy.hof.town.home.model.*
+import com.fasterxml.jackson.annotation.JsonIgnore
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Size
 
@@ -13,6 +14,8 @@ data class HomeQuestResponse(
     val reward: String?,
     val details: List<String>,
     val actionId: String?,
+    @get:JsonIgnore
+    val stateObserved: Boolean = false,
 )
 data class HomeActionResponse(val id: String, val type: HomeActionType, val label: String)
 data class RestStatusResponse(
@@ -44,7 +47,7 @@ data class HomeResponse(
     companion object {
         fun from(value: HomeSnapshot) = HomeResponse(
             value.mode,
-            value.quests.map { HomeQuestResponse(it.id, it.name, it.state, it.mission, it.reward, it.details, it.actionId) },
+            value.quests.map { HomeQuestResponse(it.id, it.name, it.state, it.mission, it.reward, it.details, it.actionId, it.stateObserved) },
             value.actions.map { HomeActionResponse(it.id, it.type, it.label) },
             value.restStatus?.let(RestStatusResponse::from),
             value.result?.let(TownActionResultResponse::from),

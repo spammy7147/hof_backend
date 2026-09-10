@@ -943,7 +943,8 @@ class UnifiedAutomationActionLifecycleModule(
         val multiplicity = targetMultiplicity(matches.size)
         val snippet = "HomeResponse|targetMultiplicity=$multiplicity|targetPresent=${quest != null}|" +
             "state=${quest?.state?.name ?: "ABSENT"}|" +
-            "actionIdPresent=${quest?.actionId != null}|resultStatus=${response.result?.status ?: "NONE"}"
+            "actionIdPresent=${quest?.actionId != null}|stateObserved=${quest?.stateObserved == true}|" +
+            "resultStatus=${response.result?.status ?: "NONE"}"
         val expectedState = if (payload.action == HomeQuestAutomationActionType.ACCEPT) {
             HomeQuestState.AVAILABLE
         } else {
@@ -966,8 +967,9 @@ class UnifiedAutomationActionLifecycleModule(
             responseShapeMaterial = responseShapeMaterial(
                 ProductionEvidenceShapes.HOME_RESPONSE,
                 structurallyKnown = matches.size <= 1 &&
-                    knownTownResultStatus(response.result?.status) &&
-                    quest != null,
+                    quest != null &&
+                    (knownTownResultStatus(response.result?.status) ||
+                        (quest.stateObserved && homeActionPoststateApplied(payload.action, quest))),
             ),
             sanitizedSnippet = snippet,
         )
@@ -978,21 +980,19 @@ class UnifiedAutomationActionLifecycleModule(
         response: app.spammy.hof.town.home.dto.HomeResponse,
     ) {
         val quest = response.quests.singleOrNull { it.id == payload.questId }
-        val applied = when (payload.action) {
-            HomeQuestAutomationActionType.ACCEPT -> quest?.state in setOf(
-                HomeQuestState.ACTIVE,
-                HomeQuestState.CLAIMABLE,
-            )
-            HomeQuestAutomationActionType.CLAIM -> quest == null || quest.state in setOf(
-                HomeQuestState.WAITING,
-                HomeQuestState.COMPLETED,
-            )
-        }
-        if (!applied) {
+        if (!homeActionPoststateApplied(payload.action, quest)) {
             throw AmbiguousAutomationSubmissionException(
                 "Home quest direct response did not prove the action-specific poststate.",
             )
         }
+    }
+
+    private fun homeActionPoststateApplied(
+        action: HomeQuestAutomationActionType,
+        quest: app.spammy.hof.town.home.dto.HomeQuestResponse?,
+    ): Boolean = when (action) {
+        HomeQuestAutomationActionType.ACCEPT -> quest?.state in setOf(HomeQuestState.ACTIVE, HomeQuestState.CLAIMABLE)
+        HomeQuestAutomationActionType.CLAIM -> quest == null || quest.state in setOf(HomeQuestState.WAITING, HomeQuestState.COMPLETED)
     }
 
     private fun questActionCompleted(

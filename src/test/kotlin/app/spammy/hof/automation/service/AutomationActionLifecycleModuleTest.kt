@@ -61,6 +61,7 @@ import app.spammy.hof.town.home.dto.HomeQuestResponse
 import app.spammy.hof.town.home.dto.HomeResponse
 import app.spammy.hof.town.home.model.HomeMode
 import app.spammy.hof.town.home.model.HomeQuestState
+import app.spammy.hof.town.home.parser.HomePageParser
 import app.spammy.hof.town.home.service.HomeService
 import app.spammy.hof.town.fishing.dto.FishingResponse
 import app.spammy.hof.town.fishing.dto.TownActionResultResponse
@@ -94,6 +95,9 @@ import kotlin.test.assertIs
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.CsvSource
+import org.junit.jupiter.params.provider.ValueSource
 import org.mockito.Mockito
 import tools.jackson.module.kotlin.jacksonObjectMapper
 
@@ -126,10 +130,11 @@ class AutomationActionLifecycleModuleTest {
         questCycle: QuestWorkCycleModule = questWorkCycle,
         questGatewayOverride: QuestGatewayService = questGateway,
         raidPubOverride: RaidPubService = raidPubService,
+        homeOverride: HomeService = home,
     ): AutomationActionLifecycleModule = UnifiedAutomationActionLifecycleModule(
         codec = StoredTypedAutomationActionCodec(jacksonObjectMapper()),
         workOwnership = workOwnership,
-        homeService = home,
+        homeService = homeOverride,
         questGateway = questGatewayOverride,
         questWorkCycle = questCycle,
         battleSubmission = battleSubmission,
@@ -180,6 +185,84 @@ class AutomationActionLifecycleModuleTest {
         val execution = assertIs<TypedAutomationExecution.ActionCompleted>(managed.execute())
         managed.applyLegacyExecution(execution)
         Mockito.verify(home, Mockito.times(1)).runHomeQuest(7L, "accept-action", HofRequestOrigin.AUTOMATION)
+    }
+
+    @ParameterizedTest
+    @CsvSource("ACCEPT,ACTIVE", "ACCEPT,CLAIMABLE", "CLAIM,WAITING", "CLAIM,COMPLETED")
+    fun `자택의 직접 사후 상태는 공용 문구 UNKNOWN이어도 적용 증거다`(
+        action: HomeQuestAutomationActionType,
+        state: HomeQuestState,
+    ) {
+        val url = "https://hof.zerosic.com/index.php?menu=housing"
+        val heading = when (state) {
+            HomeQuestState.ACTIVE -> "진행중인 작업 목록"
+            HomeQuestState.CLAIMABLE -> "완료 가능한 퀘스트"
+            HomeQuestState.WAITING -> "대기중인 작업 목록"
+            HomeQuestState.COMPLETED -> "완료한 작업 목록"
+            else -> error("적용 사후 상태가 아님")
+        }
+        val link = if (state == HomeQuestState.CLAIMABLE) "<a href='?menu=housing&amp;action=complete&amp;no=A'>완료</a>" else "-"
+        val html = """<h4>$heading</h4><table><tr><td>[A] 검증</td><td>미션 1/1</td><td>-</td><td>-</td><td>$link</td></tr></table>"""
+        val response = HomeResponse.from(HomePageParser().parse(HomeMode.HOME, html, url,
+            HofFormParser().parse(html, url), HofResultParser().parse(html)))
+        val quest = response.quests.single()
+        val managed = assertNotNull(module.prepare(7L, 12L,
+            HomeQuestAutomationAction(7L, quest.id, quest.name, "action-1", action)))
+        Mockito.`when`(home.runHomeQuest(7L, "action-1", HofRequestOrigin.AUTOMATION))
+            .thenReturn(response)
+
+        val execution = managed.execute()
+        val evidence = policyEvidence(managed, execution)
+
+        assertIs<AutomationActionEvidence.DirectApplied>(evidence)
+        assertEquals("UNKNOWN", response.result?.status)
+        assertTrue(!jacksonObjectMapper().writeValueAsString(response).contains("stateObserved"))
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["MISSING", "DUPLICATE", "UNCHANGED"])
+    fun `UNKNOWN 자택 응답의 대상 부재 중복 같은 상태는 적용으로 추정하지 않는다`(kind: String) {
+        val managed = assertNotNull(module.prepare(7L, 12L, homeAction(HomeQuestAutomationActionType.ACCEPT)))
+        val response = homeResponse(HomeQuestState.CLAIMABLE, "claim-action").let { it.copy(
+            quests = it.quests.map { quest -> quest.copy(stateObserved = true) },
+        ) }
+        val quests = when (kind) {
+            "MISSING" -> emptyList()
+            "DUPLICATE" -> response.quests + response.quests.single().copy(name = "중복")
+            else -> homeResponse(HomeQuestState.AVAILABLE, "action-1").quests
+        }
+        Mockito.`when`(home.runHomeQuest(7L, "action-1", HofRequestOrigin.AUTOMATION))
+            .thenReturn(response.copy(quests = quests, result = TownActionResultResponse("UNKNOWN", emptyList(), emptyList())))
+
+        assertIs<AutomationActionEvidence.IncompleteObservation>(policyEvidence(managed, managed.execute()))
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["MISSING_ACTION", "AMBIGUOUS_SECTION", "INVALID_CLAIM_LINK", "TRUNCATED_ROWS"])
+    fun `수락 링크가 사라진 불완전 자택 HTML의 기본 ACTIVE는 적용 증거가 아니다`(kind: String) {
+        val url = "https://hof.zerosic.com/index.php?menu=housing"
+        val before = """<h4>수락 가능한 퀘스트</h4><table><tr><td>[A] 검증</td><td>미션 0/1</td>
+            <td>-</td><td>-</td><td><a href='?menu=housing&amp;action=get&amp;no=A'>수락</a></td></tr></table>"""
+        val heading = if (kind == "TRUNCATED_ROWS") "진행중인 작업 목록" else "수락 가능한 퀘스트"
+        val span = if (kind == "TRUNCATED_ROWS") "rowspan='3'" else ""
+        val actionCell = when (kind) {
+            "MISSING_ACTION" -> ""
+            "INVALID_CLAIM_LINK" -> "<td><a href='https://invalid.test/?action=complete&amp;no=A'>완료</a></td>"
+            else -> "<td>-</td>"
+        }
+        val after = """<h4>$heading</h4><table><tr><td $span>[A] 검증</td><td>미션 0/1</td>
+            <td>-</td><td>-</td>$actionCell</tr></table>"""
+        val locations = Mockito.mock(TownLocationResolver::class.java)
+        Mockito.`when`(locations.resolve(TownFeatureId.HOME_MANAGEMENT, null))
+            .thenReturn(ResolvedTownLocation(TownFeatureId.HOME_MANAGEMENT, url))
+        val liveHome = HomeService(remoteExecutor(
+            HofHttpResponse(200, url, before, emptyMap()), HofHttpResponse(200, url, after, emptyMap()),
+        ), locations, HomePageParser())
+        val quest = HomePageParser().parse(HomeMode.HOME, before, url, HofFormParser().parse(before, url)).quests.single()
+        val managed = assertNotNull(lifecycleModule(homeOverride = liveHome).prepare(7L, 12L,
+            HomeQuestAutomationAction(7L, quest.id, quest.name, assertNotNull(quest.actionId), HomeQuestAutomationActionType.ACCEPT)))
+
+        assertIs<AutomationActionEvidence.IncompleteObservation>(policyEvidence(managed, managed.execute()))
     }
 
     @Test
