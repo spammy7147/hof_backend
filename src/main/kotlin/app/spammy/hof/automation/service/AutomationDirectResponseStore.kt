@@ -10,6 +10,7 @@ import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import app.spammy.hof.automation.outbox.AutomationOutboxService
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.quest.model.QuestSnapshot
+import app.spammy.hof.town.home.model.HomeQuestState
 import com.fasterxml.jackson.annotation.JsonSubTypes
 import com.fasterxml.jackson.annotation.JsonTypeInfo
 import java.security.MessageDigest
@@ -22,9 +23,21 @@ import tools.jackson.databind.ObjectMapper
 
 /** 원격 응답 중 판정·후처리에 필요한 정규화 값만 보존한다. HTML·쿠키·form은 포함하지 않는다. */
 @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, include = JsonTypeInfo.As.PROPERTY, property = "kind")
-@JsonSubTypes(JsonSubTypes.Type(AutomationDirectResponse.QuestPage::class, name = "QUEST_PAGE"))
+@JsonSubTypes(
+    JsonSubTypes.Type(AutomationDirectResponse.QuestPage::class, name = "QUEST_PAGE"),
+    JsonSubTypes.Type(AutomationDirectResponse.HomePage::class, name = "HOME_PAGE"),
+)
 sealed interface AutomationDirectResponse {
     data class QuestPage(val quests: List<QuestSnapshot>, val complete: Boolean) : AutomationDirectResponse
+
+    data class HomePage(val quests: List<Quest>, val resultStatus: String?) : AutomationDirectResponse {
+        data class Quest(
+            val id: String,
+            val state: HomeQuestState,
+            val actionId: String?,
+            val stateObserved: Boolean,
+        )
+    }
 }
 
 data class StoredAutomationDirectResponse(
@@ -213,6 +226,9 @@ class AutomationDirectResponseStore(
             is AutomationDirectResponse.QuestPage -> require(
                 stored.payload is StoredTypedActionPayload.QuestAccept || stored.payload is StoredTypedActionPayload.QuestClaim,
             ) { "Quest response cannot be attached to a different action kind." }
+            is AutomationDirectResponse.HomePage -> require(stored.payload is StoredTypedActionPayload.HomeQuest) {
+                "Home response cannot be attached to a different action kind."
+            }
         }
     }
 

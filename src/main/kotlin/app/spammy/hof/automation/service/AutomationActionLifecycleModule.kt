@@ -395,7 +395,15 @@ class UnifiedAutomationActionLifecycleModule(
             is StoredTypedActionPayload.HomeQuest -> object : ManagedAutomationAction {
                 override val storedAction = stored
                 override val descriptor = payload.descriptor()
-                private var submittedResponse: app.spammy.hof.town.home.dto.HomeResponse? = null
+                private var submittedResponse: AutomationDirectResponse.HomePage? = null
+
+                override val directResponse: AutomationDirectResponse? get() = submittedResponse
+
+                override fun restoreDirectResponse(response: AutomationDirectResponse): TypedAutomationExecution {
+                    require(response is AutomationDirectResponse.HomePage)
+                    submittedResponse = response
+                    return homeActionCompleted(payload, response)
+                }
 
                 override fun validateBeforeSubmission() = validateHomeQuestBeforeSubmission(accountId, payload)
 
@@ -403,8 +411,12 @@ class UnifiedAutomationActionLifecycleModule(
                     val response = runMutation(accountId, "Home quest") {
                         homeService.runHomeQuest(accountId, payload.actionId, HofRequestOrigin.AUTOMATION)
                     }
-                    submittedResponse = response
-                    return homeActionCompleted(payload, response)
+                    return restoreDirectResponse(AutomationDirectResponse.HomePage(
+                        response.quests.map {
+                            AutomationDirectResponse.HomePage.Quest(it.id, it.state, it.actionId, it.stateObserved)
+                        },
+                        response.result?.status,
+                    ))
                 }
 
                 override fun applyLegacyExecution(execution: TypedAutomationExecution): TypedAutomationExecution {
@@ -964,7 +976,7 @@ class UnifiedAutomationActionLifecycleModule(
 
     private fun homeActionCompleted(
         payload: StoredTypedActionPayload.HomeQuest,
-        response: app.spammy.hof.town.home.dto.HomeResponse,
+        response: AutomationDirectResponse.HomePage,
     ): TypedAutomationExecution.ActionCompleted {
         val matches = response.quests.filter { it.id == payload.questId }
         val quest = matches.singleOrNull()
@@ -972,7 +984,7 @@ class UnifiedAutomationActionLifecycleModule(
         val snippet = "HomeResponse|targetMultiplicity=$multiplicity|targetPresent=${quest != null}|" +
             "state=${quest?.state?.name ?: "ABSENT"}|" +
             "actionIdPresent=${quest?.actionId != null}|stateObserved=${quest?.stateObserved == true}|" +
-            "resultStatus=${response.result?.status ?: "NONE"}"
+            "resultStatus=${response.resultStatus ?: "NONE"}"
         val expectedState = if (payload.action == HomeQuestAutomationActionType.ACCEPT) {
             HomeQuestState.AVAILABLE
         } else {
@@ -996,7 +1008,7 @@ class UnifiedAutomationActionLifecycleModule(
                 ProductionEvidenceShapes.HOME_RESPONSE,
                 structurallyKnown = matches.size <= 1 &&
                     quest != null &&
-                    (knownTownResultStatus(response.result?.status) ||
+                    (knownTownResultStatus(response.resultStatus) ||
                         (quest.stateObserved && homeActionPoststateApplied(payload.action, quest))),
             ),
             sanitizedSnippet = snippet,
@@ -1005,7 +1017,7 @@ class UnifiedAutomationActionLifecycleModule(
 
     private fun requireHomeDirectApplied(
         payload: StoredTypedActionPayload.HomeQuest,
-        response: app.spammy.hof.town.home.dto.HomeResponse,
+        response: AutomationDirectResponse.HomePage,
     ) {
         val quest = response.quests.singleOrNull { it.id == payload.questId }
         if (!homeActionPoststateApplied(payload.action, quest)) {
@@ -1017,7 +1029,7 @@ class UnifiedAutomationActionLifecycleModule(
 
     private fun homeActionPoststateApplied(
         action: HomeQuestAutomationActionType,
-        quest: app.spammy.hof.town.home.dto.HomeQuestResponse?,
+        quest: AutomationDirectResponse.HomePage.Quest?,
     ): Boolean = when (action) {
         HomeQuestAutomationActionType.ACCEPT -> quest?.state in setOf(HomeQuestState.ACTIVE, HomeQuestState.CLAIMABLE)
         HomeQuestAutomationActionType.CLAIM -> quest == null || quest.state in setOf(HomeQuestState.WAITING, HomeQuestState.COMPLETED)

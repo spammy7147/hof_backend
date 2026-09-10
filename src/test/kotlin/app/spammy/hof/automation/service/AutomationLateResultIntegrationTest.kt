@@ -6,6 +6,7 @@ import app.spammy.hof.auth.service.AccountExecutionAuthorizationReader
 import app.spammy.hof.automation.convergence.*
 import app.spammy.hof.automation.entity.*
 import app.spammy.hof.automation.history.AutomationDecisionJournal
+import app.spammy.hof.automation.history.AutomationHistoryEvent
 import app.spammy.hof.automation.history.AutomationHistoryEventKind
 import app.spammy.hof.automation.history.AutomationHistoryQuery
 import app.spammy.hof.automation.lease.AccountAutomationLeaseService
@@ -755,8 +756,8 @@ abstract class AutomationLateResultIntegrationTest {
         }
     }
 
-    protected fun verifyHomeStateAdvancedBeforeDirect() {
-        val applied = CountDownLatch(1)
+    protected fun verifyHomeDirectResponseDuringRecovery(receiptStoredBeforeRecovery: Boolean = false) {
+        val directReady = CountDownLatch(1)
         val returnDirect = CountDownLatch(1)
         var accepted = false
         val url = "https://hof.zerosic.com/index.php?menu=housing"
@@ -781,39 +782,103 @@ abstract class AutomationLateResultIntegrationTest {
             HofHttpResponse(200, url, page(), emptyMap())
         }.`when`(gateway).execute(Mockito.eq(accountId), Mockito.any<HofRequest>()
             ?: HofRequest(HofHttpMethod.GET, url), Mockito.anyMap())
-        val managedPlaceholder = Mockito.mock(ManagedAutomationAction::class.java)
-        Mockito.doAnswer { invocation ->
-            val result = invocation.callRealMethod()
-            applied.countDown()
-            check(returnDirect.await(30, TimeUnit.SECONDS))
-            result
-        }.`when`(results).applyDirect(Mockito.any(ManagedAutomationAction::class.java) ?: managedPlaceholder,
-            Mockito.any(TypedAutomationExecution::class.java) ?: TypedAutomationExecution.Completed, Mockito.any(), Mockito.any())
+        if (receiptStoredBeforeRecovery) {
+            val firstDirect = java.util.concurrent.atomic.AtomicBoolean(true)
+            val managedPlaceholder = Mockito.mock(ManagedAutomationAction::class.java)
+            Mockito.doAnswer { invocation ->
+                val result = invocation.callRealMethod()
+                if (firstDirect.compareAndSet(true, false)) {
+                    directReady.countDown()
+                    check(returnDirect.await(30, TimeUnit.SECONDS))
+                }
+                result
+            }.`when`(results).applyDirect(Mockito.any(ManagedAutomationAction::class.java) ?: managedPlaceholder,
+                Mockito.any(TypedAutomationExecution::class.java) ?: TypedAutomationExecution.Completed, Mockito.any(), Mockito.any())
+        } else {
+            val preparedPlaceholder = HomeQuestAutomationAction(accountId, quest.id, quest.name,
+                assertNotNull(quest.actionId), HomeQuestAutomationActionType.ACCEPT)
+            Mockito.doAnswer { invocation ->
+                val managed = invocation.callRealMethod() as ManagedAutomationAction
+                object : ManagedAutomationAction by managed {
+                    override fun execute(): TypedAutomationExecution {
+                        val execution = managed.execute()
+                        directReady.countDown()
+                        check(returnDirect.await(30, TimeUnit.SECONDS))
+                        return execution
+                    }
+                }
+            }.`when`(actionLifecycle).prepare(Mockito.eq(accountId), Mockito.eq(entryId),
+                Mockito.any(PreparedAutomationAction::class.java) ?: preparedPlaceholder)
+        }
         wakeups.wake(accountId, "HOME_DIRECT_AFTER_RECONCILIATION")
         Executors.newFixedThreadPool(2).use { executor ->
             val otherTransport = AutomationRecoveryIntegrationTest.Config().consumerReplayTransport(mapper, consumedEvents, consumerLease, runner, clock)
             val otherPublisher = AutomationOutboxPublisher(outbox, publishedMarker, otherTransport, clock)
             val oldWorker = executor.submit { publisher.publishBatch() }
             try {
-                assertTrue(applied.await(10, TimeUnit.SECONDS), "실제 자택 수락 응답과 도메인 후처리를 완료해야 한다.")
+                assertTrue(directReady.await(10, TimeUnit.SECONDS), "실제 자택 수락 응답의 지정된 저장 전후 지점에 도달해야 한다.")
                 markBrokerAcceptedWake("HOME_DIRECT_AFTER_RECONCILIATION")
                 val originalCycle = journal.page(accountId, AutomationHistoryQuery()).cycles.single().id
+                var successCycleId = originalCycle
+                var recoveredSuccess: AutomationHistoryEvent? = null
                 assertEquals("SUBMITTING", runs().single()["status"])
+                val identity = runs().single()["execution_identity"] as String
+                assertEquals(if (receiptStoredBeforeRecovery) 1 else 0, jdbc.queryForObject(
+                    "select count(*) from typed_automation_action_runs where account_id = ? and execution_identity = ? and direct_response_json is not null",
+                    Int::class.java, accountId, identity))
                 clock.current = clock.now().plusSeconds(301)
                 wakeups.wake(accountId, "HOME_ACCEPT_RECOVERY")
                 executor.submit { otherPublisher.publishBatch() }.get(10, TimeUnit.SECONDS)
-                assertEquals("FAILED", runs().single()["status"], "최신 ACTIVE 관측은 성공 귀속 없이 기존 수락을 대체한다.")
-                val observedEvents = journal.page(accountId, AutomationHistoryQuery()).cycles.flatMap { it.events }
-                assertTrue(observedEvents.any { it.reasonCode == "ACTION_SUPERSEDED_BY_FRESH_STATE" })
-                assertTrue(observedEvents.none { it.kind == AutomationHistoryEventKind.ACTION_SUCCEEDED })
+                if (receiptStoredBeforeRecovery) {
+                    assertEquals("SUCCEEDED", runs().single()["status"], "복구 worker가 저장된 원래 응답으로 먼저 완료해야 한다.")
+                    val recovered = journal.page(accountId, AutomationHistoryQuery())
+                    val recoveredCycle = recovered.cycles.single { cycle ->
+                        cycle.events.any { it.kind == AutomationHistoryEventKind.ACTION_SUCCEEDED }
+                    }
+                    successCycleId = recoveredCycle.id
+                    assertNotEquals(originalCycle, successCycleId)
+                    assertTrue(recoveredCycle.events.any { it.reasonCode == "STORED_DIRECT_RESPONSE_RESTORE" && it.targetKey == quest.id })
+                    recoveredSuccess = recoveredCycle.events.single { it.kind == AutomationHistoryEventKind.ACTION_SUCCEEDED }
+                    assertTrue(recovered.cycles.flatMap { it.events }.none { it.reasonCode == "ACTION_SUPERSEDED_BY_FRESH_STATE" })
+                } else {
+                    val observedEvents = journal.page(accountId, AutomationHistoryQuery()).cycles.flatMap { it.events }
+                    if (mode == AutomationConvergenceMode.ACTIVE) {
+                        assertEquals("AMBIGUOUS", runs().single()["status"], "ACTIVE 복원은 성공 귀속 없이 canonical 판정으로 인계한다.")
+                        val record = assertNotNull(store.get(accountId, identity))
+                        assertEquals(ActionConvergenceResult.HELD, record.result)
+                        assertEquals("PENDING_BUDGET_EXHAUSTED", record.reasonCode,
+                            "5분 lease 복원 시 원래 제출의 2분 확인 예산을 새로 시작하지 않는다.")
+                    } else {
+                        assertEquals("FAILED", runs().single()["status"], "최신 관측은 성공 귀속 없이 기존 수락을 대체한다.")
+                        assertTrue(observedEvents.any { it.reasonCode == "ACTION_SUPERSEDED_BY_FRESH_STATE" })
+                    }
+                    assertTrue(observedEvents.none { it.kind == AutomationHistoryEventKind.ACTION_SUCCEEDED })
+                }
                 returnDirect.countDown()
                 oldWorker.get(10, TimeUnit.SECONDS)
+                assertEquals(1, jdbc.queryForObject(
+                    "select count(*) from typed_automation_action_runs where account_id = ? and execution_identity = ? and direct_response_json is not null",
+                    Int::class.java, accountId, identity))
+                assertEquals("SUCCEEDED", runs().single()["status"])
+                if (mode == AutomationConvergenceMode.ACTIVE) {
+                    assertEquals(ActionConvergenceResult.APPLIED, assertNotNull(store.get(accountId, identity)).result)
+                }
                 val history = journal.page(accountId, AutomationHistoryQuery())
-                assertEquals(1, history.cycles.single { it.id == originalCycle }.events.count {
-                    it.kind == AutomationHistoryEventKind.ACTION_SUCCEEDED && it.reasonCode == "TYPED_ACTION_COMPLETED"
-                }, "관측으로 대체된 뒤에도 원래 직접 응답의 성공 이력을 한 번 기록한다.")
+                val success = history.cycles.single { it.id == successCycleId }.events.single {
+                    it.kind == AutomationHistoryEventKind.ACTION_SUCCEEDED
+                }
+                assertEquals("TYPED_ACTION_COMPLETED", success.reasonCode)
+                assertEquals("HOME_ACCEPT", success.actionKind)
+                assertEquals(entryId, success.entryId)
+                assertEquals(quest.id, success.targetKey)
+                if (receiptStoredBeforeRecovery) assertEquals(recoveredSuccess, success,
+                    "원래 worker가 늦게 반환해도 복구 worker의 최초 성공 이력과 판단 귀속을 그대로 보존한다.")
                 val latest = history.cycles.maxOf { it.id }
                 consumeWakeUntilNextDecision(latest)
+                val continued = journal.page(accountId, AutomationHistoryQuery())
+                assertEquals(success, continued.cycles.flatMap { it.events }
+                    .single { it.kind == AutomationHistoryEventKind.ACTION_SUCCEEDED })
+                assertTrue(continued.cycles.single { it.id == successCycleId }.events.any { it.id == success.id })
                 assertEquals(1, requests.count { it.formFields["action"] == "get" })
                 assertEquals(0, runningWorkCount())
             } finally {
@@ -1502,12 +1567,14 @@ abstract class AutomationLateResultIntegrationTest {
 
 @SpringBootTest(properties = ["hof.automation-convergence.mode=LEGACY"])
 class LegacyAutomationLateResultIntegrationTest : AutomationLateResultIntegrationTest() {
+    @Test fun `저장된 자택 응답을 복구 worker가 먼저 완료해도 원래 worker는 성공을 중복 기록하지 않는다`() =
+        verifyHomeDirectResponseDuringRecovery(receiptStoredBeforeRecovery = true)
     @Test fun `재관측 결과 commit 후 도착한 직접 성공 뒤 오래된 대체 이력을 저장하지 않는다`() =
         verifyLateCatchWithFailedObservation("ADVANCED", beforeReconciliationHistory = true)
     @Test fun `재관측 503 이력 DB 실패에도 대기와 실행권 해제 및 다음 판단을 보존한다`() = verifyReconciliation503HistoryFailure()
     @Test fun `첫 CATCH 복구 기록과 직접 성공이 경합해도 성공 증거와 이력이 일치한다`() =
         verifyLateCatchWithFailedObservation("ERROR", duringCanonicalCreation = true)
-    @Test fun `자택 수락을 관측으로 먼저 종결해도 원래 직접 성공 이력을 보존한다`() = verifyHomeStateAdvancedBeforeDirect()
+    @Test fun `자택 수락을 관측으로 먼저 종결해도 원래 직접 성공 이력을 보존한다`() = verifyHomeDirectResponseDuringRecovery()
     @Test fun `복구 기록을 처음 저장하는 중 도착한 직접 성공도 같은 행동에 귀속한다`() =
         verifyLateBattleReacquisition(afterObservation = false, duringCanonicalCreation = true)
     @Test fun `정상 관측의 종결 확인 직후 CATCH 성공이 도착해도 대체 이력을 저장하지 않는다`() =
@@ -1527,12 +1594,14 @@ class LegacyAutomationLateResultIntegrationTest : AutomationLateResultIntegratio
 
 @SpringBootTest(properties = ["hof.automation-convergence.mode=SHADOW"])
 class ShadowAutomationLateResultIntegrationTest : AutomationLateResultIntegrationTest() {
+    @Test fun `저장된 자택 응답을 복구 worker가 먼저 완료해도 원래 worker는 성공을 중복 기록하지 않는다`() =
+        verifyHomeDirectResponseDuringRecovery(receiptStoredBeforeRecovery = true)
     @Test fun `재관측 결과 commit 후 도착한 직접 성공 뒤 오래된 대체 이력을 저장하지 않는다`() =
         verifyLateCatchWithFailedObservation("ADVANCED", beforeReconciliationHistory = true)
     @Test fun `재관측 503 이력 DB 실패에도 대기와 실행권 해제 및 다음 판단을 보존한다`() = verifyReconciliation503HistoryFailure()
     @Test fun `첫 CATCH 복구 기록과 직접 성공이 경합해도 성공 증거와 이력이 일치한다`() =
         verifyLateCatchWithFailedObservation("ERROR", duringCanonicalCreation = true)
-    @Test fun `자택 수락을 관측으로 먼저 종결해도 원래 직접 성공 이력을 보존한다`() = verifyHomeStateAdvancedBeforeDirect()
+    @Test fun `자택 수락을 관측으로 먼저 종결해도 원래 직접 성공 이력을 보존한다`() = verifyHomeDirectResponseDuringRecovery()
     @Test fun `복구 기록을 처음 저장하는 중 도착한 직접 성공도 같은 행동에 귀속한다`() =
         verifyLateBattleReacquisition(afterObservation = false, duringCanonicalCreation = true)
     @Test fun `SHADOW 비교 저장의 DB 실패는 복구 종결과 후속 판단을 롤백하지 않는다`() = verifyShadowRecordingFailure()
@@ -1553,6 +1622,9 @@ class ShadowAutomationLateResultIntegrationTest : AutomationLateResultIntegratio
 
 @SpringBootTest(properties = ["hof.automation-convergence.mode=ACTIVE"])
 class ActiveAutomationLateResultIntegrationTest : AutomationLateResultIntegrationTest() {
+    @Test fun `저장된 자택 응답을 복구 worker가 먼저 완료해도 원래 worker는 성공을 중복 기록하지 않는다`() =
+        verifyHomeDirectResponseDuringRecovery(receiptStoredBeforeRecovery = true)
+    @Test fun `자택 수락이 확인 예산 소진으로 보류되어도 원래 직접 성공 이력을 보존한다`() = verifyHomeDirectResponseDuringRecovery()
     @Test fun `START 저장 rollback 뒤 일시정지 재개로 결과 수용이 취소되면 성공 이력을 쓰지 않는다`() =
         verifyCanonicalDirectRollback("FISHING_START", failAfterCallback = true, resumeAfterRollback = true)
     @Test fun `관측 이력 DB 실패는 확정한 수렴과 실행권 해제 및 다음 판단을 취소하지 않는다`() = verifyProbeHistoryFailure()

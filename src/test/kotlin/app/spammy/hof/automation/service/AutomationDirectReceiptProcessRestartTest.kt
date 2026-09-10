@@ -576,7 +576,7 @@ object AutomationDirectReceiptCrashProcess {
                             continueRecovery.countDown()
                             recoveryWorker.get(15, TimeUnit.SECONDS)
                             val recoveredStatus = jdbc.queryForObject("select status from typed_automation_action_runs where id = (select min(id) from typed_automation_action_runs)", String::class.java)
-                            val receipts = jdbc.queryForObject("select count(*) from typed_automation_action_runs where direct_response_json is not null", Int::class.java)
+                            val receipts = jdbc.queryForObject("select count(*) from typed_automation_action_runs where direct_response_json is not null and id = (select min(id) from typed_automation_action_runs where action_kind = 'QUEST_ACCEPT')", Int::class.java)
                             val processed = jdbc.queryForObject("select count(*) from quest_automation_processed_results where result_kind = 'ACCEPT'", Int::class.java)
                             directory.resolve("late-reconciliation.json").writeText(mapper.writeValueAsString(
                                 mapOf("status" to recoveredStatus, "receipts" to receipts, "processed" to processed)))
@@ -616,7 +616,7 @@ object AutomationDirectReceiptCrashProcess {
                     check(state.questSubmissions == 1)
                     check(jdbc.queryForObject("select status from typed_automation_action_runs where action_kind = 'QUEST_ACCEPT'", String::class.java) == "SUBMITTING")
                     check(jdbc.queryForObject("select result from automation_action_convergences", String::class.java) == "PENDING")
-                    check(jdbc.queryForObject("select count(*) from typed_automation_action_runs where direct_response_json is not null", Int::class.java) == 1)
+                    check(jdbc.queryForObject("select count(*) from typed_automation_action_runs where direct_response_json is not null and id = (select min(id) from typed_automation_action_runs where action_kind = 'QUEST_ACCEPT')", Int::class.java) == 1)
                     check(jdbc.queryForObject("select count(*) from quest_automation_cycles", Int::class.java) == 0)
                     Runtime.getRuntime().halt(71)
                 }
@@ -624,7 +624,7 @@ object AutomationDirectReceiptCrashProcess {
                 if (phase == "crash" && interruption.startsWith("projection-")) {
                     check(state.questSubmissions == 1 && state.independentQuestSubmissions == 0)
                     check(jdbc.queryForObject("select count(*) from quest_automation_cycles", Int::class.java) == 0)
-                    check(jdbc.queryForObject("select count(*) from typed_automation_action_runs where direct_response_json is not null", Int::class.java) == 1)
+                    check(jdbc.queryForObject("select count(*) from typed_automation_action_runs where direct_response_json is not null and id = (select min(id) from typed_automation_action_runs where action_kind = 'QUEST_ACCEPT')", Int::class.java) == 1)
                     Runtime.getRuntime().halt(71)
                 }
             }
@@ -793,19 +793,21 @@ object AutomationDirectReceiptCrashProcess {
                             isProxyTargetClass = true
                             addAdvice(MethodInterceptor { invocation ->
                                 val result = invocation.proceed()
+                                val original = (invocation.arguments.getOrNull(1) as? StoredTypedAutomationAction)
+                                    ?.payload is StoredTypedActionPayload.QuestAccept
                                 if (phase == "crash" && interruption == "late-during-reconciliation" && lateRecovery &&
-                                    invocation.method.name == "load" && result == null && receiptAbsenceRead.count > 0
+                                    invocation.method.name == "load" && original && result == null && receiptAbsenceRead.count > 0
                                 ) {
                                     receiptAbsenceRead.countDown()
                                     check(continueRecovery.await(30, TimeUnit.SECONDS))
                                 }
-                                if (phase == "crash" && invocation.method.name == "record") {
+                                if (phase == "crash" && invocation.method.name == "record" && original) {
                                     if (interruption == "late-during-reconciliation") {
                                         receiptCommitted.countDown()
                                         check(recoveryFinished.await(30, TimeUnit.SECONDS))
                                         check(java.nio.file.Files.exists(directory.resolve("late-reconciliation.json")))
                                     } else check(java.nio.file.Files.exists(directory.resolve("late-terminal.json")))
-                                    check(diagnostics.queryForObject("select count(*) from typed_automation_action_runs where direct_response_json is not null", Int::class.java) == 1)
+                                    check(diagnostics.queryForObject("select count(*) from typed_automation_action_runs where direct_response_json is not null and id = (select min(id) from typed_automation_action_runs where action_kind = 'QUEST_ACCEPT')", Int::class.java) == 1)
                                     Runtime.getRuntime().halt(71)
                                 }
                                 result
@@ -854,7 +856,7 @@ object AutomationDirectReceiptCrashProcess {
                                 check(state.questSubmissions == 1)
                                 if (interruption == "late-before") {
                                     check(java.nio.file.Files.exists(directory.resolve("late-terminal.json")))
-                                    check(diagnostics.queryForObject("select count(*) from typed_automation_action_runs where direct_response_json is not null", Int::class.java) == 1)
+                                    check(diagnostics.queryForObject("select count(*) from typed_automation_action_runs where direct_response_json is not null and id = (select min(id) from typed_automation_action_runs where action_kind = 'QUEST_ACCEPT')", Int::class.java) == 1)
                                     check(diagnostics.queryForObject("select count(*) from quest_automation_processed_results where result_kind = 'ACCEPT'", Int::class.java) == 0)
                                 }
                                 if (interruption == "after") invocation.proceed()
