@@ -25,12 +25,18 @@ class AutomationHistoryRetentionScheduler(
             "select distinct c.accountId from AutomationDecisionCycleEntity c", java.lang.Long::class.java,
         ).resultList.map(Number::toLong)
         accounts.forEach { trimAccount(it) }
+        entityManager.createQuery("""update AutomationOutboxEntity o set o.payload = '', o.publishedAt = :now
+            where o.topic = :topic and o.payload <> '' and
+              (o.publishedAt is not null or o.createdAt < :cutoff or not exists
+                (select c.id from AutomationDecisionCycleEntity c where cast(c.id as string) = o.eventKey))""")
+            .setParameter("now", timeProvider.now()).setParameter("topic", AUTOMATION_HISTORY_OUTBOX_TOPIC)
+            .setParameter("cutoff", cutoff).executeUpdate()
     }
 
     private fun trimAccount(accountId: Long) {
         if (maxEventsPerAccount < 1) return
         val overflowIds = entityManager.createQuery(
-            "select e.id from AutomationDecisionEventEntity e where e.cycle.accountId = :accountId order by e.id desc",
+            "select e.id from AutomationDecisionEventEntity e where e.cycle.accountId = :accountId order by e.occurredAt desc, e.cycle.id desc, e.sequence desc, e.id desc",
             java.lang.Long::class.java,
         ).setParameter("accountId", accountId).setFirstResult(maxEventsPerAccount).resultList
         if (overflowIds.isNotEmpty()) {

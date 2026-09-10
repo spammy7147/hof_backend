@@ -43,6 +43,8 @@ import tools.jackson.module.kotlin.jacksonObjectMapper
     AutomationOutboxService::class,
     StoredTypedAutomationActionCodec::class,
     TypedAutomationRuntimeService::class,
+    AutomationDirectResponseStore::class,
+    app.spammy.hof.automation.convergence.JpaEvidenceCaseRecorder::class,
     TypedRuntimeWakeAtomicityIntegrationTest.Config::class,
 )
 class TypedRuntimeWakeAtomicityIntegrationTest {

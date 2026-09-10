@@ -106,6 +106,8 @@ class FreshSchemaTest {
                 "55" to "support character recovery review",
                 "56" to "preserve equipment dependent pattern conditions",
                 "57" to "persist captcha automation resume",
+                "58" to "preserve direct action responses",
+                "59" to "reserve automation history sequence",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -170,6 +172,8 @@ class FreshSchemaTest {
                 "V55__support_character_recovery_review.sql",
                 "V56__preserve_equipment_dependent_pattern_conditions.sql",
                 "V57__persist_captcha_automation_resume.sql",
+                "V58__preserve_direct_action_responses.sql",
+                "V59__reserve_automation_history_sequence.sql",
                 "V5__track_character_detail_sync.sql",
                 "V6__learn_shared_battle_cooldowns.sql",
                 "V7__add_automation_wait_reason.sql",

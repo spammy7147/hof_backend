@@ -18,7 +18,10 @@ interface AutomationActionConvergenceModule {
     fun prepare(accountId: Long, selection: SelectedAutomationAction): ConvergenceDirective
     fun storedSelection(accountId: Long, executionIdentity: String): SelectedAutomationAction?
     fun restoreCheckpoint(accountId: Long, selection: SelectedAutomationAction, checkpoint: RestoredActionCheckpoint): ConvergenceDirective
+    fun restoreDirectResponse(accountId: Long, selection: SelectedAutomationAction, checkpoint: RestoredActionCheckpoint): Long
     fun record(attemptId: Long, evidence: AutomationActionEvidence): ConvergenceDirective
+    /** 실제 제출의 원래 응답에만 사용한다. 후속 GET 관측은 record로 남긴다. */
+    fun recordDirectResponse(attemptId: Long, evidence: AutomationActionEvidence): ConvergenceDirective
     fun record(attemptId: Long, evidence: AutomationActionEvidence, persistObservation: (ConvergenceDirective) -> Unit): ConvergenceDirective
     fun recordLateApplication(accountId: Long, executionIdentity: String, evidence: AutomationActionEvidence.DirectApplied)
     fun observeGap(
@@ -55,7 +58,7 @@ interface AutomationActionConvergenceModule {
         reason: String,
         capturedAt: Instant,
     ): ConvergenceDirective.BattleGateWait
-    fun resumeDue(accountId: Long): ConvergenceDirective
+    fun resumeDue(accountId: Long, excludedExecutionIdentities: Set<String> = emptySet()): ConvergenceDirective
     fun releaseBattleGate(accountId: Long, resolvedAt: Instant): Boolean
     fun observeAuthoritativeBaseline(
         accountId: Long,
@@ -70,6 +73,7 @@ interface AutomationActionConvergenceModule {
         observedAt: Instant,
     ): Int
     fun allowFreshDecision(accountId: Long, attemptId: Long, allowedAt: Instant): Boolean
+    fun allowLocalResultFreshDecision(accountId: Long, executionIdentity: String, allowedAt: Instant)
     fun allowRaidRegistrationFreshDecision(
         accountId: Long,
         entryId: Long,
@@ -123,6 +127,25 @@ class DefaultAutomationActionConvergenceModule(
     override fun storedSelection(accountId: Long, executionIdentity: String): SelectedAutomationAction? =
         store.get(accountId, executionIdentity)?.selection
 
+    /** 수신한 직접 응답은 새 관측 예산을 소비하지 않고 원래 시도에 귀속한다. */
+    override fun restoreDirectResponse(
+        accountId: Long,
+        selection: SelectedAutomationAction,
+        checkpoint: RestoredActionCheckpoint,
+    ): Long {
+        requireNotNull(checkpoint.submittedAt) { "A direct response requires an original submission." }
+        val attempt = store.get(accountId, selection.executionIdentity)
+            ?: store.createOrGet(accountId, selection, checkpoint.submittedAt)
+        return requireNotNull(store.withLockedAttempt(attempt.attemptId) { current ->
+            require(current.selection == selection) { "Direct response selection differs from its original attempt." }
+            current.submittedAt = current.submittedAt ?: checkpoint.submittedAt
+            current.successfulObservationCount = maxOf(current.successfulObservationCount, checkpoint.successfulObservationCount)
+            current.firstPendingAt = current.firstPendingAt ?: checkpoint.firstPendingAt ?: current.submittedAt
+            store.save(current)
+            current.attemptId
+        })
+    }
+
     override fun restoreCheckpoint(
         accountId: Long,
         selection: SelectedAutomationAction,
@@ -158,6 +181,11 @@ class DefaultAutomationActionConvergenceModule(
             "Convergence attempt $attemptId does not exist."
         }
 
+    override fun recordDirectResponse(attemptId: Long, evidence: AutomationActionEvidence): ConvergenceDirective =
+        requireNotNull(store.withLockedAttempt(attemptId) { record -> recordEvidence(record, evidence, originalResponse = true) }) {
+            "Convergence attempt $attemptId does not exist."
+        }
+
     override fun record(
         attemptId: Long,
         evidence: AutomationActionEvidence,
@@ -172,7 +200,8 @@ class DefaultAutomationActionConvergenceModule(
             } else {
                 val supported = ProductionActionEvidenceInterpreter.supportsVersion(record.selection.policyVersion) &&
                     evidence !is AutomationActionEvidence.PolicyUnavailable
-                recordEvidence(record, evidence) to record.copy().takeIf { supported }
+                val accepted = record.active || !evidence.isUnconfirmedObservation()
+                recordEvidence(record, evidence) to record.copy().takeIf { supported && accepted }
             }
         }) {
             "Convergence attempt $attemptId does not exist."
@@ -193,7 +222,11 @@ class DefaultAutomationActionConvergenceModule(
         return next
     }
 
-    private fun recordEvidence(record: ActionConvergenceRecord, evidence: AutomationActionEvidence): ConvergenceDirective {
+    private fun recordEvidence(
+        record: ActionConvergenceRecord,
+        evidence: AutomationActionEvidence,
+        originalResponse: Boolean = false,
+    ): ConvergenceDirective {
         if (record.result == ActionConvergenceResult.APPLIED) return ConvergenceDirective.ContinueSelection
         if (!ProductionActionEvidenceInterpreter.supportsVersion(record.selection.policyVersion) ||
             evidence is AutomationActionEvidence.PolicyUnavailable
@@ -202,10 +235,19 @@ class DefaultAutomationActionConvergenceModule(
             recordUnsupportedPolicy(record, evidence.capturedAt, evidence)
             return ConvergenceDirective.ContinueSelection
         }
-        // 관측 예산 종료나 최신 상태에 따른 대체는 원래 행동의 직접 적용을 부정하지 않는다.
-        val lateDirectApplication = evidence is AutomationActionEvidence.DirectApplied &&
-            record.result in LATE_APPLICATION_RESULTS
-        check(record.active || lateDirectApplication) { "Convergence attempt ${record.attemptId} is already terminal." }
+        if (originalResponse && (
+                (record.result == ActionConvergenceResult.NOT_APPLIED && evidence is AutomationActionEvidence.DirectRejected) ||
+                    (record.result == ActionConvergenceResult.SUPERSEDED && evidence is AutomationActionEvidence.StateAdvanced)
+                )) return ConvergenceDirective.ContinueSelection
+        // 예산 소진 뒤 도착한 원래 응답의 확정 결과는 일반 후속 관측과 구분한다.
+        val lateOriginalResult = record.result in LATE_APPLICATION_RESULTS && (
+            evidence is AutomationActionEvidence.DirectApplied ||
+                (originalResponse && (evidence is AutomationActionEvidence.DirectRejected || evidence is AutomationActionEvidence.StateAdvanced))
+            )
+        if (!record.active && evidence.isUnconfirmedObservation()) {
+            return ConvergenceDirective.ContinueSelection
+        }
+        check(record.active || lateOriginalResult) { "Convergence attempt ${record.attemptId} is already terminal." }
         val unsubmittedGate = evidence is AutomationActionEvidence.BattleGateRequired && !evidence.submissionAttempted
         if (record.submittedAt == null && !record.selection.observationOnly && !unsubmittedGate) {
             record.submittedAt = evidence.capturedAt
@@ -443,10 +485,10 @@ class DefaultAutomationActionConvergenceModule(
         return ConvergenceDirective.BattleGateWait(gate.openedAt, gate.reason)
     }
 
-    override fun resumeDue(accountId: Long): ConvergenceDirective {
+    override fun resumeDue(accountId: Long, excludedExecutionIdentities: Set<String>): ConvergenceDirective {
         val now = timeProvider.now()
         store.normalizeOrphans(accountId, now)
-        val due = store.findDue(accountId, now) ?: return ConvergenceDirective.ContinueSelection
+        val due = store.findDue(accountId, now, excludedExecutionIdentities) ?: return ConvergenceDirective.ContinueSelection
         return store.withLockedAttempt(due.attemptId) { current ->
             if (!current.active || current.result != ActionConvergenceResult.PENDING || current.nextProbeAt?.isAfter(now) == true) {
                 return@withLockedAttempt ConvergenceDirective.ContinueSelection
@@ -476,6 +518,17 @@ class DefaultAutomationActionConvergenceModule(
 
     override fun allowFreshDecision(accountId: Long, attemptId: Long, allowedAt: Instant): Boolean =
         store.releaseSuppression(accountId, attemptId, allowedAt)
+
+    override fun allowLocalResultFreshDecision(accountId: Long, executionIdentity: String, allowedAt: Instant) {
+        val original = store.get(accountId, executionIdentity) ?: return
+        store.withLockedAttempt(original.attemptId) { record ->
+            // 사용자 허용은 과거 적용 사실을 만들거나 취소하지 않는다.
+            if (record.active) {
+                terminal(record, ActionConvergenceResult.RESULT_UNOBSERVED, "LOCAL_RESULT_FRESH_DECISION_ALLOWED", allowedAt)
+            }
+            store.releaseSuppression(accountId, record.attemptId, allowedAt)
+        }
+    }
 
     override fun allowRaidRegistrationFreshDecision(
         accountId: Long,
@@ -538,6 +591,10 @@ class DefaultAutomationActionConvergenceModule(
         store.save(record)
         return ConvergenceDirective.ContinueSelection
     }
+
+    private fun AutomationActionEvidence.isUnconfirmedObservation(): Boolean =
+        this is AutomationActionEvidence.IncompleteObservation || this is AutomationActionEvidence.SameState ||
+            this is AutomationActionEvidence.NetworkFailure || this is AutomationActionEvidence.ResultUnobserved
 
     private fun budgetExhausted(record: ActionConvergenceRecord, now: Instant): Boolean =
         AutomationConvergenceBudget.exhausted(

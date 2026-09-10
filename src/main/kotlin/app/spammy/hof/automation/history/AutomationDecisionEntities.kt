@@ -22,6 +22,7 @@ class AutomationDecisionCycleEntity(
     @Column(name = "selected_entry_id") val selectedEntryId: Long? = null,
     @Column(name = "started_at", nullable = false) val startedAt: Instant,
     @Column(name = "finished_at", nullable = false) val finishedAt: Instant,
+    @Column(name = "next_event_sequence", nullable = false) var nextEventSequence: Int = 0,
 ) {
     @OneToMany(mappedBy = "cycle", fetch = FetchType.LAZY)
     val events: MutableList<AutomationDecisionEventEntity> = mutableListOf()

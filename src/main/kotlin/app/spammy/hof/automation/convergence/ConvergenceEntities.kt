@@ -2,6 +2,7 @@ package app.spammy.hof.automation.convergence
 
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.automation.entity.AutomationEntryEntity
+import app.spammy.hof.automation.entity.TypedAutomationActionRunEntity
 import jakarta.persistence.Column
 import jakarta.persistence.Entity
 import jakarta.persistence.EnumType
@@ -161,8 +162,12 @@ class AutomationEvidenceCaseEntity(
     val id: String,
 
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "attempt_id", nullable = false)
-    val attempt: AutomationActionAttemptEntity,
+    @JoinColumn(name = "attempt_id")
+    val attempt: AutomationActionAttemptEntity? = null,
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "typed_action_id", unique = true)
+    val typedAction: TypedAutomationActionRunEntity? = null,
 
     @Column(name = "evidence_source", nullable = false, length = 40)
     val evidenceSource: String,

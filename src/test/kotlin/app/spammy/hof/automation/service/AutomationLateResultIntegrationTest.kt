@@ -1268,7 +1268,8 @@ abstract class AutomationLateResultIntegrationTest {
                                     check(continueDue.await(30, TimeUnit.SECONDS))
                                 }
                                 due
-                            }.`when`(store).findDue(Mockito.eq(accountId), Mockito.any(Instant::class.java) ?: Instant.EPOCH)
+                            }.`when`(store).findDue(Mockito.eq(accountId), Mockito.any(Instant::class.java) ?: Instant.EPOCH,
+                                Mockito.anySet<String>() ?: emptySet())
                         }
                         nextWorker = executor.submit { otherPublisher.publishBatch() }
                         if (staleDue) {

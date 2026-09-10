@@ -147,13 +147,18 @@ class AutomationProgressTelemetry(
         warnings.forEach { (accountId, warning) -> emitStallWarning(accountId, warning) }
     }
 
-    fun recordTerminalAction(accountId: Long, type: AutomationType?) {
+    fun recordTerminalAction(accountId: Long, type: AutomationType?, occurredAt: Instant = timeProvider.now()) {
         val now = timeProvider.now()
         states.compute(accountId) { _, existing ->
             (existing ?: AccountProgress()).also {
-                it.lastTerminalActionAt = now
-                it.progressPressureSince = null
-                it.stallWarned = false
+                // 이력 재전달은 원래 발생 시각의 진전이다. 더 최근 판단·진전의 시간을 되돌리지 않는다.
+                if (it.lastTerminalActionAt == null || occurredAt.isAfter(it.lastTerminalActionAt)) {
+                    it.lastTerminalActionAt = occurredAt
+                    if (it.progressPressureSince == null || !occurredAt.isBefore(it.progressPressureSince)) {
+                        it.progressPressureSince = null
+                        if (elapsedSeconds(occurredAt, now) < STALL_SECONDS) it.stallWarned = false
+                    }
+                }
             }
         }
         meterRegistry.counter(ACTION_TERMINAL_METER, "type", type?.name ?: "UNKNOWN").increment()

@@ -9,7 +9,7 @@ interface ConvergenceStore {
     fun findActiveScopes(accountId: Long): Set<AutomationIsolationScope>
     fun findSuppressedBaselines(accountId: Long): Map<AutomationIsolationScope, Set<String>>
     fun findPolicyHeldScopes(accountId: Long): Set<AutomationIsolationScope>
-    fun findDue(accountId: Long, now: Instant): ActionConvergenceRecord?
+    fun findDue(accountId: Long, now: Instant, excludedExecutionIdentities: Set<String> = emptySet()): ActionConvergenceRecord?
     fun normalizeOrphans(accountId: Long, now: Instant): Int
     fun get(attemptId: Long): ActionConvergenceRecord?
     fun get(accountId: Long, executionIdentity: String): ActionConvergenceRecord?
@@ -92,10 +92,11 @@ class InMemoryConvergenceStore : ConvergenceStore {
         .toSet()
 
     @Synchronized
-    override fun findDue(accountId: Long, now: Instant): ActionConvergenceRecord? = records.values
+    override fun findDue(accountId: Long, now: Instant, excludedExecutionIdentities: Set<String>): ActionConvergenceRecord? = records.values
         .asSequence()
         .filter { it.accountId == accountId && it.result == ActionConvergenceResult.PENDING }
         .filterNot { it.selection.observationOnly }
+        .filterNot { it.selection.executionIdentity in excludedExecutionIdentities }
         .filter { it.nextProbeAt?.isAfter(now) != true }
         .minWithOrNull(compareBy<ActionConvergenceRecord> { it.nextProbeAt }.thenBy { it.attemptId })
 

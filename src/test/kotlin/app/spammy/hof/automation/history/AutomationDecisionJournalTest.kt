@@ -13,6 +13,9 @@ import jakarta.persistence.EntityManager
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
 import org.springframework.test.context.ActiveProfiles
+import org.springframework.transaction.annotation.Propagation
+import org.springframework.transaction.annotation.Transactional
+import org.springframework.transaction.support.TransactionTemplate
 import java.time.Instant
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
@@ -22,15 +25,326 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.assertNotNull
 import tools.jackson.module.kotlin.jacksonObjectMapper
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry
+import kotlin.test.assertFalse
+import kotlin.test.assertFailsWith
 
 @DataJpaTest
 @ActiveProfiles("test")
-class AutomationDecisionJournalTest {
+open class AutomationDecisionJournalTest {
     @Autowired private lateinit var accounts: HofAccountRepository
     @Autowired private lateinit var entityManager: EntityManager
     @Autowired private lateinit var cycleCommands: AutomationDecisionCycleCommandRepository
     @Autowired private lateinit var eventCommands: AutomationDecisionEventCommandRepository
-    private val now = Instant.parse("2026-08-12T01:00:00Z")
+    @Autowired private lateinit var transactions: org.springframework.transaction.PlatformTransactionManager
+    private var now = Instant.parse("2026-08-12T01:00:00Z")
+
+    @ParameterizedTest
+    @ValueSource(longs = [0, 1])
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    fun `START 이력 재전달은 CATCH 뒤에 도착해도 원래 단계 순서를 보존한다`(secondsBetween: Long) {
+        val journal = journal()
+        val accountId = committed { account("history-delivery-order-$secondsBetween").id }
+        val entryId = committed { entry(entityManager.find(HofAccountEntity::class.java, accountId), AutomationType.FISHING, 0).id }
+        val cycleId = committed {
+            journal.appendDecision(accountId, AutomationCoordination.Runnable(
+                entryId, FishingTownAutomationAction(accountId,
+                    app.spammy.hof.town.fishing.model.FishingAction.START,
+                    app.spammy.hof.town.fishing.model.FishingPrimaryAction.START, 5), emptyList(),
+                listOf(AutomationEvaluationTrace(0, entryId, AutomationType.FISHING,
+                    AutomationDecisionOutcome.SELECTED, "ACTION_SELECTED", "낚시 선택")),
+            ))
+        }
+        val startAt = now
+        val start = committed { journal.deferActionResult(cycleId, "start-$cycleId", AutomationActionTrace(
+            AutomationHistoryEventKind.ACTION_SUCCEEDED, "FISHING_START_APPLIED", "시작 적용",
+            entryId, AutomationType.FISHING, "START",
+        )) }
+        committed { entityManager.createNativeQuery("alter table automation_decision_events add constraint history_start_failure check (decision_cycle_id <> $cycleId or reason_code <> 'FISHING_START_APPLIED')").executeUpdate() }
+        try {
+            journal.publishDeferredResult(start)
+        } finally {
+            committed { entityManager.createNativeQuery("alter table automation_decision_events drop constraint history_start_failure").executeUpdate() }
+        }
+        now = now.plusSeconds(secondsBetween)
+        committed { journal.appendActionResult(cycleId, AutomationActionTrace(
+            AutomationHistoryEventKind.ACTION_STARTED, "CATCH_STARTED", "잡기 전송", entryId, AutomationType.FISHING, "CATCH",
+        )) }
+        val catchAt = now
+        val catch = committed { journal.deferActionResult(cycleId, "catch-$cycleId", AutomationActionTrace(
+            AutomationHistoryEventKind.ACTION_SUCCEEDED, "FISHING_CATCH_APPLIED", "잡기 적용",
+            entryId, AutomationType.FISHING, "CATCH",
+        )) }
+        journal.publishDeferredResult(catch)
+        assertEquals(listOf("FISHING_CATCH_APPLIED"), committed {
+            journal.page(accountId, AutomationHistoryQuery()).cycles.single().events
+                .filter { it.kind == AutomationHistoryEventKind.ACTION_SUCCEEDED }.map { it.reasonCode }
+        })
+        now = now.plusSeconds(11)
+        journal.publishDeferredResults()
+        journal.publishDeferredResult(start)
+        val cycle = committed { journal.page(accountId, AutomationHistoryQuery()).cycles.single() }
+        assertEquals(listOf("ACTION_SELECTED", "FISHING_START_APPLIED", "CATCH_STARTED", "FISHING_CATCH_APPLIED"), cycle.events.map { it.reasonCode })
+        assertEquals(listOf(0, 1, 2, 3), cycle.events.map { it.sequence })
+        assertEquals(listOf("FISHING_START_APPLIED", "CATCH_STARTED", "FISHING_CATCH_APPLIED"), cycle.steps.single().executionEvents.map { it.reasonCode })
+        assertEquals(listOf(startAt, catchAt), cycle.events.filter { it.kind == AutomationHistoryEventKind.ACTION_SUCCEEDED }.map { it.occurredAt })
+    }
+
+    private fun <T : Any> committed(block: () -> T): T = requireNotNull(TransactionTemplate(transactions).execute { block() })
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    fun `Kafka 전달 실패 중에도 로컬 이력은 복원하고 상세 문맥은 전송하지 않는다`() {
+        val journal = journal()
+        val clock = TimeProvider { now }
+        val accountId = committed { account("history-broker-unavailable").id }
+        val cycleId = committed { journal.appendDecision(accountId, AutomationCoordination.Idle(emptyList())) }
+        committed { journal.deferActionResult(cycleId, "broker-result-$cycleId", AutomationActionTrace(
+            AutomationHistoryEventKind.ACTION_SUCCEEDED, "HOME_APPLIED", "로컬 결과 문맥", type = AutomationType.HOME_QUEST,
+        )) }
+        val topic = "hof.automation.wakeup"
+        committed { entityManager.persist(app.spammy.hof.automation.outbox.AutomationOutboxEntity(
+            eventId = "broker-wake-$cycleId", account = entityManager.find(HofAccountEntity::class.java, accountId),
+            topic = topic, eventKey = accountId.toString(), payload = "wake", createdAt = now, availableAt = now,
+        )) }
+        try {
+            val deliveredTopics = mutableListOf<String>()
+            val query = app.spammy.hof.automation.outbox.AutomationOutboxQueryRepository(com.querydsl.jpa.impl.JPAQueryFactory(entityManager))
+            val transport = object : app.spammy.hof.automation.outbox.AutomationOutboxTransport {
+                override val supportedTopics: Set<String>? = null
+                override fun publish(row: app.spammy.hof.automation.outbox.AutomationOutboxEntity) {
+                    deliveredTopics += row.topic
+                    throw IllegalStateException("broker unavailable")
+                }
+            }
+            val publisher = app.spammy.hof.automation.outbox.AutomationOutboxPublisher(query,
+                app.spammy.hof.automation.outbox.AutomationOutboxPublishMarker(query, clock), transport, clock, journal)
+            repeat(2) { assertFailsWith<IllegalStateException> { committed { publisher.publishBatch() } } }
+            assertEquals(listOf(topic, topic), deliveredTopics)
+            val events = committed { journal.page(accountId, AutomationHistoryQuery()).cycles.single().events }
+            assertEquals("로컬 결과 문맥", events.single().message)
+        } finally {
+            // PostgreSQL의 뒤 검사도 같은 DB를 사용하므로 실패 주입 행을 남기지 않는다.
+            assertEquals(1, committed {
+                entityManager.createQuery("delete from AutomationOutboxEntity o where o.account.id = :accountId and o.eventId = :eventId")
+                    .setParameter("accountId", accountId)
+                    .setParameter("eventId", "broker-wake-$cycleId")
+                    .executeUpdate()
+            })
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    fun `보존 정리로 삭제한 판단의 미전달 문맥은 지우고 현재 이력은 계속 복원한다`(expired: Boolean) {
+        val journal = journal()
+        val accountId = committed { account("history-retention-pending-$expired").id }
+        val oldCycle = committed { journal.appendPreparedActionAttempt(accountId, AutomationActionTrace(
+            AutomationHistoryEventKind.ACTION_STARTED, "OLD_STARTED", "과거 행동",
+        )) }
+        val old = committed { journal.deferActionResult(oldCycle, "expired-$oldCycle", AutomationActionTrace(
+            AutomationHistoryEventKind.ACTION_SUCCEEDED, "OLD_APPLIED", "과거 결과",
+        )) }
+        now = now.plusSeconds(if (expired) 31 * 24 * 60 * 60 else 1)
+        val currentCycle = committed { journal.appendPreparedActionAttempt(accountId, AutomationActionTrace(
+            AutomationHistoryEventKind.ACTION_STARTED, "CURRENT_STARTED", "현재 행동",
+        )) }
+        committed { journal.appendActionResult(currentCycle, AutomationActionTrace(
+            AutomationHistoryEventKind.WAITING, "CURRENT_WAITING", "현재 결과 저장 대기",
+        )) }
+        val current = committed { journal.deferActionResult(currentCycle, "retained-$currentCycle", AutomationActionTrace(
+            AutomationHistoryEventKind.ACTION_SUCCEEDED, "CURRENT_APPLIED", "현재 결과",
+        )) }
+        committed { AutomationHistoryRetentionScheduler(entityManager, TimeProvider { now }, 30, if (expired) 50000 else 1).cleanup() }
+        fun payload(id: Long) = committed { entityManager.createQuery("select o.payload from AutomationOutboxEntity o where o.id = :id", String::class.java)
+            .setParameter("id", id).singleResult }
+        assertEquals("", payload(old))
+        assertTrue(payload(current).isNotBlank())
+        journal.publishDeferredResult(old)
+        journal.publishDeferredResults()
+        val cycles = committed { journal.page(accountId, AutomationHistoryQuery()).cycles }
+        assertEquals(listOf(currentCycle), cycles.map { it.id })
+        assertEquals("CURRENT_APPLIED", cycles.single().events.single { it.kind == AutomationHistoryEventKind.ACTION_SUCCEEDED }.reasonCode)
+        assertEquals("", payload(current))
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = [0, 1])
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    fun `건수 제한은 늦게 전달한 과거 결과보다 최신 판단 이력을 보존한다`(secondsBetween: Long) {
+        val journal = journal()
+        val accountId = committed { account("history-retention-order-$secondsBetween").id }
+        val oldCycle = committed { journal.appendPreparedActionAttempt(accountId, AutomationActionTrace(
+            AutomationHistoryEventKind.ACTION_STARTED, "OLD_STARTED", "과거 행동",
+        )) }
+        val old = committed { journal.deferActionResult(oldCycle, "old-$oldCycle", AutomationActionTrace(
+            AutomationHistoryEventKind.ACTION_SUCCEEDED, "OLD_APPLIED", "과거 결과",
+        )) }
+        now = now.plusSeconds(secondsBetween)
+        val currentCycle = committed { journal.appendPreparedActionAttempt(accountId, AutomationActionTrace(
+            AutomationHistoryEventKind.ACTION_STARTED, "CURRENT_STARTED", "현재 행동",
+        )) }
+        val current = committed { journal.deferActionResult(currentCycle, "current-$currentCycle", AutomationActionTrace(
+            AutomationHistoryEventKind.ACTION_SUCCEEDED, "CURRENT_APPLIED", "현재 결과",
+        )) }
+        journal.publishDeferredResult(current)
+        journal.publishDeferredResult(old)
+        committed { AutomationHistoryRetentionScheduler(entityManager, TimeProvider { now }, 30, 2).cleanup() }
+        val cycles = committed { journal.page(accountId, AutomationHistoryQuery()).cycles }
+        assertEquals(listOf(currentCycle), cycles.map { it.id })
+        assertEquals(listOf("CURRENT_STARTED", "CURRENT_APPLIED"), cycles.single().events.map { it.reasonCode })
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    fun `같은 실행의 이력을 동시에 전달하고 새 판단에서 재요청해도 원래 이력 한 건만 남는다`() {
+        val journal = journal()
+        val accountId = committed { account("history-concurrent-delivery").id }
+        val trace = AutomationActionTrace(AutomationHistoryEventKind.ACTION_SUCCEEDED, "HOME_APPLIED", "원래 자택 적용",
+            type = AutomationType.HOME_QUEST, actionKind = "HOME_QUEST_ACCEPT")
+        val originalCycle = committed { journal.appendDecision(accountId, AutomationCoordination.Idle(emptyList())) }
+        val id = committed { journal.deferActionResult(originalCycle, "one-execution", trace) }
+        val ready = java.util.concurrent.CountDownLatch(2)
+        val start = java.util.concurrent.CountDownLatch(1)
+        val workers = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            val deliveries = List(2) { workers.submit {
+                ready.countDown()
+                check(start.await(10, java.util.concurrent.TimeUnit.SECONDS))
+                journal.publishDeferredResult(id)
+            } }
+            assertTrue(ready.await(10, java.util.concurrent.TimeUnit.SECONDS))
+            start.countDown()
+            deliveries.forEach { it.get(20, java.util.concurrent.TimeUnit.SECONDS) }
+        } finally {
+            start.countDown()
+            workers.shutdownNow()
+        }
+        val nextCycle = committed { journal.appendDecision(accountId, AutomationCoordination.Idle(emptyList())) }
+        assertEquals(id, committed { journal.deferActionResult(nextCycle, "one-execution", trace.copy(message = "다음 판단의 다른 문맥")) })
+        journal.publishDeferredResult(id)
+        val cycles = committed { journal.page(accountId, AutomationHistoryQuery()).cycles }
+        assertEquals("원래 자택 적용", cycles.single { it.id == originalCycle }.events.single().message)
+        assertTrue(cycles.single { it.id == nextCycle }.events.isEmpty())
+        val payload = committed { entityManager.createQuery("select o.payload from AutomationOutboxEntity o where o.id = :id", String::class.java)
+            .setParameter("id", id).singleResult }
+        assertEquals("", payload)
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    fun `지연 성공 이력은 현재 stall을 해소하거나 최신 진전 시각을 되돌리지 않는다`() {
+        val registry = SimpleMeterRegistry()
+        val telemetry = AutomationProgressTelemetry(registry, TimeProvider { now })
+        val journal = journal(telemetry)
+        val accountId = committed { account("history-late-telemetry").id }
+        val entryId = committed { entry(entityManager.find(HofAccountEntity::class.java, accountId), AutomationType.HOME_QUEST, 0).id }
+        val trace = AutomationActionTrace(AutomationHistoryEventKind.ACTION_SUCCEEDED, "HOME_APPLIED", "자택 적용",
+            entryId, AutomationType.HOME_QUEST, "HOME_QUEST_ACCEPT")
+        val oldCycle = committed { journal.appendPreparedActionAttempt(accountId, trace.copy(
+            kind = AutomationHistoryEventKind.ACTION_STARTED, reasonCode = "ACTION_STARTED",
+        )) }
+        val oldAccept = committed { journal.deferActionResult(oldCycle, "old-accept-$oldCycle", trace) }
+        val oldClaim = committed { journal.deferActionResult(oldCycle, "old-claim-$oldCycle", trace.copy(actionKind = "HOME_QUEST_CLAIM")) }
+        now = now.plusSeconds(10)
+        val currentCycle = committed { journal.appendDecision(accountId, AutomationCoordination.Runnable(
+            entryId, HomeQuestAutomationAction(accountId, "home-next", "다음 자택", "accept", HomeQuestAutomationActionType.ACCEPT), emptyList(),
+        )) }
+        now = now.plusSeconds(181)
+        telemetry.detectStalls()
+        assertTrue(telemetry.snapshot(accountId).stalled)
+        journal.publishDeferredResult(oldAccept)
+        assertTrue(telemetry.snapshot(accountId).stalled)
+        assertEquals(181, telemetry.snapshot(accountId).secondsWithoutTerminalAction)
+
+        val current = committed { journal.deferActionResult(currentCycle, "current-accept-$currentCycle", trace) }
+        journal.publishDeferredResult(current)
+        assertFalse(telemetry.snapshot(accountId).stalled)
+        assertEquals(0, telemetry.snapshot(accountId).secondsWithoutTerminalAction)
+        now = now.plusSeconds(1)
+        journal.publishDeferredResult(oldClaim)
+        journal.publishDeferredResult(oldAccept)
+        assertEquals(1, telemetry.snapshot(accountId).secondsWithoutTerminalAction)
+        assertFalse(telemetry.snapshot(accountId).stalled)
+        assertEquals(3.0, registry.counter("hof.automation.action.terminal", "type", "HOME_QUEST").count())
+        assertEquals(1.0, registry.counter("hof.automation.progress.stall", "reason", "NO_TERMINAL_ACTION").count())
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = [0, 1])
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    fun `과거 CATCH 이력 재전달은 현재 낚시 복구 반복을 초기화하지 않는다`(secondsBetween: Long) {
+        val journal = journal()
+        val accountId = committed { account("history-late-catch-$secondsBetween").id }
+        val entryId = committed { entry(entityManager.find(HofAccountEntity::class.java, accountId), AutomationType.FISHING, 0).id }
+        val cycleId = committed { journal.appendPreparedActionAttempt(accountId, AutomationActionTrace(
+            AutomationHistoryEventKind.ACTION_STARTED, "CATCH_STARTED", "이전 잡기", entryId, AutomationType.FISHING, "CATCH",
+        )) }
+        val deferred = committed { journal.deferActionResult(cycleId, "old-catch-$cycleId", AutomationActionTrace(
+            AutomationHistoryEventKind.ACTION_SUCCEEDED, "FISHING_CATCH_APPLIED", "이전 잡기 완료", entryId, AutomationType.FISHING, "CATCH",
+        )) }
+        fun recovery() {
+            now = now.plusSeconds(secondsBetween)
+            committed { journal.appendResultObservation(accountId, AutomationActionTrace(
+                AutomationHistoryEventKind.SKIPPED, "FISHING_BATTLE_RECOVERED_FROM_START", "현재 전투 재확인",
+                entryId, AutomationType.FISHING, "START", diagnosticContext = """{
+                    "version":1,"source":"DIRECT_RESPONSE","recheckRequired":true,
+                    "fishing":{"primaryAction":"NONE","remainingCasts":4,"blockedByBattle":true,
+                    "battleMapCode":"Fish03","battleObservationComplete":true}}""".trimIndent(),
+            )) }
+        }
+        recovery()
+        recovery()
+        journal.publishDeferredResult(deferred)
+        recovery()
+        val events = committed { journal.page(accountId, AutomationHistoryQuery()).cycles.flatMap { it.events } }
+        val repeated = events.single { it.reasonCode == "FISHING_RECOVERY_REPEATED" }
+        assertEquals(3, jacksonObjectMapper().readTree(repeated.diagnosticContext)["repetition"]["count"].asInt())
+        assertEquals(1, events.count { it.reasonCode == "FISHING_CATCH_APPLIED" })
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    fun `항목과 프리셋을 삭제한 뒤에도 지연 이력은 당시 이름과 결과를 보존한다`() {
+        val journal = journal()
+        val accountId = committed { account("history-deleted-entry").id }
+        val entryId = committed {
+            entry(entityManager.find(HofAccountEntity::class.java, accountId), AutomationType.BATTLE_MAP, 0)
+                .apply { displayName = "원래 맵 묶음" }.id
+        }
+        val presetId = committed {
+            app.spammy.hof.party.entity.PartyPresetEntity(
+                account = entityManager.find(HofAccountEntity::class.java, accountId), name = "원래 프리셋",
+                createdAt = now, updatedAt = now,
+            ).also(entityManager::persist).id
+        }
+        val cycleId = committed { journal.appendPreparedActionAttempt(accountId, AutomationActionTrace(
+            AutomationHistoryEventKind.ACTION_STARTED, "BATTLE_STARTED", "전투 전송", entryId, AutomationType.BATTLE_MAP, "BATTLE",
+        )) }
+        val occurredAt = now
+        val context = """{"source":"DIRECT_RESPONSE","settingsRevision":7,"targetKey":"map-1"}"""
+        val deferred = committed { journal.deferActionResult(cycleId, "deleted-entry-result", AutomationActionTrace(
+            AutomationHistoryEventKind.ACTION_SUCCEEDED, "BATTLE_APPLIED", "전투 적용", entryId, AutomationType.BATTLE_MAP,
+            "BATTLE", targetKey = "map-1", presetId = presetId, diagnosticContext = context,
+        )) }
+        committed {
+            entityManager.remove(entityManager.find(AutomationEntryEntity::class.java, entryId))
+            entityManager.remove(entityManager.find(app.spammy.hof.party.entity.PartyPresetEntity::class.java, presetId))
+        }
+        now = now.plusSeconds(20)
+        journal.publishDeferredResult(deferred)
+        journal.publishDeferredResults()
+        val events = committed { journal.page(accountId, AutomationHistoryQuery()).cycles.single().events }
+        val result = events.single { it.kind == AutomationHistoryEventKind.ACTION_SUCCEEDED }
+        assertNull(result.entryId)
+        assertEquals("원래 맵 묶음", result.entryDisplayName)
+        assertEquals("원래 프리셋", result.presetName)
+        assertEquals(occurredAt, result.occurredAt)
+        assertEquals(context, result.diagnosticContext)
+        assertEquals("map-1", result.targetKey)
+        assertEquals(2, events.size)
+    }
 
     @Test
     fun `낚시 반복은 다른 유형 성공과 재생성에 가려지지 않고 한 사건으로 보존된다`() {
@@ -472,11 +786,13 @@ class AutomationDecisionJournalTest {
         loginId = login, encryptedPassword = "encrypted", createdAt = now,
     ))
 
-    private fun journal() = JpaAutomationDecisionJournal(
+    private fun journal(telemetry: AutomationProgressTelemetry? = null) = JpaAutomationDecisionJournal(
         entityManager,
         TimeProvider { now },
         cycleCommands,
         eventCommands,
+        transactions,
+        telemetry,
     )
 
     private fun entry(account: HofAccountEntity, type: AutomationType, priority: Int): AutomationEntryEntity =

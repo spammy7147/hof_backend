@@ -2,9 +2,14 @@ package app.spammy.hof.automation.convergence
 
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.repository.HofAccountRepository
+import app.spammy.hof.account.repository.AccountQueryRepository
+import app.spammy.hof.automation.outbox.AutomationOutboxService
 import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.repository.AutomationEntryCommandRepository
+import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
+import app.spammy.hof.automation.service.AutomationDirectResponseStore
+import app.spammy.hof.automation.service.StoredTypedAutomationActionCodec
 import app.spammy.hof.common.persistence.QueryDslConfig
 import app.spammy.hof.common.time.TimeProvider
 import jakarta.persistence.EntityManager
@@ -15,12 +20,23 @@ import kotlin.test.assertNotNull
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
 import org.springframework.context.annotation.Import
+import org.springframework.context.annotation.Bean
+import org.springframework.boot.test.context.TestConfiguration
+import tools.jackson.module.kotlin.jacksonObjectMapper
 import org.springframework.test.context.ActiveProfiles
 
 @DataJpaTest
 @ActiveProfiles("test")
-@Import(QueryDslConfig::class, JpaConvergenceStore::class, JpaAutomationConvergenceStatusReader::class)
+@Import(QueryDslConfig::class, JpaConvergenceStore::class, JpaAutomationConvergenceStatusReader::class,
+    AutomationDirectResponseStore::class, TypedAutomationQueryRepository::class, JpaEvidenceCaseRecorder::class,
+    AccountQueryRepository::class, AutomationOutboxService::class,
+    StoredTypedAutomationActionCodec::class, AutomationConvergenceStatusReaderTest.Config::class)
 class AutomationConvergenceStatusReaderTest {
+    @TestConfiguration
+    class Config {
+        @Bean fun mapper() = jacksonObjectMapper()
+        @Bean fun clock() = TimeProvider { Instant.parse("2026-09-10T10:00:00Z") }
+    }
     @Autowired private lateinit var accounts: HofAccountRepository
     @Autowired private lateinit var entries: AutomationEntryCommandRepository
     @Autowired private lateinit var store: JpaConvergenceStore
@@ -50,7 +66,7 @@ class AutomationConvergenceStatusReaderTest {
         assertEquals("unsupported-fixture-version", evidence.policyVersion)
         assertEquals(null, evidence.observationCompleteness)
         assertEquals(null, evidence.observationFreshness)
-        assertEquals(null, evidence.attempt.submittedAt)
+        assertEquals(null, assertNotNull(evidence.attempt).submittedAt)
         assertEquals(0, status.successfulObservationCount)
         val record = assertNotNull(store.get(status.attemptId))
         record.result = ActionConvergenceResult.RESULT_UNOBSERVED

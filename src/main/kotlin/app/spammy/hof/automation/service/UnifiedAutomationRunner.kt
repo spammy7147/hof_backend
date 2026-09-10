@@ -38,6 +38,7 @@ class UnifiedAutomationRunner @Autowired constructor(
     private val timeProvider: TimeProvider? = null,
     private val convergenceWorkPriority: AutomationConvergenceWorkPriority? = null,
     private val fishingCycleModule: FishingCycleModule? = null,
+    private val directResponseStore: AutomationDirectResponseStore? = null,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
@@ -57,7 +58,15 @@ class UnifiedAutomationRunner @Autowired constructor(
                 return
             }
             is TypedRuntimeAcquisition.Acquired -> {
-                if (!completingCurrentAction && !ensurePreflight(accountId, acquisition.execution)) return
+                val directResponse = try {
+                    acquisition.execution.checkpoint?.storedAction?.let { directResponseStore?.load(accountId, it) }
+                } catch (error: IllegalArgumentException) {
+                    typedRuntime.complete(acquisition.execution, TypedRuntimeOutcome.IntegrityFailure(
+                        "Stored direct response integrity check failed.",
+                    ))
+                    return
+                }
+                if (directResponse == null && !completingCurrentAction && !ensurePreflight(accountId, acquisition.execution)) return
                 val dueDirective = if (
                     !completingCurrentAction &&
                     acquisition.execution.checkpoint == null
@@ -69,7 +78,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                 when (dueDirective) {
                     null,
                     ConvergenceDirective.ContinueSelection,
-                    -> runAcquired(accountId, acquisition.execution)
+                    -> runAcquired(accountId, acquisition.execution, restoredDirectResponse = directResponse)
                     is ConvergenceDirective.Probe -> runAcquired(accountId, acquisition.execution, dueDirective)
                     else -> releaseForConvergenceDirective(acquisition.execution, dueDirective)
                 }
@@ -127,6 +136,7 @@ class UnifiedAutomationRunner @Autowired constructor(
         accountId: Long,
         initialExecution: TypedRuntimeExecutionRight,
         fallbackConvergenceProbe: ConvergenceDirective.Probe? = null,
+        restoredDirectResponse: StoredAutomationDirectResponse? = null,
     ) {
         var execution = initialExecution
         var checkpoint = execution.checkpoint
@@ -137,6 +147,8 @@ class UnifiedAutomationRunner @Autowired constructor(
         var decisionCycleId: Long? = null
         var selectedWarnings: List<String>? = null
         var convergenceAttemptId: Long? = null
+        var appliedEvidence: AutomationActionEvidence? = null
+        var receivedDirectResponse = restoredDirectResponse
         lateinit var resultSelection: AutomationResultCoordinator.ActionSelection
         lateinit var managedAction: ManagedAutomationAction
         val stored: StoredTypedAutomationAction
@@ -439,6 +451,115 @@ class UnifiedAutomationRunner @Autowired constructor(
             } }
             return true
         }
+        fun finishDirectExecution(evidenceExecution: TypedAutomationExecution, capturedAt: Instant) {
+            appliedEvidence = results.directEvidence(resultSelection, evidenceExecution, capturedAt)
+            val acceptedExecution = when (val connected = results.applyDirect(managedAction, evidenceExecution, appliedEvidence, convergenceAttemptId)) {
+                is AutomationResultCoordinator.DirectResult.Accepted -> connected.execution
+                is AutomationResultCoordinator.DirectResult.Unapplied -> {
+                    typedRuntime.complete(
+                        execution, connected.outcome,
+                        convergenceRecheckAt = (connected.directive as? ConvergenceDirective.WaitUntil)?.at,
+                    )
+                    decisionCycleId?.let { cycleId ->
+                        decisionJournal?.appendActionResult(cycleId, trace(
+                            if (connected.superseded) AutomationHistoryEventKind.SKIPPED else AutomationHistoryEventKind.WAITING,
+                            "ACTION_RESULT_NOT_APPLIED", connected.warning,
+                        ))
+                    }
+                    return
+                }
+            }
+            val domainExecution = acceptedExecution.runtimeDomainExecution()
+            val storedBattle = stored.payload as? StoredTypedActionPayload.BattleMap
+            val recoveryAppliedByTerminalResult =
+                domainExecution is TypedAutomationExecution.BattleCompleted &&
+                    storedBattle?.source == BattleAutomationActionSource.RAID_AUTOMATION &&
+                    storedBattle.recoveryChainId != null
+            val wakeReason = when (domainExecution) {
+                TypedAutomationExecution.Completed -> "TYPED_ACTION_COMPLETED"
+                is TypedAutomationExecution.ActionCompleted -> error("Action evidence must be unwrapped before runtime use.")
+                is TypedAutomationExecution.BattleCompleted -> {
+                    sharedBattleCooldowns.applyAfterSuccessfulBattle(
+                        accountId,
+                        domainExecution.categoryId,
+                        domainExecution.mapCode,
+                    )
+                    if (recoveryAppliedByTerminalResult) {
+                        RAID_BATTLE_APPLIED_TERMINAL_RESULT
+                    } else {
+                        "TYPED_ACTION_COMPLETED"
+                    }
+                }
+                is TypedAutomationExecution.SharedCooldown -> {
+                    sharedBattleCooldowns.learnAndApply(
+                        accountId,
+                        domainExecution.categoryId,
+                        domainExecution.mapCode,
+                        domainExecution.retryAt,
+                    )
+                    "TYPED_SHARED_COOLDOWN_SKIPPED"
+                }
+                is TypedAutomationExecution.RaidCycleFinished -> "TYPED_RAID_CYCLE_FINISHED"
+                is TypedAutomationExecution.RaidWaiting -> "TYPED_RAID_WAITING"
+            }
+            val finalWarnings = if (
+                domainExecution is TypedAutomationExecution.BattleCompleted &&
+                (stored.payload as? StoredTypedActionPayload.BattleMap)?.source ==
+                    BattleAutomationActionSource.RAID_AUTOMATION
+            ) {
+                selectedWarnings.orEmpty().filterNot { it.startsWith("레이드 전투 결과 미확정") }
+            } else {
+                selectedWarnings
+            }
+            val outcome = if (domainExecution is TypedAutomationExecution.SharedCooldown) {
+                TypedRuntimeOutcome.SharedCooldownHandled(wakeReason, finalWarnings)
+            } else {
+                TypedRuntimeOutcome.ActionSucceeded(wakeReason, finalWarnings)
+            }
+            commitDirectResult(stored.executionIdentity,
+                persistResult = { results.finishDirect(accountId, stored, appliedEvidence, convergenceAttemptId, domainExecution) },
+                history = decisionCycleId?.let { cycleId ->
+                        val noReward = (stored.payload as? StoredTypedActionPayload.RaidTown)?.action == RaidAction.REWARD &&
+                            ((acceptedExecution as? TypedAutomationExecution.ActionCompleted)?.observedState as? RaidObservedState)
+                                ?.rewardResult == RaidRewardResultKind.NOTHING_AVAILABLE
+                        val resultTrace = when (domainExecution) {
+                            is TypedAutomationExecution.RaidCycleFinished -> raidCycleTrace(domainExecution.outcome)
+                            is TypedAutomationExecution.RaidWaiting -> raidWaitTrace(domainExecution)
+                            is TypedAutomationExecution.BattleCompleted if recoveryAppliedByTerminalResult -> trace(
+                                AutomationHistoryEventKind.ACTION_SUCCEEDED,
+                                RAID_BATTLE_APPLIED_TERMINAL_RESULT,
+                                "정확한 전투 단말 결과로 레이드 전투 적용을 확인하고 복구를 종료했습니다.",
+                            )
+                            is TypedAutomationExecution.SharedCooldown if
+                                (stored.payload as? StoredTypedActionPayload.BattleMap)?.source ==
+                                    BattleAutomationActionSource.RAID_AUTOMATION -> trace(
+                                AutomationHistoryEventKind.ACTION_SUCCEEDED,
+                                wakeReason,
+                                "HOF가 명시한 쿨타임까지 레이드 전투만 기다립니다.",
+                                domainExecution.retryAt,
+                                diagnosticKind = AutomationDiagnosticKind.RAID_EXPLICIT_COOLDOWN_WAIT,
+                                impactScope = AutomationImpactScope.RAID_ONLY,
+                                releaseCondition = "HOF가 준 시각 뒤 최신 레이드 상태 재확인",
+                            )
+                            else -> trace(
+                                AutomationHistoryEventKind.ACTION_SUCCEEDED,
+                                wakeReason,
+                                if (noReward) RAID_NOTHING_AVAILABLE_MESSAGE else "자동화 행동을 완료했습니다.",
+                            )
+                        }
+                        decisionJournal?.let { DirectResultHistory(it, cycleId, resultTrace) }
+            }) { persist -> typedRuntime.complete(execution, outcome, persist) }
+        }
+        fun retryStoredDirectResponse() {
+            val directApplied = requireNotNull(appliedEvidence as? AutomationActionEvidence.DirectApplied)
+            typedRuntime.complete(execution, TypedRuntimeOutcome.DirectResponsePending(
+                retryAt = now().plusSeconds(10),
+                message = "원래 직접 응답을 보존한 채 로컬 후처리를 다시 시도합니다. 다른 자동화는 계속 실행합니다.",
+            )) {
+                // 로컬 후처리 대기와 같은 commit에 이미 확인한 원격 적용 사실을 보존한다.
+                convergenceAttemptId?.let { results.record(it, directApplied) }
+            }
+        }
         if (decisionCycleId == null) {
             decisionCycleId = try {
                 val reconciling = activeCheckpoint.phase == TypedRuntimeCheckpointPhase.RECONCILING
@@ -452,11 +573,14 @@ class UnifiedAutomationRunner @Autowired constructor(
                     trace(
                         if (reconciling) AutomationHistoryEventKind.WAITING else AutomationHistoryEventKind.SELECTED,
                         when {
+                            restoredDirectResponse != null -> "STORED_DIRECT_RESPONSE_RESTORE"
                             raidRecoveryHandoff -> "RAID_BATTLE_RECOVERY_HANDOFF"
                             reconciling -> "AMBIGUOUS_RESULT_VERIFY"
                             else -> "PREPARED_ACTION_RETRY"
                         },
-                        if (raidRecoveryHandoff) {
+                        if (restoredDirectResponse != null) {
+                            "원래 행동에 대해 수신한 저장 응답을 복원하여 판정합니다."
+                        } else if (raidRecoveryHandoff) {
                             "저장된 레이드 전투의 불명확 결과를 전용 복구로 인계하고 다음 확인 시각까지 기다립니다."
                         } else if (reconciling) {
                             "이전 요청의 처리 결과가 불확실해 HOF 최신 상태로 적용 여부를 재확인합니다."
@@ -467,6 +591,27 @@ class UnifiedAutomationRunner @Autowired constructor(
                 )
             } catch (error: Exception) {
                 stopPreparationFailure(accountId, execution, stored.entryId, "JOURNAL_RETRY", error)
+                return
+            }
+        }
+        if (restoredDirectResponse != null) {
+            val directExecution = try {
+                managedAction.restoreDirectResponse(restoredDirectResponse.response)
+            } catch (error: IllegalArgumentException) {
+                typedRuntime.complete(execution, TypedRuntimeOutcome.IntegrityFailure("Stored direct response context mismatch."))
+                return
+            }
+            val evidence = results.directEvidence(resultSelection, directExecution, restoredDirectResponse.capturedAt)
+            // 보존된 원본 자체는 성공 증거가 아니다. 기존 모드의 비확정 응답은 유한 재관측으로 이어간다.
+            if (resultSelection.policy != null || evidence is AutomationActionEvidence.DirectApplied) {
+                convergenceAttemptId = results.restoreDirectResponse(accountId, resultSelection, activeCheckpoint)
+                try {
+                    finishDirectExecution(directExecution, restoredDirectResponse.capturedAt)
+                } catch (error: Exception) {
+                    if (error is DirectResultPersistenceFailure) throw error
+                    if (evidence !is AutomationActionEvidence.DirectApplied) throw error
+                    retryStoredDirectResponse()
+                }
                 return
             }
         }
@@ -878,7 +1023,6 @@ class UnifiedAutomationRunner @Autowired constructor(
             )
             return
         }
-        var appliedEvidence: AutomationActionEvidence? = null
         try {
             decisionCycleId?.let { cycleId ->
                 decisionJournal?.appendActionResult(
@@ -886,112 +1030,28 @@ class UnifiedAutomationRunner @Autowired constructor(
                     trace(AutomationHistoryEventKind.ACTION_STARTED, "ACTION_STARTED", "자동화 행동을 시작했습니다."),
                 )
             }
-            val authorizedExecution = submissionGate.executeAuthorized(accountId) { managedAction.execute() }
+            val authorizedExecution = submissionGate.executeAuthorized(accountId) {
+                managedAction.execute().also {
+                    managedAction.directResponse?.let { response ->
+                        try {
+                            receivedDirectResponse = directResponseStore?.record(accountId, stored, response)
+                        } catch (error: Exception) {
+                            throw DirectResultPersistenceFailure(error)
+                        }
+                    }
+                }
+            }
             if (!authorizedExecution.authorized) {
                 return typedRuntime.discardUnauthorizedSubmission(accountId, execution, convergenceAttemptId, results, now())
             }
             val evidenceExecution = requireNotNull(authorizedExecution.value)
-            appliedEvidence = results.directEvidence(resultSelection, evidenceExecution)
-            val acceptedExecution = when (val connected = results.applyDirect(managedAction, evidenceExecution, appliedEvidence, convergenceAttemptId)) {
-                is AutomationResultCoordinator.DirectResult.Accepted -> connected.execution
-                is AutomationResultCoordinator.DirectResult.Unapplied -> {
-                    typedRuntime.complete(
-                        execution, connected.outcome,
-                        convergenceRecheckAt = (connected.directive as? ConvergenceDirective.WaitUntil)?.at,
-                    )
-                    decisionCycleId?.let { cycleId ->
-                        decisionJournal?.appendActionResult(cycleId, trace(
-                            if (connected.superseded) AutomationHistoryEventKind.SKIPPED else AutomationHistoryEventKind.WAITING,
-                            "ACTION_RESULT_NOT_APPLIED", connected.warning,
-                        ))
-                    }
-                    return
-                }
-            }
-            val domainExecution = acceptedExecution.runtimeDomainExecution()
-            val storedBattle = stored.payload as? StoredTypedActionPayload.BattleMap
-            val recoveryAppliedByTerminalResult =
-                domainExecution is TypedAutomationExecution.BattleCompleted &&
-                    storedBattle?.source == BattleAutomationActionSource.RAID_AUTOMATION &&
-                    storedBattle.recoveryChainId != null
-            val wakeReason = when (domainExecution) {
-                TypedAutomationExecution.Completed -> "TYPED_ACTION_COMPLETED"
-                is TypedAutomationExecution.ActionCompleted -> error("Action evidence must be unwrapped before runtime use.")
-                is TypedAutomationExecution.BattleCompleted -> {
-                    sharedBattleCooldowns.applyAfterSuccessfulBattle(
-                        accountId,
-                        domainExecution.categoryId,
-                        domainExecution.mapCode,
-                    )
-                    if (recoveryAppliedByTerminalResult) {
-                        RAID_BATTLE_APPLIED_TERMINAL_RESULT
-                    } else {
-                        "TYPED_ACTION_COMPLETED"
-                    }
-                }
-                is TypedAutomationExecution.SharedCooldown -> {
-                    sharedBattleCooldowns.learnAndApply(
-                        accountId,
-                        domainExecution.categoryId,
-                        domainExecution.mapCode,
-                        domainExecution.retryAt,
-                    )
-                    "TYPED_SHARED_COOLDOWN_SKIPPED"
-                }
-                is TypedAutomationExecution.RaidCycleFinished -> "TYPED_RAID_CYCLE_FINISHED"
-                is TypedAutomationExecution.RaidWaiting -> "TYPED_RAID_WAITING"
-            }
-            val finalWarnings = if (
-                domainExecution is TypedAutomationExecution.BattleCompleted &&
-                (stored.payload as? StoredTypedActionPayload.BattleMap)?.source ==
-                    BattleAutomationActionSource.RAID_AUTOMATION
-            ) {
-                selectedWarnings.orEmpty().filterNot { it.startsWith("레이드 전투 결과 미확정") }
-            } else {
-                selectedWarnings
-            }
-            val outcome = if (domainExecution is TypedAutomationExecution.SharedCooldown) {
-                TypedRuntimeOutcome.SharedCooldownHandled(wakeReason, finalWarnings)
-            } else {
-                TypedRuntimeOutcome.ActionSucceeded(wakeReason, finalWarnings)
-            }
-            commitDirectResult(stored.executionIdentity,
-                persistResult = { results.finishDirect(accountId, stored, appliedEvidence, convergenceAttemptId, domainExecution) },
-                appendHistory = {
-                    decisionCycleId?.let { cycleId ->
-                        val noReward = (stored.payload as? StoredTypedActionPayload.RaidTown)?.action == RaidAction.REWARD &&
-                            ((acceptedExecution as? TypedAutomationExecution.ActionCompleted)?.observedState as? RaidObservedState)
-                                ?.rewardResult == RaidRewardResultKind.NOTHING_AVAILABLE
-                        val resultTrace = when (domainExecution) {
-                            is TypedAutomationExecution.RaidCycleFinished -> raidCycleTrace(domainExecution.outcome)
-                            is TypedAutomationExecution.RaidWaiting -> raidWaitTrace(domainExecution)
-                            is TypedAutomationExecution.BattleCompleted if recoveryAppliedByTerminalResult -> trace(
-                                AutomationHistoryEventKind.ACTION_SUCCEEDED,
-                                RAID_BATTLE_APPLIED_TERMINAL_RESULT,
-                                "정확한 전투 단말 결과로 레이드 전투 적용을 확인하고 복구를 종료했습니다.",
-                            )
-                            is TypedAutomationExecution.SharedCooldown if
-                                (stored.payload as? StoredTypedActionPayload.BattleMap)?.source ==
-                                    BattleAutomationActionSource.RAID_AUTOMATION -> trace(
-                                AutomationHistoryEventKind.ACTION_SUCCEEDED,
-                                wakeReason,
-                                "HOF가 명시한 쿨타임까지 레이드 전투만 기다립니다.",
-                                domainExecution.retryAt,
-                                diagnosticKind = AutomationDiagnosticKind.RAID_EXPLICIT_COOLDOWN_WAIT,
-                                impactScope = AutomationImpactScope.RAID_ONLY,
-                                releaseCondition = "HOF가 준 시각 뒤 최신 레이드 상태 재확인",
-                            )
-                            else -> trace(
-                                AutomationHistoryEventKind.ACTION_SUCCEEDED,
-                                wakeReason,
-                                if (noReward) RAID_NOTHING_AVAILABLE_MESSAGE else "자동화 행동을 완료했습니다.",
-                            )
-                        }
-                        decisionJournal?.appendActionResult(cycleId, resultTrace)
-                    }
-            }) { persist -> typedRuntime.complete(execution, outcome, persist) }
+            finishDirectExecution(evidenceExecution, receivedDirectResponse?.capturedAt ?: now())
         } catch (error: Throwable) {
             if (error is DirectResultPersistenceFailure) throw error
+            if (receivedDirectResponse != null && appliedEvidence is AutomationActionEvidence.DirectApplied) {
+                retryStoredDirectResponse()
+                return
+            }
             error.findActionPreconditionChanged()?.let { changed ->
                 val evidence = AutomationActionEvidence.StateAdvanced(
                     capturedAt = now(),

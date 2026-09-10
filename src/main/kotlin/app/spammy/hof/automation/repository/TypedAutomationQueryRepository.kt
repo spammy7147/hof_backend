@@ -122,6 +122,29 @@ class TypedAutomationQueryRepository(
             )
             .orderBy(typedAutomationActionRunEntity.id.desc()).fetchFirst()
 
+    fun findPendingDirectResponses(accountId: Long): List<TypedAutomationActionRunEntity> =
+        queryFactory.selectFrom(typedAutomationActionRunEntity)
+            .join(typedAutomationActionRunEntity.account, actionAccount).fetchJoin()
+            .leftJoin(typedAutomationActionRunEntity.entry, actionEntry).fetchJoin()
+            .where(
+                typedAutomationActionRunEntity.account.id.eq(accountId),
+                typedAutomationActionRunEntity.status.`in`(TypedAutomationActionStatus.RESULT_PENDING, TypedAutomationActionStatus.RESULT_HELD),
+                typedAutomationActionRunEntity.directResponseSuppressionReleasedAt.isNull,
+            ).fetch()
+
+    fun findDueDirectResponse(accountId: Long, now: Instant): TypedAutomationActionRunEntity? =
+        queryFactory.selectFrom(typedAutomationActionRunEntity)
+            .join(typedAutomationActionRunEntity.account, actionAccount).fetchJoin()
+            .leftJoin(typedAutomationActionRunEntity.entry, actionEntry).fetchJoin()
+            .leftJoin(actionEntry.account, actionEntryAccount).fetchJoin()
+            .where(
+                typedAutomationActionRunEntity.account.id.eq(accountId),
+                typedAutomationActionRunEntity.status.eq(TypedAutomationActionStatus.RESULT_PENDING),
+                typedAutomationActionRunEntity.nextAttemptAt.loe(now),
+            )
+            .orderBy(typedAutomationActionRunEntity.nextAttemptAt.asc(), typedAutomationActionRunEntity.id.asc())
+            .fetchFirst()
+
     fun findStoppedTypedAction(accountId: Long, actionId: Long): TypedAutomationActionRunEntity? =
         queryFactory.selectFrom(typedAutomationActionRunEntity)
             .join(typedAutomationActionRunEntity.account, actionAccount).fetchJoin()
@@ -151,6 +174,14 @@ class TypedAutomationQueryRepository(
             )
             .orderBy(typedAutomationActionRunEntity.id.desc())
             .fetchFirst()
+
+    fun lockTypedActionByExecutionIdentity(accountId: Long, executionIdentity: String): TypedAutomationActionRunEntity? =
+        queryFactory.selectFrom(typedAutomationActionRunEntity)
+            .where(
+                typedAutomationActionRunEntity.account.id.eq(accountId),
+                typedAutomationActionRunEntity.executionIdentity.eq(executionIdentity),
+            )
+            .setLockMode(LockModeType.PESSIMISTIC_WRITE).fetchOne()
 
     fun lockTypedAction(actionId: Long): TypedAutomationActionRunEntity? =
         queryFactory.selectFrom(typedAutomationActionRunEntity)

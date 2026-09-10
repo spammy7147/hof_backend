@@ -79,6 +79,8 @@ sealed interface TypedRuntimeOutcome {
     data class SubmissionDeferred(val retryAt: Instant, val message: String) : TypedRuntimeOutcome
     data class UnsubmittedFailure(val message: String) : TypedRuntimeOutcome
     data class SubmissionAmbiguous(val message: String) : TypedRuntimeOutcome
+    /** 원래 응답의 로컬 판정·후처리가 남았다. 원격 적용 여부와 별개이며 다른 행동의 실행권을 점유하지 않는다. */
+    data class DirectResponsePending(val retryAt: Instant, val message: String) : TypedRuntimeOutcome
     data class ReconciliationApplied(val wakeReason: String) : TypedRuntimeOutcome
     data class ReconciliationDeferred(
         val retryAt: Instant,

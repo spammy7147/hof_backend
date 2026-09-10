@@ -766,6 +766,10 @@ class TypedAutomationPersistenceTest {
             queryRepository, actionRepository, codec, TimeProvider { now },
             Mockito.mock(TypedAutomationLifecycleBridge::class.java), Mockito.mock(AutomationOutboxService::class.java),
             app.spammy.hof.character.repository.CharacterOperationJobQueryRepository(com.querydsl.jpa.impl.JPAQueryFactory(entityManager)),
+            app.spammy.hof.automation.service.AutomationDirectResponseStore(queryRepository, codec,
+                tools.jackson.module.kotlin.jacksonObjectMapper(), TimeProvider { now },
+                app.spammy.hof.automation.convergence.JpaEvidenceCaseRecorder(entityManager),
+                Mockito.mock(AutomationOutboxService::class.java)),
         )
 
         val acquisition = assertIs<TypedRuntimeAcquisition.Acquired>(runtime.acquire(account.id))

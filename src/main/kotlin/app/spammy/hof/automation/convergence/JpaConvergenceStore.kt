@@ -116,7 +116,7 @@ class JpaConvergenceStore(
             .mapValues { (_, values) -> values.toSet() }
 
     @Transactional(readOnly = true)
-    override fun findDue(accountId: Long, now: Instant): ActionConvergenceRecord? = entityManager.createQuery(
+    override fun findDue(accountId: Long, now: Instant, excludedExecutionIdentities: Set<String>): ActionConvergenceRecord? = entityManager.createQuery(
         """
         select convergence from ActionConvergenceEntity convergence
         join fetch convergence.attempt attempt
@@ -125,6 +125,7 @@ class JpaConvergenceStore(
           and convergence.result = :pending
           and convergence.activeMarker = 1
           and attempt.observationOnly = false
+          ${if (excludedExecutionIdentities.isNotEmpty()) "and attempt.executionIdentity not in :excludedExecutionIdentities" else ""}
           and (convergence.nextProbeAt is null or convergence.nextProbeAt <= :now)
         order by entry.priority asc,
                  convergence.nextProbeAt asc,
@@ -134,6 +135,7 @@ class JpaConvergenceStore(
     ).setParameter("accountId", accountId)
         .setParameter("pending", ActionConvergenceResult.PENDING)
         .setParameter("now", now)
+        .also { if (excludedExecutionIdentities.isNotEmpty()) it.setParameter("excludedExecutionIdentities", excludedExecutionIdentities) }
         .setMaxResults(1)
         .resultList
         .firstOrNull()

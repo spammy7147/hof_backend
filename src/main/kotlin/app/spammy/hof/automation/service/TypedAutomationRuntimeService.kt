@@ -19,6 +19,7 @@ private data class PersistedTypedRuntimeExecutionRight(
     val leaseToken: String,
     val actionId: Long?,
     override val checkpoint: TypedRuntimeCheckpoint?,
+    val directResponseFingerprint: String? = null,
 ) : TypedRuntimeExecutionRight
 
 @Service
@@ -30,6 +31,7 @@ class TypedAutomationRuntimeService(
     private val lifecycleBridge: TypedAutomationLifecycleBridge,
     private val outbox: AutomationOutboxService,
     private val characterJobs: CharacterOperationJobQueryRepository,
+    private val directResponses: AutomationDirectResponseStore,
     private val requestProperties: HofRequestProperties = HofRequestProperties(),
 ) {
     @Transactional(readOnly = true, propagation = Propagation.REQUIRES_NEW)
@@ -80,6 +82,8 @@ class TypedAutomationRuntimeService(
             return TypedRuntimeAcquisition.Inactive
         }
         val active = queryRepository.findActiveTypedAction(accountId)
+            ?: if (state.directResponseYieldRequired && state.lifecycleStatus == TypedAutomationLifecycle.RUNNING) null
+            else queryRepository.findDueDirectResponse(accountId, timeProvider.now())
         if (
             state.authSuspended &&
             !(
@@ -95,6 +99,10 @@ class TypedAutomationRuntimeService(
         val now = timeProvider.now()
         if (state.nextAttemptAt?.isAfter(now) == true || state.leaseUntil?.isAfter(now) == true) {
             return TypedRuntimeAcquisition.Busy
+        }
+        if (active?.status == TypedAutomationActionStatus.RESULT_PENDING) {
+            active.status = TypedAutomationActionStatus.RECONCILING
+            active.nextAttemptAt = null
         }
         if (active?.status == TypedAutomationActionStatus.SUBMITTING) {
             active.status = TypedAutomationActionStatus.RECONCILING
@@ -119,13 +127,16 @@ class TypedAutomationRuntimeService(
             val decoded = try {
                 codec.verifyPersisted(row, accountId)
             } catch (_: RuntimeException) {
-                row.status = when (row.status) {
-                    TypedAutomationActionStatus.PREPARED -> TypedAutomationActionStatus.FAILED
+                row.status = when {
+                    row.directResponseJson != null -> TypedAutomationActionStatus.RESULT_HELD
+                    row.status == TypedAutomationActionStatus.PREPARED -> TypedAutomationActionStatus.FAILED
                     else -> TypedAutomationActionStatus.AMBIGUOUS
                 }
+                row.nextAttemptAt = null
                 row.lastError = "Stored typed action integrity check failed."
                 row.finishedAt = now
                 row.updatedAt = now
+                if (row.status == TypedAutomationActionStatus.RESULT_HELD) directResponses.recordIntegrityFailure(row, now)
                 return TypedRuntimeAcquisition.RetryScheduled(
                     scheduleAutomaticRetry(state, AutomationStopReason.FATAL, row.lastError!!),
                 )
@@ -156,7 +167,7 @@ class TypedAutomationRuntimeService(
             )
         }
         return TypedRuntimeAcquisition.Acquired(
-            PersistedTypedRuntimeExecutionRight(accountId, token, active?.id, checkpoint),
+            PersistedTypedRuntimeExecutionRight(accountId, token, active?.id, checkpoint, active?.directResponseFingerprint),
         )
     }
 
@@ -200,6 +211,8 @@ class TypedAutomationRuntimeService(
                 updatedAt = now,
             ),
         )
+        // 새 행동을 실제 준비한 사실과 함께 양보 의도를 소비한다. 획득 직후 종료되면 의도는 남는다.
+        state.directResponseYieldRequired = false
         return TypedRuntimePreparation.Ready(
             PersistedTypedRuntimeExecutionRight(
                 right.accountId,
@@ -341,7 +354,8 @@ class TypedAutomationRuntimeService(
         outcome: TypedRuntimeOutcome,
         persistDirectResult: () -> Unit,
     ): TypedRuntimeProjection {
-        require(outcome is TypedRuntimeOutcome.ActionSucceeded || outcome is TypedRuntimeOutcome.SharedCooldownHandled)
+        require(outcome is TypedRuntimeOutcome.ActionSucceeded || outcome is TypedRuntimeOutcome.SharedCooldownHandled ||
+            outcome is TypedRuntimeOutcome.DirectResponsePending)
         return completeResult(execution, outcome, null, persistDirectResult)
     }
 
@@ -359,6 +373,19 @@ class TypedAutomationRuntimeService(
         if (completeRecordedAction(execution)) {
             persistDirectResult?.invoke()
             return TypedRuntimeProjection(true)
+        }
+        if (right.checkpoint?.phase == TypedRuntimeCheckpointPhase.RECONCILING &&
+            (outcome is TypedRuntimeOutcome.ReconciliationApplied || outcome is TypedRuntimeOutcome.ReconciliationDeferred ||
+                outcome is TypedRuntimeOutcome.AmbiguousHandoff || outcome is TypedRuntimeOutcome.ActionSuperseded)
+        ) {
+            val action = queryRepository.lockTypedAction(right.requireActionId())
+            if (action?.directResponseFingerprint != null && action.directResponseFingerprint != right.directResponseFingerprint) {
+                // 획득 뒤 받은 원본을 과거 재관측으로 종결하지 않는다. 이미 읽은 비확정 원본은 유한 재관측을 유지한다.
+                val retryAt = timeProvider.now()
+                deferDirectResponse(right, TypedRuntimeOutcome.DirectResponsePending(retryAt,
+                    "결과 확인 중 원래 직접 응답이 도착해 저장 응답으로 판정을 이어갑니다."))
+                return TypedRuntimeProjection(false, retryAt)
+            }
         }
         val projection = when (outcome) {
             is TypedRuntimeOutcome.RoundCompleted -> {
@@ -455,6 +482,7 @@ class TypedAutomationRuntimeService(
                 right.requireActionId(),
                 outcome.message,
             ).projection()
+            is TypedRuntimeOutcome.DirectResponsePending -> deferDirectResponse(right, outcome).projection(outcome.retryAt)
             is TypedRuntimeOutcome.ReconciliationApplied -> succeedReconciliation(
                 right.accountId,
                 right.leaseToken,
@@ -501,6 +529,7 @@ class TypedAutomationRuntimeService(
                 TypedRuntimeProjection(retryAt != null, retryAt).enqueueNext(state, "TYPED_AUTOMATIC_RETRY")
             }
         }
+        if (projection.applied && right.actionId == null) state.directResponseYieldRequired = false
         if (projection.applied && convergenceRecheckAt != null && canScheduleFollowUp(state)) {
             // 새 판단을 깨우는 예약과 특정 결과를 미래에 재확인하는 예약은 서로 대체하지 않는다.
             outbox.enqueue(right.accountId, "TYPED_CONVERGENCE_PROBE", convergenceRecheckAt)
@@ -559,7 +588,7 @@ class TypedAutomationRuntimeService(
         val action = right.actionId?.let(queryRepository::lockTypedAction) ?: return false
         if (action.account.id != right.accountId ||
             action.executionIdentity != right.checkpoint?.storedAction?.executionIdentity || action.submittedAt == null ||
-            action.status !in setOf(TypedAutomationActionStatus.RECONCILING, TypedAutomationActionStatus.FAILED, TypedAutomationActionStatus.AMBIGUOUS, TypedAutomationActionStatus.SUCCEEDED)
+            action.status !in setOf(TypedAutomationActionStatus.RECONCILING, TypedAutomationActionStatus.RESULT_PENDING, TypedAutomationActionStatus.FAILED, TypedAutomationActionStatus.AMBIGUOUS, TypedAutomationActionStatus.SUCCEEDED)
         ) return false
         if (action.status == TypedAutomationActionStatus.SUCCEEDED) return true
         val now = timeProvider.now()
@@ -621,7 +650,7 @@ class TypedAutomationRuntimeService(
             return releaseCore(right.accountId, right.leaseToken, null, null, emptyList()).projection()
         }
         val retryAt = scheduleAutomaticRetry(state, AutomationStopReason.NETWORK, message)
-        action.entry?.let { lifecycleBridge.parkUnsubmittedWork(right.accountId, it.id, retryAt) }
+        action.entry?.let { lifecycleBridge.parkWorkUntil(right.accountId, it.id, retryAt) }
         return TypedRuntimeProjection(true, retryAt)
     }
 
@@ -673,6 +702,35 @@ class TypedAutomationRuntimeService(
         state.lastError = diagnostic
         state.updatedAt = now
         return true
+    }
+
+    private fun deferDirectResponse(right: PersistedTypedRuntimeExecutionRight, outcome: TypedRuntimeOutcome.DirectResponsePending): Boolean {
+        val state = fencedState(right.accountId, right.leaseToken) ?: return false
+        val action = queryRepository.lockTypedAction(right.requireActionId()) ?: return false
+        if (action.account.id != right.accountId || action.leaseToken != right.leaseToken ||
+            action.status !in setOf(TypedAutomationActionStatus.SUBMITTING, TypedAutomationActionStatus.RECONCILING)
+        ) return false
+        requireNotNull(action.directResponseJson) { "Local result retry requires the original direct response." }
+        val now = timeProvider.now()
+        action.status = TypedAutomationActionStatus.RESULT_PENDING
+        action.nextAttemptAt = outcome.retryAt
+        action.retryAttempt += 1
+        action.lastError = sanitizeDiagnostic(outcome.message)
+        action.updatedAt = now
+        state.directResponseYieldRequired = true
+        val targetKey = when (val payload = right.checkpoint?.storedAction?.payload) {
+            is StoredTypedActionPayload.QuestAccept -> payload.questKey
+            is StoredTypedActionPayload.QuestClaim -> payload.questKey
+            else -> error("Stored direct response does not support this work target.")
+        }
+        // 같은 entry에서 다른 퀘스트가 작업권을 얻었어도 원래 결과의 재시도가 그 작업을 양보시키지 않는다.
+        action.entry?.let { lifecycleBridge.parkWorkUntil(right.accountId, it.id, outcome.retryAt, targetKey) }
+        val released = releaseCore(right.accountId, right.leaseToken, null, null, listOf(outcome.message))
+        if (released && canScheduleFollowUp(state)) {
+            outbox.enqueue(right.accountId, "TYPED_DIRECT_RESPONSE_RETRY", outcome.retryAt)
+            outbox.enqueue(right.accountId, "TYPED_CONVERGENCE_CONTINUE")
+        }
+        return released
     }
 
     private fun markReconcilingAndEnqueueWake(
@@ -873,6 +931,7 @@ class TypedAutomationRuntimeService(
         token: String,
         actionId: Long,
         reason: String,
+        warnings: List<String>? = null,
     ): Boolean {
         val state = fencedState(accountId, token) ?: return false
         val action = queryRepository.lockTypedAction(actionId) ?: return false
@@ -894,6 +953,9 @@ class TypedAutomationRuntimeService(
         state.lastError = null
         state.stopActionId = null
         state.updatedAt = now
+        if (warnings != null) {
+            state.warningText = warnings.takeIf { it.isNotEmpty() }?.joinToString("\n") { sanitizeDiagnostic(it) }
+        }
         val paused = completeRequestedLifecycle(state, now)
         if (!paused) outbox.enqueue(accountId, reason)
         return true
@@ -906,6 +968,10 @@ class TypedAutomationRuntimeService(
         reason: String,
         warnings: List<String>? = emptyList(),
     ): Boolean {
+        val action = queryRepository.lockTypedAction(actionId)
+        if (action?.status == TypedAutomationActionStatus.RECONCILING && action.directResponseJson != null) {
+            return succeedReconciliation(accountId, token, actionId, reason, warnings)
+        }
         val succeeded = finish(accountId, token, actionId, TypedAutomationActionStatus.SUCCEEDED, null, warnings)
         if (succeeded && queryRepository.findRuntimeState(accountId)?.lifecycleStatus == TypedAutomationLifecycle.RUNNING) {
             outbox.enqueue(accountId, reason)
@@ -917,16 +983,19 @@ class TypedAutomationRuntimeService(
         val state = fencedState(accountId, token) ?: return null
         val action = queryRepository.lockTypedAction(actionId) ?: return null
         if (action.account.id != accountId || action.leaseToken != token) return null
-        val terminalStatus = when (action.status) {
-            TypedAutomationActionStatus.PREPARED -> TypedAutomationActionStatus.FAILED
-            TypedAutomationActionStatus.RECONCILING -> TypedAutomationActionStatus.AMBIGUOUS
+        val terminalStatus = when {
+            action.directResponseJson != null -> TypedAutomationActionStatus.RESULT_HELD
+            action.status == TypedAutomationActionStatus.PREPARED -> TypedAutomationActionStatus.FAILED
+            action.status == TypedAutomationActionStatus.RECONCILING -> TypedAutomationActionStatus.AMBIGUOUS
             else -> return null
         }
         val now = timeProvider.now()
         action.status = terminalStatus
+        action.nextAttemptAt = null
         action.lastError = message.take(2000)
         action.finishedAt = now
         action.updatedAt = now
+        if (terminalStatus == TypedAutomationActionStatus.RESULT_HELD) directResponses.recordIntegrityFailure(action, now)
         return scheduleAutomaticRetry(state, AutomationStopReason.FATAL, message)
     }
 

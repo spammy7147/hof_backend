@@ -1,9 +1,12 @@
 package app.spammy.hof.automation.convergence
 
+import app.spammy.hof.automation.entity.TypedAutomationActionRunEntity
+import app.spammy.hof.automation.service.StoredActionPolicyContext
 import jakarta.persistence.EntityManager
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.time.Duration
+import java.time.Instant
 import java.util.HexFormat
 import java.util.UUID
 import org.springframework.stereotype.Repository
@@ -30,6 +33,32 @@ object NoOpEvidenceCaseRecorder : EvidenceCaseRecorder {
 class JpaEvidenceCaseRecorder(
     private val entityManager: EntityManager,
 ) : EvidenceCaseRecorder {
+    /** 원격 적용 판정과 별개인 로컬 보류의 진단을 같은 보존 정책으로 저장한다. */
+    fun recordLocalResultIntegrity(
+        action: TypedAutomationActionRunEntity,
+        policy: StoredActionPolicyContext?,
+        sanitizedSnippet: String,
+        at: Instant,
+    ): String {
+        val id = UUID.randomUUID().toString()
+        entityManager.persist(AutomationEvidenceCaseEntity(
+            id = id,
+            typedAction = action,
+            evidenceSource = "LOCAL_RESULT_INTEGRITY",
+            observationCompleteness = null,
+            observationFreshness = null,
+            stateFingerprint = policy?.baselineFingerprint,
+            responseShapeFingerprint = fingerprint(sanitizedSnippet),
+            sanitizedSnippet = sanitizedSnippet,
+            reasonCode = "LOCAL_RESULT_INTEGRITY_FAILED",
+            policyVersion = policy?.policyVersion ?: "unknown",
+            buildVersion = BUILD_VERSION,
+            createdAt = at,
+            expiresAt = at.plus(DETAIL_RETENTION),
+        ))
+        return id
+    }
+
     override fun record(
         record: ActionConvergenceRecord,
         evidence: AutomationActionEvidence,

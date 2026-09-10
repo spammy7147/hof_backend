@@ -89,6 +89,12 @@ interface ManagedAutomationAction {
     fun validateBeforeSubmission() = Unit
     fun execute(): TypedAutomationExecution
 
+    val directResponse: AutomationDirectResponse? get() = null
+
+    /** 원래 수신한 정규화 입력을 복원한다. 원격 조회나 행동 전송은 수행하지 않는다. */
+    fun restoreDirectResponse(response: AutomationDirectResponse): TypedAutomationExecution =
+        error("This action does not support stored direct responses.")
+
     /** Policy가 직접 적용을 인정한 뒤에만 실행할 local domain projection 경계다. */
     fun applyPolicyAcceptedExecution(execution: TypedAutomationExecution): TypedAutomationExecution = execution
 
@@ -417,6 +423,17 @@ class UnifiedAutomationActionLifecycleModule(
                 override val descriptor = payload.questDescriptor()
                 private var submittedObservation: QuestResultObservation? = null
 
+                override val directResponse: AutomationDirectResponse?
+                    get() = (submittedObservation as? QuestResultObservation.Page)?.let {
+                        AutomationDirectResponse.QuestPage(it.quests, it.complete)
+                    }
+
+                override fun restoreDirectResponse(response: AutomationDirectResponse): TypedAutomationExecution {
+                    require(response is AutomationDirectResponse.QuestPage)
+                    submittedObservation = QuestResultObservation.Page(response.quests, response.complete)
+                    return questActionCompleted(payload, response.quests, response.complete)
+                }
+
                 override fun validateBeforeSubmission() = validateQuestBeforeSubmission(
                     accountId,
                     payload.questKey,
@@ -458,6 +475,17 @@ class UnifiedAutomationActionLifecycleModule(
                 override val storedAction = stored
                 override val descriptor = payload.questDescriptor()
                 private var submittedObservation: QuestResultObservation? = null
+
+                override val directResponse: AutomationDirectResponse?
+                    get() = (submittedObservation as? QuestResultObservation.Page)?.let {
+                        AutomationDirectResponse.QuestPage(it.quests, it.complete)
+                    }
+
+                override fun restoreDirectResponse(response: AutomationDirectResponse): TypedAutomationExecution {
+                    require(response is AutomationDirectResponse.QuestPage)
+                    submittedObservation = QuestResultObservation.Page(response.quests, response.complete)
+                    return questActionCompleted(payload, response.quests, response.complete)
+                }
 
                 override fun validateBeforeSubmission() = validateQuestBeforeSubmission(
                     accountId,

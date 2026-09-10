@@ -1,19 +1,24 @@
 package app.spammy.hof.automation.service
 
+import app.spammy.hof.automation.history.AutomationActionTrace
+import app.spammy.hof.automation.history.AutomationDecisionJournal
 import org.slf4j.LoggerFactory
 import org.springframework.transaction.support.TransactionSynchronization
 import org.springframework.transaction.support.TransactionSynchronizationManager
 
 private val log = LoggerFactory.getLogger("app.spammy.hof.automation.service.AutomationDirectResultCommit")
 
-/** 직접 사실의 commit이 성공한 뒤에만 진단 이력을 파생한다. */
+internal data class DirectResultHistory(val journal: AutomationDecisionJournal, val cycleId: Long, val trace: AutomationActionTrace)
+
+/** 직접 사실과 작성할 이력을 함께 commit하고 실제 이력 INSERT는 별도로 재시도한다. */
 internal fun <T> commitDirectResult(
     executionIdentity: String,
     persistResult: () -> Unit,
-    appendHistory: () -> Unit,
+    history: DirectResultHistory?,
     commit: (() -> Unit) -> T,
 ): T {
     var accepted = false
+    var deferredHistoryId: Long? = null
     fun commitAttempt(attempt: Int): T {
         accepted = false
         var callbackFailure: RuntimeException? = null
@@ -32,6 +37,7 @@ internal fun <T> commitDirectResult(
                 }
                 try {
                     persistResult()
+                    deferredHistoryId = history?.journal?.deferActionResult(history.cycleId, executionIdentity, history.trace)
                     callbackSucceeded = true
                     if (!synchronized) accepted = true
                 } catch (error: RuntimeException) {
@@ -50,7 +56,7 @@ internal fun <T> commitDirectResult(
     val result = commitAttempt(0)
     // projection=false라도 원래 행동의 늦은 직접 사실은 수용될 수 있다.
     if (accepted) try {
-        appendHistory()
+        deferredHistoryId?.let { history?.journal?.publishDeferredResult(it) }
     } catch (error: RuntimeException) {
         log.warn("Direct result history unavailable after commit executionIdentity={} errorType={}",
             executionIdentity, error.javaClass.name)

@@ -4,6 +4,7 @@ import app.spammy.hof.automation.convergence.AutomationConvergenceSelection
 import app.spammy.hof.automation.convergence.AutomationActionConvergenceModule
 import app.spammy.hof.automation.convergence.AutomationConvergenceRollout
 import app.spammy.hof.automation.convergence.ConvergenceDirective
+import app.spammy.hof.automation.convergence.ConvergenceSelectionBlock
 import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.entity.AutomationWorkStatus
@@ -49,6 +50,7 @@ class AutomationTargetSelector(
     private val convergenceModule: AutomationActionConvergenceModule? = null,
     private val progressTelemetry: AutomationProgressTelemetry? = null,
     private val decisionJournal: AutomationDecisionJournal? = null,
+    private val directResponses: AutomationDirectResponseStore? = null,
 ) : AutomationDecisionSource {
 
     override fun select(accountId: Long): AutomationCoordination {
@@ -505,12 +507,20 @@ class AutomationTargetSelector(
         val exclusions = linkedSetOf<AutomationCandidateExclusion>()
         val messages = linkedSetOf<String>()
         val preparationFailures = decisionJournal?.preparationFailures(accountId).orEmpty().filter { it.entryId == entry.id && it.retryAt > timeProvider.now() }
+        val pendingDirect = directResponses?.pendingIsolation(accountId) ?: DirectResponseIsolation()
         val selectionFactory = app.spammy.hof.automation.convergence.StoredActionConvergenceSelectionFactory()
         val selection = convergenceModule?.openSelection(accountId, entry.id, entry.quest, convergenceRollout?.mode)
         val accepts: (PreparedAutomationAction) -> Boolean = { action ->
-            val preview = if (preparationFailures.isEmpty()) null else selectionFactory.preview(entry.id, action)
+            val preview = if (preparationFailures.isEmpty() && pendingDirect.isEmpty) null else selectionFactory.preview(entry.id, action)
             val failed = preparationFailures.firstOrNull { it.blocks(entry.id, preparationTargetKey(entry.id, action)) }
-            val block = if (failed == null) selection?.block(action) else null
+            val block = when {
+                failed != null -> null
+                preview != null && pendingDirect.blocks(entry.id, preview.scope) -> ConvergenceSelectionBlock(
+                    "DIRECT_RESULT_PENDING", "수신한 행동 결과의 검증과 후처리를 마칠 때까지 해당 범위만 건너뜁니다.",
+                    preview.scope, preview.actionKind,
+                )
+                else -> selection?.block(action)
+            }
             if (failed != null) {
                 exclusions += AutomationCandidateExclusion(failed.targetKey.orEmpty(), "PREPARATION_TARGET",
                     preview?.actionKind?.name.orEmpty(), app.spammy.hof.automation.history.ACTION_PREPARATION_FAILED,

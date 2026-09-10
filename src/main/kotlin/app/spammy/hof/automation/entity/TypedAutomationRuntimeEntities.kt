@@ -5,7 +5,7 @@ import jakarta.persistence.*
 import java.time.Instant
 
 enum class TypedAutomationLifecycle { RUNNING, DRAINING, PAUSED, STOPPED }
-enum class TypedAutomationActionStatus { PREPARED, SUBMITTING, RECONCILING, SUCCEEDED, FAILED, AMBIGUOUS }
+enum class TypedAutomationActionStatus { PREPARED, SUBMITTING, RECONCILING, RESULT_PENDING, RESULT_HELD, SUCCEEDED, FAILED, AMBIGUOUS }
 enum class AutomationWaitReason { SCHEDULED, HOF_CONNECTION, LOOP_INTERVAL }
 
 @Entity
@@ -31,6 +31,8 @@ class TypedAutomationRuntimeStateEntity(
     @Column(name = "updated_at") var updatedAt: Instant,
     // Nullable version lets Spring Data identify a new @MapsId row and persist it instead of merging it.
     @Version @Column(name = "version") var version: Long? = null,
+    @Column(name = "direct_response_yield_required", nullable = false)
+    var directResponseYieldRequired: Boolean = false,
 )
 
 @Entity
@@ -57,4 +59,8 @@ class TypedAutomationActionRunEntity(
     @Column(name = "finished_at") var finishedAt: Instant? = null,
     @Column(name = "updated_at") var updatedAt: Instant,
     @Column(name = "entry_display_name", length = 100) val entryDisplayName: String? = null,
+    @Column(name = "direct_response_json", columnDefinition = "text") var directResponseJson: String? = null,
+    @Column(name = "direct_response_fingerprint", length = 64) var directResponseFingerprint: String? = null,
+    @Column(name = "direct_response_suppression_released_at") var directResponseSuppressionReleasedAt: Instant? = null,
+    @Column(name = "direct_response_evidence_case_id", length = 64) var directResponseEvidenceCaseId: String? = null,
 )

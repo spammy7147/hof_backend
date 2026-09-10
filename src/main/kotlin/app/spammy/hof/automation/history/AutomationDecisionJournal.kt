@@ -7,15 +7,22 @@ import app.spammy.hof.automation.raid.RaidCycleOutcome
 import app.spammy.hof.automation.raid.RaidCycleOutcomeKind
 import app.spammy.hof.automation.raid.RaidCooldownSource
 import app.spammy.hof.automation.service.*
+import app.spammy.hof.account.entity.HofAccountEntity
+import app.spammy.hof.automation.outbox.AutomationOutboxEntity
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.party.entity.PartyPresetEntity
 import jakarta.persistence.EntityManager
+import jakarta.persistence.LockModeType
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import org.springframework.transaction.PlatformTransactionManager
+import org.springframework.transaction.TransactionDefinition
+import org.springframework.transaction.support.TransactionTemplate
 import org.springframework.transaction.support.TransactionSynchronization
 import org.springframework.transaction.support.TransactionSynchronizationManager
 import java.time.Instant
+import java.util.UUID
 import tools.jackson.module.kotlin.jacksonObjectMapper
 import tools.jackson.databind.node.ObjectNode
 
@@ -30,7 +37,12 @@ data class AutomationActionTrace(
     val impactScope: AutomationImpactScope? = null,
     val releaseCondition: String? = null,
     val diagnosticContext: String? = null,
+    /** 영속 이력 재전달에서는 원래 시각·표시 이름·문맥을 재조회하지 않는다. */
+    val captured: AutomationHistoryCapture? = null,
 )
+data class AutomationHistoryCapture(val occurredAt: Instant, val entryDisplayName: String?, val sequence: Int? = null)
+private data class DeferredAutomationHistory(val version: Int = 1, val cycleId: Long, val trace: AutomationActionTrace)
+const val AUTOMATION_HISTORY_OUTBOX_TOPIC = "hof.automation.history.local"
 data class AutomationHistoryQuery(
     val beforeCycleId: Long? = null, val limit: Int = 20, val type: AutomationType? = null,
     val kind: AutomationHistoryEventKind? = null, val from: Instant? = null, val to: Instant? = null,
@@ -99,6 +111,9 @@ interface AutomationDecisionJournal {
     fun appendDecision(accountId: Long, decision: AutomationCoordination): Long
     fun appendPreparedActionAttempt(accountId: Long, result: AutomationActionTrace): Long
     fun appendActionResult(cycleId: Long, result: AutomationActionTrace)
+    fun deferActionResult(cycleId: Long, executionIdentity: String, result: AutomationActionTrace): Long
+    fun publishDeferredResult(id: Long)
+    fun publishDeferredResults()
     fun appendResultObservation(accountId: Long, result: AutomationActionTrace): Long
     fun appendRaidCycleOutcome(accountId: Long, outcome: RaidCycleOutcome): Long
     fun page(accountId: Long, query: AutomationHistoryQuery): AutomationHistoryPage
@@ -110,9 +125,77 @@ class JpaAutomationDecisionJournal(
     private val timeProvider: TimeProvider,
     private val cycleCommands: AutomationDecisionCycleCommandRepository,
     private val eventCommands: AutomationDecisionEventCommandRepository,
+    transactions: PlatformTransactionManager,
     private val progressTelemetry: AutomationProgressTelemetry? = null,
 ) : AutomationDecisionJournal {
     private val diagnosticMapper = jacksonObjectMapper()
+    private val independentTransaction = TransactionTemplate(transactions).apply {
+        propagationBehavior = TransactionDefinition.PROPAGATION_REQUIRES_NEW
+    }
+
+    /** 직접 결과와 같은 transaction에 이력 의도를 기록한다. 같은 실행의 재처리는 최초 의도를 유지한다. */
+    @Transactional
+    override fun deferActionResult(cycleId: Long, executionIdentity: String, result: AutomationActionTrace): Long {
+        val cycle = requireNotNull(entityManager.find(AutomationDecisionCycleEntity::class.java, cycleId, LockModeType.PESSIMISTIC_WRITE))
+        val eventId = UUID.nameUUIDFromBytes("direct-result-history:${cycle.accountId}:$executionIdentity".toByteArray(Charsets.UTF_8)).toString()
+        entityManager.createQuery("select o.id from AutomationOutboxEntity o where o.eventId = :eventId", Long::class.javaObjectType)
+            .setParameter("eventId", eventId).resultList.firstOrNull()?.let { return it.toLong() }
+        val now = timeProvider.now()
+        val contextual = fishingContext(cycle, result)
+        val trace = contextual.copy(
+            presetName = result.presetName ?: presetName(cycle.accountId, result.presetId),
+            captured = AutomationHistoryCapture(now, recordedEntryDisplayName(cycleId, result.entryId)
+                ?: entryDisplayNames(cycle.accountId)[result.entryId], reserveSequences(cycle, contextual)),
+        )
+        val row = AutomationOutboxEntity(eventId = eventId,
+            account = entityManager.getReference(HofAccountEntity::class.java, cycle.accountId),
+            topic = AUTOMATION_HISTORY_OUTBOX_TOPIC, eventKey = cycleId.toString(),
+            payload = diagnosticMapper.writeValueAsString(DeferredAutomationHistory(cycleId = cycleId, trace = trace)),
+            createdAt = now, availableAt = now)
+        entityManager.persist(row)
+        return row.id
+    }
+
+    /** 이력 INSERT와 전달 완료를 원자적으로 기록한다. 실패는 결과 확정과 다른 wake를 취소하지 않는다. */
+    override fun publishDeferredResult(id: Long) {
+        try {
+            independentTransaction.executeWithoutResult {
+                // 보존 정리도 cycle → outbox 순서로 잠근다. entity를 잠금 전에 읽어 오래된 상태를 재사용하지 않는다.
+                val cycleId = entityManager.createQuery("select o.eventKey from AutomationOutboxEntity o where o.id = :id and o.topic = :topic", String::class.java)
+                    .setParameter("id", id).setParameter("topic", AUTOMATION_HISTORY_OUTBOX_TOPIC).resultList.firstOrNull()?.toLongOrNull()
+                    ?: return@executeWithoutResult
+                val cycle = entityManager.find(AutomationDecisionCycleEntity::class.java, cycleId, LockModeType.PESSIMISTIC_WRITE)
+                val row = entityManager.find(AutomationOutboxEntity::class.java, id, LockModeType.PESSIMISTIC_WRITE)
+                    ?: return@executeWithoutResult
+                if (row.publishedAt != null || row.availableAt.isAfter(timeProvider.now())) return@executeWithoutResult
+                if (cycle != null) {
+                    require(row.account.id == cycle.accountId)
+                    val stored = diagnosticMapper.readValue(row.payload, DeferredAutomationHistory::class.java)
+                    require(stored.version == 1 && stored.cycleId == cycle.id && stored.trace.captured != null)
+                    appendActionResult(cycle.id, stored.trace)
+                }
+                row.publishedAt = timeProvider.now()
+                row.payload = ""
+                entityManager.flush()
+            }
+        } catch (error: RuntimeException) {
+            log.warn("Deferred action history unavailable outboxId={} errorType={}", id, error.javaClass.name)
+            // 실패한 transaction과 분리해 재예약한다. 재예약 자체의 실패도 다음 wake를 막지 않는다.
+            runCatching { independentTransaction.executeWithoutResult {
+                val row = entityManager.find(AutomationOutboxEntity::class.java, id, LockModeType.PESSIMISTIC_WRITE)
+                if (row?.publishedAt == null && row != null) row.availableAt = timeProvider.now().plusSeconds(10)
+            } }.onFailure { log.warn("Deferred action history retry unavailable outboxId={}", id) }
+        }
+    }
+
+    override fun publishDeferredResults() {
+        val ids = independentTransaction.execute {
+            entityManager.createQuery("select o.id from AutomationOutboxEntity o where o.topic = :topic and o.publishedAt is null and o.availableAt <= :now order by o.id", Long::class.javaObjectType)
+                .setParameter("topic", AUTOMATION_HISTORY_OUTBOX_TOPIC).setParameter("now", timeProvider.now())
+                .setMaxResults(100).resultList.map { it.toLong() }
+        }.orEmpty()
+        ids.forEach(::publishDeferredResult)
+    }
 
     /** 준비 오류는 전송 결과와 분리된 유한 후보 보류이며, 재접속·재시작 뒤에도 같은 이력을 사용한다. */
     @Transactional(readOnly = true)
@@ -145,7 +228,8 @@ class JpaAutomationDecisionJournal(
             is AutomationCoordination.CycleBoundary -> AutomationDecisionResult.IDLE
             is AutomationCoordination.Idle -> AutomationDecisionResult.IDLE
             is AutomationCoordination.Fatal -> AutomationDecisionResult.FATAL
-        }, selectedEntryId = (decision as? AutomationCoordination.Runnable)?.entryId, startedAt = now, finishedAt = now)
+        }, selectedEntryId = (decision as? AutomationCoordination.Runnable)?.entryId, startedAt = now, finishedAt = now,
+            nextEventSequence = (decision.trace.maxOfOrNull { it.sequence } ?: -1) + 1)
         cycleCommands.save(cycle)
         eventCommands.saveAll(decision.trace.map { item -> AutomationDecisionEventEntity(
             cycle = cycle, sequence = item.sequence, entryId = item.entryId, type = item.type,
@@ -194,6 +278,7 @@ class JpaAutomationDecisionJournal(
             selectedEntryId = result.entryId,
             startedAt = now,
             finishedAt = now,
+            nextEventSequence = 1,
         )
         cycleCommands.save(cycle)
         eventCommands.save(fishingContext(cycle, result).toEntity(cycle, 0, accountId, now))
@@ -215,25 +300,13 @@ class JpaAutomationDecisionJournal(
 
     @Transactional
     override fun appendActionResult(cycleId: Long, result: AutomationActionTrace) {
-        val cycle = entityManager.find(AutomationDecisionCycleEntity::class.java, cycleId)
+        val cycle = entityManager.find(AutomationDecisionCycleEntity::class.java, cycleId, LockModeType.PESSIMISTIC_WRITE)
             ?: throw IllegalArgumentException("Automation decision cycle not found.")
-        val next = entityManager.createQuery(
-            "select coalesce(max(e.sequence), -1) + 1 from AutomationDecisionEventEntity e where e.cycle.id = :cycleId",
-            Int::class.javaObjectType,
-        ).setParameter("cycleId", cycleId).singleResult.toInt()
-        val entryDisplayName = entityManager.createQuery(
-            "select e.entryDisplayName from AutomationDecisionEventEntity e where e.cycle.id = :cycleId and e.entryId = :entryId and e.entryDisplayName is not null order by e.sequence asc",
-            String::class.java,
-        ).setParameter("cycleId", cycleId)
-            .setParameter("entryId", result.entryId ?: -1L)
-            .setMaxResults(1)
-            .resultList
-            .firstOrNull()
-        val recorded = fishingContext(cycle, result)
+        val entryDisplayName = recordedEntryDisplayName(cycleId, result.entryId)
+        val recorded = if (result.captured != null) result else fishingContext(cycle, result)
+        val next = recorded.captured?.sequence ?: reserveSequences(cycle, recorded)
         eventCommands.save(recorded.toEntity(cycle, next, cycle.accountId, timeProvider.now(), entryDisplayName))
-        if (recorded.reasonCode == FISHING_RECOVERY_REASON &&
-            recorded.diagnosticContext?.let { diagnosticMapper.readTree(it).path("repetition").path("count").asInt() } == 3
-        ) {
+        if (repeatedFishingRecovery(recorded)) {
             eventCommands.save(recorded.copy(
                 kind = AutomationHistoryEventKind.CONFIGURATION_WARNING,
                 reasonCode = "FISHING_RECOVERY_REPEATED",
@@ -243,9 +316,18 @@ class JpaAutomationDecisionJournal(
                 cycle.accountId, recorded.entryId, cycle.id, recorded.targetKey)
         }
         if (result.kind == AutomationHistoryEventKind.ACTION_SUCCEEDED) {
-            afterCommitTelemetry { progressTelemetry?.recordTerminalAction(cycle.accountId, result.type) }
+            val occurredAt = recorded.captured?.occurredAt ?: timeProvider.now()
+            afterCommitTelemetry { progressTelemetry?.recordTerminalAction(cycle.accountId, result.type, occurredAt) }
         }
     }
+
+    /** cycle 잠금 아래에서 전달 전 순서를 예약해 지연·재시작·같은 시각의 단계도 보존한다. */
+    private fun reserveSequences(cycle: AutomationDecisionCycleEntity, trace: AutomationActionTrace): Int =
+        cycle.nextEventSequence.also { cycle.nextEventSequence += if (repeatedFishingRecovery(trace)) 2 else 1 }
+
+    private fun repeatedFishingRecovery(trace: AutomationActionTrace): Boolean =
+        trace.reasonCode == FISHING_RECOVERY_REASON &&
+            trace.diagnosticContext?.let { diagnosticMapper.readTree(it).path("repetition").path("count").asInt() } == 3
 
     @Transactional
     override fun appendRaidCycleOutcome(accountId: Long, outcome: RaidCycleOutcome): Long {
@@ -257,6 +339,7 @@ class JpaAutomationDecisionJournal(
             selectedEntryId = outcome.entryId,
             startedAt = now,
             finishedAt = now,
+            nextEventSequence = 1,
         )
         cycleCommands.save(cycle)
         eventCommands.save(trace.toEntity(cycle, 0, accountId, now))
@@ -315,7 +398,7 @@ class JpaAutomationDecisionJournal(
     ): List<AutomationHistoryStep> {
         val attachedObservations = events.filter { observation ->
             observation.reasonCode == "FISHING_RECOVERY_RESOLVED" && observation.actionKind == "OBSERVATION" &&
-                events.any { it.id < observation.id && it.entryId == observation.entryId &&
+                events.any { it.sequence < observation.sequence && it.entryId == observation.entryId &&
                     it.reasonCode != "FISHING_RECOVERY_RESOLVED" }
         }
         if (attachedObservations.isNotEmpty()) {
@@ -360,6 +443,12 @@ class JpaAutomationDecisionJournal(
         entityManager.find(PartyPresetEntity::class.java, it)?.takeIf { preset -> preset.account.id == accountId }?.name
     }
 
+    private fun recordedEntryDisplayName(cycleId: Long, entryId: Long?): String? = entityManager.createQuery(
+        "select e.entryDisplayName from AutomationDecisionEventEntity e where e.cycle.id = :cycleId and e.entryId = :entryId and e.entryDisplayName is not null order by e.sequence asc",
+        String::class.java,
+    ).setParameter("cycleId", cycleId).setParameter("entryId", entryId ?: -1L)
+        .setMaxResults(1).resultList.firstOrNull()
+
     private fun fishingContext(cycle: AutomationDecisionCycleEntity, trace: AutomationActionTrace): AutomationActionTrace {
         if (trace.type != AutomationType.FISHING || trace.diagnosticContext == null) return trace
         val node = diagnosticMapper.readTree(trace.diagnosticContext) as? ObjectNode ?: return trace
@@ -385,7 +474,7 @@ class JpaAutomationDecisionJournal(
         return entityManager.createQuery(
             "select e from AutomationDecisionEventEntity e where e.cycle.accountId = :accountId " +
                 "and e.entryId = :entryId and e.type = :type and (e.reasonCode in :reasons " +
-                "or (e.kind = :success and e.actionKind <> 'START')) order by e.id desc",
+                "or (e.kind = :success and e.actionKind <> 'START')) order by e.occurredAt desc, e.cycle.id desc, e.sequence desc, e.id desc",
             AutomationDecisionEventEntity::class.java,
         ).setParameter("accountId", accountId).setParameter("entryId", entryId)
             .setParameter("type", AutomationType.FISHING)
@@ -426,8 +515,9 @@ class JpaAutomationDecisionJournal(
     ) = AutomationDecisionEventEntity(
         cycle = cycle,
         sequence = sequence,
-        entryId = entryId,
-        entryDisplayName = entryDisplayName ?: entryDisplayNames(accountId)[entryId],
+        entryId = entryId?.takeIf { captured == null ||
+            entityManager.find(AutomationEntryEntity::class.java, it)?.account?.id == accountId },
+        entryDisplayName = if (captured != null) captured.entryDisplayName else entryDisplayName ?: entryDisplayNames(accountId)[entryId],
         type = type,
         kind = kind,
         reasonCode = reasonCode,
@@ -436,9 +526,9 @@ class JpaAutomationDecisionJournal(
         targetName = targetName,
         actionKind = actionKind,
         presetId = presetId,
-        presetName = presetName ?: presetName(accountId, presetId),
+        presetName = if (captured != null) presetName else presetName ?: presetName(accountId, presetId),
         nextRunAt = nextRunAt,
-        occurredAt = occurredAt,
+        occurredAt = captured?.occurredAt ?: occurredAt,
         diagnosticKind = diagnosticKind,
         cooldownSource = cooldownSource,
         impactScope = impactScope,

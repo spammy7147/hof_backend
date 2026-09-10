@@ -23,6 +23,7 @@ class AutomationResultCoordinator(
     private val shadowEvaluator: AutomationConvergenceShadowEvaluator? = null,
     private val evidenceInterpreter: ProductionActionEvidenceInterpreter? = null,
     private val decisionJournal: AutomationDecisionJournal? = null,
+    private val directResponses: AutomationDirectResponseStore? = null,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
     private val active = rollout?.active ?: (convergenceModule != null)
@@ -104,7 +105,9 @@ class AutomationResultCoordinator(
         }
     }
 
-    fun resumeDue(accountId: Long): ConvergenceDirective? = if (active) convergenceModule?.resumeDue(accountId) else null
+    fun resumeDue(accountId: Long): ConvergenceDirective? = if (active) {
+        convergenceModule?.resumeDue(accountId, directResponses?.pendingExecutionIdentities(accountId).orEmpty())
+    } else null
 
     fun prepare(accountId: Long, context: ActionSelection, retryUnsubmitted: Boolean): ConvergenceDirective? {
         if (shadow) context.evidence?.let { selectShadow(accountId, it) }
@@ -185,13 +188,20 @@ class AutomationResultCoordinator(
         }
     }
 
-    fun directEvidence(context: ActionSelection, execution: TypedAutomationExecution): AutomationActionEvidence? =
-        directEvidence(context.evidence, execution)
+    fun restoreDirectResponse(accountId: Long, context: ActionSelection, checkpoint: TypedRuntimeCheckpoint): Long? =
+        context.policy?.let { selection ->
+            requireNotNull(convergenceModule).restoreDirectResponse(accountId, selection, RestoredActionCheckpoint(
+                checkpoint.submittedAt, checkpoint.successfulObservationCount, checkpoint.firstPendingAt,
+            ))
+        }
 
-    private fun directEvidence(selection: SelectedAutomationAction?, execution: TypedAutomationExecution): AutomationActionEvidence? =
+    fun directEvidence(context: ActionSelection, execution: TypedAutomationExecution, capturedAt: Instant = now()): AutomationActionEvidence? =
+        directEvidence(context.evidence, execution, capturedAt)
+
+    private fun directEvidence(selection: SelectedAutomationAction?, execution: TypedAutomationExecution, capturedAt: Instant = now()): AutomationActionEvidence? =
         selection?.let {
-            evidenceInterpreter?.fromExecution(it, execution, now())
-                ?: AutomationActionEvidence.IncompleteObservation(now(), "PRODUCTION_EVIDENCE_INTERPRETER_MISSING")
+            evidenceInterpreter?.fromExecution(it, execution, capturedAt)
+                ?: AutomationActionEvidence.IncompleteObservation(capturedAt, "PRODUCTION_EVIDENCE_INTERPRETER_MISSING")
         }
 
     fun applyDirect(
@@ -206,7 +216,7 @@ class AutomationResultCoordinator(
         }
         if (attemptId != null && evidence !is AutomationActionEvidence.DirectApplied && execution !is TypedAutomationExecution.SharedCooldown) {
             val recorded = requireNotNull(evidence)
-            val directive = convergenceModule?.record(attemptId, recorded)
+            val directive = convergenceModule?.recordDirectResponse(attemptId, recorded)
             if (recorded is AutomationActionEvidence.DirectRejected || recorded is AutomationActionEvidence.StateAdvanced) {
                 managed.applyPolicyResolvedExecution(execution, recorded)
             }

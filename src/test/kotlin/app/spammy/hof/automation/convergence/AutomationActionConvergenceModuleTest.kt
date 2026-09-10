@@ -6,12 +6,61 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
+import kotlin.test.assertFailsWith
 
 class AutomationActionConvergenceModuleTest {
     private val clock = MutableTimeProvider(Instant.parse("2026-08-22T00:00:00Z"))
     private val store = InMemoryConvergenceStore()
     private val module: AutomationActionConvergenceModule =
         DefaultAutomationActionConvergenceModule(store, clock)
+
+    @Test
+    fun `보류 뒤 원래 응답의 확정 거절과 상태 진전은 새 판단을 허용한다`() {
+        val cases = listOf(
+            AutomationActionEvidence.DirectRejected(clock.now(), "original-rejected") to ActionConvergenceResult.NOT_APPLIED,
+            AutomationActionEvidence.StateAdvanced(clock.now(), "original-advanced") to ActionConvergenceResult.SUPERSEDED,
+        )
+        cases.forEachIndexed { index, (evidence, expected) ->
+            val selected = questSelection("late-original-$index")
+            val id = assertIs<ConvergenceDirective.Submit>(module.prepare(7L, selected)).attemptId
+            repeat(5) { module.record(id, AutomationActionEvidence.SameState(clock.now(), "unchanged")) }
+            assertEquals(ActionConvergenceResult.HELD, store.get(id)?.result)
+            assertIs<ConvergenceDirective.ContinueSelection>(module.recordDirectResponse(id, evidence))
+            assertEquals(expected, store.get(id)?.result)
+            val resolved = requireNotNull(store.get(id)).copy()
+            assertIs<ConvergenceDirective.ContinueSelection>(module.recordDirectResponse(id, evidence))
+            assertEquals(resolved, store.get(id))
+            assertIs<ConvergenceDirective.Submit>(module.prepare(7L, selected.copy(executionIdentity = "fresh-$index")))
+        }
+    }
+
+    @Test
+    fun `보류 뒤 늦은 비확정 증거는 원래 판정과 관측 이력을 변경하지 않는다`() {
+        val lateEvidence = listOf(
+            AutomationActionEvidence.IncompleteObservation(clock.now(), "late-incomplete"),
+            AutomationActionEvidence.SameState(clock.now(), "same-state"),
+        )
+        lateEvidence.forEachIndexed { index, evidence ->
+            val id = assertIs<ConvergenceDirective.Submit>(module.prepare(7L, questSelection("late-$index"))).attemptId
+            repeat(5) { module.record(id, AutomationActionEvidence.SameState(clock.now(), "unchanged")) }
+            val held = requireNotNull(store.get(id)).copy()
+            assertEquals(ActionConvergenceResult.HELD, held.result)
+            var historyWrites = 0
+            assertIs<ConvergenceDirective.ContinueSelection>(module.record(id, evidence) { historyWrites++ })
+            assertEquals(held, store.get(id))
+            assertEquals(0, historyWrites)
+        }
+    }
+
+    @Test
+    fun `명시적 미적용 종결은 모순된 직접 적용으로 덮어쓰지 않는다`() {
+        val id = assertIs<ConvergenceDirective.Submit>(module.prepare(7L, questSelection("rejected-direct"))).attemptId
+        module.record(id, AutomationActionEvidence.DirectRejected(clock.now(), "rejected"))
+        assertFailsWith<IllegalStateException> {
+            module.record(id, AutomationActionEvidence.DirectApplied(clock.now(), "contradictory"))
+        }
+        assertEquals(ActionConvergenceResult.NOT_APPLIED, store.get(id)?.result)
+    }
 
     @Test
     fun `체크포인트 복원은 알려진 시각과 관측 횟수를 되돌리지 않고 소진된 횟수 예산을 닫는다`() {

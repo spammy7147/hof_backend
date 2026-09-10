@@ -1,6 +1,8 @@
 package app.spammy.hof.automation.convergence
 
 import app.spammy.hof.automation.outbox.AutomationOutboxService
+import app.spammy.hof.automation.service.AutomationDirectResponseStore
+import app.spammy.hof.automation.entity.TypedAutomationActionStatus
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.security.CurrentAccountId
@@ -18,6 +20,24 @@ import org.springframework.web.bind.annotation.RestController
 data class AutomationConvergenceStatusResponse(
     val battleGate: AutomationBattleGateStatusResponse?,
     val items: List<AutomationConvergenceItemResponse>,
+    val localResults: List<AutomationLocalResultResponse> = emptyList(),
+)
+
+data class AutomationLocalResultResponse(
+    val actionId: Long,
+    val entryId: Long?,
+    val entryDisplayName: String?,
+    val actionKind: String,
+    val status: TypedAutomationActionStatus,
+    val remoteResult: ActionConvergenceResult?,
+    val evidenceCaseId: String?,
+    val retryAttempt: Int,
+    val nextAttemptAt: Instant?,
+    val reasonCode: String,
+    val reasonMessage: String,
+    val impactScope: String,
+    val releaseCondition: String,
+    val canAllowFreshDecision: Boolean,
 )
 
 data class AutomationBattleGateStatusResponse(
@@ -52,6 +72,7 @@ fun interface AutomationConvergenceStatusReader {
 @Service
 class JpaAutomationConvergenceStatusReader(
     private val entityManager: EntityManager,
+    private val directResponses: AutomationDirectResponseStore,
 ) : AutomationConvergenceStatusReader {
     @Transactional(readOnly = true)
     override fun read(accountId: Long): AutomationConvergenceStatusResponse {
@@ -86,6 +107,15 @@ class JpaAutomationConvergenceStatusReader(
                 setOf(ActionConvergenceResult.HELD, ActionConvergenceResult.RESULT_UNOBSERVED),
             )
             .resultList
+        val pending = directResponses.pendingResults(accountId)
+        val remoteResults = if (pending.isEmpty()) emptyMap() else entityManager.createQuery(
+            """select convergence from ActionConvergenceEntity convergence
+                join fetch convergence.attempt attempt
+                where convergence.accountId = :accountId and attempt.executionIdentity in :identities""".trimIndent(),
+            ActionConvergenceEntity::class.java,
+        ).setParameter("accountId", accountId)
+            .setParameter("identities", pending.map { it.executionIdentity }).resultList
+            .associate { it.attempt.executionIdentity to it.result }
         return AutomationConvergenceStatusResponse(
             battleGate = gate,
             items = convergences.map { convergence ->
@@ -111,6 +141,24 @@ class JpaAutomationConvergenceStatusReader(
                         ActionConvergenceResult.HELD,
                         ActionConvergenceResult.RESULT_UNOBSERVED,
                     ),
+                )
+            },
+            localResults = pending.map { result ->
+                val held = result.status == TypedAutomationActionStatus.RESULT_HELD
+                AutomationLocalResultResponse(
+                    actionId = result.actionId, entryId = result.entryId, entryDisplayName = result.entryDisplayName,
+                    actionKind = result.actionKind, status = result.status,
+                    remoteResult = remoteResults[result.executionIdentity], retryAttempt = result.retryAttempt,
+                    evidenceCaseId = result.evidenceCaseId,
+                    nextAttemptAt = result.nextAttemptAt,
+                    reasonCode = if (held) "LOCAL_RESULT_INTEGRITY_FAILED" else "LOCAL_RESULT_RETRY",
+                    reasonMessage = if (held) "보존한 응답의 후처리를 안전하게 이어갈 수 없어 이 범위의 새 행동을 보류했습니다."
+                        else "원래 응답을 보존한 채 후처리를 다시 시도하고 있습니다. 다른 자동화는 계속 실행합니다.",
+                    impactScope = result.scope?.let { it.kind.impactLabel(it.key) }
+                        ?: (result.entryDisplayName ?: "자동화 항목 ${result.entryId ?: "미상"}"),
+                    releaseCondition = if (held) "사용자가 새 행동 판단을 허용하면 최신 상태에서 다시 판단"
+                        else "원래 응답의 후처리가 완료되면 자동으로 해제",
+                    canAllowFreshDecision = held,
                 )
             },
         )
@@ -164,6 +212,7 @@ class AutomationConvergenceCommandService(
     private val statusReader: AutomationConvergenceStatusReader,
     private val outbox: AutomationOutboxService,
     private val timeProvider: TimeProvider,
+    private val directResponses: AutomationDirectResponseStore,
 ) {
     @Transactional
     fun allowFreshDecision(accountId: Long, attemptId: Long): AutomationConvergenceStatusResponse {
@@ -171,6 +220,15 @@ class AutomationConvergenceCommandService(
             throw ApiException(ErrorCode.INVALID_REQUEST, "새 판단을 허용할 보류 항목을 찾지 못했습니다.")
         }
         outbox.enqueue(accountId, "TYPED_CONVERGENCE_USER_ALLOWED")
+        return statusReader.read(accountId)
+    }
+
+    @Transactional
+    fun allowLocalFreshDecision(accountId: Long, actionId: Long): AutomationConvergenceStatusResponse {
+        val identity = directResponses.allowFreshDecision(accountId, actionId)
+            ?: throw ApiException(ErrorCode.INVALID_REQUEST, "새 판단을 허용할 후처리 보류를 찾지 못했습니다.")
+        module.allowLocalResultFreshDecision(accountId, identity, timeProvider.now())
+        outbox.enqueue(accountId, "TYPED_LOCAL_RESULT_USER_ALLOWED")
         return statusReader.read(accountId)
     }
 }
@@ -192,4 +250,10 @@ class AutomationConvergenceController(
         @CurrentAccountId accountId: Long,
         @PathVariable attemptId: Long,
     ): AutomationConvergenceStatusResponse = commandService.allowFreshDecision(accountId, attemptId)
+
+    @PostMapping("/local-results/{actionId}/allow-fresh-decision")
+    fun allowLocalFreshDecision(
+        @CurrentAccountId accountId: Long,
+        @PathVariable actionId: Long,
+    ): AutomationConvergenceStatusResponse = commandService.allowLocalFreshDecision(accountId, actionId)
 }

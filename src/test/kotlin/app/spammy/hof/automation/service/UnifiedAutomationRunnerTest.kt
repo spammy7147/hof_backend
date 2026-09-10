@@ -210,7 +210,8 @@ class UnifiedAutomationRunnerTest {
         Mockito.verify(managed).execute()
         assertIs<TypedRuntimeOutcome.ActionSucceeded>(capturedOutcome())
         val traceCaptor = ArgumentCaptor.forClass(AutomationActionTrace::class.java)
-        Mockito.verify(journal, Mockito.times(2)).appendActionResult(Mockito.eq(41L), captureTrace(traceCaptor))
+        Mockito.verify(journal).appendActionResult(Mockito.eq(41L), captureTrace(traceCaptor))
+        Mockito.verify(journal).deferActionResult(Mockito.eq(41L), Mockito.eq(defaultStored.executionIdentity) ?: defaultStored.executionIdentity, captureTrace(traceCaptor))
         assertTrue(traceCaptor.allValues.all { it.actionKind == "QUEST_CLAIM" })
         assertTrue(traceCaptor.allValues.all { it.message.startsWith("퀘스트 보상 수령 · quest") })
     }
@@ -2090,7 +2091,8 @@ class UnifiedAutomationRunnerTest {
         assertEquals("RAID_BATTLE_APPLIED_TERMINAL_RESULT", outcome.wakeReason)
         assertEquals(emptyList(), outcome.warnings)
         val traceCaptor = ArgumentCaptor.forClass(AutomationActionTrace::class.java)
-        Mockito.verify(journal, Mockito.times(2)).appendActionResult(Mockito.eq(41L), captureTrace(traceCaptor))
+        Mockito.verify(journal).appendActionResult(Mockito.eq(41L), captureTrace(traceCaptor))
+        Mockito.verify(journal).deferActionResult(Mockito.eq(41L), Mockito.eq(stored.executionIdentity) ?: stored.executionIdentity, captureTrace(traceCaptor))
         assertEquals("RAID_BATTLE_APPLIED_TERMINAL_RESULT", traceCaptor.allValues.last().reasonCode)
     }
 
@@ -2142,7 +2144,8 @@ class UnifiedAutomationRunnerTest {
         scoped.runOne(7)
 
         val traceCaptor = ArgumentCaptor.forClass(AutomationActionTrace::class.java)
-        Mockito.verify(journal, Mockito.times(2)).appendActionResult(Mockito.eq(41L), captureTrace(traceCaptor))
+        Mockito.verify(journal).appendActionResult(Mockito.eq(41L), captureTrace(traceCaptor))
+        Mockito.verify(journal).deferActionResult(Mockito.eq(41L), Mockito.eq(stored.executionIdentity) ?: stored.executionIdentity, captureTrace(traceCaptor))
         val result = traceCaptor.allValues.last()
         assertEquals("RAID_BATTLE", result.actionKind)
         assertEquals("RaidGoblin", result.targetKey)
@@ -2204,7 +2207,8 @@ class UnifiedAutomationRunnerTest {
         val outcome = assertIs<TypedRuntimeOutcome.ActionSucceeded>(capturedOutcome())
         assertEquals("TYPED_RAID_WAITING", outcome.wakeReason)
         val traceCaptor = ArgumentCaptor.forClass(AutomationActionTrace::class.java)
-        Mockito.verify(journal, Mockito.times(2)).appendActionResult(Mockito.eq(41L), captureTrace(traceCaptor))
+        Mockito.verify(journal).appendActionResult(Mockito.eq(41L), captureTrace(traceCaptor))
+        Mockito.verify(journal).deferActionResult(Mockito.eq(41L), Mockito.eq(stored.executionIdentity) ?: stored.executionIdentity, captureTrace(traceCaptor))
         val result = traceCaptor.allValues.last()
         assertEquals(AutomationHistoryEventKind.WAITING, result.kind)
         assertEquals("RAID_MANUAL_UNCONFIGURED_ACTIVE", result.reasonCode)
@@ -2259,7 +2263,7 @@ class UnifiedAutomationRunnerTest {
             AutomationCoordination.Runnable(12, QuestAction.Claim("quest", "claim"), emptyList()),
         )
         Mockito.`when`(convergence.prepare(7L, selection)).thenAnswer { ConvergenceDirective.Submit(111L, it.getArgument(1)) }
-        Mockito.`when`(convergence.record(Mockito.eq(111L), anyConvergenceEvidence())).thenReturn(
+        Mockito.`when`(convergence.recordDirectResponse(Mockito.eq(111L), anyConvergenceEvidence())).thenReturn(
             ConvergenceDirective.WaitUntil(probeAt, selection.scope),
         )
         val scoped = buildRunner(
@@ -2277,7 +2281,7 @@ class UnifiedAutomationRunnerTest {
 
         scoped.runOne(7L)
 
-        assertIs<AutomationActionEvidence.IncompleteObservation>(convergenceEvidence(convergence, 111L))
+        assertIs<AutomationActionEvidence.IncompleteObservation>(convergenceEvidence(convergence, 111L, directResponse = true))
         assertIs<TypedRuntimeOutcome.AmbiguousHandoff>(capturedOutcome())
         Mockito.verify(runtime).complete(anyExecution(), anyOutcome(), Mockito.eq(probeAt))
     }
@@ -2296,7 +2300,7 @@ class UnifiedAutomationRunnerTest {
             AutomationCoordination.Runnable(12, QuestAction.Claim("quest", "claim"), emptyList()),
         )
         Mockito.`when`(convergence.prepare(7L, selection)).thenAnswer { ConvergenceDirective.Submit(112L, it.getArgument(1)) }
-        Mockito.`when`(convergence.record(Mockito.eq(112L), anyConvergenceEvidence()))
+        Mockito.`when`(convergence.recordDirectResponse(Mockito.eq(112L), anyConvergenceEvidence()))
             .thenReturn(ConvergenceDirective.ContinueSelection)
         Mockito.`when`(managed.execute()).thenReturn(rejected)
         val scoped = buildRunner(
@@ -2314,7 +2318,7 @@ class UnifiedAutomationRunnerTest {
 
         scoped.runOne(7L)
 
-        val evidence = assertIs<AutomationActionEvidence.DirectRejected>(convergenceEvidence(convergence, 112L))
+        val evidence = assertIs<AutomationActionEvidence.DirectRejected>(convergenceEvidence(convergence, 112L, directResponse = true))
         Mockito.verify(managed).applyPolicyResolvedExecution(rejected, evidence)
         assertIs<TypedRuntimeOutcome.ActionSuperseded>(capturedOutcome())
     }
@@ -3242,9 +3246,11 @@ class UnifiedAutomationRunnerTest {
     private fun convergenceEvidence(
         convergence: AutomationActionConvergenceModule,
         attemptId: Long,
+        directResponse: Boolean = false,
     ): AutomationActionEvidence {
         val captor = ArgumentCaptor.forClass(AutomationActionEvidence::class.java)
-        Mockito.verify(convergence).record(Mockito.eq(attemptId), captureConvergenceEvidence(captor))
+        if (directResponse) Mockito.verify(convergence).recordDirectResponse(Mockito.eq(attemptId), captureConvergenceEvidence(captor))
+        else Mockito.verify(convergence).record(Mockito.eq(attemptId), captureConvergenceEvidence(captor))
         return captor.value
     }
 

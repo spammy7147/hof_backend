@@ -135,11 +135,10 @@ class FishingCycleModule(
             }
             commitDirectResult(stored.executionIdentity,
                 persistResult = { results.finishDirect(accountId, stored, evidence, attemptId, direct.execution) },
-                appendHistory = {
-                    recordFishingResult(decisionCycleId, stored, managed,
+                history = directResultHistory(decisionCycleId, stored, managed,
                         AutomationHistoryEventKind.ACTION_SUCCEEDED, "FISHING_CATCH_APPLIED",
-                        "낚시 CATCH 적용을 확인해 한 번 낚시를 완료했습니다.")
-            }) { persist -> typedRuntime.complete(execution,
+                        "낚시 CATCH 적용을 확인해 한 번 낚시를 완료했습니다."),
+            ) { persist -> typedRuntime.complete(execution,
                 TypedRuntimeOutcome.ActionSucceeded("TYPED_FISHING_CYCLE_COMPLETED", selectedWarnings), persist) }
         } catch (error: Throwable) {
             if (error is DirectResultPersistenceFailure) throw error
@@ -292,11 +291,9 @@ class FishingCycleModule(
             fun startAppliedAndCatchPrepared(startResponse: FishingResponse) {
                 val persistDirectResult = acceptStep(startManaged, startStored, activeSelection, activeAttemptId, startResponse)
                 val outcome = TypedRuntimeOutcome.ActionSucceeded("TYPED_FISHING_START_APPLIED", selectedWarnings)
-                val appendStartHistory = {
-                    recordFishingResult(decisionCycleId, startStored, startManaged,
+                val startHistory = directResultHistory(decisionCycleId, startStored, startManaged,
                         AutomationHistoryEventKind.ACTION_SUCCEEDED, "FISHING_START_APPLIED",
                         "낚시 START 적용을 확인했습니다.")
-                }
                 val catchDraft = StoredTypedAutomationAction(
                     entryId = startStored.entryId,
                     executionIdentity = catchExecutionIdentity,
@@ -310,7 +307,7 @@ class FishingCycleModule(
                 lateinit var catchSelection: AutomationResultCoordinator.ActionSelection
                 lateinit var catchStored: StoredTypedAutomationAction
                 lateinit var catchManaged: ManagedFishingAutomationAction
-                val preparation = commitDirectResult(startStored.executionIdentity, persistDirectResult, appendStartHistory) { persist ->
+                val preparation = commitDirectResult(startStored.executionIdentity, persistDirectResult, startHistory) { persist ->
                     try {
                         catchSelection = requireNotNull(results.newSelection(catchDraft)) {
                             "Active convergence module is missing."
@@ -359,11 +356,11 @@ class FishingCycleModule(
                 val catchManaged = activeManaged as? ManagedFishingAutomationAction
                     ?: error("Prepared fishing CATCH is not managed as a fishing action.")
                 val persistDirectResult = acceptStep(catchManaged, activeStored, activeSelection, activeAttemptId, catchResponse)
-                commitDirectResult(activeStored.executionIdentity, persistDirectResult, appendHistory = {
-                    recordFishingResult(decisionCycleId, activeStored, activeManaged,
+                commitDirectResult(activeStored.executionIdentity, persistDirectResult,
+                    history = directResultHistory(decisionCycleId, activeStored, activeManaged,
                         AutomationHistoryEventKind.ACTION_SUCCEEDED, "FISHING_CATCH_APPLIED",
-                        "낚시 CATCH 적용을 확인해 한 번 낚시를 완료했습니다.")
-                }) { persist -> typedRuntime.complete(execution,
+                        "낚시 CATCH 적용을 확인해 한 번 낚시를 완료했습니다."),
+                ) { persist -> typedRuntime.complete(execution,
                     TypedRuntimeOutcome.ActionSucceeded("TYPED_FISHING_CYCLE_COMPLETED", selectedWarnings), persist) }
             }
 
@@ -399,11 +396,11 @@ class FishingCycleModule(
 
             fun waitingForCatch(startResponse: FishingResponse) {
                 val persistDirectResult = acceptStep(startManaged, startStored, activeSelection, activeAttemptId, startResponse)
-                commitDirectResult(startStored.executionIdentity, persistDirectResult, appendHistory = {
-                    recordFishingResult(decisionCycleId, startStored, startManaged,
+                commitDirectResult(startStored.executionIdentity, persistDirectResult,
+                    history = directResultHistory(decisionCycleId, startStored, startManaged,
                         AutomationHistoryEventKind.WAITING, "FISHING_WAITING_FOR_CATCH",
-                        "START 응답에 CATCH form이 없어 다음 판단에서 한 번만 다시 확인합니다.")
-                }) { persist -> typedRuntime.complete(execution,
+                        "START 응답에 CATCH form이 없어 다음 판단에서 한 번만 다시 확인합니다."),
+                ) { persist -> typedRuntime.complete(execution,
                     TypedRuntimeOutcome.ActionSucceeded("TYPED_FISHING_WAITING_FOR_CATCH", selectedWarnings), persist) }
             }
             val boundary = TownSubmissionBoundary { submission ->
@@ -519,6 +516,16 @@ class FishingCycleModule(
             log.warn("Fishing result history unavailable accountId={} executionIdentity={} errorType={}",
                 accountId, stored.executionIdentity, error.javaClass.name)
         }
+    }
+
+    private fun directResultHistory(
+        cycleId: Long?, stored: StoredTypedAutomationAction, managed: ManagedAutomationAction,
+        kind: AutomationHistoryEventKind, code: String, message: String,
+    ): DirectResultHistory? {
+        if (cycleId == null) return null
+        return decisionJournal?.let { journal -> DirectResultHistory(journal, cycleId,
+            automationActionTrace(stored, kind, code, message, null, managed.descriptor,
+                diagnosticContext = managed.diagnosticContext, observedAt = now())) }
     }
 
     private fun recordFishingResult(

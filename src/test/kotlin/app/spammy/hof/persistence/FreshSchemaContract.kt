@@ -21,7 +21,7 @@ internal object FreshSchemaContract {
             }
         }
         assertEquals(
-            setOf("payload_json"),
+            setOf("payload_json", "direct_response_json"),
             TABLES.values.flatMap { it.columns.keys }.filter { it.endsWith("_json", ignoreCase = true) }.toSet(),
         )
     }
@@ -587,7 +587,7 @@ internal object FreshSchemaContract {
         table(
             "automation_decision_cycles",
             serialId(), requiredBigint("account_id"), requiredVarchar("result", 32), optionalBigint("selected_entry_id"),
-            requiredInstant("started_at"), requiredInstant("finished_at"),
+            requiredInstant("started_at"), requiredInstant("finished_at"), requiredInteger("next_event_sequence"),
         ),
         table(
             "automation_decision_events",
@@ -637,7 +637,7 @@ internal object FreshSchemaContract {
             optionalVarchar("lease_token", 128),
             optionalInstant("lease_until"), optionalBigint("stop_action_id"), optionalText("warning_text"), optionalText("last_error"),
             optionalVarchar("requested_lifecycle", 20), requiredBoolean("auth_suspended"),
-            requiredBoolean("resume_after_auth"),
+            requiredBoolean("resume_after_auth"), requiredBoolean("direct_response_yield_required"),
             requiredBigint("intent_revision"),
             requiredInstant("created_at"), requiredInstant("updated_at"), requiredBigint("version"),
             primaryKey = listOf("account_id"),
@@ -652,6 +652,8 @@ internal object FreshSchemaContract {
             requiredVarchar("lease_token", 128),
             optionalText("last_error"), requiredInstant("created_at"), optionalInstant("submitted_at"),
             optionalInstant("finished_at"), requiredInstant("updated_at"), optionalVarchar("entry_display_name", 100),
+            optionalText("direct_response_json"), optionalVarchar("direct_response_fingerprint", 64),
+            optionalInstant("direct_response_suppression_released_at"), optionalVarchar("direct_response_evidence_case_id", 64),
         ),
         table(
             "automation_action_attempts",
@@ -680,7 +682,7 @@ internal object FreshSchemaContract {
         ),
         table(
             "automation_evidence_cases",
-            requiredVarchar("id", 64), requiredBigint("attempt_id"), requiredVarchar("evidence_source", 40),
+            requiredVarchar("id", 64), optionalBigint("attempt_id"), optionalBigint("typed_action_id"), requiredVarchar("evidence_source", 40),
             optionalVarchar("observation_completeness", 30), optionalVarchar("observation_freshness", 20),
             optionalVarchar("state_fingerprint", 128), optionalVarchar("response_shape_fingerprint", 128),
             optionalVarchar("sanitized_snippet", 1000), requiredVarchar("reason_code", 100),
@@ -1139,6 +1141,7 @@ internal object FreshSchemaContract {
         fk("fk_automation_action_convergence_attempt", "automation_action_convergences.attempt_id", "automation_action_attempts.id", DeleteAction.CASCADE),
         fk("fk_automation_action_convergence_account", "automation_action_convergences.account_id", "hof_accounts.id", DeleteAction.CASCADE),
         fk("fk_automation_account_battle_gate_account", "automation_account_battle_gates.account_id", "hof_accounts.id", DeleteAction.CASCADE),
+        fk("fk_evidence_case_typed_action", "automation_evidence_cases.typed_action_id", "typed_automation_action_runs.id", DeleteAction.CASCADE),
         fk("fk_automation_evidence_case_attempt", "automation_evidence_cases.attempt_id", "automation_action_attempts.id", DeleteAction.CASCADE),
         fk(
             "fk_automation_convergence_shadow_account",
@@ -1345,6 +1348,17 @@ internal object FreshSchemaContract {
     )
 
     private val CHECKS = listOf(
+        check("automation_decision_cycles", "ck_automation_history_next_sequence", "next_event_sequence >= 0"),
+        check("typed_automation_action_runs", "ck_typed_action_direct_response",
+            "(direct_response_json is null and direct_response_fingerprint is null) or (direct_response_json is not null and direct_response_fingerprint is not null and submitted_at is not null)"),
+        check("typed_automation_action_runs", "ck_typed_action_result_pending",
+            "status <> 'RESULT_PENDING' or (direct_response_json is not null and next_attempt_at is not null)"),
+        check("typed_automation_action_runs", "ck_typed_action_result_held",
+            "status <> 'RESULT_HELD' or (direct_response_json is not null and next_attempt_at is null and finished_at is not null)"),
+        check("typed_automation_action_runs", "ck_typed_action_direct_response_released",
+            "direct_response_suppression_released_at is null or status = 'RESULT_HELD'"),
+        check("automation_evidence_cases", "ck_evidence_case_owner",
+            "(attempt_id is not null and typed_action_id is null) or (attempt_id is null and typed_action_id is not null)"),
         check("character_operation_jobs", "chk_character_operation_recovery_status",
             "recovery_status in ('NOT_STARTED', 'REQUIRED', 'RESTORING', 'RESTORED', 'UNAVAILABLE', 'ACCEPTED') or recovery_status is null"),
         check("character_operation_jobs", "ck_character_recovery_attempt_limit", "restore_attempt_limit >= 3"),
@@ -1462,7 +1476,7 @@ internal object FreshSchemaContract {
             "remaining_seconds is null or remaining_seconds >= 0",
         ),
         check("captcha_pass_maintenance", "ck_captcha_pass_maintenance_retry", "retry_count >= 0"),
-        check("typed_automation_action_runs", "ck_typed_action_status", "locate(',' || status || ',', ',PREPARED,SUBMITTING,RECONCILING,SUCCEEDED,FAILED,AMBIGUOUS,') > 0"),
+        check("typed_automation_action_runs", "ck_typed_action_status", "status in ('PREPARED', 'SUBMITTING', 'RECONCILING', 'RESULT_PENDING', 'RESULT_HELD', 'SUCCEEDED', 'FAILED', 'AMBIGUOUS')"),
         check("typed_automation_action_runs", "ck_typed_action_retry", "retry_attempt >= 0"),
         check("typed_automation_action_runs", "ck_typed_action_fingerprint", "char_length(action_fingerprint) = 64"),
         check(

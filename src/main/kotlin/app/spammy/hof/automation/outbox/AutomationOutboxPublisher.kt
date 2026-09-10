@@ -1,12 +1,15 @@
 package app.spammy.hof.automation.outbox
 
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.automation.history.AutomationDecisionJournal
+import app.spammy.hof.automation.history.AUTOMATION_HISTORY_OUTBOX_TOPIC
 import java.util.concurrent.TimeUnit
 import org.springframework.context.annotation.Profile
 import org.springframework.kafka.core.KafkaTemplate
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
 import org.springframework.transaction.annotation.Transactional
+import org.slf4j.LoggerFactory
 import tools.jackson.databind.ObjectMapper
 
 interface AutomationOutboxTransport {
@@ -52,11 +55,24 @@ class AutomationOutboxPublisher(
     private val marker: AutomationOutboxPublishMarker,
     private val transport: AutomationOutboxTransport,
     private val timeProvider: TimeProvider,
+    private val journal: AutomationDecisionJournal? = null,
 ) {
+    private val log = LoggerFactory.getLogger(javaClass)
+
     fun publishBatch() {
-        queryRepository.findUnpublished(timeProvider.now(), topics = transport.supportedTopics).forEach { row ->
-            transport.publish(row)
-            marker.markPublished(row.id)
+        try {
+            queryRepository.findUnpublished(timeProvider.now(), topics = transport.supportedTopics,
+                excludedTopics = setOf(AUTOMATION_HISTORY_OUTBOX_TOPIC)).forEach { row ->
+                transport.publish(row)
+                marker.markPublished(row.id)
+            }
+        } finally {
+            // 로컬 이력은 Kafka 장애와 독립적으로 복구한다. 상세 문맥을 전송하거나 wake 조회 예산을 쓰지 않는다.
+            try {
+                journal?.publishDeferredResults()
+            } catch (error: RuntimeException) {
+                log.warn("Deferred history poll unavailable errorType={}", error.javaClass.name)
+            }
         }
     }
 }

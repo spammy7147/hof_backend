@@ -14,12 +14,14 @@ class AutomationOutboxQueryRepository(
         now: Instant,
         limit: Long = 100,
         topics: Collection<String>? = null,
+        excludedTopics: Collection<String> = emptySet(),
     ): List<AutomationOutboxEntity> =
         queryFactory.selectFrom(automationOutboxEntity)
             .where(
                 automationOutboxEntity.publishedAt.isNull,
                 automationOutboxEntity.availableAt.loe(now),
                 topics?.let { automationOutboxEntity.topic.`in`(it) },
+                excludedTopics.takeIf { it.isNotEmpty() }?.let { automationOutboxEntity.topic.notIn(it) },
             )
             .orderBy(automationOutboxEntity.id.asc())
             .limit(limit)
