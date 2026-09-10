@@ -781,8 +781,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                 decisionCycleId, selectedWarnings, resumedDeferredSubmission) == true
         ) return
 
-        resultSelection.policy?.let { selection ->
-            val directive = results.prepare(accountId, selection, resumedDeferredSubmission)
+        results.prepare(accountId, resultSelection, resumedDeferredSubmission)?.let { directive ->
             when (directive) {
                 is ConvergenceDirective.Submit -> convergenceAttemptId = directive.attemptId
                 else -> {
@@ -894,7 +893,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                 return typedRuntime.discardUnauthorizedSubmission(accountId, execution, convergenceAttemptId, results, now())
             }
             val evidenceExecution = requireNotNull(authorizedExecution.value)
-            appliedEvidence = results.directEvidence(resultSelection.evidence, evidenceExecution)
+            appliedEvidence = results.directEvidence(resultSelection, evidenceExecution)
             val acceptedExecution = when (val connected = results.applyDirect(managedAction, evidenceExecution, appliedEvidence, convergenceAttemptId)) {
                 is AutomationResultCoordinator.DirectResult.Accepted -> connected.execution
                 is AutomationResultCoordinator.DirectResult.Unapplied -> {

@@ -317,10 +317,9 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(catchManaged.applyLegacyExecution(anyTypedExecution())).thenAnswer { it.arguments[0] }
         Mockito.`when`(startManaged.applyPolicyAcceptedExecution(anyTypedExecution())).thenAnswer { it.arguments[0] }
         Mockito.`when`(catchManaged.applyPolicyAcceptedExecution(anyTypedExecution())).thenAnswer { it.arguments[0] }
-        Mockito.`when`(convergence.prepare(Mockito.eq(7L), anyConvergenceSelection())).thenReturn(
-            ConvergenceDirective.Submit(201L),
-            ConvergenceDirective.Submit(202L),
-        )
+        Mockito.`when`(convergence.prepare(Mockito.eq(7L), anyConvergenceSelection()))
+            .thenAnswer { ConvergenceDirective.Submit(201L, it.getArgument(1)) }
+            .thenAnswer { ConvergenceDirective.Submit(202L, it.getArgument(1)) }
         Mockito.`when`(convergence.record(Mockito.anyLong(), anyConvergenceEvidence()))
             .thenReturn(ConvergenceDirective.ContinueSelection)
         Mockito.`when`(fishing.executeOneCastForAutomation(Mockito.eq(7L), anyFishingObservation(), anyTownBoundary(), anyBeforeCatch()))
@@ -408,7 +407,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(runtime.persistPrepared(freshExecution, startStored, emptyList()))
             .thenReturn(TypedRuntimePreparation.Ready(startPrepared))
         Mockito.`when`(runtime.beginSubmission(startPrepared)).thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
-        Mockito.`when`(convergence.prepare(Mockito.eq(7L), anyConvergenceSelection())).thenReturn(ConvergenceDirective.Submit(211L))
+        Mockito.`when`(convergence.prepare(Mockito.eq(7L), anyConvergenceSelection())).thenAnswer { ConvergenceDirective.Submit(211L, it.getArgument(1)) }
         Mockito.`when`(convergence.record(Mockito.anyLong(), anyConvergenceEvidence())).thenReturn(ConvergenceDirective.ContinueSelection)
         Mockito.`when`(fishing.executeOneCastForAutomation(Mockito.eq(7L), anyFishingObservation(), anyTownBoundary(), anyBeforeCatch())).thenAnswer { invocation ->
             FishingOneCastRemoteResult.WaitingForCatch(response)
@@ -544,7 +543,7 @@ class UnifiedAutomationRunnerTest {
             .thenReturn(TypedRuntimePreparation.Ready(catchPrepared))
         Mockito.`when`(runtime.beginSubmission(catchPrepared)).thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
         Mockito.`when`(convergence.prepare(Mockito.eq(7L), anyConvergenceSelection()))
-            .thenReturn(ConvergenceDirective.Submit(205L))
+            .thenAnswer { ConvergenceDirective.Submit(205L, it.getArgument(1)) }
         Mockito.`when`(convergence.record(Mockito.eq(205L), anyConvergenceEvidence()))
             .thenReturn(ConvergenceDirective.ContinueSelection)
         val scoped = buildRunner(
@@ -724,7 +723,7 @@ class UnifiedAutomationRunnerTest {
             .thenReturn(TypedRuntimePreparation.Ready(prepared))
         Mockito.`when`(runtime.beginSubmission(prepared)).thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
         Mockito.`when`(convergence.prepare(Mockito.eq(7L), anyConvergenceSelection()))
-            .thenReturn(ConvergenceDirective.Submit(205L))
+            .thenAnswer { ConvergenceDirective.Submit(205L, it.getArgument(1)) }
         Mockito.`when`(convergence.record(Mockito.eq(205L), anyConvergenceEvidence()))
             .thenReturn(ConvergenceDirective.ContinueSelection)
         val scoped = buildRunner(
@@ -847,7 +846,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(fishing.executeOneCastForAutomation(Mockito.eq(7L), anyFishingObservation(), anyTownBoundary(), anyBeforeCatch()))
             .thenThrow(HofAutomationDeferredException(retryAt, 1, requestAttempted = false))
         Mockito.`when`(convergence.prepare(Mockito.eq(7L), anyConvergenceSelection()))
-            .thenReturn(ConvergenceDirective.Submit(204L))
+            .thenAnswer { ConvergenceDirective.Submit(204L, it.getArgument(1)) }
         val convergenceFactory = StoredActionConvergenceSelectionFactory()
         val scoped = buildRunner(
             preflight,
@@ -1649,7 +1648,7 @@ class UnifiedAutomationRunnerTest {
             .thenReturn(TypedRuntimePreparation.Ready(prepared))
         Mockito.`when`(runtime.beginSubmission(prepared))
             .thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
-        Mockito.`when`(convergence.prepare(7L, selection)).thenReturn(ConvergenceDirective.Submit(113L))
+        Mockito.`when`(convergence.prepare(7L, selection)).thenAnswer { ConvergenceDirective.Submit(113L, it.getArgument(1)) }
         Mockito.`when`(convergence.record(Mockito.eq(113L), anyConvergenceEvidence()))
             .thenReturn(ConvergenceDirective.ContinueSelection)
         Mockito.`when`(managed.execute()).thenReturn(
@@ -1720,6 +1719,39 @@ class UnifiedAutomationRunnerTest {
     }
 
     @Test
+    fun `미전송 재시도의 직접 응답은 저장 시도의 기준으로 같은 상태를 판정한다`() {
+        val clock = TimeProvider { Instant.EPOCH }
+        val store = InMemoryConvergenceStore()
+        val convergence = DefaultAutomationActionConvergenceModule(store, clock)
+        val factory = StoredActionConvergenceSelectionFactory()
+        val selection = factory.create(defaultStored, legacySuppressionEpoch = "created-before-cutover")
+        val attempt = store.createOrGet(7L, selection, Instant.EPOCH)
+        assertTrue(convergence.discardUnsubmitted(7L, selection, Instant.EPOCH, "HOF_CONNECTION"))
+        val resumed = executionRight(TypedRuntimeCheckpoint(defaultStored,
+            TypedRuntimeCheckpointPhase.PREPARED, null, "HOF_CONNECTION", deferredSubmissionRetry = true))
+        Mockito.`when`(runtime.acquire(7L)).thenReturn(TypedRuntimeAcquisition.Acquired(resumed))
+        Mockito.`when`(runtime.beginSubmission(resumed)).thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
+        Mockito.`when`(lifecycle.restoreVerified(defaultStored, 7L)).thenReturn(managed)
+        Mockito.`when`(managed.execute()).thenReturn(questClaimExecution().copy(observedState = QuestObservedState(
+            fingerprint = selection.baselineFingerprint, present = true, state = QuestState.CLAIMABLE, actionNo = "claim")))
+        val scoped = buildRunner(
+            preflight, runtime, decisions, wakeup, sharedCooldowns, lifecycle, submissionGate,
+            convergenceModule = convergence, convergenceSelectionFactory = factory,
+            timeProvider = clock, evidenceInterpreter = productionEvidenceInterpreter,
+        )
+
+        scoped.runOne(7L)
+
+        val result = requireNotNull(store.get(attempt.attemptId))
+        assertEquals(app.spammy.hof.automation.convergence.ActionConvergenceResult.PENDING, result.result)
+        assertEquals("AUTHORITATIVE_STATE_UNCHANGED", result.reasonCode)
+        assertEquals(selection, result.selection)
+        assertEquals(Instant.EPOCH.plusSeconds(10), result.nextProbeAt)
+        Mockito.verify(managed).execute()
+        assertIs<TypedRuntimeOutcome.AmbiguousHandoff>(capturedOutcome())
+    }
+
+    @Test
     fun `전투 패턴 POST의 503은 ACTIVE 재개에서 성공 패턴을 생략하고 전투까지 이어간다`() {
         val retryAt = Instant.parse("2026-07-24T00:00:56Z")
         val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
@@ -1756,9 +1788,9 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(runtime.beginSubmission(firstPrepared)).thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
         Mockito.`when`(runtime.beginSubmission(resumedPrepared))
             .thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH.plusSeconds(1)))
-        Mockito.`when`(convergence.prepare(7L, selection)).thenReturn(ConvergenceDirective.Submit(114L))
+        Mockito.`when`(convergence.prepare(7L, selection)).thenAnswer { ConvergenceDirective.Submit(114L, it.getArgument(1)) }
         Mockito.`when`(convergence.retryUnsubmitted(7L, selection, Instant.EPOCH))
-            .thenReturn(ConvergenceDirective.Submit(114L))
+            .thenAnswer { ConvergenceDirective.Submit(114L, it.getArgument(1)) }
         Mockito.`when`(convergence.record(Mockito.eq(114L), anyConvergenceEvidence()))
             .thenReturn(ConvergenceDirective.ContinueSelection)
         Mockito.`when`(convergence.discardUnsubmitted(7L, selection, Instant.EPOCH, "BATTLE_PATTERN_PRELOAD_DEFERRED"))
@@ -2147,7 +2179,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(decisions.select(7)).thenReturn(
             AutomationCoordination.Runnable(12, QuestAction.Claim("quest", "claim"), emptyList()),
         )
-        Mockito.`when`(convergence.prepare(7L, selection)).thenReturn(ConvergenceDirective.Submit(99L))
+        Mockito.`when`(convergence.prepare(7L, selection)).thenAnswer { ConvergenceDirective.Submit(99L, it.getArgument(1)) }
         Mockito.`when`(convergence.record(Mockito.eq(99L), anyConvergenceEvidence()))
             .thenReturn(ConvergenceDirective.ContinueSelection)
         Mockito.`when`(managed.execute()).thenReturn(questClaimExecution())
@@ -2182,7 +2214,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(decisions.select(7)).thenReturn(
             AutomationCoordination.Runnable(12, QuestAction.Claim("quest", "claim"), emptyList()),
         )
-        Mockito.`when`(convergence.prepare(7L, selection)).thenReturn(ConvergenceDirective.Submit(111L))
+        Mockito.`when`(convergence.prepare(7L, selection)).thenAnswer { ConvergenceDirective.Submit(111L, it.getArgument(1)) }
         Mockito.`when`(convergence.record(Mockito.eq(111L), anyConvergenceEvidence())).thenReturn(
             ConvergenceDirective.WaitUntil(probeAt, selection.scope),
         )
@@ -2219,7 +2251,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(decisions.select(7)).thenReturn(
             AutomationCoordination.Runnable(12, QuestAction.Claim("quest", "claim"), emptyList()),
         )
-        Mockito.`when`(convergence.prepare(7L, selection)).thenReturn(ConvergenceDirective.Submit(112L))
+        Mockito.`when`(convergence.prepare(7L, selection)).thenAnswer { ConvergenceDirective.Submit(112L, it.getArgument(1)) }
         Mockito.`when`(convergence.record(Mockito.eq(112L), anyConvergenceEvidence()))
             .thenReturn(ConvergenceDirective.ContinueSelection)
         Mockito.`when`(managed.execute()).thenReturn(rejected)
@@ -2280,7 +2312,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(decisions.select(7L)).thenReturn(
             AutomationCoordination.Runnable(12L, QuestAction.Claim("quest", "claim"), emptyList()),
         )
-        Mockito.`when`(convergence.prepare(7L, selection)).thenReturn(ConvergenceDirective.Submit(106L))
+        Mockito.`when`(convergence.prepare(7L, selection)).thenAnswer { ConvergenceDirective.Submit(106L, it.getArgument(1)) }
         Mockito.`when`(convergence.record(Mockito.eq(106L), anyConvergenceEvidence()))
             .thenReturn(ConvergenceDirective.ContinueSelection)
         Mockito.doThrow(IllegalStateException("unexpected adapter failure")).`when`(managed).execute()
@@ -2312,7 +2344,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(decisions.select(7L)).thenReturn(
             AutomationCoordination.Runnable(12L, QuestAction.Claim("quest", "claim"), emptyList()),
         )
-        Mockito.`when`(convergence.prepare(7L, selection)).thenReturn(ConvergenceDirective.Submit(107L))
+        Mockito.`when`(convergence.prepare(7L, selection)).thenAnswer { ConvergenceDirective.Submit(107L, it.getArgument(1)) }
         Mockito.`when`(convergence.record(Mockito.eq(107L), anyConvergenceEvidence())).thenReturn(
             ConvergenceDirective.WaitUntil(retryAt, selection.scope),
         )
@@ -2345,7 +2377,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(decisions.select(7L)).thenReturn(
             AutomationCoordination.Runnable(12L, QuestAction.Claim("quest", "claim"), emptyList()),
         )
-        Mockito.`when`(convergence.prepare(7L, selection)).thenReturn(ConvergenceDirective.Submit(105L))
+        Mockito.`when`(convergence.prepare(7L, selection)).thenAnswer { ConvergenceDirective.Submit(105L, it.getArgument(1)) }
         Mockito.`when`(convergence.record(Mockito.eq(105L), anyConvergenceEvidence()))
             .thenReturn(ConvergenceDirective.ContinueSelection)
         Mockito.doThrow(
@@ -2379,7 +2411,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(decisions.select(7L)).thenReturn(
             AutomationCoordination.Runnable(12L, QuestAction.Claim("quest", "claim"), emptyList()),
         )
-        Mockito.`when`(convergence.prepare(7L, selection)).thenReturn(ConvergenceDirective.Submit(108L))
+        Mockito.`when`(convergence.prepare(7L, selection)).thenAnswer { ConvergenceDirective.Submit(108L, it.getArgument(1)) }
         Mockito.`when`(convergence.record(Mockito.eq(108L), anyConvergenceEvidence())).thenReturn(
             ConvergenceDirective.WaitUntil(retryAt, selection.scope),
         )
@@ -2415,7 +2447,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(decisions.select(7)).thenReturn(
             AutomationCoordination.Runnable(12, QuestAction.Claim("quest", "claim"), emptyList()),
         )
-        Mockito.`when`(convergence.prepare(7L, selection)).thenReturn(ConvergenceDirective.Submit(99L))
+        Mockito.`when`(convergence.prepare(7L, selection)).thenAnswer { ConvergenceDirective.Submit(99L, it.getArgument(1)) }
         Mockito.`when`(convergence.record(Mockito.eq(99L), anyConvergenceEvidence())).thenReturn(
             ConvergenceDirective.WaitUntil(probeAt, selection.scope),
         )
@@ -2467,7 +2499,7 @@ class UnifiedAutomationRunnerTest {
             .thenReturn(TypedRuntimePreparation.Ready(prepared))
         Mockito.`when`(runtime.beginSubmission(prepared))
             .thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
-        Mockito.`when`(convergence.prepare(7L, selection)).thenReturn(ConvergenceDirective.Submit(102L))
+        Mockito.`when`(convergence.prepare(7L, selection)).thenAnswer { ConvergenceDirective.Submit(102L, it.getArgument(1)) }
         Mockito.`when`(convergence.record(Mockito.eq(102L), anyConvergenceEvidence()))
             .thenReturn(ConvergenceDirective.WaitUntil(Instant.EPOCH.plusSeconds(10), selection.scope))
         Mockito.`when`(
@@ -2500,44 +2532,39 @@ class UnifiedAutomationRunnerTest {
     }
 
     @Test
-    fun `기한이 된 수렴 확인은 저장 payload를 재제출하지 않고 최신 상태만 관측한다`() {
-        val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
+    fun `기한이 된 수렴 확인은 저장 시도의 기준을 유지하고 payload를 재제출하지 않는다`() {
+        val store = InMemoryConvergenceStore()
+        val evidenceCases = mutableListOf<AutomationActionEvidence>()
+        val clock = TimeProvider { Instant.EPOCH }
+        val convergence = DefaultAutomationActionConvergenceModule(store, clock,
+            app.spammy.hof.automation.convergence.EvidenceCaseRecorder { _, evidence, _ -> evidenceCases += evidence })
         val loader = Mockito.mock(StoredConvergenceActionLoader::class.java)
-        val selection = SelectedAutomationAction(
-            12L,
-            defaultStored.executionIdentity,
-            AutomationActionKind.QUEST_CLAIM,
-            AutomationIsolationScope(AutomationIsolationScopeKind.QUEST_TARGET, "quest"),
-            "policy-v1",
-            "baseline",
-        )
-        Mockito.`when`(convergence.resumeDue(7L)).thenReturn(
-            ConvergenceDirective.Probe(99L, defaultStored.executionIdentity),
-        )
+        val factory = StoredActionConvergenceSelectionFactory()
+        val selection = factory.create(defaultStored, legacySuppressionEpoch = "created-before-cutover")
+        val attempt = store.createOrGet(7L, selection, Instant.EPOCH.minusSeconds(10))
+        convergence.record(attempt.attemptId,
+            AutomationActionEvidence.NetworkFailure(Instant.EPOCH.minusSeconds(10), "direct response lost"))
         Mockito.`when`(loader.load(7L, defaultStored.executionIdentity)).thenReturn(defaultStored)
         Mockito.`when`(lifecycle.restoreVerified(defaultStored, 7L)).thenReturn(managed)
-        Mockito.`when`(managed.reconcile()).thenReturn(AmbiguousActionResolution.Applied())
-        Mockito.`when`(convergence.record(Mockito.eq(99L), anyConvergenceEvidence()))
-            .thenReturn(ConvergenceDirective.ContinueSelection)
+        Mockito.`when`(managed.reconcile()).thenReturn(AmbiguousActionResolution.Resubmit)
         Mockito.`when`(decisions.select(7L)).thenReturn(AutomationCoordination.Idle(emptyList()))
         val scoped = buildRunner(
-            preflight,
-            runtime,
-            decisions,
-            wakeup,
-            sharedCooldowns,
-            lifecycle,
-            submissionGate,
+            preflight, runtime, decisions, wakeup, sharedCooldowns, lifecycle, submissionGate,
             convergenceModule = convergence,
-            convergenceSelectionFactory = StoredActionConvergenceSelectionFactory(),
+            convergenceSelectionFactory = factory,
             storedConvergenceActionLoader = loader,
+            timeProvider = clock,
+            evidenceInterpreter = productionEvidenceInterpreter,
         )
 
-        scoped.runOne(7)
+        scoped.runOne(7L)
 
+        val evidence = assertIs<AutomationActionEvidence.SameState>(evidenceCases.last())
+        assertEquals(selection.baselineFingerprint, evidence.stateFingerprint)
+        assertEquals(selection, store.get(attempt.attemptId)?.selection)
+        assertEquals(Instant.EPOCH.plusSeconds(10), store.get(attempt.attemptId)?.nextProbeAt)
         Mockito.verify(managed).reconcile()
         Mockito.verify(managed, Mockito.never()).execute()
-        assertIs<AutomationActionEvidence.StateAdvanced>(convergenceEvidence(convergence, 99L))
         Mockito.verify(decisions).select(7L)
         assertIs<TypedRuntimeOutcome.SelectionChanged>(capturedOutcome())
     }
@@ -2552,7 +2579,7 @@ class UnifiedAutomationRunnerTest {
         )
         val otherSelection = factory.create(otherStored)
         Mockito.`when`(convergence.resumeDue(7L)).thenReturn(
-            ConvergenceDirective.Probe(99L, defaultStored.executionIdentity),
+            ConvergenceDirective.Probe(99L, factory.create(defaultStored)),
         )
         Mockito.`when`(decisions.select(7L)).thenReturn(
             AutomationCoordination.Runnable(
@@ -2562,7 +2589,7 @@ class UnifiedAutomationRunnerTest {
             ),
         )
         Mockito.`when`(managed.storedAction).thenReturn(otherStored)
-        Mockito.`when`(convergence.prepare(7L, otherSelection)).thenReturn(ConvergenceDirective.Submit(100L))
+        Mockito.`when`(convergence.prepare(7L, otherSelection)).thenAnswer { ConvergenceDirective.Submit(100L, it.getArgument(1)) }
         Mockito.`when`(convergence.record(Mockito.eq(100L), anyConvergenceEvidence()))
             .thenReturn(ConvergenceDirective.ContinueSelection)
         Mockito.`when`(managed.execute()).thenReturn(questClaimExecution())
@@ -2592,7 +2619,7 @@ class UnifiedAutomationRunnerTest {
         val convergence = Mockito.mock(AutomationActionConvergenceModule::class.java)
         val loader = Mockito.mock(StoredConvergenceActionLoader::class.java)
         Mockito.`when`(convergence.resumeDue(7L)).thenReturn(
-            ConvergenceDirective.Probe(109L, defaultStored.executionIdentity, entryId = 12L),
+            ConvergenceDirective.Probe(109L, StoredActionConvergenceSelectionFactory().create(defaultStored)),
         )
         Mockito.`when`(decisions.select(7L)).thenReturn(
             AutomationCoordination.Runnable(
@@ -2651,7 +2678,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(runtime.acquire(7)).thenReturn(TypedRuntimeAcquisition.Acquired(legacyExecution))
         Mockito.`when`(lifecycle.restoreVerified(runtimeEnrichedStored, 7L)).thenReturn(managed)
         Mockito.`when`(managed.reconcile()).thenReturn(AmbiguousActionResolution.Resubmit)
-        Mockito.`when`(convergence.prepare(7L, selection)).thenReturn(ConvergenceDirective.Submit(101L))
+        Mockito.`when`(convergence.prepare(7L, selection)).thenAnswer { ConvergenceDirective.Submit(101L, it.getArgument(1)) }
         Mockito.`when`(convergence.record(Mockito.eq(101L), anyConvergenceEvidence())).thenReturn(
             ConvergenceDirective.WaitUntil(probeAt, selection.scope),
         )
@@ -2698,7 +2725,7 @@ class UnifiedAutomationRunnerTest {
             .thenReturn(TypedRuntimePreparation.Ready(prepared))
         Mockito.`when`(runtime.beginSubmission(prepared))
             .thenReturn(TypedRuntimeSubmission.Started(Instant.EPOCH))
-        Mockito.`when`(convergence.prepare(7L, selection)).thenReturn(ConvergenceDirective.Submit(99L))
+        Mockito.`when`(convergence.prepare(7L, selection)).thenAnswer { ConvergenceDirective.Submit(99L, it.getArgument(1)) }
         Mockito.`when`(convergence.record(Mockito.eq(99L), anyConvergenceEvidence())).thenReturn(
             ConvergenceDirective.BattleGateWait(Instant.EPOCH, "CAPTCHA_REQUIRED"),
         )
@@ -2838,7 +2865,7 @@ class UnifiedAutomationRunnerTest {
         Mockito.`when`(managed.storedAction).thenReturn(stored)
         Mockito.`when`(runtime.persistPrepared(anyExecution(), anyStoredAction(), anyWarnings()))
             .thenReturn(TypedRuntimePreparation.Ready(prepared))
-        Mockito.`when`(convergence.prepare(7L, selection)).thenReturn(ConvergenceDirective.Submit(110L))
+        Mockito.`when`(convergence.prepare(7L, selection)).thenAnswer { ConvergenceDirective.Submit(110L, it.getArgument(1)) }
         Mockito.`when`(convergence.record(Mockito.eq(110L), anyConvergenceEvidence())).thenReturn(
             ConvergenceDirective.BattleGateWait(Instant.EPOCH, "CAPTCHA_REQUIRED"),
         )

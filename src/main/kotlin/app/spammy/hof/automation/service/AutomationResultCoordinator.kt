@@ -29,7 +29,18 @@ class AutomationResultCoordinator(
     private val shadow = rollout?.shadow == true
     val postsEnabled = rollout?.automationPostsEnabled != false
 
-    data class ActionSelection(val policy: SelectedAutomationAction? = null, val evidence: SelectedAutomationAction? = null)
+    class ActionSelection internal constructor(policy: SelectedAutomationAction? = null, evidence: SelectedAutomationAction? = null) {
+        var policy: SelectedAutomationAction? = policy
+            private set
+        var evidence: SelectedAutomationAction? = evidence
+            private set
+
+        internal fun bindPrepared(selection: SelectedAutomationAction) {
+            check(policy?.executionIdentity == selection.executionIdentity) { "Prepared action identity must match its selection." }
+            policy = selection
+            evidence = selection
+        }
+    }
 
     /** null은 활성 모드의 필수 수렴 연결 누락이며, 호출자는 기존 준비 실패 경로로 종료한다. */
     fun freshSelection(accountId: Long, stored: StoredTypedAutomationAction): ActionSelection? {
@@ -64,18 +75,21 @@ class AutomationResultCoordinator(
     }
 
     /** 낚시는 기존 LEGACY 경로에서도 단계별 직접 응답 증거를 만든다. */
-    fun fishingSelection(stored: StoredTypedAutomationAction): SelectedAutomationAction? =
-        convergenceSelectionFactory?.create(stored)
-
-    fun prepareFishing(accountId: Long, selection: SelectedAutomationAction?, retryUnsubmitted: Boolean): ConvergenceDirective? =
-        if (active && selection != null) prepare(accountId, selection, retryUnsubmitted) else null
+    fun fishingSelection(stored: StoredTypedAutomationAction): ActionSelection {
+        val selected = convergenceSelectionFactory?.create(stored)
+        return ActionSelection(policy = if (active) selected else null, evidence = selected)
+    }
 
     fun resumeDue(accountId: Long): ConvergenceDirective? = if (active) convergenceModule?.resumeDue(accountId) else null
 
-    fun prepare(accountId: Long, selection: SelectedAutomationAction, retryUnsubmitted: Boolean): ConvergenceDirective =
-        requireNotNull(convergenceModule).let {
-            if (retryUnsubmitted) it.retryUnsubmitted(accountId, selection, now()) else it.prepare(accountId, selection)
-        }
+    fun prepare(accountId: Long, context: ActionSelection, retryUnsubmitted: Boolean): ConvergenceDirective? {
+        val selection = context.policy ?: return null
+        val convergence = requireNotNull(convergenceModule)
+        val directive = if (retryUnsubmitted) convergence.retryUnsubmitted(accountId, selection, now())
+            else convergence.prepare(accountId, selection)
+        if (directive is ConvergenceDirective.Submit) context.bindPrepared(directive.selection)
+        return directive
+    }
 
     fun record(attemptId: Long, evidence: AutomationActionEvidence): ConvergenceDirective? =
         convergenceModule?.record(attemptId, evidence)
@@ -146,7 +160,10 @@ class AutomationResultCoordinator(
         }
     }
 
-    fun directEvidence(selection: SelectedAutomationAction?, execution: TypedAutomationExecution): AutomationActionEvidence? =
+    fun directEvidence(context: ActionSelection, execution: TypedAutomationExecution): AutomationActionEvidence? =
+        directEvidence(context.evidence, execution)
+
+    private fun directEvidence(selection: SelectedAutomationAction?, execution: TypedAutomationExecution): AutomationActionEvidence? =
         selection?.let {
             evidenceInterpreter?.fromExecution(it, execution, now())
                 ?: AutomationActionEvidence.IncompleteObservation(now(), "PRODUCTION_EVIDENCE_INTERPRETER_MISSING")
@@ -267,7 +284,7 @@ class AutomationResultCoordinator(
         val selection = factory.create(stored, activeCheckpoint.legacySuppressionEpoch)
         val directive = when (val prepared = convergence.prepare(accountId, selection)) {
             is ConvergenceDirective.Submit -> {
-                val observation = observeReconciliation(accountId, managed, selection, stored.executionIdentity, ReconciliationSource.LEGACY_CHECKPOINT)
+                val observation = observeReconciliation(accountId, managed, prepared.selection, stored.executionIdentity, ReconciliationSource.LEGACY_CHECKPOINT)
                 convergence.record(prepared.attemptId, observation) { next ->
                     journalFishingObservation(accountId, StoredObservation(observation, stored, managed.diagnosticContext), next)
                 }
@@ -327,8 +344,7 @@ class AutomationResultCoordinator(
                 now(), error.message ?: "STORED_ACTION_INVALID",
             ), stored)
         }
-        val selection = convergenceSelectionFactory?.create(stored)
-        val evidence = observeReconciliation(accountId, managed, selection, directive.executionIdentity, ReconciliationSource.STORED_PROBE)
+        val evidence = observeReconciliation(accountId, managed, directive.selection, directive.executionIdentity, ReconciliationSource.STORED_PROBE)
         return StoredObservation(evidence, stored, managed.diagnosticContext)
     }
 

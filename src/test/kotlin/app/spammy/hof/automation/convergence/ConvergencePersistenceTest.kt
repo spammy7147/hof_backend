@@ -127,8 +127,12 @@ class ConvergencePersistenceTest {
         entityManager.flush()
         entityManager.clear()
 
-        val replay = store.createOrGet(account.id, selection, now.plusSeconds(1))
+        val replay = store.createOrGet(account.id,
+            selection.copy(policyVersion = "new-policy", baselineFingerprint = "new-baseline"), now.plusSeconds(1))
+        val module = DefaultAutomationActionConvergenceModule(store, TimeProvider { now.plusSeconds(10) })
+        val probe = kotlin.test.assertIs<ConvergenceDirective.Probe>(module.resumeDue(account.id))
 
+        assertEquals(selection, probe.selection)
         assertEquals(created.attemptId, replay.attemptId)
         assertEquals(selection, replay.selection)
         assertEquals(ActionConvergenceResult.PENDING, replay.result)

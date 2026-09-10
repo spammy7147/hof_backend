@@ -105,7 +105,7 @@ class DefaultAutomationActionConvergenceModule(
         }
         val attempt = store.createOrGet(accountId, selection, timeProvider.now())
         if (!attempt.active) return ConvergenceDirective.ContinueSelection
-        return ConvergenceDirective.Submit(attempt.attemptId)
+        return ConvergenceDirective.Submit(attempt.attemptId, attempt.selection)
     }
 
     override fun recordLateApplication(accountId: Long, executionIdentity: String, evidence: AutomationActionEvidence.DirectApplied) {
@@ -348,7 +348,7 @@ class DefaultAutomationActionConvergenceModule(
             existing.finishedAt = null
             existing.updatedAt = retriedAt
             store.save(existing)
-            ConvergenceDirective.Submit(existing.attemptId)
+            ConvergenceDirective.Submit(existing.attemptId, existing.selection)
         } ?: ConvergenceDirective.ContinueSelection
     }
 
@@ -399,7 +399,7 @@ class DefaultAutomationActionConvergenceModule(
             if (budgetExhausted(current, now)) {
                 return@withLockedAttempt terminal(current, ActionConvergenceResult.HELD, "PENDING_BUDGET_EXHAUSTED", now)
             }
-            ConvergenceDirective.Probe(current.attemptId, current.selection.executionIdentity, current.selection.entryId)
+            ConvergenceDirective.Probe(current.attemptId, current.selection)
         } ?: ConvergenceDirective.ContinueSelection
     }
 

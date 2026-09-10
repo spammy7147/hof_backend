@@ -3,7 +3,6 @@ package app.spammy.hof.automation.service
 import app.spammy.hof.automation.convergence.AutomationActionEvidence
 import app.spammy.hof.automation.convergence.ConvergenceDirective
 import app.spammy.hof.automation.convergence.LegacyConvergenceDecision
-import app.spammy.hof.automation.convergence.SelectedAutomationAction
 import app.spammy.hof.automation.history.*
 import app.spammy.hof.auth.service.AccountExecutionSubmissionGate
 import app.spammy.hof.common.time.TimeProvider
@@ -88,7 +87,7 @@ class FishingCycleModule(
             appendFishingResult(accountId, decisionCycleId, stored, managed, kind, code, message, nextRunAt)
         }
 
-        results.prepareFishing(accountId, selection, retryUnsubmitted)?.let { directive ->
+        results.prepare(accountId, selection, retryUnsubmitted)?.let { directive ->
             when (directive) {
                 is ConvergenceDirective.Submit -> attemptId = directive.attemptId
                 else -> {
@@ -164,10 +163,10 @@ class FishingCycleModule(
                 return
             }
             error.findHofAutomationDeferral()?.takeIf { !it.actionSubmissionAttempted }?.let { deferred ->
-                if (attemptId != null && selection != null) {
+                if (attemptId != null && selection.policy != null) {
                     results.discardUnsubmitted(
                         accountId = accountId,
-                        selection = selection,
+                        selection = requireNotNull(selection.policy),
                         discardedAt = now(),
                         reasonCode = deferred.reasonCode ?: "SUBMISSION_NOT_ATTEMPTED",
                     )
@@ -231,9 +230,9 @@ class FishingCycleModule(
 
         fun prepareConvergence(
             stored: StoredTypedAutomationAction,
-            selection: SelectedAutomationAction?,
+            selection: AutomationResultCoordinator.ActionSelection,
         ): Long? {
-            val directive = results.prepareFishing(
+            val directive = results.prepare(
                 accountId, selection,
                 retryUnsubmitted && stored.executionIdentity == startStored.executionIdentity,
             ) ?: return null
@@ -249,7 +248,7 @@ class FishingCycleModule(
         fun acceptStep(
             managed: ManagedFishingAutomationAction,
             stored: StoredTypedAutomationAction,
-            selection: SelectedAutomationAction?,
+            selection: AutomationResultCoordinator.ActionSelection,
             attemptId: Long?,
             response: app.spammy.hof.town.fishing.dto.FishingResponse,
         ): () -> Unit {
@@ -441,10 +440,10 @@ class FishingCycleModule(
                 return
             }
             error.findHofAutomationDeferral()?.takeIf { !it.actionSubmissionAttempted }?.let { deferred ->
-                if (activeAttemptId != null && activeSelection != null) {
+                if (activeAttemptId != null && activeSelection.policy != null) {
                     results.discardUnsubmitted(
                         accountId = accountId,
-                        selection = requireNotNull(activeSelection),
+                        selection = requireNotNull(activeSelection.policy),
                         discardedAt = now(),
                         reasonCode = deferred.reasonCode ?: "SUBMISSION_NOT_ATTEMPTED",
                     )

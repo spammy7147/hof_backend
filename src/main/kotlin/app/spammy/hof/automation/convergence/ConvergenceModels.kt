@@ -150,13 +150,15 @@ sealed interface AutomationActionEvidence {
 }
 
 sealed interface ConvergenceDirective {
-    data class Submit(val attemptId: Long) : ConvergenceDirective
+    data class Submit(val attemptId: Long, val selection: SelectedAutomationAction) : ConvergenceDirective
 
     data class Probe(
         val attemptId: Long,
-        val executionIdentity: String,
-        val entryId: Long? = null,
-    ) : ConvergenceDirective
+        val selection: SelectedAutomationAction,
+    ) : ConvergenceDirective {
+        val executionIdentity: String get() = selection.executionIdentity
+        val entryId: Long get() = selection.entryId
+    }
 
     data class WaitUntil(
         val at: Instant,

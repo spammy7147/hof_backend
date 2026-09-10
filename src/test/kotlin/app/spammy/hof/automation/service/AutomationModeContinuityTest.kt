@@ -63,6 +63,9 @@ class ShadowAutomationContinuityTest : AutomationModeContinuityTest() {
 @SpringBootTest(properties = ["hof.automation-convergence.mode=ACTIVE"])
 class ActiveAutomationContinuityTest : AutomationModeContinuityTest() {
     override val mode = AutomationConvergenceMode.ACTIVE
+
+    @Test
+    fun `영속 시도의 기준으로 재확인하고 독립 자택과 후속 깨우기를 실행한다`() = storedAttemptContextContinuity()
 }
 
 /** Each supported mode is assembled from its real startup property, without mocking rollout. */
@@ -71,6 +74,8 @@ class ActiveAutomationContinuityTest : AutomationModeContinuityTest() {
 abstract class AutomationModeContinuityTest {
     protected abstract val mode: AutomationConvergenceMode
     @Autowired private lateinit var properties: AutomationConvergenceProperties
+    @Autowired private lateinit var convergenceStore: app.spammy.hof.automation.convergence.ConvergenceStore
+    @Autowired private lateinit var actionCodec: StoredTypedAutomationActionCodec
     @Autowired private lateinit var entityManager: EntityManager
     @Autowired private lateinit var transactions: PlatformTransactionManager
     @Autowired private lateinit var jdbc: JdbcTemplate
@@ -104,6 +109,80 @@ abstract class AutomationModeContinuityTest {
             "select min(available_at) from automation_outbox where account_id = ? and published_at is null",
             java.time.OffsetDateTime::class.java, accountId)).toInstant())
         publisher.publishBatch()
+    }
+
+    protected fun storedAttemptContextContinuity() {
+        clock.current = Instant.parse("2026-09-10T08:00:00Z")
+        transport.delivered.clear()
+        val requests = mutableListOf<HofRequest>()
+        val url = "https://hof.zerosic.com/index.php?menu=housing"
+        var accepted = false
+        fun page() = independentHomePage(false) + independentHomePage(accepted)
+            .replace("[A] 독립 자택", "[B] 독립 자택").replace("no=A", "no=B")
+        val quests = HomePageParser().parse(HomeMode.HOME, page(), url, HofFormParser().parse(page(), url)).quests
+        val baseline = "b".repeat(64)
+        val (accountId, attemptId) = requireNotNull(TransactionTemplate(transactions).execute {
+            val account = HofAccountEntity(loginId = "stored-policy-${UUID.randomUUID()}", encryptedPassword = "test", createdAt = clock.now())
+            entityManager.persist(account)
+            val entry = AutomationEntryEntity(account = account, type = AutomationType.HOME_QUEST, priority = 0,
+                enabled = true, createdAt = clock.now(), updatedAt = clock.now())
+            entityManager.persist(entry)
+            quests.forEachIndexed { index, quest -> entityManager.persist(HomeQuestAutomationSelectionEntity(
+                entry = entry, questId = quest.id, questName = quest.name, enabled = true, sourceOrder = index)) }
+            entityManager.persist(HofCookieEntity(account = account, name = "PHPSESSID", value = "fixture", updatedAt = clock.now()))
+            entityManager.persist(HofStatusSnapshotEntity(account = account, playerName = "테스트", funds = 1,
+                timeCurrent = 100, timeMax = 100, work = "", auction = "", observedAt = clock.now()))
+            entityManager.persist(TypedAutomationRuntimeStateEntity(accountId = account.id, account = account,
+                lifecycleStatus = TypedAutomationLifecycle.RUNNING, createdAt = clock.now(), updatedAt = clock.now()))
+            val stored = StoredTypedAutomationAction(entry.id, "stored-policy-${UUID.randomUUID()}",
+                StoredTypedActionPayload.HomeQuest(quests.first().id, requireNotNull(quests.first().actionId), HomeQuestAutomationActionType.ACCEPT))
+            val encoded = actionCodec.encode(stored)
+            entityManager.persist(TypedAutomationActionRunEntity(account = account, entry = entry,
+                executionIdentity = stored.executionIdentity, actionKind = stored.payload.kind(),
+                payloadJson = encoded.json, actionFingerprint = encoded.fingerprint,
+                status = TypedAutomationActionStatus.AMBIGUOUS, leaseToken = "finished-fixture",
+                createdAt = clock.now().minusSeconds(10), submittedAt = clock.now().minusSeconds(10),
+                finishedAt = clock.now().minusSeconds(1), updatedAt = clock.now()))
+            val selected = app.spammy.hof.automation.convergence.StoredActionConvergenceSelectionFactory()
+                .create(stored).copy(baselineFingerprint = baseline)
+            val attempt = convergenceStore.createOrGet(account.id, selected, clock.now().minusSeconds(10))
+            attempt.submittedAt = clock.now().minusSeconds(10)
+            attempt.firstPendingAt = attempt.submittedAt
+            attempt.nextProbeAt = clock.now()
+            convergenceStore.save(attempt)
+            entityManager.flush()
+            entityManager.clear()
+            account.id to attempt.attemptId
+        })
+        try {
+            Mockito.`when`(preflight.ensureReady(accountId)).thenReturn(AutomationDailyPreflight.Result.Ready)
+            Mockito.`when`(authorization.isExecutionAllowed(accountId)).thenReturn(true)
+            Mockito.doAnswer { invocation ->
+                val request = invocation.getArgument<HofRequest>(1)
+                requests += request
+                if (request.formFields["action"] == "get" && request.formFields["no"] == "B") accepted = true
+                HofHttpResponse(200, url, page(), emptyMap())
+            }.`when`(gateway).execute(Mockito.eq(accountId), Mockito.any<HofRequest>()
+                ?: HofRequest(HofHttpMethod.GET, "https://example.test"), Mockito.anyMap())
+
+            wakeups.wake(accountId, "STORED_POLICY_CONTEXT")
+            publisher.publishBatch()
+            assertEquals(listOf(baseline), jdbc.queryForList(
+                "select state_fingerprint from automation_evidence_cases where attempt_id = ? and reason_code = 'AUTHORITATIVE_STATE_UNCHANGED'",
+                String::class.java, attemptId))
+            assertEquals(baseline, convergenceStore.get(attemptId)?.selection?.baselineFingerprint)
+            repeat(3) { nextWake(accountId) }
+            assertTrue(accepted, requests.map { it.method to it.formFields }.toString())
+            assertTrue(requests.none { it.formFields["action"] == "get" && it.formFields["no"] == "A" })
+            assertEquals(1, requests.count { it.formFields["action"] == "get" && it.formFields["no"] == "B" })
+            assertTrue(journal.page(accountId, AutomationHistoryQuery()).cycles.size >= 2)
+            assertTrue(transport.delivered.all { outbox.consumed(it) })
+            assertEquals(0, jdbc.queryForObject("select count(*) from automation_work_sessions where account_id = ? and running_slot is not null", Int::class.java, accountId))
+            assertEquals(0, jdbc.queryForObject("select count(*) from account_automation_leases where account_id = ?", Int::class.java, accountId))
+        } finally {
+            transport.delivered.forEach { jdbc.update("delete from automation_consumed_events where event_id = ?", it) }
+            jdbc.update("delete from hof_accounts where id = ?", accountId)
+        }
     }
 
     @Test
