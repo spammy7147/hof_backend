@@ -7,6 +7,7 @@ import app.spammy.hof.automation.convergence.AutomationConvergenceMode
 import app.spammy.hof.automation.convergence.AutomationConvergenceProperties
 import app.spammy.hof.automation.entity.*
 import app.spammy.hof.automation.history.AutomationDecisionJournal
+import app.spammy.hof.automation.history.AutomationHistoryEventKind
 import app.spammy.hof.automation.history.AutomationHistoryQuery
 import app.spammy.hof.automation.outbox.AutomationOutboxPublisher
 import app.spammy.hof.automation.outbox.AutomationOutboxQueryRepository
@@ -37,6 +38,7 @@ import java.util.UUID
 import kotlin.test.*
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.CsvSource
 import org.junit.jupiter.params.provider.ValueSource
 import org.mockito.Mockito
 import org.springframework.beans.factory.annotation.Autowired
@@ -255,8 +257,12 @@ abstract class AutomationModeContinuityTest {
     }
 
     @ParameterizedTest
-    @ValueSource(booleans = [false, true])
-    fun `레이드 시작의 같은 READY는 유한하게 확인하고 다른 항목과 다음 판단을 이어간다`(externalAdvance: Boolean) {
+    @CsvSource("false,false,false", "true,false,false", "true,false,true", "true,true,false", "true,true,true")
+    fun `레이드 시작의 같은 READY는 유한하게 확인하고 다른 항목과 다음 판단을 이어간다`(
+        externalAdvance: Boolean,
+        directAdvance: Boolean,
+        genericNotice: Boolean,
+    ) {
         assertEquals(mode, properties.mode)
         clock.current = Instant.parse("2026-09-10T01:00:00Z")
         transport.delivered.clear()
@@ -308,10 +314,17 @@ abstract class AutomationModeContinuityTest {
                 val request = invocation.getArgument<HofRequest>(1)
                 requests += request
                 if (request.formFields["action"] == "get") homeAccepted = true
+                if (directAdvance && request.formFields.containsKey("start_goblin")) externallyStarted = true
                 when {
                     request.url.contains("raid_hunt") -> HofHttpResponse(200, "https://hof.zerosic.com/index.php?raid_hunt", noBattle, emptyMap())
                     request.url.contains("raidpub") || request.formFields.containsKey("start_goblin") -> HofHttpResponse(200, raidUrl,
-                        if (externallyStarted) ready.replace("현재 상태 : 출발 가능", "현재 상태 : 전투 중") else ready, emptyMap())
+                        if (externallyStarted) ready.replace("현재 상태 : 출발 가능", "현재 상태 : 전투 중")
+                            .let {
+                                val notice = if (directAdvance) "전투 정보실 안내를 확인했습니다."
+                                    else "전투가 신청 가능 상태로 바뀌었습니다."
+                                if (genericNotice) it.replace("</body>", "<div class=\"notice\">$notice</div></body>") else it
+                            }
+                        else ready, emptyMap())
                     else -> HofHttpResponse(200, homeUrl, homePage(), emptyMap())
                 }
             }.`when`(gateway).execute(Mockito.eq(accountId), Mockito.any<HofRequest>()
@@ -322,10 +335,14 @@ abstract class AutomationModeContinuityTest {
             wakeups.wake(accountId, "RAID_SAME_READY")
             publisher.publishBatch()
             assertEquals(1, startCount(), requests.map { it.url to it.formFields.keys }.toString())
-            assertEquals(listOf(if (mode == AutomationConvergenceMode.ACTIVE) "AMBIGUOUS" else "RECONCILING"),
+            assertEquals(listOf(when {
+                directAdvance && mode == AutomationConvergenceMode.ACTIVE -> "FAILED"
+                mode == AutomationConvergenceMode.ACTIVE -> "AMBIGUOUS"
+                else -> "RECONCILING"
+            }),
                 jdbc.queryForList("select status from typed_automation_action_runs where account_id = ? order by id", String::class.java, accountId))
-            assertEquals(if (mode == AutomationConvergenceMode.ACTIVE) listOf("PENDING") else emptyList(), convergenceResults())
-            if (mode == AutomationConvergenceMode.SHADOW) assertEquals(listOf("PENDING"), jdbc.queryForList(
+            assertEquals(if (mode == AutomationConvergenceMode.ACTIVE) listOf(if (directAdvance) "SUPERSEDED" else "PENDING") else emptyList(), convergenceResults())
+            if (mode == AutomationConvergenceMode.SHADOW) assertEquals(listOf(if (directAdvance) "SUPERSEDED" else "PENDING"), jdbc.queryForList(
                 "select new_result from automation_convergence_shadow_evaluations where account_id = ? and action_kind = 'RAID_START' order by created_at", String::class.java, accountId))
 
             if (externalAdvance) externallyStarted = true
@@ -346,6 +363,11 @@ abstract class AutomationModeContinuityTest {
                 "select count(*) from automation_action_convergences where account_id = ? and result = 'HELD' and suppression_released_at is null",
                 Int::class.java, accountId))
             if (externalAdvance) {
+                val startEvents = journal.page(accountId, AutomationHistoryQuery()).cycles.flatMap { it.events }
+                    .filter { it.type == AutomationType.RAID && it.actionKind == "START" }
+                assertTrue(startEvents.any { it.kind == AutomationHistoryEventKind.ACTION_STARTED }, startEvents.toString())
+                assertTrue(startEvents.none { it.kind == AutomationHistoryEventKind.ACTION_SUCCEEDED },
+                    "$mode 공유 단계 진전은 내 START 성공으로 기록하면 안 된다: $startEvents")
                 assertEquals("IN_BATTLE", jdbc.queryForObject(
                     "select status from raid_automation_cycles where account_id = ? and open_marker = 1", String::class.java, accountId))
                 if (mode == AutomationConvergenceMode.SHADOW) assertEquals("SUPERSEDED", jdbc.queryForList(

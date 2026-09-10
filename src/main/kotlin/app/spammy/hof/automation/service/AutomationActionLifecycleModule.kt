@@ -668,7 +668,7 @@ class UnifiedAutomationActionLifecycleModule(
                         accountId,
                         payload.toRaidAttempt(stored.entryId,
                             stored.executionIdentity.takeIf { payload.action == RaidAction.REWARD }),
-                        RaidResultObservation.Page(raidObservationAdapter.from(response)),
+                        RaidResultObservation.Page(raidObservationAdapter.from(response, payload.action)),
                     )
                     return (execution as TypedAutomationExecution.ActionCompleted).copy(
                         raidOutcome = projection.completion,
@@ -1156,7 +1156,7 @@ class UnifiedAutomationActionLifecycleModule(
                 structurallyKnown = actionPoststateComplete,
             ),
             sanitizedSnippet = snippet,
-            actionSuccessMarker = response.result?.status == "SUCCESS",
+            actionSuccessMarker = response.hasActionSuccessMarker(payload.action),
             explicitRejected = response.result?.status == "FAILURE" && rewardResult == null,
             rejectionReason = response.result?.status
                 ?.takeIf { it == "FAILURE" && rewardResult == null }

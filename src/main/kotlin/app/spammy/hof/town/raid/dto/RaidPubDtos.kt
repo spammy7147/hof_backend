@@ -39,6 +39,11 @@ data class RaidPubResponse(
     val battleObservationStatus: RaidBattleObservationStatus = RaidBattleObservationStatus.INCOMPLETE,
     val battleObservationEvidence: RaidBattleObservationEvidence? = null,
 ) {
+    // 조회 응답과 공용 SUCCESS는 START 전용 성공 표식이 아니다.
+    // 검증된 START 표식이 확보되기 전에는 현재 공유 단계의 진전만 반영한다.
+    internal fun hasActionSuccessMarker(submittedAction: RaidAction?): Boolean =
+        submittedAction != null && submittedAction != RaidAction.START && result?.status == "SUCCESS"
+
     companion object {
         fun from(value: RaidPubSnapshot) = RaidPubResponse(
             raids = value.raids.map { raid -> RaidPubRaidResponse(

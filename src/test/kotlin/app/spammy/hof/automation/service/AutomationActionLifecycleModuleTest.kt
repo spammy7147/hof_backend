@@ -1698,7 +1698,7 @@ class AutomationActionLifecycleModuleTest {
             ),
         )
             .thenReturn(response)
-        Mockito.`when`(raidObservationAdapter.from(response)).thenReturn(observation)
+        Mockito.`when`(raidObservationAdapter.from(response, RaidAction.RESET)).thenReturn(observation)
         Mockito.`when`(
             raidCycleModule.recordObservedResult(
                 7L,
@@ -1753,7 +1753,7 @@ class AutomationActionLifecycleModuleTest {
                 "RaidGoblin",
             ),
         ).thenReturn(response)
-        Mockito.`when`(raidObservationAdapter.from(response)).thenReturn(observation)
+        Mockito.`when`(raidObservationAdapter.from(response, RaidAction.REFRESH)).thenReturn(observation)
         Mockito.`when`(
             raidCycleModule.recordObservedResult(
                 7L,
@@ -1811,7 +1811,7 @@ class AutomationActionLifecycleModuleTest {
                 "RaidGoblin",
             ),
         ).thenReturn(response)
-        Mockito.`when`(raidObservationAdapter.from(response)).thenReturn(observation)
+        Mockito.`when`(raidObservationAdapter.from(response, RaidAction.REFRESH)).thenReturn(observation)
         Mockito.`when`(
             raidCycleModule.recordObservedResult(
                 7L,
@@ -1880,7 +1880,7 @@ class AutomationActionLifecycleModuleTest {
                 "RaidGoblin",
             ),
         ).thenReturn(response)
-        Mockito.`when`(raidObservationAdapter.from(response)).thenReturn(observation)
+        Mockito.`when`(raidObservationAdapter.from(response, RaidAction.REGISTER)).thenReturn(observation)
         Mockito.`when`(
             raidCycleModule.recordObservedResult(
                 7L,
@@ -2043,6 +2043,23 @@ class AutomationActionLifecycleModuleTest {
     }
 
     @Test
+    fun `공용 안내가 있는 외부 레이드 시작은 현재 START 요청의 성공이 아니다`() {
+        val ready = checkNotNull(javaClass.classLoader.getResource("fixtures/town/raid/raidpub.html")).readText()
+            .replace("현재 상태는 신청 대기 (신청 가능까지 6분 58초)", "현재 상태는 신청 가능")
+            .replace("현재 상태 : 모집 중", "현재 상태 : 출발 가능")
+            .replace("name=\"register_goblin\" value=\"등록한다\"", "name=\"start_goblin\" value=\"전투를 시작한다\"")
+        val externalStart = ready.replace("현재 상태 : 출발 가능", "현재 상태 : 전투 중")
+            .replace("</body>", "<div class=\"notice\">전투 정보실 안내를 확인했습니다.</div></body>")
+        val managed = assertNotNull(lifecycleModule(raidPubOverride = realRaidPubService(ready, ready, externalStart))
+            .prepare(7L, 13L, RaidTownAutomationAction(7L, RaidAction.START, "RaidGoblin", "RaidGoblin")))
+        managed.validateBeforeSubmission()
+
+        val evidence = policyEvidence(managed, managed.execute())
+
+        assertIs<AutomationActionEvidence.StateAdvanced>(evidence)
+    }
+
+    @Test
     fun `수령 가능한 보상 없음 응답은 실패 문자열이어도 레이드 보상 완료다`() {
         val base = raidBattleResponse(status = RaidStatus.COMPLETED, targetPresent = false)
         val response = base.copy(
@@ -2101,7 +2118,7 @@ class AutomationActionLifecycleModuleTest {
             ),
         )
 
-        Mockito.`when`(raidObservationAdapter.from(response)).thenReturn(observation)
+        Mockito.`when`(raidObservationAdapter.from(response, RaidAction.REWARD)).thenReturn(observation)
         Mockito.`when`(
             raidCycleModule.recordObservedResult(
                 7L,

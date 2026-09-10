@@ -37,10 +37,10 @@ class HofRaidObservationAdapter(
             response = raidPubService.actionForAutomation(accountId, RaidPubActionRequest(RaidAction.REFRESH), raidId)
         })
         if (!authorized) throw AutomationLoginRequiredException("로그아웃되어 레이드 상태 갱신을 보내지 않았습니다.")
-        from(requireNotNull(response))
+        from(requireNotNull(response), RaidAction.REFRESH)
     }
 
-    fun from(response: RaidPubResponse): RaidObservation = RaidObservation(
+    fun from(response: RaidPubResponse, submittedAction: RaidAction? = null): RaidObservation = RaidObservation(
         raids = response.raids.map { raid ->
             RaidObservedTarget(
                 id = raid.id,
@@ -89,7 +89,7 @@ class HofRaidObservationAdapter(
             )
         },
         applied = response.applied,
-        actionSuccessMarker = response.result?.status == "SUCCESS",
+        actionSuccessMarker = response.hasActionSuccessMarker(submittedAction),
         registrationWait = response.applyWait,
         registrationWaitSeconds = response.applyWaitSeconds,
         globalActions = response.globalActions.mapNotNull { action -> action.toIntentKind() }.toSet(),
