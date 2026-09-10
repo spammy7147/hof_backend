@@ -14,6 +14,124 @@ class AutomationActionConvergenceModuleTest {
         DefaultAutomationActionConvergenceModule(store, clock)
 
     @Test
+    fun `미지원 미전송 시도는 현재 정책으로 재제출하지 않고 원래 문맥으로 보류한다`() {
+        val saved = questSelection("unsupported-retry").copy(policyVersion = "unsupported-fixture-version")
+        val record = store.createOrGet(7L, saved, clock.now())
+        record.result = ActionConvergenceResult.NOT_APPLIED
+        record.finishedAt = clock.now()
+        record.reasonCode = "BATTLE_PATTERN_PRELOAD_DEFERRED"
+        val current = saved.copy(policyVersion = ProductionActionEvidenceInterpreter.VERSION_1)
+
+        assertIs<ConvergenceDirective.ContinueSelection>(module.retryUnsubmitted(7L, current, clock.now()))
+
+        val held = requireNotNull(store.get(record.attemptId))
+        assertEquals(ActionConvergenceResult.HELD, held.result)
+        assertEquals("POLICY_VERSION_UNSUPPORTED", held.reasonCode)
+        assertEquals(saved, held.selection)
+        assertEquals(null, held.submittedAt)
+        assertEquals(0, held.successfulObservationCount)
+        assertEquals(setOf(saved.scope), store.findPolicyHeldScopes(7L))
+    }
+
+    @Test
+    fun `미지원 과거 보류는 사유와 기준 상태가 달라도 자동 해제하지 않고 독립 범위만 제출한다`() {
+        for (result in listOf(ActionConvergenceResult.HELD, ActionConvergenceResult.RESULT_UNOBSERVED)) {
+            val saved = questSelection("unknown-$result").copy(
+                actionKind = AutomationActionKind.RAID_REGISTER,
+                scope = AutomationIsolationScope(AutomationIsolationScopeKind.RAID_ENTRY, "raid-$result"),
+                policyVersion = "unsupported-fixture-version",
+            )
+            val record = store.createOrGet(7L, saved, clock.now()).also {
+                it.result = result
+                it.reasonCode = "PENDING_BUDGET_EXHAUSTED"
+                it.finishedAt = clock.now()
+            }
+            assertEquals(true, saved.scope in store.findPolicyHeldScopes(7L))
+            assertEquals(0, module.observeAuthoritativeBaseline(7L, saved.scope, "current-baseline", clock.now()))
+            assertEquals(0, module.allowRaidRegistrationFreshDecision(7L, saved.entryId, saved.scope.key, clock.now()))
+            assertEquals("PENDING_BUDGET_EXHAUSTED", store.get(record.attemptId)?.reasonCode)
+            val current = saved.copy(executionIdentity = "new-$result", baselineFingerprint = "current-baseline",
+                policyVersion = ProductionActionEvidenceInterpreter.VERSION_1)
+            assertIs<ConvergenceDirective.ContinueSelection>(module.prepare(7L, current))
+            assertIs<ConvergenceDirective.ContinueSelection>(module.retryUnsubmitted(7L, current, clock.now()))
+            assertEquals(null, store.get(7L, current.executionIdentity))
+            assertIs<ConvergenceDirective.Submit>(module.prepare(7L, questSelection("independent-$result")))
+            assertEquals(true, module.allowFreshDecision(7L, record.attemptId, clock.now()))
+            assertIs<ConvergenceDirective.Submit>(module.prepare(7L, current))
+        }
+    }
+
+    @Test
+    fun `미지원 새 시도는 제출 문맥을 반환하지 않고 전송 전 보류한다`() {
+        val selected = questSelection("unsupported-new").copy(policyVersion = "unsupported-fixture-version")
+        assertIs<ConvergenceDirective.ContinueSelection>(module.prepare(7L, selected))
+        val held = requireNotNull(store.get(7L, selected.executionIdentity))
+        assertEquals(ActionConvergenceResult.HELD, held.result)
+        assertEquals("POLICY_VERSION_UNSUPPORTED", held.reasonCode)
+        assertEquals(null, held.submittedAt)
+        assertEquals(selected, held.selection)
+    }
+
+    @Test
+    fun `미지원 정책의 응답은 적용과 새 판단으로 바꾸지 않고 기존 최종 결과도 보존한다`() {
+        val evidence = listOf(
+            AutomationActionEvidence.DirectApplied(clock.now(), "applied"),
+            AutomationActionEvidence.ResultUnobservedFreshDecision(clock.now(), "fresh"),
+            AutomationActionEvidence.StateAdvanced(clock.now(), "advanced"),
+        )
+        evidence.forEachIndexed { index, observed ->
+            val selected = questSelection("unknown-record-$index").copy(policyVersion = "unsupported-fixture-version")
+            val record = store.createOrGet(7L, selected, clock.now())
+            var projected = false
+            assertIs<ConvergenceDirective.ContinueSelection>(module.record(record.attemptId, observed) { projected = true })
+            val held = requireNotNull(store.get(record.attemptId)).copy()
+            assertEquals(ActionConvergenceResult.HELD, held.result)
+            assertEquals("POLICY_VERSION_UNSUPPORTED", held.reasonCode)
+            assertEquals(null, held.submittedAt)
+            assertEquals(0, held.successfulObservationCount)
+            assertEquals(false, projected)
+            assertEquals(true, selected.scope in store.findPolicyHeldScopes(7L))
+            module.recordLateApplication(7L, selected.executionIdentity,
+                AutomationActionEvidence.DirectApplied(clock.now().plusSeconds(1), "late"))
+            assertEquals(held, store.get(record.attemptId))
+        }
+        listOf(ActionConvergenceResult.APPLIED, ActionConvergenceResult.NOT_APPLIED,
+            ActionConvergenceResult.SUPERSEDED, ActionConvergenceResult.RESULT_UNOBSERVED).forEach { result ->
+            val selected = questSelection("unknown-final-$result").copy(policyVersion = "unsupported-fixture-version")
+            val record = store.createOrGet(7L, selected, clock.now()).also {
+                it.result = result
+                it.reasonCode = "ORIGINAL_RESULT"
+                it.finishedAt = clock.now()
+            }
+            val before = record.copy()
+            module.recordLateApplication(7L, selected.executionIdentity,
+                AutomationActionEvidence.DirectApplied(clock.now().plusSeconds(1), "late"))
+            assertEquals(before, store.get(record.attemptId))
+        }
+    }
+
+    @Test
+    fun `미지원 보류의 늦은 직접 응답은 최종 결과를 보존하면서 전달된 진단을 남긴다`() {
+        val diagnostics = mutableListOf<AutomationActionEvidence>()
+        val convergence = DefaultAutomationActionConvergenceModule(store, clock,
+            EvidenceCaseRecorder { _, evidence, _ -> diagnostics += evidence })
+        val selected = questSelection("unsupported-late-diagnostic").copy(policyVersion = "unsupported-fixture-version")
+        val record = store.createOrGet(7L, selected, clock.now()).also {
+            it.result = ActionConvergenceResult.HELD
+            it.reasonCode = "PENDING_BUDGET_EXHAUSTED"
+            it.submittedAt = clock.now().minusSeconds(10)
+            it.finishedAt = clock.now()
+        }
+        val before = record.copy()
+        convergence.recordLateApplication(7L, selected.executionIdentity,
+            AutomationActionEvidence.DirectApplied(clock.now().plusSeconds(1), "state", "response-shape", "sanitized-response"))
+        assertEquals(before, store.get(record.attemptId))
+        val diagnostic = assertIs<AutomationActionEvidence.PolicyUnavailable>(diagnostics.single())
+        assertEquals("response-shape", diagnostic.responseShapeFingerprint)
+        assertEquals("sanitized-response", diagnostic.sanitizedSnippet)
+    }
+
+    @Test
     fun `새 시도는 null 결과 없이 pending으로 생성된다`() {
         val attemptId = assertIs<ConvergenceDirective.Submit>(
             module.prepare(7L, questSelection("new-pending")),
@@ -427,7 +545,7 @@ class AutomationActionConvergenceModuleTest {
         executionIdentity = "execution-$key",
         actionKind = AutomationActionKind.QUEST_CLAIM,
         scope = AutomationIsolationScope(AutomationIsolationScopeKind.QUEST_TARGET, key),
-        policyVersion = "convergence-v1",
+        policyVersion = ProductionActionEvidenceInterpreter.VERSION_1,
         baselineFingerprint = "baseline-$key",
     )
 
@@ -436,7 +554,7 @@ class AutomationActionConvergenceModuleTest {
         executionIdentity = "execution-$key",
         actionKind = AutomationActionKind.UNION_BATTLE,
         scope = AutomationIsolationScope(AutomationIsolationScopeKind.UNION_ENTRY, key),
-        policyVersion = "convergence-v1",
+        policyVersion = ProductionActionEvidenceInterpreter.VERSION_1,
         baselineFingerprint = "baseline-$key",
     )
 

@@ -115,6 +115,10 @@ class DefaultActionEvidencePolicies : ActionEvidencePolicies {
         selection: SelectedAutomationAction,
         observation: ActionPolicyObservation,
     ): AutomationActionEvidence {
+        if (!ProductionActionEvidenceInterpreter.supportsVersion(selection.policyVersion)) {
+            return AutomationActionEvidence.PolicyUnavailable(observation.capturedAt,
+                observation.responseShapeFingerprint, observation.sanitizedSnippet)
+        }
         observation.battleGateReason?.let { reason ->
             return AutomationActionEvidence.BattleGateRequired(
                 observation.capturedAt,

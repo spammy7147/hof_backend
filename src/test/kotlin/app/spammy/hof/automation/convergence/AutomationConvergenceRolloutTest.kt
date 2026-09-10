@@ -22,7 +22,7 @@ class AutomationConvergenceRolloutTest {
         val selection = SelectedAutomationAction(
             entryId = 5L, executionIdentity = "before-captcha", actionKind = AutomationActionKind.UNION_BATTLE,
             scope = AutomationIsolationScope(AutomationIsolationScopeKind.UNION_ENTRY, "5"),
-            policyVersion = "v1", baselineFingerprint = "baseline",
+            policyVersion = ProductionActionEvidenceInterpreter.VERSION_1, baselineFingerprint = "baseline",
         )
         evaluator.selected(7L, selection)
         production.openBattleGate(7L, null, "CAPTCHA_REQUIRED", now)
@@ -83,7 +83,7 @@ class AutomationConvergenceRolloutTest {
             executionIdentity = "shadow-union-1",
             actionKind = AutomationActionKind.UNION_BATTLE,
             scope = AutomationIsolationScope(AutomationIsolationScopeKind.UNION_ENTRY, "5"),
-            policyVersion = "v1",
+            policyVersion = ProductionActionEvidenceInterpreter.VERSION_1,
             baselineFingerprint = "baseline",
         )
 
@@ -115,7 +115,7 @@ class AutomationConvergenceRolloutTest {
             executionIdentity = "shadow-raid-reward-1",
             actionKind = AutomationActionKind.RAID_REWARD,
             scope = AutomationIsolationScope(AutomationIsolationScopeKind.RAID_ENTRY, "RaidGoblin"),
-            policyVersion = "v1",
+            policyVersion = ProductionActionEvidenceInterpreter.VERSION_1,
             baselineFingerprint = "reward-pending",
         )
 
@@ -143,7 +143,7 @@ class AutomationConvergenceRolloutTest {
             executionIdentity = "shadow-quest-previous",
             actionKind = AutomationActionKind.QUEST_CLAIM,
             scope = AutomationIsolationScope(AutomationIsolationScopeKind.QUEST_TARGET, "quest"),
-            policyVersion = "v1",
+            policyVersion = ProductionActionEvidenceInterpreter.VERSION_1,
             baselineFingerprint = "claimable-v1",
         )
         val replacement = previous.copy(
@@ -198,7 +198,7 @@ class AutomationConvergenceRolloutTest {
             executionIdentity = "shadow-shape-1",
             actionKind = AutomationActionKind.QUEST_CLAIM,
             scope = AutomationIsolationScope(AutomationIsolationScopeKind.QUEST_TARGET, "quest"),
-            policyVersion = "v1",
+            policyVersion = ProductionActionEvidenceInterpreter.VERSION_1,
             baselineFingerprint = "baseline",
         )
 
@@ -226,7 +226,7 @@ class AutomationConvergenceRolloutTest {
             executionIdentity = "shadow-unknown-shape",
             actionKind = AutomationActionKind.QUEST_CLAIM,
             scope = AutomationIsolationScope(AutomationIsolationScopeKind.QUEST_TARGET, "quest"),
-            policyVersion = "v1",
+            policyVersion = ProductionActionEvidenceInterpreter.VERSION_1,
             baselineFingerprint = "baseline",
         )
         evaluator.selected(7L, selection)
@@ -259,7 +259,7 @@ class AutomationConvergenceRolloutTest {
             executionIdentity = "shadow-known-shape",
             actionKind = AutomationActionKind.QUEST_CLAIM,
             scope = AutomationIsolationScope(AutomationIsolationScopeKind.QUEST_TARGET, "quest"),
-            policyVersion = "v1",
+            policyVersion = ProductionActionEvidenceInterpreter.VERSION_1,
             baselineFingerprint = "baseline",
         )
         evaluator.selected(7L, selection)

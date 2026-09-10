@@ -1,6 +1,7 @@
 package app.spammy.hof.automation.service
 
 import app.spammy.hof.automation.convergence.AutomationActionConvergenceModule
+import app.spammy.hof.automation.convergence.ActionConvergenceResult
 import app.spammy.hof.automation.convergence.AutomationActionEvidence
 import app.spammy.hof.automation.convergence.AutomationActionKind
 import app.spammy.hof.automation.convergence.AutomationConvergenceMode
@@ -143,6 +144,43 @@ class UnifiedAutomationRunnerTest {
         }.`when`(runtime).advanceAppliedActionToPreparedFollowup(anyExecution(), anyStoredAction(),
             Mockito.any(TypedRuntimeOutcome.ActionSucceeded::class.java) ?: TypedRuntimeOutcome.ActionSucceeded("test"),
             Mockito.any<() -> Unit>() ?: {})
+    }
+
+    @Test
+    fun `미지원 정책의 직접 공유 쿨다운 응답은 작업 진행에 반영하지 않는다`() {
+        val now = Instant.parse("2026-09-10T08:00:00Z")
+        val store = InMemoryConvergenceStore()
+        val selected = SelectedAutomationAction(12L, "unknown-cooldown", AutomationActionKind.MAP_BATTLE,
+            AutomationIsolationScope(AutomationIsolationScopeKind.BATTLE_COOLDOWN_SCOPE, "battle"),
+            "unsupported-fixture-version", "baseline")
+        val attempt = store.createOrGet(7L, selected, now)
+        val convergence = DefaultAutomationActionConvergenceModule(store, TimeProvider { now })
+        val coordinator = AutomationResultCoordinator(lifecycle, sharedCooldowns, convergence, timeProvider = TimeProvider { now })
+        val execution = TypedAutomationExecution.SharedCooldown("battle", "map", now.plusSeconds(30))
+        val evidence = productionEvidenceInterpreter.fromExecution(selected, execution, now)
+        val result = coordinator.applyDirect(managed, execution, evidence, attempt.attemptId)
+        assertIs<AutomationResultCoordinator.DirectResult.Unapplied>(result)
+        assertEquals(ActionConvergenceResult.HELD, store.get(attempt.attemptId)?.result)
+        Mockito.verifyNoInteractions(managed, sharedCooldowns)
+    }
+
+    @Test
+    fun `미지원 저장 정책의 probe는 lifecycle 복원과 작업 진전 전에 보류한다`() {
+        val now = Instant.parse("2026-09-10T08:00:00Z")
+        val store = InMemoryConvergenceStore()
+        val selected = SelectedAutomationAction(12L, defaultStored.executionIdentity, AutomationActionKind.QUEST_CLAIM,
+            AutomationIsolationScope(AutomationIsolationScopeKind.QUEST_TARGET, "quest"),
+            "unsupported-fixture-version", "baseline")
+        val attempt = store.createOrGet(7L, selected, now)
+        val convergence = DefaultAutomationActionConvergenceModule(store, TimeProvider { now })
+        Mockito.`when`(lifecycle.restoreVerified(defaultStored, 7L)).thenReturn(managed)
+        Mockito.`when`(managed.reconcile()).thenReturn(AmbiguousActionResolution.Applied())
+        val coordinator = AutomationResultCoordinator(lifecycle, sharedCooldowns, convergence,
+            storedConvergenceActionLoader = StoredConvergenceActionLoader { _, _ -> defaultStored },
+            timeProvider = TimeProvider { now }, evidenceInterpreter = productionEvidenceInterpreter)
+        assertIs<ConvergenceDirective.ContinueSelection>(coordinator.probe(7L, ConvergenceDirective.Probe(attempt.attemptId, selected)))
+        assertEquals(ActionConvergenceResult.HELD, store.get(attempt.attemptId)?.result)
+        Mockito.verifyNoInteractions(lifecycle, managed, sharedCooldowns)
     }
 
     @Test

@@ -70,6 +70,10 @@ class ActiveAutomationContinuityTest : AutomationModeContinuityTest() {
     @Test
     fun `외부 자택 진전을 과거 행동 성공으로 귀속하지 않고 독립 자택을 실행한다`() =
         storedAttemptContextContinuity(externalAdvance = true)
+
+    @Test
+    fun `미지원 정책의 저장 시도만 보류하고 독립 자택과 다음 판단을 실행한다`() =
+        storedAttemptContextContinuity(unsupportedPolicy = true)
 }
 
 /** Each supported mode is assembled from its real startup property, without mocking rollout. */
@@ -115,7 +119,7 @@ abstract class AutomationModeContinuityTest {
         publisher.publishBatch()
     }
 
-    protected fun storedAttemptContextContinuity(externalAdvance: Boolean = false) {
+    protected fun storedAttemptContextContinuity(externalAdvance: Boolean = false, unsupportedPolicy: Boolean = false) {
         clock.current = Instant.parse("2026-09-10T08:00:00Z")
         transport.delivered.clear()
         val requests = mutableListOf<HofRequest>()
@@ -149,7 +153,10 @@ abstract class AutomationModeContinuityTest {
                 createdAt = clock.now().minusSeconds(10), submittedAt = clock.now().minusSeconds(10),
                 finishedAt = clock.now().minusSeconds(1), updatedAt = clock.now()))
             val selected = app.spammy.hof.automation.convergence.StoredActionConvergenceSelectionFactory()
-                .create(stored).copy(baselineFingerprint = baseline)
+                .create(stored).let { it.copy(
+                    baselineFingerprint = baseline,
+                    policyVersion = if (unsupportedPolicy) "unsupported-fixture-version" else it.policyVersion,
+                ) }
             val attempt = convergenceStore.createOrGet(account.id, selected, clock.now().minusSeconds(10))
             attempt.submittedAt = clock.now().minusSeconds(10)
             attempt.firstPendingAt = attempt.submittedAt
@@ -172,9 +179,23 @@ abstract class AutomationModeContinuityTest {
 
             wakeups.wake(accountId, "STORED_POLICY_CONTEXT")
             publisher.publishBatch()
-            assertEquals(listOf(baseline), jdbc.queryForList(
-                "select state_fingerprint from automation_evidence_cases where attempt_id = ? and reason_code = 'AUTHORITATIVE_STATE_UNCHANGED'",
-                String::class.java, attemptId))
+            if (unsupportedPolicy) {
+                val held = assertNotNull(convergenceStore.get(attemptId))
+                assertEquals(app.spammy.hof.automation.convergence.ActionConvergenceResult.HELD, held.result)
+                assertEquals("POLICY_VERSION_UNSUPPORTED", held.reasonCode)
+                assertEquals("unsupported-fixture-version", held.selection.policyVersion)
+                assertEquals(Instant.parse("2026-09-10T07:59:50Z"), held.submittedAt)
+                assertEquals(0, held.successfulObservationCount)
+                val evidence = jdbc.queryForMap("select evidence_source, observation_completeness, observation_freshness, policy_version from automation_evidence_cases where attempt_id = ?", attemptId)
+                assertEquals("POLICY_UNAVAILABLE", evidence["EVIDENCE_SOURCE"] ?: evidence["evidence_source"])
+                assertEquals("unsupported-fixture-version", evidence["POLICY_VERSION"] ?: evidence["policy_version"])
+                assertEquals(null, evidence["OBSERVATION_COMPLETENESS"] ?: evidence["observation_completeness"])
+                assertEquals(null, evidence["OBSERVATION_FRESHNESS"] ?: evidence["observation_freshness"])
+            } else {
+                assertEquals(listOf(baseline), jdbc.queryForList(
+                    "select state_fingerprint from automation_evidence_cases where attempt_id = ? and reason_code = 'AUTHORITATIVE_STATE_UNCHANGED'",
+                    String::class.java, attemptId))
+            }
             assertEquals(baseline, convergenceStore.get(attemptId)?.selection?.baselineFingerprint)
             externallyAccepted = externalAdvance
             if (externalAdvance) clock.current = assertNotNull(convergenceStore.get(attemptId)?.nextProbeAt)

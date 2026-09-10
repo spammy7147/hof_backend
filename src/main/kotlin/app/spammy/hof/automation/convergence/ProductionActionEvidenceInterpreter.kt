@@ -10,11 +10,25 @@ import org.springframework.stereotype.Component
 class ProductionActionEvidenceInterpreter(
     private val policies: ActionEvidencePolicies,
 ) {
+    companion object {
+        const val VERSION_1 = "automation-action-convergence-v1"
+        const val UNSUPPORTED_POLICY_REASON = "POLICY_VERSION_UNSUPPORTED"
+
+        fun supportsVersion(version: String): Boolean = version == VERSION_1
+    }
+
     fun fromExecution(
         selection: SelectedAutomationAction,
         execution: TypedAutomationExecution,
         capturedAt: Instant,
     ): AutomationActionEvidence {
+        if (!supportsVersion(selection.policyVersion)) {
+            return AutomationActionEvidence.PolicyUnavailable(
+                capturedAt,
+                (execution as? TypedAutomationExecution.ActionCompleted)?.responseShapeMaterial?.let(ProductionEvidenceShapes::fingerprint),
+                (execution as? TypedAutomationExecution.ActionCompleted)?.sanitizedSnippet,
+            )
+        }
         if (execution is TypedAutomationExecution.ActionCompleted) {
             val responseShapeFingerprint = ProductionEvidenceShapes.fingerprint(execution.responseShapeMaterial)
             if (responseShapeFingerprint !in ProductionEvidenceShapes.knownFingerprints(selection.actionKind)) {
@@ -99,6 +113,7 @@ class ProductionActionEvidenceInterpreter(
         resolution: AmbiguousActionResolution,
         capturedAt: Instant,
     ): AutomationActionEvidence {
+        if (!supportsVersion(selection.policyVersion)) return AutomationActionEvidence.PolicyUnavailable(capturedAt)
         val resultKind = resolution.javaClass.simpleName
         val diagnostics = diagnostics(
             ProductionEvidenceShapes.reconciliationDiagnostic(selection.actionKind, resultKind),

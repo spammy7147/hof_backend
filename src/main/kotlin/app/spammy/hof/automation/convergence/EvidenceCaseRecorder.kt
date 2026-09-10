@@ -63,6 +63,7 @@ class JpaEvidenceCaseRecorder(
     }
 
     private fun AutomationActionEvidence.sourceName(): String = when (this) {
+        is AutomationActionEvidence.PolicyUnavailable -> "POLICY_UNAVAILABLE"
         is AutomationActionEvidence.DirectApplied,
         is AutomationActionEvidence.DirectRejected,
         -> "POLICY_DECISION"
@@ -77,6 +78,7 @@ class JpaEvidenceCaseRecorder(
     }
 
     private fun AutomationActionEvidence.completenessName(): String? = when (this) {
+        is AutomationActionEvidence.PolicyUnavailable -> null
         is AutomationActionEvidence.IncompleteObservation,
         is AutomationActionEvidence.NetworkFailure,
         is AutomationActionEvidence.ResultUnobserved,
@@ -86,6 +88,7 @@ class JpaEvidenceCaseRecorder(
     }
 
     private fun AutomationActionEvidence.freshnessName(): String? = when (this) {
+        is AutomationActionEvidence.PolicyUnavailable -> null
         is AutomationActionEvidence.NetworkFailure,
         is AutomationActionEvidence.ResultUnobserved,
         is AutomationActionEvidence.ResultUnobservedFreshDecision,
@@ -102,6 +105,7 @@ class JpaEvidenceCaseRecorder(
 
     /** 원문 payload, 식별자, 오류 메시지를 배제한 분류 정보만 진단 샘플로 보존한다. */
     private fun AutomationActionEvidence.structuralSnippet(): String = when (this) {
+        is AutomationActionEvidence.PolicyUnavailable -> "evidence=PolicyUnavailable"
         is AutomationActionEvidence.DirectApplied -> "evidence=DirectApplied"
         is AutomationActionEvidence.DirectRejected -> "evidence=DirectRejected"
         is AutomationActionEvidence.StateAdvanced -> "evidence=StateAdvanced"

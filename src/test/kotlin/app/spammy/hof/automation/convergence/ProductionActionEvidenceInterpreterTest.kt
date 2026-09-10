@@ -16,9 +16,22 @@ class ProductionActionEvidenceInterpreterTest {
         executionIdentity = "execution",
         actionKind = AutomationActionKind.QUEST_CLAIM,
         scope = AutomationIsolationScope(AutomationIsolationScopeKind.QUEST_TARGET, "quest"),
-        policyVersion = "policy-v1",
+        policyVersion = ProductionActionEvidenceInterpreter.VERSION_1,
         baselineFingerprint = "baseline",
     )
+
+    @Test
+    fun `미지원 정책은 직접 응답과 공유 쿨다운과 재확인 결과를 현재 정책으로 해석하지 않는다`() {
+        val unsupported = selection.copy(policyVersion = "unsupported-fixture-version")
+        listOf(questClaimCompleted(), TypedAutomationExecution.SharedCooldown("battle", "map", NOW.plusSeconds(30)))
+            .forEach { execution ->
+                assertIs<AutomationActionEvidence.PolicyUnavailable>(interpreter.fromExecution(unsupported, execution, NOW))
+            }
+        listOf(AmbiguousActionResolution.Applied(), AmbiguousActionResolution.Resubmit,
+            AmbiguousActionResolution.FreshDecision("latest progress")).forEach { resolution ->
+                assertIs<AutomationActionEvidence.PolicyUnavailable>(interpreter.fromReconciliation(unsupported, resolution, NOW))
+            }
+    }
 
     @Test
     fun `검증된 lifecycle 성공만 policy를 거쳐 applied가 된다`() {

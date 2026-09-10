@@ -8,6 +8,7 @@ interface ConvergenceStore {
     fun findActive(accountId: Long, scope: AutomationIsolationScope): ActionConvergenceRecord?
     fun findActiveScopes(accountId: Long): Set<AutomationIsolationScope>
     fun findSuppressedBaselines(accountId: Long): Map<AutomationIsolationScope, Set<String>>
+    fun findPolicyHeldScopes(accountId: Long): Set<AutomationIsolationScope>
     fun findDue(accountId: Long, now: Instant): ActionConvergenceRecord?
     fun normalizeOrphans(accountId: Long, now: Instant): Int
     fun get(attemptId: Long): ActionConvergenceRecord?
@@ -79,6 +80,18 @@ class InMemoryConvergenceStore : ConvergenceStore {
         .mapValues { (_, values) -> values.toSet() }
 
     @Synchronized
+    override fun findPolicyHeldScopes(accountId: Long): Set<AutomationIsolationScope> = records.values
+        .asSequence()
+        .filter {
+            it.accountId == accountId &&
+                it.result in setOf(ActionConvergenceResult.HELD, ActionConvergenceResult.RESULT_UNOBSERVED) &&
+                !ProductionActionEvidenceInterpreter.supportsVersion(it.selection.policyVersion) &&
+                (accountId to it.attemptId) !in releasedSuppressions
+        }
+        .map { it.selection.scope }
+        .toSet()
+
+    @Synchronized
     override fun findDue(accountId: Long, now: Instant): ActionConvergenceRecord? = records.values
         .asSequence()
         .filter { it.accountId == accountId && it.result == ActionConvergenceResult.PENDING }
@@ -127,6 +140,7 @@ class InMemoryConvergenceStore : ConvergenceStore {
             it.accountId == accountId &&
                 it.selection.scope == scope &&
                 it.result in setOf(ActionConvergenceResult.HELD, ActionConvergenceResult.RESULT_UNOBSERVED) &&
+                ProductionActionEvidenceInterpreter.supportsVersion(it.selection.policyVersion) &&
                 it.selection.baselineFingerprint !in currentBaselineFingerprints &&
                 (accountId to it.attemptId) !in releasedSuppressions
         }
@@ -154,6 +168,7 @@ class InMemoryConvergenceStore : ConvergenceStore {
         val held = records.values.filter {
             it.accountId == accountId && it.selection.entryId == entryId &&
                 it.selection.actionKind == AutomationActionKind.RAID_REGISTER &&
+                ProductionActionEvidenceInterpreter.supportsVersion(it.selection.policyVersion) &&
                 it.selection.scope == AutomationIsolationScope(AutomationIsolationScopeKind.RAID_ENTRY, raidId) &&
                 it.result in setOf(ActionConvergenceResult.HELD, ActionConvergenceResult.RESULT_UNOBSERVED) &&
                 (accountId to it.attemptId) !in releasedSuppressions

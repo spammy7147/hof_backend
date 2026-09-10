@@ -175,6 +175,10 @@ class AutomationResultCoordinator(
         evidence: AutomationActionEvidence?,
         attemptId: Long?,
     ): DirectResult {
+        if (evidence is AutomationActionEvidence.PolicyUnavailable) {
+            return DirectResult.Unapplied("저장된 정책을 지원하지 않아 행동 결과 판정과 재제출을 보류합니다.",
+                false, attemptId?.let { record(it, evidence) })
+        }
         if (attemptId != null && evidence !is AutomationActionEvidence.DirectApplied && execution !is TypedAutomationExecution.SharedCooldown) {
             val recorded = requireNotNull(evidence)
             val directive = convergenceModule?.record(attemptId, recorded)
@@ -182,6 +186,7 @@ class AutomationResultCoordinator(
                 managed.applyPolicyResolvedExecution(execution, recorded)
             }
             val warning = when (recorded) {
+                is AutomationActionEvidence.PolicyUnavailable -> "저장된 정책을 지원하지 않아 행동 결과 판정과 재제출을 보류합니다."
                 is AutomationActionEvidence.DirectRejected -> "직접 응답이 행동 미적용을 확인해 최신 상태로 다시 판단합니다."
                 is AutomationActionEvidence.StateAdvanced -> "직접 응답에서 저장 행동보다 최신 상태가 확인되어 성공으로 귀속하지 않습니다."
                 is AutomationActionEvidence.SameState -> "직접 응답만으로 행동 적용을 확인하지 못해 권위 상태를 다시 관측합니다."
@@ -209,6 +214,10 @@ class AutomationResultCoordinator(
         attemptId: Long?,
         unconfirmedWarning: String,
     ): DirectResult {
+        if (evidence is AutomationActionEvidence.PolicyUnavailable) {
+            return DirectResult.Unapplied("저장된 정책을 지원하지 않아 행동 결과 판정과 재제출을 보류합니다.",
+                false, attemptId?.let { record(it, evidence) })
+        }
         if (attemptId != null && evidence !is AutomationActionEvidence.DirectApplied) {
             return DirectResult.Unapplied(unconfirmedWarning, false, record(attemptId, requireNotNull(evidence)))
         }
@@ -335,6 +344,9 @@ class AutomationResultCoordinator(
         accountId: Long,
         directive: ConvergenceDirective.Probe,
     ): StoredObservation {
+        if (!ProductionActionEvidenceInterpreter.supportsVersion(directive.selection.policyVersion)) {
+            return StoredObservation(AutomationActionEvidence.PolicyUnavailable(now()))
+        }
         val stored = storedConvergenceActionLoader?.load(accountId, directive.executionIdentity)
             ?: return StoredObservation(AutomationActionEvidence.ResultUnobserved(now(), "STORED_ACTION_NOT_FOUND"))
         val managed = try {
@@ -356,7 +368,11 @@ class AutomationResultCoordinator(
         selection: SelectedAutomationAction?,
         executionIdentity: String,
         source: ReconciliationSource,
-    ): AutomationActionEvidence = try {
+    ): AutomationActionEvidence = if (selection != null &&
+        !ProductionActionEvidenceInterpreter.supportsVersion(selection.policyVersion)
+    ) {
+        AutomationActionEvidence.PolicyUnavailable(now())
+    } else try {
         val resolution = managed.reconcile()
         if (resolution is AmbiguousActionResolution.Applied) {
             applyRecoveredExecution(accountId, resolution.execution)

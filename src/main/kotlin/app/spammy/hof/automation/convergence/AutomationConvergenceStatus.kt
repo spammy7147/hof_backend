@@ -90,6 +90,8 @@ class JpaAutomationConvergenceStatusReader(
             battleGate = gate,
             items = convergences.map { convergence ->
                 val result = convergence.result
+                val policyUnavailable = result in setOf(ActionConvergenceResult.HELD, ActionConvergenceResult.RESULT_UNOBSERVED) &&
+                    !ProductionActionEvidenceInterpreter.supportsVersion(convergence.attempt.policyVersion)
                 AutomationConvergenceItemResponse(
                     attemptId = requireNotNull(convergence.attempt.id),
                     entryId = convergence.attempt.entry?.id,
@@ -100,10 +102,11 @@ class JpaAutomationConvergenceStatusReader(
                     successfulObservationCount = convergence.successfulObservationCount,
                     nextProbeAt = convergence.nextProbeAt,
                     reasonCode = convergence.reasonCode,
-                    reasonMessage = convergence.reasonCode.reasonMessage(result),
+                    reasonMessage = if (policyUnavailable) ProductionActionEvidenceInterpreter.UNSUPPORTED_POLICY_REASON.reasonMessage(result)
+                        else convergence.reasonCode.reasonMessage(result),
                     evidenceCaseId = convergence.evidenceCaseId,
                     impactScope = convergence.scopeKind.impactLabel(convergence.scopeKey),
-                    releaseCondition = result.releaseCondition(),
+                    releaseCondition = if (policyUnavailable) "사용자가 새 행동 판단을 허용하면 보류 해제" else result.releaseCondition(),
                     canAllowFreshDecision = result in setOf(
                         ActionConvergenceResult.HELD,
                         ActionConvergenceResult.RESULT_UNOBSERVED,
@@ -130,6 +133,8 @@ class JpaAutomationConvergenceStatusReader(
     }
 
     private fun String?.reasonMessage(result: ActionConvergenceResult): String = when (this) {
+        ProductionActionEvidenceInterpreter.UNSUPPORTED_POLICY_REASON ->
+            "저장된 행동의 판정 규칙을 사용할 수 없어 이 범위의 자동 실행을 보류했습니다."
         "HOME_ACTION_ID_MISSING" -> "자택 퀘스트 실행 식별자를 읽지 못해 최신 상태를 다시 확인하고 있습니다."
         "FISHING_BATTLE_TARGET_MISSING" -> "낚시를 막은 전투 대상 식별자를 읽지 못해 최신 상태를 다시 확인하고 있습니다."
         "OBSERVATION_INCOMPLETE" -> "최신 권위 상태가 완전하지 않아 아직 결과를 확정하지 못했습니다."

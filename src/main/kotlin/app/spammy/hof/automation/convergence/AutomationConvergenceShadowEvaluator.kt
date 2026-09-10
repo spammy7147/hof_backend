@@ -217,6 +217,7 @@ class DefaultAutomationConvergenceShadowEvaluator(
     }
 
     private fun AutomationActionEvidence.completeness(): String = when (this) {
+        is AutomationActionEvidence.PolicyUnavailable -> "POLICY_UNAVAILABLE"
         is AutomationActionEvidence.IncompleteObservation ->
             if (authoritative) "AUTHORITATIVE_IDENTITY_INCOMPLETE" else "INCOMPLETE"
         is AutomationActionEvidence.NetworkFailure -> "NETWORK_FAILURE"
@@ -227,6 +228,7 @@ class DefaultAutomationConvergenceShadowEvaluator(
     }
 
     private fun AutomationActionEvidence.shapeMaterial(): String = when (this) {
+        is AutomationActionEvidence.PolicyUnavailable -> "PolicyUnavailable"
         is AutomationActionEvidence.DirectApplied -> "DirectApplied"
         is AutomationActionEvidence.DirectRejected -> "DirectRejected"
         is AutomationActionEvidence.StateAdvanced -> "StateAdvanced"

@@ -29,6 +29,13 @@ class AutomationConvergenceSelection internal constructor(
 
     fun block(action: PreparedAutomationAction): ConvergenceSelectionBlock? {
         val preview = factory.preview(entryId, action)
+        fun blocked(reason: String, message: String) =
+            ConvergenceSelectionBlock(reason, message, preview.scope, preview.actionKind)
+
+        if (preview.scope in store.findPolicyHeldScopes(accountId)) {
+            return blocked("CONVERGENCE_SCOPE_BLOCKED",
+                "저장된 행동의 정책 버전을 지원하지 않아 해당 범위를 보류했습니다.")
+        }
         // 다른 미션을 탐색한 사실은 같은 퀘스트의 과거 미션이 바뀐 증거가 아니다.
         if (observedScopes.add(preview.scope) &&
             (action !is RaidTownAutomationAction || action.action != RaidAction.REFRESH)
@@ -39,9 +46,6 @@ class AutomationConvergenceSelection internal constructor(
                 observeBaselines(preview.scope, baselines)
             }
         }
-        fun blocked(reason: String, message: String) =
-            ConvergenceSelectionBlock(reason, message, preview.scope, preview.actionKind)
-
         if (store.activeBattleGate(accountId) != null && preview.actionKind.battle) {
             return blocked("CAPTCHA_BATTLE_GATE_BLOCKED", "캡차 해결 전까지 전투 범위만 잠시 건너뜁니다.")
         }
@@ -54,7 +58,8 @@ class AutomationConvergenceSelection internal constructor(
         if (mode == AutomationConvergenceMode.ACTIVE) {
             convergence.resolveObservationGap(accountId, preview.scope, timeProvider.now())
         }
-        val scopeBlocked = preview.scope in store.findActiveScopes(accountId) ||
+        val scopeBlocked = preview.scope in store.findPolicyHeldScopes(accountId) ||
+            preview.scope in store.findActiveScopes(accountId) ||
             (preview.actionKind.battle && store.activeBattleGate(accountId) != null) ||
             preview.baselineFingerprint in store.findSuppressedBaselines(accountId)[preview.scope].orEmpty()
         return if (scopeBlocked) blocked("CONVERGENCE_SCOPE_BLOCKED", "이전 행동 결과를 확인 중이라 해당 범위만 잠시 건너뜁니다.") else null

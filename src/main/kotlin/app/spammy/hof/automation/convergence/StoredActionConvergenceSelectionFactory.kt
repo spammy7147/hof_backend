@@ -361,7 +361,7 @@ class StoredActionConvergenceSelectionFactory {
     )
 
     companion object {
-        const val POLICY_VERSION = "automation-action-convergence-v1"
+        const val POLICY_VERSION = ProductionActionEvidenceInterpreter.VERSION_1
         const val SHARED_BATTLE_COOLDOWN_SCOPE = "shared-battle-cooldown"
     }
 }

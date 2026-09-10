@@ -213,6 +213,25 @@ class JpaConvergenceStore(
         entity.updatedAt = record.updatedAt
     }
 
+    @Transactional(readOnly = true)
+    override fun findPolicyHeldScopes(accountId: Long): Set<AutomationIsolationScope> =
+        entityManager.createQuery(
+            """
+            select convergence from ActionConvergenceEntity convergence
+            join fetch convergence.attempt attempt
+            join attempt.entry entry
+            where convergence.accountId = :accountId
+              and convergence.result in :results
+              and convergence.suppressionReleasedAt is null
+            """.trimIndent(),
+            ActionConvergenceEntity::class.java,
+        ).setParameter("accountId", accountId)
+            .setParameter("results", setOf(ActionConvergenceResult.HELD, ActionConvergenceResult.RESULT_UNOBSERVED))
+            .resultList
+            .filterNot { ProductionActionEvidenceInterpreter.supportsVersion(it.attempt.policyVersion) }
+            .map { AutomationIsolationScope(it.scopeKind, it.scopeKey) }
+            .toSet()
+
     override fun releaseSupersededSuppressions(
         accountId: Long,
         scope: AutomationIsolationScope,
@@ -240,6 +259,7 @@ class JpaConvergenceStore(
             )
             .setParameter("currentBaselineFingerprints", currentBaselineFingerprints)
             .resultList
+            .filter { ProductionActionEvidenceInterpreter.supportsVersion(it.attempt.policyVersion) }
         superseded.forEach { it.suppressionReleasedAt = releasedAt }
         return superseded.size
     }
@@ -280,6 +300,7 @@ class JpaConvergenceStore(
             .setParameter("scopeKey", raidId)
             .setParameter("results", setOf(ActionConvergenceResult.HELD, ActionConvergenceResult.RESULT_UNOBSERVED))
             .resultList
+            .filter { ProductionActionEvidenceInterpreter.supportsVersion(it.attempt.policyVersion) }
         held.forEach {
             it.suppressionReleasedAt = observedAt
             it.reasonCode = "RAID_REGISTRATION_FRESH_DECISION_RELEASED"

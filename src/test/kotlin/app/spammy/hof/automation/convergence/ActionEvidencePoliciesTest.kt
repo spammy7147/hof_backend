@@ -14,6 +14,18 @@ class ActionEvidencePoliciesTest {
     private val policies: ActionEvidencePolicies = DefaultActionEvidencePolicies()
 
     @Test
+    fun `미지원 정책은 모든 행동의 성공 거절 관문을 새 규칙으로 판정하지 않는다`() {
+        val state = QuestObservedState("waiting", true, QuestState.UNAVAILABLE, null)
+        for (kind in AutomationActionKind.entries) {
+            val unsupported = selection(kind, "unsupported").copy(policyVersion = "unsupported-fixture-version")
+            for (observation in listOf(direct(state), direct(state).copy(explicitRejected = true),
+                direct(state).copy(battleGateReason = "CAPTCHA_REQUIRED"))) {
+                assertIs<AutomationActionEvidence.PolicyUnavailable>(policies.evaluate(unsupported, observation))
+            }
+        }
+    }
+
+    @Test
     fun `반복 퀘스트 보상 직접 응답의 대기 상태만 Applied이고 후속 진전은 Superseded다`() {
         val selection = selection(AutomationActionKind.QUEST_CLAIM, "quest-a")
         val waiting = QuestObservedState(
@@ -273,7 +285,7 @@ class ActionEvidencePoliciesTest {
             },
             key,
         ),
-        policyVersion = "convergence-v1",
+        policyVersion = ProductionActionEvidenceInterpreter.VERSION_1,
         baselineFingerprint = "baseline",
     )
 

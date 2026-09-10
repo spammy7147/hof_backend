@@ -80,6 +80,13 @@ sealed interface AutomationActionEvidence {
     val sanitizedSnippet: String?
         get() = null
 
+    /** 저장 정책이 없어 응답이나 관측을 해석하지 않은 진단이다. */
+    data class PolicyUnavailable(
+        override val capturedAt: Instant,
+        override val responseShapeFingerprint: String? = null,
+        override val sanitizedSnippet: String? = null,
+    ) : AutomationActionEvidence
+
     data class DirectApplied(
         override val capturedAt: Instant,
         val stateFingerprint: String,

@@ -93,10 +93,7 @@ class DefaultAutomationActionConvergenceModule(
         store.activeBattleGate(accountId)?.takeIf { selection.actionKind.battle }?.let { gate ->
             return ConvergenceDirective.BattleGateWait(gate.openedAt, gate.reason)
         }
-        if (
-            selection.baselineFingerprint in
-            store.findSuppressedBaselines(accountId)[selection.scope].orEmpty()
-        ) return ConvergenceDirective.ContinueSelection
+        if (isSuppressed(accountId, selection)) return ConvergenceDirective.ContinueSelection
         store.findActive(accountId, selection.scope)?.let { active ->
             return ConvergenceDirective.WaitUntil(
                 active.nextProbeAt ?: timeProvider.now().plus(PROBE_INTERVAL),
@@ -105,6 +102,12 @@ class DefaultAutomationActionConvergenceModule(
         }
         val attempt = store.createOrGet(accountId, selection, timeProvider.now())
         if (!attempt.active) return ConvergenceDirective.ContinueSelection
+        if (!ProductionActionEvidenceInterpreter.supportsVersion(attempt.selection.policyVersion)) {
+            return requireNotNull(store.withLockedAttempt(attempt.attemptId) { current ->
+                if (!current.active) ConvergenceDirective.ContinueSelection
+                else holdUnsupportedPolicy(current, timeProvider.now())
+            })
+        }
         return ConvergenceDirective.Submit(attempt.attemptId, attempt.selection)
     }
 
@@ -132,7 +135,9 @@ class DefaultAutomationActionConvergenceModule(
             if (record.result == ActionConvergenceResult.APPLIED) {
                 ConvergenceDirective.ContinueSelection to null
             } else {
-                recordEvidence(record, evidence) to record.copy()
+                val supported = ProductionActionEvidenceInterpreter.supportsVersion(record.selection.policyVersion) &&
+                    evidence !is AutomationActionEvidence.PolicyUnavailable
+                recordEvidence(record, evidence) to record.copy().takeIf { supported }
             }
         }) {
             "Convergence attempt $attemptId does not exist."
@@ -155,6 +160,13 @@ class DefaultAutomationActionConvergenceModule(
 
     private fun recordEvidence(record: ActionConvergenceRecord, evidence: AutomationActionEvidence): ConvergenceDirective {
         if (record.result == ActionConvergenceResult.APPLIED) return ConvergenceDirective.ContinueSelection
+        if (!ProductionActionEvidenceInterpreter.supportsVersion(record.selection.policyVersion) ||
+            evidence is AutomationActionEvidence.PolicyUnavailable
+        ) {
+            if (record.active) return holdUnsupportedPolicy(record, evidence.capturedAt, evidence)
+            recordUnsupportedPolicy(record, evidence.capturedAt, evidence)
+            return ConvergenceDirective.ContinueSelection
+        }
         // 관측 예산 종료나 최신 상태에 따른 대체는 원래 행동의 직접 적용을 부정하지 않는다.
         val lateDirectApplication = evidence is AutomationActionEvidence.DirectApplied &&
             record.result in LATE_APPLICATION_RESULTS
@@ -172,6 +184,7 @@ class DefaultAutomationActionConvergenceModule(
         }
         evidenceCaseRecorder.record(record, evidence, evidenceReasonCode)
         return when (evidence) {
+            is AutomationActionEvidence.PolicyUnavailable -> error("Unsupported policy handled before evidence classification")
             is AutomationActionEvidence.DirectApplied -> terminal(
                 record,
                 ActionConvergenceResult.APPLIED,
@@ -250,13 +263,13 @@ class DefaultAutomationActionConvergenceModule(
         evidence: AutomationActionEvidence.IncompleteObservation,
     ): ConvergenceDirective {
         require(selection.observationOnly) { "Observation gap selection must not represent a submission." }
-        if (
-            selection.baselineFingerprint in
-            store.findSuppressedBaselines(accountId)[selection.scope].orEmpty()
-        ) return ConvergenceDirective.ContinueSelection
+        if (isSuppressed(accountId, selection)) return ConvergenceDirective.ContinueSelection
         val now = timeProvider.now()
         val active = store.findActive(accountId, selection.scope)
         if (active != null) {
+            if (!ProductionActionEvidenceInterpreter.supportsVersion(active.selection.policyVersion)) {
+                return record(active.attemptId, AutomationActionEvidence.PolicyUnavailable(now))
+            }
             if (active.selection.executionIdentity != selection.executionIdentity) {
                 if (!active.selection.observationOnly) {
                     return ConvergenceDirective.WaitUntil(active.nextProbeAt ?: now.plus(PROBE_INTERVAL), selection.scope)
@@ -288,6 +301,10 @@ class DefaultAutomationActionConvergenceModule(
         val active = store.findActive(accountId, scope)
             ?.takeIf { it.selection.observationOnly }
             ?: return false
+        if (!ProductionActionEvidenceInterpreter.supportsVersion(active.selection.policyVersion)) {
+            record(active.attemptId, AutomationActionEvidence.PolicyUnavailable(resolvedAt))
+            return false
+        }
         record(
             active.attemptId,
             AutomationActionEvidence.StateAdvanced(
@@ -310,7 +327,9 @@ class DefaultAutomationActionConvergenceModule(
             if (!current.active || current.selection.executionIdentity != selection.executionIdentity || current.submittedAt != null) {
                 return@withLockedAttempt false
             }
-            terminal(current, ActionConvergenceResult.NOT_APPLIED, reasonCode, discardedAt)
+            if (!ProductionActionEvidenceInterpreter.supportsVersion(current.selection.policyVersion)) {
+                holdUnsupportedPolicy(current, discardedAt)
+            } else terminal(current, ActionConvergenceResult.NOT_APPLIED, reasonCode, discardedAt)
             true
         } ?: false
     }
@@ -323,10 +342,7 @@ class DefaultAutomationActionConvergenceModule(
         store.activeBattleGate(accountId)?.takeIf { selection.actionKind.battle }?.let { gate ->
             return ConvergenceDirective.BattleGateWait(gate.openedAt, gate.reason)
         }
-        if (
-            selection.baselineFingerprint in
-            store.findSuppressedBaselines(accountId)[selection.scope].orEmpty()
-        ) return ConvergenceDirective.ContinueSelection
+        if (isSuppressed(accountId, selection)) return ConvergenceDirective.ContinueSelection
         store.findActive(accountId, selection.scope)?.let { active ->
             return ConvergenceDirective.WaitUntil(
                 active.nextProbeAt ?: retriedAt.plus(PROBE_INTERVAL),
@@ -340,6 +356,9 @@ class DefaultAutomationActionConvergenceModule(
                 existing.result != ActionConvergenceResult.NOT_APPLIED ||
                 existing.submittedAt != null
             ) return@withLockedAttempt ConvergenceDirective.ContinueSelection
+            if (!ProductionActionEvidenceInterpreter.supportsVersion(existing.selection.policyVersion)) {
+                return@withLockedAttempt holdUnsupportedPolicy(existing, retriedAt)
+            }
             existing.result = ActionConvergenceResult.PENDING
             existing.successfulObservationCount = 0
             existing.firstPendingAt = null
@@ -359,13 +378,13 @@ class DefaultAutomationActionConvergenceModule(
         successfulObservationCount: Int,
         firstPendingAt: Instant,
     ): ConvergenceDirective {
-        if (
-            selection.baselineFingerprint in
-            store.findSuppressedBaselines(accountId)[selection.scope].orEmpty()
-        ) return ConvergenceDirective.ContinueSelection
+        if (isSuppressed(accountId, selection)) return ConvergenceDirective.ContinueSelection
         val attempt = store.createOrGet(accountId, selection, evidence.capturedAt)
         return store.withLockedAttempt(attempt.attemptId) { record ->
             if (!record.active) return@withLockedAttempt ConvergenceDirective.ContinueSelection
+            if (!ProductionActionEvidenceInterpreter.supportsVersion(record.selection.policyVersion)) {
+                return@withLockedAttempt holdUnsupportedPolicy(record, evidence.capturedAt, evidence)
+            }
             evidenceCaseRecorder.record(record, evidence, "PENDING_BUDGET_EXHAUSTED")
             record.successfulObservationCount = successfulObservationCount
             record.firstPendingAt = firstPendingAt
@@ -395,6 +414,9 @@ class DefaultAutomationActionConvergenceModule(
         return store.withLockedAttempt(due.attemptId) { current ->
             if (!current.active || current.result != ActionConvergenceResult.PENDING || current.nextProbeAt?.isAfter(now) == true) {
                 return@withLockedAttempt ConvergenceDirective.ContinueSelection
+            }
+            if (!ProductionActionEvidenceInterpreter.supportsVersion(current.selection.policyVersion)) {
+                return@withLockedAttempt holdUnsupportedPolicy(current, now)
             }
             if (budgetExhausted(current, now)) {
                 return@withLockedAttempt terminal(current, ActionConvergenceResult.HELD, "PENDING_BUDGET_EXHAUSTED", now)
@@ -426,6 +448,26 @@ class DefaultAutomationActionConvergenceModule(
         observedAt: Instant,
     ): Int =
         store.releaseRaidRegistrationSuppressions(accountId, entryId, raidId, observedAt)
+
+    private fun holdUnsupportedPolicy(
+        record: ActionConvergenceRecord,
+        at: Instant,
+        evidence: AutomationActionEvidence? = null,
+    ): ConvergenceDirective.ContinueSelection {
+        recordUnsupportedPolicy(record, at, evidence)
+        return terminal(record, ActionConvergenceResult.HELD,
+            ProductionActionEvidenceInterpreter.UNSUPPORTED_POLICY_REASON, at)
+    }
+
+    private fun recordUnsupportedPolicy(record: ActionConvergenceRecord, at: Instant, evidence: AutomationActionEvidence?) {
+        evidenceCaseRecorder.record(record, AutomationActionEvidence.PolicyUnavailable(
+            at, evidence?.responseShapeFingerprint, evidence?.sanitizedSnippet,
+        ), ProductionActionEvidenceInterpreter.UNSUPPORTED_POLICY_REASON)
+    }
+
+    private fun isSuppressed(accountId: Long, selection: SelectedAutomationAction): Boolean =
+        selection.scope in store.findPolicyHeldScopes(accountId) ||
+            selection.baselineFingerprint in store.findSuppressedBaselines(accountId)[selection.scope].orEmpty()
 
     private fun pending(
         record: ActionConvergenceRecord,
@@ -469,6 +511,7 @@ class DefaultAutomationActionConvergenceModule(
         )
 
     private fun AutomationActionEvidence.reasonCode(): String = when (this) {
+        is AutomationActionEvidence.PolicyUnavailable -> ProductionActionEvidenceInterpreter.UNSUPPORTED_POLICY_REASON
         is AutomationActionEvidence.DirectApplied -> "DIRECT_RESPONSE_APPLIED"
         is AutomationActionEvidence.DirectRejected -> "DIRECT_RESPONSE_REJECTED"
         is AutomationActionEvidence.StateAdvanced -> "AUTHORITATIVE_STATE_ADVANCED"

@@ -50,7 +50,7 @@ class ConvergencePersistenceTest {
         val (account, entry, attempt) = transaction.execute {
             val (account, entry) = fixture("release-race-$release", now)
             val selected = SelectedAutomationAction(entry.id, "release-race-$release", AutomationActionKind.RAID_REGISTER,
-                AutomationIsolationScope(AutomationIsolationScopeKind.RAID_ENTRY, "raid-a"), "v1", "old-baseline")
+                AutomationIsolationScope(AutomationIsolationScopeKind.RAID_ENTRY, "raid-a"), ProductionActionEvidenceInterpreter.VERSION_1, "old-baseline")
             val attempt = store.createOrGet(account.id, selected, now)
             attempt.result = ActionConvergenceResult.HELD
             attempt.submittedAt = now
@@ -310,13 +310,51 @@ class ConvergencePersistenceTest {
     }
 
     @Test
+    fun `미지원 과거 보류는 재로딩 뒤에도 최신 관측과 신청 자격 갱신으로 해제하지 않는다`() {
+        val now = Instant.parse("2026-09-10T00:00:00Z")
+        val (account, entry) = fixture("unsupported-policy-held", now)
+        val records = listOf(ActionConvergenceResult.HELD, ActionConvergenceResult.RESULT_UNOBSERVED).map { result ->
+            val selected = selection(entry.id, "unknown-$result", "raid-$result").copy(
+                actionKind = AutomationActionKind.RAID_REGISTER,
+                scope = AutomationIsolationScope(AutomationIsolationScopeKind.RAID_ENTRY, "raid-$result"),
+                policyVersion = "unsupported-fixture-version",
+            )
+            store.createOrGet(account.id, selected, now).also {
+                it.result = result
+                it.finishedAt = now
+                it.reasonCode = "PENDING_BUDGET_EXHAUSTED"
+                store.save(it)
+                entityManager.flush()
+            }
+        }
+        entityManager.clear()
+        val reloaded = JpaConvergenceStore(entityManager)
+        assertEquals(records.map { it.selection.scope }.toSet(), reloaded.findPolicyHeldScopes(account.id))
+        for (record in records) {
+            assertEquals(0, reloaded.releaseSupersededSuppressions(account.id, record.selection.scope,
+                setOf("current-baseline"), now.plusSeconds(1)))
+            assertEquals(0, reloaded.releaseRaidRegistrationSuppressions(account.id, entry.id,
+                record.selection.scope.key, now.plusSeconds(1)))
+            entityManager.flush()
+            entityManager.clear()
+            assertEquals("PENDING_BUDGET_EXHAUSTED", reloaded.get(record.attemptId)?.reasonCode)
+            assertEquals(setOf(record.selection.baselineFingerprint),
+                reloaded.findSuppressedBaselines(account.id)[record.selection.scope])
+            assertEquals(true, reloaded.releaseSuppression(account.id, record.attemptId, now.plusSeconds(2)))
+        }
+        entityManager.flush()
+        entityManager.clear()
+        assertEquals(emptySet(), reloaded.findPolicyHeldScopes(account.id))
+    }
+
+    @Test
     fun `신청 보류 해제는 계정 항목 대상 행동을 제한하고 재로딩과 재처리 뒤에도 유지된다`() {
         val now = Instant.parse("2026-09-04T00:00:00Z")
         val (account, entry) = fixture("raid-release", now)
         val (otherAccount, otherEntry) = fixture("other-raid-release", now)
         fun held(owner: Long, entryId: Long, identity: String, raidId: String, kind: AutomationActionKind): ActionConvergenceRecord {
             val record = store.createOrGet(owner, SelectedAutomationAction(entryId, identity, kind,
-                AutomationIsolationScope(AutomationIsolationScopeKind.RAID_ENTRY, raidId), "v1", identity), now)
+                AutomationIsolationScope(AutomationIsolationScopeKind.RAID_ENTRY, raidId), ProductionActionEvidenceInterpreter.VERSION_1, identity), now)
             record.result = ActionConvergenceResult.HELD
             record.finishedAt = now
             store.save(record)
@@ -348,7 +386,7 @@ class ConvergencePersistenceTest {
         val scope = AutomationIsolationScope(AutomationIsolationScopeKind.QUEST_TARGET, "quest-a")
         val held = listOf("mission-a", "mission-b").map { baseline ->
             store.createOrGet(account.id, SelectedAutomationAction(entry.id, baseline,
-                AutomationActionKind.QUEST_BATTLE, scope, "v1", baseline), now).also {
+                AutomationActionKind.QUEST_BATTLE, scope, ProductionActionEvidenceInterpreter.VERSION_1, baseline), now).also {
                 it.result = ActionConvergenceResult.HELD
                 it.finishedAt = now
                 store.save(it)
@@ -392,7 +430,7 @@ class ConvergencePersistenceTest {
         executionIdentity = executionIdentity,
         actionKind = AutomationActionKind.QUEST_CLAIM,
         scope = AutomationIsolationScope(AutomationIsolationScopeKind.QUEST_TARGET, scopeKey),
-        policyVersion = "convergence-v1",
+        policyVersion = ProductionActionEvidenceInterpreter.VERSION_1,
         baselineFingerprint = "baseline-$scopeKey",
     )
 
@@ -414,7 +452,7 @@ class ConvergencePersistenceTest {
         reasonDiffers = true,
         shapeDiffers = false,
         completenessDiffers = false,
-        policyVersion = "convergence-v1",
+        policyVersion = ProductionActionEvidenceInterpreter.VERSION_1,
         observedAt = at,
     )
 }
