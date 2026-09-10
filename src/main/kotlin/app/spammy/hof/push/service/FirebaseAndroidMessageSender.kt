@@ -27,7 +27,10 @@ class FirebaseAndroidMessageSender(
             .putAllData(data)
             .setAndroidConfig(
                 AndroidConfig.builder()
-                    .setNotification(AndroidNotification.builder().setChannelId(CHANNEL_ID).build())
+                    .setNotification(AndroidNotification.builder()
+                        .setChannelId(CHANNEL_ID)
+                        .setTag("hof-push:${data.getValue("eventId")}")
+                        .build())
                     .build(),
             )
             .build()

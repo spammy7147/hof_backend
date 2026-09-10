@@ -10,6 +10,7 @@ import app.spammy.hof.automation.service.UnifiedAutomationRunner
 import app.spammy.hof.automation.service.UnifiedAutomationService
 import app.spammy.hof.captcha.dto.CaptchaPassMaintenanceLastResult
 import app.spammy.hof.captcha.entity.CaptchaChallengeEntity
+import app.spammy.hof.captcha.repository.CaptchaQueryRepository
 import app.spammy.hof.captcha.service.CaptchaNotificationGateway
 import app.spammy.hof.captcha.service.CaptchaPassMaintenanceService
 import app.spammy.hof.captcha.service.CaptchaPassTerminalService
@@ -51,6 +52,7 @@ import tools.jackson.databind.ObjectMapper
 @Import(AutomationStopNotificationIntegrationTest.Config::class)
 class AutomationStopNotificationIntegrationTest {
     @Autowired private lateinit var entityManager: EntityManager
+    @Autowired private lateinit var mapper: ObjectMapper
     @Autowired private lateinit var transactions: PlatformTransactionManager
     @Autowired private lateinit var automation: UnifiedAutomationService
     @Autowired private lateinit var maintenance: CaptchaPassMaintenanceService
@@ -109,10 +111,12 @@ class AutomationStopNotificationIntegrationTest {
             assertNotNull(query.findById(event.id)?.publishedAt)
             assertTrue(query.consumed(event.eventId))
         }
+        val eventIds = notifications.associate { mapper.readTree(it.payload).path("type").asText() to it.eventId }
         Mockito.verify(sender).send(Mockito.eq("fixture-fcm-token") ?: "", Mockito.anyString(), Mockito.anyString(),
-            Mockito.eq(mapOf("type" to "CAPTCHA_REQUIRED", "challengeId" to challengeId.toString())) ?: emptyMap())
+            Mockito.eq(mapOf("type" to "CAPTCHA_REQUIRED", "challengeId" to challengeId.toString(),
+                "eventId" to eventIds.getValue("CAPTCHA_REQUIRED"))) ?: emptyMap())
         Mockito.verify(sender).send(Mockito.eq("fixture-fcm-token") ?: "", Mockito.anyString(), Mockito.anyString(),
-            Mockito.eq(mapOf("type" to "LOGIN_REQUIRED")) ?: emptyMap())
+            Mockito.eq(mapOf("type" to "LOGIN_REQUIRED", "eventId" to eventIds.getValue("LOGIN_REQUIRED"))) ?: emptyMap())
 
         // 이미 읽힌 깨우기가 늦게 도착해도 정지된 runtime은 새 HOF 행동을 제출하지 않는다.
         clock.current = clock.now().plusSeconds(120)
@@ -145,9 +149,9 @@ class AutomationStopNotificationIntegrationTest {
         fun replayTransport(mapper: ObjectMapper, consumed: AutomationConsumedEventService,
             lease: AccountAutomationLeaseService, runner: UnifiedAutomationRunner, clock: TimeProvider,
             sender: FirebaseAndroidMessageSender, targets: DevicePushTargetQueryRepository,
-            targetService: DevicePushTargetService): AutomationOutboxTransport {
+            targetService: DevicePushTargetService, challenges: CaptchaQueryRepository): AutomationOutboxTransport {
             val wakeConsumer = AutomationWakeupConsumer(mapper, consumed, lease, runner, clock)
-            val pushConsumer = PushRequestConsumer(mapper, consumed, AndroidPushService(sender, targets, targetService))
+            val pushConsumer = PushRequestConsumer(mapper, consumed, AndroidPushService(sender, targets, targetService, consumed, challenges))
             return object : AutomationOutboxTransport {
                 override val supportedTopics: Set<String>? = null
                 override fun publish(row: AutomationOutboxEntity) {

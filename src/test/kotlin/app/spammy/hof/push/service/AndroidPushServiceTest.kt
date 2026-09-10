@@ -1,6 +1,9 @@
 package app.spammy.hof.push.service
 
 import app.spammy.hof.account.entity.HofAccountEntity
+import app.spammy.hof.automation.outbox.AutomationConsumedEventService
+import app.spammy.hof.captcha.entity.CaptchaChallengeEntity
+import app.spammy.hof.captcha.repository.CaptchaQueryRepository
 import app.spammy.hof.push.entity.DevicePushTargetEntity
 import app.spammy.hof.push.repository.DevicePushTargetQueryRepository
 import com.google.firebase.messaging.FirebaseMessagingException
@@ -14,16 +17,25 @@ class AndroidPushServiceTest {
     private val sender = Mockito.mock(FirebaseAndroidMessageSender::class.java)
     private val queries = Mockito.mock(DevicePushTargetQueryRepository::class.java)
     private val targets = Mockito.mock(DevicePushTargetService::class.java)
-    private val service = AndroidPushService(sender, queries, targets)
+    private val consumed = Mockito.mock(AutomationConsumedEventService::class.java)
+    private val challenges = Mockito.mock(CaptchaQueryRepository::class.java)
+    private val service = AndroidPushService(sender, queries, targets, consumed, challenges)
+
+    init {
+        Mockito.`when`(challenges.findActiveByAccountId(7L)).thenReturn(listOf(CaptchaChallengeEntity(
+            id = 91L, account = HofAccountEntity(7L, "login", "encrypted", NOW), status = "READY", prompt = "fixture",
+            imageUrl = null, sourceUrl = "https://example.test/captcha", answer = null, createdAt = NOW, answeredAt = null,
+        )))
+    }
 
     @Test
     fun `captcha notification is sent to every active target`() {
         Mockito.`when`(queries.findActiveByAccountId(7L))
             .thenReturn(listOf(target(1L, "token-a"), target(2L, "token-b")))
 
-        service.sendCaptchaRequired(7L, 91L)
+        service.sendCaptchaRequired(7L, 91L, "event-1")
 
-        val data = mapOf("type" to "CAPTCHA_REQUIRED", "challengeId" to "91")
+        val data = captchaData()
         Mockito.verify(sender).send("token-a", TITLE, BODY, data)
         Mockito.verify(sender).send("token-b", TITLE, BODY, data)
     }
@@ -32,7 +44,7 @@ class AndroidPushServiceTest {
     fun `no active target completes without sending`() {
         Mockito.`when`(queries.findActiveByAccountId(7L)).thenReturn(emptyList())
 
-        service.sendCaptchaRequired(7L, 91L)
+        service.sendCaptchaRequired(7L, 91L, "event-1")
 
         Mockito.verifyNoInteractions(sender, targets)
     }
@@ -41,13 +53,14 @@ class AndroidPushServiceTest {
     fun `permanent token error deactivates only that target and continues`() {
         val expired = target(1L, "expired")
         val valid = target(2L, "valid")
+        Mockito.`when`(targets.deactivateRejectedToken(expired)).thenReturn(true)
         Mockito.`when`(queries.findActiveByAccountId(7L)).thenReturn(listOf(expired, valid))
         Mockito.doThrow(messagingError(MessagingErrorCode.UNREGISTERED))
             .`when`(sender).send("expired", TITLE, BODY, captchaData())
 
-        service.sendCaptchaRequired(7L, 91L)
+        service.sendCaptchaRequired(7L, 91L, "event-1")
 
-        Mockito.verify(targets).deactivate(expired)
+        Mockito.verify(targets).deactivateRejectedToken(expired)
         Mockito.verify(sender).send("valid", TITLE, BODY, captchaData())
     }
 
@@ -58,7 +71,7 @@ class AndroidPushServiceTest {
         Mockito.doThrow(messagingError(MessagingErrorCode.UNAVAILABLE))
             .`when`(sender).send("first", TITLE, BODY, captchaData())
 
-        assertFailsWith<FirebaseMessagingException> { service.sendCaptchaRequired(7L, 91L) }
+        assertFailsWith<FirebaseMessagingException> { service.sendCaptchaRequired(7L, 91L, "event-1") }
 
         Mockito.verify(sender).send("second", TITLE, BODY, captchaData())
         Mockito.verifyNoInteractions(targets)
@@ -69,7 +82,7 @@ class AndroidPushServiceTest {
             Mockito.`when`(it.messagingErrorCode).thenReturn(code)
         }
 
-    private fun captchaData() = mapOf("type" to "CAPTCHA_REQUIRED", "challengeId" to "91")
+    private fun captchaData() = mapOf("type" to "CAPTCHA_REQUIRED", "challengeId" to "91", "eventId" to "event-1")
 
     private fun target(id: Long, token: String) = DevicePushTargetEntity(
         id = id,

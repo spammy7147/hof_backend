@@ -19,7 +19,7 @@ class PushRequestConsumerTest {
     fun `captcha event is sent recorded and acknowledged`() {
         consumer.consume(payload(), acknowledgment)
 
-        Mockito.verify(pushes).sendCaptchaRequired(7L, 91L)
+        Mockito.verify(pushes).sendCaptchaRequired(7L, 91L, "event-1")
         Mockito.verify(consumed).record("event-1")
         Mockito.verify(acknowledgment).acknowledge()
     }
@@ -38,7 +38,7 @@ class PushRequestConsumerTest {
     @Test
     fun `failed push is neither recorded nor acknowledged`() {
         Mockito.doThrow(IllegalStateException("temporary"))
-            .`when`(pushes).sendCaptchaRequired(7L, 91L)
+            .`when`(pushes).sendCaptchaRequired(7L, 91L, "event-1")
 
         assertFailsWith<IllegalStateException> { consumer.consume(payload(), acknowledgment) }
 

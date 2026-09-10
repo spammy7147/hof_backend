@@ -4,6 +4,7 @@ import app.spammy.hof.common.persistence.CommandRepository
 import app.spammy.hof.push.entity.DevicePushTargetEntity
 import app.spammy.hof.push.entity.QDevicePushTargetEntity.devicePushTargetEntity
 import com.querydsl.jpa.impl.JPAQueryFactory
+import jakarta.persistence.LockModeType
 import org.springframework.stereotype.Repository
 
 interface DevicePushTargetRepository : CommandRepository<DevicePushTargetEntity, Long>
@@ -31,8 +32,9 @@ class DevicePushTargetQueryRepository(
             .orderBy(devicePushTargetEntity.lastSeenAt.desc(), devicePushTargetEntity.id.desc())
             .fetch()
 
-    fun findOwnedById(accountId: Long, id: Long): DevicePushTargetEntity? =
+    fun findOwnedByIdForUpdate(accountId: Long, id: Long): DevicePushTargetEntity? =
         queryFactory.selectFrom(devicePushTargetEntity)
             .where(devicePushTargetEntity.account.id.eq(accountId), devicePushTargetEntity.id.eq(id))
+            .setLockMode(LockModeType.PESSIMISTIC_WRITE)
             .fetchOne()
 }

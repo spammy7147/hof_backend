@@ -39,8 +39,8 @@ class PushRequestConsumer(
             event.type,
         )
         when (event.type) {
-            "CAPTCHA_REQUIRED" -> pushService.sendCaptchaRequired(event.accountId, requireNotNull(event.challengeId))
-            "LOGIN_REQUIRED" -> pushService.sendLoginRequired(event.accountId)
+            "CAPTCHA_REQUIRED" -> pushService.sendCaptchaRequired(event.accountId, requireNotNull(event.challengeId), event.eventId)
+            "LOGIN_REQUIRED" -> pushService.sendLoginRequired(event.accountId, event.eventId)
             else -> throw IllegalArgumentException("지원하지 않는 push type입니다: ${event.type}")
         }
         consumedEventService.record(event.eventId)
