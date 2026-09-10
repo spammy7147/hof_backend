@@ -1908,7 +1908,7 @@ class AutomationActionLifecycleModuleTest {
     }
 
     @Test
-    fun `잘린 raid action 응답은 보충 GET 뒤 HTTP 경계부터 durable applied까지 수렴한다`() {
+    fun `잘린 레이드 초기화 직접 응답은 보충 GET으로 성공을 만들지 않는다`() {
         val fixture = checkNotNull(
             javaClass.classLoader.getResource("fixtures/town/raid/raidpub.html"),
         ).readText()
@@ -1940,15 +1940,9 @@ class AutomationActionLifecycleModuleTest {
             ),
         )
 
-        val execution = assertIs<TypedAutomationExecution.ActionCompleted>(managed.execute())
-        val evidence = assertIs<AutomationActionEvidence.DirectApplied>(policyEvidence(managed, execution))
-        val store = InMemoryConvergenceStore()
-        val convergence = DefaultAutomationActionConvergenceModule(store, TimeProvider { now })
-        val selection = StoredActionConvergenceSelectionFactory().create(managed.storedAction)
-        val attemptId = assertIs<ConvergenceDirective.Submit>(convergence.prepare(7L, selection)).attemptId
+        val failure = assertFailsWith<AmbiguousAutomationSubmissionException> { managed.execute() }
 
-        assertIs<ConvergenceDirective.ContinueSelection>(convergence.record(attemptId, evidence))
-        assertEquals(ActionConvergenceResult.APPLIED, store.get(attemptId)?.result)
+        assertEquals(ErrorCode.HOF_REQUEST_FAILED, assertIs<ApiException>(failure.cause).errorCode)
     }
 
     @Test

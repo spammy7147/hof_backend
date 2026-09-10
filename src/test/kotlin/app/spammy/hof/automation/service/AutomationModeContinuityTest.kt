@@ -92,6 +92,20 @@ abstract class AutomationModeContinuityTest {
     @Autowired private lateinit var automation: UnifiedAutomationService
     @MockitoBean(name = "characterSyncTaskExecutor") private lateinit var characterTasks: org.springframework.core.task.TaskExecutor
 
+    private fun independentHomePage(accepted: Boolean): String {
+        val heading = if (accepted) "진행중인 작업 목록" else "수락 가능한 작업 목록"
+        val action = if (accepted) "-" else "<a href='?menu=housing&amp;action=get&amp;no=A'>수락</a>"
+        return """<div id='menu2'>Funds : $ 1 Time : 100/100</div><h4>$heading</h4><table>
+            <tr><td>[A] 독립 자택</td><td>미션 0/1</td><td>-</td><td>-</td><td>$action</td></tr></table>"""
+    }
+
+    private fun nextWake(accountId: Long) {
+        clock.current = maxOf(clock.now(), assertNotNull(jdbc.queryForObject(
+            "select min(available_at) from automation_outbox where account_id = ? and published_at is null",
+            java.time.OffsetDateTime::class.java, accountId)).toInstant())
+        publisher.publishBatch()
+    }
+
     @Test
     fun `설정 가져오기의 최종 상태를 보존하고 영속 복귀 깨우기에서 낚시와 후속 판단을 이어간다`() {
         assertEquals(mode, properties.mode)
@@ -277,13 +291,8 @@ abstract class AutomationModeContinuityTest {
         val noBattle = requireNotNull(javaClass.getResource("/fixtures/raid/raid-complete-absent.html")).readText()
         var homeAccepted = false
         var externallyStarted = false
-        fun homePage(): String {
-            val heading = if (homeAccepted) "진행중인 작업 목록" else "수락 가능한 작업 목록"
-            val action = if (homeAccepted) "-" else "<a href='?menu=housing&amp;action=get&amp;no=A'>수락</a>"
-            return """<div id='menu2'>Funds : $ 1 Time : 100/100</div><h4>$heading</h4><table>
-                <tr><td>[A] 독립 자택</td><td>미션 0/1</td><td>-</td><td>-</td><td>$action</td></tr></table>"""
-        }
-        val homeQuest = HomePageParser().parse(HomeMode.HOME, homePage(), homeUrl, HofFormParser().parse(homePage(), homeUrl)).quests.single()
+
+        val homeQuest = HomePageParser().parse(HomeMode.HOME, independentHomePage(homeAccepted), homeUrl, HofFormParser().parse(independentHomePage(homeAccepted), homeUrl)).quests.single()
         val accountId = TransactionTemplate(transactions).execute {
             val account = HofAccountEntity(loginId = "raid-ready-mode-${UUID.randomUUID()}", encryptedPassword = "test", createdAt = clock.now())
             entityManager.persist(account)
@@ -325,7 +334,7 @@ abstract class AutomationModeContinuityTest {
                                 if (genericNotice) it.replace("</body>", "<div class=\"notice\">$notice</div></body>") else it
                             }
                         else ready, emptyMap())
-                    else -> HofHttpResponse(200, homeUrl, homePage(), emptyMap())
+                    else -> HofHttpResponse(200, homeUrl, independentHomePage(homeAccepted), emptyMap())
                 }
             }.`when`(gateway).execute(Mockito.eq(accountId), Mockito.any<HofRequest>()
                 ?: HofRequest(HofHttpMethod.GET, "https://example.test"), Mockito.anyMap())
@@ -409,13 +418,8 @@ abstract class AutomationModeContinuityTest {
         }
         var refreshCount = 0
         var homeAccepted = false
-        fun homePage(): String {
-            val heading = if (homeAccepted) "진행중인 작업 목록" else "수락 가능한 작업 목록"
-            val action = if (homeAccepted) "-" else "<a href='?menu=housing&amp;action=get&amp;no=A'>수락</a>"
-            return """<div id='menu2'>Funds : $ 1 Time : 100/100</div><h4>$heading</h4><table>
-                <tr><td>[A] 독립 자택</td><td>미션 0/1</td><td>-</td><td>-</td><td>$action</td></tr></table>"""
-        }
-        val homeQuest = HomePageParser().parse(HomeMode.HOME, homePage(), homeUrl, HofFormParser().parse(homePage(), homeUrl)).quests.single()
+
+        val homeQuest = HomePageParser().parse(HomeMode.HOME, independentHomePage(homeAccepted), homeUrl, HofFormParser().parse(independentHomePage(homeAccepted), homeUrl)).quests.single()
         val accountId = TransactionTemplate(transactions).execute {
             val account = HofAccountEntity(loginId = "raid-refresh-mode-${UUID.randomUUID()}", encryptedPassword = "test", createdAt = clock.now())
             entityManager.persist(account)
@@ -455,16 +459,11 @@ abstract class AutomationModeContinuityTest {
                     HofHttpResponse(200, raidUrl, if (refreshCount == 0) before else after(
                         observationCase == "COMPLETE" || observationCase == "LATER_COMPLETE" &&
                             (request.method == HofHttpMethod.GET || refreshCount > 1)), emptyMap())
-                else HofHttpResponse(200, homeUrl, homePage(), emptyMap())
+                else HofHttpResponse(200, homeUrl, independentHomePage(homeAccepted), emptyMap())
             }.`when`(gateway).execute(Mockito.eq(accountId), Mockito.any<HofRequest>()
                 ?: HofRequest(HofHttpMethod.GET, "https://example.test"), Mockito.anyMap())
             fun refreshResults() = jdbc.queryForList("select c.result from automation_action_convergences c join automation_action_attempts a on a.id = c.attempt_id where a.account_id = ? and a.action_kind = 'RAID_REFRESH' order by c.id", String::class.java, accountId)
-            fun nextWake() {
-                clock.current = maxOf(clock.now(), assertNotNull(jdbc.queryForObject(
-                    "select min(available_at) from automation_outbox where account_id = ? and published_at is null",
-                    java.time.OffsetDateTime::class.java, accountId)).toInstant())
-                publisher.publishBatch()
-            }
+
             wakeups.wake(accountId, "RAID_REFRESH_CONTINUITY")
             publisher.publishBatch()
             assertEquals(1, refreshCount, "$mode/$phase ${requests.map { it.url to it.formFields.keys }}")
@@ -479,11 +478,11 @@ abstract class AutomationModeContinuityTest {
                 assertTrue(firstEvents.any { it.nextRunAt == deadline }, firstEvents.toString())
             } else {
                 clock.current = clock.now().plusSeconds(31)
-                repeat(3) { nextWake() }
+                repeat(3) { nextWake(accountId) }
                 assertEquals(1, refreshCount, "$mode/$observationCase 결과 재확인에 저장 REFRESH를 다시 POST하면 안 된다.")
                 if (observationCase == "STAYS_INCOMPLETE") {
                     clock.current = deadline.minusSeconds(600).plusSeconds(121)
-                    repeat(6) { nextWake() }
+                    repeat(6) { nextWake(accountId) }
                     assertEquals(listOf("HELD"), refreshResults(), "$mode 불완전 상태는 확인 예산 뒤 보류해야 한다.")
                     assertEquals(1, refreshCount)
                     assertTrue(homeAccepted)
@@ -499,16 +498,121 @@ abstract class AutomationModeContinuityTest {
                     assertTrue("APPLIED" !in comparisons, comparisons.toString())
                 }
             }
-            repeat(6) { nextWake() }
+            repeat(6) { nextWake(accountId) }
             assertTrue(clock.now().isBefore(deadline))
             assertEquals(1, refreshCount)
             assertTrue(homeAccepted, "$mode/$phase 레이드 대기 중 독립 자택을 실행해야 한다.")
             assertTrue(journal.page(accountId, AutomationHistoryQuery()).cycles.size >= 3)
             clock.current = deadline
-            repeat(4) { if (refreshCount < 2) nextWake() }
+            repeat(4) { if (refreshCount < 2) nextWake(accountId) }
             assertEquals(2, refreshCount, "$mode/$phase 등록 대기 종료 뒤 새 갱신을 실행해야 한다.")
             val expectedResults = if (observationCase == "COMPLETE") listOf("APPLIED", "APPLIED") else listOf("SUPERSEDED", "APPLIED")
             assertEquals(if (mode == AutomationConvergenceMode.ACTIVE) expectedResults else emptyList(), refreshResults())
+            assertTrue(transport.delivered.all { outbox.consumed(it) })
+            assertEquals(0, jdbc.queryForObject("select count(*) from automation_work_sessions where account_id = ? and running_slot is not null", Int::class.java, accountId))
+            assertEquals(0, jdbc.queryForObject("select count(*) from account_automation_leases where account_id = ?", Int::class.java, accountId))
+        } finally {
+            transport.delivered.forEach { jdbc.update("delete from automation_consumed_events where event_id = ?", it) }
+            jdbc.update("delete from hof_accounts where id = ?", accountId)
+        }
+    }
+
+    @ParameterizedTest
+    @CsvSource("RESET,LATER_COMPLETE", "RESET,STAYS_INCOMPLETE", "REWARD,LATER_COMPLETE", "REWARD,STAYS_INCOMPLETE")
+    fun `잘린 레이드 행동 응답 뒤 공유 관측은 성공 귀속 없이 독립 항목과 다음 판단을 이어간다`(action: String, observationCase: String) {
+        assertEquals(mode, properties.mode)
+        clock.current = Instant.parse("2026-09-10T06:00:00Z")
+        val startedAt = clock.now()
+        transport.delivered.clear()
+        val requests = mutableListOf<HofRequest>()
+        val raidUrl = "https://hof.zerosic.com/index.php?menu=raidpub"
+        val homeUrl = "https://hof.zerosic.com/index.php?menu=housing"
+        val fixture = requireNotNull(javaClass.getResource("/fixtures/town/raid/raidpub.html")).readText()
+            .replace("Funds : $ 1,000", "Funds : $ 1,000 Time : 100/100")
+            .replace("현재 상태는 신청 대기 (신청 가능까지 6분 58초)", "현재 상태는 신청 가능")
+        val before = if (action == "RESET") fixture
+            .replace("[《테스트 길드》현재사용자]", "[다른 신청자]")
+            .replace("현재 상태 : 모집 중", "현재 상태 : 보상 확인 종료(리셋 가능)")
+            .replace("name=\"register_goblin\" value=\"등록한다\"", "name=\"reset_goblin\" value=\"전투를 리셋한다\"")
+        else fixture.replace("현재 상태 : 모집 중", "현재 상태 : 보상 확인 시간 (남은 시간 앞으로 0시간 29분 56초)")
+        val noBattle = requireNotNull(javaClass.getResource("/fixtures/raid/raid-complete-absent.html")).readText()
+        val actionField = if (action == "RESET") "reset_goblin" else "reward_nonce"
+        fun after() = fixture
+            .replace("[《테스트 길드》현재사용자]", "[다른 신청자]")
+            .replace("현재 상태 : 모집 중", "현재 상태 : 파티 모집 중 (신청 안됨)")
+            .replace("현재 상태는 신청 가능", "현재 상태는 신청 대기입니다.(신청 가능 까지 600초)")
+            .replace("name=\"reward_nonce\" value=\"보상 확인\"", "name=\"refresh_nonce\" value=\"상태 갱신\"")
+        var actionCount = 0
+        var homeAccepted = false
+
+        val homeQuest = HomePageParser().parse(HomeMode.HOME, independentHomePage(homeAccepted), homeUrl, HofFormParser().parse(independentHomePage(homeAccepted), homeUrl)).quests.single()
+        val accountId = TransactionTemplate(transactions).execute {
+            val account = HofAccountEntity(loginId = "raid-action-mode-${UUID.randomUUID()}", encryptedPassword = "test", createdAt = clock.now())
+            entityManager.persist(account)
+            val raidEntry = AutomationEntryEntity(account = account, type = AutomationType.RAID, priority = 0,
+                enabled = true, createdAt = clock.now(), updatedAt = clock.now())
+            entityManager.persist(raidEntry)
+            entityManager.persist(RaidAutomationTargetEntity(entry = raidEntry, raidId = "RaidGoblin", displayName = "고블린 전투 마차",
+                presetMode = PresetSelectionMode.PRIMARY, executionOrder = 0))
+            entityManager.persist(RaidAutomationCycleEntity(account = account, entry = raidEntry,
+                raidId = "RaidGoblin", raidName = "고블린 전투 마차",
+                status = if (action == "RESET") RaidAutomationCycleStatus.PREPARING else RaidAutomationCycleStatus.REWARD_PENDING,
+                startedAt = clock.now(), updatedAt = clock.now()))
+            val homeEntry = AutomationEntryEntity(account = account, type = AutomationType.HOME_QUEST, priority = 1,
+                enabled = true, createdAt = clock.now(), updatedAt = clock.now())
+            entityManager.persist(homeEntry)
+            entityManager.persist(HomeQuestAutomationSelectionEntity(entry = homeEntry, questId = homeQuest.id,
+                questName = homeQuest.name, enabled = true, sourceOrder = 0))
+            entityManager.persist(HofCookieEntity(account = account, name = "PHPSESSID", value = "fixture", updatedAt = clock.now()))
+            entityManager.persist(HofStatusSnapshotEntity(account = account, playerName = "테스트", funds = 1,
+                timeCurrent = 100, timeMax = 100, work = "", auction = "", observedAt = clock.now()))
+            entityManager.persist(TypedAutomationRuntimeStateEntity(accountId = account.id, account = account,
+                lifecycleStatus = TypedAutomationLifecycle.RUNNING, createdAt = clock.now(), updatedAt = clock.now()))
+            account.id
+        }
+        try {
+            Mockito.`when`(preflight.ensureReady(accountId)).thenReturn(AutomationDailyPreflight.Result.Ready)
+            Mockito.`when`(authorization.isExecutionAllowed(accountId)).thenReturn(true)
+            Mockito.doAnswer { invocation ->
+                val request = invocation.getArgument<HofRequest>(1)
+                requests += request
+                if (request.formFields["action"] == "get") homeAccepted = true
+                val submitted = request.method == HofHttpMethod.POST && request.formFields.containsKey(actionField)
+                if (submitted) actionCount++
+                if (request.url.contains("raid_hunt")) {
+                    HofHttpResponse(200, "https://hof.zerosic.com/index.php?raid_hunt", noBattle, emptyMap())
+                } else if (request.url.contains("raidpub") || submitted || request.formFields.containsKey("refresh_nonce")) {
+                    val html = if (actionCount == 0) before else after().let {
+                        if (submitted || observationCase == "STAYS_INCOMPLETE") it.substringBefore("<div id=\"foot\"") else it
+                    }
+                    HofHttpResponse(200, raidUrl, html, emptyMap())
+                } else HofHttpResponse(200, homeUrl, independentHomePage(homeAccepted), emptyMap())
+            }.`when`(gateway).execute(Mockito.eq(accountId), Mockito.any<HofRequest>()
+                ?: HofRequest(HofHttpMethod.GET, "https://example.test"), Mockito.anyMap())
+            fun results() = jdbc.queryForList("select c.result from automation_action_convergences c join automation_action_attempts a on a.id = c.attempt_id where a.account_id = ? and a.action_kind = ? order by c.id", String::class.java, accountId, "RAID_$action")
+
+            wakeups.wake(accountId, "RAID_ACTION_RESPONSE_LOST")
+            publisher.publishBatch()
+            assertEquals(1, actionCount, requests.map { it.url to it.formFields.keys }.toString())
+            assertEquals(if (mode == AutomationConvergenceMode.ACTIVE) listOf("PENDING") else emptyList(), results())
+            clock.current = startedAt.plusSeconds(31)
+            repeat(3) { nextWake(accountId) }
+            if (observationCase == "STAYS_INCOMPLETE") clock.current = maxOf(clock.now(), startedAt.plusSeconds(121))
+            repeat(6) { nextWake(accountId) }
+            val expected = if (observationCase == "STAYS_INCOMPLETE") listOf("HELD")
+                else if (mode == AutomationConvergenceMode.ACTIVE) listOf("SUPERSEDED") else emptyList()
+            assertEquals(expected, results(), "$mode/$action/$observationCase ${journal.page(accountId, AutomationHistoryQuery()).cycles}")
+            if (mode == AutomationConvergenceMode.SHADOW) {
+                val comparisons = jdbc.queryForList("select new_result from automation_convergence_shadow_evaluations where account_id = ? and action_kind = ? order by created_at", String::class.java, accountId, "RAID_$action")
+                assertTrue("APPLIED" !in comparisons, comparisons.toString())
+                if (observationCase == "LATER_COMPLETE") assertTrue("SUPERSEDED" in comparisons, comparisons.toString())
+            }
+            assertEquals(1, actionCount, "$mode 결과 재확인에 $action POST를 재생하면 안 된다.")
+            assertTrue(homeAccepted, "$mode 레이드 결과 대기 중 독립 자택이 실행되어야 한다.")
+            val cycles = journal.page(accountId, AutomationHistoryQuery()).cycles
+            assertTrue(cycles.size >= 3, cycles.toString())
+            val actionEvents = cycles.flatMap { it.events }.filter { it.actionKind == action }
+            assertTrue(actionEvents.none { it.kind == AutomationHistoryEventKind.ACTION_SUCCEEDED }, actionEvents.toString())
             assertTrue(transport.delivered.all { outbox.consumed(it) })
             assertEquals(0, jdbc.queryForObject("select count(*) from automation_work_sessions where account_id = ? and running_slot is not null", Int::class.java, accountId))
             assertEquals(0, jdbc.queryForObject("select count(*) from account_automation_leases where account_id = ?", Int::class.java, accountId))

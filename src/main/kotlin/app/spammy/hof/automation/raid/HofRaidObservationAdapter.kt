@@ -15,6 +15,7 @@ import app.spammy.hof.town.raid.model.RaidRewardWindowStatus
 import app.spammy.hof.town.raid.model.RaidCooldownObservationSource
 import app.spammy.hof.town.raid.model.isRaidNothingAvailableMessage
 import app.spammy.hof.town.raid.service.RaidPubService
+import app.spammy.hof.town.raid.service.IncompleteRaidPageException
 import org.springframework.stereotype.Component
 
 @Component
@@ -28,7 +29,15 @@ class HofRaidObservationAdapter(
         val load = {
             from(raidPubService.load(accountId, HofRequestOrigin.AUTOMATION))
         }
-        return sessionRecovery.execute(accountId, load)
+        return try {
+            sessionRecovery.execute(accountId, load)
+        } catch (_: IncompleteRaidPageException) {
+            // 잘린 레이드 조회는 이 항목만 보류하고 독립 항목의 판단은 계속한다.
+            RaidObservation(
+                raids = emptyList(), applied = false, registrationWait = false,
+                observedAt = timeProvider.now(), fresh = false,
+            )
+        }
     }
 
     fun refresh(accountId: Long, raidId: String): RaidObservation = sessionRecovery.execute(accountId) {

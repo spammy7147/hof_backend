@@ -2123,8 +2123,7 @@ class UnifiedAutomationActionLifecycleModule(
         observation: RaidResultObservation,
         defaultExecution: TypedAutomationExecution = TypedAutomationExecution.Completed,
     ): AmbiguousActionResolution {
-        val sharedState = attempt.kind in setOf(RaidIntentKind.REGISTER, RaidIntentKind.REFRESH) &&
-            observation is RaidResultObservation.Page
+        val sharedState = observation is RaidResultObservation.Page
         return when (val result = raidCycleModule.recordObservedResult(accountId, attempt, observation)) {
             is RaidRecordResult.Recorded -> {
                 result.completion?.let { workLifecycle.completeRaidCycle(accountId, attempt.entryId) }

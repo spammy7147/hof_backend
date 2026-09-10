@@ -758,6 +758,12 @@ class DefaultRaidCycleModule(
                 accountId, attempt.entryId, attempt.raidId, timeProvider.now(),
             )
         }
+        if (accountState.openCycle == null && attempt.kind == RaidIntentKind.REWARD &&
+            page.fresh && rewardResultIsProven(page, attempt.raidId)
+        ) {
+            // 새 판단이 사이클을 먼저 닫아도 후속 공유 관측으로 남은 행동 결과를 대체한다.
+            return RaidRecordResult.Recorded()
+        }
         val cycle = accountState.openCycle ?: if (attempt.kind == RaidIntentKind.REFRESH) {
             return recordInitialRefresh(accountId, attempt, page, accountState)
         } else {

@@ -115,10 +115,16 @@ class RaidPubParserTest {
         val after = before.replace("</form>", "</form><div class=\"notice\">수령 가능한 보상이 없습니다.</div>")
         for (direct in listOf(before.substringBefore("<div id=\"foot\""), after.substringBefore("<div id=\"foot\""))) {
             val context = service(before, direct, after)
-            val response = context.service.actionForAutomation(7L, RaidPubActionRequest(RaidAction.REWARD), "RaidGoblin")
+            val response = context.service.action(7L, RaidPubActionRequest(RaidAction.REWARD))
             assertTrue(response.pageComplete)
             assertTrue(response.result?.messages.orEmpty().isEmpty())
             assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.POST, HofHttpMethod.GET), context.requests().map { it.method })
+            val automation = service(before, direct, after)
+            val failure = assertFailsWith<app.spammy.hof.common.error.ApiException> {
+                automation.service.actionForAutomation(7L, RaidPubActionRequest(RaidAction.REWARD), "RaidGoblin")
+            }
+            assertEquals(app.spammy.hof.common.error.ErrorCode.HOF_REQUEST_FAILED, failure.errorCode)
+            assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.POST), automation.requests().map { it.method })
         }
         assertTrue(service(after).service.load(7L).result?.messages.orEmpty().isEmpty())
         val wrongPage = parser.parse(after, "https://hof.zerosic.com/index.php?menu=housing", forms.parse(after, URL),

@@ -16,6 +16,11 @@ import app.spammy.hof.town.raid.model.*
 import app.spammy.hof.town.raid.parser.RaidPubParser
 import org.springframework.stereotype.Service
 
+class IncompleteRaidPageException : ApiException(
+    ErrorCode.HOF_REQUEST_FAILED,
+    "HOF 전투 정보실의 완전한 응답을 확인하지 못했습니다.",
+)
+
 @Service
 class RaidPubService(
     private val executor: TownAuthenticatedExecutor,
@@ -99,9 +104,10 @@ class RaidPubService(
                 TownActionRequest(actionId)
             },
             acceptsActionResponse = { observed ->
-                // 신청 복구의 갱신 근거는 직접 응답이어야 하므로 보충 GET으로 대체하지 않는다.
-                if (origin == HofRequestOrigin.AUTOMATION && request.action == RaidAction.REFRESH &&
-                    (!observed.pageComplete || !observed.registrationStateObserved || observed.raids.any { it.status == RaidStatus.UNKNOWN })
+                // 자동화 행동의 직접 증거를 후속 GET의 공유 상태로 대체하지 않는다.
+                if (origin == HofRequestOrigin.AUTOMATION &&
+                    (!observed.pageComplete || request.action == RaidAction.REFRESH &&
+                        (!observed.registrationStateObserved || observed.raids.any { it.status == RaidStatus.UNKNOWN }))
                 ) {
                     incompletePage()
                 }
@@ -123,10 +129,7 @@ class RaidPubService(
         parsed
     }
 
-    private fun incompletePage(): Nothing = throw ApiException(
-        ErrorCode.HOF_REQUEST_FAILED,
-        "HOF 전투 정보실의 완전한 응답을 확인하지 못했습니다.",
-    )
+    private fun incompletePage(): Nothing = throw IncompleteRaidPageException()
 
     private fun withBattleAvailability(
         accountId: Long,
