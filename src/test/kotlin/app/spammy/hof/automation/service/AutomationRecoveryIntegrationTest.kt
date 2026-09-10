@@ -1,12 +1,11 @@
 package app.spammy.hof.automation.service
 
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean
+import org.springframework.beans.factory.annotation.Autowired
 import app.spammy.hof.account.entity.HofAccountEntity
-import app.spammy.hof.account.entity.HofCookieEntity
-import app.spammy.hof.auth.service.AccountExecutionAuthorizationReader
 import app.spammy.hof.automation.convergence.*
 import app.spammy.hof.automation.raid.*
 import app.spammy.hof.automation.history.AutomationHistoryEventKind
-import app.spammy.hof.automation.history.AutomationDecisionJournal
 import app.spammy.hof.automation.history.AutomationHistoryQuery
 import app.spammy.hof.town.home.model.HomeMode
 import app.spammy.hof.town.home.parser.HomePageParser
@@ -16,7 +15,6 @@ import tools.jackson.module.kotlin.jacksonObjectMapper
 import app.spammy.hof.party.entity.PartyPresetEntity
 import app.spammy.hof.party.entity.PartyPresetMemberEntity
 import app.spammy.hof.character.entity.CharacterPatternSlotEntity
-import org.springframework.test.context.bean.override.mockito.MockitoSpyBean
 import app.spammy.hof.town.raid.model.RaidAction
 import app.spammy.hof.automation.entity.*
 import app.spammy.hof.automation.port.AutomationWakeupPort
@@ -31,35 +29,24 @@ import app.spammy.hof.character.entity.CharacterOperationStatus
 import app.spammy.hof.character.entity.CharacterOperationType
 import app.spammy.hof.character.entity.CharacterRecoveryStatus
 import app.spammy.hof.common.time.TimeProvider
-import app.spammy.hof.status.entity.HofStatusSnapshotEntity
-import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
-import jakarta.persistence.EntityManager
 import java.io.IOException
 import java.time.Instant
-import java.time.LocalDate
 import java.util.UUID
 import kotlin.test.*
-import org.junit.jupiter.api.AfterEach
-import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
 import org.junit.jupiter.params.provider.EnumSource
-import org.junit.jupiter.params.provider.CsvSource
 import org.mockito.Mockito
-import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.test.context.TestConfiguration
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Import
 import org.springframework.context.annotation.Primary
-import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.test.context.ActiveProfiles
-import org.springframework.test.context.bean.override.mockito.MockitoBean
-import org.springframework.transaction.PlatformTransactionManager
 import org.springframework.transaction.support.TransactionTemplate
 import org.springframework.kafka.support.Acknowledgment
 import tools.jackson.databind.ObjectMapper
@@ -67,60 +54,23 @@ import tools.jackson.databind.ObjectMapper
 @SpringBootTest(properties = ["hof.automation-convergence.mode=ACTIVE"])
 @ActiveProfiles("test")
 @Import(AutomationRecoveryIntegrationTest.Config::class)
-class AutomationRecoveryIntegrationTest {
-    @MockitoSpyBean private lateinit var battleRuns: app.spammy.hof.battle.service.BattleRunService
-    @MockitoBean private lateinit var captchaSolver: app.spammy.hof.captcha.service.CaptchaAutoSolveCoordinator
-    @Autowired private lateinit var passMaintenance: app.spammy.hof.captcha.service.CaptchaPassMaintenanceService
-    @Autowired private lateinit var captchaService: app.spammy.hof.captcha.service.CaptchaService
-    @Autowired private lateinit var captchaResumes: TypedCaptchaAutomationResumeService
-    @MockitoSpyBean private lateinit var convergenceProperties: AutomationConvergenceProperties
-    @MockitoSpyBean private lateinit var wakeOutbox: AutomationOutboxService
-    @Autowired private lateinit var runner: UnifiedAutomationRunner
-    @Autowired private lateinit var store: ConvergenceStore
-    @MockitoSpyBean private lateinit var journal: AutomationDecisionJournal
-    @Autowired private lateinit var entityManager: EntityManager
-    @Autowired private lateinit var transactions: PlatformTransactionManager
-    @Autowired private lateinit var jdbc: JdbcTemplate
-    @Autowired private lateinit var clock: RecoveryClock
-    @Autowired private lateinit var publisher: AutomationOutboxPublisher
-    @Autowired private lateinit var outbox: AutomationOutboxQueryRepository
-    @Autowired private lateinit var transport: ConsumerReplayTransport
-    @Autowired private lateinit var fishingService: app.spammy.hof.town.fishing.service.FishingService
-    @Autowired private lateinit var battleMaps: app.spammy.hof.battle.service.BattleMapService
-    @Autowired private lateinit var application: UnifiedAutomationService
-    @Autowired private lateinit var recoveryQuery: app.spammy.hof.automation.recovery.AutomationRecoveryDueAccountQuery
-    @Autowired private lateinit var lifecycle: TypedAutomationLifecycleBridge
-    @MockitoBean private lateinit var gateway: HofGateway
-    @MockitoSpyBean private lateinit var decisions: AutomationDecisionSource
-    @MockitoSpyBean private lateinit var raidModule: RaidCycleModule
-    @MockitoBean private lateinit var preflight: AutomationDailyPreflight
-    @MockitoSpyBean private lateinit var authorization: AccountExecutionAuthorizationReader
-    @Autowired private lateinit var refreshTokens: app.spammy.hof.auth.service.RefreshTokenService
-    @Autowired private lateinit var auth: app.spammy.hof.auth.service.AuthService
-    @Autowired private lateinit var wakeups: AutomationWakeupPort
-    @Autowired private lateinit var characterGate: app.spammy.hof.character.command.CharacterAutomationGate
-    @Autowired private lateinit var characterRecovery: app.spammy.hof.character.service.CharacterDeepSyncRecovery
-    @Autowired private lateinit var characterJobs: app.spammy.hof.character.service.CharacterOperationJobService
-    @Autowired private lateinit var characterIdentity: app.spammy.hof.character.identity.CharacterLifecycleService
-    @Autowired private lateinit var characterAutomation: app.spammy.hof.character.service.CharacterOperationAutomation
-    @Autowired private lateinit var recoveryActions: app.spammy.hof.character.service.CharacterOperationRecoveryService
-    @Autowired private lateinit var accountMutations: app.spammy.hof.town.common.service.AccountHofMutationFence
-    @Autowired private lateinit var dueStore: DatabaseAutomationDueStore
-
-    private var accountId = 0L
-    private var entryId = 0L
-    private val requests = mutableListOf<HofRequest>()
-    private var failedPattern = 2
-    private var failBattle = false
-    private var captchaBattleResponse = false
-    private var patternCalls = 0
-    private val characters = listOf("recovery-1", "recovery-2", "recovery-3")
-    private var selectedCharacters = characters
-    private var raidPageTransform: (String) -> String = { it }
+class AutomationRecoveryIntegrationTest : AutomationRecoveryFixture() {
     private var incompleteRefreshPost = false
-    private var rotatePatternCookies = false
-    private val requestCookies = mutableListOf<Map<String, String>>()
-    private var mapPage = "<a href='index.php?union=0003'>도적소탕</a>"
+    private var raidPageTransform: (String) -> String = { it }
+    @Autowired private lateinit var dueStore: DatabaseAutomationDueStore
+    @Autowired private lateinit var accountMutations: app.spammy.hof.town.common.service.AccountHofMutationFence
+    @Autowired private lateinit var recoveryActions: app.spammy.hof.character.service.CharacterOperationRecoveryService
+    @Autowired private lateinit var characterAutomation: app.spammy.hof.character.service.CharacterOperationAutomation
+    @Autowired private lateinit var characterIdentity: app.spammy.hof.character.identity.CharacterLifecycleService
+    @Autowired private lateinit var characterJobs: app.spammy.hof.character.service.CharacterOperationJobService
+    @Autowired private lateinit var characterRecovery: app.spammy.hof.character.service.CharacterDeepSyncRecovery
+    @Autowired private lateinit var characterGate: app.spammy.hof.character.command.CharacterAutomationGate
+    @Autowired private lateinit var refreshTokens: app.spammy.hof.auth.service.RefreshTokenService
+    @MockitoSpyBean private lateinit var raidModule: RaidCycleModule
+    @Autowired private lateinit var recoveryQuery: app.spammy.hof.automation.recovery.AutomationRecoveryDueAccountQuery
+    @Autowired private lateinit var battleMaps: app.spammy.hof.battle.service.BattleMapService
+    @Autowired private lateinit var fishingService: app.spammy.hof.town.fishing.service.FishingService
+    @Autowired private lateinit var runner: UnifiedAutomationRunner
 
     @ParameterizedTest
     @ValueSource(strings = ["CURRENT", "RETRY", "STARTUP", "NOT_STARTED", "NOT_STARTED_RETRY", "USER_STOP"])
@@ -245,64 +195,6 @@ class AutomationRecoveryIntegrationTest {
             check(request.method == HofHttpMethod.GET)
             HofHttpResponse(200, request.url, body(), emptyMap())
         }.`when`(gateway).execute(Mockito.eq(accountId), anyRequest(), Mockito.anyMap())
-    }
-
-    @BeforeEach
-    fun prepareAccount() {
-        transport.delivered.clear()
-        clock.current = Instant.parse("2026-09-04T00:00:00Z")
-        TransactionTemplate(transactions).executeWithoutResult {
-            val account = HofAccountEntity(loginId = "recovery-${UUID.randomUUID()}", encryptedPassword = "test", createdAt = clock.now())
-            entityManager.persist(account)
-            entityManager.flush()
-            accountId = account.id
-            val entry = AutomationEntryEntity(account = account, type = AutomationType.UNION, priority = 0,
-                enabled = true, createdAt = clock.now(), updatedAt = clock.now())
-            entityManager.persist(entry)
-            entityManager.flush()
-            entryId = entry.id
-            entityManager.persist(HofCookieEntity(account = account, name = "PHPSESSID", value = "test-session", updatedAt = clock.now()))
-            entityManager.persist(HofStatusSnapshotEntity(account = account, playerName = "테스트", funds = 1, timeCurrent = 100, timeMax = 100, work = "", auction = "", observedAt = clock.now()))
-            characters.forEach { id ->
-                entityManager.persist(CharacterEntity(account = account, hofCharacterId = id, name = id, job = "Knight", updatedAt = clock.now()))
-            }
-            entityManager.persist(TypedAutomationRuntimeStateEntity(accountId = accountId, account = account,
-                lifecycleStatus = TypedAutomationLifecycle.RUNNING, createdAt = clock.now(), updatedAt = clock.now()))
-        }
-        Mockito.`when`(preflight.ensureReady(accountId)).thenReturn(AutomationDailyPreflight.Result.Ready)
-        Mockito.`when`(authorization.isExecutionAllowed(accountId)).thenReturn(true)
-        Mockito.doAnswer {
-            AutomationCoordination.Runnable(entryId, battle(), emptyList())
-        }.`when`(decisions).select(accountId)
-        Mockito.doAnswer { invocation ->
-            val request = invocation.arguments[1] as HofRequest
-            requests += request
-            requestCookies += invocation.getArgument<Map<String, String>>(2)
-            val body = when {
-                request.url.contains("?char=") -> {
-                    patternCalls++
-                    if (patternCalls == failedPattern) throw IOException("HTTP/1.1 header parser received no bytes")
-                    "<div>Funds : $ 1 Time : 100/100</div>" + app.spammy.hof.character.service.currentPatternForm() +
-                        app.spammy.hof.character.service.savedPatternLoadForm(request.formFields.getValue("patternno").toInt())
-                }
-                request.method == HofHttpMethod.GET -> mapPage
-                captchaBattleResponse -> "<div id='menu2'>Funds : $ 1 Time : 100/100</div><div>자경단에서 통행증을 발급받아주세요.</div>"
-                failBattle -> throw IOException("battle response lost")
-                else -> """<div id="menu2">Funds : $ 1 Time : 100/100</div><h2>Show Detail( 1 turns. )</h2><h1>테스트은(는) 승리했다!</h1>
-                    <div>남은 HP : 0/100 생존자 : 0/1 총 데미지 : 0</div>
-                    <div>남은 HP : 100/100 생존자 : 1/1 총 데미지 : 100 턴 : 1/100 획득 경험치 : 1 획득 Funds : $ 1</div>"""
-            }
-            val updatedCookies = if (rotatePatternCookies && request.url.contains("?char=")) {
-                mapOf("PHPSESSID" to "rotated-$patternCalls")
-            } else emptyMap()
-            HofHttpResponse(200, request.url, body, updatedCookies)
-        }.`when`(gateway).execute(Mockito.eq(accountId), anyRequest(), Mockito.anyMap())
-    }
-
-    @AfterEach
-    fun removeAccount() {
-        transport.delivered.forEach { jdbc.update("delete from automation_consumed_events where event_id = ?", it) }
-        if (accountId != 0L) jdbc.update("delete from hof_accounts where id = ?", accountId)
     }
 
     @ParameterizedTest
@@ -590,65 +482,6 @@ class AutomationRecoveryIntegrationTest {
         assertEquals(2, transport.delivered.size)
         assertTrue(transport.delivered.all { outbox.consumed(it) })
         assertEquals(0, jdbc.queryForObject("select count(*) from account_automation_leases where account_id = ?", Int::class.java, accountId))
-        assertNull(jdbc.queryForObject("select lease_token from typed_automation_runtime_states where account_id = ?", String::class.java, accountId))
-    }
-
-    @ParameterizedTest
-    @CsvSource("LEGACY,REJECTED", "SHADOW,REJECTED", "ACTIVE,REJECTED",
-        "LEGACY,INCOMPLETE", "SHADOW,INCOMPLETE", "ACTIVE,INCOMPLETE",
-        "LEGACY,CAPTCHA", "SHADOW,CAPTCHA", "ACTIVE,CAPTCHA")
-    fun `패턴 불러오기를 확인하지 못한 세 모드는 전투 없이 끝내고 새 판단에서 복구한다`(mode: AutomationConvergenceMode, failure: String) {
-        Mockito.doReturn(mode).`when`(convergenceProperties).mode
-        val state = setupFishing(initialBattle = true, hiddenBattle = true)
-        state.preloadFailure = failure
-        fun patternPosts() = requests.filter { it.method == HofHttpMethod.POST && it.url.contains("?char=") }
-        fun fishingBattles() = requests.filter { it.method == HofHttpMethod.POST && it.url.contains("common=fishing_12") }
-
-        wakeups.wake(accountId, "PATTERN_LOAD_UNCONFIRMED")
-        publisher.publishBatch()
-
-        assertEquals(1, patternPosts().size)
-        assertTrue(fishingBattles().isEmpty(), "선로드의 거부·불완전·캡차 응답 뒤 실제 전투를 보내면 안 된다.")
-        assertTrue(fishingPosts().isEmpty())
-        val first = runs().single()
-        assertEquals("FAILED", first["status"])
-        assertNull(first["submitted_at"])
-        assertEquals(0, jdbc.queryForObject(
-            "select count(*) from automation_action_attempts where account_id = ? and submitted_at is not null", Int::class.java, accountId))
-        assertTrue(store.findSuppressedBaselines(accountId).isEmpty(), "전투 미전송을 결과 미관측으로 보류하면 안 된다.")
-        if (failure == "CAPTCHA") {
-            assertNotNull(captchaService.findCurrent(accountId), "선로드 캡차도 실제 답안 요청으로 기록한다.")
-            assertNotNull(store.activeBattleGate(accountId))
-            consumeNextWake()
-            assertTrue(fishingBattles().isEmpty(), "관문 해소 전의 후속 판단도 전투를 보내면 안 된다.")
-            assertEquals(0, runningWorkCount(), "관문 판단에서 대기 작업의 작업권을 양보해야 한다.")
-            val count = requests.size
-            assertTrue(captchaService.resolveCurrentPassChallenge(accountId))
-            assertNull(store.activeBattleGate(accountId))
-            assertEquals(count, requests.size, "관문 해소는 저장 전투를 재전송하지 않는다.")
-        } else {
-            assertEquals(0, runningWorkCount())
-            assertNull(store.activeBattleGate(accountId))
-            val events = journal.page(accountId, AutomationHistoryQuery()).cycles.flatMap { it.events }
-            assertTrue(events.any { it.reasonCode == "BATTLE_PATTERN_PRELOAD_FAILED" })
-        }
-
-        // 관문에 보류된 작업은 기존 30초 재확인 간격을 유지한다. 그동안의 유휴 wake도 실제로 소비한다.
-        val recoveryDeadline = clock.now().plusSeconds(30)
-        repeat(12) { if (fishingBattles().isEmpty()) consumeNextWake() }
-        assertTrue(fishingBattles().isNotEmpty(), "기존 재확인 시각 안에 새 전투를 선택해야 한다.")
-        assertTrue(clock.now() <= recoveryDeadline)
-
-        assertEquals(2, patternPosts().size, "실패한 로드를 재사용하지 않고 최신 파티에서 다시 준비한다.")
-        assertEquals(1, fishingBattles().size)
-        assertEquals("SUCCEEDED", runs().last()["status"])
-        assertNotEquals(first["execution_identity"], runs().last()["execution_identity"])
-        val count = journal.page(accountId, AutomationHistoryQuery()).cycles.size
-        consumeNextWake()
-        assertTrue(journal.page(accountId, AutomationHistoryQuery()).cycles.size > count)
-        assertEquals(1, fishingBattles().size)
-        assertTrue(fishingPosts().isEmpty())
-        assertEquals(0, runningWorkCount())
         assertNull(jdbc.queryForObject("select lease_token from typed_automation_runtime_states where account_id = ?", String::class.java, accountId))
     }
 
@@ -1057,140 +890,6 @@ class AutomationRecoveryIntegrationTest {
         assertTrue(node["fishing"].isObject)
     }
 
-    @ParameterizedTest
-    @EnumSource(AutomationConvergenceMode::class)
-    fun `빠른 답안 해소 뒤 늦게 생성된 관문도 유효 통행증 재관측과 다음 판단에서 복구한다`(mode: AutomationConvergenceMode) {
-        Mockito.doReturn(mode).`when`(convergenceProperties).mode
-        failedPattern = -1
-        captchaBattleResponse = true
-        var answerCompletedBeforeError = false
-        var selections = 0
-        Mockito.doAnswer {
-            if (++selections <= 2) AutomationCoordination.Runnable(entryId, battle(), emptyList())
-            else AutomationCoordination.Idle(emptyList())
-        }.`when`(decisions).select(accountId)
-        Mockito.doAnswer { invocation ->
-            try { invocation.callRealMethod() }
-            catch (error: app.spammy.hof.common.error.ApiException) {
-                assertEquals(app.spammy.hof.common.error.ErrorCode.CAPTCHA_REQUIRED, error.errorCode)
-                // 실제 detectAndRecord commit 뒤, 오류를 runner에 전달하기 전에 빠른 답안 처리가 완료된다.
-                assertTrue(captchaService.resolveCurrentPassChallenge(accountId))
-                assertTrue(captchaResumes.findPendingAccountIds().isEmpty())
-                assertNull(store.activeBattleGate(accountId))
-                answerCompletedBeforeError = true
-                throw error
-            }
-        }.`when`(battleRuns).runBattle(Mockito.eq(accountId),
-            Mockito.any(app.spammy.hof.battle.dto.RunBattleRequest::class.java)
-                ?: app.spammy.hof.battle.dto.RunBattleRequest("union", "0003", characters),
-            Mockito.eq(app.spammy.hof.external.model.HofRequestOrigin.AUTOMATION)
-                ?: app.spammy.hof.external.model.HofRequestOrigin.AUTOMATION)
-        wakeups.wake(accountId, "FAST_CAPTCHA_ANSWER")
-        publisher.publishBatch()
-        assertEquals(1, battleRequests().size)
-        assertTrue(answerCompletedBeforeError, "답안 완료를 지연된 CAPTCHA_REQUIRED 전달보다 먼저 실행해야 한다.")
-        assertNotNull(store.activeBattleGate(accountId), "답안보다 늦은 실제 runner의 관문 생성 순서를 재현한다.")
-        val requestsBeforeObservation = requests.size
-        captchaBattleResponse = false
-        assertTrue(passMaintenance.observe(accountId, "<div id='menu'>인증 유효시간 0:30:00</div>", clock.now(), clock.now()))
-        assertNull(store.activeBattleGate(accountId))
-        assertEquals(requestsBeforeObservation, requests.size)
-        consumeNextWake()
-        assertEquals(2, battleRequests().size, "이전 캡차 응답 뒤 최신 실행에서 새 전투는 한 번만 제출한다.")
-        val decisionCount = journal.page(accountId, AutomationHistoryQuery()).cycles.size
-        repeat(3) {
-            if (journal.page(accountId, AutomationHistoryQuery()).cycles.size <= decisionCount) consumeNextWake()
-        }
-        assertTrue(journal.page(accountId, AutomationHistoryQuery()).cycles.size > decisionCount)
-        assertEquals(2, battleRequests().size)
-        assertEquals(0, runningWorkCount())
-    }
-
-    @ParameterizedTest
-    @CsvSource("LEGACY,NONE", "SHADOW,NONE", "ACTIVE,NONE",
-        "LEGACY,PAUSE", "SHADOW,PAUSE", "ACTIVE,PAUSE",
-        "LEGACY,STOP", "SHADOW,STOP", "ACTIVE,STOP",
-        "LEGACY,AUTH", "SHADOW,AUTH", "ACTIVE,AUTH")
-    fun `세 모드에서 캡차 관문 중 비전투를 진행하고 재개 실패 복구 뒤 새 전투와 후속 판단을 소비한다`(mode: AutomationConvergenceMode, control: String) {
-        Mockito.doReturn(mode).`when`(convergenceProperties).mode
-        setupFishing()
-        val challengeId = TransactionTemplate(transactions).execute {
-            val account = entityManager.find(HofAccountEntity::class.java, accountId)
-            entityManager.find(AutomationEntryEntity::class.java, entryId).priority = 1
-            val battleEntry = AutomationEntryEntity(account = account, type = AutomationType.BATTLE_MAP,
-                priority = 0, enabled = true, createdAt = clock.now(), updatedAt = clock.now())
-            entityManager.persist(battleEntry)
-            entityManager.persist(BattleAutomationMapEntity(entry = battleEntry, categoryId = "battle_map",
-                mapCode = "0001", dailyTargetCount = 1, presetMode = PresetSelectionMode.PRIMARY, executionOrder = 0))
-            val challenge = app.spammy.hof.captcha.entity.CaptchaChallengeEntity(
-                account = account, status = "READY", prompt = "captcha", challengeKind = "VIGILANTE_PASS",
-                imageUrl = null, sourceUrl = "https://example.test/captcha", answer = null,
-                createdAt = clock.now(), answeredAt = null)
-            entityManager.persist(challenge)
-            store.openBattleGate(accountId, null, "CAPTCHA_REQUIRED", clock.now())
-            challenge.id
-        }
-        fun battlePosts() = requests.filter {
-            it.method == HofHttpMethod.POST && !it.url.contains("?char=") && !it.url.contains("menu=fishing")
-        }
-        wakeups.wake(accountId, "CAPTCHA_GATE_NON_BATTLE")
-        publisher.publishBatch()
-        assertEquals(listOf("FStart", "FCatch"), fishingPosts())
-        assertTrue(battlePosts().isEmpty(), "상위 전투 관문이 하위 비전투를 막거나 전투를 제출하면 안 된다.")
-        assertNotNull(store.activeBattleGate(accountId))
-        val requestCount = requests.size
-        Mockito.doThrow(org.springframework.dao.DataAccessResourceFailureException("controlled wake storage failure"))
-            .doCallRealMethod().`when`(wakeOutbox).enqueue(accountId, "CAPTCHA_ANSWERED", null)
-        assertTrue(captchaService.resolveCurrentPassChallenge(accountId))
-        assertNotNull(store.activeBattleGate(accountId), "후속 예약 실패는 관문 해제도 rollback해야 한다.")
-        assertTrue(jdbc.queryForObject("select automation_resume_pending from captcha_challenges where id = ?",
-            Boolean::class.java, challengeId)!!)
-
-        when (control) {
-            "PAUSE" -> application.pauseTyped(accountId)
-            "STOP" -> application.stopTyped(accountId)
-            "AUTH" -> TransactionTemplate(transactions).executeWithoutResult {
-                lifecycle.suspendForAuthentication(accountId, "CAPTCHA_RETRY_AUTH")
-            }
-        }
-        val controlledState = jdbc.queryForMap("select * from typed_automation_runtime_states where account_id = ?", accountId)
-        app.spammy.hof.captcha.service.CaptchaAutomationResumeScheduler(captchaResumes).recoverOnStartup()
-        assertNull(store.activeBattleGate(accountId))
-        assertFalse(jdbc.queryForObject("select automation_resume_pending from captcha_challenges where id = ?",
-            Boolean::class.java, challengeId)!!)
-        assertEquals(requestCount, requests.size, "재개 복구는 HOF 답안이나 관측을 재요청하지 않는다.")
-        if (control != "NONE") {
-            assertEquals(controlledState, jdbc.queryForMap("select * from typed_automation_runtime_states where account_id = ?", accountId))
-            wakeups.wake(accountId, "STALE_CAPTCHA_WAKE")
-            publisher.publishBatch()
-            assertEquals(requestCount, requests.size, "사용자 제어 또는 인증 중단 중에는 지연 wake도 HOF를 호출하지 않는다.")
-            when (control) {
-                "PAUSE" -> application.resumeTyped(accountId)
-                "STOP" -> application.startTyped(accountId)
-                "AUTH" -> TransactionTemplate(transactions).executeWithoutResult {
-                    assertTrue(lifecycle.resumeAfterAuthentication(accountId, "CAPTCHA_RETRY_LOGIN"))
-                }
-            }
-        }
-        consumeNextWake()
-        assertEquals(1, battlePosts().size, "복구 뒤 최신 상태에서 전투를 한 번 제출해야 한다.")
-        assertEquals(1, jdbc.queryForObject("select successful_runs from battle_automation_daily_progress where account_id = ?",
-            Int::class.java, accountId))
-        val decisionCount = journal.page(accountId, AutomationHistoryQuery()).cycles.size
-        val nextDecisionDeadline = clock.now().plusSeconds(3)
-        // 이전 즉시 wake가 남아 있으면 runtime의 다음 판단 시각 전에는 소비만 하고,
-        // 이어서 예약된 유휴 판단 wake를 실제로 소비한다.
-        repeat(2) {
-            if (journal.page(accountId, AutomationHistoryQuery()).cycles.size <= decisionCount) consumeNextWake()
-        }
-        assertTrue(journal.page(accountId, AutomationHistoryQuery()).cycles.size > decisionCount)
-        assertTrue(clock.now() <= nextDecisionDeadline)
-        assertEquals(1, battlePosts().size)
-        assertEquals(listOf("FStart", "FCatch"), fishingPosts())
-        assertEquals(0, runningWorkCount())
-        assertTrue(requests.none { it.url.contains("example.test/captcha") })
-    }
-
     @Test
     fun `정상 낚시는 START CATCH 뒤 작업권을 놓고 후속 유휴 판단을 계속 소비한다`() {
         setupFishing()
@@ -1541,118 +1240,6 @@ class AutomationRecoveryIntegrationTest {
             assertTrue(clock.now() <= deadline, "낚시 후속 소비가 30초를 넘었다")
         }
         assertTrue(done(), "네 번의 실제 후속 소비 안에 진전해야 한다")
-    }
-
-    private fun completeFishingMapPage(extra: String = "") = """<div id='contents'>
-        <div id='mapgroup1'><a href='index.php?common=0001'>일반 맵</a></div>$extra</div>
-        <div id='foot'><h5>Copy Right sanitized fixture</h5><h6>H.O.F Korean Ver sanitized fixture</h6>
-        <img src='image/zerohof.gif'></div>"""
-
-    private fun runningWorkCount() = jdbc.queryForObject(
-        "select count(*) from automation_work_sessions where account_id = ? and status = 'RUNNING'", Int::class.java, accountId)
-
-    private fun fishingPosts() = requests.mapNotNull { request ->
-        val action = listOf("FStart", "FCatch").singleOrNull { it in request.formFields } ?: return@mapNotNull null
-        assertEquals(HofHttpMethod.POST, request.method)
-        assertEquals("https://hof.zerosic.com/index.php?menu=fishing", request.url)
-        assertEquals(if (action == "FStart") "낚시를 시작한다" else "낚는다", request.formFields[action])
-        action
-    }
-
-    private class FishingFixtureState(var phase: String = "reset", var battle: Boolean = false, var mapFailure: String? = null) {
-        var revealOnStart = false
-        var preloadFailure: String? = null
-        var currentTime = 100
-        val requestCookies = mutableListOf<Map<String, String>>()
-    }
-
-    private fun setupFishing(
-        obstruction: Boolean = false,
-        startObstruction: Boolean = false,
-        lostFishingResponse: String? = null,
-        homeResponse: ((HofRequest) -> String)? = null,
-        initialBattle: Boolean = false,
-        hiddenBattle: Boolean = false,
-        castsAfterBattle: Int = 0,
-        mapFailure: String? = null,
-        rotatingCookies: Boolean = false,
-        unconfirmedResponse: String? = null,
-    ): FishingFixtureState {
-        Mockito.doCallRealMethod().`when`(decisions).select(accountId)
-        TransactionTemplate(transactions).executeWithoutResult {
-            val entry = entityManager.find(AutomationEntryEntity::class.java, entryId)
-            entry.type = AutomationType.FISHING
-            entry.singletonTypeMarker = AutomationType.FISHING
-            val preset = PartyPresetEntity(account = entry.account, name = "낚시 파티", createdAt = clock.now(), updatedAt = clock.now(), isPrimary = true)
-            entityManager.persist(preset)
-            val character = entityManager.createQuery("select c from CharacterEntity c where c.account.id = :id", CharacterEntity::class.java)
-                .setParameter("id", accountId).resultList.first()
-            val pattern = CharacterPatternSlotEntity(character = character, slotCode = "1", label = "기본", canLoad = true)
-            entityManager.persist(pattern)
-            entityManager.persist(PartyPresetMemberEntity(preset, 0, character, pattern))
-        }
-        fun fixture(name: String) = requireNotNull(javaClass.getResource("/fixtures/town/fishing/$name.html")).readText()
-        val state = FishingFixtureState(battle = initialBattle, mapFailure = mapFailure)
-        state.revealOnStart = startObstruction
-        Mockito.doAnswer { invocation ->
-            val request = invocation.arguments[1] as HofRequest
-            @Suppress("UNCHECKED_CAST")
-            val requestCookies = invocation.arguments[2] as Map<String, String>
-            val header = """<table id='menu2'><tr><td>《테스트》테스트</td>
-                <td>Funds : $ 1<br>Work : Nothing</td><td>Time : ${state.currentTime}/100<br>Auction : Nothing</td></tr></table>"""
-            state.requestCookies += requestCookies.toMap()
-            requests += request
-            val body = when {
-                unconfirmedResponse != null && unconfirmedResponse in request.formFields -> fixture(state.phase)
-                request.url.contains("?char=") -> {
-                    val failure = state.preloadFailure
-                    state.preloadFailure = null
-                    header + when (failure) {
-                        "REJECTED" -> app.spammy.hof.character.service.currentPatternForm() + "<div class='error'>패턴 로드가 거부되었습니다.</div>"
-                        "INCOMPLETE" -> "<div>현재 설정을 읽지 못했습니다.</div>"
-                        "CAPTCHA" -> "<div>자경단에서 통행증을 발급받아주세요.</div>"
-                        else -> app.spammy.hof.character.service.currentPatternForm() + app.spammy.hof.character.service.savedPatternLoadForm(1)
-                    }
-                }
-                homeResponse != null && request.url.contains("menu=quest2") -> homeResponse(request)
-                "FStart" in request.formFields -> {
-                    state.battle = state.battle || state.revealOnStart
-                    state.revealOnStart = false
-                    state.phase = if (state.battle) "monster" else "waiting"
-                    if (lostFishingResponse == "FStart") throw IOException("Fishing START response lost")
-                    fixture(state.phase)
-                }
-                "FCatch" in request.formFields -> {
-                    state.battle = obstruction
-                    state.phase = if (obstruction) "monster" else "exhausted"
-                    if (lostFishingResponse == "FCatch") throw IOException("Fishing CATCH response lost")
-                    if (obstruction) fixture("caught").substringBefore("<form") + fixture("monster") + "</main>" else fixture("caught")
-                }
-                request.method == HofHttpMethod.POST -> {
-                    state.battle = false
-                    state.phase = if (castsAfterBattle > 0) "reset" else "exhausted"
-                    """$header<h2>Show Detail( 1 turns. )</h2><h1>《테스트》테스트은(는) 승리했다!</h1>
-                    <div>남은 HP : 0/100 생존자 : 0/1 총 데미지 : 0</div>
-                    <div>남은 HP : 100/100 생존자 : 1/1 총 데미지 : 100 턴 : 1/100 획득 경험치 : 1 획득 Funds : $ 1</div>"""
-                }
-                request.url.contains("menu=fishing") -> when {
-                    state.phase == "exhausted" -> fixture("reset").replace("18회", "0회")
-                    hiddenBattle && state.battle -> fixture("reset")
-                    else -> fixture(state.phase)
-                }
-                state.mapFailure == "IO" -> throw IOException("map unavailable")
-                state.mapFailure == "INCOMPLETE" -> "<div>목록 일부만 도착했습니다.</div>"
-                else -> completeFishingMapPage(if (state.battle) "<a href='index.php?common=fishing_12'>Fishing- 악어</a>" else "")
-            }
-            val responseCookies = if (rotatingCookies) mapOf("PHPSESSID" to when {
-                "FStart" in request.formFields -> "start-cookie"
-                "FCatch" in request.formFields -> "catch-cookie"
-                request.url.endsWith("?hunt") -> "hunt-cookie"
-                else -> "fishing-cookie"
-            }) else emptyMap()
-            HofHttpResponse(200, request.url, header + body, responseCookies)
-        }.`when`(gateway).execute(Mockito.eq(accountId), anyRequest(), Mockito.anyMap())
-        return state
     }
 
     @Test
@@ -2039,19 +1626,6 @@ class AutomationRecoveryIntegrationTest {
         consumeNextWake()
     }
 
-    private fun consumeNextWake() {
-        val next = jdbc.queryForObject(
-            "select min(available_at) from automation_outbox where account_id = ? and topic = ? and published_at is null",
-            java.time.OffsetDateTime::class.java, accountId, AutomationOutboxService.WAKEUP_TOPIC)?.toInstant()
-        assertNotNull(next, "행동 수렴 뒤 실제 소비할 후속 wakeup이 있어야 한다.")
-        clock.current = maxOf(clock.now(), next)
-        val before = transport.delivered.size
-        publisher.publishBatch()
-        assertTrue(transport.delivered.size > before)
-        assertTrue(transport.delivered.all { outbox.consumed(it) })
-        assertEquals(0, jdbc.queryForObject("select count(*) from account_automation_leases where account_id = ?", Int::class.java, accountId))
-    }
-
     private fun assertScheduledWake(reason: String, at: Instant) {
         val payloads = jdbc.queryForList(
             "select payload from automation_outbox where account_id = ? and topic = ? and available_at = ? and published_at is null",
@@ -2059,18 +1633,6 @@ class AutomationRecoveryIntegrationTest {
         assertTrue(payloads.any { jacksonObjectMapper().readTree(it)["reason"].asString() == reason },
             "$reason wake가 $at 에 예약되어 있어야 한다.")
     }
-
-    private fun battle() = BattleMapAutomationAction(accountId, LocalDate.of(2026, 9, 4), "union", "0003",
-        PresetSelectionMode.EXPLICIT, 1L, 1, UUID.randomUUID().toString(),
-        source = BattleAutomationActionSource.UNION_AUTOMATION,
-        resolvedParty = ResolvedAutomationParty(selectedCharacters, selectedCharacters.map { BattlePatternLoadRequest(it, 1) }),
-        mapName = "도적소탕")
-
-    private fun runs() = jdbc.queryForList(
-        "select status, submitted_at, execution_identity, last_error from typed_automation_action_runs where account_id = ? order by id", accountId)
-    private fun battleRequests() = requests.filter { it.method == HofHttpMethod.POST && !it.url.contains("?char=") }
-    private fun anyRequest(): HofRequest = Mockito.any<HofRequest>()
-        ?: HofRequest(HofHttpMethod.GET, "https://example.test")
 
     class RecoveryClock(var current: Instant = Instant.parse("2026-09-04T00:00:00Z")) : TimeProvider {
         override fun now(): Instant = current

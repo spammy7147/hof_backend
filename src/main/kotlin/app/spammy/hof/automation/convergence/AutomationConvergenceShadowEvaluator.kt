@@ -49,13 +49,14 @@ interface AutomationConvergenceShadowEvaluator {
 }
 
 /**
- * production runtime/store와 분리된 메모리 evaluator다. 실제 실행이 만든 evidence만 소비하고
- * HOF 요청, runtime 전이, production convergence row를 만들지 않는다.
+ * production runtime/store와 분리된 메모리 evaluator다. 실제 실행이 만든 evidence를 소비하고
+ * 관문 해제 여부만 production store에서 읽는다. HOF 요청, runtime 전이, production row는 만들지 않는다.
  */
 @Service
 class DefaultAutomationConvergenceShadowEvaluator(
     private val timeProvider: TimeProvider,
     private val recorder: AutomationConvergenceShadowRecorder = NoOpAutomationConvergenceShadowRecorder,
+    private val productionStore: ConvergenceStore? = null,
 ) : AutomationConvergenceShadowEvaluator {
     private val log = LoggerFactory.getLogger(javaClass)
     private val store = InMemoryConvergenceStore()
@@ -65,6 +66,11 @@ class DefaultAutomationConvergenceShadowEvaluator(
 
     @Synchronized
     override fun selected(accountId: Long, selection: SelectedAutomationAction) {
+        if (selection.actionKind.battle && store.activeBattleGate(accountId) != null &&
+            productionStore != null && productionStore.activeBattleGate(accountId) == null
+        ) {
+            engine.releaseBattleGate(accountId, timeProvider.now())
+        }
         store.findActive(accountId, selection.scope)
             ?.takeIf { it.selection.executionIdentity != selection.executionIdentity }
             ?.let { replaced ->

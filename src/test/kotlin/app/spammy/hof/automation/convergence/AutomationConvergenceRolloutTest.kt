@@ -5,10 +5,52 @@ import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class AutomationConvergenceRolloutTest {
     private val now = Instant.parse("2026-08-22T00:00:00Z")
+
+    @Test
+    fun `실제 관문이 해제된 뒤 새 전투의 shadow 비교를 재개하고 열린 관문은 유지한다`() {
+        val production = InMemoryConvergenceStore()
+        val durable = mutableListOf<DurableShadowEvaluation>()
+        val evaluator = DefaultAutomationConvergenceShadowEvaluator(
+            TimeProvider { now }, AutomationConvergenceShadowRecorder(durable::add), production,
+        )
+        val selection = SelectedAutomationAction(
+            entryId = 5L, executionIdentity = "before-captcha", actionKind = AutomationActionKind.UNION_BATTLE,
+            scope = AutomationIsolationScope(AutomationIsolationScopeKind.UNION_ENTRY, "5"),
+            policyVersion = "v1", baselineFingerprint = "baseline",
+        )
+        evaluator.selected(7L, selection)
+        production.openBattleGate(7L, null, "CAPTCHA_REQUIRED", now)
+        assertNotNull(evaluator.observe(7L, selection.executionIdentity,
+            AutomationActionEvidence.BattleGateRequired(now, null, "CAPTCHA_REQUIRED"), LegacyConvergenceDecision.HELD))
+
+        val next = selection.copy(executionIdentity = "after-captcha")
+        evaluator.selected(7L, next)
+        assertNull(evaluator.observe(7L, next.executionIdentity,
+            AutomationActionEvidence.DirectApplied(now, "battle-finished"), LegacyConvergenceDecision.APPLIED))
+        assertNotNull(production.activeBattleGate(7L))
+        assertEquals(1, durable.size)
+
+        val home = selection.copy(executionIdentity = "home-during-captcha", actionKind = AutomationActionKind.HOME_ACCEPT,
+            scope = AutomationIsolationScope(AutomationIsolationScopeKind.HOME_TARGET, "home"))
+        evaluator.selected(7L, home)
+        assertEquals(ActionConvergenceResult.APPLIED, evaluator.observe(7L, home.executionIdentity,
+            AutomationActionEvidence.DirectApplied(now, "home-accepted"), LegacyConvergenceDecision.APPLIED)?.newResult)
+        assertNotNull(production.activeBattleGate(7L))
+
+        production.releaseBattleGate(7L, now)
+        evaluator.selected(7L, next)
+        assertEquals(ActionConvergenceResult.APPLIED, evaluator.observe(7L, next.executionIdentity,
+            AutomationActionEvidence.DirectApplied(now, "battle-finished"), LegacyConvergenceDecision.APPLIED)?.newResult)
+        assertEquals(3, durable.size)
+        assertTrue(production.findActiveScopes(7L).isEmpty())
+        assertNull(production.activeBattleGate(7L))
+    }
 
     @Test
     fun `shadow is the safe default and the post switch is independent from reads`() {
