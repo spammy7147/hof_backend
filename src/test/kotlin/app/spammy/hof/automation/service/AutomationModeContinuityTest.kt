@@ -66,6 +66,10 @@ class ActiveAutomationContinuityTest : AutomationModeContinuityTest() {
 
     @Test
     fun `영속 시도의 기준으로 재확인하고 독립 자택과 후속 깨우기를 실행한다`() = storedAttemptContextContinuity()
+
+    @Test
+    fun `외부 자택 진전을 과거 행동 성공으로 귀속하지 않고 독립 자택을 실행한다`() =
+        storedAttemptContextContinuity(externalAdvance = true)
 }
 
 /** Each supported mode is assembled from its real startup property, without mocking rollout. */
@@ -111,13 +115,14 @@ abstract class AutomationModeContinuityTest {
         publisher.publishBatch()
     }
 
-    protected fun storedAttemptContextContinuity() {
+    protected fun storedAttemptContextContinuity(externalAdvance: Boolean = false) {
         clock.current = Instant.parse("2026-09-10T08:00:00Z")
         transport.delivered.clear()
         val requests = mutableListOf<HofRequest>()
         val url = "https://hof.zerosic.com/index.php?menu=housing"
         var accepted = false
-        fun page() = independentHomePage(false) + independentHomePage(accepted)
+        var externallyAccepted = false
+        fun page() = independentHomePage(externallyAccepted) + independentHomePage(accepted)
             .replace("[A] 독립 자택", "[B] 독립 자택").replace("no=A", "no=B")
         val quests = HomePageParser().parse(HomeMode.HOME, page(), url, HofFormParser().parse(page(), url)).quests
         val baseline = "b".repeat(64)
@@ -171,7 +176,13 @@ abstract class AutomationModeContinuityTest {
                 "select state_fingerprint from automation_evidence_cases where attempt_id = ? and reason_code = 'AUTHORITATIVE_STATE_UNCHANGED'",
                 String::class.java, attemptId))
             assertEquals(baseline, convergenceStore.get(attemptId)?.selection?.baselineFingerprint)
+            externallyAccepted = externalAdvance
+            if (externalAdvance) clock.current = assertNotNull(convergenceStore.get(attemptId)?.nextProbeAt)
             repeat(3) { nextWake(accountId) }
+            if (externalAdvance) {
+                assertEquals(app.spammy.hof.automation.convergence.ActionConvergenceResult.SUPERSEDED,
+                    convergenceStore.get(attemptId)?.result)
+            }
             assertTrue(accepted, requests.map { it.method to it.formFields }.toString())
             assertTrue(requests.none { it.formFields["action"] == "get" && it.formFields["no"] == "A" })
             assertEquals(1, requests.count { it.formFields["action"] == "get" && it.formFields["no"] == "B" })
@@ -287,8 +298,9 @@ abstract class AutomationModeContinuityTest {
         }
     }
 
-    @Test
-    fun `각 모드의 낚시는 CATCH 뒤 숨은 전투를 확인하고 새 START를 반복하지 않는다`() {
+    @ParameterizedTest
+    @ValueSource(strings = ["NONE", "START", "CATCH"])
+    fun `각 모드의 낚시는 CATCH 뒤 숨은 전투를 확인하고 새 START를 반복하지 않는다`(lostResponse: String) {
         assertEquals(mode, properties.mode)
         clock.current = Instant.parse("2026-09-08T00:00:00Z")
         transport.delivered.clear()
@@ -307,6 +319,7 @@ abstract class AutomationModeContinuityTest {
         }
         fun fixture(name: String) = requireNotNull(javaClass.getResource("/fixtures/town/fishing/$name.html")).readText()
         var battle = false
+        var started = false
         try {
             Mockito.`when`(preflight.ensureReady(accountId)).thenReturn(AutomationDailyPreflight.Result.Ready)
             Mockito.`when`(authorization.isExecutionAllowed(accountId)).thenReturn(true)
@@ -314,12 +327,19 @@ abstract class AutomationModeContinuityTest {
                 val request = invocation.arguments[1] as HofRequest
                 requests += request
                 val body = when {
-                    "FStart" in request.formFields -> fixture("waiting")
+                    "FStart" in request.formFields -> {
+                        started = true
+                        if (lostResponse == "START") throw IllegalStateException(
+                            "fixture response lost", java.io.IOException("fixture response lost"))
+                        fixture("waiting")
+                    }
                     "FCatch" in request.formFields -> {
                         battle = true
+                        if (lostResponse == "CATCH") throw IllegalStateException(
+                            "fixture response lost", java.io.IOException("fixture response lost"))
                         fixture("caught").substringBefore("<form") + fixture("monster")
                     }
-                    request.url.contains("menu=fishing") -> fixture("reset")
+                    request.url.contains("menu=fishing") -> fixture(if (started && !battle) "waiting" else "reset")
                     else -> """<div id='contents'><a href='?common=0001'>일반 맵</a>
                         ${if (battle) "<a href='?common=Fish03'>Fishing- 악어</a>" else ""}</div>
                         <div id='foot'><h5>Copy Right sanitized</h5><h6>H.O.F Korean Ver sanitized</h6><img src='zerohof.gif'></div>"""
@@ -329,18 +349,30 @@ abstract class AutomationModeContinuityTest {
                 ?: HofRequest(HofHttpMethod.GET, "https://example.test"), Mockito.anyMap())
             wakeups.wake(accountId, "FISHING_MODE_CONTINUITY")
             publisher.publishBatch()
-            assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.GET, HofHttpMethod.POST, HofHttpMethod.POST), requests.map { it.method })
-            repeat(2) {
-                clock.current = assertNotNull(jdbc.queryForObject(
-                    "select min(available_at) from automation_outbox where account_id = ? and published_at is null",
-                    java.time.OffsetDateTime::class.java, accountId)).toInstant()
-                publisher.publishBatch()
-            }
+            if (lostResponse == "NONE") assertEquals(
+                listOf(HofHttpMethod.GET, HofHttpMethod.GET, HofHttpMethod.POST, HofHttpMethod.POST), requests.map { it.method })
+            if (lostResponse != "NONE") clock.current = clock.now().plusSeconds(31)
+            repeat(if (lostResponse == "NONE") 2 else 6) { nextWake(accountId) }
             assertEquals(1, requests.count { "FStart" in it.formFields })
-            assertEquals(1, requests.count { "FCatch" in it.formFields })
+            assertEquals(1, requests.count { "FCatch" in it.formFields },
+                "requests=${requests.map { it.url to it.formFields }}; history=${journal.page(accountId, AutomationHistoryQuery())}")
             assertEquals(2, requests.count { it.method == HofHttpMethod.POST })
             val history = journal.page(accountId, AutomationHistoryQuery())
             assertTrue(history.cycles.any { cycle -> cycle.events.any { it.reasonCode == "FISHING_PRESET_MISSING" } }, history.toString())
+            if (lostResponse != "NONE") {
+                val lostEvents = history.cycles.flatMap { it.events }.filter { it.actionKind == lostResponse }
+                assertTrue(lostEvents.any { it.kind == AutomationHistoryEventKind.ACTION_STARTED }, lostEvents.toString())
+                assertTrue(lostEvents.none { it.kind == AutomationHistoryEventKind.ACTION_SUCCEEDED }, lostEvents.toString())
+                if (mode == AutomationConvergenceMode.ACTIVE) assertEquals(listOf("SUPERSEDED"), jdbc.queryForList(
+                    "select c.result from automation_action_convergences c join automation_action_attempts a on a.id = c.attempt_id where a.account_id = ? and a.action_kind = ?",
+                    String::class.java, accountId, "FISHING_$lostResponse"))
+                if (mode == AutomationConvergenceMode.SHADOW) {
+                    val results = jdbc.queryForList(
+                        "select new_result from automation_convergence_shadow_evaluations where account_id = ? and action_kind = ?",
+                        String::class.java, accountId, "FISHING_$lostResponse")
+                    assertTrue("SUPERSEDED" in results && "APPLIED" !in results, results.toString())
+                }
+            }
             assertEquals(0, jdbc.queryForObject("select count(*) from automation_work_sessions where account_id = ? and status = 'RUNNING'", Int::class.java, accountId))
             assertTrue(transport.delivered.all { outbox.consumed(it) })
         } finally {
@@ -692,6 +724,89 @@ abstract class AutomationModeContinuityTest {
             assertTrue(cycles.size >= 3, cycles.toString())
             val actionEvents = cycles.flatMap { it.events }.filter { it.actionKind == action }
             assertTrue(actionEvents.none { it.kind == AutomationHistoryEventKind.ACTION_SUCCEEDED }, actionEvents.toString())
+            assertTrue(transport.delivered.all { outbox.consumed(it) })
+            assertEquals(0, jdbc.queryForObject("select count(*) from automation_work_sessions where account_id = ? and running_slot is not null", Int::class.java, accountId))
+            assertEquals(0, jdbc.queryForObject("select count(*) from account_automation_leases where account_id = ?", Int::class.java, accountId))
+        } finally {
+            transport.delivered.forEach { jdbc.update("delete from automation_consumed_events where event_id = ?", it) }
+            jdbc.update("delete from hof_accounts where id = ?", accountId)
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["ACCEPT", "CLAIM"])
+    fun `유실된 자택 응답 뒤 외부 진전은 성공 귀속 없이 닫고 독립 자택과 다음 판단을 실행한다`(action: String) {
+        assertEquals(mode, properties.mode)
+        clock.current = Instant.parse("2026-09-10T09:00:00Z")
+        transport.delivered.clear()
+        val requests = mutableListOf<HofRequest>()
+        val url = "https://hof.zerosic.com/index.php?menu=housing"
+        var externalAdvance = false
+        var independentAccepted = false
+        fun page(): String {
+            val original = independentHomePage(false).let {
+                if (action == "CLAIM") it.replace("action=get", "action=complete").replace(">수락</a>", ">보상 수령</a>") else it
+            }
+            return (if (externalAdvance) independentHomePage(true) else original) + independentHomePage(independentAccepted)
+                .replace("[A] 독립 자택", "[B] 독립 자택").replace("no=A", "no=B")
+        }
+        val quests = HomePageParser().parse(HomeMode.HOME, page(), url, HofFormParser().parse(page(), url)).quests
+        val accountId = requireNotNull(TransactionTemplate(transactions).execute {
+            val account = HofAccountEntity(loginId = "home-observation-${UUID.randomUUID()}", encryptedPassword = "test", createdAt = clock.now())
+            entityManager.persist(account)
+            val entry = AutomationEntryEntity(account = account, type = AutomationType.HOME_QUEST, priority = 0,
+                enabled = true, createdAt = clock.now(), updatedAt = clock.now())
+            entityManager.persist(entry)
+            quests.forEachIndexed { index, quest -> entityManager.persist(HomeQuestAutomationSelectionEntity(
+                entry = entry, questId = quest.id, questName = quest.name, enabled = true, sourceOrder = index)) }
+            entityManager.persist(HofCookieEntity(account = account, name = "PHPSESSID", value = "fixture", updatedAt = clock.now()))
+            entityManager.persist(HofStatusSnapshotEntity(account = account, playerName = "테스트", funds = 1,
+                timeCurrent = 100, timeMax = 100, work = "", auction = "", observedAt = clock.now()))
+            entityManager.persist(TypedAutomationRuntimeStateEntity(accountId = account.id, account = account,
+                lifecycleStatus = TypedAutomationLifecycle.RUNNING, createdAt = clock.now(), updatedAt = clock.now()))
+            account.id
+        })
+        try {
+            Mockito.`when`(preflight.ensureReady(accountId)).thenReturn(AutomationDailyPreflight.Result.Ready)
+            Mockito.`when`(authorization.isExecutionAllowed(accountId)).thenReturn(true)
+            Mockito.doAnswer { invocation ->
+                val request = invocation.getArgument<HofRequest>(1)
+                requests += request
+                if (request.formFields["action"] != null) {
+                    if (request.formFields["no"] == "A") throw IllegalStateException(
+                        "fixture response lost", java.io.IOException("fixture response lost"))
+                    if (request.formFields["no"] == "B") independentAccepted = true
+                }
+                HofHttpResponse(200, url, page(), emptyMap())
+            }.`when`(gateway).execute(Mockito.eq(accountId), Mockito.any<HofRequest>()
+                ?: HofRequest(HofHttpMethod.GET, "https://example.test"), Mockito.anyMap())
+            fun actionCount(target: String) = requests.count { it.formFields["action"] != null && it.formFields["no"] == target }
+
+            wakeups.wake(accountId, "HOME_LOST_RESPONSE")
+            publisher.publishBatch()
+            assertEquals(1, actionCount("A"), requests.toString())
+            val identity = assertNotNull(jdbc.queryForObject(
+                "select execution_identity from typed_automation_action_runs where account_id = ? order by id limit 1", String::class.java, accountId))
+            externalAdvance = true
+            clock.current = clock.now().plusSeconds(31)
+            repeat(6) { nextWake(accountId) }
+
+            assertEquals(1, actionCount("A"))
+            assertEquals(1, actionCount("B"))
+            val cycles = journal.page(accountId, AutomationHistoryQuery()).cycles
+            val events = cycles.flatMap { it.events }.filter { it.targetKey == quests.first().id }
+            assertTrue(events.any { it.kind == AutomationHistoryEventKind.ACTION_STARTED }, events.toString())
+            assertTrue(events.none { it.kind == AutomationHistoryEventKind.ACTION_SUCCEEDED }, events.toString())
+            assertTrue(cycles.size >= 3)
+            if (mode == AutomationConvergenceMode.ACTIVE) assertEquals(listOf("SUPERSEDED"), jdbc.queryForList(
+                "select c.result from automation_action_convergences c join automation_action_attempts a on a.id = c.attempt_id where a.account_id = ? and a.execution_identity = ?",
+                String::class.java, accountId, identity))
+            if (mode == AutomationConvergenceMode.SHADOW) {
+                val comparisons = jdbc.queryForList(
+                    "select new_result from automation_convergence_shadow_evaluations where account_id = ? and execution_identity_hash = ?",
+                    String::class.java, accountId, app.spammy.hof.automation.convergence.ProductionEvidenceShapes.fingerprint(identity))
+                assertTrue("SUPERSEDED" in comparisons && "APPLIED" !in comparisons, comparisons.toString())
+            }
             assertTrue(transport.delivered.all { outbox.consumed(it) })
             assertEquals(0, jdbc.queryForObject("select count(*) from automation_work_sessions where account_id = ? and running_slot is not null", Int::class.java, accountId))
             assertEquals(0, jdbc.queryForObject("select count(*) from account_automation_leases where account_id = ?", Int::class.java, accountId))

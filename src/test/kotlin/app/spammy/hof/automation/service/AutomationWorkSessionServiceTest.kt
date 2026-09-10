@@ -61,6 +61,35 @@ class AutomationWorkSessionServiceTest {
         Mockito.verifyNoMoreInteractions(commands)
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(
+        value = AutomationWorkStatus::class,
+        names = ["WAITING_COOLDOWN", "WAITING_RESOURCE", "YIELDED_PRIORITY"],
+    )
+    fun `새 낚시 관측으로 대기 시각을 갱신해도 다른 작업권을 바꾸지 않는다`(status: AutomationWorkStatus) {
+        val fishingEntry = AutomationEntryEntity(15, account, AutomationType.FISHING, 2, true, now, now)
+        val fishing = AutomationWorkSessionEntity(
+            id = 51, account = account, entry = fishingEntry, workType = AutomationWorkType.FISHING,
+            targetKey = "DAILY_FISHING", status = status, configVersion = fishingEntry.updatedAt.toString(),
+            nextCheckAt = now.plusSeconds(60), holdMessage = "결과 확인 대기", createdAt = now, updatedAt = now,
+        )
+        val other = battleSession(status = AutomationWorkStatus.RUNNING, confirmedCount = 12)
+        Mockito.`when`(typed.lockRuntimeState(7)).thenReturn(runtime)
+        Mockito.`when`(queries.lockOpen(7)).thenReturn(listOf(other, fishing))
+
+        service.waitFishingCycle(7, fishingEntry.id, now, "최신 CATCH 확인")
+
+        assertEquals(AutomationWorkStatus.WAITING_COOLDOWN, fishing.status)
+        assertEquals(now, fishing.nextCheckAt)
+        assertEquals("최신 CATCH 확인", fishing.holdMessage)
+        assertEquals(now, fishing.lastVerifiedAt)
+        assertEquals(null, fishing.runningSlot)
+        assertEquals(AutomationWorkStatus.RUNNING, other.status)
+        assertEquals(12, other.confirmedCount)
+        Mockito.verify(commands).save(fishing)
+        Mockito.verifyNoMoreInteractions(commands)
+    }
+
     @Test
     fun `preparing a different action transfers the sole running ownership`() {
         val questEntry = AutomationEntryEntity(10, account, AutomationType.QUEST, 0, true, now, now)

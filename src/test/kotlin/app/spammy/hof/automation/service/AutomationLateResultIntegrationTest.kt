@@ -540,7 +540,7 @@ abstract class AutomationLateResultIntegrationTest {
                 if (failure == "503") throw app.spammy.hof.external.client.HofAutomationDeferredException(
                     clock.now().plusSeconds(5), 1, requestAttempted = true, actionSubmissionAttempted = false,
                 )
-                if (failure !in setOf("ADVANCED", "APPLIED")) throw java.io.IOException("Fishing observation response failed")
+                if (failure !in setOf("ADVANCED", "CASTS_EXHAUSTED")) throw java.io.IOException("Fishing observation response failed")
             }
         })
         val boundary = app.spammy.hof.town.common.service.TownSubmissionBoundary { it() }
@@ -652,7 +652,7 @@ abstract class AutomationLateResultIntegrationTest {
                     failObservation.countDown()
                     recoveryWorker.get(10, TimeUnit.SECONDS)
                     assertEquals("AMBIGUOUS", runs().single { it["execution_identity"] == identity }["status"])
-                    if (failure in setOf("ADVANCED", "APPLIED")) {
+                    if (failure in setOf("ADVANCED", "CASTS_EXHAUSTED")) {
                         // ACTIVE의 첫 복구는 typed checkpoint를 넘긴다. 그 다음 예약을
                         // 실제 소비해 수렴 probe가 최신 상태를 판정할 때까지 진행한다.
                         val consumeProbes = {
@@ -668,7 +668,7 @@ abstract class AutomationLateResultIntegrationTest {
                             assertTrue(observationRead.await(10, TimeUnit.SECONDS), "실제 probe가 현재 수렴을 읽고 상태 진전을 판정해야 한다.")
                         } else {
                             consumeProbes()
-                            assertEquals(if (failure == "APPLIED") ActionConvergenceResult.APPLIED else ActionConvergenceResult.SUPERSEDED, assertNotNull(store.get(accountId, identity as String)).result,
+                            assertEquals(ActionConvergenceResult.SUPERSEDED, assertNotNull(store.get(accountId, identity as String)).result,
                                 "실제 후속 probe의 관측 결과를 먼저 저장해야 한다: ${store.get(accountId, identity)}")
                         }
                     } else {
@@ -739,13 +739,13 @@ abstract class AutomationLateResultIntegrationTest {
         }
     }
 
-    protected fun verifyHomeAppliedBeforeDirect() {
+    protected fun verifyHomeStateAdvancedBeforeDirect() {
         val applied = CountDownLatch(1)
         val returnDirect = CountDownLatch(1)
         var accepted = false
         val url = "https://hof.zerosic.com/index.php?menu=housing"
         fun page() = """<div id="menu2">Funds : $ 1 Time : 100/100</div>
-            <h4>수락 가능한 퀘스트</h4><table><tr><td>[A] 작업 A</td><td>미션 0/1</td><td>-</td><td>-</td>
+            <h4>${if (accepted) "진행중인 작업 목록" else "수락 가능한 작업 목록"}</h4><table><tr><td>[A] 작업 A</td><td>미션 0/1</td><td>-</td><td>-</td>
             <td>${if (accepted) "-" else "<a href='?menu=housing&amp;action=get&amp;no=A'>수락</a>"}</td></tr></table>"""
         val quest = app.spammy.hof.town.home.parser.HomePageParser().parse(
             app.spammy.hof.town.home.model.HomeMode.HOME, page(), url,
@@ -786,15 +786,16 @@ abstract class AutomationLateResultIntegrationTest {
                 clock.current = clock.now().plusSeconds(301)
                 wakeups.wake(accountId, "HOME_ACCEPT_RECOVERY")
                 executor.submit { otherPublisher.publishBatch() }.get(10, TimeUnit.SECONDS)
-                assertEquals("SUCCEEDED", runs().single()["status"], "최신 ACTIVE 작업 관측이 같은 수락 행동을 먼저 종결해야 한다.")
-                assertTrue(journal.page(accountId, AutomationHistoryQuery()).cycles.flatMap { it.events }
-                    .any { it.reasonCode == "AMBIGUOUS_RESULT_APPLIED" })
+                assertEquals("FAILED", runs().single()["status"], "최신 ACTIVE 관측은 성공 귀속 없이 기존 수락을 대체한다.")
+                val observedEvents = journal.page(accountId, AutomationHistoryQuery()).cycles.flatMap { it.events }
+                assertTrue(observedEvents.any { it.reasonCode == "ACTION_SUPERSEDED_BY_FRESH_STATE" })
+                assertTrue(observedEvents.none { it.kind == AutomationHistoryEventKind.ACTION_SUCCEEDED })
                 returnDirect.countDown()
                 oldWorker.get(10, TimeUnit.SECONDS)
                 val history = journal.page(accountId, AutomationHistoryQuery())
                 assertEquals(1, history.cycles.single { it.id == originalCycle }.events.count {
                     it.kind == AutomationHistoryEventKind.ACTION_SUCCEEDED && it.reasonCode == "TYPED_ACTION_COMPLETED"
-                }, "원래 직접 응답의 성공 이력을 이미 SUCCEEDED라는 이유로 생략하지 않는다.")
+                }, "관측으로 대체된 뒤에도 원래 직접 응답의 성공 이력을 한 번 기록한다.")
                 val latest = history.cycles.maxOf { it.id }
                 consumeWakeUntilNextDecision(latest)
                 assertEquals(1, requests.count { it.formFields["action"] == "get" })
@@ -871,11 +872,14 @@ abstract class AutomationLateResultIntegrationTest {
                 "rollback된 callback만으로 START 성공 이력을 기록하지 않는다.")
             val identity = runs().last()["execution_identity"] as String
             repeat(4) {
-                if (store.get(accountId, identity)?.result != ActionConvergenceResult.APPLIED) consumeNextWake()
+                if (store.get(accountId, identity)?.active == true) consumeNextWake()
             }
-            assertEquals(ActionConvergenceResult.APPLIED, assertNotNull(store.get(accountId, identity)).result,
-                "확정되지 않은 저장은 기존 복구 관측과 실제 wake 소비로 수렴한다.")
-            assertEquals(listOf("FStart"), fishingPosts(), "저장 실패나 사용자 재개 때문에 START를 재제출하지 않는다.")
+            assertEquals(ActionConvergenceResult.SUPERSEDED, assertNotNull(store.get(accountId, identity)).result,
+                "rollback된 직접 증거 없이 최신 관측만으로 START 성공을 추정하지 않는다.")
+            assertEquals(listOf("FStart", "FCatch"), fishingPosts(), "START 재제출 없이 최신 CATCH 단계까지 이어간다.")
+            assertTrue(journal.page(accountId, AutomationHistoryQuery()).cycles.flatMap { it.events }
+                .none { it.reasonCode == "FISHING_START_APPLIED" },
+                "복구 뒤에도 rollback된 START의 성공 이력을 추정하지 않는다.")
             consumeWakeUntilNextDecision(journal.page(accountId, AutomationHistoryQuery()).cycles.maxOf { it.id })
             assertEquals(0, runningWorkCount())
             return
@@ -959,8 +963,11 @@ abstract class AutomationLateResultIntegrationTest {
         assertEquals("RECONCILING", runs().last()["status"])
         assertNull(jdbc.queryForObject("select lease_token from typed_automation_runtime_states where account_id = ?",
             String::class.java, accountId), "이력 저장 실패 뒤에도 재관측 대기의 실행권을 놓는다.")
-        repeat(4) { if (runs().last()["status"] != "SUCCEEDED") consumeNextWake() }
-        assertTrue(runs().all { it["status"] == "SUCCEEDED" })
+        repeat(4) { if (runs().last()["status"] == "RECONCILING") consumeNextWake() }
+        assertEquals(listOf("SUCCEEDED", "FAILED"), runs().map { it["status"] })
+        val observedEvents = journal.page(accountId, AutomationHistoryQuery()).cycles.flatMap { it.events }
+        assertTrue(observedEvents.any { it.reasonCode == "ACTION_SUPERSEDED_BY_FRESH_STATE" })
+        assertTrue(observedEvents.none { it.actionKind == "CATCH" && it.kind == AutomationHistoryEventKind.ACTION_SUCCEEDED })
         assertEquals(listOf("FStart", "FCatch"), fishingPosts())
         assertEquals(0, runningWorkCount())
         assertTrue(journal.page(accountId, AutomationHistoryQuery()).cycles.flatMap { it.events }
@@ -1483,7 +1490,7 @@ class LegacyAutomationLateResultIntegrationTest : AutomationLateResultIntegratio
     @Test fun `재관측 503 이력 DB 실패에도 대기와 실행권 해제 및 다음 판단을 보존한다`() = verifyReconciliation503HistoryFailure()
     @Test fun `첫 CATCH 복구 기록과 직접 성공이 경합해도 성공 증거와 이력이 일치한다`() =
         verifyLateCatchWithFailedObservation("ERROR", duringCanonicalCreation = true)
-    @Test fun `자택 수락을 관측으로 먼저 종결해도 원래 직접 성공 이력을 보존한다`() = verifyHomeAppliedBeforeDirect()
+    @Test fun `자택 수락을 관측으로 먼저 종결해도 원래 직접 성공 이력을 보존한다`() = verifyHomeStateAdvancedBeforeDirect()
     @Test fun `복구 기록을 처음 저장하는 중 도착한 직접 성공도 같은 행동에 귀속한다`() =
         verifyLateBattleReacquisition(afterObservation = false, duringCanonicalCreation = true)
     @Test fun `정상 관측의 종결 확인 직후 CATCH 성공이 도착해도 대체 이력을 저장하지 않는다`() =
@@ -1508,7 +1515,7 @@ class ShadowAutomationLateResultIntegrationTest : AutomationLateResultIntegratio
     @Test fun `재관측 503 이력 DB 실패에도 대기와 실행권 해제 및 다음 판단을 보존한다`() = verifyReconciliation503HistoryFailure()
     @Test fun `첫 CATCH 복구 기록과 직접 성공이 경합해도 성공 증거와 이력이 일치한다`() =
         verifyLateCatchWithFailedObservation("ERROR", duringCanonicalCreation = true)
-    @Test fun `자택 수락을 관측으로 먼저 종결해도 원래 직접 성공 이력을 보존한다`() = verifyHomeAppliedBeforeDirect()
+    @Test fun `자택 수락을 관측으로 먼저 종결해도 원래 직접 성공 이력을 보존한다`() = verifyHomeStateAdvancedBeforeDirect()
     @Test fun `복구 기록을 처음 저장하는 중 도착한 직접 성공도 같은 행동에 귀속한다`() =
         verifyLateBattleReacquisition(afterObservation = false, duringCanonicalCreation = true)
     @Test fun `SHADOW 비교 저장의 DB 실패는 복구 종결과 후속 판단을 롤백하지 않는다`() = verifyShadowRecordingFailure()
@@ -1545,8 +1552,8 @@ class ActiveAutomationLateResultIntegrationTest : AutomationLateResultIntegratio
         verifyLateBattleWithAnotherWorker(afterPendingExpires = true, staleDue = true)
     @Test fun `먼저 읽은 수렴 상태로 늦은 직접 적용을 덮어쓰지 않는다`() =
         verifyLateCatchWithFailedObservation("ADVANCED", afterRecoveryCompletes = true, staleObservation = true)
-    @Test fun `관측으로 적용된 CATCH에 원래 직접 응답이 도착해도 성공을 보존한다`() =
-        verifyLateCatchWithFailedObservation("APPLIED", afterRecoveryCompletes = true)
+    @Test fun `잔여 횟수 소진으로 대체된 CATCH도 원래 직접 응답으로 성공을 귀속한다`() =
+        verifyLateCatchWithFailedObservation("CASTS_EXHAUSTED", afterRecoveryCompletes = true)
     @Test fun `최신 상태로 대체된 CATCH도 늦은 직접 응답으로 원래 행동 적용을 귀속한다`() =
         verifyLateCatchWithFailedObservation("ADVANCED", afterRecoveryCompletes = true)
     @Test fun `미확정 전투는 새 낚시 제출을 억제하고 늦은 직접 응답 뒤 후속 판단을 진행한다`() = verifyLateBattleWithAnotherWorker()

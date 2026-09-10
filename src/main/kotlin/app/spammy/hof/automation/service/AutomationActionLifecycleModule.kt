@@ -1369,22 +1369,24 @@ class UnifiedAutomationActionLifecycleModule(
         if (latest.quests.isEmpty()) {
             return verifyLater("자택 퀘스트 영역이 비어 있어 실행 결과를 완전하게 확인할 수 없습니다.")
         }
+        // 다른 행의 존재만으로 전체 목록의 완전성이나 대상 부재를 증명할 수 없다.
         val quest = latest.quests.singleOrNull { it.id == payload.questId }
-        if (quest == null) {
-            return if (payload.action == HomeQuestAutomationActionType.CLAIM) {
-                AmbiguousActionResolution.Applied()
-            } else {
-                verifyLater("수락한 자택 퀘스트가 아직 관측되지 않습니다.")
-            }
-        }
+            ?: return verifyLater("자택 퀘스트 대상을 하나로 확인하지 못했습니다.")
         val originalState = if (payload.action == HomeQuestAutomationActionType.ACCEPT) {
             HomeQuestState.AVAILABLE
         } else {
             HomeQuestState.CLAIMABLE
         }
         return when {
-            quest.state != originalState -> AmbiguousActionResolution.Applied()
+            !quest.stateObserved ->
+                verifyLater("자택 퀘스트 상태를 완전하게 확인하지 못했습니다.")
+            quest.state != originalState -> AmbiguousActionResolution.Superseded(
+                "최신 자택 상태가 바뀌었습니다. 이전 행동의 성공으로 귀속하지 않고 새로 판단합니다.",
+            )
             quest.actionId == payload.actionId -> AmbiguousActionResolution.Resubmit
+            quest.actionId != null -> AmbiguousActionResolution.Superseded(
+                "최신 자택 행동 식별자가 바뀌었습니다. 이전 행동의 성공으로 귀속하지 않고 새로 판단합니다.",
+            )
             else -> verifyLater("자택 퀘스트 실행 결과를 아직 확정할 수 없습니다.")
         }
     }
@@ -1458,7 +1460,9 @@ class UnifiedAutomationActionLifecycleModule(
                     QuestAttempt.Battle(stored.executionIdentity, payload.toQuestAction()),
                     QuestResultObservation.Page(observation.quests, observation.complete),
                 )) {
-                    is QuestRecordResult.Recorded -> appliedQuestBattle(payload)
+                    is QuestRecordResult.Recorded -> AmbiguousActionResolution.FreshDecision(
+                        "최신 퀘스트 진행을 반영했습니다. 이전 전투 결과는 귀속하지 않고 새로 판단합니다.",
+                    )
                     is QuestRecordResult.NotApplied -> verifyLater(result.message)
                     is QuestRecordResult.NeedsRecheck -> verifyLater(result.message)
                     is QuestRecordResult.FreshDecision -> AmbiguousActionResolution.FreshDecision(result.message)
@@ -1977,7 +1981,9 @@ class UnifiedAutomationActionLifecycleModule(
                     "낚시 상태가 바뀌어 현재 가능한 단계부터 다시 판단합니다.",
                 )
             }
-            return AmbiguousActionResolution.Applied()
+            return AmbiguousActionResolution.Superseded(
+                "최신 낚시 상태가 바뀌었습니다. 이전 행동의 성공으로 귀속하지 않고 현재 단계에서 이어갑니다.",
+            )
         }
         return AmbiguousActionResolution.Resubmit
     }
@@ -2446,7 +2452,9 @@ class UnifiedAutomationActionLifecycleModule(
     )
 
     private fun QuestRecordResult.toAmbiguousResolution(): AmbiguousActionResolution = when (this) {
-        is QuestRecordResult.Recorded -> AmbiguousActionResolution.Applied()
+        is QuestRecordResult.Recorded -> AmbiguousActionResolution.Superseded(
+            "최신 퀘스트 상태를 반영했습니다. 이전 행동의 성공으로 귀속하지 않고 새로 판단합니다.",
+        )
         is QuestRecordResult.NotApplied -> AmbiguousActionResolution.Resubmit
         is QuestRecordResult.NeedsRecheck -> verifyLater(message)
         is QuestRecordResult.FreshDecision -> AmbiguousActionResolution.FreshDecision(message)

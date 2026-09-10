@@ -394,9 +394,9 @@ class AutomationWorkSessionService(
         holdMessage: String,
     ) {
         requireRunningRuntime(accountId)
+        // 결과 확인을 위해 작업권을 놓은 낚시도 최신 관측으로 재검사 시각을 갱신한다.
         val session = queries.lockOpen(accountId).singleOrNull {
-            it.status == AutomationWorkStatus.RUNNING &&
-                it.entry.id == entryId &&
+            it.entry.id == entryId &&
                 it.workType == AutomationWorkType.FISHING &&
                 it.targetKey == FISHING_CYCLE_TARGET
         } ?: return

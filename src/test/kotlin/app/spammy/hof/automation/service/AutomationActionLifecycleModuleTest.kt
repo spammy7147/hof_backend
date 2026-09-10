@@ -240,16 +240,17 @@ class AutomationActionLifecycleModuleTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = ["MISSING_ACTION", "AMBIGUOUS_SECTION", "INVALID_CLAIM_LINK", "TRUNCATED_ROWS"])
+    @ValueSource(strings = ["MISSING_ACTION", "AMBIGUOUS_SECTION", "INVALID_CLAIM_LINK", "TRUNCATED_ROWS", "TRUNCATED_ACTION_CHANGED"])
     fun `수락 링크가 사라진 불완전 자택 HTML의 기본 ACTIVE는 적용 증거가 아니다`(kind: String) {
         val url = "https://hof.zerosic.com/index.php?menu=housing"
         val before = """<h4>수락 가능한 퀘스트</h4><table><tr><td>[A] 검증</td><td>미션 0/1</td>
             <td>-</td><td>-</td><td><a href='?menu=housing&amp;action=get&amp;no=A'>수락</a></td></tr></table>"""
         val heading = if (kind == "TRUNCATED_ROWS") "진행중인 작업 목록" else "수락 가능한 퀘스트"
-        val span = if (kind == "TRUNCATED_ROWS") "rowspan='3'" else ""
+        val span = if (kind.startsWith("TRUNCATED")) "rowspan='3'" else ""
         val actionCell = when (kind) {
             "MISSING_ACTION" -> ""
             "INVALID_CLAIM_LINK" -> "<td><a href='https://invalid.test/?action=complete&amp;no=A'>완료</a></td>"
+            "TRUNCATED_ACTION_CHANGED" -> "<td><a href='?menu=housing&amp;action=get&amp;no=A2'>수락</a></td>"
             else -> "<td>-</td>"
         }
         val after = """<h4>$heading</h4><table><tr><td $span>[A] 검증</td><td>미션 0/1</td>
@@ -265,6 +266,7 @@ class AutomationActionLifecycleModuleTest {
             HomeQuestAutomationAction(7L, quest.id, quest.name, assertNotNull(quest.actionId), HomeQuestAutomationActionType.ACCEPT)))
 
         assertIs<AutomationActionEvidence.IncompleteObservation>(policyEvidence(managed, managed.execute()))
+        assertIs<AmbiguousActionResolution.VerifyLater>(managed.reconcile())
     }
 
     @Test
@@ -309,16 +311,21 @@ class AutomationActionLifecycleModuleTest {
     }
 
     @Test
-    fun `권위 있는 자택 퀘스트 상태로 적용 재제출 재확인을 구분한다`() {
+    fun `최신 자택 진전은 행동 대체이고 같은 상태와 불명확한 결과는 재확인한다`() {
         val accept = assertNotNull(module.prepare(7L, 12L, homeAction(HomeQuestAutomationActionType.ACCEPT)))
-        Mockito.`when`(home.load(7L, HomeMode.HOME, HofRequestOrigin.AUTOMATION)).thenReturn(
+        val observations = listOf(
             homeResponse(HomeQuestState.ACTIVE, null),
             homeResponse(HomeQuestState.AVAILABLE, "action-1"),
             homeResponse(HomeQuestState.AVAILABLE, "changed-action"),
+            homeResponse(HomeQuestState.AVAILABLE, null),
+        ).map { response -> response.copy(quests = response.quests.map { it.copy(stateObserved = true) }) }
+        Mockito.`when`(home.load(7L, HomeMode.HOME, HofRequestOrigin.AUTOMATION)).thenReturn(
+            observations[0], *observations.drop(1).toTypedArray(),
         )
 
-        assertIs<AmbiguousActionResolution.Applied>(accept.reconcile())
+        assertIs<AmbiguousActionResolution.Superseded>(accept.reconcile())
         assertIs<AmbiguousActionResolution.Resubmit>(accept.reconcile())
+        assertIs<AmbiguousActionResolution.Superseded>(accept.reconcile())
         val verifyLater = assertIs<AmbiguousActionResolution.VerifyLater>(accept.reconcile())
         assertEquals(now.plusSeconds(10), verifyLater.retryAt)
 
@@ -338,6 +345,19 @@ class AutomationActionLifecycleModuleTest {
             ).reason,
         )
         Mockito.verify(home).runHomeQuest(7L, "action-1", HofRequestOrigin.AUTOMATION)
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["ABSENT", "DUPLICATE"])
+    fun `자택 목록의 대상 부재나 중복만으로 이전 보상 행동을 종결하지 않는다`(kind: String) {
+        val managed = assertNotNull(module.prepare(7L, 12L, homeAction(HomeQuestAutomationActionType.CLAIM)))
+        val response = homeResponse(HomeQuestState.CLAIMABLE, "action-1")
+        val target = response.quests.single().copy(stateObserved = true)
+        val quests = if (kind == "ABSENT") listOf(target.copy(id = "other-home")) else listOf(target, target)
+        Mockito.`when`(home.load(7L, HomeMode.HOME, HofRequestOrigin.AUTOMATION))
+            .thenReturn(response.copy(quests = quests))
+
+        assertIs<AmbiguousActionResolution.VerifyLater>(managed.reconcile())
     }
 
     @Test
@@ -549,16 +569,19 @@ class AutomationActionLifecycleModuleTest {
             QuestPageObservation(emptyList(), complete = false),
             QuestPageObservation(listOf(quest(QuestState.CLAIMABLE, "claim-1")), complete = true),
             QuestPageObservation(listOf(quest(QuestState.ACTIVE, null)), complete = true),
+            QuestPageObservation(emptyList(), complete = true),
         )
         Mockito.doReturn(
             QuestRecordResult.NotApplied("still claimable"),
             QuestRecordResult.NeedsRecheck("not authoritative"),
+            QuestRecordResult.Recorded(),
         ).`when`(questWorkCycle).recordObservedResult(Mockito.eq(7L), anyQuestAttempt(), anyQuestObservation())
 
         assertIs<AmbiguousActionResolution.VerifyLater>(managed.reconcile())
         assertIs<AmbiguousActionResolution.Resubmit>(managed.reconcile())
         val verifyLater = assertIs<AmbiguousActionResolution.VerifyLater>(managed.reconcile())
         assertEquals(now.plusSeconds(10), verifyLater.retryAt)
+        assertIs<AmbiguousActionResolution.Superseded>(managed.reconcile())
     }
 
     @Test
@@ -577,7 +600,7 @@ class AutomationActionLifecycleModuleTest {
             QuestRecordResult.NeedsRecheck("not authoritative"),
         ).`when`(questWorkCycle).recordObservedResult(Mockito.eq(7L), anyQuestAttempt(), anyQuestObservation())
 
-        assertIs<AmbiguousActionResolution.Applied>(managed.reconcile())
+        assertIs<AmbiguousActionResolution.Superseded>(managed.reconcile())
         Mockito.verify(questWorkCycle).recordObservedResult(
             7L,
             QuestAttempt.Accept(managed.storedAction.executionIdentity, "quest-1", "accept-1"),
@@ -762,7 +785,7 @@ class AutomationActionLifecycleModuleTest {
             ),
             QuestResultObservation.BattleRounds(listOf(BattleAutomationRoundOutcome.VICTORY)),
         )
-        assertIs<AmbiguousActionResolution.Applied>(managed.reconcile())
+        assertIs<AmbiguousActionResolution.FreshDecision>(managed.reconcile())
         Mockito.verify(questWorkCycle).recordObservedResult(
             7L,
             QuestAttempt.Battle(
@@ -1507,7 +1530,7 @@ class AutomationActionLifecycleModuleTest {
     }
 
     @Test
-    fun `불명확한 낚시는 권위 상태 변화만 적용하고 같은 상태는 공통 관측 예산으로 넘긴다`() {
+    fun `불명확한 낚시의 상태 변화는 행동 대체이고 같은 상태는 공통 관측 예산으로 넘긴다`() {
         val changed = assertNotNull(
             module.prepare(
                 7L,
@@ -1536,7 +1559,7 @@ class AutomationActionLifecycleModuleTest {
             fishingService.load(7L, HofRequestOrigin.AUTOMATION),
         ).thenReturn(changedResponse, unknownResponse, unchangedResponse)
 
-        assertIs<AmbiguousActionResolution.Applied>(changed.reconcile())
+        assertIs<AmbiguousActionResolution.Superseded>(changed.reconcile())
         assertIs<AmbiguousActionResolution.Resubmit>(noBaseline.reconcile())
         assertIs<AmbiguousActionResolution.Resubmit>(unchanged.reconcile())
         Mockito.verify(workLifecycle).completeFishingCycle(7L, 15L)
@@ -1572,11 +1595,11 @@ class AutomationActionLifecycleModuleTest {
             caughtState,
         )
 
-        assertIs<AmbiguousActionResolution.Applied>(startToCatch.reconcile())
+        assertIs<AmbiguousActionResolution.Superseded>(startToCatch.reconcile())
         assertIs<AmbiguousActionResolution.Superseded>(startToBattle.reconcile())
         assertIs<AmbiguousActionResolution.Resubmit>(startIndeterminate.reconcile())
-        assertIs<AmbiguousActionResolution.Applied>(startEscaped.reconcile())
-        assertIs<AmbiguousActionResolution.Applied>(catchCompleted.reconcile())
+        assertIs<AmbiguousActionResolution.Superseded>(startEscaped.reconcile())
+        assertIs<AmbiguousActionResolution.Superseded>(catchCompleted.reconcile())
 
         Mockito.verify(workLifecycle, Mockito.times(3)).completeFishingCycle(7L, 15L)
     }
