@@ -19,6 +19,7 @@ import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
 import app.spammy.hof.party.entity.PartyPresetEntity
 import app.spammy.hof.party.entity.PartyPresetMemberEntity
+import app.spammy.hof.quest.parser.QuestPageParser
 import app.spammy.hof.town.common.parser.HofFormParser
 import app.spammy.hof.town.home.model.HomeMode
 import app.spammy.hof.town.home.parser.HomePageParser
@@ -80,6 +81,17 @@ abstract class AutomationBattleMapDirectReceiptContinuityTest : AutomationRecove
         verifyBattleMapDirectResult(failFirstApplication = true, failAfterProjection = true)
 
     @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    fun `전투맵에서 재료를 얻으면 상위 퀘스트를 기존 대기 시각 전에 완료하고 다음 판단을 이어간다`(recoverResult: Boolean) =
+        verifyBattleMapDirectResult(failFirstApplication = recoverResult, verifyMaterialWait = true)
+
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    fun `전리품이 있어도 최신 화면이 재료 부족이면 독립 항목을 진행하고 실제 완료 가능할 때 퀘스트를 완료한다`(recoverResult: Boolean) =
+        verifyBattleMapDirectResult(failFirstApplication = recoverResult, verifyMaterialWait = true,
+            delayMaterialObservation = true)
+
+    @ParameterizedTest
     @ValueSource(strings = ["DEFEAT", "DRAW"])
     fun `패배와 무승부를 복구해도 전투맵의 일일 승리는 늘리지 않는다`(outcome: String) =
         verifyBattleMapDirectResult(failFirstApplication = true,
@@ -115,12 +127,34 @@ abstract class AutomationBattleMapDirectReceiptContinuityTest : AutomationRecove
         recoverAfterMidnight: Boolean = false,
         corruption: String? = null,
         receiptStoredBeforeRecovery: Boolean? = null,
+        verifyMaterialWait: Boolean = false,
+        delayMaterialObservation: Boolean = false,
     ) {
         Mockito.doCallRealMethod().`when`(decisions).select(accountId)
         if (recoverAfterMidnight) clock.current = Instant.parse("2026-09-04T14:59:55Z")
         val availableTime = if (outcomes.size == 3) 300 else 100
         var battleCount = 0
         var homeAccepted = false
+        var materialClaimCount = 0
+        var materialWorkId = 0L
+        var materialObservationReady = !delayMaterialObservation
+        val materialRecheckAt = clock.now().plusSeconds(3600)
+        val questUrl = "https://hof.zerosic.com/index.php?menu=quest"
+        fun questPage(): String {
+            val empty = requireNotNull(javaClass.getResource("/fixtures/quest/quest-complete-empty.html")).readText()
+            val ready = battleCount > 0 && materialObservationReady
+            val action = if (ready) "<a href='?menu=quest&amp;action=complete&amp;no=claim-material'>완료</a>" else "-"
+            val row = if (materialClaimCount > 0) "" else """<tr><td class='td7s'>[0777] 재료 확인 퀘스트</td>
+                <td>미션 : 아이템 반납( Silver Ingot ) - [ ${if (ready) 1 else 0} / 1 ]</td>
+                <td>-</td><td>Funds x1</td><td>$action</td></tr>"""
+            return "<div id='menu2'>Funds : $ 1 Time : $availableTime/$availableTime</div>" +
+                empty.replaceFirst("</table>", "$row</table>")
+        }
+        val materialQuest = if (verifyMaterialWait) {
+            val observation = QuestPageParser().parseObservation(questPage(), questUrl)
+            assertTrue(observation.complete)
+            observation.quests.single { it.displayCode == "0777" }
+        } else null
         val homeUrl = "https://hof.zerosic.com/index.php?menu=quest2"
         fun homePage(): String {
             val heading = if (homeAccepted) "진행중인 작업 목록" else "수락 가능한 작업 목록"
@@ -147,6 +181,22 @@ abstract class AutomationBattleMapDirectReceiptContinuityTest : AutomationRecove
             val entry = entityManager.find(AutomationEntryEntity::class.java, entryId)
             entry.type = AutomationType.BATTLE_MAP
             entry.singletonTypeMarker = null
+            if (materialQuest != null) {
+                entry.priority = 1
+                val questEntry = AutomationEntryEntity(account = entry.account, type = AutomationType.QUEST,
+                    priority = 0, enabled = true, createdAt = clock.now(), updatedAt = clock.now())
+                entityManager.persist(questEntry)
+                entityManager.persist(QuestAutomationSelectionEntity(entry = questEntry, questKey = materialQuest.questKey,
+                    enabled = true, sourceOrder = 0, displayCode = materialQuest.displayCode, questName = materialQuest.name))
+                val work = AutomationWorkSessionEntity(account = entry.account, entry = questEntry,
+                    workType = AutomationWorkType.QUEST, targetKey = materialQuest.questKey,
+                    status = AutomationWorkStatus.WAITING_RESOURCE, configVersion = clock.now().toString(),
+                    materialName = "silver ingot", materialMissing = 1, nextCheckAt = materialRecheckAt,
+                    createdAt = clock.now(), updatedAt = clock.now())
+                entityManager.persist(work)
+                entityManager.flush()
+                materialWorkId = work.id
+            }
             entityManager.persist(BattleAutomationMapEntity(entry = entry, categoryId = "battle_map",
                 mapCode = "0003", dailyTargetCount = outcomes.size, presetMode = PresetSelectionMode.PRIMARY, executionOrder = 0))
             val preset = PartyPresetEntity(account = entry.account, name = "전투맵 파티", isPrimary = true,
@@ -159,7 +209,7 @@ abstract class AutomationBattleMapDirectReceiptContinuityTest : AutomationRecove
                     entityManager.persist(PartyPresetMemberEntity(preset, index, character, pattern))
                 }
             val homeEntry = AutomationEntryEntity(account = entry.account, type = AutomationType.HOME_QUEST,
-                priority = 1, enabled = true, createdAt = clock.now(), updatedAt = clock.now())
+                priority = if (verifyMaterialWait) 2 else 1, enabled = true, createdAt = clock.now(), updatedAt = clock.now())
             entityManager.persist(homeEntry)
             entityManager.persist(HomeQuestAutomationSelectionEntity(entry = homeEntry, questId = home.id,
                 questName = home.name, enabled = true, sourceOrder = 0))
@@ -174,9 +224,24 @@ abstract class AutomationBattleMapDirectReceiptContinuityTest : AutomationRecove
                     if (request.formFields["action"] == "get") {
                         assertEquals(HofHttpMethod.GET, request.method)
                         assertEquals("A", request.formFields["no"])
+                        if (verifyMaterialWait) assertEquals(if (delayMaterialObservation) 0 else 1, materialClaimCount,
+                            "최신 화면에서 완료 가능한 상위 퀘스트만 자택보다 먼저 실행한다.")
                         homeAccepted = true
                     }
                     homePage()
+                }
+                request.url.startsWith(questUrl) -> {
+                    assertTrue(verifyMaterialWait)
+                    if (request.formFields["action"] == "complete") {
+                        assertEquals(HofHttpMethod.GET, request.method)
+                        assertEquals("claim-material", request.formFields["no"])
+                        assertEquals(1, battleCount)
+                        assertEquals(0, materialClaimCount)
+                        assertEquals(delayMaterialObservation, homeAccepted)
+                        assertTrue(clock.now() < materialRecheckAt, "기존 한 시간 대기를 기다리지 않고 최신 상태에서 완료한다.")
+                        materialClaimCount++
+                    }
+                    questPage()
                 }
                 request.method == HofHttpMethod.GET -> maps()
                 else -> {
@@ -234,6 +299,7 @@ abstract class AutomationBattleMapDirectReceiptContinuityTest : AutomationRecove
 
         assertEquals(1, battleCount, "첫 판단에서 설정한 일반 전투맵을 실제 제출해야 한다.")
         assertFalse(homeAccepted, "첫 판단은 앞선 일반 전투맵 행동만 제출한다.")
+        assertEquals(0, materialClaimCount, "퀘스트 완료는 전투 이후의 새 판단에서 선택한다.")
         val identity = assertNotNull(jdbc.queryForObject(
             "select execution_identity from typed_automation_action_runs where account_id = ? and action_kind = 'BATTLE_MAP'",
             String::class.java, accountId))
@@ -322,11 +388,29 @@ abstract class AutomationBattleMapDirectReceiptContinuityTest : AutomationRecove
         if (corruption == null) assertEquals("battle_map/0003", assertNotNull(result).targetKey)
         val initialCycles = journal.page(accountId, AutomationHistoryQuery()).cycles.map { it.id }.toSet()
 
+        if (delayMaterialObservation) {
+            repeat(3) { consumeNextWake() }
+            assertTrue(homeAccepted, "전리품으로 퀘스트 완료를 추정하지 않고 독립 자택을 계속한다.")
+            assertEquals(0, materialClaimCount)
+            assertEquals("WAITING_RESOURCE", jdbc.queryForObject(
+                "select status from automation_work_sessions where id = ?", String::class.java, materialWorkId))
+            materialObservationReady = true
+        }
         repeat(4) { consumeNextWake() }
 
         assertTrue(homeAccepted, "전투맵 종료 뒤 독립 자택의 실제 제출로 이어져야 한다.")
         assertEquals(1, requests.count { it.method == HofHttpMethod.GET && it.formFields["action"] == "get" && it.formFields["no"] == "A" })
         assertEquals(1, battleCount)
+        if (verifyMaterialWait) {
+            assertEquals(1, materialClaimCount)
+            assertTrue(clock.now() < materialRecheckAt)
+            assertEquals("COMPLETED", jdbc.queryForObject(
+                "select status from automation_work_sessions where id = ?", String::class.java, materialWorkId))
+            val claims = journal.page(accountId, AutomationHistoryQuery()).cycles.flatMap { it.events }
+                .filter { it.kind == AutomationHistoryEventKind.ACTION_SUCCEEDED && it.actionKind == "QUEST_CLAIM" }
+            assertEquals(1, claims.size)
+            assertEquals(assertNotNull(materialQuest).questKey, claims.single().targetKey)
+        }
         assertResultPreserved()
         assertEquals(result, originalEvents().singleOrNull())
         assertTrue(journal.page(accountId, AutomationHistoryQuery()).cycles.count { it.id !in initialCycles } >= 2)

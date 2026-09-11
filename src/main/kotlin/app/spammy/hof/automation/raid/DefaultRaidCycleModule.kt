@@ -502,7 +502,7 @@ class DefaultRaidCycleModule(
         }
         if (cycle.status == RaidAutomationCycleStatus.IN_BATTLE && observed.status == RaidObservedStatus.IN_BATTLE) {
             if (cycle.battleSafetyVersion < CURRENT_RAID_BATTLE_SAFETY_VERSION) {
-                cycle = initializeDeploymentSafetyGate(accountId, cycle, observed)
+                cycle = initializeBattleSafetyGate(accountId, cycle, observed)
             }
             cycle.battleSafetyGate?.let { gate ->
                 decideBattleSafetyGate(accountId, configuration, cycle, observed, observation.fresh, gate)?.let {
@@ -543,6 +543,7 @@ class DefaultRaidCycleModule(
                     raidId = cycle.raidId,
                 )
             battle.cooldownRemainingSeconds?.takeIf { it > 0 }?.let { seconds ->
+                initializeBattleSafetyGate(accountId, cycle, observed)
                 return RaidDirective.WaitUntil(
                     at = timeProvider.now().plusSeconds(seconds),
                     reason = RaidWaitReason.BATTLE_COOLDOWN,
@@ -731,8 +732,20 @@ class DefaultRaidCycleModule(
             store.load(accountId).openCycle
                 ?.takeIf { cycle -> cycle.raidId == attempt.raidId }
                 ?.let { cycle ->
+                    // 늦은 원래 결과는 별도 전투가 소유한 복구와 안전 대기를 변경하지 않는다.
+                    if (cycle.battleRecovery?.let { it.latestExecutionIdentity != attempt.executionIdentity } == true) {
+                        return@let
+                    }
                     createFallbackGate(attempt, attempt.finishedAt ?: now)?.let { gate ->
-                        store.saveBattleSafetyGate(accountId, cycle.raidId, gate, now)
+                        val current = cycle.battleSafetyGate
+                        val observedAfterCompletion = current != null && current.source in setOf(
+                            RaidCooldownSource.HOF_DIRECT, RaidCooldownSource.HOF_SINGLE_TARGET_INFERENCE,
+                        ) && !(current.lastObservedAt ?: current.startedAt).isBefore(gate.startedAt)
+                        val newerBattleCompleted = current != null && current.source == RaidCooldownSource.LOCAL_FALLBACK &&
+                            current.executionIdentity != gate.executionIdentity && current.startedAt.isAfter(gate.startedAt)
+                        if (!observedAfterCompletion && !newerBattleCompleted) {
+                            store.saveBattleSafetyGate(accountId, cycle.raidId, gate, now)
+                        }
                     }
                     if (cycle.battleRecovery != null) {
                         store.clearBattleRecovery(accountId, cycle.raidId, now)
@@ -1491,7 +1504,7 @@ class DefaultRaidCycleModule(
         )
     }
 
-    private fun initializeDeploymentSafetyGate(
+    private fun initializeBattleSafetyGate(
         accountId: Long,
         cycle: RaidCycleSnapshot,
         observed: RaidObservedTarget,

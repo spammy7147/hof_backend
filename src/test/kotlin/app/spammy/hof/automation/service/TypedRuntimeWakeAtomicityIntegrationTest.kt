@@ -39,6 +39,7 @@ import tools.jackson.module.kotlin.jacksonObjectMapper
     QueryDslConfig::class,
     AccountQueryRepository::class,
     TypedAutomationQueryRepository::class,
+    AutomationWorkSessionQueryRepository::class,
     AutomationOutboxQueryRepository::class,
     AutomationOutboxService::class,
     StoredTypedAutomationActionCodec::class,

@@ -1116,25 +1116,11 @@ abstract class AutomationLateResultIntegrationTest {
                 request.url.contains("menu=fishing") && failNextObservation.compareAndSet(true, false)
             ) throw java.io.IOException("Battle recovery observation response failed")
         })
-        if (duringCanonicalCreation) {
-            val managedPlaceholder = Mockito.mock(ManagedAutomationAction::class.java)
-            Mockito.doAnswer { invocation ->
-                val result = invocation.callRealMethod()
-                directThread.set(Thread.currentThread())
-                battleReturned.countDown()
-                check(returnBattle.await(30, TimeUnit.SECONDS))
-                result
-            }.`when`(results).applyDirect(
-                Mockito.any(ManagedAutomationAction::class.java) ?: managedPlaceholder,
-                Mockito.any(TypedAutomationExecution::class.java) ?: TypedAutomationExecution.Completed,
-                Mockito.any(), Mockito.any(),
-            )
-            Mockito.doAnswer { invocation ->
-                if (Thread.currentThread() == directThread.get()) directLockRequested.countDown()
-                invocation.callRealMethod()
-            }.`when`(runtimeQueries).lockRuntimeState(accountId)
-        } else Mockito.doAnswer { invocation ->
+        Mockito.doAnswer { invocation ->
             val result = invocation.callRealMethod()
+            // 응답 저장 이전에 멈춰야 복구 worker가 기존 receipt를 다시 적용하지 않고
+            // 첫 복구 기록을 생성하는 동안 원래 직접 응답을 도착시킬 수 있다.
+            if (duringCanonicalCreation) directThread.set(Thread.currentThread())
             battleReturned.countDown()
             check(returnBattle.await(30, TimeUnit.SECONDS))
             result
@@ -1143,6 +1129,12 @@ abstract class AutomationLateResultIntegrationTest {
                 ?: app.spammy.hof.battle.dto.RunBattleRequest("battle_map", "fishing_12", characters),
             Mockito.eq(app.spammy.hof.external.model.HofRequestOrigin.AUTOMATION)
                 ?: app.spammy.hof.external.model.HofRequestOrigin.AUTOMATION)
+        if (duringCanonicalCreation) {
+            Mockito.doAnswer { invocation ->
+                if (Thread.currentThread() == directThread.get()) directLockRequested.countDown()
+                invocation.callRealMethod()
+            }.`when`(runtimeQueries).lockRuntimeState(accountId)
+        }
         wakeups.wake(accountId, "LATE_BATTLE_BEFORE_LEASE_RECOVERY")
         Executors.newFixedThreadPool(2).use { executor ->
             val otherTransport = AutomationRecoveryIntegrationTest.Config().consumerReplayTransport(mapper, consumedEvents, consumerLease, runner, clock)
@@ -1161,6 +1153,12 @@ abstract class AutomationLateResultIntegrationTest {
                 // 기존 preflight adapter의 대기 위치만 사용한다. acquire의 실제
                 // transaction이 끝난 뒤 멈추므로 runtime 행 잠금을 잡고 기다리지 않는다.
                 if (duringCanonicalCreation) {
+                    assertEquals(0, jdbc.queryForObject(
+                        "select count(*) from typed_automation_action_runs where account_id = ? and direct_response_json is not null",
+                        Int::class.java, accountId), "첫 복구 기록 생성 전에는 직접 응답이 아직 저장되지 않아야 한다.")
+                    assertEquals(0, jdbc.queryForObject(
+                        "select count(*) from automation_action_attempts where account_id = ?",
+                        Int::class.java, accountId), "복구 worker가 원래 행동의 첫 수렴 기록을 생성해야 한다.")
                     val selectionPlaceholder = Mockito.mock(SelectedAutomationAction::class.java)
                     Mockito.doAnswer { invocation ->
                         val result = invocation.callRealMethod()

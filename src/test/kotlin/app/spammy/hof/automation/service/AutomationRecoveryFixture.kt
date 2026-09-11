@@ -150,6 +150,8 @@ abstract class AutomationRecoveryFixture {
     }
 
     protected class FishingFixtureState(var phase: String = "reset", var battle: Boolean = false, var mapFailure: String? = null) {
+        var beforeCatch: (() -> Unit)? = null
+        var battleOutcome = BattleAutomationRoundOutcome.VICTORY
         var revealOnStart = false
         var preloadFailure: String? = null
         var currentTime = 100
@@ -191,6 +193,7 @@ abstract class AutomationRecoveryFixture {
             val header = """<table id='menu2'><tr><td>《테스트》테스트</td>
                 <td>Funds : $ 1<br>Work : Nothing</td><td>Time : ${state.currentTime}/100<br>Auction : Nothing</td></tr></table>"""
             state.requestCookies += requestCookies.toMap()
+            if ("FCatch" in request.formFields) state.beforeCatch?.invoke()
             requests += request
             val body = when {
                 unconfirmedResponse != null && unconfirmedResponse in request.formFields -> fixture(state.phase)
@@ -221,9 +224,17 @@ abstract class AutomationRecoveryFixture {
                 request.method == HofHttpMethod.POST -> {
                     state.battle = false
                     state.phase = if (castsAfterBattle > 0) "reset" else "exhausted"
-                    """$header<h2>Show Detail( 1 turns. )</h2><h1>《테스트》테스트은(는) 승리했다!</h1>
-                    <div>남은 HP : 0/100 생존자 : 0/1 총 데미지 : 0</div>
-                    <div>남은 HP : 100/100 생존자 : 1/1 총 데미지 : 100 턴 : 1/100 획득 경험치 : 1 획득 Funds : $ 1</div>"""
+                    val title = when (state.battleOutcome) {
+                        BattleAutomationRoundOutcome.VICTORY -> "《테스트》테스트은(는) 승리했다!"
+                        BattleAutomationRoundOutcome.DEFEAT -> "Fishing- 악어은(는) 승리했다!"
+                        BattleAutomationRoundOutcome.DRAW -> "무승부!"
+                        else -> error("단말 전투 결과만 사용하는 fixture다.")
+                    }
+                    val enemyHp = if (state.battleOutcome == BattleAutomationRoundOutcome.VICTORY) 0 else 100
+                    val allyHp = if (state.battleOutcome == BattleAutomationRoundOutcome.DEFEAT) 0 else 100
+                    """$header<h2>Show Detail( 1 turns. )</h2><h1>$title</h1>
+                    <div>남은 HP : $enemyHp/100 생존자 : ${if (enemyHp == 0) 0 else 1}/1 총 데미지 : 0</div>
+                    <div>남은 HP : $allyHp/100 생존자 : ${if (allyHp == 0) 0 else 1}/1 총 데미지 : 100 턴 : 1/100 획득 경험치 : 1 획득 Funds : $ 1</div>"""
                 }
                 request.url.contains("menu=fishing") -> when {
                     state.phase == "exhausted" -> fixture("reset").replace("18회", "0회")

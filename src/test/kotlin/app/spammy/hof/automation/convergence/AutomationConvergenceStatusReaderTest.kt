@@ -7,6 +7,7 @@ import app.spammy.hof.automation.outbox.AutomationOutboxService
 import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.repository.AutomationEntryCommandRepository
+import app.spammy.hof.automation.repository.AutomationWorkSessionQueryRepository
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
 import app.spammy.hof.automation.service.AutomationDirectResponseStore
 import app.spammy.hof.automation.service.StoredTypedAutomationActionCodec
@@ -29,7 +30,7 @@ import org.springframework.test.context.ActiveProfiles
 @ActiveProfiles("test")
 @Import(QueryDslConfig::class, JpaConvergenceStore::class, JpaAutomationConvergenceStatusReader::class,
     AutomationDirectResponseStore::class, TypedAutomationQueryRepository::class, JpaEvidenceCaseRecorder::class,
-    AccountQueryRepository::class, AutomationOutboxService::class,
+    AccountQueryRepository::class, AutomationOutboxService::class, AutomationWorkSessionQueryRepository::class,
     StoredTypedAutomationActionCodec::class, AutomationConvergenceStatusReaderTest.Config::class)
 class AutomationConvergenceStatusReaderTest {
     @TestConfiguration

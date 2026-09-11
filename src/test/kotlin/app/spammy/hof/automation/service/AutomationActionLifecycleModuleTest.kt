@@ -1184,8 +1184,14 @@ class AutomationActionLifecycleModuleTest {
         val managed = assertNotNull(module.prepare(7L, 13L, action))
 
         assertEquals(AutomationType.UNION, managed.descriptor.source)
-        assertTerminalBattle(managed.execute())
-        Mockito.verify(unionProgress).battleCompleted(7L, 13L, "battle_map", "map-1")
+        val execution = managed.execute()
+        assertTerminalBattle(execution)
+        val response = assertIs<AutomationDirectResponse.BattleMap>(managed.directResponse)
+        assertEquals("union-execution-1", response.resultIdentity)
+        assertEquals(listOf(BattleAutomationRoundOutcome.VICTORY), response.outcomes)
+        Mockito.verifyNoInteractions(unionProgress, workLifecycle)
+        assertTerminalBattle(managed.applyLegacyExecution(execution))
+        Mockito.verify(unionProgress).battleCompleted(7L, 13L, "battle_map", "map-1", "union-execution-1")
         Mockito.verify(workLifecycle).completeUnionCycle(7L, 13L, managed.storedAction.executionIdentity)
         Mockito.verifyNoInteractions(battleHandler)
     }
@@ -1208,9 +1214,15 @@ class AutomationActionLifecycleModuleTest {
         Mockito.verify(workOwnership).ensure(
             7L,
             14L,
-            AutomationWorkAssignment(AutomationWorkType.ADVENTURE_MAP, "battle_map/map-1"),
+            AutomationWorkAssignment(AutomationWorkType.ADVENTURE_MAP, "battle_map/map-1",
+                executionIdentity = managed.storedAction.executionIdentity),
         )
-        assertTerminalBattle(managed.execute())
+        val execution = managed.execute()
+        assertTerminalBattle(execution)
+        assertEquals(listOf(BattleAutomationRoundOutcome.VICTORY),
+            assertIs<AutomationDirectResponse.AdventureBattle>(managed.directResponse).outcomes)
+        Mockito.verifyNoInteractions(workLifecycle)
+        assertTerminalBattle(managed.applyLegacyExecution(execution))
         Mockito.verify(workLifecycle).completeAdventureAction(7L, 14L, "battle_map", "map-1", managed.storedAction.executionIdentity)
     }
 
@@ -1621,12 +1633,18 @@ class AutomationActionLifecycleModuleTest {
         val managed = assertNotNull(module.prepare(7L, 15L, action))
 
         assertEquals(AutomationType.FISHING, managed.descriptor.source)
-        assertTerminalBattle(managed.execute())
+        val execution = managed.execute()
+        assertTerminalBattle(execution)
+        val response = assertIs<AutomationDirectResponse.BattleMap>(managed.directResponse)
+        assertEquals("fishing-battle-1", response.resultIdentity)
+        assertEquals(listOf(BattleAutomationRoundOutcome.VICTORY), response.outcomes)
         Mockito.verify(workOwnership).ensure(
             7L,
             15L,
             AutomationWorkAssignment(AutomationWorkType.FISHING, "DAILY_FISHING"),
         )
+        Mockito.verifyNoInteractions(workLifecycle)
+        assertTerminalBattle(managed.applyLegacyExecution(execution))
         Mockito.verify(workLifecycle).completeFishingCycle(7L, 15L, managed.storedAction.executionIdentity)
         Mockito.verifyNoInteractions(battleHandler, unionProgress)
     }
@@ -2440,7 +2458,7 @@ class AutomationActionLifecycleModuleTest {
     }
 
     @Test
-    fun `레이드 전투 응답이 모든 회차의 종료를 증명하면 즉시 규칙 모듈에 기록한다`() {
+    fun `레이드 전투 단말 응답을 보존한 뒤 적용 단계에서 규칙 모듈에 기록한다`() {
         val action = battleMapAction().copy(
             source = BattleAutomationActionSource.RAID_AUTOMATION,
             sourceTargetKey = "RaidGoblin",
@@ -2457,7 +2475,13 @@ class AutomationActionLifecycleModuleTest {
         ).thenReturn(RaidRecordResult.Recorded())
         val managed = assertNotNull(module.prepare(7L, 13L, action))
 
-        assertTerminalBattle(managed.execute())
+        val execution = managed.execute()
+        assertTerminalBattle(execution)
+        val response = assertIs<AutomationDirectResponse.BattleMap>(managed.directResponse)
+        assertEquals(listOf(BattleAutomationRoundOutcome.VICTORY), response.outcomes)
+        assertEquals(now, response.finishedAt)
+        Mockito.verifyNoInteractions(raidCycleModule)
+        assertTerminalBattle(managed.applyLegacyExecution(execution))
         Mockito.verify(raidCycleModule).recordObservedResult(
             7L,
             completedRaidBattleAttempt(action),

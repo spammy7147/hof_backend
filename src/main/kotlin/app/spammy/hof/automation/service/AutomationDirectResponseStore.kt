@@ -3,10 +3,15 @@ package app.spammy.hof.automation.service
 import app.spammy.hof.automation.entity.TypedAutomationActionRunEntity
 import app.spammy.hof.automation.entity.TypedAutomationActionStatus
 import app.spammy.hof.automation.entity.TypedAutomationLifecycle
+import app.spammy.hof.automation.entity.AutomationWorkStatus
+import app.spammy.hof.automation.entity.AutomationWorkType
 import app.spammy.hof.automation.convergence.AutomationIsolationScope
+import app.spammy.hof.automation.convergence.AutomationIsolationScopeKind
 import app.spammy.hof.automation.convergence.JpaEvidenceCaseRecorder
 import app.spammy.hof.automation.convergence.StoredActionConvergenceSelectionFactory
 import app.spammy.hof.automation.repository.TypedAutomationQueryRepository
+import app.spammy.hof.automation.repository.AutomationWorkSessionQueryRepository
+import app.spammy.hof.automation.repository.AutomationWorkSessionCommandRepository
 import app.spammy.hof.automation.outbox.AutomationOutboxService
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.quest.model.QuestSnapshot
@@ -27,6 +32,7 @@ import tools.jackson.databind.ObjectMapper
     JsonSubTypes.Type(AutomationDirectResponse.QuestPage::class, name = "QUEST_PAGE"),
     JsonSubTypes.Type(AutomationDirectResponse.HomePage::class, name = "HOME_PAGE"),
     JsonSubTypes.Type(AutomationDirectResponse.QuestBattle::class, name = "QUEST_BATTLE"),
+    JsonSubTypes.Type(AutomationDirectResponse.AdventureBattle::class, name = "ADVENTURE_BATTLE"),
     JsonSubTypes.Type(AutomationDirectResponse.BattleMap::class, name = "BATTLE_MAP"),
 )
 sealed interface AutomationDirectResponse {
@@ -34,11 +40,14 @@ sealed interface AutomationDirectResponse {
 
     data class QuestBattle(val outcomes: List<BattleAutomationRoundOutcome>) : AutomationDirectResponse
 
+    data class AdventureBattle(val outcomes: List<BattleAutomationRoundOutcome>) : AutomationDirectResponse
+
     data class BattleMap(
         val resultIdentity: String,
         val outcomes: List<BattleAutomationRoundOutcome>,
         val lootNames: List<String>,
         val questTexts: List<String>,
+        val finishedAt: Instant? = null,
     ) : AutomationDirectResponse
 
     data class HomePage(val quests: List<Quest>, val resultStatus: String?) : AutomationDirectResponse {
@@ -93,6 +102,8 @@ class AutomationDirectResponseStore(
     private val clock: TimeProvider,
     private val evidenceCases: JpaEvidenceCaseRecorder,
     private val outbox: AutomationOutboxService,
+    private val workSessions: AutomationWorkSessionQueryRepository,
+    private val workCommands: AutomationWorkSessionCommandRepository,
 ) {
     /** 원래 응답 후처리는 typed runtime이 재시도하며 일반 관측 probe로 대체하지 않는다. */
     @Transactional(readOnly = true)
@@ -149,6 +160,30 @@ class AutomationDirectResponseStore(
         val now = clock.now()
         row.directResponseSuppressionReleasedAt = now
         row.updatedAt = now
+        val original = originalScope(row, accountId)
+        workSessions.lockOpen(accountId)
+            .filter { it.status == AutomationWorkStatus.WAITING_COOLDOWN ||
+                it.status == AutomationWorkStatus.WAITING_RESOURCE }
+            .filter { session ->
+                when (original?.scope?.kind) {
+                    AutomationIsolationScopeKind.BATTLE_COOLDOWN_SCOPE ->
+                        session.workType in setOf(AutomationWorkType.BATTLE_MAP, AutomationWorkType.ADVENTURE_MAP)
+                    AutomationIsolationScopeKind.QUEST_TARGET ->
+                        session.workType == AutomationWorkType.QUEST && session.targetKey == original.scope.key
+                    AutomationIsolationScopeKind.HOME_TARGET ->
+                        session.workType == AutomationWorkType.HOME_QUEST && session.targetKey == original.scope.key
+                    AutomationIsolationScopeKind.RAID_ENTRY ->
+                        session.workType == AutomationWorkType.RAID && session.targetKey == original.scope.key
+                    AutomationIsolationScopeKind.FISHING_ENTRY, AutomationIsolationScopeKind.UNION_ENTRY ->
+                        session.entry.id == original.entryId
+                    null -> session.entry.id == row.entry?.id
+                }
+            }.forEach { session ->
+                // 보류 재확인 예약만 앞당긴다. 실제 행동은 최신 관측과 남은 모든 억제를 다시 통과한다.
+                session.nextCheckAt = now
+                session.updatedAt = now
+                workCommands.save(session)
+            }
         if (runtime.lifecycleStatus == TypedAutomationLifecycle.RUNNING && !runtime.authSuspended &&
             runtime.leaseToken == null && queries.findActiveTypedAction(accountId) == null
         ) {
@@ -243,9 +278,17 @@ class AutomationDirectResponseStore(
             is AutomationDirectResponse.QuestBattle -> require(stored.payload is StoredTypedActionPayload.QuestBattle) {
                 "Quest battle response cannot be attached to a different action kind."
             }
+            is AutomationDirectResponse.AdventureBattle -> require(stored.payload is StoredTypedActionPayload.AdventureMap) {
+                "Adventure battle response cannot be attached to a different action kind."
+            }
             is AutomationDirectResponse.BattleMap -> require(
                 stored.payload is StoredTypedActionPayload.BattleMap &&
-                    stored.payload.source == BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
+                    stored.payload.source in setOf(
+                        BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
+                        BattleAutomationActionSource.UNION_AUTOMATION,
+                        BattleAutomationActionSource.FISHING_AUTOMATION,
+                        BattleAutomationActionSource.RAID_AUTOMATION,
+                    ),
             ) { "Battle-map response cannot be attached to a different action source." }
         }
     }

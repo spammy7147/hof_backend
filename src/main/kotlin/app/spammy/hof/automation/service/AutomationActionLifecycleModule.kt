@@ -151,6 +151,7 @@ data class AutomationWorkAssignment(
     val type: AutomationWorkType,
     val targetKey: String,
     val targetCount: Int? = null,
+    val executionIdentity: String? = null,
 )
 
 fun interface AutomationWorkOwnership {
@@ -596,12 +597,21 @@ class UnifiedAutomationActionLifecycleModule(
                     override val storedAction = stored
                     override val descriptor = payload.battleMapDescriptor()
                     private var submittedBattle: AutomationDirectResponse.BattleMap? = null
+                    private val preservesDirectResponse = payload.source in setOf(
+                        BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
+                        BattleAutomationActionSource.UNION_AUTOMATION,
+                        BattleAutomationActionSource.FISHING_AUTOMATION,
+                        BattleAutomationActionSource.RAID_AUTOMATION,
+                    )
 
                     override val directResponse: AutomationDirectResponse? get() = submittedBattle
 
                     override fun restoreDirectResponse(response: AutomationDirectResponse): TypedAutomationExecution {
-                        require(payload.source == BattleAutomationActionSource.BATTLE_MAP_AUTOMATION)
+                        require(preservesDirectResponse)
                         require(response is AutomationDirectResponse.BattleMap)
+                        if (payload.source == BattleAutomationActionSource.RAID_AUTOMATION) {
+                            requireNotNull(response.finishedAt) { "Raid battle response must retain its original completion time." }
+                        }
                         require(response.resultIdentity.isNotBlank() && response.resultIdentity.length <= 128)
                         require(response.outcomes.size == payload.battleCount && response.outcomes.all {
                             it in setOf(BattleAutomationRoundOutcome.VICTORY, BattleAutomationRoundOutcome.DEFEAT,
@@ -622,7 +632,7 @@ class UnifiedAutomationActionLifecycleModule(
                     }
 
                     override fun execute(): TypedAutomationExecution = executeBattleMap(accountId, stored, payload,
-                        onCompleted = if (payload.source == BattleAutomationActionSource.BATTLE_MAP_AUTOMATION) {
+                        onCompleted = if (preservesDirectResponse) {
                             { submission ->
                                 val rounds = submission.response.rounds.takeIf(List<*>::isNotEmpty)
                                 restoreDirectResponse(AutomationDirectResponse.BattleMap(
@@ -632,21 +642,24 @@ class UnifiedAutomationActionLifecycleModule(
                                         ?: submission.response.loots.map { it.name },
                                     rounds?.mapNotNull { it.quest?.takeIf(String::isNotBlank) }
                                         ?: listOfNotNull(submission.response.quest?.takeIf(String::isNotBlank)),
+                                    finishedAt = if (payload.source == BattleAutomationActionSource.RAID_AUTOMATION) timeProvider.now() else null,
                                 ))
                             }
                         } else null,
                     )
 
                     private fun applyProjection(execution: TypedAutomationExecution): TypedAutomationExecution {
-                        if (payload.source != BattleAutomationActionSource.BATTLE_MAP_AUTOMATION ||
-                            execution is TypedAutomationExecution.SharedCooldown
-                        ) return execution
+                        if (!preservesDirectResponse || execution is TypedAutomationExecution.SharedCooldown) return execution
                         val response = requireNotNull(submittedBattle) { "Battle-map direct response is missing." }
                         submittedBattle = null
-                        applyCompletedBattleMap(accountId, stored, payload, response.resultIdentity, response.outcomes)
+                        val raidCompletion = applyCompletedBattleMap(
+                            accountId, stored, payload, response.resultIdentity, response.outcomes,
+                            finishedAt = response.finishedAt,
+                        )
                         executionSignals.afterBattle(accountId, payload.source, response.outcomes,
                             response.lootNames, response.questTexts)
-                        return execution
+                        return if (raidCompletion == null) execution
+                            else (execution as TypedAutomationExecution.BattleCompleted).copy(raidOutcome = raidCompletion)
                     }
 
                     override fun applyPolicyAcceptedExecution(execution: TypedAutomationExecution) = applyProjection(execution)
@@ -665,11 +678,42 @@ class UnifiedAutomationActionLifecycleModule(
             is StoredTypedActionPayload.AdventureMap -> object : ManagedAutomationAction {
                 override val storedAction = stored
                 override val descriptor = payload.adventureDescriptor()
+                private var submittedBattle: AutomationDirectResponse.AdventureBattle? = null
+
+                override val directResponse: AutomationDirectResponse? get() = submittedBattle
+
+                override fun restoreDirectResponse(response: AutomationDirectResponse): TypedAutomationExecution {
+                    require(response is AutomationDirectResponse.AdventureBattle)
+                    require(response.outcomes.size == payload.battleCount && response.outcomes.all {
+                        it in setOf(BattleAutomationRoundOutcome.VICTORY, BattleAutomationRoundOutcome.DEFEAT,
+                            BattleAutomationRoundOutcome.DRAW)
+                    }) { "Adventure response must prove every requested terminal round." }
+                    submittedBattle = response
+                    return TypedAutomationExecution.BattleCompleted(
+                        payload.categoryId, payload.mapCode, response.outcomes.map { it.name },
+                    )
+                }
 
                 override fun validateBeforeSubmission() =
                     validateBattleBeforeSubmission(accountId, payload.battleRequest)
 
-                override fun execute(): TypedAutomationExecution = executeAdventure(accountId, stored, payload)
+                override fun execute(): TypedAutomationExecution = executeAdventure(accountId, stored, payload) { submission ->
+                    restoreDirectResponse(AutomationDirectResponse.AdventureBattle(submission.outcomes))
+                }
+
+                private fun applyProjection(execution: TypedAutomationExecution): TypedAutomationExecution {
+                    if (execution is TypedAutomationExecution.SharedCooldown) return execution
+                    requireNotNull(submittedBattle) { "Adventure direct response is missing." }
+                    submittedBattle = null
+                    workLifecycle.completeAdventureAction(
+                        accountId, stored.entryId, payload.categoryId, payload.mapCode, stored.executionIdentity,
+                    )
+                    return execution
+                }
+
+                override fun applyPolicyAcceptedExecution(execution: TypedAutomationExecution) = applyProjection(execution)
+
+                override fun applyLegacyExecution(execution: TypedAutomationExecution) = applyProjection(execution)
 
                 override fun reconcile(): AmbiguousActionResolution = reconcileAdventure(accountId, stored, payload)
             }
@@ -1351,7 +1395,8 @@ class UnifiedAutomationActionLifecycleModule(
         workOwnership.ensure(
             accountId,
             entryId,
-            AutomationWorkAssignment(AutomationWorkType.ADVENTURE_MAP, "${action.categoryId}/${action.mapCode}"),
+            AutomationWorkAssignment(AutomationWorkType.ADVENTURE_MAP, "${action.categoryId}/${action.mapCode}",
+                executionIdentity = action.executionIdentity),
         )
         return manage(
             accountId,
@@ -1762,6 +1807,7 @@ class UnifiedAutomationActionLifecycleModule(
         payload: StoredTypedActionPayload.BattleMap,
         resultIdentity: String,
         outcomes: List<BattleAutomationRoundOutcome>,
+        finishedAt: java.time.Instant? = null,
     ): RaidCycleOutcome? {
         val action = payload.toPrepared(accountId, stored.executionIdentity)
         return when (payload.source) {
@@ -1791,6 +1837,7 @@ class UnifiedAutomationActionLifecycleModule(
                     stored.entryId,
                     payload.categoryId,
                     payload.mapCode,
+                    stored.executionIdentity,
                 )
                 workLifecycle.completeUnionCycle(accountId, stored.entryId, stored.executionIdentity)
                 null
@@ -1813,7 +1860,7 @@ class UnifiedAutomationActionLifecycleModule(
                         mapCode = payload.mapCode,
                         recoveryChainId = payload.recoveryChainId,
                         retransmissionCount = payload.raidRetransmissionCount,
-                        finishedAt = timeProvider.now(),
+                        finishedAt = finishedAt ?: timeProvider.now(),
                         submittedFromRunnable = payload.raidSubmittedFromRunnable,
                     ),
                     RaidResultObservation.BattleCompleted,
@@ -1884,6 +1931,7 @@ class UnifiedAutomationActionLifecycleModule(
         accountId: Long,
         stored: StoredTypedAutomationAction,
         payload: StoredTypedActionPayload.AdventureMap,
+        onCompleted: (AutomationBattleSubmissionResult.Completed) -> TypedAutomationExecution,
     ): TypedAutomationExecution {
         return when (val submission = battleSubmission.submit(
             accountId,
@@ -1896,20 +1944,7 @@ class UnifiedAutomationActionLifecycleModule(
                 payload.mapCode,
                 submission.retryAt,
             )
-            is AutomationBattleSubmissionResult.Completed -> {
-                workLifecycle.completeAdventureAction(
-                    accountId,
-                    stored.entryId,
-                    payload.categoryId,
-                    payload.mapCode,
-                    stored.executionIdentity,
-                )
-                TypedAutomationExecution.BattleCompleted(
-                    payload.categoryId,
-                    payload.mapCode,
-                    submission.outcomes.map { it.name },
-                )
-            }
+            is AutomationBattleSubmissionResult.Completed -> onCompleted(submission)
         }
     }
 

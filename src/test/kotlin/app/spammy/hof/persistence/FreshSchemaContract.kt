@@ -453,6 +453,7 @@ internal object FreshSchemaContract {
         table(
             "automation_work_sessions",
             serialId(), requiredBigint("account_id"), requiredBigint("automation_entry_id"),
+            optionalVarchar("last_prepared_execution_identity", 128),
             requiredVarchar("work_type", 24), requiredVarchar("target_key", 255),
             requiredVarchar("status", 24), optionalInteger("running_slot"), requiredVarchar("config_version", 64),
             optionalInteger("target_count"), requiredInteger("confirmed_count"),
@@ -551,7 +552,7 @@ internal object FreshSchemaContract {
         table(
             "automation_rotation_states",
             serialId(), requiredBigint("automation_entry_id"), requiredVarchar("current_target_key", 255),
-            requiredInstant("updated_at"), requiredBigint("version"),
+            requiredInstant("updated_at"), optionalBigint("last_completed_action_id"), requiredBigint("version"),
         ),
         table(
             "raid_automation_cycles",

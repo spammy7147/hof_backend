@@ -108,6 +108,8 @@ class FreshSchemaTest {
                 "57" to "persist captcha automation resume",
                 "58" to "preserve direct action responses",
                 "59" to "reserve automation history sequence",
+                "60" to "preserve union rotation result order",
+                "61" to "bind adventure work to prepared execution",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -175,6 +177,8 @@ class FreshSchemaTest {
                 "V58__preserve_direct_action_responses.sql",
                 "V59__reserve_automation_history_sequence.sql",
                 "V5__track_character_detail_sync.sql",
+                "V60__preserve_union_rotation_result_order.sql",
+                "V61__bind_adventure_work_to_prepared_execution.sql",
                 "V6__learn_shared_battle_cooldowns.sql",
                 "V7__add_automation_wait_reason.sql",
                 "V8__observe_latest_hof_status.sql",

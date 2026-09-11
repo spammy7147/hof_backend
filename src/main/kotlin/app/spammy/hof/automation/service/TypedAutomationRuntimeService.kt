@@ -723,7 +723,12 @@ class TypedAutomationRuntimeService(
             is StoredTypedActionPayload.QuestClaim -> payload.questKey
             is StoredTypedActionPayload.HomeQuest -> payload.questId
             is StoredTypedActionPayload.QuestBattle -> payload.questKey
-            is StoredTypedActionPayload.BattleMap -> "${payload.categoryId}/${payload.mapCode}"
+            is StoredTypedActionPayload.AdventureMap -> "${payload.categoryId}/${payload.mapCode}"
+            is StoredTypedActionPayload.BattleMap -> when (payload.source) {
+                BattleAutomationActionSource.FISHING_AUTOMATION -> FISHING_CYCLE_TARGET
+                BattleAutomationActionSource.RAID_AUTOMATION -> requireNotNull(payload.sourceTargetKey)
+                else -> "${payload.categoryId}/${payload.mapCode}"
+            }
             else -> error("Stored direct response does not support this work target.")
         }
         // 같은 entry에서 다른 퀘스트가 작업권을 얻었어도 원래 결과의 재시도가 그 작업을 양보시키지 않는다.

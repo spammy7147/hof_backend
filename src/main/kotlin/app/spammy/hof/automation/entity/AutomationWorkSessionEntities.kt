@@ -101,6 +101,9 @@ class AutomationWorkSessionEntity(
     @Version
     @Column(name = "version")
     var version: Long? = null,
+
+    @Column(name = "last_prepared_execution_identity", length = 128)
+    var lastPreparedExecutionIdentity: String? = null,
 ) {
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false)

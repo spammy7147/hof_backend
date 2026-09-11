@@ -238,6 +238,8 @@ class AutomationRotationStateEntity(
     var currentTargetKey: String,
     @Column(name = "updated_at", nullable = false)
     var updatedAt: Instant,
+    @Column(name = "last_completed_action_id")
+    var lastCompletedActionId: Long? = null,
     @Version @Column(name = "version", nullable = false)
     var version: Long? = null,
 )

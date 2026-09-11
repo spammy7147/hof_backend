@@ -288,7 +288,7 @@ class AutomationTargetSelector(
                     when (directive) {
                         is RaidDirective.Execute -> {
                             val action = directive.intent.toPreparedAction(accountId)
-                            val block = convergenceModule?.openSelection(accountId, entry.id, mode = convergenceRollout?.mode)?.block(action)
+                            val block = blockRaidAction(accountId, entry.id, action)
                             if (block != null) {
                                 warnings += block.message
                                 trace += AutomationEvaluationTrace(
@@ -633,6 +633,20 @@ class AutomationTargetSelector(
         waitScope = AutomationWaitScope.RELEASE_OTHER_AUTOMATIONS,
     )
 
+    private fun blockRaidAction(accountId: Long, entryId: Long, action: PreparedAutomationAction): ConvergenceSelectionBlock? {
+        val pending = directResponses?.pendingIsolation(accountId)
+        if (pending != null && !pending.isEmpty) {
+            val preview = app.spammy.hof.automation.convergence.StoredActionConvergenceSelectionFactory().preview(entryId, action)
+            if (pending.blocks(entryId, preview.scope)) {
+                return ConvergenceSelectionBlock(
+                    "DIRECT_RESULT_PENDING", "수신한 행동 결과의 검증과 후처리를 마칠 때까지 해당 범위만 건너뜁니다.",
+                    preview.scope, preview.actionKind,
+                )
+            }
+        }
+        return convergenceModule?.openSelection(accountId, entryId, mode = convergenceRollout?.mode)?.block(action)
+    }
+
     private fun decideRaid(
         accountId: Long,
         entryId: Long,
@@ -653,6 +667,7 @@ class AutomationTargetSelector(
         trace.any {
             it.reasonCode in setOf(
                 CONVERGENCE_BLOCKED_REASON,
+                "DIRECT_RESULT_PENDING",
                 OBSERVATION_GAP_HELD_REASON,
                 CAPTCHA_BATTLE_GATE_REASON,
                 app.spammy.hof.automation.history.ACTION_PREPARATION_FAILED,
@@ -692,7 +707,7 @@ class AutomationTargetSelector(
         return when (directive) {
             is RaidDirective.Execute -> {
                 val action = directive.intent.toPreparedAction(accountId)
-                val block = convergenceModule?.openSelection(accountId, session.entryId, mode = convergenceRollout?.mode)?.block(action)
+                val block = blockRaidAction(accountId, session.entryId, action)
                 if (block != null) {
                     lifecycle.waitForCooldown(
                         accountId,

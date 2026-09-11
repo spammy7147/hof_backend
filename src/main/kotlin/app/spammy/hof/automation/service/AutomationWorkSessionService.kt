@@ -156,6 +156,10 @@ class AutomationWorkSessionService(
         }
         val now = timeProvider.now()
         if (selected != null) {
+            if (spec.executionIdentity != null && selected.lastPreparedExecutionIdentity != spec.executionIdentity) {
+                selected.lastPreparedExecutionIdentity = spec.executionIdentity
+                commands.save(selected)
+            }
             val transfer = releaseOwnership(open, selected, now)
             if (selected.status == AutomationWorkStatus.RUNNING) {
                 selected.alignRaidTarget(spec, entry.updatedAt.toString())?.let(commands::save)
@@ -178,6 +182,7 @@ class AutomationWorkSessionService(
             targetCount = spec.targetCount,
             createdAt = now,
             updatedAt = now,
+            lastPreparedExecutionIdentity = spec.executionIdentity,
         )
         commands.save(session)
         logOwnershipTransfer(accountId, transfer, session, AutomationOwnershipTransferReason.ACTION_PREPARE)
@@ -371,10 +376,14 @@ class AutomationWorkSessionService(
         if (!isRunningRuntime(accountId, executionIdentity)) return
         val targetKey = "$categoryId/$mapCode"
         val session = queries.lockOpen(accountId).singleOrNull {
-            it.status == AutomationWorkStatus.RUNNING &&
-                it.entry.id == entryId &&
+            it.entry.id == entryId &&
                 it.workType == AutomationWorkType.ADVENTURE_MAP &&
-                it.targetKey == targetKey
+                it.targetKey == targetKey &&
+                if (executionIdentity == null || it.lastPreparedExecutionIdentity == null) {
+                    it.status == AutomationWorkStatus.RUNNING
+                } else {
+                    it.lastPreparedExecutionIdentity == executionIdentity
+                }
         } ?: return
         val now = timeProvider.now()
         session.transitionTo(AutomationWorkStatus.COMPLETED)
