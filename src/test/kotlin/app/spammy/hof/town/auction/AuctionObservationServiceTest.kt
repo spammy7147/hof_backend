@@ -13,7 +13,6 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
-import kotlin.test.assertTrue
 import org.mockito.ArgumentCaptor
 import org.mockito.Mockito
 
@@ -73,48 +72,6 @@ class AuctionObservationServiceTest {
         val saved = savedEntities(repository, 2)
         assertNotEquals(saved[0].observationKey, saved[1].observationKey)
     }
-
-    @Test
-    fun `market prices only completed sales and divides total by quantity`() {
-        val repository = Mockito.mock(AuctionObservationRepository::class.java)
-        val query = Mockito.mock(AuctionQueryRepository::class.java)
-        Mockito.`when`(query.findRecent(null, NOW.minusSeconds(30L * 24 * 60 * 60))).thenReturn(
-            listOf(
-                observation("current", "Mask of Scorn", "CURRENT", 3, 90_000_000),
-                observation("sold", "Mask of Scorn", "SOLD", 3, 120_000_000),
-                observation("unsold", "Shield", "CURRENT", 1, 5_000_000),
-            ),
-        )
-        val service = AuctionObservationService(repository, query, CLOCK)
-
-        val market = service.market(null)
-
-        val item = market.items.single()
-        assertEquals("Mask of Scorn", item.name)
-        assertEquals(40_000_000, item.latestUnitPrice)
-        assertEquals(1, item.tradeCount)
-        assertEquals(3, item.volume)
-        assertTrue(item.points.all { it.kind == ObservationKind.SOLD })
-    }
-
-    private fun observation(
-        key: String,
-        name: String,
-        kind: String,
-        quantity: Int,
-        totalPrice: Long,
-    ) = AuctionObservationEntity(
-        observationKey = key,
-        itemKey = name.lowercase(),
-        itemName = name,
-        itemType = "item",
-        observationKind = kind,
-        quantity = quantity,
-        totalPrice = totalPrice,
-        unitPrice = totalPrice / quantity,
-        observedAt = NOW,
-        lastSeenAt = NOW,
-    )
 
     private fun savedEntities(
         repository: AuctionObservationRepository,

@@ -16,13 +16,13 @@ import app.spammy.hof.town.common.service.TownAuthenticatedExecutor
 import app.spammy.hof.town.common.service.TownLocationResolver
 import app.spammy.hof.town.fishing.dto.TownActionResultResponse
 import java.security.MessageDigest
-import java.math.BigInteger
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
+import org.springframework.transaction.annotation.Isolation
 import org.springframework.transaction.annotation.Transactional
 
 enum class AuctionAction { BROWSE, BID, EXHIBIT, CLAIM }
@@ -70,7 +70,9 @@ data class AuctionExhibitCommand(
     val entryActionId: String, val actionId: String, val candidateId: String, val amount: Int, val exhibitTime: String,
     val startPrice: Long, val comment: String,
 )
+/** observedAt은 매물의 최초 관측 시각이다. 실제 낙찰 시각이나 최근 방문 시각이 아니다. */
 data class MarketPoint(val totalPrice: Long, val unitPrice: Long, val quantity: Int, val observedAt: Instant, val kind: ObservationKind)
+/** 통계는 기간 내 저장된 낙찰 기록 전체이며 points만 품목별 최근 100건이다. */
 data class MarketItem(
     val itemKey: String, val name: String, val type: String?, val latestUnitPrice: Long,
     val averageUnitPrice: Long, val minimumUnitPrice: Long, val maximumUnitPrice: Long,
@@ -111,18 +113,15 @@ class AuctionObservationService(
         }
     }
 
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     fun market(query: String?): AuctionMarket {
         val now = clock.instant()
-        val observations = queryRepository.findRecent(query, now.minus(Duration.ofDays(30)))
-        val items = observations.groupBy { it.itemKey }.mapNotNull { (itemKey, rows) ->
-            val sold = rows.filter { it.observationKind == ObservationKind.SOLD.name }
-            if (sold.isEmpty()) return@mapNotNull null
-            val ordered = sold.sortedBy { it.observedAt }
+        val items = queryRepository.findMarket(query, now.minus(Duration.ofDays(30)), now).map { summary ->
+            val latest = summary.recentObservations.last()
             MarketItem(
-                itemKey, ordered.last().itemName, ordered.last().itemType, ordered.last().unitPrice,
-                checkedAverage(sold.map { it.unitPrice }), sold.minOf { it.unitPrice }, sold.maxOf { it.unitPrice },
-                sold.size, sold.sumOf { it.quantity.toLong() }, ordered.takeLast(100).map {
+                latest.itemKey, latest.itemName, latest.itemType, latest.unitPrice,
+                summary.averageUnitPrice, summary.minimumUnitPrice, summary.maximumUnitPrice,
+                summary.tradeCount, summary.volume, summary.recentObservations.map {
                     MarketPoint(it.totalPrice, it.unitPrice, it.quantity, it.observedAt, ObservationKind.valueOf(it.observationKind))
                 },
             )
@@ -133,11 +132,6 @@ class AuctionObservationService(
     private fun hash(value: String): String = MessageDigest.getInstance("SHA-256")
         .digest(value.toByteArray()).joinToString("") { "%02x".format(it) }
 
-    private fun checkedAverage(values: List<Long>): Long {
-        if (values.isEmpty()) return 0
-        return values.fold(BigInteger.ZERO) { total, value -> total + BigInteger.valueOf(value) }
-            .divide(BigInteger.valueOf(values.size.toLong())).longValueExact()
-    }
 }
 
 @Service
