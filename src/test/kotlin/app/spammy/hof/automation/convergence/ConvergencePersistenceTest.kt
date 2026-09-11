@@ -5,6 +5,7 @@ import app.spammy.hof.account.repository.HofAccountRepository
 import app.spammy.hof.automation.entity.AutomationEntryEntity
 import app.spammy.hof.automation.entity.AutomationType
 import app.spammy.hof.automation.repository.AutomationEntryCommandRepository
+import app.spammy.hof.automation.repository.AutomationConvergenceShadowQueryRepository
 import app.spammy.hof.common.persistence.QueryDslConfig
 import app.spammy.hof.common.time.TimeProvider
 import jakarta.persistence.EntityManager
@@ -18,6 +19,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.CsvSource
 import org.junit.jupiter.params.provider.ValueSource
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
@@ -31,7 +33,8 @@ import org.springframework.transaction.support.TransactionTemplate
 
 @DataJpaTest
 @ActiveProfiles("test")
-@Import(QueryDslConfig::class, JpaConvergenceStore::class, JpaAutomationConvergenceShadowRecorder::class)
+@Import(QueryDslConfig::class, JpaConvergenceStore::class, JpaAutomationConvergenceShadowRecorder::class,
+    AutomationConvergenceShadowQueryRepository::class)
 class ConvergencePersistenceTest {
     @Autowired private lateinit var accounts: HofAccountRepository
     @Autowired private lateinit var entries: AutomationEntryCommandRepository
@@ -406,6 +409,442 @@ class ConvergencePersistenceTest {
         held.forEach { assertEquals(ActionConvergenceResult.HELD, store.get(it.attemptId)?.result) }
         assertEquals(0, module.observeAuthoritativeBaselines(account.id, scope, setOf("mission-a", "mission-b"), now))
         assertEquals(setOf("mission-b"), store.findSuppressedBaselines(account.id)[scope])
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    fun `shadow 판정기 재생성 뒤에도 다섯 번째 성공 관측에서 같은 보류 결과를 저장한다`() {
+        val now = Instant.parse("2026-09-11T00:00:00Z")
+        var currentTime = now
+        val clock = TimeProvider { currentTime }
+        val transaction = TransactionTemplate(transactions)
+        val (continuousAccount, continuousEntry) = requireNotNull(transaction.execute {
+            fixture("shadow-budget-continuous", now)
+        })
+        val (restoredAccount, restoredEntry) = requireNotNull(transaction.execute {
+            fixture("shadow-budget-restored", now)
+        })
+        val accountIds = listOf(continuousAccount.id, restoredAccount.id)
+        try {
+            val continuousSelection = selection(continuousEntry.id, "continuous-execution", "quest")
+            val restoredSelection = selection(restoredEntry.id, "restored-execution", "quest")
+            val continuous = DefaultAutomationConvergenceShadowEvaluator(clock, shadowRecorder, store)
+            var restored = DefaultAutomationConvergenceShadowEvaluator(clock, shadowRecorder, store)
+            continuous.selected(continuousAccount.id, continuousSelection)
+            restored.selected(restoredAccount.id, restoredSelection)
+            repeat(4) { index ->
+                currentTime = now.plusSeconds(index.toLong())
+                val evidence = AutomationActionEvidence.SameState(currentTime, "baseline-quest")
+                assertEquals(ActionConvergenceResult.PENDING, continuous.observe(
+                    continuousAccount.id, continuousSelection.executionIdentity,
+                    evidence, LegacyConvergenceDecision.RECONCILING,
+                )?.newResult)
+                assertEquals(ActionConvergenceResult.PENDING, restored.observe(
+                    restoredAccount.id, restoredSelection.executionIdentity,
+                    evidence, LegacyConvergenceDecision.RECONCILING,
+                )?.newResult)
+            }
+            fun storedTrace(accountId: Long) = requireNotNull(transaction.execute {
+                entityManager.createQuery(
+                    "select shadow from AutomationConvergenceShadowEvaluationEntity shadow " +
+                        "where shadow.accountId = :accountId order by shadow.createdAt",
+                    AutomationConvergenceShadowEvaluationEntity::class.java,
+                ).setParameter("accountId", accountId).resultList.map {
+                    Triple(it.newResult, it.newReasonCode, it.createdAt)
+                }
+            })
+            assertEquals(4, storedTrace(restoredAccount.id).size)
+            restored = DefaultAutomationConvergenceShadowEvaluator(clock, shadowRecorder, store)
+            restored.selected(restoredAccount.id, restoredSelection)
+            currentTime = now.plusSeconds(4)
+            val lastEvidence = AutomationActionEvidence.SameState(currentTime, "baseline-quest")
+            assertEquals(ActionConvergenceResult.HELD, continuous.observe(
+                continuousAccount.id, continuousSelection.executionIdentity,
+                lastEvidence, LegacyConvergenceDecision.HELD,
+            )?.newResult)
+            val afterRestart = restored.observe(
+                restoredAccount.id, restoredSelection.executionIdentity,
+                lastEvidence, LegacyConvergenceDecision.HELD,
+            )
+            val continuousTrace = storedTrace(continuousAccount.id)
+            val restoredTrace = storedTrace(restoredAccount.id)
+            assertEquals(5, continuousTrace.size)
+            assertEquals("PENDING_BUDGET_EXHAUSTED", continuousTrace.last().second)
+            assertEquals(0L, transaction.execute {
+                entityManager.createQuery(
+                    "select count(attempt) from AutomationActionAttemptEntity attempt " +
+                        "where attempt.account.id in :accountIds", Long::class.javaObjectType,
+                ).setParameter("accountIds", accountIds).singleResult
+            })
+            assertEquals(continuousTrace, restoredTrace, "저장된 SHADOW 결과·이유·시각이 재생성으로 달라지면 안 된다")
+            assertEquals(ActionConvergenceResult.HELD, afterRestart?.newResult)
+        } finally {
+            transaction.executeWithoutResult {
+                entityManager.createNativeQuery("delete from hof_accounts where id in (:accountIds)")
+                    .setParameter("accountIds", accountIds).executeUpdate()
+            }
+        }
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    fun `shadow 재생성 후 네트워크 실패는 관측 횟수를 늘리지 않고 원래 시간 예산을 끝낸다`() {
+        val now = Instant.parse("2026-09-11T00:00:00Z")
+        var currentTime = now
+        val clock = TimeProvider { currentTime }
+        val transaction = TransactionTemplate(transactions)
+        val (account, entry) = requireNotNull(transaction.execute { fixture("shadow-network-budget", now) })
+        try {
+            val selected = selection(entry.id, "network-budget", "quest")
+            var evaluator = DefaultAutomationConvergenceShadowEvaluator(clock, shadowRecorder, store)
+            evaluator.selected(account.id, selected)
+            assertEquals(ActionConvergenceResult.PENDING, evaluator.observe(account.id, selected.executionIdentity,
+                AutomationActionEvidence.SameState(now, "baseline-quest"), LegacyConvergenceDecision.RECONCILING)?.newResult)
+            for ((seconds, expected) in listOf(110L to ActionConvergenceResult.PENDING,
+                119L to ActionConvergenceResult.PENDING, 120L to ActionConvergenceResult.HELD)) {
+                currentTime = now.plusSeconds(seconds)
+                evaluator = DefaultAutomationConvergenceShadowEvaluator(clock, shadowRecorder, store)
+                evaluator.selected(account.id, selected)
+                assertEquals(expected, evaluator.observe(account.id, selected.executionIdentity,
+                    AutomationActionEvidence.NetworkFailure(currentTime, "fixture network failure"), LegacyConvergenceDecision.RECONCILING)?.newResult)
+            }
+            val rows = requireNotNull(transaction.execute {
+                entityManager.createQuery(
+                    "select shadow from AutomationConvergenceShadowEvaluationEntity shadow " +
+                        "where shadow.accountId = :accountId order by shadow.recordedSequence",
+                    AutomationConvergenceShadowEvaluationEntity::class.java,
+                ).setParameter("accountId", account.id).resultList
+            })
+            assertEquals(listOf(1, 1, 1, 1), rows.map { it.successfulObservationCount })
+            assertEquals(listOf(now, now, now, now), rows.map { it.firstPendingAt })
+            assertEquals("PENDING_BUDGET_EXHAUSTED", rows.last().newReasonCode)
+        } finally {
+            transaction.executeWithoutResult {
+                entityManager.createNativeQuery("delete from hof_accounts where id = :accountId")
+                    .setParameter("accountId", account.id).executeUpdate()
+            }
+        }
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    fun `shadow 종결 뒤 늦은 원래 직접 응답은 저장 순서대로 복원하고 독립 범위는 새로 판단한다`() {
+        val now = Instant.parse("2026-09-11T00:00:00Z")
+        var currentTime = now
+        val clock = TimeProvider { currentTime }
+        val transaction = TransactionTemplate(transactions)
+        val (account, entry) = requireNotNull(transaction.execute { fixture("shadow-late-terminal", now) })
+        try {
+            val selected = selection(entry.id, "late-terminal", "quest")
+            var evaluator = DefaultAutomationConvergenceShadowEvaluator(clock, shadowRecorder, store)
+            evaluator.selected(account.id, selected)
+            repeat(5) { index ->
+                currentTime = now.plusSeconds(10L + index)
+                evaluator.observe(account.id, selected.executionIdentity,
+                    AutomationActionEvidence.SameState(currentTime, "baseline-quest"), LegacyConvergenceDecision.RECONCILING)
+            }
+            evaluator = DefaultAutomationConvergenceShadowEvaluator(clock, shadowRecorder, store)
+            evaluator.selected(account.id, selected)
+            assertEquals(null, evaluator.observe(account.id, selected.executionIdentity,
+                AutomationActionEvidence.NetworkFailure(currentTime, "fixture network failure"), LegacyConvergenceDecision.RECONCILING))
+            assertEquals(ActionConvergenceResult.APPLIED, evaluator.observe(account.id, selected.executionIdentity,
+                AutomationActionEvidence.DirectApplied(now, "original-response"), LegacyConvergenceDecision.APPLIED)?.newResult)
+            evaluator = DefaultAutomationConvergenceShadowEvaluator(clock, shadowRecorder, store)
+            evaluator.selected(account.id, selected.copy(policyVersion = "unsupported-new-policy"))
+            assertEquals(null, evaluator.observe(account.id, selected.executionIdentity,
+                AutomationActionEvidence.DirectApplied(now, "original-response"), LegacyConvergenceDecision.APPLIED))
+            val independent = selection(entry.id, "independent-execution", "independent-quest")
+            evaluator.selected(account.id, independent)
+            assertEquals(ActionConvergenceResult.PENDING, evaluator.observe(account.id, independent.executionIdentity,
+                AutomationActionEvidence.SameState(currentTime, "baseline-independent-quest"),
+                LegacyConvergenceDecision.RECONCILING)?.newResult)
+            transaction.executeWithoutResult {
+                val rows = entityManager.createQuery(
+                    "select shadow from AutomationConvergenceShadowEvaluationEntity shadow " +
+                        "where shadow.accountId = :accountId order by shadow.recordedSequence",
+                    AutomationConvergenceShadowEvaluationEntity::class.java,
+                ).setParameter("accountId", account.id).resultList
+                assertEquals(7, rows.size)
+                assertEquals(ActionConvergenceResult.HELD, rows[4].newResult)
+                assertEquals(ActionConvergenceResult.APPLIED, rows[5].newResult)
+                assertEquals(now, rows[5].createdAt)
+                assertTrue(rows[5].createdAt.isBefore(rows[4].createdAt))
+                assertEquals(ProductionActionEvidenceInterpreter.VERSION_1, rows[5].policyVersion)
+                assertEquals(1, rows[6].successfulObservationCount)
+                assertEquals(0L, entityManager.createQuery(
+                    "select count(attempt) from AutomationActionAttemptEntity attempt where attempt.account.id = :accountId",
+                    Long::class.javaObjectType,
+                ).setParameter("accountId", account.id).singleResult)
+            }
+        } finally {
+            transaction.executeWithoutResult {
+                entityManager.createNativeQuery("delete from hof_accounts where id = :accountId")
+                    .setParameter("accountId", account.id).executeUpdate()
+            }
+        }
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    fun `shadow 재생성은 진행도 기준 새 판단으로 해제한 과거 보류를 다시 활성화하지 않는다`() {
+        val now = Instant.parse("2026-09-11T00:00:00Z")
+        var currentTime = now
+        val clock = TimeProvider { currentTime }
+        val transaction = TransactionTemplate(transactions)
+        val fixtures = listOf(false, true).map { restart ->
+            restart to requireNotNull(transaction.execute { fixture("shadow-fresh-decision-$restart", now) })
+        }
+        val accountIds = fixtures.map { it.second.first.id }
+        try {
+            val traces = fixtures.map { (restart, fixture) ->
+                val (account, entry) = fixture
+                val original = selection(entry.id, "original-battle", "quest")
+                    .copy(actionKind = AutomationActionKind.QUEST_BATTLE)
+                currentTime = now
+                var evaluator = DefaultAutomationConvergenceShadowEvaluator(clock, shadowRecorder, store)
+                evaluator.selected(account.id, original)
+                assertEquals(ActionConvergenceResult.RESULT_UNOBSERVED, evaluator.observe(
+                    account.id, original.executionIdentity,
+                    AutomationActionEvidence.ResultUnobservedFreshDecision(now, "complete quest progress"),
+                    LegacyConvergenceDecision.RESULT_UNOBSERVED,
+                )?.newResult)
+
+                if (restart) evaluator = DefaultAutomationConvergenceShadowEvaluator(clock, shadowRecorder, store)
+                evaluator.selected(account.id, original)
+                currentTime = now.plusSeconds(1)
+                val next = original.copy(executionIdentity = "next-battle")
+                evaluator.selected(account.id, next)
+                assertEquals(ActionConvergenceResult.PENDING, evaluator.observe(
+                    account.id, next.executionIdentity,
+                    AutomationActionEvidence.SameState(currentTime, original.baselineFingerprint),
+                    LegacyConvergenceDecision.RECONCILING,
+                )?.newResult, "재시작=$restart: 해제한 과거 보류가 같은 기준 상태의 다음 행동 비교를 막으면 안 된다")
+                currentTime = now.plusSeconds(2)
+                assertEquals(ActionConvergenceResult.APPLIED, evaluator.observe(
+                    account.id, next.executionIdentity,
+                    AutomationActionEvidence.DirectApplied(currentTime, "next-battle-response"),
+                    LegacyConvergenceDecision.APPLIED,
+                )?.newResult)
+                requireNotNull(transaction.execute {
+                    entityManager.createQuery(
+                        "select shadow from AutomationConvergenceShadowEvaluationEntity shadow " +
+                            "where shadow.accountId = :accountId order by shadow.recordedSequence",
+                        AutomationConvergenceShadowEvaluationEntity::class.java,
+                    ).setParameter("accountId", account.id).resultList.map {
+                        Triple(it.newResult, it.newReasonCode, it.successfulObservationCount)
+                    }
+                })
+            }
+            assertEquals(listOf(
+                Triple(ActionConvergenceResult.RESULT_UNOBSERVED, "RESULT_UNOBSERVED_FRESH_DECISION", 0),
+                Triple(ActionConvergenceResult.PENDING, "AUTHORITATIVE_STATE_UNCHANGED", 1),
+                Triple(ActionConvergenceResult.APPLIED, "DIRECT_RESPONSE_APPLIED", 1),
+            ), traces.first())
+            assertEquals(traces.first(), traces.last())
+            assertEquals(0L, transaction.execute {
+                entityManager.createQuery(
+                    "select count(attempt) from AutomationActionAttemptEntity attempt where attempt.account.id in :accountIds",
+                    Long::class.javaObjectType,
+                ).setParameter("accountIds", accountIds).singleResult
+            })
+        } finally {
+            transaction.executeWithoutResult {
+                entityManager.createNativeQuery("delete from hof_accounts where id in (:accountIds)")
+                    .setParameter("accountIds", accountIds).executeUpdate()
+            }
+        }
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    fun `shadow 재생성 뒤 같은 범위의 새 행동 선택은 이전 행동 대체 기록을 보존한다`() {
+        val now = Instant.parse("2026-09-11T00:00:00Z")
+        var currentTime = now
+        val clock = TimeProvider { currentTime }
+        val transaction = TransactionTemplate(transactions)
+        val fixtures = listOf(false, true).map { restart ->
+            restart to requireNotNull(transaction.execute { fixture("shadow-replacement-$restart", now) })
+        }
+        val accountIds = fixtures.map { it.second.first.id }
+        try {
+            val traces = fixtures.map { (restart, fixture) ->
+                val (account, entry) = fixture
+                val original = selection(entry.id, "original-action", "same-quest")
+                currentTime = now
+                var evaluator = DefaultAutomationConvergenceShadowEvaluator(clock, shadowRecorder, store)
+                evaluator.selected(account.id, original)
+                assertEquals(ActionConvergenceResult.PENDING, evaluator.observe(
+                    account.id, original.executionIdentity,
+                    AutomationActionEvidence.SameState(now, original.baselineFingerprint),
+                    LegacyConvergenceDecision.RECONCILING,
+                )?.newResult)
+                if (restart) evaluator = DefaultAutomationConvergenceShadowEvaluator(clock, shadowRecorder, store)
+                currentTime = now.plusSeconds(1)
+                val next = original.copy(executionIdentity = "next-action")
+                evaluator.selected(account.id, next)
+                assertEquals(ActionConvergenceResult.APPLIED, evaluator.observe(
+                    account.id, next.executionIdentity,
+                    AutomationActionEvidence.DirectApplied(currentTime, "next-action-response"),
+                    LegacyConvergenceDecision.APPLIED,
+                )?.newResult)
+                requireNotNull(transaction.execute {
+                    entityManager.createQuery(
+                        "select shadow from AutomationConvergenceShadowEvaluationEntity shadow " +
+                            "where shadow.accountId = :accountId order by shadow.recordedSequence",
+                        AutomationConvergenceShadowEvaluationEntity::class.java,
+                    ).setParameter("accountId", account.id).resultList.map {
+                        Triple(it.newResult, it.newReasonCode, it.createdAt)
+                    }
+                })
+            }
+            assertEquals(listOf(
+                Triple(ActionConvergenceResult.PENDING, "AUTHORITATIVE_STATE_UNCHANGED", now),
+                Triple(ActionConvergenceResult.SUPERSEDED, "AUTHORITATIVE_STATE_ADVANCED", now.plusSeconds(1)),
+                Triple(ActionConvergenceResult.APPLIED, "DIRECT_RESPONSE_APPLIED", now.plusSeconds(1)),
+            ), traces.first())
+            assertEquals(traces.first(), traces.last(), "재시작 뒤에도 이전 행동의 대체를 누락하지 않는다")
+            assertEquals(0L, transaction.execute {
+                entityManager.createQuery(
+                    "select count(attempt) from AutomationActionAttemptEntity attempt where attempt.account.id in :accountIds",
+                    Long::class.javaObjectType,
+                ).setParameter("accountIds", accountIds).singleResult
+            })
+        } finally {
+            transaction.executeWithoutResult {
+                entityManager.createNativeQuery("delete from hof_accounts where id in (:accountIds)")
+                    .setParameter("accountIds", accountIds).executeUpdate()
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    fun `종결한 이전 shadow 행동을 다시 선택해도 현재 행동의 결과 확인을 대체하지 않는다`(restart: Boolean) {
+        val now = Instant.parse("2026-09-11T00:00:00Z")
+        var currentTime = now
+        val clock = TimeProvider { currentTime }
+        val transaction = TransactionTemplate(transactions)
+        val (account, entry) = requireNotNull(transaction.execute { fixture("shadow-old-selection-$restart", now) })
+        try {
+            val original = selection(entry.id, "old-execution", "same-quest")
+            val next = original.copy(executionIdentity = "new-execution")
+            var evaluator = DefaultAutomationConvergenceShadowEvaluator(clock, shadowRecorder, store)
+            evaluator.selected(account.id, original)
+            evaluator.observe(account.id, original.executionIdentity,
+                AutomationActionEvidence.SameState(now, original.baselineFingerprint), LegacyConvergenceDecision.RECONCILING)
+            currentTime = now.plusSeconds(1)
+            evaluator.selected(account.id, next)
+            assertEquals(ActionConvergenceResult.PENDING, evaluator.observe(account.id, next.executionIdentity,
+                AutomationActionEvidence.SameState(currentTime, next.baselineFingerprint),
+                LegacyConvergenceDecision.RECONCILING)?.newResult)
+
+            if (restart) {
+                evaluator = DefaultAutomationConvergenceShadowEvaluator(clock, shadowRecorder, store)
+                evaluator.selected(account.id, next)
+            }
+            evaluator.selected(account.id, original.copy(
+                actionKind = AutomationActionKind.HOME_ACCEPT,
+                scope = AutomationIsolationScope(AutomationIsolationScopeKind.HOME_TARGET, "changed-scope"),
+                policyVersion = "unsupported-replacement", baselineFingerprint = "changed-baseline",
+                observationOnly = true,
+            ))
+            assertEquals(ActionConvergenceResult.APPLIED, evaluator.observe(account.id, original.executionIdentity,
+                AutomationActionEvidence.DirectApplied(now, "old-original-response"), LegacyConvergenceDecision.APPLIED)?.newResult)
+            evaluator.selected(account.id, next)
+            currentTime = now.plusSeconds(2)
+            assertEquals(ActionConvergenceResult.PENDING, evaluator.observe(account.id, next.executionIdentity,
+                AutomationActionEvidence.SameState(currentTime, next.baselineFingerprint),
+                LegacyConvergenceDecision.RECONCILING)?.newResult)
+            transaction.executeWithoutResult {
+                val rows = entityManager.createQuery(
+                    "select shadow from AutomationConvergenceShadowEvaluationEntity shadow " +
+                        "where shadow.accountId = :accountId order by shadow.recordedSequence",
+                    AutomationConvergenceShadowEvaluationEntity::class.java,
+                ).setParameter("accountId", account.id).resultList
+                assertEquals(listOf(ActionConvergenceResult.PENDING, ActionConvergenceResult.SUPERSEDED,
+                    ActionConvergenceResult.PENDING, ActionConvergenceResult.APPLIED, ActionConvergenceResult.PENDING),
+                    rows.map { it.newResult })
+                assertEquals(2, rows.last().successfulObservationCount)
+                assertEquals(now.plusSeconds(1), rows.last().firstPendingAt)
+                assertEquals(original.actionKind, rows[3].actionKind)
+                assertEquals(original.scope.kind, rows[3].scopeKind)
+                assertEquals(rows[0].scopeKeyHash, rows[3].scopeKeyHash)
+                assertEquals(rows[0].baselineFingerprintHash, rows[3].baselineFingerprintHash)
+                assertEquals(original.policyVersion, rows[3].policyVersion)
+                assertEquals(false, rows[3].observationOnly)
+                assertEquals(entry.id, rows[3].selectionEntryId)
+            }
+        } finally {
+            transaction.executeWithoutResult {
+                entityManager.createNativeQuery("delete from hof_accounts where id = :accountId")
+                    .setParameter("accountId", account.id).executeUpdate()
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @CsvSource("false, false", "true, false", "false, true", "true, true")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    fun `사용자가 해제한 보류는 항목 삭제와 shadow 재시작 뒤에도 새 행동 비교를 막지 않는다`(
+        restart: Boolean,
+        deleteEntry: Boolean,
+    ) {
+        val now = Instant.parse("2026-09-11T00:00:00Z")
+        var currentTime = now
+        val clock = TimeProvider { currentTime }
+        val transaction = TransactionTemplate(transactions)
+        val (account, entry) = requireNotNull(transaction.execute {
+            fixture("shadow-user-release-$restart-$deleteEntry", now)
+        })
+        try {
+            val original = selection(entry.id, "original-manual-release", "same-quest")
+            var evaluator = DefaultAutomationConvergenceShadowEvaluator(clock, shadowRecorder, store)
+            evaluator.selected(account.id, original)
+            repeat(5) { index ->
+                currentTime = now.plusSeconds(index.toLong())
+                assertEquals(if (index == 4) ActionConvergenceResult.HELD else ActionConvergenceResult.PENDING,
+                    evaluator.observe(account.id, original.executionIdentity,
+                        AutomationActionEvidence.SameState(currentTime, original.baselineFingerprint),
+                        LegacyConvergenceDecision.RECONCILING)?.newResult)
+            }
+            val canonical = DefaultAutomationActionConvergenceModule(store, clock)
+            canonical.holdUnresolved(account.id, original,
+                AutomationActionEvidence.ResultUnobserved(currentTime, "result budget exhausted"), 5, now)
+            val attempt = assertNotNull(store.get(account.id, original.executionIdentity))
+            assertEquals(setOf(original.baselineFingerprint), store.findSuppressedBaselines(account.id)[original.scope])
+            currentTime = now.plusSeconds(6)
+            assertTrue(canonical.allowFreshDecision(account.id, attempt.attemptId, currentTime))
+            assertTrue(store.findSuppressedBaselines(account.id).isEmpty())
+
+            val nextEntryId = if (deleteEntry) requireNotNull(transaction.execute {
+                entries.delete(entry)
+                entries.flush()
+                entries.save(AutomationEntryEntity(
+                    account = account, type = AutomationType.QUEST, priority = 0,
+                    enabled = true, createdAt = currentTime, updatedAt = currentTime,
+                )).id
+            }) else entry.id
+            if (restart) evaluator = DefaultAutomationConvergenceShadowEvaluator(clock, shadowRecorder, store)
+            val next = original.copy(entryId = nextEntryId, executionIdentity = "after-manual-release")
+            evaluator.selected(account.id, next)
+            assertEquals(ActionConvergenceResult.APPLIED, evaluator.observe(account.id, next.executionIdentity,
+                AutomationActionEvidence.DirectApplied(currentTime, "new-original-response"),
+                LegacyConvergenceDecision.APPLIED)?.newResult)
+            assertEquals(if (deleteEntry) null else ActionConvergenceResult.HELD, store.get(attempt.attemptId)?.result)
+            assertEquals(ActionConvergenceResult.HELD, transaction.execute {
+                entityManager.createQuery(
+                    "select convergence.result from ActionConvergenceEntity convergence " +
+                        "where convergence.attempt.id = :attemptId", ActionConvergenceResult::class.java,
+                ).setParameter("attemptId", attempt.attemptId).singleResult
+            })
+            assertEquals(null, store.get(account.id, next.executionIdentity), "SHADOW는 production 시도를 추가하지 않는다")
+        } finally {
+            transaction.executeWithoutResult {
+                entityManager.createNativeQuery("delete from hof_accounts where id = :accountId")
+                    .setParameter("accountId", account.id).executeUpdate()
+            }
+        }
     }
 
     private fun fixture(loginId: String, now: Instant): Pair<HofAccountEntity, AutomationEntryEntity> {

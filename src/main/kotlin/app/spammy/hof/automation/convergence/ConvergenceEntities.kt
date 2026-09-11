@@ -276,4 +276,34 @@ class AutomationConvergenceShadowEvaluationEntity(
 
     @Column(name = "expires_at", nullable = false)
     val expiresAt: Instant,
+
+    @Column(name = "successful_observation_count")
+    val successfulObservationCount: Int? = null,
+
+    @Column(name = "first_pending_at")
+    val firstPendingAt: Instant? = null,
+
+    @Column(name = "submitted_at")
+    val submittedAt: Instant? = null,
+
+    @Column(name = "next_probe_at")
+    val nextProbeAt: Instant? = null,
+
+    @Column(name = "finished_at")
+    val finishedAt: Instant? = null,
+
+    @Column(name = "checkpoint_updated_at")
+    val checkpointUpdatedAt: Instant? = null,
+
+    @Column(name = "selection_entry_id")
+    val selectionEntryId: Long? = null,
+
+    @Column(name = "baseline_fingerprint_hash", length = 64)
+    val baselineFingerprintHash: String? = null,
+
+    @Column(name = "observation_only")
+    val observationOnly: Boolean? = null,
+
+    @Column(name = "recorded_sequence", nullable = false, insertable = false, updatable = false)
+    val recordedSequence: Long = 0,
 )

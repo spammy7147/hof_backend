@@ -1,5 +1,6 @@
 package app.spammy.hof.automation.convergence
 
+import app.spammy.hof.automation.repository.AutomationConvergenceShadowQueryRepository
 import jakarta.persistence.EntityManager
 import java.time.Duration
 import java.time.Instant
@@ -28,10 +29,31 @@ data class DurableShadowEvaluation(
     val completenessDiffers: Boolean,
     val policyVersion: String,
     val observedAt: Instant,
+    val checkpoint: ShadowConvergenceCheckpoint? = null,
+)
+
+data class ShadowConvergenceCheckpoint(
+    /** 실행 식별자·scope key·기준 상태는 SHADOW 전용 지문이다. */
+    val selection: SelectedAutomationAction,
+    val result: ActionConvergenceResult,
+    val reasonCode: String,
+    val successfulObservationCount: Int,
+    val firstPendingAt: Instant?,
+    val submittedAt: Instant?,
+    val nextProbeAt: Instant?,
+    val finishedAt: Instant?,
+    val updatedAt: Instant,
+    val suppressionReleased: Boolean = false,
 )
 
 fun interface AutomationConvergenceShadowRecorder {
     fun record(evaluation: DurableShadowEvaluation)
+
+    fun restore(
+        accountId: Long,
+        executionIdentityHash: String,
+        scope: AutomationIsolationScope,
+    ): List<ShadowConvergenceCheckpoint> = emptyList()
 }
 
 object NoOpAutomationConvergenceShadowRecorder : AutomationConvergenceShadowRecorder {
@@ -42,6 +64,7 @@ object NoOpAutomationConvergenceShadowRecorder : AutomationConvergenceShadowReco
 @Transactional(propagation = Propagation.REQUIRES_NEW)
 class JpaAutomationConvergenceShadowRecorder(
     private val entityManager: EntityManager,
+    private val queries: AutomationConvergenceShadowQueryRepository,
 ) : AutomationConvergenceShadowRecorder {
     override fun record(evaluation: DurableShadowEvaluation) {
         entityManager.persist(
@@ -68,9 +91,24 @@ class JpaAutomationConvergenceShadowRecorder(
                 buildVersion = BUILD_VERSION,
                 createdAt = evaluation.observedAt,
                 expiresAt = evaluation.observedAt.plus(RETENTION),
+                successfulObservationCount = evaluation.checkpoint?.successfulObservationCount,
+                firstPendingAt = evaluation.checkpoint?.firstPendingAt,
+                submittedAt = evaluation.checkpoint?.submittedAt,
+                nextProbeAt = evaluation.checkpoint?.nextProbeAt,
+                finishedAt = evaluation.checkpoint?.finishedAt,
+                checkpointUpdatedAt = evaluation.checkpoint?.updatedAt,
+                selectionEntryId = evaluation.checkpoint?.selection?.entryId,
+                baselineFingerprintHash = evaluation.checkpoint?.selection?.baselineFingerprint,
+                observationOnly = evaluation.checkpoint?.selection?.observationOnly,
             ),
         )
     }
+
+    override fun restore(
+        accountId: Long,
+        executionIdentityHash: String,
+        scope: AutomationIsolationScope,
+    ): List<ShadowConvergenceCheckpoint> = queries.restore(accountId, executionIdentityHash, scope)
 
     private companion object {
         val RETENTION: Duration = Duration.ofDays(30)

@@ -374,6 +374,40 @@ class AutomationDirectReceiptProcessRestartTest {
         assertEquals(0, result["runningWorks"].asInt(), result.toString())
     }
 
+    @Test
+    fun `shadow 실제 JVM 재시작은 원래 관측 예산과 보류 뒤 독립 자택 판단을 보존한다`() {
+        val root = directory
+        val mapper = jacksonObjectMapper()
+        directory = java.nio.file.Files.createDirectories(root.resolve("continuous"))
+        assertEquals(0, runProcess("crash", "SHADOW", "shadow-budget-continuous"))
+        val continuous = mapper.readTree(directory.resolve("shadow-budget.json").readText())
+        assertEquals(1, continuous["productionAttempts"].asInt(), continuous.toString())
+        assertEquals("HELD", continuous["productionResults"].single()["result"].asString())
+        assertEquals("PENDING_BUDGET_EXHAUSTED", continuous["productionResults"].single()["reason_code"].asString())
+        directory = java.nio.file.Files.createDirectories(root.resolve("restarted"))
+        assertEquals(71, runProcess("crash", "SHADOW", "shadow-budget"))
+        val interrupted = mapper.readTree(directory.resolve("shadow-budget.json").readText())
+        assertEquals(1, interrupted["questSubmissions"].asInt(), interrupted.toString())
+        assertEquals("PENDING", interrupted["trace"].last()["new_result"].asString(), interrupted.toString())
+        assertEquals(1, interrupted["trace"].last()["successful_observation_count"].asInt(), interrupted.toString())
+        assertEquals(0, interrupted["productionAttempts"].asInt(), interrupted.toString())
+        val processes = mutableSetOf(interrupted["pid"].asLong())
+        for (phase in listOf("resume", "resume-again")) {
+            assertEquals(0, runProcess(phase, "SHADOW", "shadow-budget"))
+            val result = mapper.readTree(directory.resolve("shadow-budget.json").readText())
+            assertTrue(processes.add(result["pid"].asLong()))
+            assertEquals(continuous["trace"], result["trace"], "재시작 전후 실제 SHADOW 판정·예산·시각이 같아야 한다: $result")
+            assertEquals(1, result["questSubmissions"].asInt(), result.toString())
+            assertEquals(1, result["homeSubmissions"].asInt(), result.toString())
+            // 실제 runtime의 holdUnresolved는 모드와 무관하게 원래 항목의 보류를 한 번 저장한다.
+            assertEquals(1, result["productionAttempts"].asInt(), result.toString())
+            assertEquals(continuous["productionResults"], result["productionResults"])
+            assertEquals(0, result["runningWorks"].asInt(), result.toString())
+            assertTrue(result["runtimeLeaseReleased"].asBoolean())
+            assertTrue(result["consumedWakes"].asInt() > 1)
+        }
+    }
+
     private fun runProcess(phase: String, mode: String, interruption: String): Int {
         val classpath = generateSequence(javaClass.classLoader) { it.parent }.filterIsInstance<URLClassLoader>()
             .flatMap { it.urLs.asSequence() }.map { Path.of(it.toURI()).toString() }.toList()
@@ -454,7 +488,8 @@ object AutomationDirectReceiptCrashProcess {
             diagnostics = context.getBean(JdbcTemplate::class.java)
             val clock = context.getBean(AutomationRecoveryIntegrationTest.RecoveryClock::class.java)
             deliveryClock = clock
-            clock.current = maxOf(Instant.parse("2026-09-10T10:00:00Z").plusSeconds(if (phase != "crash") 301 else 0),
+            clock.current = maxOf(Instant.parse("2026-09-10T10:00:00Z").plusSeconds(
+                if (phase != "crash" && !interruption.startsWith("shadow-budget")) 301 else 0),
                 state.clockAt?.let(Instant::parse) ?: Instant.MIN)
             val em = context.getBean(EntityManager::class.java)
             if (phase == "crash") {
@@ -541,10 +576,40 @@ object AutomationDirectReceiptCrashProcess {
                             java.sql.Timestamp::class.java)?.toInstant() == independentRetryAt)
                     }
                     check(state.questSubmissions == 1 && state.questClaims == 0) { "해제 요청 자체가 원격 행동을 제출하면 안 된다: $state" }
-                } else context.getBean(AutomationWakeupPort::class.java).wake(1L, "PROCESS_RESTART")
+                } else if (!interruption.startsWith("shadow-budget")) {
+                    context.getBean(AutomationWakeupPort::class.java).wake(1L, "PROCESS_RESTART")
+                }
             }
             val publisher = context.getBean(AutomationOutboxPublisher::class.java)
             val jdbc = context.getBean(JdbcTemplate::class.java)
+            if (interruption.startsWith("shadow-budget")) {
+                val stopping = phase == "crash" && interruption == "shadow-budget"
+                repeat(if (stopping) 1 else if (phase == "resume") 11 else 12) {
+                    val due = jdbc.queryForObject("select min(available_at) from automation_outbox where published_at is null",
+                        java.sql.Timestamp::class.java)?.toInstant()
+                    if (due != null) clock.current = maxOf(clock.now(), due)
+                    publisher.publishBatch()
+                }
+                val result = mapOf(
+                    "pid" to ProcessHandle.current().pid(),
+                    "trace" to jdbc.queryForList("select evidence_kind, new_result, new_reason_code, " +
+                        "successful_observation_count, first_pending_at, created_at " +
+                        "from automation_convergence_shadow_evaluations where account_id = 1 and action_kind = 'QUEST_ACCEPT' " +
+                        "order by recorded_sequence"),
+                    "questSubmissions" to state.questSubmissions, "homeSubmissions" to state.homeSubmissions,
+                    "productionAttempts" to jdbc.queryForObject("select count(*) from automation_action_attempts", Int::class.java),
+                    "productionResults" to jdbc.queryForList("select result, reason_code, successful_observation_count, first_pending_at " +
+                        "from automation_action_convergences order by id"),
+                    "runningWorks" to jdbc.queryForObject("select count(*) from automation_work_sessions where status = 'RUNNING'", Int::class.java),
+                    "runtimeLeaseReleased" to (jdbc.queryForObject("select lease_token from typed_automation_runtime_states where account_id = 1", String::class.java) == null),
+                    "consumedWakes" to jdbc.queryForObject("select count(*) from automation_consumed_events", Int::class.java),
+                )
+                directory.resolve("shadow-budget.json").writeText(mapper.writeValueAsString(result))
+                state.clockAt = clock.now().toString()
+                directory.resolve("hof.json").writeText(mapper.writeValueAsString(state))
+                if (stopping) Runtime.getRuntime().halt(71)
+                return@use
+            }
             if (phase == "crash" && interruption.startsWith("late-")) {
                 val outbox = context.getBean(AutomationOutboxQueryRepository::class.java)
                 val marker = context.getBean(AutomationOutboxPublishMarker::class.java)
@@ -744,6 +809,7 @@ object AutomationDirectReceiptCrashProcess {
                             if (request.formFields["action"] == "complete") state.questClaims++
                         }
                         when {
+                            interruption.startsWith("shadow-budget") -> questPage(false)
                             lateRecovery -> "<div id='contents'>퀘스트 목록</div>"
                             submitting && interruption == "late-incomplete" -> "<div id='contents'>퀘스트 목록</div>"
                             submitting && interruption == "incomplete" -> "<div id='contents'>퀘스트 목록</div>"
@@ -850,7 +916,7 @@ object AutomationDirectReceiptCrashProcess {
                     if (bean !is QuestWorkCycleModule) return bean
                     return ProxyFactory(bean).apply {
                         addAdvice(MethodInterceptor { invocation ->
-                            if (phase == "crash" && !interruption.startsWith("history-") &&
+                            if (phase == "crash" && !interruption.startsWith("history-") && !interruption.startsWith("shadow-budget") &&
                                 (!interruption.startsWith("projection-") || interruption == "projection-before-corrupt") &&
                                 invocation.method.name == "recordObservedResult") {
                                 check(state.questSubmissions == 1)

@@ -704,6 +704,12 @@ internal object FreshSchemaContract {
             requiredBoolean("reason_differs"), requiredBoolean("shape_differs"),
             requiredBoolean("completeness_differs"), requiredVarchar("policy_version", 80),
             requiredVarchar("build_version", 80), requiredInstant("created_at"), requiredInstant("expires_at"),
+            optionalInteger("successful_observation_count"), optionalInstant("first_pending_at"),
+            optionalInstant("submitted_at"), optionalInstant("next_probe_at"), optionalInstant("finished_at"),
+            optionalInstant("checkpoint_updated_at"),
+            optionalBigint("selection_entry_id"), optionalVarchar("baseline_fingerprint_hash", 64),
+            optionalBoolean("observation_only"),
+            ColumnContract("recorded_sequence", TypeFamily.BIGINT, nullable = false, autoIncrement = true),
             primaryKey = listOf("id"),
         ),
         table(
@@ -1345,6 +1351,11 @@ internal object FreshSchemaContract {
             "automation_convergence_shadow_evaluations",
             "idx_automation_convergence_shadow_expiry",
             "expires_at", "id",
+        ),
+        index(
+            "automation_convergence_shadow_evaluations",
+            "idx_automation_convergence_shadow_restore",
+            "account_id", "execution_identity_hash", "recorded_sequence",
         ),
     )
 

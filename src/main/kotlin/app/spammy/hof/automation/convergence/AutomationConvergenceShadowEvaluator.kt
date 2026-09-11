@@ -49,7 +49,7 @@ interface AutomationConvergenceShadowEvaluator {
 }
 
 /**
- * production runtime/store와 분리된 메모리 evaluator다. 실제 실행이 만든 evidence를 소비하고
+ * production runtime/store와 분리된 evaluator다. 비교 기록에서 판정 상태를 복원하며 실제 실행의 evidence를 소비하고
  * 관문 해제 여부만 production store에서 읽는다. HOF 요청, runtime 전이, production row는 만들지 않는다.
  */
 @Service
@@ -66,17 +66,51 @@ class DefaultAutomationConvergenceShadowEvaluator(
 
     @Synchronized
     override fun selected(accountId: Long, selection: SelectedAutomationAction) {
-        if (selection.actionKind.battle && store.activeBattleGate(accountId) != null &&
+        val redacted = selection.copy(
+            executionIdentity = fingerprint(selection.executionIdentity),
+            scope = selection.scope.copy(key = fingerprint(selection.scope.key)),
+            baselineFingerprint = fingerprint(selection.baselineFingerprint),
+        )
+        if (store.get(accountId, redacted.executionIdentity) == null) {
+            recorder.restore(accountId, redacted.executionIdentity, redacted.scope).forEach { checkpoint ->
+                val restored = store.get(accountId, checkpoint.selection.executionIdentity)
+                    ?: store.createOrGet(accountId, checkpoint.selection, checkpoint.updatedAt).also {
+                        it.result = checkpoint.result
+                        it.reasonCode = checkpoint.reasonCode
+                        it.successfulObservationCount = checkpoint.successfulObservationCount
+                        it.firstPendingAt = checkpoint.firstPendingAt
+                        it.submittedAt = checkpoint.submittedAt
+                        it.nextProbeAt = checkpoint.nextProbeAt
+                        it.finishedAt = checkpoint.finishedAt
+                        store.save(it)
+                    }
+                if (checkpoint.suppressionReleased ||
+                    !ProductionActionEvidenceInterpreter.supportsVersion(checkpoint.selection.policyVersion) ||
+                    (checkpoint.result == ActionConvergenceResult.RESULT_UNOBSERVED &&
+                        checkpoint.reasonCode == "RESULT_UNOBSERVED_FRESH_DECISION")
+                ) {
+                    store.releaseSuppression(accountId, restored.attemptId, checkpoint.updatedAt)
+                }
+                attempts[accountId to checkpoint.selection.executionIdentity] = restored.attemptId
+            }
+        }
+        val existing = store.get(accountId, redacted.executionIdentity)
+        val original = existing?.selection ?: redacted
+        if (existing != null && !existing.active) {
+            attempts[accountId to original.executionIdentity] = existing.attemptId
+            return
+        }
+        if (original.actionKind.battle && store.activeBattleGate(accountId) != null &&
             productionStore != null && productionStore.activeBattleGate(accountId) == null
         ) {
             engine.releaseBattleGate(accountId, timeProvider.now())
         }
-        store.findActive(accountId, selection.scope)
-            ?.takeIf { it.selection.executionIdentity != selection.executionIdentity }
+        store.findActive(accountId, original.scope)
+            ?.takeIf { it.selection.executionIdentity != original.executionIdentity }
             ?.let { replaced ->
                 val replacedKey = accountId to replaced.selection.executionIdentity
                 attempts.putIfAbsent(replacedKey, replaced.attemptId)
-                observe(
+                observeRedacted(
                     accountId,
                     replaced.selection.executionIdentity,
                     AutomationActionEvidence.StateAdvanced(
@@ -88,12 +122,12 @@ class DefaultAutomationConvergenceShadowEvaluator(
                     LegacyConvergenceDecision.SUPERSEDED,
                 )
             }
-        val directive = engine.prepare(accountId, selection)
+        val directive = engine.prepare(accountId, original)
         if (directive is ConvergenceDirective.Submit) {
-            attempts[accountId to selection.executionIdentity] = directive.attemptId
-        } else if (!ProductionActionEvidenceInterpreter.supportsVersion(selection.policyVersion)) {
-            store.get(accountId, selection.executionIdentity)?.let { held ->
-                attempts[accountId to selection.executionIdentity] = held.attemptId
+            attempts[accountId to original.executionIdentity] = directive.attemptId
+        } else if (!ProductionActionEvidenceInterpreter.supportsVersion(original.policyVersion)) {
+            store.get(accountId, original.executionIdentity)?.let { held ->
+                attempts[accountId to original.executionIdentity] = held.attemptId
                 // SHADOW의 진단 보류가 실제로 선택된 후속 행동의 비교를 막지는 않는다.
                 store.releaseSuppression(accountId, held.attemptId, timeProvider.now())
             }
@@ -106,10 +140,17 @@ class DefaultAutomationConvergenceShadowEvaluator(
         executionIdentity: String,
         evidence: AutomationActionEvidence,
         legacyDecision: LegacyConvergenceDecision,
+    ): ShadowConvergenceEvaluation? = observeRedacted(accountId, fingerprint(executionIdentity), evidence, legacyDecision)
+
+    private fun observeRedacted(
+        accountId: Long,
+        executionIdentityHash: String,
+        evidence: AutomationActionEvidence,
+        legacyDecision: LegacyConvergenceDecision,
     ): ShadowConvergenceEvaluation? {
-        val key = accountId to executionIdentity
+        val key = accountId to executionIdentityHash
         val attemptId = attempts[key] ?: if (evidence is AutomationActionEvidence.DirectApplied) {
-            store.get(accountId, executionIdentity)
+            store.get(accountId, executionIdentityHash)
                 ?.takeIf { ProductionActionEvidenceInterpreter.supportsVersion(it.selection.policyVersion) }
                 ?.attemptId
         } else null
@@ -118,7 +159,7 @@ class DefaultAutomationConvergenceShadowEvaluator(
         if (!before.active && ProductionActionEvidenceInterpreter.supportsVersion(before.selection.policyVersion)) {
             if (evidence !is AutomationActionEvidence.DirectApplied) return null
             val previousResult = before.result
-            engine.recordLateApplication(accountId, executionIdentity, evidence)
+            engine.recordLateApplication(accountId, executionIdentityHash, evidence)
             if (store.get(attemptId)?.result == previousResult) return null
         } else {
             engine.record(attemptId, evidence)
@@ -139,10 +180,10 @@ class DefaultAutomationConvergenceShadowEvaluator(
         recorder.record(
             DurableShadowEvaluation(
                 accountId = accountId,
-                executionIdentityHash = fingerprint(executionIdentity),
+                executionIdentityHash = executionIdentityHash,
                 actionKind = before.selection.actionKind,
                 scopeKind = before.selection.scope.kind,
-                scopeKeyHash = fingerprint(before.selection.scope.key),
+                scopeKeyHash = before.selection.scope.key,
                 evidenceKind = evidenceKind,
                 evidenceCompleteness = completeness,
                 responseShapeFingerprint = shapeFingerprint,
@@ -157,6 +198,11 @@ class DefaultAutomationConvergenceShadowEvaluator(
                 completenessDiffers = legacyDecision.expectedCompleteness(completeness) != completeness,
                 policyVersion = before.selection.policyVersion,
                 observedAt = evidence.capturedAt,
+                checkpoint = ShadowConvergenceCheckpoint(
+                    after.selection, newResult, newReasonCode,
+                    after.successfulObservationCount, after.firstPendingAt, after.submittedAt,
+                    after.nextProbeAt, after.finishedAt, after.updatedAt,
+                ),
             ),
         )
         val shadowKey = ShadowKey(before.selection.actionKind, evidenceKind, legacyDecision, newResult, differs)
