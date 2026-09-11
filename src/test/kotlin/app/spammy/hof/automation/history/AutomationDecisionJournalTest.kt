@@ -269,6 +269,87 @@ open class AutomationDecisionJournalTest {
         assertFalse(telemetry.snapshot(accountId).stalled)
         assertEquals(3.0, registry.counter("hof.automation.action.terminal", "type", "HOME_QUEST").count())
         assertEquals(1.0, registry.counter("hof.automation.progress.stall", "reason", "NO_TERMINAL_ACTION").count())
+
+        // 새 성공이 있어도 후속 판단 자체가 끊겼다면 다시 정체를 감지한다.
+        now = now.plusSeconds(181)
+        telemetry.detectStalls()
+        telemetry.detectStalls()
+        assertEquals(2.0, registry.counter("hof.automation.progress.stall", "reason", "NO_TERMINAL_ACTION").count())
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["IDLE", "COOLDOWN", "CAPTCHA"])
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    fun `성공 뒤 정상 대기를 저장하면 정체 경고 없이 대기하고 새 실행 압력은 다시 감시한다`(waiting: String) {
+        val registry = SimpleMeterRegistry()
+        val telemetry = AutomationProgressTelemetry(registry, TimeProvider { now })
+        val journal = journal(telemetry)
+        val accountId = committed { account("history-idle-progress-$waiting").id }
+        val entryId = committed { entry(entityManager.find(HofAccountEntity::class.java, accountId), AutomationType.HOME_QUEST, 0).id }
+        val runnable = AutomationCoordination.Runnable(
+            entryId, HomeQuestAutomationAction(accountId, "home", "자택", "accept", HomeQuestAutomationActionType.ACCEPT), emptyList(),
+        )
+        val cycleId = committed { journal.appendDecision(accountId, runnable) }
+        committed { journal.appendActionResult(cycleId, AutomationActionTrace(
+            AutomationHistoryEventKind.ACTION_SUCCEEDED, "HOME_APPLIED", "자택 적용",
+            entryId, AutomationType.HOME_QUEST, "HOME_QUEST_ACCEPT",
+        )) }
+        val decision = when (waiting) {
+            "COOLDOWN" -> AutomationCoordination.Unavailable(now.plusSeconds(600), emptyList())
+            "CAPTCHA" -> {
+                val battleEntryId = committed {
+                    entry(entityManager.find(HofAccountEntity::class.java, accountId), AutomationType.BATTLE_MAP, 1).id
+                }
+                AutomationCoordination.Idle(emptyList(), listOf(AutomationEvaluationTrace(
+                    0, battleEntryId, AutomationType.BATTLE_MAP, AutomationDecisionOutcome.WAITING,
+                    "CAPTCHA_BATTLE_GATE_BLOCKED", "전투 관문 대기",
+                )))
+            }
+            else -> AutomationCoordination.Idle(emptyList())
+        }
+        val idleCycleId = committed { journal.appendDecision(accountId, decision) }
+        assertEquals(AutomationDecisionResult.IDLE, committed {
+            journal.page(accountId, AutomationHistoryQuery()).cycles.single { it.id == idleCycleId }.result
+        })
+        assertEquals(1.0, registry.counter("hof.automation.action.terminal", "type", "HOME_QUEST").count())
+        now = now.plusSeconds(181)
+
+        telemetry.detectStalls()
+
+        assertEquals(0.0, registry.counter("hof.automation.progress.stall", "reason", "NO_TERMINAL_ACTION").count())
+        committed { journal.appendDecision(accountId, runnable) }
+        telemetry.detectStalls()
+        assertEquals(0.0, registry.counter("hof.automation.progress.stall", "reason", "NO_TERMINAL_ACTION").count())
+        now = now.plusSeconds(181)
+        telemetry.detectStalls()
+        telemetry.detectStalls()
+        assertEquals(1.0, registry.counter("hof.automation.progress.stall", "reason", "NO_TERMINAL_ACTION").count())
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    fun `복원 성공 이력 뒤 정상 유휴 확인 없이 판단이 끊긴 경우만 정체를 경고한다`(idleConfirmed: Boolean) {
+        val registry = SimpleMeterRegistry()
+        val telemetry = AutomationProgressTelemetry(registry, TimeProvider { now })
+        val journal = journal(telemetry)
+        val accountId = committed { account("history-idle-late-success-$idleConfirmed").id }
+        val cycleId = committed { journal.appendPreparedActionAttempt(accountId, AutomationActionTrace(
+            AutomationHistoryEventKind.ACTION_STARTED, "HOME_STARTED", "자택 제출", type = AutomationType.HOME_QUEST,
+        )) }
+        val deferred = committed { journal.deferActionResult(cycleId, "idle-late-$cycleId", AutomationActionTrace(
+            AutomationHistoryEventKind.ACTION_SUCCEEDED, "HOME_APPLIED", "자택 적용", type = AutomationType.HOME_QUEST,
+        )) }
+        now = now.plusSeconds(1)
+        if (idleConfirmed) committed { journal.appendDecision(accountId, AutomationCoordination.Idle(emptyList())) }
+        now = now.plusSeconds(181)
+        journal.publishDeferredResult(deferred)
+
+        telemetry.detectStalls()
+
+        assertEquals(1.0, registry.counter("hof.automation.action.terminal", "type", "HOME_QUEST").count())
+        assertEquals(if (idleConfirmed) 0.0 else 1.0,
+            registry.counter("hof.automation.progress.stall", "reason", "NO_TERMINAL_ACTION").count())
     }
 
     @ParameterizedTest

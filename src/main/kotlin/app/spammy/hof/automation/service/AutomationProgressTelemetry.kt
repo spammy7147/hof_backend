@@ -76,6 +76,7 @@ class AutomationProgressTelemetry(
 
             val hasProgressPressure = decision is AutomationCoordination.Runnable ||
                 stale != null || scopeRelease != null
+            current.progressExpected = hasProgressPressure
             if (hasProgressPressure) {
                 if (current.progressPressureSince == null) current.progressPressureSince = now
                 val baseline = listOfNotNull(current.progressPressureSince, current.lastTerminalActionAt).maxOrNull()
@@ -137,7 +138,7 @@ class AutomationProgressTelemetry(
             states.computeIfPresent(accountId) { _, current ->
                 val baseline = listOfNotNull(current.progressPressureSince, current.lastTerminalActionAt).maxOrNull()
                 val withoutAction = baseline?.let { elapsedSeconds(it, now) } ?: 0
-                if (withoutAction >= STALL_SECONDS && !current.stallWarned) {
+                if (current.progressExpected && withoutAction >= STALL_SECONDS && !current.stallWarned) {
                     current.stallWarned = true
                     warnings += accountId to current.warning(withoutAction, now)
                 }
@@ -237,6 +238,8 @@ class AutomationProgressTelemetry(
     private data class AccountProgress(
         var lastTerminalActionAt: Instant? = null,
         var progressPressureSince: Instant? = null,
+        // 복원 성공만 전달돼도 후속 판단 중단을 감시하며, 정상 대기가 확인되면 경고를 멈춘다.
+        var progressExpected: Boolean = true,
         var stallWarned: Boolean = false,
         var staleEntryId: Long? = null,
         var staleWorkSessionId: Long? = null,
