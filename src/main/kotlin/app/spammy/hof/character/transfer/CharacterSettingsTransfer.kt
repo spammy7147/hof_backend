@@ -4,6 +4,8 @@ import app.spammy.hof.character.command.CharacterStat
 import app.spammy.hof.character.pattern.CharacterPatternRowValue
 import app.spammy.hof.character.pattern.CharacterPatternSetting
 import app.spammy.hof.external.model.HofEquipment
+import com.fasterxml.jackson.annotation.JsonSubTypes
+import com.fasterxml.jackson.annotation.JsonTypeInfo
 
 /** 같은 HOF 계정 안에서 복사할 수 있는 캐릭터 설정 스냅샷. */
 data class CharacterTransferSource(
@@ -70,6 +72,16 @@ data class CharacterTransferIssue(
     val severity: CharacterTransferIssueSeverity,
 )
 
+@JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "type")
+@JsonSubTypes(
+    JsonSubTypes.Type(CharacterTransferStep.ApplyCurrentPattern::class, name = "APPLY_CURRENT_PATTERN"),
+    JsonSubTypes.Type(CharacterTransferStep.SavePatternSlot::class, name = "SAVE_PATTERN_SLOT"),
+    JsonSubTypes.Type(CharacterTransferStep.AllocateStats::class, name = "ALLOCATE_STATS"),
+    JsonSubTypes.Type(CharacterTransferStep.LearnSkill::class, name = "LEARN_SKILL"),
+    JsonSubTypes.Type(CharacterTransferStep.EquipItem::class, name = "EQUIP_ITEM"),
+    JsonSubTypes.Type(CharacterTransferStep.RemoveAllEquipment::class, name = "REMOVE_ALL_EQUIPMENT"),
+    JsonSubTypes.Type(CharacterTransferStep.SaveEquipmentPreset::class, name = "SAVE_EQUIPMENT_PRESET"),
+)
 sealed interface CharacterTransferStep {
     val id: String
     val dependsOn: Set<String>
@@ -127,6 +139,7 @@ data class CharacterTransferPreview(
     val targetCharacterId: Long,
     val steps: List<CharacterTransferStep>,
     val issues: List<CharacterTransferIssue>,
+    val confirmationToken: String? = null,
 ) {
     val executable: Boolean get() = issues.none { it.severity == CharacterTransferIssueSeverity.BLOCKING }
 }

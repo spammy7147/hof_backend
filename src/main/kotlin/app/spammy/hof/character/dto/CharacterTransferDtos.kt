@@ -13,4 +13,5 @@ data class CharacterTransferExecuteRequest(
     val targetCharacterId: Long,
     val transfer: CharacterTransferRequest,
     val completedStepIds: Set<String> = emptySet(),
+    val confirmationToken: String? = null,
 )

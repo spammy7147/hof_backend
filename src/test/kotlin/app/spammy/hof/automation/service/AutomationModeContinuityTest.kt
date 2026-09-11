@@ -21,6 +21,8 @@ import app.spammy.hof.town.common.parser.HofFormParser
 import app.spammy.hof.town.home.model.HomeMode
 import app.spammy.hof.town.home.parser.HomePageParser
 import app.spammy.hof.character.transfer.CharacterTransferFixture
+import app.spammy.hof.character.transfer.CharacterTransferService
+import app.spammy.hof.character.transfer.CharacterTransferSelection
 import app.spammy.hof.character.transfer.CharacterTransferRequest
 import app.spammy.hof.character.transfer.CharacterTransferOutcome
 import app.spammy.hof.character.transfer.CharacterSavedPatternMapping
@@ -126,6 +128,7 @@ abstract class AutomationModeContinuityTest {
     @MockitoBean private lateinit var authorization: AccountExecutionAuthorizationReader
     @Autowired private lateinit var characterGate: app.spammy.hof.character.command.CharacterAutomationGate
     @Autowired private lateinit var characterRecovery: app.spammy.hof.character.service.CharacterDeepSyncRecovery
+    @Autowired private lateinit var characterTransfers: CharacterTransferService
     @Autowired private lateinit var characterJobs: CharacterOperationJobService
     @Autowired private lateinit var snapshots: CharacterSnapshotSynchronizer
     @Autowired private lateinit var archive: CharacterSnapshotArchiveWriter
@@ -330,8 +333,9 @@ abstract class AutomationModeContinuityTest {
         }
     }
 
-    @Test
-    fun `설정 가져오기의 최종 상태를 보존하고 영속 복귀 깨우기에서 낚시와 후속 판단을 이어간다`() {
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    fun `설정 가져오기의 완료 또는 미리보기 변경 후 영속 복귀 깨우기에서 낚시와 후속 판단을 이어간다`(previewChanged: Boolean) {
         assertEquals(mode, properties.mode)
         clock.current = Instant.parse("2026-09-09T00:00:00Z")
         transport.delivered.clear()
@@ -400,17 +404,26 @@ abstract class AutomationModeContinuityTest {
             }.`when`(gateway).execute(Mockito.eq(accountId), Mockito.any<HofRequest>()
                 ?: HofRequest(HofHttpMethod.GET, "https://example.test"), Mockito.anyMap())
 
+            val transferRequest = CharacterTransferRequest(includeCurrentPattern = true,
+                savedPatternMappings = listOf(CharacterSavedPatternMapping("0", "0")))
+            val preview = characterTransfers.preview(accountId, CharacterTransferSelection(source.id, target.id, transferRequest))
+            if (previewChanged) {
+                snapshots.writeParsed(accountId, source.hofCharacterId, characterParser.parsePage(source.hofCharacterId,
+                    CharacterTransferFixture.page(source.hofCharacterId, sourceSaved, mapOf("0" to sourceSaved))))
+            }
             val started = characterJobs.startTransfer(accountId, CharacterTransferExecuteRequest(source.id, target.id,
-                CharacterTransferRequest(includeCurrentPattern = true,
-                    savedPatternMappings = listOf(CharacterSavedPatternMapping("0", "0")))))
+                transferRequest, confirmationToken = preview.confirmationToken))
             requests.clear()
             wakeups.wake(accountId, "TRANSFER_PENDING")
             publisher.publishBatch()
             assertTrue(requests.isEmpty(), "가져오기 대기 중 새 자동화 행동을 실행하지 않는다.")
             tasks.removeFirst().run()
-            assertEquals(CharacterTransferOutcome.COMPLETED, characterJobs.find(accountId, started.id).transfer?.outcome)
-            assertEquals(sourceCurrent, current)
-            assertEquals(sourceSaved, slots["0"])
+            assertEquals(if (previewChanged) CharacterTransferOutcome.PREVIEW_CHANGED else CharacterTransferOutcome.COMPLETED,
+                characterJobs.find(accountId, started.id).transfer?.outcome)
+            val expectedCurrent = if (previewChanged) CharacterTransferFixture.setting("0") else sourceCurrent
+            assertEquals(expectedCurrent, current)
+            assertEquals(if (previewChanged) null else sourceSaved, slots["0"])
+            if (previewChanged) assertTrue(requests.none { it.url.contains("?char=") && it.method == HofHttpMethod.POST })
             assertEquals(TypedAutomationLifecycle.RUNNING, automation.getTyped(accountId).runtime.lifecycle)
             publisher.publishBatch()
             val firstCycles = journal.page(accountId, AutomationHistoryQuery()).cycles.map { it.id }.toSet()
@@ -424,7 +437,7 @@ abstract class AutomationModeContinuityTest {
             assertTrue(cycles.any { it.id !in firstCycles }, "복귀 행동 이후 새 판단을 실제 소비해야 한다.")
             assertEquals(1, requests.count { "FStart" in it.formFields })
             assertEquals(1, requests.count { "FCatch" in it.formFields })
-            assertEquals(sourceCurrent, current)
+            assertEquals(expectedCurrent, current)
             assertTrue(transport.delivered.all { outbox.consumed(it) })
         } finally {
             transport.delivered.forEach { jdbc.update("delete from automation_consumed_events where event_id = ?", it) }

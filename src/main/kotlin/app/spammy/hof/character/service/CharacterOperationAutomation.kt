@@ -9,6 +9,7 @@ import app.spammy.hof.character.entity.CharacterOperationType
 import app.spammy.hof.character.entity.CharacterOperationStatus
 import app.spammy.hof.character.entity.CharacterRecoveryStatus
 import app.spammy.hof.character.transfer.CharacterTransferExecutionResult
+import app.spammy.hof.character.transfer.CharacterTransferOutcome
 import app.spammy.hof.character.repository.CharacterOperationJobQueryRepository
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
@@ -58,7 +59,10 @@ class CharacterOperationAutomation(
             if (job.status in setOf(CharacterOperationStatus.PENDING, CharacterOperationStatus.RUNNING)) return
             runCatching {
                 job.resultPayload?.let { objectMapper.readValue(it, CharacterTransferExecutionResult::class.java) }
-                    ?.finalSettingsConfirmed == true
+                    ?.let { result ->
+                        result.finalSettingsConfirmed ||
+                            (result.outcome == CharacterTransferOutcome.PREVIEW_CHANGED && result.results.isEmpty())
+                    } == true
             }.getOrDefault(false)
         } else {
             if (job.recoveryStatus !in setOf(CharacterRecoveryStatus.NOT_STARTED, CharacterRecoveryStatus.RESTORED)) return

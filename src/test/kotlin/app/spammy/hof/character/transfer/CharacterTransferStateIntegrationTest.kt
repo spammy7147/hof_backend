@@ -96,10 +96,12 @@ class CharacterTransferStateIntegrationTest {
     private var equipmentGrantsSkill = true
     private var equipmentCandidateValue = "ring"
     private var targetEquipmentName = "Focus Ring"
+    private var targetStatusPoints: Int? = null
     private val targetEquipmentSlots = mutableMapOf<Int, String?>()
     private var changeEquipmentCandidateAfterClear = false
     private val tasks = ArrayDeque<Runnable>()
     private var onFirstPost: (() -> Unit)? = null
+    private var onFirstObservation: (() -> Unit)? = null
 
     @BeforeEach
     fun prepare() {
@@ -127,6 +129,7 @@ class CharacterTransferStateIntegrationTest {
                 val request = invocation.getArgument<HofRequest>(1)
                 val characterId = request.url.substringAfter("char=")
                 check(characterId == target.hofCharacterId) { "설정 가져오기는 원본에 HOF 요청을 보내지 않는다." }
+                if (request.method == HofHttpMethod.GET) onFirstObservation?.also { onFirstObservation = null }?.invoke()
                 if (request.method == HofHttpMethod.POST) {
                     submittedCharacters += characterId
                     val fields = request.formFields
@@ -183,7 +186,8 @@ class CharacterTransferStateIntegrationTest {
                 }
                 val body = page(target.hofCharacterId, targetCurrent, targetSlots, targetEquipment,
                     skills = if (targetEquipment == false || !equipmentGrantsSkill) 0..1 else 0..2,
-                    equipmentCandidateValue = equipmentCandidateValue, equipmentName = targetEquipmentName)
+                    equipmentCandidateValue = equipmentCandidateValue, equipmentName = targetEquipmentName) +
+                    targetStatusPoints?.let { statusPointForm(it) }.orEmpty()
                 val observed = when (observationVariant) {
                     "MISSING_QUANTITY" -> body.replace(Regex("<input[^>]*name=\"quantity0\"[^>]*>"), "")
                     "ERROR" -> body + "<div class='error'>캐릭터 관측을 완료하지 못했습니다.</div>"
@@ -193,6 +197,173 @@ class CharacterTransferStateIntegrationTest {
                     if (observationVariant == "OTHER_CHARACTER") request.url.replace("transfer-target", "other-character") else request.url,
                     observed, emptyMap())
             }
+    }
+
+    @Test
+    fun `미리보기 뒤 원본 패턴이 달라지면 최초 가져오기 작업은 변경 요청 전에 멈춘다`() {
+        val request = CharacterTransferRequest(includeCurrentPattern = true)
+        val preview = transfers.preview(accountId, CharacterTransferSelection(source.id, target.id, request))
+        assertTrue(!preview.confirmationToken.isNullOrBlank())
+        snapshots.writeParsed(accountId, source.hofCharacterId, parser.parsePage(source.hofCharacterId,
+            page(source.hofCharacterId, setting("2"), mapOf("0" to sourceSaved))))
+
+        val started = jobs.startTransfer(accountId, CharacterTransferExecuteRequest(source.id, target.id,
+            request, confirmationToken = preview.confirmationToken))
+        tasks.removeFirst().run()
+
+        val result = jobs.find(accountId, started.id).transfer!!
+        assertEquals("PREVIEW_CHANGED", result.outcome?.name)
+        assertTrue(submittedFields.isEmpty(), "확인하지 않은 변경 패턴을 HOF에 보내지 않는다")
+        assertEquals(setting("0"), targetCurrent)
+        assertTrue(result.results.isEmpty())
+        assertTrue(!objectMapper.readTree(jobQueries.findByAccountIdAndId(accountId, started.id)!!.requestPayload).hasNonNull("snapshot"))
+        val changed = result.preview!!
+        assertTrue(changed.confirmationToken != preview.confirmationToken)
+        assertEquals(setting("2"), changed.steps.filterIsInstance<CharacterTransferStep.ApplyCurrentPattern>().single().setting)
+
+        val confirmed = jobs.startTransfer(accountId, CharacterTransferExecuteRequest(source.id, target.id,
+            request, confirmationToken = changed.confirmationToken))
+        tasks.removeFirst().run()
+
+        assertEquals(CharacterTransferOutcome.COMPLETED, jobs.find(accountId, confirmed.id).transfer!!.outcome)
+        assertEquals(setting("2"), targetCurrent)
+        assertTrue(submittedFields.isNotEmpty())
+        assertTrue(submittedCharacters.all { it == target.hofCharacterId })
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["PATTERN", "EQUIPMENT", "STATUS_POINTS", "SLOT"])
+    fun `미리보기 뒤 대상 값이 바뀌면 새 미리보기를 보여주고 변경 행동을 보내지 않는다`(changed: String) {
+        if (changed == "EQUIPMENT") {
+            targetEquipment = true
+            snapshots.writeParsed(accountId, source.hofCharacterId, parser.parsePage(source.hofCharacterId,
+                page(source.hofCharacterId, sourceCurrent, mapOf("0" to sourceSaved), equipment = true)))
+        }
+        if (changed == "STATUS_POINTS") {
+            targetStatusPoints = 20
+            snapshots.writeParsed(accountId, source.hofCharacterId, parser.parsePage(source.hofCharacterId,
+                page(source.hofCharacterId, sourceCurrent, mapOf("0" to sourceSaved)) + statusPointForm(0, 20)))
+        }
+        snapshots.writeParsed(accountId, target.hofCharacterId, parser.parsePage(target.hofCharacterId,
+            page(target.hofCharacterId, targetCurrent, targetSlots, targetEquipment) +
+                targetStatusPoints?.let { statusPointForm(it) }.orEmpty()))
+        val request = CharacterTransferRequest(includeCurrentPattern = true,
+            includeStats = changed == "STATUS_POINTS", includeEquipment = changed == "EQUIPMENT",
+            savedPatternMappings = listOf(CharacterSavedPatternMapping("0", "0")))
+        val preview = transfers.preview(accountId, CharacterTransferSelection(source.id, target.id, request))
+        when (changed) {
+            "PATTERN" -> targetCurrent = setting("2")
+            "EQUIPMENT" -> targetEquipmentName = "Guard Ring"
+            "STATUS_POINTS" -> targetStatusPoints = 0
+            "SLOT" -> targetSlots["0"] = setting("1")
+        }
+
+        val started = jobs.startTransfer(accountId, CharacterTransferExecuteRequest(source.id, target.id,
+            request, confirmationToken = preview.confirmationToken))
+        tasks.removeFirst().run()
+
+        val result = jobs.find(accountId, started.id).transfer!!
+        assertEquals(CharacterTransferOutcome.PREVIEW_CHANGED, result.outcome)
+        assertTrue(submittedFields.isEmpty())
+        assertTrue(result.results.isEmpty())
+        assertTrue(result.preview!!.confirmationToken != preview.confirmationToken)
+        if (changed == "STATUS_POINTS") {
+            assertTrue(preview.steps.any { it is CharacterTransferStep.AllocateStats })
+            assertTrue(result.preview.steps.none { it is CharacterTransferStep.AllocateStats })
+            assertTrue(result.preview.issues.any { it.code == "STATUS_POINTS_INSUFFICIENT" })
+        }
+        if (changed == "SLOT") {
+            assertEquals(false, preview.steps.filterIsInstance<CharacterTransferStep.SavePatternSlot>().single().replacesExisting)
+            assertEquals(true, result.preview.steps.filterIsInstance<CharacterTransferStep.SavePatternSlot>().single().replacesExisting)
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["STATS", "SKILLS", "SLOTS"])
+    fun `선택한 대상 구역을 다시 관측하지 못하면 저장된 과거 값으로 확인을 통과시키지 않는다`(missing: String) {
+        if (missing == "STATS") {
+            targetStatusPoints = 20
+            snapshots.writeParsed(accountId, source.hofCharacterId, parser.parsePage(source.hofCharacterId,
+                page(source.hofCharacterId, sourceCurrent, mapOf("0" to sourceSaved)) + statusPointForm(0, 20)))
+        }
+        snapshots.writeParsed(accountId, target.hofCharacterId, parser.parsePage(target.hofCharacterId,
+            page(target.hofCharacterId, targetCurrent, targetSlots) +
+                targetStatusPoints?.let { statusPointForm(it) }.orEmpty() +
+                if (missing == "SKILLS") "<h4>Skill</h4>" else ""))
+        val request = CharacterTransferRequest(includeCurrentPattern = true,
+            includeStats = missing == "STATS", includeSkills = missing == "SKILLS",
+            savedPatternMappings = if (missing == "SLOTS") listOf(CharacterSavedPatternMapping("0", "0")) else emptyList())
+        val preview = transfers.preview(accountId, CharacterTransferSelection(source.id, target.id, request))
+        targetStatusPoints = null
+        if (missing == "SLOTS") targetSlots.clear()
+
+        val started = jobs.startTransfer(accountId, CharacterTransferExecuteRequest(source.id, target.id,
+            request, confirmationToken = preview.confirmationToken))
+        tasks.removeFirst().run()
+
+        assertEquals(CharacterOperationStatus.FAILED, jobs.find(accountId, started.id).status)
+        assertTrue(submittedFields.isEmpty(), "관측 실패 시 과거 값으로 미리보기 일치를 판정하지 않는다")
+        assertTrue(!objectMapper.readTree(jobQueries.findByAccountIdAndId(accountId, started.id)!!.requestPayload).hasNonNull("snapshot"))
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["MISSING", "WRONG", "MODIFIED_SELECTION"])
+    fun `확인 정보가 없거나 다른 선택의 확인값으로 최초 작업을 시작해도 변경하지 않는다`(invalid: String) {
+        val request = CharacterTransferRequest(includeCurrentPattern = true)
+        val preview = transfers.preview(accountId, CharacterTransferSelection(source.id, target.id, request))
+        val changedRequest = if (invalid == "MODIFIED_SELECTION") request.copy(
+            savedPatternMappings = listOf(CharacterSavedPatternMapping("0", "0"))) else request
+        val token = when (invalid) { "MISSING" -> null; "WRONG" -> "invalid"; else -> preview.confirmationToken }
+
+        val started = jobs.startTransfer(accountId, CharacterTransferExecuteRequest(source.id, target.id,
+            changedRequest, confirmationToken = token))
+        tasks.removeFirst().run()
+
+        val result = jobs.find(accountId, started.id).transfer!!
+        assertEquals(CharacterTransferOutcome.PREVIEW_CHANGED, result.outcome)
+        assertTrue(submittedFields.isEmpty())
+        assertTrue(!result.preview!!.confirmationToken.isNullOrBlank())
+        assertTrue(!objectMapper.readTree(jobQueries.findByAccountIdAndId(accountId, started.id)!!.requestPayload).hasNonNull("snapshot"))
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["RUNNING", "USER_PAUSE", "USER_STOP", "AUTH", "AUTH_RELOGIN"])
+    fun `미리보기 변경으로 행동하지 않은 작업의 복귀도 사용자 정지와 인증 종료를 보존한다`(control: String) {
+        val account = TransactionTemplate(transactions).execute {
+            val account = entityManager.find(HofAccountEntity::class.java, accountId)
+            entityManager.persist(AutomationEntryEntity(account = account, type = AutomationType.UNION,
+                priority = 0, enabled = true, createdAt = Instant.now(), updatedAt = Instant.now()))
+            account
+        }!!
+        val authToken = refreshTokens.issue(account, "NATIVE")
+        automation.startTyped(accountId)
+        val request = CharacterTransferRequest(includeCurrentPattern = true)
+        val preview = transfers.preview(accountId, CharacterTransferSelection(source.id, target.id, request))
+        snapshots.writeParsed(accountId, source.hofCharacterId, parser.parsePage(source.hofCharacterId,
+            page(source.hofCharacterId, setting("2"), mapOf("0" to sourceSaved))))
+        onFirstObservation = {
+            when (control) {
+                "USER_PAUSE" -> automation.pauseTyped(accountId)
+                "USER_STOP" -> automation.stopTyped(accountId)
+                "AUTH", "AUTH_RELOGIN" -> {
+                    auth.logout(authToken.value)
+                    if (control == "AUTH_RELOGIN") refreshTokens.issue(account, "NATIVE")
+                }
+            }
+        }
+
+        val started = jobs.startTransfer(accountId, CharacterTransferExecuteRequest(source.id, target.id,
+            request, confirmationToken = preview.confirmationToken))
+        tasks.removeFirst().run()
+
+        assertEquals(CharacterTransferOutcome.PREVIEW_CHANGED, jobs.find(accountId, started.id).transfer!!.outcome)
+        assertTrue(submittedFields.isEmpty())
+        assertEquals(when (control) {
+            "RUNNING" -> TypedAutomationLifecycle.RUNNING
+            "USER_STOP" -> TypedAutomationLifecycle.STOPPED
+            else -> TypedAutomationLifecycle.PAUSED
+        }, automation.getTyped(accountId).runtime.lifecycle)
+        assertEquals(true, jobQueries.findByAccountIdAndId(accountId, started.id)!!.automationReleased)
     }
 
     @ParameterizedTest
@@ -205,7 +376,7 @@ class CharacterTransferStateIntegrationTest {
         snapshots.writeParsed(accountId, target.hofCharacterId, parser.parsePage(target.hofCharacterId,
             page(target.hofCharacterId, targetCurrent, targetSlots, equipment = false)))
 
-        val result = transfers.execute(accountId, CharacterTransferSelection(source.id, target.id,
+        val result = executeConfirmed(accountId, CharacterTransferSelection(source.id, target.id,
             CharacterTransferRequest(includeCurrentPattern = true, includeEquipment = true)))
 
         assertTrue(result.results.all { it.status == CharacterTransferStepStatus.COMPLETED }, result.toString())
@@ -233,7 +404,7 @@ class CharacterTransferStateIntegrationTest {
         val selection = CharacterTransferSelection(source.id, target.id,
             CharacterTransferRequest(includeCurrentPattern = true, includeEquipment = true))
         var snapshot: CharacterTransferSnapshot? = null
-        val first = transfers.execute(accountId, selection, onSnapshot = { snapshot = it })
+        val first = executeConfirmed(accountId, selection, onSnapshot = { snapshot = it })
         assertTrue(first.results.all { it.status == CharacterTransferStepStatus.COMPLETED }, first.toString())
 
         // 완료 저장 뒤 HOF에서 현재 장비가 바뀌어도 과거 완료 ID를 최종 상태로 믿지 않는다.
@@ -241,7 +412,7 @@ class CharacterTransferStateIntegrationTest {
         targetCurrent = setting("0")
         if (candidateChange == "BEFORE_RESUME") equipmentCandidateValue = "ring-new"
         changeEquipmentCandidateAfterClear = candidateChange == "AFTER_CLEAR"
-        val resumed = transfers.execute(accountId, selection, first.results.map { it.stepId }.toSet(), snapshot)
+        val resumed = executeConfirmed(accountId, selection, first.results.map { it.stepId }.toSet(), snapshot)
 
         assertTrue(resumed.results.all { it.status == CharacterTransferStepStatus.COMPLETED }, resumed.toString())
         assertEquals(true, targetEquipment)
@@ -260,14 +431,14 @@ class CharacterTransferStateIntegrationTest {
             page(target.hofCharacterId, targetCurrent, targetSlots, equipment = false)))
         val selection = CharacterTransferSelection(source.id, target.id, CharacterTransferRequest(includeEquipment = true))
         var snapshot: CharacterTransferSnapshot? = null
-        val first = transfers.execute(accountId, selection, onSnapshot = { snapshot = it })
+        val first = executeConfirmed(accountId, selection, onSnapshot = { snapshot = it })
         assertTrue(first.results.all { it.status == CharacterTransferStepStatus.COMPLETED }, first.toString())
         val original = checkNotNull(snapshot)
         val legacy = original.copy(source = original.source.copy(equipment = original.source.equipment.map { it.copy(identity = null) }))
         submittedFields.clear()
 
         assertFailsWith<IllegalArgumentException> {
-            transfers.execute(accountId, selection, first.results.map { it.stepId }.toSet(), legacy)
+            executeConfirmed(accountId, selection, first.results.map { it.stepId }.toSet(), legacy)
         }
 
         assertTrue(submittedFields.isEmpty(), "기존 후보 값만으로 해제·장착을 시작하지 않는다.")
@@ -287,7 +458,7 @@ class CharacterTransferStateIntegrationTest {
         snapshots.writeParsed(accountId, target.hofCharacterId, parser.parsePage(target.hofCharacterId,
             page(target.hofCharacterId, targetCurrent, targetSlots, equipment = false)))
 
-        val result = transfers.execute(accountId, CharacterTransferSelection(source.id, target.id,
+        val result = executeConfirmed(accountId, CharacterTransferSelection(source.id, target.id,
             CharacterTransferRequest(includeEquipment = true)))
 
         assertEquals(CharacterTransferStepStatus.FAILED, result.results.single { it.stepId == "equipment-preset:2:save" }.status)
@@ -314,7 +485,7 @@ class CharacterTransferStateIntegrationTest {
             page(target.hofCharacterId, targetCurrent, targetSlots, equipment = false)))
         val selection = CharacterTransferSelection(source.id, target.id, CharacterTransferRequest(includeEquipment = true))
 
-        val failed = transfers.execute(accountId, selection)
+        val failed = executeConfirmed(accountId, selection)
 
         assertEquals(CharacterTransferStepStatus.FAILED, failed.results.single { it.stepId == "equipment-preset:2:save" }.status)
         assertEquals(if (outcome == "SUBMISSIONS_IGNORED") "Guard Ring" else null, targetEquipmentSlots[2])
@@ -325,7 +496,7 @@ class CharacterTransferStateIntegrationTest {
         ignoreEquipmentLoad = false
         ignoreEquipment = false
         rejectEquipment = false
-        val completed = transfers.execute(accountId, selection)
+        val completed = executeConfirmed(accountId, selection)
 
         assertTrue(completed.results.all { it.status == CharacterTransferStepStatus.COMPLETED }, completed.toString())
         assertTrue(2 in targetEquipmentSlots && targetEquipmentSlots[2] == null)
@@ -350,7 +521,7 @@ class CharacterTransferStateIntegrationTest {
         val selection = CharacterTransferSelection(source.id, target.id, CharacterTransferRequest(includeEquipment = true))
         var snapshot: CharacterTransferSnapshot? = null
 
-        val failed = transfers.execute(accountId, selection, onSnapshot = { snapshot = it })
+        val failed = executeConfirmed(accountId, selection, onSnapshot = { snapshot = it })
 
         assertEquals(CharacterTransferStepStatus.FAILED, failed.results.single { it.stepId == "equipment-preset:2:save" }.status)
         assertEquals(true, targetEquipment)
@@ -363,7 +534,7 @@ class CharacterTransferStateIntegrationTest {
 
         targetEquipmentName = "Focus Ring"
         ignoreEquipmentLoad = false
-        val resumed = transfers.execute(accountId, selection,
+        val resumed = executeConfirmed(accountId, selection,
             failed.results.filter { it.status == CharacterTransferStepStatus.COMPLETED }.map { it.stepId }.toSet(), snapshot)
 
         assertTrue(resumed.results.all { it.status == CharacterTransferStepStatus.COMPLETED }, resumed.toString())
@@ -378,7 +549,7 @@ class CharacterTransferStateIntegrationTest {
 
         submittedFields.clear()
         assertFailsWith<IllegalArgumentException> {
-            transfers.execute(accountId, selection, snapshot = checkNotNull(snapshot).copy(originalEquipment = null))
+            executeConfirmed(accountId, selection, snapshot = checkNotNull(snapshot).copy(originalEquipment = null))
         }
         assertTrue(submittedFields.isEmpty(), "최초 대상 장비가 없는 기존 기록은 임시 장비를 원래 장비로 취급하지 않는다.")
     }
@@ -398,7 +569,7 @@ class CharacterTransferStateIntegrationTest {
         val preview = transfers.preview(accountId, selection)
         assertTrue(preview.issues.isEmpty(), preview.toString())
         var snapshot: CharacterTransferSnapshot? = null
-        val first = transfers.execute(accountId, selection, onSnapshot = { snapshot = it })
+        val first = executeConfirmed(accountId, selection, onSnapshot = { snapshot = it })
         assertTrue(first.results.all { it.status == CharacterTransferStepStatus.COMPLETED }, first.toString())
         assertEquals(mapOf<Int, String?>(1 to "Focus Ring", 2 to "Guard Ring"), targetEquipmentSlots)
         assertEquals(false, targetEquipment)
@@ -408,7 +579,7 @@ class CharacterTransferStateIntegrationTest {
         targetEquipmentName = "Guard Ring"
         targetEquipmentSlots[1] = "Guard Ring"
         targetEquipmentSlots[2] = "Focus Ring"
-        val resumed = transfers.execute(accountId, selection, first.results.map { it.stepId }.toSet(), snapshot)
+        val resumed = executeConfirmed(accountId, selection, first.results.map { it.stepId }.toSet(), snapshot)
 
         assertTrue(resumed.results.all { it.status == CharacterTransferStepStatus.COMPLETED }, resumed.toString())
         assertEquals(mapOf<Int, String?>(1 to "Focus Ring", 2 to "Guard Ring"), targetEquipmentSlots)
@@ -426,7 +597,7 @@ class CharacterTransferStateIntegrationTest {
         snapshots.writeParsed(accountId, target.hofCharacterId, parser.parsePage(target.hofCharacterId,
             page(target.hofCharacterId, targetCurrent, targetSlots, equipment = false)))
 
-        val result = transfers.execute(accountId, CharacterTransferSelection(source.id, target.id,
+        val result = executeConfirmed(accountId, CharacterTransferSelection(source.id, target.id,
             CharacterTransferRequest(includeEquipment = true)))
 
         assertEquals(CharacterTransferStepStatus.FAILED, result.results.single { it.stepId == "equipment-current:item:0" }.status)
@@ -447,7 +618,7 @@ class CharacterTransferStateIntegrationTest {
         snapshots.writeParsed(accountId, target.hofCharacterId, parser.parsePage(target.hofCharacterId,
             page(target.hofCharacterId, targetCurrent, targetSlots, equipment = false)))
 
-        val result = transfers.execute(accountId, CharacterTransferSelection(source.id, target.id,
+        val result = executeConfirmed(accountId, CharacterTransferSelection(source.id, target.id,
             CharacterTransferRequest(includeEquipment = true,
                 savedPatternMappings = listOf(CharacterSavedPatternMapping("0", "0")))))
 
@@ -473,7 +644,7 @@ class CharacterTransferStateIntegrationTest {
         snapshots.writeParsed(accountId, target.hofCharacterId, parser.parsePage(target.hofCharacterId,
             page(target.hofCharacterId, targetCurrent, targetSlots, equipment = false)))
 
-        val result = transfers.execute(accountId, CharacterTransferSelection(source.id, target.id,
+        val result = executeConfirmed(accountId, CharacterTransferSelection(source.id, target.id,
             CharacterTransferRequest(includeCurrentPattern = true, includeEquipment = true)))
 
         assertEquals(CharacterTransferStepStatus.FAILED, result.results.last().status)
@@ -485,7 +656,7 @@ class CharacterTransferStateIntegrationTest {
 
     @Test
     fun `원격 설정이 같으면 저장 직전 재조회로 revision이 달라져도 가져오기를 허용한다`() {
-        val result = transfers.execute(accountId, CharacterTransferSelection(source.id, target.id,
+        val result = executeConfirmed(accountId, CharacterTransferSelection(source.id, target.id,
             CharacterTransferRequest(includeCurrentPattern = true)))
 
         assertTrue(result.results.all { it.status == CharacterTransferStepStatus.COMPLETED }, result.toString())
@@ -513,7 +684,7 @@ class CharacterTransferStateIntegrationTest {
 
     @Test
     fun `현재 A와 저장 B를 함께 가져온 뒤 현재는 A이고 저장 슬롯은 B다`() {
-        val result = transfers.execute(accountId, CharacterTransferSelection(source.id, target.id,
+        val result = executeConfirmed(accountId, CharacterTransferSelection(source.id, target.id,
             CharacterTransferRequest(includeCurrentPattern = true,
                 savedPatternMappings = listOf(CharacterSavedPatternMapping("0", "0")))))
 
@@ -548,7 +719,7 @@ class CharacterTransferStateIntegrationTest {
         })
         var snapshot: CharacterTransferSnapshot? = null
 
-        val first = transfers.execute(accountId, selection, onSnapshot = { snapshot = it })
+        val first = executeConfirmed(accountId, selection, onSnapshot = { snapshot = it })
 
         assertTrue(first.results.all { it.status == CharacterTransferStepStatus.COMPLETED }, first.toString())
         assertEquals(sourceSaved, targetSlots["0"])
@@ -557,7 +728,7 @@ class CharacterTransferStateIntegrationTest {
         targetCurrent = sourceSaved
         snapshots.writeParsed(accountId, source.hofCharacterId, parser.parsePage(source.hofCharacterId,
             page(source.hofCharacterId, sourceCurrent, mapOf("0" to sourceSaved))))
-        val resumed = transfers.execute(accountId, selection, first.results.map { it.stepId }.toSet(), snapshot)
+        val resumed = executeConfirmed(accountId, selection, first.results.map { it.stepId }.toSet(), snapshot)
 
         assertTrue(resumed.results.all { it.status == CharacterTransferStepStatus.COMPLETED }, resumed.toString())
         assertEquals(original, targetCurrent, "재진입 때 새 원본이나 임시 현재 패턴으로 최초 의도를 바꾸지 않는다.")
@@ -577,7 +748,7 @@ class CharacterTransferStateIntegrationTest {
         var captured: CharacterTransferSnapshot? = null
 
         assertFailsWith<IllegalStateException> {
-            transfers.execute(accountId, selection, setOf("saved-pattern:0:0"),
+            executeConfirmed(accountId, selection, setOf("saved-pattern:0:0"),
                 onSnapshot = { captured = it })
         }
 
@@ -593,7 +764,7 @@ class CharacterTransferStateIntegrationTest {
         targetSlots["0"] = sourceSaved
         snapshots.writeParsed(accountId, source.hofCharacterId, parser.parsePage(source.hofCharacterId,
             page(source.hofCharacterId, setting("9"), mapOf("0" to sourceSaved), skills = 0..9)))
-        val started = jobs.startTransfer(accountId, CharacterTransferExecuteRequest(source.id, target.id,
+        val started = startConfirmedTransfer(accountId, CharacterTransferExecuteRequest(source.id, target.id,
             CharacterTransferRequest(includeCurrentPattern = true,
                 savedPatternMappings = listOf(CharacterSavedPatternMapping("0", "0"))),
             completedStepIds = setOf("saved-pattern:0:0")))
@@ -631,7 +802,7 @@ class CharacterTransferStateIntegrationTest {
         var captured: CharacterTransferSnapshot? = null
 
         assertFailsWith<IllegalStateException> {
-            transfers.execute(accountId, CharacterTransferSelection(source.id, target.id,
+            executeConfirmed(accountId, CharacterTransferSelection(source.id, target.id,
                 CharacterTransferRequest(includeCurrentPattern = true, includeEquipment = true)),
                 setOf("equipment-preset:2:save"), onSnapshot = { captured = it })
         }
@@ -656,7 +827,7 @@ class CharacterTransferStateIntegrationTest {
         var captured: CharacterTransferSnapshot? = null
 
         assertFailsWith<IllegalArgumentException> {
-            transfers.execute(accountId, CharacterTransferSelection(source.id, target.id,
+            executeConfirmed(accountId, CharacterTransferSelection(source.id, target.id,
                 CharacterTransferRequest(includeCurrentPattern = true, includeEquipment = true)),
                 setOf("equipment-preset:2:save"), onSnapshot = { captured = it })
         }
@@ -675,7 +846,7 @@ class CharacterTransferStateIntegrationTest {
         archive.savePatternSlot(source, "1", parser.parsePage(source.hofCharacterId,
             page(source.hofCharacterId, sourceCurrent, mapOf("1" to sourceCurrent))))
 
-        val result = transfers.execute(accountId, CharacterTransferSelection(source.id, target.id,
+        val result = executeConfirmed(accountId, CharacterTransferSelection(source.id, target.id,
             CharacterTransferRequest(savedPatternMappings = listOf(
                 CharacterSavedPatternMapping("0", "0"), CharacterSavedPatternMapping("1", "1")))))
 
@@ -691,7 +862,7 @@ class CharacterTransferStateIntegrationTest {
     fun `DB checkpoint에서 재개할 때 임시 패턴을 원래 현재 패턴으로 다시 보존하지 않는다`(includeCurrent: Boolean) {
         val intendedCurrent = if (includeCurrent) sourceCurrent else targetCurrent
         rejectedCurrentSkill = intendedCurrent.rows.single().skill
-        val started = jobs.startTransfer(accountId, CharacterTransferExecuteRequest(source.id, target.id,
+        val started = startConfirmedTransfer(accountId, CharacterTransferExecuteRequest(source.id, target.id,
             CharacterTransferRequest(includeCurrentPattern = includeCurrent,
                 savedPatternMappings = listOf(CharacterSavedPatternMapping("0", "0")))))
         tasks.removeFirst().run()
@@ -722,7 +893,7 @@ class CharacterTransferStateIntegrationTest {
     @Test
     fun `이미 최종 패턴인 완료 checkpoint는 재관측만 하고 다시 제출하지 않는다`() {
         targetCurrent = sourceCurrent
-        val result = transfers.execute(accountId, CharacterTransferSelection(source.id, target.id,
+        val result = executeConfirmed(accountId, CharacterTransferSelection(source.id, target.id,
             CharacterTransferRequest(includeCurrentPattern = true)), setOf("current-pattern"))
 
         assertTrue(result.results.all { it.status == CharacterTransferStepStatus.COMPLETED })
@@ -737,7 +908,7 @@ class CharacterTransferStateIntegrationTest {
         val originalCurrent = targetCurrent
 
         assertFailsWith<IllegalStateException> {
-            transfers.execute(accountId, CharacterTransferSelection(source.id, target.id,
+            executeConfirmed(accountId, CharacterTransferSelection(source.id, target.id,
                 CharacterTransferRequest(savedPatternMappings = listOf(CharacterSavedPatternMapping("0", "0")))))
         }
 
@@ -747,7 +918,7 @@ class CharacterTransferStateIntegrationTest {
 
     @Test
     fun `완료된 최종 패턴 단계도 재개 시 실제 현재 설정을 다시 확인한다`() {
-        val result = transfers.execute(accountId, CharacterTransferSelection(source.id, target.id,
+        val result = executeConfirmed(accountId, CharacterTransferSelection(source.id, target.id,
             CharacterTransferRequest(includeCurrentPattern = true)), setOf("current-pattern"))
 
         assertTrue(result.results.all { it.status == CharacterTransferStepStatus.COMPLETED }, result.toString())
@@ -759,7 +930,7 @@ class CharacterTransferStateIntegrationTest {
         val originalCurrent = targetCurrent
         rejectedSaveSlot = "0"
 
-        val result = transfers.execute(accountId, CharacterTransferSelection(source.id, target.id,
+        val result = executeConfirmed(accountId, CharacterTransferSelection(source.id, target.id,
             CharacterTransferRequest(savedPatternMappings = listOf(CharacterSavedPatternMapping("0", "0")))))
 
         assertEquals(CharacterTransferStepStatus.FAILED, result.results.first().status)
@@ -772,7 +943,7 @@ class CharacterTransferStateIntegrationTest {
     @Test
     fun `가져오기 작업의 마지막 적용이 거부되면 부분 반영 결과와 실제 현재 설정을 함께 반환한다`() {
         rejectedCurrentSkill = "1"
-        val started = jobs.startTransfer(accountId, CharacterTransferExecuteRequest(source.id, target.id,
+        val started = startConfirmedTransfer(accountId, CharacterTransferExecuteRequest(source.id, target.id,
             CharacterTransferRequest(includeCurrentPattern = true,
                 savedPatternMappings = listOf(CharacterSavedPatternMapping("0", "0")))))
 
@@ -792,7 +963,7 @@ class CharacterTransferStateIntegrationTest {
     @ParameterizedTest
     @ValueSource(strings = ["OTHER_CHARACTER", "MISSING_QUANTITY", "ERROR"])
     fun `단계가 모두 완료돼도 마지막 관측이 불완전하면 재확인 필요로 반환한다`(variant: String) {
-        val result = transfers.execute(accountId, CharacterTransferSelection(source.id, target.id,
+        val result = executeConfirmed(accountId, CharacterTransferSelection(source.id, target.id,
             CharacterTransferRequest(includeCurrentPattern = true)), onStepResult = {
             if (it.stepId == "current-pattern") observationVariant = variant
         })
@@ -815,7 +986,7 @@ class CharacterTransferStateIntegrationTest {
         snapshots.writeParsed(accountId, target.hofCharacterId, parser.parsePage(target.hofCharacterId,
             page(target.hofCharacterId, targetCurrent, targetSlots, equipment = false)))
 
-        val result = transfers.execute(accountId, CharacterTransferSelection(source.id, target.id,
+        val result = executeConfirmed(accountId, CharacterTransferSelection(source.id, target.id,
             CharacterTransferRequest(includeCurrentPattern = true, includeEquipment = true)), onStepResult = {
             if (it.stepId == "current-pattern") {
                 if (changed == "PATTERN") targetCurrent = targetCurrent.copy(position = "back")
@@ -835,7 +1006,7 @@ class CharacterTransferStateIntegrationTest {
 
     @Test
     fun `공개 작업은 현재와 저장 패턴을 함께 확인한 완료 결과를 보존하고 구형 결과도 읽는다`() {
-        val started = jobs.startTransfer(accountId, CharacterTransferExecuteRequest(source.id, target.id,
+        val started = startConfirmedTransfer(accountId, CharacterTransferExecuteRequest(source.id, target.id,
             CharacterTransferRequest(includeCurrentPattern = true,
                 savedPatternMappings = listOf(CharacterSavedPatternMapping("0", "0")))))
         tasks.removeFirst().run()
@@ -874,7 +1045,7 @@ class CharacterTransferStateIntegrationTest {
         }!!
         refreshTokens.issue(account, "NATIVE")
         automation.startTyped(accountId)
-        val started = jobs.startTransfer(accountId, CharacterTransferExecuteRequest(source.id, target.id,
+        val started = startConfirmedTransfer(accountId, CharacterTransferExecuteRequest(source.id, target.id,
             CharacterTransferRequest(includeCurrentPattern = true)))
         val columns = jdbc.queryForList("select column_name from information_schema.columns where table_name = 'character_operation_jobs' order by ordinal_position", String::class.java)
         val released = columns.indexOf("automation_released")
@@ -942,7 +1113,7 @@ class CharacterTransferStateIntegrationTest {
             }
         }
 
-        val started = jobs.startTransfer(accountId, CharacterTransferExecuteRequest(source.id, target.id,
+        val started = startConfirmedTransfer(accountId, CharacterTransferExecuteRequest(source.id, target.id,
             CharacterTransferRequest(includeCurrentPattern = true,
                 savedPatternMappings = listOf(CharacterSavedPatternMapping("0", "0")))))
         tasks.removeFirst().run()
@@ -968,6 +1139,29 @@ class CharacterTransferStateIntegrationTest {
                 "사용자가 현재 설정을 확인한 뒤 명시적으로 재개할 수 있어야 한다.")
         }
     }
+
+    private fun executeConfirmed(
+        accountId: Long,
+        selection: CharacterTransferSelection,
+        completedStepIds: Set<String> = emptySet(),
+        snapshot: CharacterTransferSnapshot? = null,
+        onSnapshot: (CharacterTransferSnapshot) -> Unit = {},
+        onStepResult: (CharacterTransferStepResult) -> Unit = {},
+    ): CharacterTransferExecutionResult {
+        val confirmed = if (snapshot != null) selection else selection.copy(
+            confirmationToken = transfers.preview(accountId, selection).confirmationToken)
+        return transfers.execute(accountId, confirmed, completedStepIds, snapshot, onSnapshot, onStepResult)
+    }
+
+    private fun startConfirmedTransfer(accountId: Long, request: CharacterTransferExecuteRequest) =
+        jobs.startTransfer(accountId, request.copy(confirmationToken = transfers.preview(accountId,
+            CharacterTransferSelection(request.sourceCharacterId, request.targetCharacterId, request.transfer)).confirmationToken))
+
+    private fun statusPointForm(points: Int, strength: Int = 10) =
+        "<table>" + mapOf("Exp" to "0/100", "HP" to "100", "SP" to "10", "STR" to "$strength",
+            "INT" to "10", "DEX" to "10", "SPD" to "10", "LUK" to "10").entries.joinToString("") { (name, value) ->
+            "<tr><td><font>$name</font></td><td>$value</td></tr>"
+        } + "</table><form>Point : $points<select name='upStr'><option value='0'>0</option></select></form>"
 
     private fun anyRequest(): HofRequest = Mockito.any(HofRequest::class.java)
         ?: HofRequest(HofHttpMethod.GET, "https://example.test")

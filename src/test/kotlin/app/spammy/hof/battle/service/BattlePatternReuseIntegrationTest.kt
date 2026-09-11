@@ -220,8 +220,10 @@ class BattlePatternReuseIntegrationTest {
         snapshots.writeParsed(accountId, SECOND_CHARACTER,
             CharacterDetailParser().parsePage(SECOND_CHARACTER, characterPage("B", SECOND_CHARACTER)))
         snapshots.refresh(accountId, characterId)
-        val result = transfers.execute(accountId, CharacterTransferSelection(secondCharacterId, characterId,
-            CharacterTransferRequest(includeCurrentPattern = true)))
+        val selection = CharacterTransferSelection(secondCharacterId, characterId,
+            CharacterTransferRequest(includeCurrentPattern = true))
+        val preview = transfers.preview(accountId, selection)
+        val result = transfers.execute(accountId, selection.copy(confirmationToken = preview.confirmationToken))
         assertTrue(result.results.isNotEmpty())
         assertTrue(result.results.all { it.status == CharacterTransferStepStatus.COMPLETED }, result.toString())
         assertEquals("B", currentPattern)

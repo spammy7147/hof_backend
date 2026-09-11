@@ -258,10 +258,13 @@ object CharacterTransferCrashProcess {
                 snapshots.writeParsed(account.id, target.hofCharacterId,
                     parser.parsePage(target.hofCharacterId, page(target.hofCharacterId, state.current, state.slots,
                         state.equipment, equipmentName = state.equipmentName)))
-                jobs.startTransfer(account.id, CharacterTransferExecuteRequest(source.id, target.id,
-                    if (state.equipment != null) CharacterTransferRequest(includeCurrentPattern = true, includeEquipment = true)
+                val request = if (state.equipment != null) CharacterTransferRequest(includeCurrentPattern = true, includeEquipment = true)
                     else CharacterTransferRequest(includeCurrentPattern = state.unavailableCurrentPattern,
-                        savedPatternMappings = listOf(CharacterSavedPatternMapping("0", "0")))))
+                        savedPatternMappings = listOf(CharacterSavedPatternMapping("0", "0")))
+                val preview = context.getBean(CharacterTransferService::class.java).preview(account.id,
+                    CharacterTransferSelection(source.id, target.id, request))
+                jobs.startTransfer(account.id, CharacterTransferExecuteRequest(source.id, target.id,
+                    request, confirmationToken = preview.confirmationToken))
             }
             // resume는 ApplicationReadyEvent의 실제 startup 진입점이 소비한다.
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20)

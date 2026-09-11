@@ -349,6 +349,7 @@ class CharacterOperationJobService(
         sourceCharacterId,
         targetCharacterId,
         transfer,
+        confirmationToken,
     )
 
     private fun readStrings(payload: String): Set<String> = objectMapper.readValue(

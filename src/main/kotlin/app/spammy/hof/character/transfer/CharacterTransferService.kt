@@ -9,6 +9,8 @@ import app.spammy.hof.character.command.CharacterEquipmentCommandRules
 import app.spammy.hof.character.entity.CharacterLifecycle
 import app.spammy.hof.character.entity.CharacterPatternOptionType
 import app.spammy.hof.character.entity.CharacterSkillType
+import app.spammy.hof.character.entity.CharacterSection
+import app.spammy.hof.character.entity.CharacterSectionSyncStatus
 import app.spammy.hof.character.pattern.CharacterPatternDraft
 import app.spammy.hof.character.pattern.CharacterPatternOperationResult
 import app.spammy.hof.character.pattern.CharacterPatternRowValue
@@ -22,13 +24,17 @@ import app.spammy.hof.character.service.CharacterRestoreState
 import app.spammy.hof.town.common.service.TownAuthenticatedExecutor
 import app.spammy.hof.external.model.HofEquipment
 import app.spammy.hof.external.model.HofEquipmentCandidate
+import java.security.MessageDigest
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import tools.jackson.databind.ObjectMapper
+import tools.jackson.databind.SerializationFeature
 
 data class CharacterTransferSelection(
     val sourceCharacterId: Long,
     val targetCharacterId: Long,
     val request: CharacterTransferRequest,
+    val confirmationToken: String? = null,
 )
 
 /** DB 스냅샷으로 미리보기를 만들고 모든 명령을 대상 캐릭터에만 실행한다. */
@@ -41,13 +47,39 @@ class CharacterTransferService(
     private val executor: TownAuthenticatedExecutor,
     private val patternRemotes: CharacterPatternRemoteFactory,
     private val currentSettings: CharacterDeepSyncService,
+    private val objectMapper: ObjectMapper,
 ) {
     private val planner = CharacterTransferPlanner()
 
     @Transactional(readOnly = true)
     fun preview(accountId: Long, selection: CharacterTransferSelection): CharacterTransferPreview {
         val pair = readPair(accountId, selection.sourceCharacterId, selection.targetCharacterId)
-        return planner.preview(pair.first, pair.second, selection.request)
+        return confirmationPreview(pair.first, pair.second, selection.request)
+    }
+
+    private fun confirmationPreview(
+        source: CharacterTransferSource,
+        target: CharacterTransferTarget,
+        request: CharacterTransferRequest,
+    ): CharacterTransferPreview {
+        // 순서가 의미 없는 집합과 map의 반환 순서는 확인 내용의 변경으로 취급하지 않는다.
+        val content = objectMapper.writer().with(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS).writeValueAsBytes(listOf(
+            "transfer-preview-v1",
+            source.copy(learnedSkills = source.learnedSkills.toSortedSet()),
+            target.copy(
+                allowedJudges = target.allowedJudges.toSortedSet(),
+                allowedSkills = target.allowedSkills.toSortedSet(),
+                allowedPositions = target.allowedPositions.toSortedSet(),
+                allowedGuards = target.allowedGuards.toSortedSet(),
+                occupiedPatternSlots = target.occupiedPatternSlots.toSortedSet(),
+                learnedSkills = target.learnedSkills.toSortedSet(),
+                learnableSkills = target.learnableSkills.toSortedSet(),
+                equipmentCandidateValues = target.equipmentCandidateValues.toSortedSet(),
+            ),
+            request,
+        ))
+        val token = MessageDigest.getInstance("SHA-256").digest(content).joinToString("") { "%02x".format(it) }
+        return planner.preview(source, target, request).copy(confirmationToken = token)
     }
 
     fun execute(
@@ -68,6 +100,21 @@ class CharacterTransferService(
                 CharacterPatternSetting(observed.patterns.map { CharacterPatternRowValue(it.judge, it.quantity, it.skill) },
                     observed.position, observed.guard)
             } else patternRemotes.withRemote(accountId, selection.targetCharacterId) { it.observe().setting }
+            if (snapshot == null) {
+                // 실패한 구역은 이전 값이 DB에 남는다. 그 값으로 최초 확인 지문을 통과시키지 않는다.
+                val required = buildList {
+                    if (selection.request.includeStats) add(CharacterSection.STATS)
+                    if (selection.request.includeSkills) add(CharacterSection.SKILLS)
+                    if (selection.request.savedPatternMappings.isNotEmpty()) add(CharacterSection.SAVED_PATTERNS)
+                    if (selection.request.includeEquipment) {
+                        add(CharacterSection.EQUIPMENT)
+                        add(CharacterSection.EQUIPMENT_CANDIDATES)
+                    }
+                }
+                check(required.all { query.findSectionState(selection.targetCharacterId, it)?.status == CharacterSectionSyncStatus.SUCCESS }) {
+                    "선택한 대상 설정을 완전히 확인하지 못했습니다. 대상 정보를 다시 동기화한 뒤 미리보기를 확인해 주세요."
+                }
+            }
             val pair = readPair(accountId, selection.sourceCharacterId, selection.targetCharacterId)
             val original = snapshot ?: CharacterTransferSnapshot(pair.first, current,
                 pair.second.currentEquipment.takeIf { selection.request.includeEquipment })
@@ -87,11 +134,23 @@ class CharacterTransferService(
             )
             val preview = planner.preview(source, pair.second.copy(currentPattern = original.originalCurrentPattern,
                 currentEquipment = original.originalEquipment?.map { resolveEquipment(it, candidates) }), selection.request)
-            require(preview.executable) { "차단된 항목을 해결한 뒤 실행해 주세요." }
             check(snapshot != null || completedStepIds.isEmpty() ||
                 (selection.request.includeCurrentPattern && preview.steps.none { it.id.startsWith("preserve-current-") })) {
                 "중단 전 대상의 현재 설정 기록이 없어 임시 설정을 원래 설정으로 사용할 수 없습니다."
             }
+            // 원본이 없는 구형 재개를 새 미리보기로 승인하도록 유도하지 않는다.
+            if (snapshot == null) {
+                val freshPreview = confirmationPreview(pair.first, pair.second.copy(currentPattern = current), selection.request)
+                if (selection.confirmationToken == null || selection.confirmationToken != freshPreview.confirmationToken) {
+                    return@executeAccountSequence CharacterTransferExecutionResult(
+                        selection.targetCharacterId, emptyList(), 0,
+                        outcome = CharacterTransferOutcome.PREVIEW_CHANGED,
+                        message = "미리보기의 원본·대상 값이 달라졌거나 확인 정보가 없습니다. 변경된 미리보기를 다시 확인해 주세요.",
+                        preview = freshPreview,
+                    )
+                }
+            }
+            require(preview.executable) { "차단된 항목을 해결한 뒤 실행해 주세요." }
             // 완료 ID만 있는 구형 작업의 임시 패턴·장비를 최초 원본으로 영속화하지 않는다.
             if (snapshot == null) onSnapshot(original)
             val result = CharacterTransferExecutor { targetCharacterId, step ->

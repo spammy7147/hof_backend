@@ -4,7 +4,7 @@ import app.spammy.hof.character.pattern.CharacterPatternSetting
 import app.spammy.hof.external.model.HofEquipment
 
 enum class CharacterTransferStepStatus { COMPLETED, FAILED, SKIPPED }
-enum class CharacterTransferOutcome { COMPLETED, PARTIALLY_APPLIED, RECHECK_REQUIRED }
+enum class CharacterTransferOutcome { COMPLETED, PARTIALLY_APPLIED, RECHECK_REQUIRED, PREVIEW_CHANGED }
 
 data class CharacterTransferCurrentSettings(
     val pattern: CharacterPatternSetting,
@@ -27,6 +27,8 @@ data class CharacterTransferExecutionResult(
     val currentSettings: CharacterTransferCurrentSettings? = null,
     val finalSettingsConfirmed: Boolean = false,
     val message: String? = null,
+    /** 최초 변경 전에 확인한 내용이 달라졌을 때만 반환하는 재확인용 미리보기다. */
+    val preview: CharacterTransferPreview? = null,
 )
 
 fun interface CharacterTransferTargetPort {
