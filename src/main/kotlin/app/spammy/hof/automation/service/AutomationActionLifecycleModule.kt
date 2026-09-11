@@ -595,6 +595,23 @@ class UnifiedAutomationActionLifecycleModule(
                 object : ManagedAutomationAction {
                     override val storedAction = stored
                     override val descriptor = payload.battleMapDescriptor()
+                    private var submittedBattle: AutomationDirectResponse.BattleMap? = null
+
+                    override val directResponse: AutomationDirectResponse? get() = submittedBattle
+
+                    override fun restoreDirectResponse(response: AutomationDirectResponse): TypedAutomationExecution {
+                        require(payload.source == BattleAutomationActionSource.BATTLE_MAP_AUTOMATION)
+                        require(response is AutomationDirectResponse.BattleMap)
+                        require(response.resultIdentity.isNotBlank() && response.resultIdentity.length <= 128)
+                        require(response.outcomes.size == payload.battleCount && response.outcomes.all {
+                            it in setOf(BattleAutomationRoundOutcome.VICTORY, BattleAutomationRoundOutcome.DEFEAT,
+                                BattleAutomationRoundOutcome.DRAW)
+                        }) { "Battle-map response must prove every requested terminal round." }
+                        submittedBattle = response
+                        return TypedAutomationExecution.BattleCompleted(
+                            payload.categoryId, payload.mapCode, response.outcomes.map { it.name },
+                        )
+                    }
 
                     override fun validateBeforeSubmission() = if (
                         payload.source == BattleAutomationActionSource.RAID_AUTOMATION
@@ -604,7 +621,37 @@ class UnifiedAutomationActionLifecycleModule(
                         validateBattleBeforeSubmission(accountId, payload.battleRequest)
                     }
 
-                    override fun execute(): TypedAutomationExecution = executeBattleMap(accountId, stored, payload)
+                    override fun execute(): TypedAutomationExecution = executeBattleMap(accountId, stored, payload,
+                        onCompleted = if (payload.source == BattleAutomationActionSource.BATTLE_MAP_AUTOMATION) {
+                            { submission ->
+                                val rounds = submission.response.rounds.takeIf(List<*>::isNotEmpty)
+                                restoreDirectResponse(AutomationDirectResponse.BattleMap(
+                                    submission.resultIdentity,
+                                    submission.outcomes,
+                                    rounds?.flatMap { it.loots.map { loot -> loot.name } }
+                                        ?: submission.response.loots.map { it.name },
+                                    rounds?.mapNotNull { it.quest?.takeIf(String::isNotBlank) }
+                                        ?: listOfNotNull(submission.response.quest?.takeIf(String::isNotBlank)),
+                                ))
+                            }
+                        } else null,
+                    )
+
+                    private fun applyProjection(execution: TypedAutomationExecution): TypedAutomationExecution {
+                        if (payload.source != BattleAutomationActionSource.BATTLE_MAP_AUTOMATION ||
+                            execution is TypedAutomationExecution.SharedCooldown
+                        ) return execution
+                        val response = requireNotNull(submittedBattle) { "Battle-map direct response is missing." }
+                        submittedBattle = null
+                        applyCompletedBattleMap(accountId, stored, payload, response.resultIdentity, response.outcomes)
+                        executionSignals.afterBattle(accountId, payload.source, response.outcomes,
+                            response.lootNames, response.questTexts)
+                        return execution
+                    }
+
+                    override fun applyPolicyAcceptedExecution(execution: TypedAutomationExecution) = applyProjection(execution)
+
+                    override fun applyLegacyExecution(execution: TypedAutomationExecution) = applyProjection(execution)
 
                     override fun reconcile(): AmbiguousActionResolution = reconcileBattleMap(accountId, stored, payload)
 
@@ -1534,6 +1581,7 @@ class UnifiedAutomationActionLifecycleModule(
         accountId: Long,
         stored: StoredTypedAutomationAction,
         payload: StoredTypedActionPayload.BattleMap,
+        onCompleted: ((AutomationBattleSubmissionResult.Completed) -> TypedAutomationExecution)? = null,
     ): TypedAutomationExecution {
         val submission = battleSubmission.submit(
             accountId,
@@ -1545,6 +1593,7 @@ class UnifiedAutomationActionLifecycleModule(
             return TypedAutomationExecution.SharedCooldown(payload.categoryId, payload.mapCode, submission.retryAt)
         }
         submission as AutomationBattleSubmissionResult.Completed
+        onCompleted?.let { return it(submission) }
         val raidCompletion = applyCompletedBattleMap(
             accountId,
             stored,

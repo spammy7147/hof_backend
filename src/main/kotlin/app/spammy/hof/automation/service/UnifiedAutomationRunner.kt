@@ -317,11 +317,12 @@ class UnifiedAutomationRunner @Autowired constructor(
                     IllegalStateException("Active convergence module is missing."))
                 return
             }
-            stored = resultSelection.stored
+            val selectedAction = resultSelection.stored
             val preparation = try {
-                typedRuntime.persistPrepared(execution, stored, selectedWarnings.orEmpty())
+                typedRuntime.persistPrepared(execution, selectedAction, selectedWarnings.orEmpty())
             } catch (error: Exception) {
-                stopPreparationFailure(accountId, execution, stored.entryId, "PERSIST", error, decisionCycleId, preparationDescriptor(stored, managedAction.descriptor))
+                stopPreparationFailure(accountId, execution, selectedAction.entryId, "PERSIST", error, decisionCycleId,
+                    preparationDescriptor(selectedAction, managedAction.descriptor))
                 return
             }
             if (preparation !is TypedRuntimePreparation.Ready) {
@@ -333,6 +334,7 @@ class UnifiedAutomationRunner @Autowired constructor(
             }
             execution = preparation.execution
             checkpoint = requireNotNull(execution.checkpoint)
+            stored = checkpoint.storedAction
         }
 
         val activeCheckpoint = requireNotNull(checkpoint)

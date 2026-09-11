@@ -27,11 +27,19 @@ import tools.jackson.databind.ObjectMapper
     JsonSubTypes.Type(AutomationDirectResponse.QuestPage::class, name = "QUEST_PAGE"),
     JsonSubTypes.Type(AutomationDirectResponse.HomePage::class, name = "HOME_PAGE"),
     JsonSubTypes.Type(AutomationDirectResponse.QuestBattle::class, name = "QUEST_BATTLE"),
+    JsonSubTypes.Type(AutomationDirectResponse.BattleMap::class, name = "BATTLE_MAP"),
 )
 sealed interface AutomationDirectResponse {
     data class QuestPage(val quests: List<QuestSnapshot>, val complete: Boolean) : AutomationDirectResponse
 
     data class QuestBattle(val outcomes: List<BattleAutomationRoundOutcome>) : AutomationDirectResponse
+
+    data class BattleMap(
+        val resultIdentity: String,
+        val outcomes: List<BattleAutomationRoundOutcome>,
+        val lootNames: List<String>,
+        val questTexts: List<String>,
+    ) : AutomationDirectResponse
 
     data class HomePage(val quests: List<Quest>, val resultStatus: String?) : AutomationDirectResponse {
         data class Quest(
@@ -235,6 +243,10 @@ class AutomationDirectResponseStore(
             is AutomationDirectResponse.QuestBattle -> require(stored.payload is StoredTypedActionPayload.QuestBattle) {
                 "Quest battle response cannot be attached to a different action kind."
             }
+            is AutomationDirectResponse.BattleMap -> require(
+                stored.payload is StoredTypedActionPayload.BattleMap &&
+                    stored.payload.source == BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
+            ) { "Battle-map response cannot be attached to a different action source." }
         }
     }
 

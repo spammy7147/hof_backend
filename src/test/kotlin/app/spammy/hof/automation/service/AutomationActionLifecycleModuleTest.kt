@@ -926,7 +926,11 @@ class AutomationActionLifecycleModuleTest {
             AutomationWorkAssignment(AutomationWorkType.BATTLE_MAP, "battle_map/map-1"),
         )
 
-        assertTerminalBattle(managed.execute())
+        val execution = managed.execute()
+        assertTerminalBattle(execution)
+        assertIs<AutomationDirectResponse.BattleMap>(managed.directResponse)
+        Mockito.verifyNoInteractions(battleHandler)
+        assertTerminalBattle(managed.applyLegacyExecution(execution))
         Mockito.verify(battleHandler).onBattleCompleted(
             action,
             BattleAutomationActionSource.BATTLE_MAP_AUTOMATION,
