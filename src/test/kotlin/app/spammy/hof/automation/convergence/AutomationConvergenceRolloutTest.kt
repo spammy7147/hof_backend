@@ -2,6 +2,8 @@ package app.spammy.hof.automation.convergence
 
 import app.spammy.hof.common.time.TimeProvider
 import java.time.Instant
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -11,6 +13,55 @@ import kotlin.test.assertTrue
 
 class AutomationConvergenceRolloutTest {
     private val now = Instant.parse("2026-08-22T00:00:00Z")
+
+    @ParameterizedTest
+    @ValueSource(strings = ["HELD", "NOT_APPLIED", "UNSUPPORTED_POLICY"])
+    fun `늦은 직접 응답은 보류를 해소하지만 미적용과 비지원 정책을 바꾸거나 중복 기록하지 않는다`(terminal: String) {
+        var currentTime = now
+        val production = InMemoryConvergenceStore()
+        val durable = mutableListOf<DurableShadowEvaluation>()
+        val evaluator = DefaultAutomationConvergenceShadowEvaluator(
+            TimeProvider { currentTime }, AutomationConvergenceShadowRecorder(durable::add), production,
+        )
+        val selection = SelectedAutomationAction(
+            entryId = 5L, executionIdentity = "late-after-$terminal", actionKind = AutomationActionKind.QUEST_CLAIM,
+            scope = AutomationIsolationScope(AutomationIsolationScopeKind.QUEST_TARGET, "quest"),
+            policyVersion = if (terminal == "UNSUPPORTED_POLICY") "unsupported" else ProductionActionEvidenceInterpreter.VERSION_1,
+            baselineFingerprint = "claimable",
+        )
+        evaluator.selected(7L, selection)
+        when (terminal) {
+            "HELD" -> {
+                evaluator.observe(7L, selection.executionIdentity,
+                    AutomationActionEvidence.IncompleteObservation(now, "원래 응답 확인 대기"), LegacyConvergenceDecision.RECONCILING)
+                currentTime = now.plusSeconds(121)
+                evaluator.observe(7L, selection.executionIdentity,
+                    AutomationActionEvidence.SameState(currentTime, "claimable"), LegacyConvergenceDecision.HELD)
+            }
+            "NOT_APPLIED" -> evaluator.observe(7L, selection.executionIdentity,
+                AutomationActionEvidence.DirectRejected(now, "신청 거절"), LegacyConvergenceDecision.RESUBMIT)
+            "UNSUPPORTED_POLICY" -> evaluator.observe(7L, selection.executionIdentity,
+                AutomationActionEvidence.DirectApplied(now, "claim-applied"), LegacyConvergenceDecision.APPLIED)
+        }
+        assertEquals(if (terminal == "NOT_APPLIED") ActionConvergenceResult.NOT_APPLIED else ActionConvergenceResult.HELD,
+            durable.last().newResult)
+        val recordedBeforeLateResult = durable.size
+        val direct = AutomationActionEvidence.DirectApplied(now, "claim-applied")
+        val late = evaluator.observe(7L, selection.executionIdentity, direct, LegacyConvergenceDecision.APPLIED)
+        if (terminal == "HELD") {
+            assertEquals(ActionConvergenceResult.APPLIED, assertNotNull(late).newResult)
+            assertEquals(now, durable.last().observedAt)
+        } else assertNull(late)
+
+        assertNull(evaluator.observe(7L, selection.executionIdentity, direct, LegacyConvergenceDecision.APPLIED))
+        assertNull(evaluator.observe(8L, selection.executionIdentity, direct, LegacyConvergenceDecision.APPLIED))
+        assertNull(evaluator.observe(7L, "unknown-execution", direct, LegacyConvergenceDecision.APPLIED))
+        assertNull(evaluator.observe(7L, selection.executionIdentity,
+            AutomationActionEvidence.SameState(currentTime, "claimable"), LegacyConvergenceDecision.RECONCILING))
+        assertEquals(recordedBeforeLateResult + if (terminal == "HELD") 1 else 0, durable.size)
+        assertNull(production.get(7L, selection.executionIdentity))
+        assertNull(production.activeBattleGate(7L))
+    }
 
     @Test
     fun `실제 관문이 해제된 뒤 새 전투의 shadow 비교를 재개하고 열린 관문은 유지한다`() {
@@ -132,7 +183,7 @@ class AutomationConvergenceRolloutTest {
     }
 
     @Test
-    fun `같은 scope의 새 identity는 이전 shadow attempt를 대체하고 새 표본을 받는다`() {
+    fun `새 실행의 shadow 비교와 이전 실행의 늦은 직접 응답을 각각 보존한다`() {
         val durable = mutableListOf<DurableShadowEvaluation>()
         val evaluator = DefaultAutomationConvergenceShadowEvaluator(
             TimeProvider { now },
@@ -176,14 +227,21 @@ class AutomationConvergenceRolloutTest {
             durable.map(DurableShadowEvaluation::legacyDecision),
         )
         assertEquals(
-            null,
+            ActionConvergenceResult.APPLIED,
             evaluator.observe(
                 7L,
                 previous.executionIdentity,
                 AutomationActionEvidence.DirectApplied(now, "late-old-result"),
                 LegacyConvergenceDecision.APPLIED,
-            ),
+            )?.newResult,
         )
+        assertEquals(listOf(ActionConvergenceResult.PENDING, ActionConvergenceResult.SUPERSEDED,
+            ActionConvergenceResult.APPLIED, ActionConvergenceResult.APPLIED), durable.map { it.newResult })
+        assertNull(evaluator.observe(7L, previous.executionIdentity,
+            AutomationActionEvidence.DirectApplied(now, "late-old-result"), LegacyConvergenceDecision.APPLIED))
+        assertNull(evaluator.observe(7L, replacement.executionIdentity,
+            AutomationActionEvidence.DirectApplied(now, "claim-applied"), LegacyConvergenceDecision.APPLIED))
+        assertEquals(4, durable.size)
     }
 
     @Test

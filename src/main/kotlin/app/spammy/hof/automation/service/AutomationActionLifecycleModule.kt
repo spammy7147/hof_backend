@@ -539,13 +539,27 @@ class UnifiedAutomationActionLifecycleModule(
             is StoredTypedActionPayload.QuestBattle -> object : ManagedAutomationAction {
                 override val storedAction = stored
                 override val descriptor = payload.questBattleDescriptor()
-                private var submittedBattle: AutomationBattleSubmissionResult.Completed? = null
+                private var submittedBattle: AutomationDirectResponse.QuestBattle? = null
+
+                override val directResponse: AutomationDirectResponse? get() = submittedBattle
+
+                override fun restoreDirectResponse(response: AutomationDirectResponse): TypedAutomationExecution {
+                    require(response is AutomationDirectResponse.QuestBattle)
+                    require(response.outcomes.size == payload.battleCount && response.outcomes.all {
+                        it in setOf(BattleAutomationRoundOutcome.VICTORY, BattleAutomationRoundOutcome.DEFEAT,
+                            BattleAutomationRoundOutcome.DRAW)
+                    }) { "Quest battle response must prove every requested terminal round." }
+                    submittedBattle = response
+                    return TypedAutomationExecution.BattleCompleted(
+                        payload.categoryId, payload.mapCode, response.outcomes.map { it.name },
+                    )
+                }
 
                 override fun validateBeforeSubmission() =
                     validateBattleBeforeSubmission(accountId, payload.battleRequest)
 
                 override fun execute(): TypedAutomationExecution = executeQuestBattle(accountId, stored, payload) {
-                    submittedBattle = it
+                    restoreDirectResponse(AutomationDirectResponse.QuestBattle(it.outcomes))
                 }
 
                 private fun applyProjection(execution: TypedAutomationExecution): TypedAutomationExecution {
@@ -564,7 +578,7 @@ class UnifiedAutomationActionLifecycleModule(
                             QuestResultObservation.BattleRounds(submission.outcomes),
                         ),
                     )
-                    emitBattleSignals(accountId, BattleAutomationActionSource.QUEST_AUTOMATION, submission)
+                    // 퀘스트 전투의 진전은 questWorkCycle이 소유하며 공용 afterBattle은 이 source에서 아무 일도 하지 않는다.
                     return execution
                 }
 
@@ -2374,7 +2388,7 @@ class UnifiedAutomationActionLifecycleModule(
         accountId: Long,
         stored: StoredTypedAutomationAction,
         payload: StoredTypedActionPayload.QuestBattle,
-        captureSubmission: (AutomationBattleSubmissionResult.Completed) -> Unit,
+        captureSubmission: (AutomationBattleSubmissionResult.Completed) -> TypedAutomationExecution,
     ): TypedAutomationExecution {
         val submission = battleSubmission.submit(
             accountId,
@@ -2386,12 +2400,7 @@ class UnifiedAutomationActionLifecycleModule(
             return TypedAutomationExecution.SharedCooldown(payload.categoryId, payload.mapCode, submission.retryAt)
         }
         submission as AutomationBattleSubmissionResult.Completed
-        captureSubmission(submission)
-        return TypedAutomationExecution.BattleCompleted(
-            payload.categoryId,
-            payload.mapCode,
-            submission.outcomes.map { it.name },
-        )
+        return captureSubmission(submission)
     }
 
     private fun StoredTypedActionPayload.QuestBattle.toQuestAction() = QuestAction.Battle(

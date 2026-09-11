@@ -722,6 +722,7 @@ class TypedAutomationRuntimeService(
             is StoredTypedActionPayload.QuestAccept -> payload.questKey
             is StoredTypedActionPayload.QuestClaim -> payload.questKey
             is StoredTypedActionPayload.HomeQuest -> payload.questId
+            is StoredTypedActionPayload.QuestBattle -> payload.questKey
             else -> error("Stored direct response does not support this work target.")
         }
         // 같은 entry에서 다른 퀘스트가 작업권을 얻었어도 원래 결과의 재시도가 그 작업을 양보시키지 않는다.

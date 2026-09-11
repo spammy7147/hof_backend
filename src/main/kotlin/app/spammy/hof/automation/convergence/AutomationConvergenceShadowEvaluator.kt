@@ -108,10 +108,21 @@ class DefaultAutomationConvergenceShadowEvaluator(
         legacyDecision: LegacyConvergenceDecision,
     ): ShadowConvergenceEvaluation? {
         val key = accountId to executionIdentity
-        val attemptId = attempts[key] ?: return null
+        val attemptId = attempts[key] ?: if (evidence is AutomationActionEvidence.DirectApplied) {
+            store.get(accountId, executionIdentity)
+                ?.takeIf { ProductionActionEvidenceInterpreter.supportsVersion(it.selection.policyVersion) }
+                ?.attemptId
+        } else null
+        if (attemptId == null) return null
         val before = store.get(attemptId) ?: return null
-        if (!before.active && ProductionActionEvidenceInterpreter.supportsVersion(before.selection.policyVersion)) return null
-        engine.record(attemptId, evidence)
+        if (!before.active && ProductionActionEvidenceInterpreter.supportsVersion(before.selection.policyVersion)) {
+            if (evidence !is AutomationActionEvidence.DirectApplied) return null
+            val previousResult = before.result
+            engine.recordLateApplication(accountId, executionIdentity, evidence)
+            if (store.get(attemptId)?.result == previousResult) return null
+        } else {
+            engine.record(attemptId, evidence)
+        }
         val after = requireNotNull(store.get(attemptId))
         val newResult = after.result ?: ActionConvergenceResult.PENDING
         val evidenceKind = evidence.javaClass.simpleName
