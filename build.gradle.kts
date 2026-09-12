@@ -72,6 +72,8 @@ allOpen {
 
 tasks.withType<Test> {
 	useJUnitPlatform()
+	// Show progress while process-restart checks run on slower CI agents.
+	testLogging.events("started", "passed", "skipped", "failed")
 	// JenkinsfileTest executes these files; changes must invalidate Gradle's test cache.
 	inputs.files("Jenkinsfile", fileTree("scripts") { include("**/*.py") })
 		.withPathSensitivity(PathSensitivity.RELATIVE)
