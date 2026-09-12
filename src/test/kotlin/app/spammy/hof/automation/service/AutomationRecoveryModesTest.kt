@@ -49,6 +49,35 @@ abstract class AutomationRecoveryModesTest : AutomationRecoveryFixture() {
     @Autowired private lateinit var captchaService: app.spammy.hof.captcha.service.CaptchaService
     @Autowired private lateinit var passMaintenance: app.spammy.hof.captcha.service.CaptchaPassMaintenanceService
     @MockitoSpyBean private lateinit var battleRuns: app.spammy.hof.battle.service.BattleRunService
+
+    @Test
+    fun `일반 아이템 이미지가 있는 패턴 응답도 전투를 완료하고 후속 판단을 소비한다`() {
+        val state = setupFishing(initialBattle = true, hiddenBattle = true)
+        // 보관된 정상 캐릭터 화면의 일반 아이템 이미지다. 캡차 form이나 만료 신호는 없다.
+        state.patternPageExtra = "<div id='menu'>0:26:09</div><img src='image/pass2.gif'>"
+        fun patternPosts() = requests.filter { it.method == HofHttpMethod.POST && it.url.contains("?char=") }
+        fun fishingBattles() = requests.filter { it.method == HofHttpMethod.POST && it.url.contains("common=fishing_12") }
+
+        wakeups.wake(accountId, "NORMAL_CHARACTER_PATTERN_PAGE")
+        publisher.publishBatch()
+
+        assertEquals(1, patternPosts().size)
+        assertEquals(1, fishingBattles().size, "일반 아이템 이미지는 패턴 선로드 뒤 전투 제출을 막지 않는다.")
+        assertEquals("SUCCEEDED", runs().single()["status"])
+        assertNotNull(runs().single()["submitted_at"])
+        assertEquals(0, jdbc.queryForObject("select count(*) from captcha_challenges where account_id = ?", Int::class.java, accountId))
+        assertNull(store.activeBattleGate(accountId))
+        val count = journal.page(accountId, AutomationHistoryQuery()).cycles.size
+        consumeNextWake()
+        assertTrue(journal.page(accountId, AutomationHistoryQuery()).cycles.size > count)
+        assertEquals(1, patternPosts().size)
+        assertEquals(1, fishingBattles().size)
+        assertTrue(fishingPosts().isEmpty())
+        assertEquals(0, runningWorkCount())
+        assertNull(jdbc.queryForObject("select lease_token from typed_automation_runtime_states where account_id = ?", String::class.java, accountId))
+        assertAppliedInMode(AutomationActionKind.FISHING_OBSTRUCTION_BATTLE)
+    }
+
     @ParameterizedTest
     @ValueSource(strings = ["REJECTED", "INCOMPLETE", "CAPTCHA"])
     fun `패턴 불러오기를 확인하지 못한 세 모드는 전투 없이 끝내고 새 판단에서 복구한다`(failure: String) {

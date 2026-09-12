@@ -154,6 +154,7 @@ abstract class AutomationRecoveryFixture {
         var battleOutcome = BattleAutomationRoundOutcome.VICTORY
         var revealOnStart = false
         var preloadFailure: String? = null
+        var patternPageExtra = ""
         var currentTime = 100
         val requestCookies = mutableListOf<Map<String, String>>()
     }
@@ -205,7 +206,7 @@ abstract class AutomationRecoveryFixture {
                         "INCOMPLETE" -> "<div>현재 설정을 읽지 못했습니다.</div>"
                         "CAPTCHA" -> "<div>자경단에서 통행증을 발급받아주세요.</div>"
                         else -> app.spammy.hof.character.service.currentPatternForm() + app.spammy.hof.character.service.savedPatternLoadForm(1)
-                    }
+                    } + state.patternPageExtra
                 }
                 homeResponse != null && request.url.contains("menu=quest2") -> homeResponse(request)
                 "FStart" in request.formFields -> {

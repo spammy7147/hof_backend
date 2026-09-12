@@ -2,12 +2,41 @@ package app.spammy.hof.captcha.service
 
 import org.jsoup.Jsoup
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
+import java.nio.charset.Charset
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class CaptchaChallengeParserTest {
     private val parser = CaptchaChallengeParser()
+
+    @ParameterizedTest
+    @ValueSource(strings = ["skillPoint_not_exist", "kick", "use", "skillPoint_exist", "changeName", "knockback"])
+    fun doesNotTreatOrdinaryCharacterItemImagesAsCaptcha(fixture: String) {
+        val html = requireNotNull(javaClass.getResource("/character/Hall of Fame Ver ZeroHOF_$fixture.html"))
+            .readText(Charset.forName("MS949"))
+        val document = Jsoup.parse(html)
+
+        assertTrue(document.select("img[src]").any { it.attr("src").contains("pass2.gif") })
+        assertFalse(parser.hasCaptchaSignal(document, document.text()))
+    }
+
+    @Test
+    fun distinguishesWeakImageHintsFromExplicitCaptchaSignals() {
+        val ordinary = Jsoup.parse("<img src='image/pass2.gif'><img src='image/author.gif'>")
+        assertFalse(parser.hasCaptchaSignal(ordinary, ordinary.text()))
+
+        ordinary.append("<img src='simple-php-CAPTCHA.php?_CAPTCHA=1'>")
+        assertTrue(parser.hasCaptchaSignal(ordinary, ordinary.text()))
+
+        val challenge = Jsoup.parse("<form><label>인증 문자를 입력하세요.</label><img src='pass.php'></form>",
+            "https://example.test/index.php")
+        assertTrue(parser.hasCaptchaSignal(challenge, challenge.text()))
+        assertEquals("https://example.test/pass.php",
+            parser.extractDocumentMetadata(challenge, challenge.text(), challenge.baseUri()).imageUrl)
+    }
 
     @Test
     fun extractsTheSelectedFormWithoutPersistingHtmlAsJson() {

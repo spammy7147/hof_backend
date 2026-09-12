@@ -38,7 +38,7 @@ data class VigilantePassState(
  */
 @Component
 class CaptchaChallengeParser {
-    /** 본문 키워드, 빨간 자경단 표시, input 이름, 이미지 src 중 하나라도 있으면 gate로 판단한다. */
+    /** 명시적인 캡차 신호만 gate로 판단한다. pass/auth 이미지 힌트는 metadata 추출에만 쓴다. */
     fun hasCaptchaSignal(
         element: Element,
         pageText: String,
@@ -48,7 +48,7 @@ class CaptchaChallengeParser {
             parseVigilantePassState(element).required ||
             hasRedVigilanteSignal(element) ||
             findCaptchaNamedInput(element) != null ||
-            findChallengeImage(element) != null
+            element.select("img[src]").any { it.attr("src").contains("captcha", ignoreCase = true) }
 
     /**
      * 게임 내부 메뉴인 `#menu`만 대상으로 빨간 `통행증`·`자경단`과 인증 유효시간 `H:MM:SS`를 읽는다.
