@@ -19,6 +19,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.EnumSource
 import org.junit.jupiter.params.provider.CsvSource
 import org.junit.jupiter.params.provider.ValueSource
 import org.springframework.beans.factory.annotation.Autowired
@@ -336,7 +337,7 @@ class ConvergencePersistenceTest {
         for (record in records) {
             assertEquals(0, reloaded.releaseSupersededSuppressions(account.id, record.selection.scope,
                 setOf("current-baseline"), now.plusSeconds(1)))
-            assertEquals(0, reloaded.releaseRaidRegistrationSuppressions(account.id, entry.id,
+            assertEquals(0, reloaded.releaseRaidSuppressions(account.id, entry.id,
                 record.selection.scope.key, now.plusSeconds(1)))
             entityManager.flush()
             entityManager.clear()
@@ -350,8 +351,9 @@ class ConvergencePersistenceTest {
         assertEquals(emptySet(), reloaded.findPolicyHeldScopes(account.id))
     }
 
-    @Test
-    fun `신청 보류 해제는 계정 항목 대상 행동을 제한하고 재로딩과 재처리 뒤에도 유지된다`() {
+    @ParameterizedTest
+    @EnumSource(value = AutomationActionKind::class, names = ["RAID_REGISTER", "RAID_REFRESH"])
+    fun `레이드 보류 해제는 계정 항목 대상 행동을 제한하고 재로딩과 재처리 뒤에도 유지된다`(kind: AutomationActionKind) {
         val now = Instant.parse("2026-09-04T00:00:00Z")
         val (account, entry) = fixture("raid-release", now)
         val (otherAccount, otherEntry) = fixture("other-raid-release", now)
@@ -363,18 +365,19 @@ class ConvergencePersistenceTest {
             store.save(record)
             return record
         }
-        val registration = held(account.id, entry.id, "register", "raid-a", AutomationActionKind.RAID_REGISTER)
+        val registration = held(account.id, entry.id, "register", "raid-a", kind)
         val battle = held(account.id, entry.id, "battle", "raid-a", AutomationActionKind.RAID_BATTLE)
-        val anotherTarget = held(account.id, entry.id, "other-target", "raid-b", AutomationActionKind.RAID_REGISTER)
-        val foreign = held(otherAccount.id, otherEntry.id, "foreign", "raid-a", AutomationActionKind.RAID_REGISTER)
-        assertEquals(0, store.releaseRaidRegistrationSuppressions(account.id, otherEntry.id, "raid-a", now))
-        assertEquals(1, store.releaseRaidRegistrationSuppressions(account.id, entry.id, "raid-a", now.plusSeconds(1)))
+        val anotherTarget = held(account.id, entry.id, "other-target", "raid-b", kind)
+        val foreign = held(otherAccount.id, otherEntry.id, "foreign", "raid-a", kind)
+        assertEquals(0, store.releaseRaidSuppressions(account.id, otherEntry.id, "raid-a", now, kind))
+        assertEquals(1, store.releaseRaidSuppressions(account.id, entry.id, "raid-a", now.plusSeconds(1), kind))
         entityManager.flush()
         entityManager.clear()
         val reloaded = JpaConvergenceStore(entityManager)
-        assertEquals(0, reloaded.releaseRaidRegistrationSuppressions(account.id, entry.id, "raid-a", now.plusSeconds(2)))
+        assertEquals(0, reloaded.releaseRaidSuppressions(account.id, entry.id, "raid-a", now.plusSeconds(2), kind))
         assertEquals(ActionConvergenceResult.HELD, reloaded.get(registration.attemptId)?.result)
-        assertEquals("RAID_REGISTRATION_FRESH_DECISION_RELEASED", reloaded.get(registration.attemptId)?.reasonCode)
+        assertEquals(if (kind == AutomationActionKind.RAID_REFRESH) "RAID_REFRESH_FRESH_DECISION_RELEASED"
+            else "RAID_REGISTRATION_FRESH_DECISION_RELEASED", reloaded.get(registration.attemptId)?.reasonCode)
         assertEquals(setOf(battle.selection.baselineFingerprint), reloaded.findSuppressedBaselines(account.id)[battle.selection.scope])
         assertEquals(setOf(anotherTarget.selection.baselineFingerprint), reloaded.findSuppressedBaselines(account.id)[anotherTarget.selection.scope])
         assertEquals(setOf(foreign.selection.baselineFingerprint), reloaded.findSuppressedBaselines(otherAccount.id)[foreign.selection.scope])

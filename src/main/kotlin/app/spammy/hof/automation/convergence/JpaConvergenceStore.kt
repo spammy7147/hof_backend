@@ -276,12 +276,14 @@ class JpaConvergenceStore(
         return true
     }
 
-    override fun releaseRaidRegistrationSuppressions(
+    override fun releaseRaidSuppressions(
         accountId: Long,
         entryId: Long,
         raidId: String,
         observedAt: Instant,
+        actionKind: AutomationActionKind,
     ): Int {
+        require(actionKind in setOf(AutomationActionKind.RAID_REGISTER, AutomationActionKind.RAID_REFRESH))
         val held = entityManager.createQuery(
             """
             select convergence from ActionConvergenceEntity convergence
@@ -297,7 +299,7 @@ class JpaConvergenceStore(
             ActionConvergenceEntity::class.java,
         ).setParameter("accountId", accountId)
             .setParameter("entryId", entryId)
-            .setParameter("actionKind", AutomationActionKind.RAID_REGISTER)
+            .setParameter("actionKind", actionKind)
             .setParameter("scopeKind", AutomationIsolationScopeKind.RAID_ENTRY)
             .setParameter("scopeKey", raidId)
             .setParameter("results", setOf(ActionConvergenceResult.HELD, ActionConvergenceResult.RESULT_UNOBSERVED))
@@ -305,7 +307,9 @@ class JpaConvergenceStore(
             .filter { ProductionActionEvidenceInterpreter.supportsVersion(it.attempt.policyVersion) }
         held.forEach {
             it.suppressionReleasedAt = observedAt
-            it.reasonCode = "RAID_REGISTRATION_FRESH_DECISION_RELEASED"
+            it.reasonCode = if (actionKind == AutomationActionKind.RAID_REFRESH) {
+                "RAID_REFRESH_FRESH_DECISION_RELEASED"
+            } else "RAID_REGISTRATION_FRESH_DECISION_RELEASED"
             it.updatedAt = observedAt
         }
         return held.size

@@ -32,6 +32,10 @@ class AutomationConvergenceSelection internal constructor(
         fun blocked(reason: String, message: String) =
             ConvergenceSelectionBlock(reason, message, preview.scope, preview.actionKind)
 
+        // 상태 갱신의 과거 결과가 새 상태 확인을 막으면 복구 관측 자체가 불가능해진다.
+        if (preview.actionKind == AutomationActionKind.RAID_REFRESH) {
+            store.releaseRaidSuppressions(accountId, entryId, preview.scope.key, timeProvider.now(), preview.actionKind)
+        }
         if (preview.scope in store.findPolicyHeldScopes(accountId)) {
             return blocked("CONVERGENCE_SCOPE_BLOCKED",
                 "저장된 행동의 정책 버전을 지원하지 않아 해당 범위를 보류했습니다.")

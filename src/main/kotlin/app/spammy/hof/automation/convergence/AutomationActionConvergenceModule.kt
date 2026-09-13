@@ -99,6 +99,9 @@ class DefaultAutomationActionConvergenceModule(
         store.activeBattleGate(accountId)?.takeIf { selection.actionKind.battle }?.let { gate ->
             return ConvergenceDirective.BattleGateWait(gate.openedAt, gate.reason)
         }
+        if (selection.actionKind == AutomationActionKind.RAID_REFRESH) {
+            store.releaseRaidSuppressions(accountId, selection.entryId, selection.scope.key, timeProvider.now(), selection.actionKind)
+        }
         if (isSuppressed(accountId, selection)) return ConvergenceDirective.ContinueSelection
         store.findActive(accountId, selection.scope)?.let { active ->
             return ConvergenceDirective.WaitUntil(
@@ -536,7 +539,7 @@ class DefaultAutomationActionConvergenceModule(
         raidId: String,
         observedAt: Instant,
     ): Int =
-        store.releaseRaidRegistrationSuppressions(accountId, entryId, raidId, observedAt)
+        store.releaseRaidSuppressions(accountId, entryId, raidId, observedAt)
 
     private fun holdUnsupportedPolicy(
         record: ActionConvergenceRecord,

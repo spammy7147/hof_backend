@@ -22,11 +22,12 @@ interface ConvergenceStore {
         releasedAt: Instant,
     ): Int
     fun releaseSuppression(accountId: Long, attemptId: Long, releasedAt: Instant): Boolean
-    fun releaseRaidRegistrationSuppressions(
+    fun releaseRaidSuppressions(
         accountId: Long,
         entryId: Long,
         raidId: String,
         observedAt: Instant,
+        actionKind: AutomationActionKind = AutomationActionKind.RAID_REGISTER,
     ): Int
     fun activeBattleGate(accountId: Long): AccountBattleGate?
     fun openBattleGate(accountId: Long, challengeId: Long?, reason: String, now: Instant): AccountBattleGate
@@ -160,15 +161,17 @@ class InMemoryConvergenceStore : ConvergenceStore {
     }
 
     @Synchronized
-    override fun releaseRaidRegistrationSuppressions(
+    override fun releaseRaidSuppressions(
         accountId: Long,
         entryId: Long,
         raidId: String,
         observedAt: Instant,
+        actionKind: AutomationActionKind,
     ): Int {
+        require(actionKind in setOf(AutomationActionKind.RAID_REGISTER, AutomationActionKind.RAID_REFRESH))
         val held = records.values.filter {
             it.accountId == accountId && it.selection.entryId == entryId &&
-                it.selection.actionKind == AutomationActionKind.RAID_REGISTER &&
+                it.selection.actionKind == actionKind &&
                 ProductionActionEvidenceInterpreter.supportsVersion(it.selection.policyVersion) &&
                 it.selection.scope == AutomationIsolationScope(AutomationIsolationScopeKind.RAID_ENTRY, raidId) &&
                 it.result in setOf(ActionConvergenceResult.HELD, ActionConvergenceResult.RESULT_UNOBSERVED) &&
@@ -176,7 +179,9 @@ class InMemoryConvergenceStore : ConvergenceStore {
         }
         held.forEach {
             releasedSuppressions += accountId to it.attemptId
-            it.reasonCode = "RAID_REGISTRATION_FRESH_DECISION_RELEASED"
+            it.reasonCode = if (actionKind == AutomationActionKind.RAID_REFRESH) {
+                "RAID_REFRESH_FRESH_DECISION_RELEASED"
+            } else "RAID_REGISTRATION_FRESH_DECISION_RELEASED"
             it.updatedAt = observedAt
         }
         return held.size

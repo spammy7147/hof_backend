@@ -23,6 +23,37 @@ class AutomationConvergenceSelectionTest {
 
     @ParameterizedTest
     @EnumSource(AutomationConvergenceMode::class)
+    fun `과거 상태 갱신 결과가 미확정이어도 새 레이드 상태 갱신을 막지 않는다`(mode: AutomationConvergenceMode) {
+        val refresh = RaidTownAutomationAction(7, RaidAction.REFRESH, null, "raid-1", "레이드")
+        val preview = StoredActionConvergenceSelectionFactory().preview(11, refresh)
+        val attempt = assertIs<ConvergenceDirective.Submit>(module.prepare(7,
+            SelectedAutomationAction(11, "lost-refresh", preview.actionKind, preview.scope,
+                "automation-action-convergence-v1", requireNotNull(preview.baselineFingerprint)),
+        )).attemptId
+        module.record(attempt, AutomationActionEvidence.ResultUnobserved(now, "response lost"))
+
+        val selection = module.openSelection(7, 11, mode = mode)
+        assertNull(selection.block(refresh), "현재 상태를 읽기 위한 갱신을 과거 갱신 결과로 막으면 복구할 수 없다.")
+        assertEquals(ActionConvergenceResult.RESULT_UNOBSERVED, store.get(attempt)?.result)
+    }
+
+    @Test
+    fun `선택 검사를 거치지 않아도 새 상태 갱신은 준비할 수 있고 활성 시도는 중복 제출하지 않는다`() {
+        val preview = StoredActionConvergenceSelectionFactory().preview(11,
+            RaidTownAutomationAction(7, RaidAction.REFRESH, null, "raid-1", "레이드"))
+        val original = SelectedAutomationAction(11, "lost-refresh", preview.actionKind, preview.scope,
+            "automation-action-convergence-v1", requireNotNull(preview.baselineFingerprint))
+        val old = assertIs<ConvergenceDirective.Submit>(module.prepare(7, original))
+        module.record(old.attemptId, AutomationActionEvidence.ResultUnobserved(now, "response lost"))
+
+        assertIs<ConvergenceDirective.Submit>(module.prepare(7, original.copy(executionIdentity = "new-refresh")))
+        assertIs<ConvergenceDirective.WaitUntil>(module.prepare(7, original.copy(executionIdentity = "duplicate-refresh")))
+        assertEquals(ActionConvergenceResult.RESULT_UNOBSERVED, store.get(old.attemptId)?.result)
+        assertEquals(emptyMap(), store.findSuppressedBaselines(7))
+    }
+
+    @ParameterizedTest
+    @EnumSource(AutomationConvergenceMode::class)
     fun `후보 판정은 과거 보류를 유지하고 최신 관측 뒤 같은 모양의 새 사이클을 허용한다`(mode: AutomationConvergenceMode) {
         val original = QuestAction.Accept("quest-1", "accept-1")
         val preview = StoredActionConvergenceSelectionFactory().preview(11, original)

@@ -1376,6 +1376,42 @@ class AutomationRecoveryIntegrationTest : AutomationRecoveryFixture() {
         assertEquals(raidEvent, journal.page(accountId, AutomationHistoryQuery()).cycles.first { it.id == history.id }.steps.first().event)
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = ["runnable", "cooldown", "incomplete"])
+    fun `상태 갱신 보류가 있어도 실제 갱신과 후속 판단에서 현재 레이드 상태를 처리한다`(state: String) {
+        setupRaid()
+        val registration = holdRegistration()
+        val refresh = StoredActionConvergenceSelectionFactory().preview(entryId,
+            RaidTownAutomationAction(accountId, RaidAction.REFRESH, null, "RaidGoblin"))
+        val old = store.createOrGet(accountId, SelectedAutomationAction(entryId, "held-refresh-$accountId",
+            refresh.actionKind, refresh.scope, "automation-action-convergence-v1",
+            requireNotNull(refresh.baselineFingerprint)), clock.now())
+        old.result = ActionConvergenceResult.HELD
+        old.reasonCode = "PENDING_BUDGET_EXHAUSTED"
+        old.finishedAt = clock.now()
+        store.save(old)
+        if (state == "cooldown") raidPageTransform = {
+            it.replace("현재 상태는 신청 가능", "현재 상태는 신청 대기 (신청 가능까지 6분 58초)")
+        }
+        incompleteRefreshPost = state == "incomplete"
+
+        wakeups.wake(accountId, "RAID_HELD_REFRESH_RECOVERY")
+        publisher.publishBatch()
+
+        assertEquals(1, requests.count { it.formFields.containsKey("refresh_nonce") },
+            journal.page(accountId, AutomationHistoryQuery()).cycles.toString())
+        assertFalse(old.selection.baselineFingerprint in store.findSuppressedBaselines(accountId)[old.selection.scope].orEmpty())
+        assertEquals(ActionConvergenceResult.HELD, store.get(old.attemptId)?.result)
+        assertTrue(runs().none { it["execution_identity"] == old.selection.executionIdentity })
+        val firstCycle = journal.page(accountId, AutomationHistoryQuery()).cycles.single().id
+        repeat(3) { consumeNextWake() }
+        assertTrue(journal.page(accountId, AutomationHistoryQuery()).cycles.any { it.id != firstCycle })
+        assertEquals(if (state == "runnable") 1 else 0, registerRequests().size)
+        assertEquals(state != "runnable", registration.selection.baselineFingerprint in
+            store.findSuppressedBaselines(accountId)[registration.selection.scope].orEmpty())
+        assertEquals(0, runningWorkCount())
+    }
+
     @Test
     fun `과거 신청 보류는 실제 갱신 뒤 해제되고 새 신청은 한 번만 제출된다`() {
         setupRaid()
