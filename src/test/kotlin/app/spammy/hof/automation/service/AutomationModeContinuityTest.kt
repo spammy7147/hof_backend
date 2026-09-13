@@ -691,6 +691,7 @@ abstract class AutomationModeContinuityTest {
         }
         var refreshCount = 0
         var homeAccepted = false
+        var recoveredObservation = false
 
         val homeQuest = HomePageParser().parse(HomeMode.HOME, independentHomePage(homeAccepted), homeUrl, HofFormParser().parse(independentHomePage(homeAccepted), homeUrl)).quests.single()
         val accountId = TransactionTemplate(transactions).execute {
@@ -730,7 +731,7 @@ abstract class AutomationModeContinuityTest {
                 }
                 if (request.url.contains("raidpub") || request.formFields.containsKey("refresh_nonce"))
                     HofHttpResponse(200, raidUrl, if (refreshCount == 0) before else after(
-                        observationCase == "COMPLETE" || observationCase == "LATER_COMPLETE" &&
+                        recoveredObservation || observationCase == "COMPLETE" || observationCase == "LATER_COMPLETE" &&
                             (request.method == HofHttpMethod.GET || refreshCount > 1)), emptyMap())
                 else HofHttpResponse(200, homeUrl, independentHomePage(homeAccepted), emptyMap())
             }.`when`(gateway).execute(Mockito.eq(accountId), Mockito.any<HofRequest>()
@@ -756,8 +757,20 @@ abstract class AutomationModeContinuityTest {
                 if (observationCase == "STAYS_INCOMPLETE") {
                     clock.current = deadline.minusSeconds(600).plusSeconds(121)
                     repeat(6) { nextWake(accountId) }
-                    assertEquals(listOf("HELD"), refreshResults(), "$mode 불완전 상태는 확인 예산 뒤 보류해야 한다.")
-                    assertEquals(1, refreshCount)
+                    assertEquals("HELD", refreshResults().first(), "$mode 과거 불완전 결과를 성공으로 바꾸면 안 된다.")
+                    assertEquals(2, refreshCount, "$mode 과거 결과 억제를 닫고 새 상태 갱신을 한 번 실행해야 한다.")
+                    val identities = jdbc.queryForList(
+                        "select execution_identity from typed_automation_action_runs where account_id = ? and action_kind = 'RAID_TOWN' order by id",
+                        String::class.java, accountId)
+                    assertEquals(2, identities.distinct().size, "저장된 갱신을 재전송하지 않고 별도 실행으로 관측한다.")
+                    assertNotNull(jdbc.queryForObject(
+                        "select c.suppression_released_at from automation_action_convergences c join automation_action_attempts a on a.id = c.attempt_id where a.account_id = ? and a.execution_identity = ?",
+                        java.sql.Timestamp::class.java, accountId, identities.first()))
+                    recoveredObservation = true
+                    repeat(6) { nextWake(accountId) }
+                    assertEquals(if (mode == AutomationConvergenceMode.ACTIVE) listOf("HELD", "SUPERSEDED") else listOf("HELD"),
+                        refreshResults(), "최신 관측으로 이어가되 과거 요청에 성공을 귀속하지 않는다.")
+                    assertEquals(2, refreshCount, "활성 갱신은 GET으로 확인하며 쿨다운 동안 새 POST를 만들지 않는다.")
                     assertTrue(homeAccepted)
                     assertTrue(transport.delivered.all { outbox.consumed(it) })
                     assertEquals(0, jdbc.queryForObject("select count(*) from automation_work_sessions where account_id = ? and running_slot is not null", Int::class.java, accountId))
