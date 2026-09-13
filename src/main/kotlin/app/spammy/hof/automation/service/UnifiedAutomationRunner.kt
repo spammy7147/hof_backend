@@ -655,7 +655,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                             accountId = accountId,
                             execution = execution,
                             stored = stored,
-                            actionDescriptor = actionDescriptor,
+                            managedAction = managedAction,
                             activeCheckpoint = activeCheckpoint,
                             observedAt = observedAt,
                             reason = message,
@@ -702,7 +702,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                         accountId = accountId,
                         execution = execution,
                         stored = stored,
-                        actionDescriptor = actionDescriptor,
+                        managedAction = managedAction,
                         activeCheckpoint = activeCheckpoint,
                         observedAt = observedAt,
                         reason = error.message ?: error.javaClass.simpleName,
@@ -756,7 +756,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                             accountId = accountId,
                             execution = execution,
                             stored = stored,
-                            actionDescriptor = actionDescriptor,
+                            managedAction = managedAction,
                             activeCheckpoint = activeCheckpoint,
                             observedAt = observedAt,
                             reason = reason,
@@ -857,7 +857,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                             accountId = accountId,
                             execution = execution,
                             stored = stored,
-                            actionDescriptor = actionDescriptor,
+                            managedAction = managedAction,
                             activeCheckpoint = activeCheckpoint,
                             observedAt = observedAt,
                             reason = resolution.reason,
@@ -1291,7 +1291,7 @@ class UnifiedAutomationRunner @Autowired constructor(
         accountId: Long,
         execution: TypedRuntimeExecutionRight,
         stored: StoredTypedAutomationAction,
-        actionDescriptor: AutomationActionDescriptor,
+        managedAction: ManagedAutomationAction,
         activeCheckpoint: TypedRuntimeCheckpoint,
         observedAt: Instant,
         reason: String,
@@ -1305,6 +1305,7 @@ class UnifiedAutomationRunner @Autowired constructor(
         val warning = "이전 요청 결과를 최대 5회 또는 2분 안에 확정하지 못해 해당 상태만 보류합니다. " +
             "성공 관측 ${successfulObservationCount}회 · 마지막 사유: $sanitizedReason"
         val evidence = AutomationActionEvidence.ResultUnobserved(observedAt, sanitizedReason)
+        managedAction.finishUnresolvedReconciliation(observedAt)
         completeReconciliation(
             execution,
             TypedRuntimeOutcome.AmbiguousHandoff(
@@ -1322,7 +1323,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                     AutomationHistoryEventKind.SKIPPED,
                     TYPED_RECONCILIATION_BUDGET_EXHAUSTED,
                     warning,
-                    descriptor = actionDescriptor,
+                    descriptor = managedAction.descriptor,
                 ))
             }
         }

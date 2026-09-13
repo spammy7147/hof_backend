@@ -109,6 +109,9 @@ interface ManagedAutomationAction {
 
     fun reconcile(): AmbiguousActionResolution
 
+    /** 유한 관측이 끝난 행동이 필요한 작업 대기 상태를 저장한다. 원격 요청은 보내지 않는다. */
+    fun finishUnresolvedReconciliation(observedAt: java.time.Instant) = Unit
+
     /**
      * 일부 action family는 공용 RECONCILING 대신 자체 복구 상태가 불명확 제출을 소유한다.
      * 반환값이 없으면 기존 공용 조정 절차를 사용한다.
@@ -845,6 +848,15 @@ class UnifiedAutomationActionLifecycleModule(
                     applyPolicyAcceptedExecution(execution)
 
                 override fun reconcile(): AmbiguousActionResolution = reconcileRaidTown(accountId, stored, payload)
+
+                override fun finishUnresolvedReconciliation(observedAt: java.time.Instant) {
+                    if (payload.action != RaidAction.REFRESH) return
+                    val raidId = payload.targetRaidId ?: payload.raidId ?: return
+                    workLifecycle.waitForRaid(
+                        accountId, stored.entryId, raidId, observedAt.plusSeconds(RAID_REFRESH_RECHECK_SECONDS),
+                        "레이드 상태를 확인하지 못해 잠시 후 다시 조회합니다.",
+                    )
+                }
             }
             is StoredTypedActionPayload.RaidCycleAbort -> object : ManagedAutomationAction {
                 override val storedAction = stored
@@ -2658,6 +2670,7 @@ class UnifiedAutomationActionLifecycleModule(
         }
 
     private companion object {
+        const val RAID_REFRESH_RECHECK_SECONDS = 30L
         const val HOME_QUEST_STORAGE_KIND = "HOME_QUEST"
         const val QUEST_ACCEPT_STORAGE_KIND = "QUEST_ACCEPT"
         const val QUEST_CLAIM_STORAGE_KIND = "QUEST_CLAIM"

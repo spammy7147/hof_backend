@@ -669,7 +669,7 @@ abstract class AutomationModeContinuityTest {
 
     @ParameterizedTest
     @CsvSource("INITIAL,COMPLETE", "POST_REWARD,COMPLETE", "DUE,COMPLETE",
-        "POST_REWARD,LATER_COMPLETE", "POST_REWARD,STAYS_INCOMPLETE")
+        "POST_REWARD,LATER_COMPLETE", "POST_REWARD,STAYS_INCOMPLETE", "INITIAL,STAYS_INCOMPLETE")
     fun `레이드 갱신은 직접 상태와 후속 관측을 구분하며 독립 항목과 새 판단을 이어간다`(phase: String, observationCase: String) {
         assertEquals(mode, properties.mode)
         clock.current = Instant.parse("2026-09-10T04:00:00Z")
@@ -758,6 +758,8 @@ abstract class AutomationModeContinuityTest {
                     clock.current = deadline.minusSeconds(600).plusSeconds(121)
                     repeat(6) { nextWake(accountId) }
                     assertEquals("HELD", refreshResults().first(), "$mode 과거 불완전 결과를 성공으로 바꾸면 안 된다.")
+                    assertTrue(homeAccepted, "$mode/$phase 레이드 관측이 계속 불완전해도 낮은 우선순위의 독립 자택을 실행해야 한다.")
+                    repeat(12) { if (refreshCount < 2) nextWake(accountId) }
                     assertEquals(2, refreshCount, "$mode 과거 결과 억제를 닫고 새 상태 갱신을 한 번 실행해야 한다.")
                     val identities = jdbc.queryForList(
                         "select execution_identity from typed_automation_action_runs where account_id = ? and action_kind = 'RAID_TOWN' order by id",
@@ -766,6 +768,14 @@ abstract class AutomationModeContinuityTest {
                     assertNotNull(jdbc.queryForObject(
                         "select c.suppression_released_at from automation_action_convergences c join automation_action_attempts a on a.id = c.attempt_id where a.account_id = ? and a.execution_identity = ?",
                         java.sql.Timestamp::class.java, accountId, identities.first()))
+                    if (mode != AutomationConvergenceMode.ACTIVE) {
+                        val timings = jdbc.queryForList(
+                            "select submitted_at, finished_at from typed_automation_action_runs where account_id = ? and action_kind = 'RAID_TOWN' order by id",
+                            accountId)
+                        val finishedAt = (timings.first()["finished_at"] as java.time.OffsetDateTime).toInstant()
+                        val submittedAt = (timings.last()["submitted_at"] as java.time.OffsetDateTime).toInstant()
+                        assertFalse(submittedAt.isBefore(finishedAt.plusSeconds(30)), "불완전 조회는 30초 간격을 두고 새 상태를 확인해야 한다.")
+                    }
                     recoveredObservation = true
                     repeat(6) { nextWake(accountId) }
                     assertEquals(if (mode == AutomationConvergenceMode.ACTIVE) listOf("HELD", "SUPERSEDED") else listOf("HELD"),
