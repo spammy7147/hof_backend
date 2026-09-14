@@ -36,6 +36,39 @@ class RaidPubParserTest {
     private val forms = HofFormParser()
     private val parser = RaidPubParser()
 
+    @Test fun `실제 신청 가능 상태입니다 응답으로 자동화 갱신을 완료한다`() {
+        val before = registerableFixture()
+            .replace("현재 상태는 신청 가능", "<input type=\"submit\" name=\"refresh_nonce\" value=\"상태 갱신\">")
+        val after = before.replaceFirst("  <h4>", "  <div class=\"result\">현재 상태는 신청 가능 상태입니다.</div>\n  <h4>")
+        val parsed = parser.parse(after, URL, forms.parse(after, URL))
+        assertTrue(parsed.pageComplete)
+        assertTrue(parsed.raids.all { it.status != RaidStatus.UNKNOWN })
+        assertFalse(parsed.raids.any { it.joined })
+        val shortResponse = after.replace("신청 가능 상태입니다.", "신청 가능")
+        assertTrue(parser.parse(shortResponse, URL, forms.parse(shortResponse, URL)).registrationStateObserved)
+        val context = service(before, after)
+
+        val response = context.service.actionForAutomation(7L, RaidPubActionRequest(RaidAction.REFRESH), "RaidGoblin")
+
+        assertTrue(response.registrationStateObserved)
+        assertFalse(response.applied)
+        assertFalse(response.applyWait)
+        assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.POST), context.requests().map { it.method })
+    }
+
+    @Test fun `신청 가능 문구의 부정 조건 설명과 인용은 완전한 신청 상태가 아니다`() {
+        for (message in listOf(
+            "현재 상태는 신청 가능하지 않은 상태입니다.",
+            "현재 상태는 신청 가능 상태입니다라고 표시되면 신청하세요.",
+            "<blockquote>현재 상태는 신청 가능 상태입니다.</blockquote>",
+        )) {
+            val html = registerableFixture().replace("현재 상태는 신청 가능", "<div class=\"result\">$message</div>")
+            val parsed = parser.parse(html, URL, forms.parse(html, URL))
+            assertTrue(parsed.pageComplete)
+            assertFalse(parsed.registrationStateObserved, message)
+        }
+    }
+
     @Test fun `폼 내부 보상 없음 직접 응답은 수동과 자동화 결과에 보존한다`() {
         val before = fixture().replace("현재 상태 : 모집 중", "현재 상태 : 보상 확인 시간 (남은 시간 앞으로 0시간 29분 56초)")
         val after = before.replaceFirst("  <h4>", "  <font color=\"#88ee88\">수령 가능한 보상이 없습니다.</font><br>\n  <h4>")

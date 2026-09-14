@@ -1377,7 +1377,7 @@ class AutomationRecoveryIntegrationTest : AutomationRecoveryFixture() {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = ["runnable", "cooldown", "incomplete"])
+    @ValueSource(strings = ["runnable", "runnable-sentence", "cooldown", "incomplete"])
     fun `상태 갱신 보류가 있어도 실제 갱신과 후속 판단에서 현재 레이드 상태를 처리한다`(state: String) {
         setupRaid()
         val registration = holdRegistration()
@@ -1393,6 +1393,9 @@ class AutomationRecoveryIntegrationTest : AutomationRecoveryFixture() {
         if (state == "cooldown") raidPageTransform = {
             it.replace("현재 상태는 신청 가능", "현재 상태는 신청 대기 (신청 가능까지 6분 58초)")
         }
+        if (state == "runnable-sentence") raidPageTransform = {
+            it.replace("현재 상태는 신청 가능", "<div class=\"result\">현재 상태는 신청 가능 상태입니다.</div>")
+        }
         incompleteRefreshPost = state == "incomplete"
 
         wakeups.wake(accountId, "RAID_HELD_REFRESH_RECOVERY")
@@ -1406,8 +1409,8 @@ class AutomationRecoveryIntegrationTest : AutomationRecoveryFixture() {
         val firstCycle = journal.page(accountId, AutomationHistoryQuery()).cycles.single().id
         repeat(3) { consumeNextWake() }
         assertTrue(journal.page(accountId, AutomationHistoryQuery()).cycles.any { it.id != firstCycle })
-        assertEquals(if (state == "runnable") 1 else 0, registerRequests().size)
-        assertEquals(state != "runnable", registration.selection.baselineFingerprint in
+        assertEquals(if (state.startsWith("runnable")) 1 else 0, registerRequests().size)
+        assertEquals(!state.startsWith("runnable"), registration.selection.baselineFingerprint in
             store.findSuppressedBaselines(accountId)[registration.selection.scope].orEmpty())
         assertEquals(0, runningWorkCount())
     }
