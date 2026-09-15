@@ -41,6 +41,7 @@ class StashOpenServiceTest {
         assertEquals("Weapon Box (Dagger&MainGauche) (Stash)", result.items.single().name)
         assertEquals(1, result.items.single().quantity)
         assertEquals(52, response.boxes.single { it.label == "Plumpy Fish (Stash)" }.owned)
+        assertEquals(listOf("Plumpy Fish (Stash)을 개봉합니다."), result.messages)
         assertTrue(result.messages.none { it.contains("개봉 가능한") })
     }
 
@@ -82,7 +83,6 @@ class StashOpenServiceTest {
     @Test fun `목록과 개봉 시도와 다른 구역의 문구를 성공으로 오인하지 않는다`() {
         val pages = listOf(
             fixture("stash-live-get.html"),
-            resultPage("<img src='fish.gif'>Plumpy Fish (Stash) / 설명을 개봉합니다.<hr>"),
             resultPage("<div class='success'>새로운 안내입니다.</div>"),
             resultPage("<h4>다른 기능</h4><p>Other Box (Stash) 발견!!</p>"),
             resultPage("<form><p>Inventory Box (Stash) 발견!!</p></form>"),
@@ -94,6 +94,15 @@ class StashOpenServiceTest {
             assertTrue(result.items.isEmpty())
             assertTrue(result.messages.isEmpty())
         }
+    }
+
+    @Test fun `개봉 안내만 있으면 문구와 새로고침 안내를 보존하고 성공으로 확정하지 않는다`() {
+        val result = assertNotNull(open(resultPage("<img src='fish.gif'>Plumpy Fish (Stash) / 설명을 개봉합니다.<hr>")).result)
+        assertEquals("UNKNOWN", result.status)
+        assertTrue(result.items.isEmpty())
+        assertTrue(result.messages.contains("Plumpy Fish (Stash)을 개봉합니다."))
+        assertTrue(result.messages.any { "새로고침" in it })
+        assertTrue(result.refreshRequired)
     }
 
     @Test fun `개봉한 아이템 종류와 관계없이 중첩된 발견 행만 읽는다`() {

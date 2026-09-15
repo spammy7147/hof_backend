@@ -24,6 +24,8 @@ data class StashResponse(
             boxes = value.boxes.map { StashBoxResponse(it.id, it.name, it.selectable, it.owned, it.cost, it.detail) },
             actions = value.actions.map { StashActionResponse(it.action, it.label) },
             result = value.result?.let { result ->
+                val messages = result.openingMessages + result.failures
+                val unknownOpening = result.openingMessages.isNotEmpty() && result.rewards.isEmpty() && result.failures.isEmpty()
                 TownActionResultResponse(
                     status = when {
                         result.rewards.isNotEmpty() && result.failures.isNotEmpty() -> "INFORMATIONAL"
@@ -32,8 +34,9 @@ data class StashResponse(
                         else -> "UNKNOWN"
                     },
                     // 앱의 결과 표시 상한과 맞추고, 제한으로 숨겨진 결과가 있음을 알린다.
-                    messages = result.failures.take(18) + listOfNotNull(
-                        if (result.failures.size > 18) "실패 안내 ${result.failures.size}개 중 앞 18개만 표시합니다." else null,
+                    messages = messages.take(18) + listOfNotNull(
+                        if (unknownOpening) "개봉 결과를 확인하지 못했습니다. 정보를 새로고침해 주세요." else null,
+                        if (messages.size > 18) "결과 안내 ${messages.size}개 중 앞 18개만 표시합니다." else null,
                         if (result.rewards.size > 100) "획득 아이템 ${result.rewards.size}종 중 앞 100종만 표시합니다. 총 획득 수량: ${result.rewards.sumOf { it.quantity.toLong() }}개." else null,
                     ),
                     items = result.rewards.take(100).map { TownResultItemResponse(it.name, it.quantity, null, it.detail) },

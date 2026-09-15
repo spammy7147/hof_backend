@@ -56,12 +56,18 @@ class StashPageParser {
             ?: return StashOpenResult(emptyList())
         val rewards = mutableListOf<StashReward>()
         val failures = mutableListOf<String>()
+        val openingMessages = mutableListOf<String>()
         val buffer = StringBuilder()
         var ended = false
         fun flush() {
             val text = clean(buffer.toString())
             buffer.clear()
             if (UNSAFE_RESULT.containsMatchIn(text)) return
+            val opening = OPENING.matchEntire(text)?.groupValues?.get(1)
+            if (opening != null) {
+                openingMessages += "${opening.substringBefore('/').trim()}을 개봉합니다."
+                return
+            }
             val found = DISCOVERED.matchEntire(text)?.groupValues?.get(1)
             if (found == null) {
                 if (FAILURE.matches(text)) failures += text
@@ -101,7 +107,7 @@ class StashPageParser {
             val quantity = entries.sumOf { it.quantity.toLong() }
             if (quantity <= Int.MAX_VALUE) listOf(entries.first().copy(quantity = quantity.toInt())) else entries
         }
-        return StashOpenResult(combined, failures.distinct())
+        return StashOpenResult(combined, failures.distinct(), openingMessages.distinct())
     }
 
     private fun stashAction(form: ParsedTownForm): StashOpenAction? {
@@ -121,6 +127,7 @@ class StashPageParser {
 
     private companion object {
         const val LIST_START = "개봉 가능한 물건들의 목록"
+        val OPENING = Regex("^(.+?)을\\s*개봉합니다[.!]?$")
         val DISCOVERED = Regex("^(.+\\S)\\s+발견\\s*!+\\s*$")
         val TRAILING_QUANTITY = Regex("\\s+[x×]\\s*([\\d,]+)\\s*$", RegexOption.IGNORE_CASE)
         val FAILURE = Regex("^(?:상자|아이템|물건|개봉|소지금|자금|돈|재료|조건|개수|수량)[^/]*(?:부족합니다|없습니다|불가능합니다|실패(?:했습니다|하였습니다)?)[.!?]*$")
