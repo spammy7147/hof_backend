@@ -1,6 +1,8 @@
 package app.spammy.hof.character.pattern
 
 import java.time.Instant
+import com.fasterxml.jackson.annotation.JsonSubTypes
+import com.fasterxml.jackson.annotation.JsonTypeInfo
 
 data class CharacterPatternRemoteSlot(val slotCode: String, val label: String, val canLoad: Boolean)
 
@@ -27,6 +29,14 @@ interface CharacterPatternRemote {
     fun loadSlot(slotCode: String): CharacterPatternMutationReceipt
 }
 
+@JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "type")
+@JsonSubTypes(
+    JsonSubTypes.Type(CharacterPatternOperationResult.Completed::class, name = "Completed"),
+    JsonSubTypes.Type(CharacterPatternOperationResult.Conflict::class, name = "Conflict"),
+    JsonSubTypes.Type(CharacterPatternOperationResult.Rejected::class, name = "Rejected"),
+    JsonSubTypes.Type(CharacterPatternOperationResult.PartiallyApplied::class, name = "PartiallyApplied"),
+    JsonSubTypes.Type(CharacterPatternOperationResult.RefreshRequired::class, name = "RefreshRequired"),
+)
 sealed interface CharacterPatternOperationResult {
     data class Completed(val revision: Instant, val messages: List<String> = emptyList()) : CharacterPatternOperationResult
     data class Conflict(val currentRevision: Instant, val rowDiffs: List<CharacterPatternRowDiff>) : CharacterPatternOperationResult
@@ -74,6 +84,8 @@ class CharacterPatternOrchestrator(
             is CharacterPatternPlanResult.Rejected -> return CharacterPatternOperationResult.Rejected(planned.code, planned.message)
             is CharacterPatternPlanResult.Ready -> planned.plan
         }
+
+        validateSlot(current, slotAfterApply)?.let { return it }
 
         remote.changeAllRows(plan.rows)
         val rowsObserved = remote.observe()
@@ -132,11 +144,8 @@ class CharacterPatternOrchestrator(
         current: CharacterPatternRemoteState,
         request: PatternSlotAfterApply.SaveEmpty,
     ): CharacterPatternOperationResult {
-        if (request.name.isBlank() || request.name.length > 6) {
-            return CharacterPatternOperationResult.Rejected("INVALID_SLOT_NAME", "저장 이름은 1~6자로 입력해 주세요.")
-        }
         val slot = current.savedSlots.singleOrNull { it.slotCode == request.slotCode && !it.canLoad }
-            ?: return CharacterPatternOperationResult.Rejected("SLOT_NOT_EMPTY", "선택한 패턴 슬롯이 비어 있지 않습니다.")
+            ?: return CharacterPatternOperationResult.PartiallyApplied(2, "SAVE_SLOT", "현재 설정은 저장됐지만 선택한 패턴 슬롯이 비어 있지 않습니다.")
         remote.saveSlot(slot.slotCode, request.name)
         val after = remote.observe()
         return if (after.savedSlots.any { it.slotCode == slot.slotCode && it.canLoad }) {
@@ -152,7 +161,7 @@ class CharacterPatternOrchestrator(
         request: PatternSlotAfterApply.Replace,
     ): CharacterPatternOperationResult {
         val slot = current.savedSlots.singleOrNull { it.slotCode == request.slotCode && it.canLoad }
-            ?: return CharacterPatternOperationResult.Rejected("SLOT_NOT_FOUND", "교체할 저장 패턴을 찾지 못했습니다.")
+            ?: return CharacterPatternOperationResult.PartiallyApplied(2, "SAVE_SLOT", "현재 설정은 저장됐지만 교체할 저장 패턴을 찾지 못했습니다.")
         remote.deleteSlot(slot.slotCode)
         val deleted = remote.observe()
         if (deleted.savedSlots.any { it.slotCode == slot.slotCode && it.canLoad }) {
@@ -169,5 +178,25 @@ class CharacterPatternOrchestrator(
                 message = "기존 슬롯은 삭제됐지만 현재 설정을 다시 보관하지 못했습니다.",
             )
         }
+    }
+
+    private fun validateSlot(
+        current: CharacterPatternRemoteState,
+        request: PatternSlotAfterApply,
+    ): CharacterPatternOperationResult.Rejected? {
+        val (slotCode, name) = when (request) {
+            PatternSlotAfterApply.None -> return null
+            is PatternSlotAfterApply.SaveEmpty -> request.slotCode to request.name
+            is PatternSlotAfterApply.Replace -> request.slotCode to request.name
+        }
+        if (name.isBlank() || name.length > 6) {
+            return CharacterPatternOperationResult.Rejected("INVALID_SLOT_NAME", "저장 이름은 1~6자로 입력해 주세요.")
+        }
+        val shouldBeOccupied = request is PatternSlotAfterApply.Replace
+        if (current.savedSlots.none { it.slotCode == slotCode && it.canLoad == shouldBeOccupied }) {
+            return if (shouldBeOccupied) CharacterPatternOperationResult.Rejected("SLOT_NOT_FOUND", "교체할 저장 패턴을 찾지 못했습니다.")
+            else CharacterPatternOperationResult.Rejected("SLOT_NOT_EMPTY", "선택한 패턴 슬롯이 비어 있지 않습니다.")
+        }
+        return null
     }
 }

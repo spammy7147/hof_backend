@@ -4,14 +4,53 @@ import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import tools.jackson.module.kotlin.jacksonObjectMapper
 
 class CharacterPatternOrchestratorTest {
+    @Test
+    fun `패턴 결과 JSON은 기존 필드와 명시적인 결과 종류를 함께 전달한다`() {
+        val mapper = jacksonObjectMapper()
+        val outcomes = listOf(
+            "Completed" to CharacterPatternOperationResult.Completed(Instant.parse("2026-09-15T00:00:00Z"), listOf("저장 완료")),
+            "Rejected" to CharacterPatternOperationResult.Rejected("INVALID_QUANTITY", "기준값을 입력해 주세요."),
+            "Conflict" to CharacterPatternOperationResult.Conflict(Instant.parse("2026-09-15T00:00:00Z"), emptyList()),
+            "PartiallyApplied" to CharacterPatternOperationResult.PartiallyApplied(2, "SAVE_SLOT", "슬롯 보관은 확인하지 못했습니다."),
+            "RefreshRequired" to CharacterPatternOperationResult.RefreshRequired("현재 상태를 확인해 주세요."),
+        )
+        for ((type, outcome) in outcomes) {
+            val json = mapper.readTree(mapper.writerFor(CharacterPatternOperationResult::class.java).writeValueAsString(outcome))
+            assertEquals(type, json.path("type").asString())
+            when (outcome) {
+                is CharacterPatternOperationResult.Completed -> assertEquals("저장 완료", json.path("messages").get(0).asString())
+                is CharacterPatternOperationResult.Rejected -> assertEquals("INVALID_QUANTITY", json.path("code").asString())
+                is CharacterPatternOperationResult.PartiallyApplied -> {
+                    assertEquals(2, json.path("completedSteps").asInt())
+                    assertEquals("SAVE_SLOT", json.path("nextStep").asString())
+                }
+                is CharacterPatternOperationResult.Conflict -> assertEquals(true, json.has("currentRevision"))
+                is CharacterPatternOperationResult.RefreshRequired -> assertEquals(outcome.message, json.path("message").asString())
+            }
+        }
+    }
+
     private val revision = Instant.parse("2026-08-17T00:00:00Z")
     private val base = CharacterPatternSetting(
         rows = listOf(row("j1", "s1"), row("j2", "s2")),
         position = "front",
         guard = "always",
     )
+
+    @Test
+    fun `잘못된 슬롯 이름은 현재 캐릭터 설정이나 기존 슬롯을 바꾸기 전에 거절한다`() {
+        for (canLoad in listOf(false, true)) {
+            val remote = FakeRemote(state(slots = listOf(CharacterPatternRemoteSlot("0", "기존", canLoad))))
+            val request = if (canLoad) PatternSlotAfterApply.Replace("0", "") else PatternSlotAfterApply.SaveEmpty("0", "")
+            val result = CharacterPatternOrchestrator().apply(remote, base, revision,
+                CharacterPatternDraft(revision, base.rows.reversed(), "front", "always"), request)
+            assertEquals("INVALID_SLOT_NAME", assertIs<CharacterPatternOperationResult.Rejected>(result).code)
+            assertEquals(listOf("observe"), remote.operations)
+        }
+    }
 
     @Test
     fun `apply submits every row once then position and guard without original add delete`() {
