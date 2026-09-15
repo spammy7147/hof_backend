@@ -15,8 +15,10 @@ data class StashBox(
 data class StashSnapshot(
     val boxes: List<StashBox>,
     val actions: List<StashActionCandidate>,
-    val result: ParsedTownResult? = null,
+    val result: StashOpenResult? = null,
 )
+data class StashReward(val name: String, val quantity: Int, val detail: String?)
+data class StashOpenResult(val rewards: List<StashReward>, val failures: List<String> = emptyList())
 
 enum class OrbExchangeAction(val repetitions: Int) { ONE(1), FIVE(5) }
 data class OrbActionCandidate(val action: OrbExchangeAction, val label: String, internal val actionId: String)

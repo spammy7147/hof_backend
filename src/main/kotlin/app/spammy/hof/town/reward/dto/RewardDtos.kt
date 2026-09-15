@@ -1,6 +1,7 @@
 package app.spammy.hof.town.reward.dto
 
 import app.spammy.hof.town.fishing.dto.TownActionResultResponse
+import app.spammy.hof.town.fishing.dto.TownResultItemResponse
 import app.spammy.hof.town.reward.model.*
 import jakarta.validation.constraints.NotBlank
 
@@ -22,7 +23,22 @@ data class StashResponse(
         fun from(value: StashSnapshot) = StashResponse(
             boxes = value.boxes.map { StashBoxResponse(it.id, it.name, it.selectable, it.owned, it.cost, it.detail) },
             actions = value.actions.map { StashActionResponse(it.action, it.label) },
-            result = value.result?.let(TownActionResultResponse::from),
+            result = value.result?.let { result ->
+                TownActionResultResponse(
+                    status = when {
+                        result.rewards.isNotEmpty() && result.failures.isNotEmpty() -> "INFORMATIONAL"
+                        result.rewards.isNotEmpty() -> "SUCCESS"
+                        result.failures.isNotEmpty() -> "FAILURE"
+                        else -> "UNKNOWN"
+                    },
+                    // 앱의 결과 표시 상한과 맞추고, 제한으로 숨겨진 결과가 있음을 알린다.
+                    messages = result.failures.take(18) + listOfNotNull(
+                        if (result.failures.size > 18) "실패 안내 ${result.failures.size}개 중 앞 18개만 표시합니다." else null,
+                        if (result.rewards.size > 100) "획득 아이템 ${result.rewards.size}종 중 앞 100종만 표시합니다. 총 획득 수량: ${result.rewards.sumOf { it.quantity.toLong() }}개." else null,
+                    ),
+                    items = result.rewards.take(100).map { TownResultItemResponse(it.name, it.quantity, null, it.detail) },
+                )
+            },
         )
     }
 }

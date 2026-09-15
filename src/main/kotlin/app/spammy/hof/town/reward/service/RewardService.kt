@@ -35,7 +35,7 @@ class RewardService(
                 ?: invalid("현재 개봉할 수 없는 상자입니다. 목록을 갱신해 주세요.")
             TownActionRequest(action.actionId, listOf(TownActionSelection(box.id)))
         },
-    ) { html, finalUrl, result, page -> StashResponse.from(stashParser.parse(html, finalUrl, page, result)) }
+    ) { html, finalUrl, _, page -> StashResponse.from(stashParser.parse(html, finalUrl, page, afterOpening = true)) }
 
     fun loadOrbs(accountId: Long): OrbExchangeResponse = executor.loadProjected(accountId, url(TownFeatureId.ORB_EXCHANGE)) { html, finalUrl, page ->
         OrbExchangeResponse.from(orbParser.parse(html, finalUrl, page))

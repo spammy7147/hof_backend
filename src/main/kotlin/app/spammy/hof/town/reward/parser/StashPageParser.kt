@@ -1,12 +1,17 @@
 package app.spammy.hof.town.reward.parser
 
+import app.spammy.hof.external.parser.HofHtmlParser
 import app.spammy.hof.town.common.model.ParsedTownForm
 import app.spammy.hof.town.common.model.ParsedTownPage
-import app.spammy.hof.town.common.model.ParsedTownResult
 import app.spammy.hof.town.reward.model.StashActionCandidate
 import app.spammy.hof.town.reward.model.StashBox
 import app.spammy.hof.town.reward.model.StashOpenAction
 import app.spammy.hof.town.reward.model.StashSnapshot
+import app.spammy.hof.town.reward.model.StashOpenResult
+import app.spammy.hof.town.reward.model.StashReward
+import org.jsoup.nodes.Element
+import org.jsoup.nodes.Node
+import org.jsoup.nodes.TextNode
 import org.springframework.stereotype.Component
 
 @Component
@@ -15,7 +20,7 @@ class StashPageParser {
         html: String,
         finalUrl: String,
         page: ParsedTownPage,
-        result: ParsedTownResult? = null,
+        afterOpening: Boolean = false,
     ): StashSnapshot {
         val actionForms = page.forms.mapNotNull { form -> stashAction(form)?.let { it to form } }
         val actions = actionForms
@@ -39,10 +44,65 @@ class StashPageParser {
                 detail = detail,
             )
         }
-        return StashSnapshot(boxes.distinctBy(StashBox::id), actions, result)
+        return StashSnapshot(boxes.distinctBy(StashBox::id), actions, if (afterOpening) parseResult(html, finalUrl) else null)
     }
 
     fun action(form: ParsedTownForm): StashOpenAction? = stashAction(form)
+
+    private fun parseResult(html: String, finalUrl: String): StashOpenResult {
+        val document = HofHtmlParser.parse(html, finalUrl)
+        document.select("script,style,noscript,header,nav,footer").remove()
+        val heading = document.select("h1,h2,h3,h4,legend").singleOrNull { clean(it.text()) == "상자의 개봉" }
+            ?: return StashOpenResult(emptyList())
+        val rewards = mutableListOf<StashReward>()
+        val failures = mutableListOf<String>()
+        val buffer = StringBuilder()
+        var ended = false
+        fun flush() {
+            val text = clean(buffer.toString())
+            buffer.clear()
+            if (UNSAFE_RESULT.containsMatchIn(text)) return
+            val found = DISCOVERED.matchEntire(text)?.groupValues?.get(1)
+            if (found == null) {
+                if (FAILURE.matches(text)) failures += text
+                return
+            }
+            val title = found.substringBefore('/').trim()
+            val count = TRAILING_QUANTITY.find(title)
+            val quantity = if (count == null) 1 else count.groupValues[1].replace(",", "").toIntOrNull()?.takeIf { it > 0 } ?: return
+            val name = title.replace(TRAILING_QUANTITY, "").trim().takeIf(String::isNotBlank) ?: return
+            rewards += StashReward(name, quantity, found.substringAfter('/', "").trim().takeIf(String::isNotBlank))
+        }
+        fun visit(node: Node) {
+            if (ended) return
+            when (node) {
+                is TextNode -> {
+                    val text = node.wholeText
+                    buffer.append(text.substringBefore(LIST_START))
+                    if (LIST_START in text) { flush(); ended = true }
+                }
+                is Element -> when (node.tagName()) {
+                    "form", "h1", "h2", "h3", "h4", "h5", "h6", "legend" -> { flush(); ended = true }
+                    "img", "br", "hr" -> flush()
+                    else -> {
+                        node.childNodes().forEach(::visit)
+                        if (node.tagName() in setOf("div", "p", "li", "tr")) flush()
+                    }
+                }
+            }
+        }
+        var node = heading.nextSibling()
+        while (node != null && !ended) {
+            visit(node)
+            node = node.nextSibling()
+        }
+        flush()
+        val combined = rewards.groupBy { it.name to it.detail }.values.flatMap { entries ->
+            val quantity = entries.sumOf { it.quantity.toLong() }
+            if (quantity <= Int.MAX_VALUE) listOf(entries.first().copy(quantity = quantity.toInt())) else entries
+        }
+        return StashOpenResult(combined, failures.distinct())
+    }
 
     private fun stashAction(form: ParsedTownForm): StashOpenAction? {
         val submit = form.submitFields.singleOrNull() ?: return null
@@ -57,9 +117,14 @@ class StashPageParser {
         return allowedActions.intersect(semanticActions).singleOrNull()
     }
 
-    private fun clean(value: String) = value.replace(Regex("\\s+"), " ").trim()
+    private fun clean(value: String) = value.replace(Regex("[\\s\\u00a0]+"), " ").trim()
 
     private companion object {
+        const val LIST_START = "개봉 가능한 물건들의 목록"
+        val DISCOVERED = Regex("^(.+\\S)\\s+발견\\s*!+\\s*$")
+        val TRAILING_QUANTITY = Regex("\\s+[x×]\\s*([\\d,]+)\\s*$", RegexOption.IGNORE_CASE)
+        val FAILURE = Regex("^(?:상자|아이템|물건|개봉|소지금|자금|돈|재료|조건|개수|수량)[^/]*(?:부족합니다|없습니다|불가능합니다|실패(?:했습니다|하였습니다)?)[.!?]*$")
+        val UNSAFE_RESULT = Regex("PHPSESSID|Set-Cookie|Authorization|\\bBearer\\s+|password|passwd|비밀번호|</?[a-z][^>]*>", RegexOption.IGNORE_CASE)
         val ORDER = listOf(StashOpenAction.ONE, StashOpenAction.TWENTY, StashOpenAction.HUNDRED, StashOpenAction.THOUSAND, StashOpenAction.ALL)
         // APK가 관측한 고정 submit 계약만 허용한다. 표시 문구가 우연히 같은 임의 submit을
         // action으로 승격하면 서버가 추가한 다른 기능을 상자 개봉으로 오인할 수 있다.
