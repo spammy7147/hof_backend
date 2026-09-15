@@ -858,7 +858,7 @@ class TypedAutomationRuntimeService(
         accountId: Long,
         token: String,
         actionId: Long,
-        warning: String,
+        warning: String?,
         wakeReason: String,
         clearSubmission: Boolean = false,
     ): Boolean {
@@ -874,7 +874,7 @@ class TypedAutomationRuntimeService(
             )
         ) return false
         val now = timeProvider.now()
-        val diagnostic = sanitizeDiagnostic(warning)
+        val diagnostic = warning?.let(::sanitizeDiagnostic)
         if (clearSubmission) action.submittedAt = null
         action.status = TypedAutomationActionStatus.FAILED
         action.nextAttemptAt = null

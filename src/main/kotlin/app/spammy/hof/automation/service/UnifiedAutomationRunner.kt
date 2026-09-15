@@ -795,7 +795,7 @@ class UnifiedAutomationRunner @Autowired constructor(
                 is AmbiguousActionResolution.Superseded -> {
                     completeReconciliation(
                         execution,
-                        TypedRuntimeOutcome.ActionSuperseded(resolution.reason, ACTION_SUPERSEDED_REASON),
+                        TypedRuntimeOutcome.ActionSuperseded(resolution.warning, ACTION_SUPERSEDED_REASON),
                         persistResult = {
                             results.observeShadow(
                                 accountId,
@@ -806,11 +806,14 @@ class UnifiedAutomationRunner @Autowired constructor(
                         },
                     ) {
                         decisionCycleId?.let { cycleId ->
-                            decisionJournal?.appendActionResult(cycleId, trace(
+                            val resultTrace = resolution.raidWait?.let {
+                                raidWaitTrace(it).copy(kind = AutomationHistoryEventKind.SKIPPED)
+                            } ?: trace(
                                 AutomationHistoryEventKind.SKIPPED,
                                 ACTION_SUPERSEDED_REASON,
                                 resolution.reason,
-                            ))
+                            )
+                            decisionJournal?.appendActionResult(cycleId, resultTrace)
                         }
                     }
                 }

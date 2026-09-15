@@ -84,6 +84,7 @@ import java.time.Instant
 import java.time.LocalDate
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertContains
 import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
@@ -1444,6 +1445,133 @@ class UnifiedAutomationServiceTest {
         service.stopTyped(ACCOUNT_ID)
 
         Mockito.verify(lifecycle).stop(ACCOUNT_ID, AutomationStopReason.MANUAL_STOP, "USER_STOP")
+    }
+
+    @Test
+    fun `퀘스트 경고는 같은 패턴 문제의 대상들을 모으고 복구하면 사라진다`() {
+        val fixture = questWarningFixture()
+        val brokenPattern = requireNotNull(fixture.members[3].patternSlot)
+        brokenPattern.canLoad = false
+        brokenPattern.label = "빈슬롯"
+
+        val response = service.getTyped(ACCOUNT_ID)
+
+        val warning = response.runtime.warnings.single()
+        listOf("탑 파티", "4번 자리", "마법사-3", "저장 패턴 1", "빈슬롯", "불러올 수 없", "탑 열쇠", "탑 열쇠 EASY", "tower", "tower-easy")
+            .forEach { assertContains(warning, it) }
+        assertEquals(listOf(warning), response.entries.single().warnings)
+        assertFalse(response.entries.single().ready)
+        assertFalse(warning.contains("마법사-0"))
+
+        brokenPattern.canLoad = true
+        val restored = service.getTyped(ACCOUNT_ID)
+        assertTrue(restored.runtime.warnings.isEmpty())
+        assertTrue(restored.entries.single().ready)
+    }
+
+    private data class QuestWarningFixture(
+        val selections: List<QuestAutomationSelectionEntity>,
+        val maps: List<QuestAutomationMapEntity>,
+        val members: List<PartyPresetMemberEntity>,
+    )
+
+    @Test
+    fun `퀘스트 경고는 누락과 잘못된 패턴을 설명하고 비활성 대상과 빈 자리는 제외한다`() {
+        val fixture = questWarningFixture()
+        fixture.selections[1].enabled = false
+        val member = fixture.members[3]
+        val pattern = requireNotNull(member.patternSlot)
+        val character = member.character
+        member.patternSlot = null
+        val missingPattern = service.getTyped(ACCOUNT_ID).runtime.warnings.single()
+        assertContains(missingPattern, "4번 자리 마법사-3")
+        assertContains(missingPattern, "저장 패턴이 선택되지 않았거나")
+        assertFalse(missingPattern.contains("EASY"))
+
+        member.patternSlot = pattern
+        member.character = null
+        assertContains(service.getTyped(ACCOUNT_ID).runtime.warnings.single(), "캐릭터를 찾을 수 없어요")
+        member.character = character
+        pattern.slotCode = "2147483648"
+        assertContains(service.getTyped(ACCOUNT_ID).runtime.warnings.single(), "번호 '2147483648'을 해석할 수 없어요")
+
+        member.character = null
+        member.patternSlot = null
+        assertTrue(service.getTyped(ACCOUNT_ID).runtime.warnings.isEmpty())
+    }
+
+    @Test
+    fun `대표와 명시 선택은 같은 파티 문제를 공유하고 파티 누락은 설명한다`() {
+        val fixture = questWarningFixture()
+        fixture.members.first().preset.markPrimary()
+        fixture.maps[1].presetMode = PresetSelectionMode.PRIMARY
+        fixture.maps[1].partyPreset = null
+        requireNotNull(fixture.members[3].patternSlot).canLoad = false
+        val shared = service.getTyped(ACCOUNT_ID).runtime.warnings.single()
+        assertContains(shared, "탑 열쇠 EASY")
+        assertContains(shared, "tower)")
+
+        fixture.maps[0].partyPreset = null
+        fixture.members.first().preset.clearPrimary()
+        val missing = service.getTyped(ACCOUNT_ID).runtime.warnings
+        assertEquals(2, missing.size)
+        assertTrue(missing.any { "대표 파티" in it && "프리셋을 찾을 수 없어요" in it })
+        assertTrue(missing.any { "선택한 파티" in it && "프리셋을 찾을 수 없어요" in it })
+    }
+
+    @Test
+    fun `이름이 같은 별개 파티 문제는 합치지 않고 표시 이름이 없으면 식별자를 쓴다`() {
+        val fixture = questWarningFixture()
+        val first = fixture.members.first().preset
+        val second = PartyPresetEntity(102L, account(), first.name, NOW, NOW)
+        val broken = fixture.members[3]
+        requireNotNull(broken.patternSlot).canLoad = false
+        fixture.maps[1].partyPreset = second
+        val secondMember = PartyPresetMemberEntity(second, 3, broken.character, broken.patternSlot)
+        Mockito.`when`(partyPresetQueryRepository.findAllByAccountId(ACCOUNT_ID)).thenReturn(listOf(first, second))
+        Mockito.`when`(partyPresetQueryRepository.findMembersByPresetIds(listOf(first.id, second.id)))
+            .thenReturn(fixture.members + secondMember)
+        val warnings = service.getTyped(ACCOUNT_ID).runtime.warnings
+        assertEquals(2, warnings.size)
+        assertTrue(warnings.any { "탑 파티 (#101)" in it && "tower)" in it && "EASY" !in it })
+        assertTrue(warnings.any { "탑 파티 (#102)" in it && "tower-easy)" in it })
+
+        first.name = ""
+        fixture.selections[0].questName = ""
+        requireNotNull(broken.character).name = ""
+        val unnamed = service.getTyped(ACCOUNT_ID).runtime.warnings.first()
+        assertContains(unnamed, "파티 #101")
+        assertContains(unnamed, "mage-3")
+        assertContains(unnamed, "tower-quest")
+    }
+
+    private fun questWarningFixture(): QuestWarningFixture {
+        val account = account()
+        val quest = entry(91L, AutomationType.QUEST, enabled = true)
+        val selections = listOf(
+            QuestAutomationSelectionEntity(901L, quest, "tower-quest", true, 0, questName = "탑 열쇠"),
+            QuestAutomationSelectionEntity(902L, quest, "tower-easy-quest", true, 1, questName = "탑 열쇠 EASY"),
+        )
+        val preset = PartyPresetEntity(101L, account, "탑 파티", NOW, NOW)
+        val members = (0..4).map { slot ->
+            val character = CharacterEntity(
+                id = 1_000L + slot, account = account, hofCharacterId = "mage-$slot", name = "마법사-$slot",
+                job = "마법사", level = 1, patternSlotCount = 2, imageUrl = null, updatedAt = NOW,
+            )
+            PartyPresetMemberEntity(preset, slot, character,
+                CharacterPatternSlotEntity(2_000L + slot, character, "1", "전투", true))
+        }
+        val maps = selections.mapIndexed { index, selection ->
+            QuestAutomationMapEntity(910L + index, selection, "mission", "adventure_map",
+                if (index == 0) "tower" else "tower-easy", PresetSelectionMode.EXPLICIT, preset, 0, true)
+        }
+        Mockito.`when`(accountQueryRepository.findById(ACCOUNT_ID)).thenReturn(account)
+        Mockito.`when`(typedQuery.findEntries(ACCOUNT_ID)).thenReturn(listOf(quest))
+        Mockito.`when`(typedQuery.findQuestSelections(quest.id)).thenReturn(selections)
+        Mockito.`when`(typedQuery.findQuestMaps(selections.map { it.id })).thenReturn(maps)
+        Mockito.`when`(partyPresetQueryRepository.findAllByAccountId(ACCOUNT_ID)).thenReturn(listOf(preset))
+        Mockito.`when`(partyPresetQueryRepository.findMembersByPresetIds(listOf(preset.id))).thenReturn(members)
+        return QuestWarningFixture(selections, maps, members)
     }
 
     private fun account() = HofAccountEntity(ACCOUNT_ID, "login", "encrypted", NOW)

@@ -302,6 +302,7 @@ private fun raidEntryWaitWarning(reasonCode: String, message: String): String? =
     "RAID_GLOBAL_REGISTRATION_COOLDOWN",
     "RAID_POST_REWARD_GLOBAL_COOLDOWN",
     "RAID_PERSONAL_BATTLE_COOLDOWN",
+    "RAID_EXTERNAL_CONFIGURED_ACTIVE",
     -> null
     else -> message
 }

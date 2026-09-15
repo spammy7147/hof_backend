@@ -94,7 +94,7 @@ sealed interface TypedRuntimeOutcome {
         val successfulObservationCount: Int? = null,
     ) : TypedRuntimeOutcome
     data class ActionSuperseded(
-        val warning: String,
+        val warning: String?,
         val wakeReason: String,
     ) : TypedRuntimeOutcome
     data class PreparedDiscarded(

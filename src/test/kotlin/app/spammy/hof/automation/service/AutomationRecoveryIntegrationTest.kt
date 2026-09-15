@@ -71,6 +71,7 @@ class AutomationRecoveryIntegrationTest : AutomationRecoveryFixture() {
     @Autowired private lateinit var battleMaps: app.spammy.hof.battle.service.BattleMapService
     @Autowired private lateinit var fishingService: app.spammy.hof.town.fishing.service.FishingService
     @Autowired private lateinit var runner: UnifiedAutomationRunner
+    @Autowired private lateinit var workSessions: app.spammy.hof.automation.repository.AutomationWorkSessionQueryRepository
 
     @ParameterizedTest
     @ValueSource(strings = ["CURRENT", "RETRY", "STARTUP", "NOT_STARTED", "NOT_STARTED_RETRY", "USER_STOP"])
@@ -1319,6 +1320,88 @@ class AutomationRecoveryIntegrationTest : AutomationRecoveryFixture() {
         assertEquals(2, journal.page(accountId, AutomationHistoryQuery()).cycles.size)
         assertEquals(1, requests.count { it.formFields["action"] == "get" && it.formFields["no"] == "B" })
         assertEquals(0, requests.count { it.formFields["action"] == "get" && it.formFields["no"] == "A" })
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    fun `외부 레이드 재확인은 오래된 경고를 해제하고 하위 행동과 다음 재확인까지 진행한다`(loseRefreshResponse: Boolean) {
+        setupRaid()
+        val oldWarning = "다른 사용자가 진행 중인 설정 레이드는 자동 행동 없이 다시 확인합니다."
+        val homeUrl = "https://hof.zerosic.com/index.php?menu=quest2"
+        var accepted = false
+        var responseLost = false
+        fun homePage() = """<div id="menu2">Funds : $ 1 Time : 100/100</div><h4>${if (accepted) "진행 중인 퀘스트" else "수락 가능한 퀘스트"}</h4><table>
+            <tr><td>[B] 하위 자택</td><td>미션 0/1</td><td>-</td><td>-</td><td>${if (accepted) "-" else "<a href='?menu=quest2&amp;action=get&amp;no=B'>수락</a>"}</td></tr></table>"""
+        val quest = HomePageParser().parse(HomeMode.HOME, homePage(), homeUrl, HofFormParser().parse(homePage(), homeUrl)).quests.single()
+        TransactionTemplate(transactions).executeWithoutResult {
+            val entry = entityManager.find(AutomationEntryEntity::class.java, entryId)
+            entityManager.persist(AutomationWorkSessionEntity(account = entry.account, entry = entry,
+                workType = AutomationWorkType.RAID, targetKey = "RaidGoblin", status = AutomationWorkStatus.WAITING_COOLDOWN,
+                configVersion = entry.updatedAt.toString(), nextCheckAt = clock.now(), holdMessage = oldWarning,
+                createdAt = clock.now(), updatedAt = clock.now()))
+            val home = AutomationEntryEntity(account = entry.account, type = AutomationType.HOME_QUEST, priority = 1,
+                enabled = true, createdAt = clock.now(), updatedAt = clock.now())
+            entityManager.persist(home)
+            entityManager.persist(HomeQuestAutomationSelectionEntity(entry = home, questId = quest.id,
+                questName = quest.name, enabled = true, sourceOrder = 0))
+        }
+        assertContains(application.getTyped(accountId).runtime.warnings, oldWarning)
+        val externalRaid = raidHtml(false).replace("현재 상태 : 파티 모집 중 (신청 안됨)", "현재 상태 : 전투 중 (신청 안됨)")
+        Mockito.doAnswer { invocation ->
+            val request = invocation.getArgument<HofRequest>(1)
+            requests += request
+            if (request.formFields["action"] == "get" && request.formFields["no"] == "B") accepted = true
+            if (loseRefreshResponse && !responseLost && "refresh_nonce" in request.formFields) {
+                responseLost = true
+                throw IOException("외부 레이드 상태 갱신 직접 응답 유실")
+            }
+            val isHome = request.url.contains("menu=quest2") || request.formFields["no"] == "B"
+            HofHttpResponse(200, if (isHome) homeUrl else "https://hof.zerosic.com/index.php?menu=raidpub",
+                if (isHome) homePage() else externalRaid, emptyMap())
+        }.`when`(gateway).execute(Mockito.eq(accountId), anyRequest(), Mockito.anyMap())
+
+        fun waitSession() = workSessions.findWaiting(accountId).single { it.workType == AutomationWorkType.RAID }
+        fun refreshCount() = requests.count { "refresh_nonce" in it.formFields }
+        fun consumeUntil(done: () -> Boolean) {
+            repeat(32) { if (done()) return; consumeNextWake() }
+            assertTrue(done(), "영속 wakeup을 소비해 재확인과 하위 행동이 진전해야 한다. accepted=$accepted, wait=${waitSession()}, requests=${requests.takeLast(5).map { it.url to it.formFields }}")
+        }
+        wakeups.wake(accountId, "EXTERNAL_RAID_WARNING_RECHECK")
+        consumeUntil { accepted && waitSession().holdMessage == null &&
+            waitSession().nextCheckAt!! >= clock.now().plusSeconds(600) }
+        val firstWait = waitSession()
+        assertTrue(application.getTyped(accountId).runtime.warnings.isEmpty())
+        assertTrue(application.getTyped(accountId).entries.first { it.id == entryId }.ready)
+        val history = journal.page(accountId, AutomationHistoryQuery()).cycles
+        val raidEvent = assertNotNull(history.flatMap { it.events }.firstOrNull { oldWarning in it.message },
+            "외부 레이드 재확인 사유를 이력에서 확인할 수 있어야 한다. ${history.flatMap { it.events }}")
+        assertEquals("RAID_EXTERNAL_CONFIGURED_ACTIVE", raidEvent.reasonCode)
+        assertEquals(firstWait.nextCheckAt, raidEvent.nextRunAt)
+        assertEquals(AutomationImpactScope.RAID_ONLY, raidEvent.impactScope)
+        assertFalse(raidEvent.releaseCondition.isNullOrBlank())
+        assertTrue(history.flatMap { it.events }.any {
+            it.kind == AutomationHistoryEventKind.ACTION_SUCCEEDED && it.type == AutomationType.HOME_QUEST
+        })
+        val previousCycles = history.map { it.id }.toSet()
+        val previousRefreshes = refreshCount()
+        clock.current = assertNotNull(firstWait.nextCheckAt)
+        app.spammy.hof.automation.recovery.AutomationRecoveryScheduler(recoveryQuery, wakeups, clock).recoverOnStartup()
+        consumeUntil { refreshCount() > previousRefreshes && waitSession().nextCheckAt!! > firstWait.nextCheckAt }
+        consumeNextWake()
+
+        assertTrue(journal.page(accountId, AutomationHistoryQuery()).cycles.any { it.id !in previousCycles })
+        val recheckEvent = journal.page(accountId, AutomationHistoryQuery()).cycles.flatMap { it.events }
+            .first { it.reasonCode == "RAID_EXTERNAL_CONFIGURED_ACTIVE" }
+        assertContains(recheckEvent.message, oldWarning)
+        assertEquals(waitSession().nextCheckAt, recheckEvent.nextRunAt)
+        assertNull(waitSession().holdMessage)
+        assertNull(workSessions.findRunning(accountId))
+        assertTrue(application.getTyped(accountId).runtime.warnings.isEmpty())
+        assertEquals(1, requests.count { it.formFields["action"] == "get" && it.formFields["no"] == "B" })
+        assertTrue(requests.filter { it.method == HofHttpMethod.POST }.all {
+            "refresh_nonce" in it.formFields || (it.formFields["action"] == "get" && it.formFields["no"] == "B")
+        }, "외부 레이드에는 참가·전투·보상·리셋을 제출하지 않는다.")
+        assertEquals(loseRefreshResponse, responseLost)
     }
 
     @ParameterizedTest

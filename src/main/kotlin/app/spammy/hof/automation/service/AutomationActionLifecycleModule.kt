@@ -2294,7 +2294,10 @@ class UnifiedAutomationActionLifecycleModule(
             is RaidRecordResult.EntryWait -> {
                 workLifecycle.waitForRaid(accountId, attempt.entryId, result.raidId, result.at, result.warning)
                 if (sharedState) {
-                    AmbiguousActionResolution.Superseded(result.message)
+                    if (result.reasonCode == "RAID_EXTERNAL_CONFIGURED_ACTIVE") {
+                        AmbiguousActionResolution.Superseded(result.message,
+                            raidWait = result.toExecution(), warning = result.warning)
+                    } else AmbiguousActionResolution.Superseded(result.message)
                 } else {
                     AmbiguousActionResolution.Applied(result.toExecution())
                 }

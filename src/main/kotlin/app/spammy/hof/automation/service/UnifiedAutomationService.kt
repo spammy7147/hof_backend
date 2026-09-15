@@ -898,6 +898,8 @@ class UnifiedAutomationService(
             canLoadPattern = { it.patternSlot?.canLoad == true },
         ).keys
         val primaryPresetId = presets.singleOrNull { it.isPrimary }?.id
+        val presetsById = presets.associateBy { it.id }
+        val membersByPreset = presetMembers.groupBy { it.preset.id }
         val hofStatus = hofStatusSnapshots.findLatest(accountId)
         val responses = entries.map { entry ->
             val quests = if (entry.type == AutomationType.QUEST) {
@@ -955,7 +957,6 @@ class UnifiedAutomationService(
                     entry,
                     quests,
                     homeQuests,
-                    questMaps,
                     battle,
                     adventure,
                     fishingMaps,
@@ -965,7 +966,11 @@ class UnifiedAutomationService(
                     validPresetIds,
                     hofStatus?.timeMax,
                 ) +
-                    holdWarningsByEntry[entry.id].orEmpty()
+                    (if (entry.enabled && entry.type == AutomationType.QUEST) {
+                        questAutomationPresetWarnings(
+                            questMaps.values.flatten(), primaryPresetId, presetsById, membersByPreset, validPresetIds,
+                        )
+                    } else emptyList()) + holdWarningsByEntry[entry.id].orEmpty()
                 ).distinct()
             TypedAutomationEntryResponse(
                 id = entry.id,
@@ -1114,7 +1119,6 @@ class UnifiedAutomationService(
         entry: AutomationEntryEntity,
         quests: List<QuestAutomationSelectionEntity>,
         homeQuests: List<HomeQuestAutomationSelectionEntity>,
-        questMaps: Map<Long, List<QuestAutomationMapEntity>>,
         battle: List<BattleAutomationMapEntity>,
         adventure: List<AdventureAutomationMapEntity>,
         fishingMaps: List<FishingAutomationMapEntity>,
@@ -1139,17 +1143,6 @@ class UnifiedAutomationService(
         when (entry.type) {
             AutomationType.QUEST -> {
                 if (quests.none { it.enabled }) warnings += "활성화된 퀘스트가 없습니다."
-                quests.filter { it.enabled }.forEach { selection ->
-                    val maps = questMaps[selection.id].orEmpty()
-                    maps.forEach { map ->
-                        presetWarning(
-                            map.presetMode,
-                            map.partyPreset?.id,
-                            primaryPresetId,
-                            validPresetIds,
-                        )?.let(warnings::add)
-                    }
-                }
             }
             AutomationType.HOME_QUEST -> {
                 if (homeQuests.none { it.enabled }) warnings += "활성화된 자택 퀘스트가 없습니다."

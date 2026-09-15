@@ -2,6 +2,8 @@ package app.spammy.hof.automation.service
 
 import app.spammy.hof.automation.convergence.*
 import app.spammy.hof.automation.history.AutomationDecisionJournal
+import app.spammy.hof.automation.history.AutomationActionTrace
+import app.spammy.hof.automation.history.AutomationHistoryEventKind
 import app.spammy.hof.common.error.ApiException
 import app.spammy.hof.common.error.ErrorCode
 import app.spammy.hof.common.time.TimeProvider
@@ -301,11 +303,12 @@ class AutomationResultCoordinator(
         val convergence = convergenceModule ?: return null
         val observation = observeStoredConvergenceAction(accountId, directive)
         return convergence.record(directive.attemptId, observation.evidence) { next ->
-            journalFishingObservation(accountId, observation, next)
+            journalResultObservation(accountId, observation, next)
         }
     }
 
-    private fun journalFishingObservation(accountId: Long, observation: StoredObservation, next: ConvergenceDirective) {
+    private fun journalResultObservation(accountId: Long, observation: StoredObservation, next: ConvergenceDirective) {
+        observation.resultTrace?.let { decisionJournal?.appendResultObservation(accountId, it) }
         val stored = observation.stored
         if (stored?.payload is StoredTypedActionPayload.FishingTown) {
             decisionJournal?.appendResultObservation(accountId,
@@ -331,8 +334,8 @@ class AutomationResultCoordinator(
         val directive = when (val prepared = restored) {
             is ConvergenceDirective.Probe -> {
                 val observation = observeReconciliation(accountId, managed, prepared.selection, stored.executionIdentity, ReconciliationSource.LEGACY_CHECKPOINT)
-                convergence.record(prepared.attemptId, observation) { next ->
-                    journalFishingObservation(accountId, StoredObservation(observation, stored, managed.diagnosticContext), next)
+                convergence.record(prepared.attemptId, observation.evidence) { next ->
+                    journalResultObservation(accountId, observation.copy(stored = stored, diagnosticContext = managed.diagnosticContext), next)
                 }
             }
             else -> prepared
@@ -397,6 +400,7 @@ class AutomationResultCoordinator(
         val evidence: AutomationActionEvidence,
         val stored: StoredTypedAutomationAction? = null,
         val diagnosticContext: String? = null,
+        val resultTrace: AutomationActionTrace? = null,
     )
 
     private fun observeStoredConvergenceAction(
@@ -415,8 +419,8 @@ class AutomationResultCoordinator(
                 now(), error.message ?: "STORED_ACTION_INVALID",
             ), stored)
         }
-        val evidence = observeReconciliation(accountId, managed, directive.selection, directive.executionIdentity, ReconciliationSource.STORED_PROBE)
-        return StoredObservation(evidence, stored, managed.diagnosticContext)
+        val observation = observeReconciliation(accountId, managed, directive.selection, directive.executionIdentity, ReconciliationSource.STORED_PROBE)
+        return observation.copy(stored = stored, diagnosticContext = managed.diagnosticContext)
     }
 
     private enum class ReconciliationSource { STORED_PROBE, LEGACY_CHECKPOINT }
@@ -427,35 +431,48 @@ class AutomationResultCoordinator(
         selection: SelectedAutomationAction?,
         executionIdentity: String,
         source: ReconciliationSource,
-    ): AutomationActionEvidence = if (selection != null &&
-        !ProductionActionEvidenceInterpreter.supportsVersion(selection.policyVersion)
-    ) {
-        AutomationActionEvidence.PolicyUnavailable(now())
-    } else try {
-        val resolution = managed.reconcile()
-        if (resolution is AmbiguousActionResolution.Applied) {
-            applyRecoveredExecution(accountId, resolution.execution)
-        }
-        selection?.let { evidenceInterpreter?.fromReconciliation(it, resolution, now()) }
-            ?: when (resolution) {
-                is AmbiguousActionResolution.Applied -> AutomationActionEvidence.StateAdvanced(now(), "advanced:$executionIdentity")
-                AmbiguousActionResolution.Resubmit -> AutomationActionEvidence.SameState(now(),
-                    "${if (source == ReconciliationSource.STORED_PROBE) "unchanged" else "same"}:$executionIdentity")
-                is AmbiguousActionResolution.VerifyLater -> AutomationActionEvidence.IncompleteObservation(now(), resolution.reason)
-                is AmbiguousActionResolution.Held -> AutomationActionEvidence.ResultUnobserved(now(), resolution.reason)
-                is AmbiguousActionResolution.HandedOff -> AutomationActionEvidence.ResultUnobserved(now(), resolution.reason)
-                is AmbiguousActionResolution.Superseded -> AutomationActionEvidence.StateAdvanced(now(), "superseded:$executionIdentity")
-                is AmbiguousActionResolution.FreshDecision -> AutomationActionEvidence.ResultUnobservedFreshDecision(now(), resolution.reason)
+    ): StoredObservation {
+        var resultTrace: AutomationActionTrace? = null
+        val evidence = if (selection != null &&
+            !ProductionActionEvidenceInterpreter.supportsVersion(selection.policyVersion)
+        ) {
+            AutomationActionEvidence.PolicyUnavailable(now())
+        } else try {
+            val resolution = managed.reconcile()
+            (resolution as? AmbiguousActionResolution.Superseded)?.raidWait?.let { wait ->
+                resultTrace = automationActionTrace(
+                    managed.storedAction, AutomationHistoryEventKind.SKIPPED, wait.reasonCode, wait.message,
+                    nextRunAt = wait.retryAt, descriptor = managed.descriptor,
+                    impactScope = AutomationImpactScope.RAID_ONLY, releaseCondition = wait.releaseCondition,
+                    observedAt = now(),
+                ).copy(targetKey = wait.raidId)
             }
-    } catch (error: Throwable) {
-        val deferred = error.findHofAutomationDeferral()
-        // Preserve each existing entry's fallback classification and diagnostic source.
-        when {
-            source == ReconciliationSource.STORED_PROBE -> AutomationActionEvidence.NetworkFailure(now(),
-                if (deferred != null) deferred.message ?: "HOF_DEFERRED" else error.message ?: error.javaClass.simpleName)
-            deferred != null -> AutomationActionEvidence.NetworkFailure(now(), error.message ?: "HOF_DEFERRED")
-            else -> AutomationActionEvidence.ResultUnobserved(now(), error.message ?: error.javaClass.simpleName)
+            if (resolution is AmbiguousActionResolution.Applied) {
+                applyRecoveredExecution(accountId, resolution.execution)
+            }
+            selection?.let { evidenceInterpreter?.fromReconciliation(it, resolution, now()) }
+                ?: when (resolution) {
+                    is AmbiguousActionResolution.Applied -> AutomationActionEvidence.StateAdvanced(now(), "advanced:$executionIdentity")
+                    AmbiguousActionResolution.Resubmit -> AutomationActionEvidence.SameState(now(),
+                        "${if (source == ReconciliationSource.STORED_PROBE) "unchanged" else "same"}:$executionIdentity")
+                    is AmbiguousActionResolution.VerifyLater -> AutomationActionEvidence.IncompleteObservation(now(), resolution.reason)
+                    is AmbiguousActionResolution.Held -> AutomationActionEvidence.ResultUnobserved(now(), resolution.reason)
+                    is AmbiguousActionResolution.HandedOff -> AutomationActionEvidence.ResultUnobserved(now(), resolution.reason)
+                    is AmbiguousActionResolution.Superseded -> AutomationActionEvidence.StateAdvanced(now(), "superseded:$executionIdentity")
+                    is AmbiguousActionResolution.FreshDecision -> AutomationActionEvidence.ResultUnobservedFreshDecision(now(), resolution.reason)
+                }
+        } catch (error: Throwable) {
+            val deferred = error.findHofAutomationDeferral()
+            // Preserve each existing entry's fallback classification and diagnostic source.
+            when {
+                source == ReconciliationSource.STORED_PROBE -> AutomationActionEvidence.NetworkFailure(now(),
+                    if (deferred != null) deferred.message ?: "HOF_DEFERRED" else error.message ?: error.javaClass.simpleName)
+                deferred != null -> AutomationActionEvidence.NetworkFailure(now(), error.message ?: "HOF_DEFERRED")
+                else -> AutomationActionEvidence.ResultUnobserved(now(), error.message ?: error.javaClass.simpleName)
+            }
         }
+
+        return StoredObservation(evidence, resultTrace = resultTrace.takeIf { evidence is AutomationActionEvidence.StateAdvanced })
     }
 
     fun applyRecoveredExecution(accountId: Long, execution: TypedAutomationExecution) {

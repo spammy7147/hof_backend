@@ -383,6 +383,22 @@ class TypedAutomationRuntimeServiceTest {
     }
 
     @Test
+    fun `정상 대기로 대체된 행동은 이전 경고를 해제하고 다음 판단을 예약한다`() {
+        val state = state().apply { warningText = "이전 경고" }
+        val fixture = action(TypedAutomationActionStatus.PREPARED)
+        val execution = acquire(state, fixture.row)
+        assertIs<TypedRuntimeSubmission.Started>(service.beginSubmission(execution))
+
+        assertTrue(service.complete(execution,
+            TypedRuntimeOutcome.ActionSuperseded(null, "TYPED_ACTION_SUPERSEDED")).applied)
+
+        assertEquals(TypedAutomationActionStatus.FAILED, fixture.row.status)
+        assertNull(state.warningText)
+        assertNull(state.leaseToken)
+        Mockito.verify(outbox).enqueue(7, "TYPED_ACTION_SUPERSEDED")
+    }
+
+    @Test
     fun `submitted HOF deferral returns checkpoint to prepared and sanitizes diagnostics`() {
         val retryAt = now.plusSeconds(30)
         val state = state()

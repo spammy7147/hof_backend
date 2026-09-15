@@ -11,6 +11,8 @@ sealed interface AmbiguousActionResolution {
 
     data class Superseded(
         val reason: String,
+        val raidWait: TypedAutomationExecution.RaidWaiting? = null,
+        val warning: String? = reason,
     ) : AmbiguousActionResolution
 
     /** 이전 제출의 결과는 귀속하지 않고, 완전한 최신 목표 상태에서 새 행동을 고른다. */

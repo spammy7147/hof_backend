@@ -66,6 +66,7 @@ import app.spammy.hof.town.common.service.ObservedTownActionPreconditionChangedE
 import java.time.Instant
 import java.time.LocalDate
 import kotlin.test.Test
+import kotlin.test.assertNull
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
@@ -1359,6 +1360,43 @@ class UnifiedAutomationRunnerTest {
         val outcome = assertIs<TypedRuntimeOutcome.ReconciliationDeferred>(capturedOutcome())
         assertEquals(observedAt.plusSeconds(10), outcome.retryAt)
         assertEquals(true, outcome.successfulObservation)
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(AutomationConvergenceMode::class, names = ["LEGACY", "SHADOW"])
+    fun `외부 레이드 복구는 경고 없이 대기 이력과 대체 판정을 보존한다`(mode: AutomationConvergenceMode) {
+        val stored = StoredTypedAutomationAction(12L, "external-raid-refresh",
+            StoredTypedActionPayload.RaidTown(RaidAction.REFRESH, "RaidGoblin")).withRecordedPolicy()
+        val reconciling = executionRight(TypedRuntimeCheckpoint(stored,
+            TypedRuntimeCheckpointPhase.RECONCILING, Instant.EPOCH, "응답 유실"))
+        val wait = TypedAutomationExecution.RaidWaiting(Instant.EPOCH.plusSeconds(600), "RaidGoblin",
+            "RAID_EXTERNAL_CONFIGURED_ACTIVE", "다른 사용자 레이드를 다시 확인합니다.", "최신 상태 재확인")
+        val journal = Mockito.mock(AutomationDecisionJournal::class.java)
+        Mockito.`when`(runtime.acquire(7L)).thenReturn(TypedRuntimeAcquisition.Acquired(reconciling))
+        Mockito.`when`(lifecycle.restoreVerified(stored, 7L)).thenReturn(managed)
+        Mockito.`when`(managed.storedAction).thenReturn(stored)
+        Mockito.`when`(managed.descriptor).thenReturn(defaultDescriptor().copy(
+            source = AutomationType.RAID, storageKind = "RAID_TOWN", actionKind = "REFRESH",
+            actionLabel = "상태 갱신", context = "상태 갱신 단계", targetKey = "RaidGoblin"))
+        Mockito.`when`(managed.reconcile()).thenReturn(AmbiguousActionResolution.Superseded(
+            wait.message, raidWait = wait, warning = null))
+        val scoped = buildRunner(preflight, runtime, decisions, wakeup, sharedCooldowns, lifecycle, submissionGate,
+            decisionJournal = journal, timeProvider = TimeProvider { Instant.EPOCH },
+            rollout = AutomationConvergenceRollout(AutomationConvergenceProperties(mode = mode)))
+
+        scoped.runOne(7L)
+
+        assertNull(assertIs<TypedRuntimeOutcome.ActionSuperseded>(capturedOutcome()).warning)
+        val trace = ArgumentCaptor.forClass(AutomationActionTrace::class.java)
+        Mockito.verify(journal).appendActionResult(Mockito.anyLong(), trace.capture() ?: AutomationActionTrace(
+            AutomationHistoryEventKind.SKIPPED, "", ""))
+        assertEquals(AutomationHistoryEventKind.SKIPPED, trace.value.kind)
+        assertEquals(AutomationType.RAID, trace.value.type)
+        assertEquals(wait.raidId, trace.value.targetKey)
+        assertEquals(wait.reasonCode, trace.value.reasonCode)
+        assertEquals(wait.retryAt, trace.value.nextRunAt)
+        assertEquals(wait.releaseCondition, trace.value.releaseCondition)
+        Mockito.verify(managed, Mockito.never()).execute()
     }
 
     @Test

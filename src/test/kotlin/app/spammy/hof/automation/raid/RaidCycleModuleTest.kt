@@ -1087,6 +1087,9 @@ class RaidCycleModuleTest {
 
         assertEquals(now.plusSeconds(600), wait.at)
         assertEquals(null, store.state.openCycle)
+        assertEquals("RAID_EXTERNAL_CONFIGURED_ACTIVE", wait.reasonCode)
+        assertEquals(null, wait.warning)
+        assertEquals("외부 전투 또는 보상 단계 종료 뒤 상태 갱신", wait.releaseCondition)
     }
 
     @Test
@@ -1127,6 +1130,8 @@ class RaidCycleModuleTest {
 
         assertEquals(now.plusSeconds(1_800), wait.at)
         assertEquals(null, store.state.openCycle)
+        assertEquals("RAID_EXTERNAL_CONFIGURED_ACTIVE", wait.reasonCode)
+        assertEquals(null, wait.warning)
     }
 
     @Test
