@@ -48,6 +48,7 @@ import app.spammy.hof.town.raid.model.RaidStatus
 import app.spammy.hof.town.raid.model.isRaidRegistrationAvailable
 import app.spammy.hof.town.raid.model.isRaidResetRequiredStatus
 import app.spammy.hof.town.raid.service.RaidActionPreconditionChangedException
+import app.spammy.hof.town.raid.service.IncompleteRaidPageException
 import app.spammy.hof.town.raid.service.RaidPubService
 import java.io.IOException
 import java.util.UUID
@@ -2652,7 +2653,8 @@ class UnifiedAutomationActionLifecycleModule(
                 }
                 if (api.errorCode == ErrorCode.HOF_REQUEST_FAILED) {
                     throw AmbiguousAutomationSubmissionException(
-                        "$family side-effect outcome is not provable; it will not be resent.",
+                        if (api is IncompleteRaidPageException) api.message
+                        else "$family side-effect outcome is not provable; it will not be resent.",
                         error,
                     )
                 }

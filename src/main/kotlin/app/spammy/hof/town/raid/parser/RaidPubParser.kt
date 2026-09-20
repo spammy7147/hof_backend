@@ -304,7 +304,7 @@ class RaidPubParser {
         val APPLICANT = Regex("-\\s*\\[([^]]+)]")
         val APPLY_WAIT = Regex("신청\\s*가능\\s*까지\\s*(?:(\\d+)\\s*시간)?\\s*(?:(\\d+)\\s*분)?\\s*(?:(\\d+)\\s*초)?")
         val APPLY_WAIT_STATE = Regex("신청\\s*대기|신청\\s*가능\\s*까지")
-        val REGISTRATION_STATE = Regex("현재\\s*(?:상태는|전투)\\s*(?:신청\\s*가능(?:\\s+상태입니다)?|신청한\\s*상태|신청\\s*완료)(?=\\s*(?:[.(]|$))")
+        val REGISTRATION_STATE = Regex("현재\\s*(?:상태는|전투(?:에)?)\\s*(?:신청\\s*가능(?:\\s+상태입니다)?|신청한\\s*상태(?:입니다)?|신청\\s*완료)(?=\\s*(?:[.(]|$))")
         val MY_STATUS = Regex("현재\\s*(?:상태는|전투)[^)]*\\)")
         val APPLIED = Regex("신청한\\s*상태|신청\\s*완료")
         val UNPLAYABLE = Regex("플레이\\s*불가|시험\\s*중")

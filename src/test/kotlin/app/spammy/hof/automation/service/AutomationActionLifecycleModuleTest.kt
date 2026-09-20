@@ -2084,11 +2084,12 @@ class AutomationActionLifecycleModuleTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = ["MISSING_REGISTRATION", "INVALID_WAIT", "UNKNOWN_OTHER_RAID", "QUOTED_REGISTRATION"])
+    @ValueSource(strings = ["INCOMPLETE_PAGE", "MISSING_REGISTRATION", "INVALID_WAIT", "UNKNOWN_OTHER_RAID", "QUOTED_REGISTRATION"])
     fun `레이드 갱신의 불완전 상태는 공용 SUCCESS가 있어도 직접 응답으로 받지 않는다`(variant: String) {
         val page = raidRefreshPage()
         val header = "현재 상태는 신청 대기 (신청 가능까지 6분 58초)"
         val incomplete = when (variant) {
+            "INCOMPLETE_PAGE" -> page.substringBefore("<div id=\"foot\"")
             "MISSING_REGISTRATION" -> page.replace(header, "")
             "INVALID_WAIT" -> page.replace(header, "현재 상태는 신청 대기 (신청 가능까지 확인 중)")
             "UNKNOWN_OTHER_RAID" -> page.replace("418초 후 출발", "확인되지 않은 단계")
@@ -2101,6 +2102,12 @@ class AutomationActionLifecycleModuleTest {
 
         val failure = assertFailsWith<AmbiguousAutomationSubmissionException> { managed.execute() }
         assertEquals(ErrorCode.HOF_REQUEST_FAILED, assertIs<ApiException>(failure.cause).errorCode)
+        val expectedReason = when (variant) {
+            "INCOMPLETE_PAGE" -> "레이드 페이지가 완전하지 않아 행동 응답을 확인하지 못했습니다."
+            "UNKNOWN_OTHER_RAID" -> "레이드 단계를 인식하지 못해 갱신 응답을 확인하지 못했습니다."
+            else -> "레이드 신청 상태 문구를 인식하지 못해 갱신 응답을 확인하지 못했습니다."
+        }
+        assertEquals(expectedReason, failure.message)
     }
 
     @ParameterizedTest
@@ -2127,7 +2134,7 @@ class AutomationActionLifecycleModuleTest {
     @Test
     fun `레이드 상태 갱신은 이미 신청한 현재 계정의 직접 상태도 적용한다`() {
         val page = raidRefreshPage(joined = true)
-            .replace("현재 상태는 신청 대기 (신청 가능까지 6분 58초)", "현재 상태는 신청한 상태")
+            .replace("현재 상태는 신청 대기 (신청 가능까지 6분 58초)", "현재 전투에 신청한 상태입니다.(신청 불가능)")
         val evidence = refreshEvidence(page, page)
 
         assertIs<AutomationActionEvidence.DirectApplied>(evidence)

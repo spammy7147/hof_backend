@@ -5,6 +5,9 @@ import app.spammy.hof.account.entity.HofCookieEntity
 import app.spammy.hof.auth.service.AccountExecutionAuthorizationReader
 import app.spammy.hof.automation.convergence.AutomationConvergenceMode
 import app.spammy.hof.automation.convergence.AutomationConvergenceProperties
+import app.spammy.hof.automation.convergence.ActionConvergenceResult
+import app.spammy.hof.automation.convergence.SelectedAutomationAction
+import app.spammy.hof.automation.convergence.StoredActionConvergenceSelectionFactory
 import app.spammy.hof.automation.entity.*
 import app.spammy.hof.automation.history.AutomationDecisionJournal
 import app.spammy.hof.automation.history.AutomationHistoryEventKind
@@ -20,6 +23,7 @@ import app.spammy.hof.status.entity.HofStatusSnapshotEntity
 import app.spammy.hof.town.common.parser.HofFormParser
 import app.spammy.hof.town.home.model.HomeMode
 import app.spammy.hof.town.home.parser.HomePageParser
+import app.spammy.hof.town.raid.model.RaidAction
 import app.spammy.hof.character.transfer.CharacterTransferFixture
 import app.spammy.hof.character.transfer.CharacterTransferService
 import app.spammy.hof.character.transfer.CharacterTransferSelection
@@ -661,6 +665,87 @@ abstract class AutomationModeContinuityTest {
             assertTrue(transport.delivered.all { outbox.consumed(it) })
             assertEquals(0, jdbc.queryForObject("select count(*) from automation_work_sessions where account_id = ? and running_slot is not null", Int::class.java, accountId))
             assertEquals(0, jdbc.queryForObject("select count(*) from account_automation_leases where account_id = ?", Int::class.java, accountId))
+        } finally {
+            transport.delivered.forEach { jdbc.update("delete from automation_consumed_events where event_id = ?", it) }
+            jdbc.update("delete from hof_accounts where id = ?", accountId)
+        }
+    }
+
+    @Test
+    fun `과거 갱신 보류 뒤 실제 신청 완료 응답으로 갱신하고 다음 깨우기에서 한 번 시작한다`() {
+        assertEquals(mode, properties.mode)
+        clock.current = Instant.parse("2026-09-20T07:00:00Z")
+        transport.delivered.clear()
+        val requests = mutableListOf<HofRequest>()
+        val raidUrl = "https://hof.zerosic.com/index.php?menu=raidpub"
+        val ready = requireNotNull(javaClass.getResource("/fixtures/town/raid/raidpub.html")).readText()
+            .replace("Funds : $ 1,000", "Funds : $ 1,000 Time : 100/100")
+            .replace("현재 상태는 신청 대기 (신청 가능까지 6분 58초)",
+                "<input type=\"submit\" name=\"refresh_nonce\" value=\"상태 갱신\">")
+            .replace("현재 상태 : 모집 중", "현재 상태 : 파티 모집 중 (출발 가능)")
+            .replace("name=\"register_goblin\" value=\"등록한다\"", "name=\"start_goblin\" value=\"전투를 시작한다\"")
+        val refreshed = ready.replaceFirst("  <h4>",
+            "  현재 전투에 신청한 상태입니다.(신청 불가능)\n  <h4>")
+        val noBattle = requireNotNull(javaClass.getResource("/fixtures/raid/raid-complete-absent.html")).readText()
+        val (accountId, entryId) = requireNotNull(TransactionTemplate(transactions).execute {
+            val account = HofAccountEntity(loginId = "raid-refresh-joined-${UUID.randomUUID()}", encryptedPassword = "test",
+                createdAt = clock.now())
+            entityManager.persist(account)
+            val entry = AutomationEntryEntity(account = account, type = AutomationType.RAID, priority = 0,
+                enabled = true, createdAt = clock.now(), updatedAt = clock.now())
+            entityManager.persist(entry)
+            entityManager.persist(RaidAutomationTargetEntity(entry = entry, raidId = "RaidGoblin", displayName = "고블린 전투 마차",
+                presetMode = PresetSelectionMode.PRIMARY, executionOrder = 0))
+            entityManager.persist(RaidAutomationCycleEntity(account = account, entry = entry, raidId = "RaidGoblin",
+                raidName = "고블린 전투 마차", status = RaidAutomationCycleStatus.REGISTERED_WAITING,
+                nextCheckAt = clock.now().minusSeconds(1), startedAt = clock.now(), updatedAt = clock.now()))
+            entityManager.persist(HofCookieEntity(account = account, name = "PHPSESSID", value = "fixture", updatedAt = clock.now()))
+            entityManager.persist(HofStatusSnapshotEntity(account = account, playerName = "테스트", funds = 1,
+                timeCurrent = 100, timeMax = 100, work = "", auction = "", observedAt = clock.now()))
+            entityManager.persist(TypedAutomationRuntimeStateEntity(accountId = account.id, account = account,
+                lifecycleStatus = TypedAutomationLifecycle.RUNNING, createdAt = clock.now(), updatedAt = clock.now()))
+            account.id to entry.id
+        })
+        try {
+            val preview = StoredActionConvergenceSelectionFactory().preview(entryId,
+                RaidTownAutomationAction(accountId, RaidAction.REFRESH, null, "RaidGoblin"))
+            val old = convergenceStore.createOrGet(accountId, SelectedAutomationAction(entryId, "old-refresh-$accountId",
+                preview.actionKind, preview.scope, "automation-action-convergence-v1", requireNotNull(preview.baselineFingerprint)), clock.now())
+            old.result = ActionConvergenceResult.HELD
+            old.reasonCode = "PENDING_BUDGET_EXHAUSTED"
+            old.finishedAt = clock.now()
+            convergenceStore.save(old)
+            Mockito.`when`(preflight.ensureReady(accountId)).thenReturn(AutomationDailyPreflight.Result.Ready)
+            Mockito.`when`(authorization.isExecutionAllowed(accountId)).thenReturn(true)
+            Mockito.doAnswer { invocation ->
+                val request = invocation.getArgument<HofRequest>(1)
+                requests += request
+                when {
+                    request.url.contains("raid_hunt") -> HofHttpResponse(200,
+                        "https://hof.zerosic.com/index.php?raid_hunt", noBattle, emptyMap())
+                    request.formFields.containsKey("refresh_nonce") -> HofHttpResponse(200, raidUrl, refreshed, emptyMap())
+                    else -> HofHttpResponse(200, raidUrl, ready, emptyMap())
+                }
+            }.`when`(gateway).execute(Mockito.eq(accountId), Mockito.any<HofRequest>()
+                ?: HofRequest(HofHttpMethod.GET, "https://example.test"), Mockito.anyMap())
+            fun submits(key: String) = requests.count { it.method == HofHttpMethod.POST && key in it.formFields }
+
+            wakeups.wake(accountId, "RAID_JOINED_REFRESH")
+            publisher.publishBatch()
+            assertEquals(1, submits("refresh_nonce"))
+            assertEquals(0, submits("start_goblin"))
+            assertTrue(journal.page(accountId, AutomationHistoryQuery()).cycles.flatMap { it.events }
+                .any { it.actionKind == "REFRESH" && it.kind == AutomationHistoryEventKind.ACTION_SUCCEEDED })
+            assertEquals(ActionConvergenceResult.HELD, convergenceStore.get(old.attemptId)?.result)
+            assertFalse(requireNotNull(preview.baselineFingerprint) in
+                convergenceStore.findSuppressedBaselines(accountId)[preview.scope].orEmpty())
+
+            nextWake(accountId)
+            assertEquals(1, submits("start_goblin"), "정상 갱신 뒤 실제 후속 판단이 전투 시작을 제출해야 한다.")
+            repeat(2) { nextWake(accountId) }
+            assertEquals(1, submits("start_goblin"), "미확정 START를 다시 보내면 안 된다.")
+            assertEquals(1, submits("refresh_nonce"), "일반 GET에 갱신 문구가 없어도 갱신을 반복하면 안 된다.")
+            assertTrue(transport.delivered.all { outbox.consumed(it) })
         } finally {
             transport.delivered.forEach { jdbc.update("delete from automation_consumed_events where event_id = ?", it) }
             jdbc.update("delete from hof_accounts where id = ?", accountId)

@@ -36,6 +36,22 @@ class RaidPubParserTest {
     private val forms = HofFormParser()
     private val parser = RaidPubParser()
 
+    @Test fun `일반 조회에 없는 실제 신청 완료 문구를 갱신 직접 응답에서 인식한다`() {
+        val before = fixture().replace("현재 상태는 신청 대기 (신청 가능까지 6분 58초)",
+            "<input type=\"submit\" name=\"refresh_nonce\" value=\"상태 갱신\">")
+        val after = before.replaceFirst("  <h4>",
+            "  <div class=\"result\">현재 전투에 신청한 상태입니다.(신청 불가능)</div>\n  <h4>")
+        assertFalse(parser.parse(before, URL, forms.parse(before, URL)).registrationStateObserved)
+        val context = service(before, after)
+
+        val response = context.service.actionForAutomation(7L, RaidPubActionRequest(RaidAction.REFRESH), "RaidGoblin")
+
+        assertTrue(response.registrationStateObserved)
+        assertTrue(response.applied)
+        assertTrue(response.raids.single { it.id == "RaidGoblin" }.joined)
+        assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.POST), context.requests().map { it.method })
+    }
+
     @Test fun `실제 신청 가능 상태입니다 응답으로 자동화 갱신을 완료한다`() {
         val before = registerableFixture()
             .replace("현재 상태는 신청 가능", "<input type=\"submit\" name=\"refresh_nonce\" value=\"상태 갱신\">")
@@ -61,6 +77,10 @@ class RaidPubParserTest {
             "현재 상태는 신청 가능하지 않은 상태입니다.",
             "현재 상태는 신청 가능 상태입니다라고 표시되면 신청하세요.",
             "<blockquote>현재 상태는 신청 가능 상태입니다.</blockquote>",
+            "현재 전투에 신청한 상태가 아닙니다.(신청 가능)",
+            "현재 전투에 신청한 상태입니다라고 표시되면 기다리세요.",
+            "<blockquote>현재 전투에 신청한 상태입니다.(신청 불가능)</blockquote>",
+            "<span hidden>현재 전투에 신청한 상태입니다.(신청 불가능)</span>",
         )) {
             val html = registerableFixture().replace("현재 상태는 신청 가능", "<div class=\"result\">$message</div>")
             val parsed = parser.parse(html, URL, forms.parse(html, URL))
