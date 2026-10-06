@@ -100,6 +100,17 @@ class BattleLogQueryRepository(
             .fetchOne() ?: 0L
     }
 
+    /** Funds 유무나 결과와 관계없이 지정 시각 이후 저장된 전투 수를 집계한다. */
+    fun countBattlesSince(accountId: Long, since: Instant): Long =
+        queryFactory
+            .select(battleLogEntity.id.count())
+            .from(battleLogEntity)
+            .where(
+                battleLogEntity.account.id.eq(accountId),
+                battleLogEntity.createdAt.goe(since),
+            )
+            .fetchOne() ?: 0L
+
     /** 모험맵 중 패배 또는 무승부가 있었던 맵만 맵별로 집계한다. */
     fun findAdventureMapOutcomeStats(accountId: Long, since: Instant): List<AdventureMapOutcomeStatsProjection> {
         val defeats = outcomeCount("DEFEAT")

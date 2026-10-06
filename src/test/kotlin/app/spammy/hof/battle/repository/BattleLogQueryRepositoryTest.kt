@@ -144,6 +144,9 @@ class BattleLogQueryRepositoryTest {
 
         assertEquals(50L, queryRepository.sumFundsSince(account.id, LATER))
         assertEquals(150L, queryRepository.sumFundsSince(account.id, EARLIER))
+        assertEquals(4L, queryRepository.countBattlesSince(account.id, LATER))
+        assertEquals(5L, queryRepository.countBattlesSince(account.id, EARLIER))
+        assertEquals(0L, queryRepository.countBattlesSince(account.id, LATER.plusSeconds(10)))
         assertEquals(
             listOf(
                 AdventureMapOutcomeStatsProjection("snow22", "얼어붙은 산", defeats = 1, draws = 1),

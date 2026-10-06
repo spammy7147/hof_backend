@@ -21,7 +21,8 @@ class CraftingService(
     }
 
     fun loadCategory(accountId: Long, mode: CraftingMode, categoryCandidateId: String): CraftingResponse {
-        if (mode == CraftingMode.CLARIS) {
+        if (mode == CraftingMode.CLARIS || categoryCandidateId.startsWith("catalog_type_create:") ||
+            mode in setOf(CraftingMode.REFINE, CraftingMode.VETERAN) && categoryCandidateId.startsWith("list_type:")) {
             return executor.loadProjected(accountId, url(mode)) { html, finalUrl, page ->
                 CraftingResponse.from(parser.parse(mode, html, finalUrl, page, categoryCandidateId = categoryCandidateId))
             }
@@ -89,44 +90,60 @@ class CraftingService(
 
     fun refine(accountId: Long, mode: CraftingMode, request: RefineRequest): CraftingResponse {
         require(mode == CraftingMode.REFINE || mode == CraftingMode.VETERAN)
-        return executor.executeProjected(
-            accountId = accountId,
-            pageUrl = url(mode),
-            resolveAction = { html, finalUrl, page ->
-                val snapshot = parser.parse(mode, html, finalUrl, page)
-                validateCategory(snapshot, request.categoryCandidateId)
-                validateRow(snapshot, request.candidateId)
-                val countId = snapshot.refineCountCandidateIds[request.refineCount]
-                    ?: invalid("현재 HOF가 허용하는 제련 횟수를 다시 선택해 주세요.")
-                val selections = mutableListOf(
-                    TownActionSelection(request.candidateId),
-                    TownActionSelection(request.categoryCandidateId),
-                    TownActionSelection(countId),
-                )
-                if (mode == CraftingMode.VETERAN) {
-                    selections += TownActionSelection(snapshot.timesADefaultCandidateId
-                        ?: invalid("현재 장로대장간의 기본 제련 방식을 안전하게 확인하지 못했습니다."))
-                }
-                TownActionRequest(snapshot.actionId ?: invalid("현재 HOF 제련 양식을 찾지 못했습니다."), selections)
-            },
-        ) { html, finalUrl, result, page -> CraftingResponse.from(parser.parse(mode, html, finalUrl, page, result)) }
+        val resolve: (String, String, ParsedTownPage) -> TownActionRequest = { html, finalUrl, page ->
+            val snapshot = parser.parse(mode, html, finalUrl, page, categoryCandidateId = request.categoryCandidateId)
+            validateCategory(snapshot, request.categoryCandidateId)
+            validateRow(snapshot, request.candidateId)
+            val countId = snapshot.refineCountCandidateIds[request.refineCount]
+                ?: invalid("현재 HOF가 허용하는 제련 횟수를 다시 선택해 주세요.")
+            val selections = mutableListOf(
+                TownActionSelection(request.candidateId),
+                TownActionSelection(countId),
+            )
+            if (page.forms.firstOrNull { it.actionId == snapshot.actionId }?.candidates?.any { it.id == request.categoryCandidateId } == true) {
+                selections += TownActionSelection(request.categoryCandidateId)
+            }
+            if (mode == CraftingMode.VETERAN) {
+                selections += TownActionSelection(snapshot.timesADefaultCandidateId
+                    ?: invalid("현재 장로대장간의 기본 제련 방식을 안전하게 확인하지 못했습니다."))
+            }
+            TownActionRequest(snapshot.actionId ?: invalid("현재 HOF 제련 양식을 찾지 못했습니다."), selections)
+        }
+        val project: (String, String, ParsedTownResult, ParsedTownPage) -> CraftingResponse = { html, finalUrl, result, page ->
+            CraftingResponse.from(parser.parse(mode, html, finalUrl, page, result, categoryCandidateId = request.categoryCandidateId))
+        }
+        if (request.categoryCandidateId.startsWith("list_type:")) {
+            return executor.executeMaterializedResolvedProjectedWithScalars(
+                accountId = accountId,
+                pageUrl = url(mode),
+                requiredScalarFields = emptySet(),
+                requiredSubmitField = "refine",
+                requiredSyntheticFields = setOf("list_type"),
+                requiredReplacedFields = setOf("item_no"),
+                allowedAbsentRawReplacedFields = setOf("item_no"),
+                materialize = { html, finalUrl -> parser.materializeRefineHtml(html, finalUrl, request.categoryCandidateId) },
+                resolve = { html, finalUrl, page -> resolve(html, finalUrl, page) to emptyMap() },
+                projector = project,
+            )
+        }
+        return executor.executeProjected(accountId, url(mode), resolveAction = resolve, projector = project)
     }
 
     fun create(accountId: Long, request: CreateCraftRequest): CraftingResponse {
         val mode = CraftingMode.CREATE
-        val pageUrl = url(mode)
-        return executor.executeResolvedProjectedWithScalars(
+        return executeCrafting(
             accountId = accountId,
-            pageUrl = pageUrl,
+            mode = mode,
+            categoryCandidateId = request.categoryCandidateId,
             resolve = { html, finalUrl, page ->
-                val snapshot = parser.parse(mode, html, finalUrl, page)
+                val snapshot = parser.parse(mode, html, finalUrl, page, categoryCandidateId = request.categoryCandidateId)
                 validateCategory(snapshot, request.categoryCandidateId)
                 val recipe = validateRow(snapshot, request.recipeCandidateId)
                 validateQuantity(request.quantity, snapshot)
                 val selections = mutableListOf(
                     TownActionSelection(recipe.id),
-                    TownActionSelection(request.categoryCandidateId),
                 )
+                if (!request.categoryCandidateId.startsWith("catalog_type_create:")) selections += TownActionSelection(request.categoryCandidateId)
                 request.additionalMaterialCandidateId?.let { id ->
                     if (snapshot.additionalMaterials.none { it.id == id && it.selectable }) invalid("현재 사용할 수 없는 추가 소재입니다.")
                     selections += TownActionSelection(id)
@@ -134,11 +151,10 @@ class CraftingService(
                 TownActionRequest(snapshot.actionId ?: invalid("현재 HOF 제작 양식을 찾지 못했습니다."), selections) to
                     mapOf("ItemT" to (recipe.itemT ?: invalid("현재 품목의 HOF ItemT 계약을 안전하게 확인하지 못했습니다.")), "amount" to request.quantity.toString())
             },
-            requiredScalarFields = setOf("ItemT", "amount"),
-            requiredSubmitField = "Create",
         ) { html, finalUrl, result, page ->
             CraftingResponse.from(parser.parse(
                 mode, html, finalUrl, page, result,
+                categoryCandidateId = request.categoryCandidateId,
                 warningCode = if (request.additionalMaterialCandidateId == null) NO_ADDITIONAL_MATERIAL else null,
             ))
         }
@@ -152,25 +168,55 @@ class CraftingService(
         categoryCandidateId: String,
         quantity: Int,
     ): CraftingResponse {
-        return executor.executeResolvedProjectedWithScalars(
+        return executeCrafting(
             accountId = accountId,
-            pageUrl = url(mode),
+            mode = mode,
+            categoryCandidateId = categoryCandidateId,
             resolve = { html, finalUrl, page ->
-                val snapshot = parser.parse(mode, html, finalUrl, page)
+                val snapshot = parser.parse(mode, html, finalUrl, page, categoryCandidateId = categoryCandidateId)
                 validateCategory(snapshot, categoryCandidateId)
                 val row = validateRow(snapshot, candidateId)
                 validateQuantity(quantity, snapshot)
                 TownActionRequest(
                     snapshot.actionId ?: invalid("현재 HOF 제작 양식을 찾지 못했습니다."),
-                    listOf(TownActionSelection(candidateId), TownActionSelection(categoryCandidateId)),
+                    listOfNotNull(TownActionSelection(candidateId),
+                        TownActionSelection(categoryCandidateId).takeUnless { categoryCandidateId.startsWith("catalog_type_create:") }),
                 ) to mapOf(
                     "ItemT" to (row.itemT ?: invalid("현재 품목의 HOF ItemT 계약을 안전하게 확인하지 못했습니다.")),
                     "amount" to quantity.toString(),
                 )
             },
+        ) { html, finalUrl, result, page -> CraftingResponse.from(parser.parse(mode, html, finalUrl, page, result, categoryCandidateId = categoryCandidateId)) }
+    }
+
+    private fun executeCrafting(
+        accountId: Long,
+        mode: CraftingMode,
+        categoryCandidateId: String,
+        resolve: (String, String, ParsedTownPage) -> Pair<TownActionRequest, Map<String, String>>,
+        project: (String, String, ParsedTownResult, ParsedTownPage) -> CraftingResponse,
+    ): CraftingResponse = if (categoryCandidateId.startsWith("catalog_type_create:")) {
+        executor.executeMaterializedResolvedProjectedWithScalars(
+            accountId = accountId,
+            pageUrl = url(mode),
             requiredScalarFields = setOf("ItemT", "amount"),
             requiredSubmitField = "Create",
-        ) { html, finalUrl, result, page -> CraftingResponse.from(parser.parse(mode, html, finalUrl, page, result)) }
+            requiredSyntheticFields = setOf("list_type"),
+            requiredReplacedFields = setOf("ItemNo"),
+            allowedAbsentRawReplacedFields = setOf("ItemNo"),
+            materialize = { html, finalUrl -> parser.materializeCraftingHtml(mode, html, finalUrl, categoryCandidateId) },
+            resolve = resolve,
+            projector = project,
+        )
+    } else {
+        executor.executeResolvedProjectedWithScalars(
+            accountId = accountId,
+            pageUrl = url(mode),
+            requiredScalarFields = setOf("ItemT", "amount"),
+            requiredSubmitField = "Create",
+            resolve = resolve,
+            projector = project,
+        )
     }
 
     private fun validateRow(snapshot: CraftingSnapshot, candidateId: String): CraftingRow =

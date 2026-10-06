@@ -23,11 +23,13 @@ class CraftingPageParser(
         warningCode: String? = null,
         categoryCandidateId: String? = null,
     ): CraftingSnapshot {
-        val claris = if (mode == CraftingMode.CLARIS && CLARIS_LIST_FUNCTION_MARKER in html) {
-            materializeClaris(html, finalUrl, categoryCandidateId)
+        val claris = if (mode in ITEM_T_MODES && CLARIS_LIST_FUNCTION_MARKER in html) {
+            materializeClaris(html, finalUrl, categoryCandidateId, categoryPrefix(mode))
         } else null
-        val effectiveHtml = claris?.html ?: html
-        val effectivePage = claris?.let { formParser.parse(effectiveHtml, finalUrl) } ?: page
+        val effectiveHtml = claris?.html ?: if (mode in setOf(CraftingMode.REFINE, CraftingMode.VETERAN) && "function Listtype(" in html) {
+            materializeRefineHtml(html, finalUrl, categoryCandidateId)
+        } else html
+        val effectivePage = if (effectiveHtml != html) formParser.parse(effectiveHtml, finalUrl) else page
         val document = HofHtmlParser.parse(effectiveHtml, finalUrl)
         val contract = contract(mode)
         val submitForms = effectivePage.forms.filter { form -> form.submitFields.singleOrNull()?.name == contract.submit }
@@ -45,7 +47,20 @@ class CraftingPageParser(
         val itemTByCandidate = if (mode in ITEM_T_MODES && actionForm != null && domForm != null) {
             strictItemTByCandidate(actionForm, domForm, contract.itemField)
         } else emptyMap()
-        val categories = claris?.categories?.map { category ->
+        val detachedRefineSelect = if (mode == CraftingMode.REFINE || mode == CraftingMode.VETERAN) {
+            document.select("form select[name=type]").filter { it.closest("form") !== domForm }.singleOrNull()
+        } else null
+        val categories = detachedRefineSelect?.let { select ->
+            val options = select.select("option[value]").filterNot { it.hasAttr("disabled") }
+            val current = categoryCandidateId?.removePrefix("list_type:")
+                ?: domForm?.selectFirst("input[name=list_type]")?.attr("value")
+                ?: options.firstOrNull { it.hasAttr("selected") }?.attr("value")
+                ?: options.firstOrNull()?.attr("value")
+            require(options.any { "list_type:${it.attr("value")}" == (categoryCandidateId ?: "list_type:$current") }) {
+                "현재 HOF에서 선택할 수 없는 제련 종류입니다."
+            }
+            options.map { CraftingCategory("list_type:${it.attr("value")}", clean(it.text()), it.attr("value") == current) }
+        } ?: claris?.categories?.map { category ->
             CraftingCategory(category.id, category.label, category.id == claris.currentCategoryId)
         } ?: parseCategories(actionForm, domForm, contract.categoryField)
         val currentCategoryCandidateId = categories.firstOrNull(CraftingCategory::current)?.id
@@ -108,10 +123,40 @@ class CraftingPageParser(
     fun materializeClarisHtml(html: String, finalUrl: String, categoryCandidateId: String): String =
         materializeClaris(html, finalUrl, categoryCandidateId).html
 
+    fun materializeCraftingHtml(mode: CraftingMode, html: String, finalUrl: String, categoryCandidateId: String): String =
+        materializeClaris(html, finalUrl, categoryCandidateId, categoryPrefix(mode)).html
+
+    private fun categoryPrefix(mode: CraftingMode): String =
+        if (mode == CraftingMode.CLARIS) CLARIS_CATEGORY_FIELD else "catalog_type_create"
+
+    /** 종류별 정적 문자열만 읽고 원본 제련 form의 목록 영역만 교체한다. */
+    fun materializeRefineHtml(html: String, finalUrl: String, categoryCandidateId: String?): String {
+        val document = HofHtmlParser.parse(html, finalUrl)
+        val select = document.select("form select[name=type]").filter {
+            it.closest("form")?.select("input[type=submit],button").orEmpty().isEmpty()
+        }.singleOrNull() ?: throw IllegalStateException("제련 종류 선택기를 하나로 확인하지 못했습니다.")
+        val values = select.select("option[value]").filterNot { it.hasAttr("disabled") }.map { it.attr("value") }
+        require(values.isNotEmpty() && values.all(SAFE_CLARIS_TOKEN::matches) && values.distinct().size == values.size)
+        val form = document.select("form").filter { it.select("input[name=refine],button[name=refine]").isNotEmpty() }.singleOrNull()
+            ?: throw IllegalStateException("제련 양식을 하나로 확인하지 못했습니다.")
+        val current = categoryCandidateId?.let { id -> values.singleOrNull { "list_type:$it" == id }
+            ?: throw IllegalArgumentException("현재 HOF에서 선택할 수 없는 제련 종류입니다.") }
+            ?: form.selectFirst("input[name=list_type]")?.attr("value")?.takeIf { it in values }
+            ?: select.selectFirst("option[selected]")?.attr("value") ?: values.first()
+        val catalog = parseStaticClarisCatalog(document, REFINE_LIST_FUNCTION, "function Listtype(")
+        require(catalog.keys == values.filterNot { it == "all" }.toSet()) { "제련 종류와 정적 품목 목록이 일치하지 않습니다." }
+        val fragment = if (current == "all") values.filterNot { it == "all" }.joinToString("") { catalog.getValue(it) }
+            else catalog.getValue(current)
+        val list = form.select("#list").singleOrNull() ?: throw IllegalStateException("제련 품목 목록 위치를 하나로 확인하지 못했습니다.")
+        list.html("<table>$fragment</table><input type=\"hidden\" name=\"list_type\" value=\"$current\">")
+        return document.outerHtml()
+    }
+
     private fun materializeClaris(
         html: String,
         finalUrl: String,
         categoryCandidateId: String?,
+        categoryPrefix: String = CLARIS_CATEGORY_FIELD,
     ): MaterializedClaris {
         val document = HofHtmlParser.parse(html, finalUrl)
         val select = document.select("form select[name=${cssValue(CLARIS_CATEGORY_FIELD)}]").filter { candidate ->
@@ -120,7 +165,7 @@ class CraftingPageParser(
         val categories = select.select("option[value]").filterNot { it.hasAttr("disabled") }.map { option ->
             val value = option.attr("value").trim()
             if (!SAFE_CLARIS_TOKEN.matches(value)) throw ClarisCraftingContractException("안전하지 않은 클라리스 분류 값입니다.")
-            ClarisCategory("$CLARIS_CATEGORY_FIELD:$value", value, clean(option.text()).ifBlank { value })
+            ClarisCategory("$categoryPrefix:$value", value, clean(option.text()).ifBlank { value })
         }
         if (categories.isEmpty() || categories.map(ClarisCategory::id).distinct().size != categories.size) {
             throw ClarisCraftingContractException("클라리스 분류 계약이 비어 있거나 중복되었습니다.")
@@ -147,11 +192,15 @@ class CraftingPageParser(
         return MaterializedClaris(document.outerHtml(), categories, current.id)
     }
 
-    private fun parseStaticClarisCatalog(document: org.jsoup.nodes.Document): Map<String, String> {
-        val scripts = document.select("script").map(Element::data).filter { CLARIS_LIST_FUNCTION_MARKER in it }
+    private fun parseStaticClarisCatalog(
+        document: org.jsoup.nodes.Document,
+        function: Regex = CLARIS_LIST_FUNCTION,
+        marker: String = CLARIS_LIST_FUNCTION_MARKER,
+    ): Map<String, String> {
+        val scripts = document.select("script").map(Element::data).filter { marker in it }
         val script = scripts.singleOrNull()
             ?: throw ClarisCraftingContractException("클라리스 정적 목록 스크립트를 하나로 확인하지 못했습니다.")
-        val body = CLARIS_LIST_FUNCTION.find(script)?.groupValues?.get(1)
+        val body = function.find(script)?.groupValues?.get(1)
             ?: throw ClarisCraftingContractException("클라리스 정적 목록 함수를 확인하지 못했습니다.")
         val labels = CLARIS_CASE_LABEL.findAll(body).map { it.groupValues[1] }.toList()
         val assignments = CLARIS_CASE_ASSIGNMENT.findAll(body).map { match ->
@@ -195,7 +244,8 @@ class CraftingPageParser(
             (control.tagName() == "input" && control.attr("type").equals("submit", true)) ||
                 (control.tagName() == "button" && control.attr("type").let { it.isBlank() || it.equals("submit", true) })
         }
-        return form.attr("method").equals("post", true) && submits.singleOrNull()?.attr("name") == CLARIS_SUBMIT_FIELD &&
+        return form.attr("method").equals("post", true) && submits.isNotEmpty() &&
+            submits.all { it.attr("name") == CLARIS_SUBMIT_FIELD && it.attr("value") == submits.first().attr("value") } &&
             controls.count { it.attr("name") == CLARIS_ITEM_T_FIELD } == 1 &&
             controls.count { it.attr("name") == CLARIS_AMOUNT_FIELD } == 1
     }
@@ -392,6 +442,7 @@ class CraftingPageParser(
         val FOOTER_WORD = Regex("Copy\\s*Right|UpDate\\s+Manual|GameData\\s+Top", RegexOption.IGNORE_CASE)
         val HEADER = Regex("^(?:(?:제작비|제련가능)(?:\\s+(?:Item|아이템))?|Item|아이템|수수료)$", RegexOption.IGNORE_CASE)
         const val CLARIS_LIST_FUNCTION_MARKER = "function Listtype_create"
+        val REFINE_LIST_FUNCTION = Regex("function\\s+Listtype\\s*\\([^)]*\\)\\s*\\{([\\s\\S]*?)\\}\\s*return\\s*\\(html\\)\\s*;\\s*\\}")
         val CLARIS_LIST_FUNCTION = Regex("function\\s+Listtype_create\\s*\\([^)]*\\)\\s*\\{([\\s\\S]*?)\\n\\s*\\}\\s*function\\s+ChangeTypecreate\\b")
         val CLARIS_CASE_LABEL = Regex("case\\s+[\"']([A-Za-z0-9_-]{1,80})[\"']\\s*:")
         val CLARIS_CASE_ASSIGNMENT = Regex("case\\s+[\"']([A-Za-z0-9_-]{1,80})[\"']\\s*:\\s*html\\s*=\\s*([\\s\\S]*?)\\s*;\\s*break\\s*;")

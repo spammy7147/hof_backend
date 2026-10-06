@@ -35,6 +35,27 @@ class CraftingServiceTest {
         CraftingPageParser(),
     )
 
+    @Test fun `작업장의 분리된 종류를 바꾸고 정적 품목으로 작업을 시작한다`() {
+        stub(TownFeatureId.WORKBASE, WORK_URL, fixture("claris-live.html").replace("?menu=sewingshop", "?menu=workbase"))
+        val response = service.loadCategory(7L, CraftingMode.WORKBASE, "catalog_type_create:cloak")
+        assertEquals(listOf("무기(weapon)", "외투(cloak)"), response.categories.map { it.label })
+        service.startWorkbase(7L, WorkbaseStartRequest(response.rows.single().id, "catalog_type_create:cloak", 2))
+        val posted = captureRequests().last()
+        assertEquals("cloak", posted.formEntries.single { it.name == "list_type" }.value)
+        assertEquals("42", posted.formEntries.single { it.name == "ItemT" }.value)
+    }
+
+    @Test fun `제작공방의 상하단 버튼이 있는 정적 품목을 다른 종류에서 제작한다`() {
+        val html = fixture("claris-live.html").replace("?menu=sewingshop", "?menu=create")
+            .replace("<input type=\"submit\" name=\"Create\" value=\"Create\">", "<input type=\"submit\" name=\"Create\" value=\"Create\"><input type=\"submit\" name=\"Create\" value=\"Create\">")
+        stub(TownFeatureId.CREATE_WORKSHOP, CREATE_URL, html)
+        val response = service.loadCategory(7L, CraftingMode.CREATE, "catalog_type_create:cloak")
+        service.create(7L, CreateCraftRequest(response.rows.single().id, "catalog_type_create:cloak", 2))
+        val posted = captureRequests().last()
+        assertEquals("cloak", posted.formEntries.single { it.name == "list_type" }.value)
+        assertEquals("42", posted.formEntries.single { it.name == "ItemT" }.value)
+    }
+
     @Test fun `작업 시작은 최신 GET의 radio와 strict ItemT만 한 번 제출한다`() {
         val html = fixture("workbase.html")
         stub(TownFeatureId.WORKBASE, WORK_URL, html)
@@ -77,6 +98,34 @@ class CraftingServiceTest {
         assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.POST), requests.map(HofRequest::method))
         assertEquals(listOf("nonce", "type_create"), requests.last().formEntries.map { it.name })
         assertEquals(listOf("fresh-123", "armor"), requests.last().formEntries.map { it.value })
+    }
+
+    @Test fun `분리된 제련 종류 전환은 GET만 하고 해당 종류의 품목만 반환한다`() {
+        stub(TownFeatureId.REFINE_WORKSHOP, REFINE_URL, fixture("refine-detached.html"))
+        val response = service.loadCategory(7L, CraftingMode.REFINE, "list_type:armor")
+        assertEquals("list_type:armor", response.currentCategoryId)
+        assertEquals(listOf("Knight Armor"), response.rows.map { it.label })
+        assertEquals(listOf(HofHttpMethod.GET), captureRequests().map(HofRequest::method))
+    }
+
+    @Test fun `분리된 종류에서 선택한 제련 품목은 실제 form 후보만 제출한다`() {
+        stub(TownFeatureId.REFINE_WORKSHOP, REFINE_URL, fixture("refine-detached.html"))
+        val category = service.loadCategory(7L, CraftingMode.REFINE, "list_type:armor")
+        service.refine(7L, CraftingMode.REFINE, RefineRequest(category.rows.single().id, "list_type:armor", 2))
+        val posted = captureRequests().last()
+        assertEquals(HofHttpMethod.POST, posted.method)
+        assertEquals(listOf("armor"), posted.formEntries.filter { it.name == "item_no" }.map { it.value })
+        assertEquals(listOf("2"), posted.formEntries.filter { it.name == "timesB" }.map { it.value })
+        assertEquals(false, posted.formEntries.any { it.name == "type" })
+    }
+
+    @Test fun `다른 제련 종류의 품목은 POST 전에 거부한다`() {
+        stub(TownFeatureId.REFINE_WORKSHOP, REFINE_URL, fixture("refine-detached.html"))
+        val weapon = service.loadCategory(7L, CraftingMode.REFINE, "list_type:weapon")
+        assertFailsWith<app.spammy.hof.common.error.ApiException> {
+            service.refine(7L, CraftingMode.REFINE, RefineRequest(weapon.rows.single().id, "list_type:armor", 1))
+        }
+        assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.GET), captureRequests().map(HofRequest::method))
     }
 
     @Test fun `클라리스 분류 전환은 HOF 제출 없이 정적 목록을 선택한다`() {
@@ -153,6 +202,7 @@ class CraftingServiceTest {
     private fun anyCookies(): Map<String, String> = Mockito.anyMap<String, String>() ?: emptyMap()
     private companion object {
         const val WORK_URL = "https://hof.zerosic.com/index.php?menu=workbase"
+        const val REFINE_URL = "https://hof.zerosic.com/index.php?menu=refine"
         const val VETERAN_URL = "https://hof.zerosic.com/index.php?menu=refine2"
         const val CREATE_URL = "https://hof.zerosic.com/index.php?menu=create"
         const val CLARIS_URL = "https://hof.zerosic.com/index.php?menu=sewingshop"

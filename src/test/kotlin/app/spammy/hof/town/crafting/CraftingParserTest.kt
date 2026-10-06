@@ -10,6 +10,19 @@ class CraftingParserTest {
     private val forms = HofFormParser()
     private val parser = CraftingPageParser()
 
+    @Test fun `작업장과 제작공방의 분리된 정적 종류 목록도 파싱한다`() {
+        val html = resource("claris-live.html").replace(
+            "<input type=\"submit\" name=\"Create\" value=\"Create\">",
+            "<input type=\"submit\" name=\"Create\" value=\"Create\"><input type=\"submit\" name=\"Create\" value=\"Create\">",
+        )
+        for (mode in listOf(CraftingMode.WORKBASE, CraftingMode.CREATE)) {
+            val value = parser.parse(mode, html, URL, forms.parse(html, URL), categoryCandidateId = "catalog_type_create:cloak")
+            assertThat(value.categories.map { it.label }).containsExactly("무기(weapon)", "외투(cloak)")
+            assertThat(value.currentCategoryId).isEqualTo("catalog_type_create:cloak")
+            assertThat(value.rows.single().selectable).isTrue()
+        }
+    }
+
     @Test fun `작업장은 radio 없는 행과 제작 시간 및 최대 수량을 보존한다`() {
         val value = parse("workbase.html", CraftingMode.WORKBASE)
         assertThat(value.rows.single { it.label.contains("재료 부족") }.selectable).isFalse()
@@ -165,6 +178,30 @@ class CraftingParserTest {
         assertThat(value.rows).anyMatch { it.label.contains("Short Sword") }
         assertThat(value.allowedRefineCounts).containsExactly(1, 2, 3)
         assertThat(value.actionId).isNotBlank()
+    }
+
+    @Test fun `제련공방의 분리된 종류 선택기도 종류 목록을 노출한다`() {
+        val category = "<select name=\"type\"><option value=\"all\" selected>전부(all)</option><option value=\"weapon\">무기</option></select>"
+        val html = resource("refine.html")
+            .replace(category, "")
+            .replace("<body>", "<body><form>$category</form>")
+
+        val value = parser.parse(CraftingMode.REFINE, html, URL, forms.parse(html, URL))
+
+        assertThat(value.categories.map { it.label }).containsExactly("전부(all)", "무기")
+        assertThat(value.currentCategoryId).isEqualTo("list_type:all")
+    }
+
+    @Test fun `분리된 제련 종류는 실제 전체 목록에서 선택한 종류의 후보만 표시한다`() {
+        val html = resource("refine-detached.html")
+        val initial = parser.parse(CraftingMode.REFINE, html, URL, forms.parse(html, URL))
+        assertThat(initial.currentCategoryId).isEqualTo("list_type:all")
+        assertThat(initial.categories.map { it.label }).containsExactly("무기(weapon)", "방어구(armor)", "전부(all)")
+        assertThat(initial.rows.filter { it.selectable }).hasSize(2)
+        val armor = parser.parse(CraftingMode.REFINE, html, URL, forms.parse(html, URL), categoryCandidateId = "list_type:armor")
+        assertThat(armor.currentCategoryId).isEqualTo("list_type:armor")
+        assertThat(armor.rows.map { it.label }).containsExactly("Knight Armor")
+        assertThat(armor.rows.single().selectable).isTrue()
     }
 
     @Test fun `장로대장간의 분류 선택기가 제련 form 밖에 있어도 품목은 표시한다`() {

@@ -119,6 +119,9 @@ class BattleLogServiceTest {
         assertEquals(3_660L, stats.dailyFunds)
         assertEquals(3_660L, stats.weeklyFunds)
         assertEquals(3_660L, stats.monthlyFunds)
+        assertEquals(1L, stats.dailyBattles)
+        assertEquals(1L, stats.weeklyBattles)
+        assertEquals(1L, stats.monthlyBattles)
         assertEquals(emptyList(), stats.adventureMapOutcomes)
     }
 

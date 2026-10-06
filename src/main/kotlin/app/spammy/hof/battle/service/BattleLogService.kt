@@ -135,7 +135,7 @@ class BattleLogService(
             .map { readModel -> readModel.toResponse() }
 
     /**
-     * 서울 시간 기준 일/주/월 Funds와 모험맵 패배·무승부를 DB aggregate로 계산한다.
+     * 서울 시간 기준 일/주/월 Funds·전투 수와 모험맵 패배·무승부를 DB aggregate로 계산한다.
      */
     @Transactional(readOnly = true)
     fun summarize(accountId: Long, adventurePeriod: AdventureMapStatsPeriod = AdventureMapStatsPeriod.DAY): BattleStatsResponse {
@@ -150,6 +150,9 @@ class BattleLogService(
             dailyFunds = battleLogQueryRepository.sumFundsSince(accountId, periods.day),
             weeklyFunds = battleLogQueryRepository.sumFundsSince(accountId, periods.week),
             monthlyFunds = battleLogQueryRepository.sumFundsSince(accountId, periods.month),
+            dailyBattles = battleLogQueryRepository.countBattlesSince(accountId, periods.day),
+            weeklyBattles = battleLogQueryRepository.countBattlesSince(accountId, periods.week),
+            monthlyBattles = battleLogQueryRepository.countBattlesSince(accountId, periods.month),
             adventureMapOutcomes = battleLogQueryRepository.findAdventureMapOutcomeStats(accountId, adventureSince)
                 .groupBy { stats -> stats.mapCode }
                 .map { (mapCode, entries) ->

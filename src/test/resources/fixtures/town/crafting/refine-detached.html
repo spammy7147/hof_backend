@@ -1,0 +1,24 @@
+<html><body>
+<form id="my"><select name="type" onchange="ChangeTypemy()">
+  <option value="weapon">무기(weapon)</option><option value="armor">방어구(armor)</option><option value="all" selected>전부(all)</option>
+</select></form>
+<form method="post" action="?menu=refine">
+<input type="submit" name="refine" value="Refine">
+<select name="timesA"><option value="1" selected>1</option></select>
+<div id="list"><table>
+<tr><td><input type="radio" name="item_no" value="sword">Short Sword</td></tr>
+</table></div>
+<input type="submit" name="refine" value="Refine"><input type="hidden" name="refine" value="Refine">
+<select name="timesB"><option value="1" selected>1</option><option value="2">2</option></select>
+</form>
+<script>
+function Listtype(mode) {
+switch(mode) {
+case "weapon": html = '<tr><td><input type="radio" name="item_no" value="sword">Short Sword</td></tr>'; break;
+case "armor": html = '<tr><td><input type="radio" name="item_no" value="armor">Knight Armor</td></tr>'; break;
+}
+return(html);
+}
+function ChangeTypemy() {}
+</script>
+</body></html>
