@@ -109,4 +109,7 @@ class BattleLogEntity(
 
     @Column(name = "created_at", nullable = false)
     var createdAt: Instant,
+
+    @Column(name = "archived_html", columnDefinition = "text")
+    var archivedHtml: String? = null,
 )

@@ -22,7 +22,10 @@ data class BattleLogResponse(
     val ally: BattleSideResponse,
     val rawLogUrl: String?,
     val createdAt: String,
+    val hasArchivedHtml: Boolean = false,
 )
+
+data class BattleLogHtmlResponse(val html: String)
 
 /**
  * 기간별 Funds·전투 수와 파티 조정용 모험맵 결과 집계를 앱에 내려주는 응답 DTO다.

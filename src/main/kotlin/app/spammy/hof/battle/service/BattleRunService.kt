@@ -262,6 +262,7 @@ class BattleRunService(
                 request = request.copy(mapCode = mapCode),
                 characters = characters,
                 result = parsedResult,
+                responseHtml = battleResponse.body,
             )
         }
 

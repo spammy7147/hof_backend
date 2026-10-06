@@ -19,6 +19,11 @@ import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
+import kotlin.test.assertFalse
+import kotlin.test.assertFailsWith
+import app.spammy.hof.common.error.ApiException
+import app.spammy.hof.common.error.ErrorCode
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest
 import org.springframework.boot.test.context.TestConfiguration
@@ -154,6 +159,29 @@ class BattleLogServiceTest {
             assertEquals("unknown-code", stored.mapCodeSnapshot)
             assertEquals("unknown-code", stored.mapNameSnapshot)
         }
+    }
+
+    @Test
+    fun `패배 HTML은 재조회 가능하며 다른 계정과 승리에는 보관본을 제공하지 않는다`() {
+        val account = savedAccount("html-archive")
+        val other = savedAccount("html-other")
+        val source = """<html><body><div style="display:none" onclick="evil()">1턴 공격 상세</div><table><tr><td>패배</td></tr></table><script>secret()</script><form><input value="password"></form><img src="https://example.com/tracker"></body></html>"""
+        val defeat = service.record(account, request("battle_map", "snow22", emptyList()), emptyList(), result(HofBattleOutcome.DEFEAT), source)
+        assertTrue(defeat.hasArchivedHtml)
+        val html = service.findArchivedHtml(account.id, defeat.id)
+        assertTrue(html.contains("1턴 공격 상세"))
+        assertTrue(html.contains("<table>"))
+        assertFalse(html.contains("display:none"))
+        assertFalse(html.contains("onclick"))
+        assertFalse(html.contains("secret()"))
+        assertFalse(html.contains("password"))
+        assertFalse(html.contains("tracker"))
+        val forbidden = assertFailsWith<ApiException> { service.findArchivedHtml(other.id, defeat.id) }
+        assertEquals(ErrorCode.RESOURCE_NOT_FOUND, forbidden.errorCode)
+        val victory = service.record(account, request("battle_map", "snow22", emptyList()), emptyList(), result(HofBattleOutcome.VICTORY), source)
+        assertFalse(victory.hasArchivedHtml)
+        assertFailsWith<ApiException> { service.findArchivedHtml(account.id, victory.id) }
+        assertTrue(service.findRecent(account.id).single { it.id == defeat.id }.hasArchivedHtml)
     }
 
     @Test

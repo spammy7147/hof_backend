@@ -37,6 +37,12 @@ data class AdventureMapOutcomeStatsProjection(
 class BattleLogQueryRepository(
     private val queryFactory: JPAQueryFactory,
 ) {
+    fun findArchivedHtml(accountId: Long, logId: Long): String? = queryFactory
+        .select(battleLogEntity.archivedHtml)
+        .from(battleLogEntity)
+        .where(battleLogEntity.id.eq(logId), battleLogEntity.account.id.eq(accountId))
+        .fetchOne()
+
     /** 계정의 최근 전투를 `created_at DESC, id DESC`로 안정적으로 제한하고 자식 행을 일괄 조립한다. */
     fun findRecent(
         accountId: Long,

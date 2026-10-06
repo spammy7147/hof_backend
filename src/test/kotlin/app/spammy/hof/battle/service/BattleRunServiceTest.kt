@@ -319,6 +319,34 @@ class BattleRunServiceTest {
     }
 
     @Test
+    fun `자동화 패배 응답을 HTML로 보관하고 다음 전투도 기존 요청 순서로 진행한다`() {
+        prepareRunnableBattle()
+        gateway.nextBattleBody = "<html><body><div id=\"menu2\">Funds : ${'$'} 1 Time : 10/10</div><h1>적군이 승리했다!</h1><div>1턴 공격 상세</div></body></html>"
+        val defeat = service.runBattle(1L, runRequest(), HofRequestOrigin.AUTOMATION)
+        assertEquals("DEFEAT", defeat.outcome)
+        assertTrue(assertNotNull(battleLogRepository.savedEntities.single().archivedHtml).contains("1턴 공격 상세"))
+        gateway.nextBattleBody = "<html><body><div id=\"menu2\">Funds : ${'$'} 1 Time : 10/10</div><h1>《얼어붙은 손길》공민이은(는) 승리했다!</h1></body></html>"
+        val victory = service.runBattle(1L, runRequest(), HofRequestOrigin.AUTOMATION)
+        assertEquals("VICTORY", victory.outcome)
+        assertNull(battleLogRepository.savedEntities.last().archivedHtml)
+        assertEquals(2, battleLogRepository.savedEntities.size)
+    }
+
+    @Test
+    fun `3회 전투 중 패배 회차만 전체 응답 HTML을 보관한다`() {
+        prepareRunnableBattle()
+        gateway.nextBattleBody = threeBattleResultHtml().replaceFirst("《얼어붙은 손길》공민이은(는) 승리했다!", "적군이 승리했다!")
+        val response = service.runBattle(1L, runRequest().copy(battleCount = 3))
+        assertEquals(listOf("DEFEAT", "VICTORY", "VICTORY"), response.rounds.map { it.outcome })
+        val saved = battleLogRepository.savedEntities
+        assertTrue(assertNotNull(saved[0].archivedHtml).contains("Stone x 2"))
+        assertNull(saved[1].archivedHtml)
+        assertNull(saved[2].archivedHtml)
+        assertEquals(1, gateway.requests.size)
+        assertEquals("https://hof.zerosic.com/index.php?common=snow22", gateway.requests.single().url)
+    }
+
+    @Test
     fun runBattleUsesStoredPlayerNameForOneSideVictoryOutcome() {
         prepareRunnableBattle()
         gateway.nextBattleBody = """

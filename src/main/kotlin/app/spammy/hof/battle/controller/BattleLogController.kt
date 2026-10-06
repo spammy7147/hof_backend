@@ -1,6 +1,7 @@
 package app.spammy.hof.battle.controller
 
 import app.spammy.hof.battle.dto.BattleLogResponse
+import app.spammy.hof.battle.dto.BattleLogHtmlResponse
 import app.spammy.hof.battle.dto.BattleStatsResponse
 import app.spammy.hof.battle.dto.AdventureMapStatsPeriod
 import app.spammy.hof.battle.service.BattleLogService
@@ -19,6 +20,12 @@ import org.springframework.web.bind.annotation.RestController
 class BattleLogController(
     private val battleLogService: BattleLogService,
 ) {
+    @GetMapping("/logs/{logId}/html")
+    fun archivedHtml(
+        @CurrentAccountId accountId: Long,
+        @PathVariable logId: Long,
+    ): BattleLogHtmlResponse = BattleLogHtmlResponse(battleLogService.findArchivedHtml(accountId, logId))
+
     /**
      * 최근 전투 로그를 최신순으로 조회한다.
      */

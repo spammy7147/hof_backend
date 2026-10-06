@@ -21,6 +21,9 @@ import app.spammy.hof.character.entity.CharacterEntity
 import app.spammy.hof.common.time.TimeProvider
 import app.spammy.hof.external.model.HofBattleResult
 import app.spammy.hof.external.model.HofBattleSide
+import app.spammy.hof.external.model.HofBattleOutcome
+import app.spammy.hof.common.error.ApiException
+import app.spammy.hof.common.error.ErrorCode
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
@@ -57,6 +60,7 @@ class BattleLogService(
         request: RunBattleRequest,
         characters: List<CharacterEntity>,
         result: HofBattleResult,
+        responseHtml: String? = null,
     ): BattleLogResponse {
         val battleMap = battleMapQueryRepository.findMapByCategoryIdAndMapCode(
             categoryId = request.categoryId,
@@ -91,6 +95,8 @@ class BattleLogService(
                 allyTurnMax = result.allySide.turnMax,
                 rawLogUrl = result.rawLogUrl,
                 createdAt = timeProvider.now(),
+                archivedHtml = responseHtml?.takeIf { result.outcome == HofBattleOutcome.DEFEAT }
+                    ?.let(::archiveBattleHtml),
             ),
         )
         val participants = characters.mapIndexed { slotIndex, character ->
@@ -116,6 +122,12 @@ class BattleLogService(
 
         return log.toResponse(participants = participants, loots = loots)
     }
+
+    /** 원본 서버에 다시 요청하지 않고 현재 계정 소유의 보관본만 반환한다. */
+    @Transactional(readOnly = true)
+    fun findArchivedHtml(accountId: Long, logId: Long): String =
+        battleLogQueryRepository.findArchivedHtml(accountId, logId)
+            ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "보관된 전투 HTML이 없습니다.")
 
     /** 최근 전투를 1~100건으로 제한하여 부모 ID, scalar, 참가자, 전리품 query 결과를 앱 응답으로 조립한다. */
     @Transactional(readOnly = true)
@@ -218,6 +230,7 @@ class BattleLogService(
             ),
             rawLogUrl = rawLogUrl,
             createdAt = createdAt.toString(),
+            hasArchivedHtml = archivedHtml != null,
         )
 
     private companion object {
