@@ -43,6 +43,8 @@ import org.springframework.transaction.support.TransactionTemplate
     BattleMapQueryRepository::class,
     BattleLogQueryRepository::class,
     BattleLogService::class,
+    BattleDetailArchiveCollector::class,
+    BattleDetailArchiveStore::class,
     BattleLogServiceTest.FixedTimeConfig::class,
 )
 class BattleLogServiceTest {
@@ -63,6 +65,33 @@ class BattleLogServiceTest {
 
     @Autowired
     private lateinit var transactionManager: PlatformTransactionManager
+
+    @Autowired
+    private lateinit var collector: BattleDetailArchiveCollector
+
+    @Autowired
+    private lateinit var archiveStore: BattleDetailArchiveStore
+
+    @Autowired
+    private lateinit var jdbc: org.springframework.jdbc.core.JdbcTemplate
+
+    @org.junit.jupiter.api.AfterEach
+    fun removeArchiveTestAccounts() { jdbc.update("delete from hof_accounts where login_id like 'detail-%'") }
+
+    @Autowired
+    private lateinit var archiveTime: java.util.concurrent.atomic.AtomicReference<Instant>
+
+    @org.junit.jupiter.api.BeforeEach
+    fun resetArchiveAdapter() {
+        archiveTime.set(NOW)
+        org.mockito.Mockito.reset(detailGateway)
+    }
+
+    private fun detailRequest(url: String) = app.spammy.hof.external.model.HofRequest(
+        app.spammy.hof.external.model.HofHttpMethod.GET, url, origin = app.spammy.hof.external.model.HofRequestOrigin.AUTOMATION, followRedirects = false, timeoutSeconds = 20)
+
+    @Autowired
+    private lateinit var detailGateway: app.spammy.hof.external.client.HofGateway
 
     @Test
     fun recordPersistsParentParticipantsAndLootsInExactOrder() {
@@ -129,6 +158,144 @@ class BattleLogServiceTest {
         assertEquals(1L, stats.monthlyBattles)
         assertEquals(emptyList(), stats.adventureMapOutcomes)
     }
+
+    @Test
+    fun `모험맵 이름이 바뀌어도 승리를 포함해 합산하고 승리만 있는 맵은 숨긴다`() {
+        val account = savedAccount("adventure-total-count")
+        val map = savedMap("adventure_map", "total-map", "변경 전 이름")
+        fun record(mapCode: String, outcome: HofBattleOutcome) {
+            service.record(
+                account = account,
+                request = RunBattleRequest(categoryId = "adventure_map", mapCode = mapCode, characterIds = emptyList()),
+                characters = emptyList(),
+                result = result(outcome),
+            )
+        }
+        record("total-map", HofBattleOutcome.VICTORY)
+        map.name = "변경 후 이름"
+        mapRepository.save(map)
+        record("total-map", HofBattleOutcome.DEFEAT)
+        record("total-map", HofBattleOutcome.DRAW)
+        record("victory-map", HofBattleOutcome.VICTORY)
+
+        val stats = service.summarize(account.id).adventureMapOutcomes.single()
+        assertEquals("total-map", stats.mapCode)
+        assertEquals(3L, stats.totalBattles)
+        assertEquals(1L, stats.defeats)
+        assertEquals(1L, stats.draws)
+    }
+
+    @Test
+    fun `패배 상세 페이지를 보관하면 원본 링크가 만료돼도 별도 페이지의 턴별 내용을 읽는다`() {
+        val account = savedAccount("detail-html-expiry")
+        val url = "https://hof.zerosic.com/index.php?alog=123456"
+        val log = service.record(account, request("adventure_map", "snow22", emptyList()), emptyList(),
+            result(HofBattleOutcome.DEFEAT).copy(rawLogUrl = url),
+            "<html><body><a href='$url'>Show Detail</a><h1>적군이 승리했다!</h1></body></html>")
+        org.mockito.Mockito.`when`(detailGateway.execute(account.id,
+            detailRequest(url), emptyMap())).thenReturn(
+            app.spammy.hof.external.model.HofHttpResponse(200, url,
+                "<html><body><div id='menu2'>계정 비밀</div><div id='contents'><table><tr><td class='ttd1'>1턴 아군 공격</td><td class='ttd2'><span class='dmg'>상대에게 156 데미지</span></td></tr></table><script>secret()</script></div></body></html>", emptyMap()))
+        collector.collectDue()
+        org.mockito.Mockito.reset(detailGateway) // 원본 접근 불가: 이후 조회는 저장된 HTML만 사용한다.
+        val html = service.findArchivedHtml(account.id, log.id)
+        assertTrue(html.contains("1턴 아군 공격"))
+        assertTrue(html.contains("상대에게 156 데미지"))
+        assertFalse(html.contains("계정 비밀"))
+        assertFalse(html.contains("secret()"))
+        org.mockito.Mockito.verifyNoInteractions(detailGateway)
+    }
+
+    @Test
+    fun `상세 수집 실패는 패배 기록을 보존하고 재시도 예산 뒤 실패로 표시한다`() {
+        val account = savedAccount("detail-retry-budget")
+        val url = "https://hof.zerosic.com/index.php?log=123457"
+        val log = service.record(account, request("battle_map", "snow22", emptyList()), emptyList(),
+            result(HofBattleOutcome.DEFEAT).copy(rawLogUrl = url), "<html><body>전투 결과 요약</body></html>")
+        org.mockito.Mockito.`when`(detailGateway.execute(account.id, detailRequest(url), emptyMap()))
+            .thenAnswer { throw java.io.IOException("timeout") }
+        repeat(3) {
+            collector.collectDue()
+            archiveTime.set(archiveTime.get().plusSeconds(30))
+        }
+        val response = service.findArchive(account.id, log.id)
+        assertEquals("FAILED", response.archiveStatus)
+        assertEquals("RESPONSE", response.kind)
+        assertTrue(response.html!!.contains("전투 결과 요약"))
+        assertEquals("DEFEAT", service.findRecent(account.id).single().outcome)
+        collector.collectDue()
+        org.mockito.Mockito.verify(detailGateway, org.mockito.Mockito.times(3)).execute(account.id, detailRequest(url), emptyMap())
+    }
+
+    @Test
+    fun `상세 수집 도중 재시작해도 저장된 대기를 복구하고 같은 패배 기록을 완성한다`() {
+        val account = savedAccount("detail-restart")
+        val url = "https://hof.zerosic.com/index.php?alog=123458"
+        val log = service.record(account, request("adventure_map", "snow22", emptyList()), emptyList(),
+            result(HofBattleOutcome.DEFEAT).copy(rawLogUrl = url), "<html><body>응답 요약</body></html>")
+        org.mockito.Mockito.`when`(detailGateway.execute(account.id, detailRequest(url), emptyMap()))
+            .thenAnswer { throw AssertionError("process stopped after durable claim") }
+        assertFailsWith<AssertionError> { collector.collectDue() }
+        assertEquals("PENDING", service.findArchive(account.id, log.id).archiveStatus)
+        archiveTime.set(NOW.plusSeconds(121))
+        org.mockito.Mockito.reset(detailGateway)
+        org.mockito.Mockito.`when`(detailGateway.execute(account.id, detailRequest(url), emptyMap()))
+            .thenAnswer {
+                assertFalse(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive())
+                app.spammy.hof.external.model.HofHttpResponse(200, url, detailedFixture, emptyMap())
+            }
+        BattleDetailArchiveCollector(archiveStore, detailGateway).collectDue()
+        assertEquals("READY", service.findArchive(account.id, log.id).archiveStatus)
+        assertEquals(listOf(log.id), service.findRecent(account.id).map { it.id })
+        assertTrue(service.findArchivedHtml(account.id, log.id).contains("1턴 아군 공격"))
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = ["LOGIN", "CAPTCHA", "SUMMARY", "EMPTY", "REDIRECT", "EXTERNAL"])
+    fun `로그인 캡차 요약 빈문서 redirect 외부문서를 상세 보관 성공으로 표시하지 않는다`(page: String) {
+        val account = savedAccount("detail-invalid-$page")
+        val url = "https://hof.zerosic.com/index.php?log=123459"
+        val log = service.record(account, request("battle_map", "snow22", emptyList()), emptyList(),
+            result(HofBattleOutcome.DEFEAT).copy(rawLogUrl = url), "<html><body>원래 전투 응답</body></html>")
+        val body = when (page) {
+            "LOGIN" -> "<div id='contents'><form><input name='id'><input name='pass'></form></div>"
+            "CAPTCHA" -> "<div id='contents'>자경단에서 통행증을 발급받아주세요.</div>"
+            "SUMMARY" -> "<div id='contents'><h1>적군이 승리했다!</h1><p>총 데미지: 156</p></div>"
+            "EMPTY" -> ""
+            else -> detailedFixture
+        }
+        val finalUrl = if (page == "EXTERNAL") "https://example.test/index.php?log=123459" else url
+        org.mockito.Mockito.`when`(detailGateway.execute(account.id, detailRequest(url), emptyMap()))
+            .thenReturn(app.spammy.hof.external.model.HofHttpResponse(if (page == "REDIRECT") 302 else 200, finalUrl, body, emptyMap()))
+        collector.collectDue()
+        val archive = service.findArchive(account.id, log.id)
+        assertEquals("PENDING", archive.archiveStatus)
+        assertEquals("RESPONSE", archive.kind)
+        assertTrue(archive.html!!.contains("원래 전투 응답"))
+    }
+
+    @Test
+    fun `미전송 유예는 HTTP 시도 예산을 쓰지 않으며 원래 재개 시각 뒤 상세를 보관한다`() {
+        val account = savedAccount("detail-deferred")
+        val url = "https://hof.zerosic.com/index.php?log=123460"
+        val log = service.record(account, request("battle_map", "snow22", emptyList()), emptyList(),
+            result(HofBattleOutcome.DEFEAT).copy(rawLogUrl = url), "<p>요약</p>")
+        repeat(4) {
+            org.mockito.Mockito.reset(detailGateway)
+            org.mockito.Mockito.`when`(detailGateway.execute(account.id, detailRequest(url), emptyMap()))
+                .thenAnswer { throw app.spammy.hof.external.client.HofAutomationDeferredException(archiveTime.get().plusSeconds(15), 1) }
+            collector.collectDue()
+            archiveTime.set(archiveTime.get().plusSeconds(15))
+            assertEquals("PENDING", service.findArchive(account.id, log.id).archiveStatus)
+        }
+        org.mockito.Mockito.reset(detailGateway)
+        org.mockito.Mockito.`when`(detailGateway.execute(account.id, detailRequest(url), emptyMap()))
+            .thenReturn(app.spammy.hof.external.model.HofHttpResponse(200, url, detailedFixture, emptyMap()))
+        collector.collectDue()
+        assertEquals("READY", service.findArchive(account.id, log.id).archiveStatus)
+    }
+
+    private val detailedFixture = "<div id='contents'><table><tr><td class='ttd1'>1턴 아군 공격</td><td class='ttd2'><span class='dmg'>상대에게 156 데미지</span></td></tr></table></div>"
 
     @Test
     fun recordKeepsRequestSnapshotsWhenCatalogMapIsUnavailable() {
@@ -254,7 +421,13 @@ class BattleLogServiceTest {
     @TestConfiguration
     class FixedTimeConfig {
         @Bean
-        fun timeProvider(): TimeProvider = TimeProvider { NOW }
+        fun archiveTime() = java.util.concurrent.atomic.AtomicReference(NOW)
+
+        @Bean
+        fun timeProvider(archiveTime: java.util.concurrent.atomic.AtomicReference<Instant>): TimeProvider = TimeProvider { archiveTime.get() }
+
+        @Bean
+        fun detailGateway(): app.spammy.hof.external.client.HofGateway = org.mockito.Mockito.mock(app.spammy.hof.external.client.HofGateway::class.java)
     }
 
     private companion object {

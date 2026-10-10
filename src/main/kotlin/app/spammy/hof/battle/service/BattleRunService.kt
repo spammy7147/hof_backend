@@ -263,6 +263,8 @@ class BattleRunService(
                 characters = characters,
                 result = parsedResult,
                 responseHtml = battleResponse.body,
+                archiveDetail = safeBattleDetailUrl(parsedResult.rawLogUrl) != null &&
+                    results.count { safeBattleDetailUrl(it.rawLogUrl) == safeBattleDetailUrl(parsedResult.rawLogUrl) } == 1,
             )
         }
 

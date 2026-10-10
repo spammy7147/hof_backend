@@ -9,6 +9,7 @@ import app.spammy.hof.battle.entity.QBattleLogParticipantEntity.battleLogPartici
 import com.querydsl.core.types.dsl.CaseBuilder
 import com.querydsl.jpa.impl.JPAQueryFactory
 import org.springframework.stereotype.Repository
+import jakarta.persistence.LockModeType
 import java.time.Instant
 
 /** 최근 전투 한 건의 scalar 부모와 정렬된 참가자/전리품을 함께 전달하는 read model이다. */
@@ -18,10 +19,11 @@ data class BattleLogReadModel(
     val loots: List<BattleLogLootEntity>,
 )
 
-/** 모험맵 한 곳의 패배/무승부 집계 결과다. */
+/** 모험맵 한 곳의 총 전투 수와 패배/무승부 집계 결과다. */
 data class AdventureMapOutcomeStatsProjection(
     val mapCode: String,
     val mapName: String,
+    val totalBattles: Long,
     val defeats: Long,
     val draws: Long,
 )
@@ -38,9 +40,29 @@ class BattleLogQueryRepository(
     private val queryFactory: JPAQueryFactory,
 ) {
     fun findArchivedHtml(accountId: Long, logId: Long): String? = queryFactory
-        .select(battleLogEntity.archivedHtml)
+        .select(battleLogEntity.detailHtml.coalesce(battleLogEntity.archivedHtml))
         .from(battleLogEntity)
         .where(battleLogEntity.id.eq(logId), battleLogEntity.account.id.eq(accountId))
+        .fetchOne()
+
+    fun findOwnedLog(accountId: Long, logId: Long): BattleLogEntity? = queryFactory
+        .selectFrom(battleLogEntity)
+        .where(battleLogEntity.id.eq(logId), battleLogEntity.account.id.eq(accountId))
+        .fetchOne()
+
+    fun findDueDetailArchives(now: Instant): List<Long> = queryFactory
+        .select(battleLogEntity.id)
+        .from(battleLogEntity)
+        .where(battleLogEntity.detailArchiveStatus.eq("PENDING"),
+            battleLogEntity.detailArchiveNextAt.loe(now),
+            battleLogEntity.detailArchiveLeaseUntil.isNull.or(battleLogEntity.detailArchiveLeaseUntil.loe(now)))
+        .orderBy(battleLogEntity.detailArchiveNextAt.asc(), battleLogEntity.id.asc())
+        .limit(20).fetch()
+
+    fun findForDetailArchiveUpdate(id: Long): BattleLogEntity? = queryFactory
+        .selectFrom(battleLogEntity)
+        .where(battleLogEntity.id.eq(id))
+        .setLockMode(LockModeType.PESSIMISTIC_WRITE)
         .fetchOne()
 
     /** 계정의 최근 전투를 `created_at DESC, id DESC`로 안정적으로 제한하고 자식 행을 일괄 조립한다. */
@@ -117,14 +139,16 @@ class BattleLogQueryRepository(
             )
             .fetchOne() ?: 0L
 
-    /** 모험맵 중 패배 또는 무승부가 있었던 맵만 맵별로 집계한다. */
+    /** 승리를 포함한 모든 모험맵 전투를 집계한다. 표시 대상은 맵 코드별 합산 후 결정한다. */
     fun findAdventureMapOutcomeStats(accountId: Long, since: Instant): List<AdventureMapOutcomeStatsProjection> {
+        val totalBattles = battleLogEntity.id.count()
         val defeats = outcomeCount("DEFEAT")
         val draws = outcomeCount("DRAW")
         return queryFactory
             .select(
                 battleLogEntity.mapCodeSnapshot,
                 battleLogEntity.mapNameSnapshot,
+                totalBattles,
                 defeats,
                 draws,
             )
@@ -132,7 +156,6 @@ class BattleLogQueryRepository(
             .where(
                 battleLogEntity.account.id.eq(accountId),
                 battleLogEntity.categoryIdSnapshot.eq("adventure_map"),
-                battleLogEntity.outcome.`in`("DEFEAT", "DRAW"),
                 battleLogEntity.createdAt.goe(since),
             )
             .groupBy(battleLogEntity.mapCodeSnapshot, battleLogEntity.mapNameSnapshot)
@@ -142,6 +165,7 @@ class BattleLogQueryRepository(
                 AdventureMapOutcomeStatsProjection(
                     mapCode = row.get(battleLogEntity.mapCodeSnapshot).orEmpty(),
                     mapName = row.get(battleLogEntity.mapNameSnapshot).orEmpty(),
+                    totalBattles = row.get(totalBattles) ?: 0L,
                     defeats = row.get(defeats) ?: 0L,
                     draws = row.get(draws) ?: 0L,
                 )

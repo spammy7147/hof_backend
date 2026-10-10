@@ -112,4 +112,23 @@ class BattleLogEntity(
 
     @Column(name = "archived_html", columnDefinition = "text")
     var archivedHtml: String? = null,
+
+    @Column(name = "detail_archive_status", nullable = false, length = 16)
+    var detailArchiveStatus: String = "NONE",
+
+    @Column(name = "detail_html", columnDefinition = "text")
+    var detailHtml: String? = null,
+
+    @Column(name = "detail_archive_attempts", nullable = false)
+    var detailArchiveAttempts: Int = 0,
+
+    @Column(name = "detail_archive_next_at")
+    var detailArchiveNextAt: Instant? = null,
+
+    @Column(name = "detail_archive_lease_token", length = 36)
+    var detailArchiveLeaseToken: String? = null,
+
+    @Column(name = "detail_archive_lease_until")
+    var detailArchiveLeaseUntil: Instant? = null,
+
 )

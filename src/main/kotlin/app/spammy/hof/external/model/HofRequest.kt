@@ -9,6 +9,8 @@ data class HofRequest(
     val formFields: Map<String, String> = emptyMap(),
     val origin: HofRequestOrigin = HofRequestOrigin.INTERACTIVE,
     val formEntries: List<HofFormField> = formFields.map { (name, value) -> HofFormField(name, value) },
+    val followRedirects: Boolean = true,
+    val timeoutSeconds: Long = 90,
 )
 
 /** 같은 이름이 반복되는 HTML form의 순서와 값을 손실 없이 보존한다. */

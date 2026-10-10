@@ -23,9 +23,14 @@ data class BattleLogResponse(
     val rawLogUrl: String?,
     val createdAt: String,
     val hasArchivedHtml: Boolean = false,
+    val detailArchiveStatus: String = "NONE",
 )
 
-data class BattleLogHtmlResponse(val html: String)
+data class BattleLogHtmlResponse(
+    val html: String?,
+    val archiveStatus: String = "SUMMARY",
+    val kind: String = "RESPONSE",
+)
 
 /**
  * 기간별 Funds·전투 수와 파티 조정용 모험맵 결과 집계를 앱에 내려주는 응답 DTO다.
@@ -43,10 +48,11 @@ data class BattleStatsResponse(
 
 enum class AdventureMapStatsPeriod { DAY, WEEK, MONTH }
 
-/** 파티 조정에 활용할 수 있도록 모험맵별 패배와 무승부 횟수를 전달한다. */
+/** 파티 조정에 활용할 수 있도록 모험맵별 총 전투 수와 패배·무승부 횟수를 전달한다. */
 data class AdventureMapOutcomeStatsResponse(
     val mapCode: String,
     val mapName: String,
+    val totalBattles: Long,
     val defeats: Long,
     val draws: Long,
 )

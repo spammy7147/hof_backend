@@ -141,6 +141,26 @@ class HofHttpClientTest {
     }
 
     @Test
+    fun `상세 로그 GET은 동일 출처 redirect도 따라가지 않는다`() {
+        val followed = AtomicInteger()
+        val server = HttpServer.create(InetSocketAddress(0), 0)
+        server.createContext("/detail") { exchange ->
+            exchange.responseHeaders.add("Location", "/action")
+            exchange.sendResponseHeaders(302, -1)
+            exchange.close()
+        }
+        server.createContext("/action") { exchange -> followed.incrementAndGet(); exchange.sendText("unexpected") }
+        server.start()
+        try {
+            assertFailsWith<ApiException> {
+                client().execute(ACCOUNT_ID, HofRequest(HofHttpMethod.GET,
+                    "http://localhost:${server.address.port}/detail", followRedirects = false, timeoutSeconds = 20))
+            }
+            assertEquals(0, followed.get())
+        } finally { server.stop(0) }
+    }
+
+    @Test
     fun `get form query is attached only to initial hop across 307 redirect`() {
         val queries = mutableListOf<Pair<String, String?>>()
         val server = HttpServer.create(InetSocketAddress(0), 0)

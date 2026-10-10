@@ -1,6 +1,7 @@
 package app.spammy.hof.battle.service
 
 import app.spammy.hof.account.entity.HofAccountEntity
+import app.spammy.hof.battle.dto.BattleLogHtmlResponse
 import app.spammy.hof.battle.dto.BattleLogResponse
 import app.spammy.hof.battle.dto.AdventureMapOutcomeStatsResponse
 import app.spammy.hof.battle.dto.AdventureMapStatsPeriod
@@ -61,6 +62,7 @@ class BattleLogService(
         characters: List<CharacterEntity>,
         result: HofBattleResult,
         responseHtml: String? = null,
+        archiveDetail: Boolean = true,
     ): BattleLogResponse {
         val battleMap = battleMapQueryRepository.findMapByCategoryIdAndMapCode(
             categoryId = request.categoryId,
@@ -94,6 +96,14 @@ class BattleLogService(
                 allyTurnCurrent = result.allySide.turnCurrent,
                 allyTurnMax = result.allySide.turnMax,
                 rawLogUrl = result.rawLogUrl,
+                detailArchiveStatus = when {
+                    archiveDetail && result.outcome == HofBattleOutcome.DEFEAT && safeBattleDetailUrl(result.rawLogUrl) != null -> "PENDING"
+                    result.outcome == HofBattleOutcome.DEFEAT && responseHtml != null -> "SUMMARY"
+                    else -> "NONE"
+                },
+                detailArchiveNextAt = timeProvider.now().takeIf {
+                    archiveDetail && result.outcome == HofBattleOutcome.DEFEAT && safeBattleDetailUrl(result.rawLogUrl) != null
+                },
                 createdAt = timeProvider.now(),
                 archivedHtml = responseHtml?.takeIf { result.outcome == HofBattleOutcome.DEFEAT }
                     ?.let(::archiveBattleHtml),
@@ -129,6 +139,17 @@ class BattleLogService(
         battleLogQueryRepository.findArchivedHtml(accountId, logId)
             ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "보관된 전투 HTML이 없습니다.")
 
+    @Transactional(readOnly = true)
+    fun findArchive(accountId: Long, logId: Long): BattleLogHtmlResponse {
+        val row = battleLogQueryRepository.findOwnedLog(accountId, logId)
+            ?: throw ApiException(ErrorCode.RESOURCE_NOT_FOUND, "전투 기록이 없습니다.")
+        return BattleLogHtmlResponse(
+            html = row.detailHtml ?: row.archivedHtml,
+            archiveStatus = row.detailArchiveStatus,
+            kind = when { row.detailHtml != null -> "DETAIL"; row.archivedHtml != null -> "RESPONSE"; else -> "NONE" },
+        )
+    }
+
     /** 최근 전투를 1~100건으로 제한하여 부모 ID, scalar, 참가자, 전리품 query 결과를 앱 응답으로 조립한다. */
     @Transactional(readOnly = true)
     fun findRecent(
@@ -147,7 +168,7 @@ class BattleLogService(
             .map { readModel -> readModel.toResponse() }
 
     /**
-     * 서울 시간 기준 일/주/월 Funds·전투 수와 모험맵 패배·무승부를 DB aggregate로 계산한다.
+     * 서울 시간 기준 일/주/월 Funds·전투 수와 모험맵 총 전투 수·패배·무승부를 DB aggregate로 계산한다.
      */
     @Transactional(readOnly = true)
     fun summarize(accountId: Long, adventurePeriod: AdventureMapStatsPeriod = AdventureMapStatsPeriod.DAY): BattleStatsResponse {
@@ -171,10 +192,12 @@ class BattleLogService(
                     AdventureMapOutcomeStatsResponse(
                         mapCode = mapCode,
                         mapName = entries.firstNotNullOfOrNull { it.mapName.takeIf(String::isNotBlank) } ?: mapCode,
+                        totalBattles = entries.sumOf { it.totalBattles },
                         defeats = entries.sumOf { it.defeats },
                         draws = entries.sumOf { it.draws },
                     )
                 }
+                .filter { it.defeats > 0 || it.draws > 0 }
                 .sortedWith(
                     compareByDescending<AdventureMapOutcomeStatsResponse> { it.defeats }
                         .thenByDescending { it.draws }
@@ -230,7 +253,8 @@ class BattleLogService(
             ),
             rawLogUrl = rawLogUrl,
             createdAt = createdAt.toString(),
-            hasArchivedHtml = archivedHtml != null,
+            hasArchivedHtml = detailHtml != null || archivedHtml != null,
+            detailArchiveStatus = detailArchiveStatus,
         )
 
     private companion object {

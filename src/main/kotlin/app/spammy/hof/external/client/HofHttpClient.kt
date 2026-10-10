@@ -113,6 +113,9 @@ class HofHttpClient private constructor(
             if (response.statusCode() !in REDIRECT_STATUSES || location == null) {
                 return RedirectResponse(response, receivedCookies)
             }
+            if (!initialRequest.followRedirects) {
+                throw ApiException(ErrorCode.HOF_REQUEST_FAILED, "상세 로그 요청의 redirect를 차단했습니다.")
+            }
             if (redirectCount >= MAX_REDIRECTS) {
                 throw ApiException(ErrorCode.HOF_REQUEST_FAILED, "HOF redirect 횟수가 너무 많습니다.")
             }
@@ -145,7 +148,7 @@ class HofHttpClient private constructor(
             HofHttpMethod.POST -> request.url
         }
         val builder = HttpRequest.newBuilder(URI.create(requestUrl))
-            .timeout(Duration.ofSeconds(90))
+            .timeout(Duration.ofSeconds(request.timeoutSeconds))
             .header("User-Agent", USER_AGENT)
             .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
             .header("Accept-Language", "ko-KR,ko;q=0.9,en-US;q=0.5,en;q=0.3")

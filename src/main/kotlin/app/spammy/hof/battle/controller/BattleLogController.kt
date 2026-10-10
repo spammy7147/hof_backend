@@ -24,7 +24,7 @@ class BattleLogController(
     fun archivedHtml(
         @CurrentAccountId accountId: Long,
         @PathVariable logId: Long,
-    ): BattleLogHtmlResponse = BattleLogHtmlResponse(battleLogService.findArchivedHtml(accountId, logId))
+    ): BattleLogHtmlResponse = battleLogService.findArchive(accountId, logId)
 
     /**
      * 최근 전투 로그를 최신순으로 조회한다.

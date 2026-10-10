@@ -346,6 +346,24 @@ class BattleRunServiceTest {
         assertEquals("https://hof.zerosic.com/index.php?common=snow22", gateway.requests.single().url)
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = [false, true])
+    fun `3회 전투는 회차를 식별하는 상세 링크만 패배 보관 대기로 등록한다`(sharedLink: Boolean) {
+        prepareRunnableBattle()
+        var round = 0
+        gateway.nextBattleBody = threeBattleResultHtml()
+            .replaceFirst("《얼어붙은 손길》공민이은(는) 승리했다!", "적군이 승리했다!")
+            .replace(Regex("https://hof.zerosic.com/index.php\\?common=gb0#")) {
+                round++
+                "https://hof.zerosic.com/index.php?alog=${if (sharedLink) 123456 else 123456 + round}"
+            }
+        val response = service.runBattle(1L, runRequest().copy(battleCount = 3), HofRequestOrigin.AUTOMATION)
+        assertEquals(listOf("DEFEAT", "VICTORY", "VICTORY"), response.rounds.map { it.outcome })
+        assertEquals(listOf(if (sharedLink) "SUMMARY" else "PENDING", "NONE", "NONE"),
+            battleLogRepository.savedEntities.map { it.detailArchiveStatus })
+        assertEquals(1, gateway.requests.size, "전투 실행 경로에서 상세 GET이나 추가 POST를 보내지 않는다")
+    }
+
     @Test
     fun runBattleUsesStoredPlayerNameForOneSideVictoryOutcome() {
         prepareRunnableBattle()
