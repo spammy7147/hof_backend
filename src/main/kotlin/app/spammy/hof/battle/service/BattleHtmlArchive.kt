@@ -13,7 +13,7 @@ internal fun archiveBattleHtml(source: String, detailed: Boolean = false): Strin
     clean.head().appendElement("meta").attr("charset", "utf-8")
     clean.head().appendElement("meta").attr("name", "viewport").attr("content", "width=device-width, initial-scale=1")
     clean.head().appendElement("title").text("패배 전투 로그 보관본")
-    clean.head().appendElement("style").text("body{font-family:sans-serif;line-height:1.6;padding:16px;overflow-wrap:anywhere}table{border-collapse:collapse;max-width:100%}td,th{border:1px solid #ccc;padding:4px}")
+    clean.head().appendElement("style").text("body{color:#111;background:#fff;font-family:sans-serif;line-height:1.6;padding:16px;overflow-wrap:anywhere}table{border-collapse:collapse;max-width:100%}td,th{border:1px solid #ccc;padding:4px}")
     clean.body().prependElement("p").text(if (detailed) "패배 전투의 상세 로그 보관본입니다." else "패배 시 받은 전투 응답 요약입니다. 상세 로그 보관본이 아닙니다. 3회 전투는 전체 응답을 포함합니다.")
     return "<!doctype html>\n" + clean.outerHtml()
 }

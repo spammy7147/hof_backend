@@ -730,7 +730,10 @@ internal object FreshSchemaContract {
             optionalInteger("ally_hp_current"), optionalInteger("ally_hp_max"),
             optionalInteger("ally_survivors_alive"), optionalInteger("ally_survivors_max"),
             optionalInteger("ally_total_damage"), optionalInteger("ally_turn_current"), optionalInteger("ally_turn_max"),
-            optionalText("raw_log_url"), requiredInstant("created_at"),
+            optionalText("raw_log_url"), requiredInstant("created_at"), optionalText("archived_html"),
+            requiredVarchar("detail_archive_status", 16), optionalText("detail_html"),
+            requiredInteger("detail_archive_attempts"), optionalInstant("detail_archive_next_at"),
+            optionalVarchar("detail_archive_lease_token", 36), optionalInstant("detail_archive_lease_until"),
         ),
         table(
             "battle_log_participants",
@@ -1317,6 +1320,7 @@ internal object FreshSchemaContract {
         index("battle_logs", "idx_battle_logs_account_created", "account_id", "created_at", "id"),
         index("battle_logs", "idx_battle_logs_account_outcome", "account_id", "outcome", "id"),
         index("battle_logs", "idx_battle_logs_battle_map", "battle_map_id", "id"),
+        index("battle_logs", "idx_battle_logs_detail_archive_due", "detail_archive_status", "detail_archive_next_at"),
         index(
             "battle_log_participants", "idx_battle_log_participants_log_order", "battle_log_id", "slot_index", "id",
         ),

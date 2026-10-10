@@ -111,6 +111,8 @@ class FreshSchemaTest {
                 "60" to "preserve union rotation result order",
                 "61" to "bind adventure work to prepared execution",
                 "62" to "restore shadow convergence checkpoints",
+                "63" to "archive defeated battle html",
+                "64" to "archive battle detail pages",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -181,6 +183,8 @@ class FreshSchemaTest {
                 "V60__preserve_union_rotation_result_order.sql",
                 "V61__bind_adventure_work_to_prepared_execution.sql",
                 "V62__restore_shadow_convergence_checkpoints.sql",
+                "V63__archive_defeated_battle_html.sql",
+                "V64__archive_battle_detail_pages.sql",
                 "V6__learn_shared_battle_cooldowns.sql",
                 "V7__add_automation_wait_reason.sql",
                 "V8__observe_latest_hof_status.sql",

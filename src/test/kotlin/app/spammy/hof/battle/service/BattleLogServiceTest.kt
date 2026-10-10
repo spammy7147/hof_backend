@@ -87,6 +87,8 @@ class BattleLogServiceTest {
         org.mockito.Mockito.reset(detailGateway)
     }
 
+    private val observedDetailHtml get() = javaClass.getResource("/fixtures/battle/detail-observed-sanitized.html")!!.readText()
+
     private fun detailRequest(url: String) = app.spammy.hof.external.model.HofRequest(
         app.spammy.hof.external.model.HofHttpMethod.GET, url, origin = app.spammy.hof.external.model.HofRequestOrigin.AUTOMATION, followRedirects = false, timeoutSeconds = 20)
 
@@ -195,12 +197,22 @@ class BattleLogServiceTest {
         org.mockito.Mockito.`when`(detailGateway.execute(account.id,
             detailRequest(url), emptyMap())).thenReturn(
             app.spammy.hof.external.model.HofHttpResponse(200, url,
-                "<html><body><div id='menu2'>계정 비밀</div><div id='contents'><table><tr><td class='ttd1'>1턴 아군 공격</td><td class='ttd2'><span class='dmg'>상대에게 156 데미지</span></td></tr></table><script>secret()</script></div></body></html>", emptyMap()))
+                observedDetailHtml.replace("<body>", "<body><div id='menu2'>계정 비밀</div><script>secret()</script>"), emptyMap()))
         collector.collectDue()
         org.mockito.Mockito.reset(detailGateway) // 원본 접근 불가: 이후 조회는 저장된 HTML만 사용한다.
         val html = service.findArchivedHtml(account.id, log.id)
-        assertTrue(html.contains("1턴 아군 공격"))
-        assertTrue(html.contains("상대에게 156 데미지"))
+        val original = org.jsoup.Jsoup.parse(observedDetailHtml)
+        val saved = org.jsoup.Jsoup.parse(html)
+        assertEquals(original.select("#contents table").size, saved.select("table").size)
+        // 전체 셀의 텍스트와 DOM 순서를 비교하여 적군/아군·다중 턴의 귀속까지 확인한다.
+        assertEquals(original.select("#contents td").map { it.text() }, saved.select("td").map { it.text() })
+        assertTrue(saved.text().contains("Knife Desperado"))
+        assertTrue(saved.text().contains("의 행동력 변경"))
+        assertTrue(saved.text().contains("회복되었다"))
+        assertTrue(saved.text().contains("소멸하였다"))
+        assertTrue(original.select(".dmg").size > 10)
+        assertTrue(original.select("td.ttd1").size > 10)
+        assertTrue(original.select("td.ttd2").size > 10)
         assertFalse(html.contains("계정 비밀"))
         assertFalse(html.contains("secret()"))
         org.mockito.Mockito.verifyNoInteractions(detailGateway)

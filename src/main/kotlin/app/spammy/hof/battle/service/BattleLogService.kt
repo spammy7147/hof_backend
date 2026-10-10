@@ -68,6 +68,8 @@ class BattleLogService(
             categoryId = request.categoryId,
             mapCode = request.mapCode,
         )
+        val shouldArchiveDetail = archiveDetail && result.outcome == HofBattleOutcome.DEFEAT &&
+            safeBattleDetailUrl(result.rawLogUrl) != null
         val log = battleLogRepository.save(
             BattleLogEntity(
                 account = account,
@@ -97,13 +99,11 @@ class BattleLogService(
                 allyTurnMax = result.allySide.turnMax,
                 rawLogUrl = result.rawLogUrl,
                 detailArchiveStatus = when {
-                    archiveDetail && result.outcome == HofBattleOutcome.DEFEAT && safeBattleDetailUrl(result.rawLogUrl) != null -> "PENDING"
+                    shouldArchiveDetail -> "PENDING"
                     result.outcome == HofBattleOutcome.DEFEAT && responseHtml != null -> "SUMMARY"
                     else -> "NONE"
                 },
-                detailArchiveNextAt = timeProvider.now().takeIf {
-                    archiveDetail && result.outcome == HofBattleOutcome.DEFEAT && safeBattleDetailUrl(result.rawLogUrl) != null
-                },
+                detailArchiveNextAt = timeProvider.now().takeIf { shouldArchiveDetail },
                 createdAt = timeProvider.now(),
                 archivedHtml = responseHtml?.takeIf { result.outcome == HofBattleOutcome.DEFEAT }
                     ?.let(::archiveBattleHtml),
