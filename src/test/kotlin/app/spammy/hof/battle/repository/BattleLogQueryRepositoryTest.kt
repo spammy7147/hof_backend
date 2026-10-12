@@ -132,14 +132,14 @@ class BattleLogQueryRepositoryTest {
     }
 
     @Test
-    fun sumsPeriodFundsAndGroupsAdventureMapTotalsIncludingVictories() {
+    fun `기간별 펀드와 모험맵·전투맵 횟수를 승리까지 포함해 집계한다`() {
         val account = savedAccount("battle-query-periods")
         val otherAccount = savedAccount("battle-query-periods-other")
         savedLog(account, EARLIER, "VICTORY", funds = 100)
         savedLog(account, LATER, "DEFEAT", funds = 30, categoryId = "adventure_map", mapCode = "snow22", mapName = "얼어붙은 산")
         savedLog(account, LATER.plusSeconds(1), "DRAW", funds = null, categoryId = "adventure_map", mapCode = "snow22", mapName = "얼어붙은 산")
         savedLog(account, LATER.plusSeconds(2), "DEFEAT", funds = 20, categoryId = "adventure_map", mapCode = "desert01", mapName = "사막")
-        savedLog(account, LATER.plusSeconds(3), "DEFEAT", categoryId = "battle_map")
+        savedLog(account, LATER.plusSeconds(3), "DEFEAT", categoryId = "battle_map", mapCode = "snow22", mapName = "전투 산")
         savedLog(otherAccount, LATER.plusSeconds(4), "DEFEAT", funds = 9_999, categoryId = "adventure_map")
 
         savedLog(account, LATER.plusSeconds(5), "VICTORY", categoryId = "adventure_map", mapCode = "snow22", mapName = "얼어붙은 산")
@@ -153,9 +153,10 @@ class BattleLogQueryRepositoryTest {
         assertEquals(0L, queryRepository.countBattlesSince(account.id, LATER.plusSeconds(10)))
         assertEquals(
             listOf(
-                AdventureMapOutcomeStatsProjection("snow22", "얼어붙은 산", totalBattles = 3, defeats = 1, draws = 1),
-                AdventureMapOutcomeStatsProjection("desert01", "사막", totalBattles = 1, defeats = 1, draws = 0),
-                AdventureMapOutcomeStatsProjection("victory-only", "승리 맵", totalBattles = 1, defeats = 0, draws = 0),
+                AdventureMapOutcomeStatsProjection("snow22", "얼어붙은 산", totalBattles = 3, defeats = 1, draws = 1, categoryId = "adventure_map"),
+                AdventureMapOutcomeStatsProjection("desert01", "사막", totalBattles = 1, defeats = 1, draws = 0, categoryId = "adventure_map"),
+                AdventureMapOutcomeStatsProjection("snow22", "전투 산", totalBattles = 1, defeats = 1, draws = 0, categoryId = "battle_map"),
+                AdventureMapOutcomeStatsProjection("victory-only", "승리 맵", totalBattles = 1, defeats = 0, draws = 0, categoryId = "adventure_map"),
             ),
             queryRepository.findAdventureMapOutcomeStats(account.id, LATER),
         )

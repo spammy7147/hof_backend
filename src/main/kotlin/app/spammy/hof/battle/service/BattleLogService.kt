@@ -30,6 +30,7 @@ import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import java.time.DayOfWeek
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 import java.time.temporal.TemporalAdjusters
 
@@ -168,13 +169,22 @@ class BattleLogService(
             .map { readModel -> readModel.toResponse() }
 
     /**
-     * 서울 시간 기준 일/주/월 Funds·전투 수와 모험맵 총 전투 수·패배·무승부를 DB aggregate로 계산한다.
+     * 서울 시간 기준 일/주/월 Funds·전투 수와 모험맵·전투맵 총 전투 수·패배·무승부를 DB aggregate로 계산한다.
      */
     @Transactional(readOnly = true)
-    fun summarize(accountId: Long, adventurePeriod: AdventureMapStatsPeriod = AdventureMapStatsPeriod.DAY): BattleStatsResponse {
-        val periods = battleFundPeriodStarts(timeProvider.now())
+    fun summarize(
+        accountId: Long,
+        adventurePeriod: AdventureMapStatsPeriod = AdventureMapStatsPeriod.DAY,
+        date: LocalDate? = null,
+    ): BattleStatsResponse {
+        val now = timeProvider.now()
+        val zone = ZoneId.of("Asia/Seoul")
+        if (date != null && (adventurePeriod != AdventureMapStatsPeriod.DAY || date > now.atZone(zone).toLocalDate())) {
+            throw ApiException(ErrorCode.INVALID_REQUEST, "날짜는 일간 통계에서 오늘 또는 이전 날짜로 지정해 주세요.")
+        }
+        val periods = battleFundPeriodStarts(now)
         val adventureSince = when (adventurePeriod) {
-            AdventureMapStatsPeriod.DAY -> periods.day
+            AdventureMapStatsPeriod.DAY -> date?.atStartOfDay(zone)?.toInstant() ?: periods.day
             AdventureMapStatsPeriod.WEEK -> periods.week
             AdventureMapStatsPeriod.MONTH -> periods.month
         }
@@ -186,15 +196,17 @@ class BattleLogService(
             dailyBattles = battleLogQueryRepository.countBattlesSince(accountId, periods.day),
             weeklyBattles = battleLogQueryRepository.countBattlesSince(accountId, periods.week),
             monthlyBattles = battleLogQueryRepository.countBattlesSince(accountId, periods.month),
-            adventureMapOutcomes = battleLogQueryRepository.findAdventureMapOutcomeStats(accountId, adventureSince)
-                .groupBy { stats -> stats.mapCode }
-                .map { (mapCode, entries) ->
+            adventureMapOutcomes = battleLogQueryRepository.findAdventureMapOutcomeStats(accountId, adventureSince, date?.plusDays(1)?.atStartOfDay(zone)?.toInstant())
+                .groupBy { stats -> stats.categoryId to stats.mapCode }
+                .map { (identity, entries) ->
+                    val (categoryId, mapCode) = identity
                     AdventureMapOutcomeStatsResponse(
                         mapCode = mapCode,
                         mapName = entries.firstNotNullOfOrNull { it.mapName.takeIf(String::isNotBlank) } ?: mapCode,
                         totalBattles = entries.sumOf { it.totalBattles },
                         defeats = entries.sumOf { it.defeats },
                         draws = entries.sumOf { it.draws },
+                        categoryId = categoryId,
                     )
                 }
                 .filter { it.defeats > 0 || it.draws > 0 }

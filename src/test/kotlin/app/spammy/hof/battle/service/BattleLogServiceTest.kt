@@ -16,6 +16,9 @@ import app.spammy.hof.external.model.HofBattleOutcome
 import app.spammy.hof.external.model.HofBattleResult
 import app.spammy.hof.external.model.HofBattleSide
 import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import app.spammy.hof.battle.dto.AdventureMapStatsPeriod
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -162,13 +165,42 @@ class BattleLogServiceTest {
     }
 
     @Test
-    fun `모험맵 이름이 바뀌어도 승리를 포함해 합산하고 승리만 있는 맵은 숨긴다`() {
+    fun `지정 한국 날짜의 시작은 포함하고 다음 날 시작과 다른 계정은 제외한다`() {
+        val account = savedAccount("detail-date-stats")
+        val other = savedAccount("detail-date-stats-other")
+        val date = LocalDate.of(2026, 7, 1)
+        val start = date.atStartOfDay(ZoneId.of("Asia/Seoul")).toInstant()
+        fun record(at: Instant, outcome: HofBattleOutcome, owner: HofAccountEntity = account) {
+            archiveTime.set(at)
+            service.record(owner, request("adventure_map", "date-map", emptyList()), emptyList(), result(outcome))
+        }
+        record(start.minusSeconds(1), HofBattleOutcome.DEFEAT)
+        record(start, HofBattleOutcome.VICTORY)
+        record(start.plusSeconds(86_399), HofBattleOutcome.DRAW)
+        record(start.plusSeconds(86_400), HofBattleOutcome.DEFEAT)
+        record(start.plusSeconds(1), HofBattleOutcome.DEFEAT, other)
+        archiveTime.set(start.plusSeconds(172_800))
+
+        val stats = service.summarize(account.id, date = date).adventureMapOutcomes.single()
+        assertEquals(2L, stats.totalBattles)
+        assertEquals(0L, stats.defeats)
+        assertEquals(1L, stats.draws)
+        assertEquals(1L, service.summarize(account.id, date = date.plusDays(1)).adventureMapOutcomes.single().defeats)
+        assertTrue(service.summarize(account.id, date = date.minusDays(2)).adventureMapOutcomes.isEmpty())
+        assertEquals(ErrorCode.INVALID_REQUEST, assertFailsWith<ApiException> {
+            service.summarize(account.id, date = date.plusDays(3))
+        }.errorCode)
+        assertFailsWith<ApiException> { service.summarize(account.id, AdventureMapStatsPeriod.WEEK, date) }
+    }
+
+    @Test
+    fun `맵 이름 변경은 합산하고 같은 코드의 전투맵은 구분하며 승리만 있는 맵은 숨긴다`() {
         val account = savedAccount("adventure-total-count")
         val map = savedMap("adventure_map", "total-map", "변경 전 이름")
-        fun record(mapCode: String, outcome: HofBattleOutcome) {
+        fun record(mapCode: String, outcome: HofBattleOutcome, categoryId: String = "adventure_map") {
             service.record(
                 account = account,
-                request = RunBattleRequest(categoryId = "adventure_map", mapCode = mapCode, characterIds = emptyList()),
+                request = RunBattleRequest(categoryId = categoryId, mapCode = mapCode, characterIds = emptyList()),
                 characters = emptyList(),
                 result = result(outcome),
             )
@@ -179,12 +211,22 @@ class BattleLogServiceTest {
         record("total-map", HofBattleOutcome.DEFEAT)
         record("total-map", HofBattleOutcome.DRAW)
         record("victory-map", HofBattleOutcome.VICTORY)
+        record("total-map", HofBattleOutcome.DEFEAT, "battle_map")
+        record("total-map", HofBattleOutcome.VICTORY, "battle_map")
+        record("victory-map", HofBattleOutcome.VICTORY, "battle_map")
 
-        val stats = service.summarize(account.id).adventureMapOutcomes.single()
+        val maps = service.summarize(account.id).adventureMapOutcomes
+        assertEquals(2, maps.size)
+        val stats = maps.single { it.categoryId == "adventure_map" }
         assertEquals("total-map", stats.mapCode)
         assertEquals(3L, stats.totalBattles)
         assertEquals(1L, stats.defeats)
         assertEquals(1L, stats.draws)
+        val battleStats = maps.single { it.categoryId == "battle_map" }
+        assertEquals("total-map", battleStats.mapCode)
+        assertEquals(2L, battleStats.totalBattles)
+        assertEquals(1L, battleStats.defeats)
+        assertEquals(0L, battleStats.draws)
     }
 
     @Test

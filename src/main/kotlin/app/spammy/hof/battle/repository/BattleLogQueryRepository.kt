@@ -19,13 +19,14 @@ data class BattleLogReadModel(
     val loots: List<BattleLogLootEntity>,
 )
 
-/** 모험맵 한 곳의 총 전투 수와 패배/무승부 집계 결과다. */
+/** 모험맵 또는 전투맵 한 곳의 총 전투 수와 패배/무승부 집계 결과다. */
 data class AdventureMapOutcomeStatsProjection(
     val mapCode: String,
     val mapName: String,
     val totalBattles: Long,
     val defeats: Long,
     val draws: Long,
+    val categoryId: String,
 )
 
 /**
@@ -139,13 +140,14 @@ class BattleLogQueryRepository(
             )
             .fetchOne() ?: 0L
 
-    /** 승리를 포함한 모든 모험맵 전투를 집계한다. 표시 대상은 맵 코드별 합산 후 결정한다. */
-    fun findAdventureMapOutcomeStats(accountId: Long, since: Instant): List<AdventureMapOutcomeStatsProjection> {
+    /** 승리를 포함한 모험맵·전투맵 전투를 집계한다. 표시 대상은 유형·맵 코드별 합산 후 결정한다. */
+    fun findAdventureMapOutcomeStats(accountId: Long, since: Instant, until: Instant? = null): List<AdventureMapOutcomeStatsProjection> {
         val totalBattles = battleLogEntity.id.count()
         val defeats = outcomeCount("DEFEAT")
         val draws = outcomeCount("DRAW")
         return queryFactory
             .select(
+                battleLogEntity.categoryIdSnapshot,
                 battleLogEntity.mapCodeSnapshot,
                 battleLogEntity.mapNameSnapshot,
                 totalBattles,
@@ -155,10 +157,11 @@ class BattleLogQueryRepository(
             .from(battleLogEntity)
             .where(
                 battleLogEntity.account.id.eq(accountId),
-                battleLogEntity.categoryIdSnapshot.eq("adventure_map"),
+                battleLogEntity.categoryIdSnapshot.`in`("adventure_map", "battle_map"),
                 battleLogEntity.createdAt.goe(since),
+                until?.let { battleLogEntity.createdAt.lt(it) },
             )
-            .groupBy(battleLogEntity.mapCodeSnapshot, battleLogEntity.mapNameSnapshot)
+            .groupBy(battleLogEntity.categoryIdSnapshot, battleLogEntity.mapCodeSnapshot, battleLogEntity.mapNameSnapshot)
             .orderBy(defeats.desc(), draws.desc(), battleLogEntity.mapNameSnapshot.asc())
             .fetch()
             .map { row ->
@@ -168,6 +171,7 @@ class BattleLogQueryRepository(
                     totalBattles = row.get(totalBattles) ?: 0L,
                     defeats = row.get(defeats) ?: 0L,
                     draws = row.get(draws) ?: 0L,
+                    categoryId = row.get(battleLogEntity.categoryIdSnapshot).orEmpty(),
                 )
             }
     }
