@@ -113,6 +113,7 @@ class FreshSchemaTest {
                 "62" to "restore shadow convergence checkpoints",
                 "63" to "archive defeated battle html",
                 "64" to "archive battle detail pages",
+                "65" to "bulk character deep sync",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -185,6 +186,7 @@ class FreshSchemaTest {
                 "V62__restore_shadow_convergence_checkpoints.sql",
                 "V63__archive_defeated_battle_html.sql",
                 "V64__archive_battle_detail_pages.sql",
+                "V65__bulk_character_deep_sync.sql",
                 "V6__learn_shared_battle_cooldowns.sql",
                 "V7__add_automation_wait_reason.sql",
                 "V8__observe_latest_hof_status.sql",
@@ -220,6 +222,38 @@ class FreshSchemaTest {
                     assertTrue(rows.next())
                     assertEquals(33L, rows.getLong(1))
                 }
+            }
+        }
+    }
+
+    @Test
+    fun `단일 작업 삭제는 전체 동기화 이력을 보존하고 계정 삭제는 함께 정리한다`() {
+        dataSource.connection.use { connection ->
+            connection.autoCommit = false
+            try {
+                fun insert(sql: String): Long = connection.prepareStatement(sql, java.sql.Statement.RETURN_GENERATED_KEYS).use { statement ->
+                    statement.executeUpdate()
+                    statement.generatedKeys.use { rows -> assertTrue(rows.next()); rows.getLong(1) }
+                }
+                val accountId = insert("insert into hof_accounts(login_id,encrypted_password,created_at) values('schema-${UUID.randomUUID()}','fixture',current_timestamp)")
+                val characterId = insert("insert into characters(account_id,current_hof_character_id,name,job,pattern_slot_count,updated_at) values($accountId,'schema-character','검증','전사',0,current_timestamp)")
+                val operationId = insert("insert into character_operation_jobs(account_id,operation_type,status,target_character_id,started_at,updated_at) values($accountId,'DEEP_SYNC','COMPLETED',$characterId,current_timestamp,current_timestamp)")
+                val syncId = insert("insert into character_sync_jobs(account_id,status,roster_count,synced_count,started_at,current_operation_job_id) values($accountId,'COMPLETED',0,0,current_timestamp,$operationId)")
+                connection.createStatement().use { statement ->
+                    statement.executeUpdate("delete from character_operation_jobs where id=$operationId")
+                    statement.executeQuery("select sync_mode,current_operation_job_id from character_sync_jobs where id=$syncId").use { rows ->
+                        assertTrue(rows.next())
+                        assertEquals("DETAIL", rows.getString(1))
+                        kotlin.test.assertNull(rows.getObject(2))
+                    }
+                    statement.executeUpdate("delete from hof_accounts where id=$accountId")
+                    statement.executeQuery("select count(*) from character_sync_jobs where id=$syncId").use { rows ->
+                        assertTrue(rows.next())
+                        assertEquals(0, rows.getInt(1))
+                    }
+                }
+            } finally {
+                connection.rollback()
             }
         }
     }

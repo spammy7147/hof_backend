@@ -338,6 +338,7 @@ internal object FreshSchemaContract {
             requiredInteger("synced_count"), optionalText("message"), requiredInstant("started_at"),
             optionalInstant("finished_at"), requiredBoolean("stop_requested"),
             requiredInteger("last_completed_roster_index"), optionalVarchar("current_hof_character_id", 50),
+            requiredVarchar("sync_mode", 20), optionalText("deep_sync_targets"), optionalBigint("current_operation_job_id"),
         ),
         table(
             "character_sync_failures",
@@ -988,6 +989,7 @@ internal object FreshSchemaContract {
         ),
         fk("fk_character_skills_character", "character_skills.character_id", "characters.id", DeleteAction.CASCADE),
         fk("fk_character_sync_jobs_account", "character_sync_jobs.account_id", "hof_accounts.id", DeleteAction.CASCADE),
+        fk("fk_character_sync_jobs_current_operation", "character_sync_jobs.current_operation_job_id", "character_operation_jobs.id", DeleteAction.SET_NULL),
         fk("fk_character_sync_failures_job", "character_sync_failures.sync_job_id", "character_sync_jobs.id", DeleteAction.CASCADE),
         fk("fk_character_operation_jobs_account", "character_operation_jobs.account_id", "hof_accounts.id", DeleteAction.CASCADE),
         fk("fk_character_operation_jobs_source", "character_operation_jobs.source_character_id", "characters.id", DeleteAction.SET_NULL),
