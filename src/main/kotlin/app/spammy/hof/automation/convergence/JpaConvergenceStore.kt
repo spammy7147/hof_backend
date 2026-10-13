@@ -276,6 +276,43 @@ class JpaConvergenceStore(
         return true
     }
 
+    override fun releaseQuestBattleSuppressions(
+        accountId: Long,
+        entryId: Long,
+        questKey: String,
+        baselineFingerprint: String,
+        observedAt: Instant,
+    ): Int {
+        val held = entityManager.createQuery(
+            """
+            select convergence from ActionConvergenceEntity convergence
+            join fetch convergence.attempt attempt
+            where convergence.accountId = :accountId
+              and attempt.entry.id = :entryId
+              and attempt.actionKind = :actionKind
+              and attempt.observationOnly = false
+              and attempt.baselineFingerprint = :baselineFingerprint
+              and convergence.scopeKind = :scopeKind
+              and convergence.scopeKey = :scopeKey
+              and convergence.result in :results
+              and convergence.finishedAt <= :observedAt
+              and convergence.suppressionReleasedAt is null
+            """.trimIndent(),
+            ActionConvergenceEntity::class.java,
+        ).setParameter("accountId", accountId)
+            .setParameter("entryId", entryId)
+            .setParameter("actionKind", AutomationActionKind.QUEST_BATTLE)
+            .setParameter("baselineFingerprint", baselineFingerprint)
+            .setParameter("scopeKind", AutomationIsolationScopeKind.QUEST_TARGET)
+            .setParameter("scopeKey", questKey)
+            .setParameter("results", setOf(ActionConvergenceResult.HELD, ActionConvergenceResult.RESULT_UNOBSERVED))
+            .setParameter("observedAt", observedAt)
+            .resultList
+            .filter { ProductionActionEvidenceInterpreter.supportsVersion(it.attempt.policyVersion) }
+        held.forEach { it.suppressionReleasedAt = observedAt }
+        return held.size
+    }
+
     override fun releaseRaidSuppressions(
         accountId: Long,
         entryId: Long,

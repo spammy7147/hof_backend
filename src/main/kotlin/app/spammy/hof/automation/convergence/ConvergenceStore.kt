@@ -22,6 +22,14 @@ interface ConvergenceStore {
         releasedAt: Instant,
     ): Int
     fun releaseSuppression(accountId: Long, attemptId: Long, releasedAt: Instant): Boolean
+    /** 완전한 최신 진행도로 새 퀘스트 전투를 판단하되 이전 결과는 그대로 보존한다. */
+    fun releaseQuestBattleSuppressions(
+        accountId: Long,
+        entryId: Long,
+        questKey: String,
+        baselineFingerprint: String,
+        observedAt: Instant,
+    ): Int
     fun releaseRaidSuppressions(
         accountId: Long,
         entryId: Long,
@@ -158,6 +166,28 @@ class InMemoryConvergenceStore : ConvergenceStore {
         } ?: return false
         releasedSuppressions += accountId to record.attemptId
         return true
+    }
+
+    @Synchronized
+    override fun releaseQuestBattleSuppressions(
+        accountId: Long,
+        entryId: Long,
+        questKey: String,
+        baselineFingerprint: String,
+        observedAt: Instant,
+    ): Int {
+        val held = records.values.filter {
+            it.accountId == accountId && it.selection.entryId == entryId &&
+                it.selection.actionKind == AutomationActionKind.QUEST_BATTLE &&
+                it.selection.scope == AutomationIsolationScope(AutomationIsolationScopeKind.QUEST_TARGET, questKey) &&
+                it.selection.baselineFingerprint == baselineFingerprint && !it.selection.observationOnly &&
+                ProductionActionEvidenceInterpreter.supportsVersion(it.selection.policyVersion) &&
+                it.result in setOf(ActionConvergenceResult.HELD, ActionConvergenceResult.RESULT_UNOBSERVED) &&
+                it.finishedAt?.let { finished -> !finished.isAfter(observedAt) } == true &&
+                (accountId to it.attemptId) !in releasedSuppressions
+        }
+        held.forEach { releasedSuppressions += accountId to it.attemptId }
+        return held.size
     }
 
     @Synchronized

@@ -398,6 +398,13 @@ class CharacterDeepSyncServiceTest {
             assertEquals(stored.first().snapshot.positionGuard, stored.last().snapshot.positionGuard)
         }
 
+        /** 실제 서비스 조립 테스트에서 상태를 가진 HOF 경계로 재사용한다. */
+        fun remoteResponse(request: HofRequest): HofHttpResponse {
+            gateOwned = true
+            return try { gateway.execute(1L, request, mapOf("PHPSESSID" to "fixture")) }
+            finally { gateOwned = false }
+        }
+
         fun page(): String = """
             <div class="carpet_frame">fixture Lv.60 Knight</div>
             <form action="?char=10" method="post">

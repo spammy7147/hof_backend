@@ -19,33 +19,35 @@ class ColosseumService(
         ColosseumBattleResponse.from(parser.parseBattle(html, finalUrl, page))
     }
 
-    fun saveTeam(accountId: Long, request: SaveColosseumTeamRequest): ColosseumBattleResponse = executor.executeProjected(
-        accountId = accountId,
-        pageUrl = battleUrl(),
-        resolveAction = { html, finalUrl, page ->
-            val snapshot = parser.parseBattle(html, finalUrl, page)
-            val requested = request.fighterCandidateIds.distinct()
-            if (requested.size != request.fighterCandidateIds.size || requested.size !in snapshot.minTeamSize..snapshot.maxTeamSize) {
-                invalid("현재 HOF가 허용하는 팀 인원을 선택해 주세요.")
-            }
-            val available = snapshot.fighters.map { it.id }.toSet()
-            if (!available.containsAll(requested)) invalid("현재 선택할 수 없는 팀원이 포함되어 있습니다.")
-            TownActionRequest(snapshot.teamActionId ?: invalid("현재 팀 저장 양식을 찾지 못했습니다."), requested.map(::TownActionSelection))
-        },
-    ) { html, finalUrl, result, page ->
-        val parsed = parser.parseBattle(html, finalUrl, page, result)
-        if (parsed.selectedTeam.toSet() != request.fighterCandidateIds.toSet()) invalid("HOF가 요청한 팀을 저장하지 않았습니다.")
-        ColosseumBattleResponse.from(parsed)
+    fun saveTeam(accountId: Long, request: SaveColosseumTeamRequest): ColosseumBattleResponse {
+        val saved = executor.executeProjectedWithSingleFallbackGet(
+            accountId = accountId,
+            pageUrl = battleUrl(),
+            resolveAction = { html, finalUrl, page ->
+                val snapshot = parser.parseBattle(html, finalUrl, page)
+                val requested = request.fighterCandidateIds.distinct()
+                if (requested.size != request.fighterCandidateIds.size || requested.size != 5) {
+                    invalid("콜로세움에 출전할 5명을 중복 없이 선택해 주세요.")
+                }
+                if (!snapshot.fighters.map { it.id }.toSet().containsAll(requested)) invalid("현재 선택할 수 없는 팀원이 포함되어 있습니다.")
+                TownActionRequest(snapshot.teamActionId ?: invalid("현재 팀 저장 양식을 찾지 못했습니다."),
+                    requested.map { TownActionSelection(snapshot.teamCandidateIds.getValue(it)) })
+            },
+            acceptsActionResponse = { it.fighters.isNotEmpty() },
+        ) { html, finalUrl, result, page, _ -> parser.parseBattle(html, finalUrl, page, result) }
+        if (saved.selectedTeam.toSet() != request.fighterCandidateIds.toSet()) invalid("HOF가 요청한 팀을 저장하지 않았습니다.")
+        return ColosseumBattleResponse.from(saved)
     }
 
     /** 저장된 팀은 HOF 서버 상태를 그대로 사용하며 앱에서 팀 payload를 다시 만들지 않는다. */
-    fun challenge(accountId: Long, request: ChallengeColosseumRequest): ColosseumBattleResponse = executor.executeProjected(
+    fun challenge(accountId: Long): ColosseumBattleResponse = executor.executeProjected(
         accountId = accountId,
         pageUrl = battleUrl(),
         resolveAction = { html, finalUrl, page ->
             val snapshot = parser.parseBattle(html, finalUrl, page)
-            val actionId = snapshot.challengeActionIds[request.opponentCandidateId]
-                ?: invalid("현재 도전할 수 없는 상대입니다.")
+            if (snapshot.selectedTeam.size != 5) invalid("콜로세움에 출전할 5명을 먼저 저장해 주세요.")
+            val actionId = snapshot.challengeActionId
+                ?: invalid(snapshot.challengeNotice ?: "현재 랭킹에 도전할 수 없습니다. 새로고침 후 다시 시도해 주세요.")
             TownActionRequest(actionId)
         },
     ) { html, finalUrl, result, page ->

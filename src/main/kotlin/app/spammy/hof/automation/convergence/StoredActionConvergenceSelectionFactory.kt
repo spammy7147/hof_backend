@@ -32,14 +32,23 @@ class StoredActionConvergenceSelectionFactory {
     )
 
     /** 한 퀘스트의 현재 미션들은 같은 격리 범위 안에서 동시에 유효한 기준이다. */
-    fun authoritativeQuestBattleBaselines(snapshot: QuestAutomationSnapshot): Map<String, Set<String>> = snapshot.quests
-        .filter { it.state == QuestState.ACTIVE }
-        .associate { quest -> quest.questKey to quest.missions
-            .filter { it.type in setOf(QuestMissionType.MONSTER_KILL, QuestMissionType.MAP_CLEAR) }
-            .map { mission -> fingerprint(questBattleBaseline(quest.questKey,
-                snapshot.currentCycles[quest.questKey] ?: "0", mission.key,
+    fun authoritativeQuestBattleBaselines(snapshot: QuestAutomationSnapshot): Map<String, Set<String>> {
+        if (!snapshot.pageComplete) return emptyMap()
+        return snapshot.quests.groupBy { it.questKey }.mapNotNull { (questKey, matches) ->
+            val quest = matches.singleOrNull()?.takeIf { it.state == QuestState.ACTIVE }
+                ?: return@mapNotNull null
+            if (quest.missions.map { it.key }.distinct().size != quest.missions.size) return@mapNotNull null
+            val missions = quest.missions.filter {
+                it.type in setOf(QuestMissionType.MONSTER_KILL, QuestMissionType.MAP_CLEAR)
+            }
+            if (missions.any { mission -> mission.progress?.let {
+                it.required > 0 && it.current in 0..it.required
+            } != true }) return@mapNotNull null
+            questKey to missions.map { mission -> fingerprint(questBattleBaseline(questKey,
+                snapshot.currentCycles[questKey] ?: "0", mission.key,
                 mission.progress?.current, mission.progress?.required)) }.toSet()
-        }
+        }.toMap()
+    }
 
     fun create(
         stored: StoredTypedAutomationAction,

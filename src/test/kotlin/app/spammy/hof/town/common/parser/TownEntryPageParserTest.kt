@@ -16,7 +16,7 @@ class TownEntryPageParserTest {
         assertEquals("sell", TownFeatureId.SELL.menuCode)
         assertEquals("combine", TownFeatureId.COMBINE.menuCode)
         assertEquals("auction", TownFeatureId.AUCTION.menuCode)
-        assertEquals("colosseum", TownFeatureId.COLOSSEUM_BATTLE.menuCode)
+        assertEquals("rank", TownFeatureId.COLOSSEUM_BATTLE.menuCode)
         assertEquals("colosseumshop", TownFeatureId.COLOSSEUM_EXCHANGE.menuCode)
         assertEquals("recruit", TownFeatureId.TALENT_AGENCY.menuCode)
         assertEquals("quest2", TownFeatureId.HOME_MANAGEMENT.menuCode)
@@ -31,7 +31,7 @@ class TownEntryPageParserTest {
         assertEquals("createF", TownFeatureId.FISHING_EXCHANGE.menuCode)
         assertEquals(
             setOf(
-                "buy", "buy2", "sbuy", "sell", "combine", "auction", "colosseum", "colosseumshop", "recruit", "quest2",
+                "buy", "buy2", "sbuy", "sell", "combine", "auction", "rank", "colosseumshop", "recruit", "quest2",
                 "cardshop", "cardmix", "cardmix2", "cardsell", "fishing", "createF",
                 "stash", "orbboxshop", "sewingshop", "workbase", "refine", "create", "refine2", "create2", "raidpub",
                 "restroom", "quest", "legacy", "ann", "soulecho", "pantheon",

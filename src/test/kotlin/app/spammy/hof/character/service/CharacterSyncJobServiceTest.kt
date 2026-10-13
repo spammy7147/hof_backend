@@ -9,6 +9,12 @@ import app.spammy.hof.character.dto.CharacterSyncEventResponse
 import app.spammy.hof.character.entity.CharacterSyncFailureEntity
 import app.spammy.hof.character.entity.CharacterSyncJobEntity
 import app.spammy.hof.character.entity.CharacterSyncJobStatus
+import app.spammy.hof.character.entity.CharacterSyncMode
+import app.spammy.hof.character.entity.CharacterOperationType
+import app.spammy.hof.character.entity.CharacterOperationStatus
+import app.spammy.hof.character.entity.CharacterRecoveryStatus
+import app.spammy.hof.character.dto.CharacterOperationJobResponse
+import kotlin.test.assertFailsWith
 import app.spammy.hof.character.repository.CharacterSyncFailureCommandRepository
 import app.spammy.hof.character.repository.CharacterSyncJobQueryRepository
 import app.spammy.hof.character.repository.CharacterSyncJobRepository
@@ -51,6 +57,7 @@ class CharacterSyncJobServiceTest {
     private val savedCharacters = linkedMapOf<String, CharacterResponse>()
     private val publishedEvents = mutableListOf<CharacterSyncEventResponse>()
     private var requestStopAfterFirstCharacter = false
+    private val batchDeepSync = Mockito.mock(CharacterBatchDeepSync::class.java)
     private val service = createService(SyncTaskExecutor())
 
     private fun createService(taskExecutor: TaskExecutor) = CharacterSyncJobService(
@@ -68,6 +75,7 @@ class CharacterSyncJobServiceTest {
         taskExecutor = taskExecutor,
         timeProvider = TimeProvider { now },
         mutationFence = app.spammy.hof.town.common.service.AccountHofMutationFence(),
+        batchDeepSync = batchDeepSync,
     )
 
     @Test
@@ -205,6 +213,100 @@ class CharacterSyncJobServiceTest {
         assertEquals(listOf("222"), publishedEvents.mapNotNull { it.character?.hofCharacterId })
     }
 
+    @Test
+    fun `전체 설정은 각 캐릭터 복원 후 다음 캐릭터를 수집한다`() {
+        arrangeDeepSync()
+        val started = service.startSyncJob(1, CharacterSyncMode.DEEP)
+        val result = service.findSyncJob(1, started.jobId)
+        assertEquals("completed", result.status)
+        assertEquals(CharacterSyncMode.DEEP, result.syncMode)
+        assertEquals(2, result.syncedCount)
+        assertEquals("[111,222]", savedJobs[12L]?.deepSyncTargets)
+        val order = Mockito.inOrder(batchDeepSync)
+        order.verify(batchDeepSync).prepare(anySyncJob(), Mockito.eq(111L))
+        order.verify(batchDeepSync).execute(1, 111)
+        order.verify(batchDeepSync).prepare(anySyncJob(), Mockito.eq(222L))
+        order.verify(batchDeepSync).execute(1, 222)
+        Mockito.verifyNoInteractions(snapshotSynchronizer)
+    }
+
+    @Test
+    fun `수집 또는 복원 실패 시 다음 캐릭터를 건드리지 않는다`() {
+        arrangeDeepSync()
+        Mockito.`when`(batchDeepSync.execute(1, 111)).thenReturn(deepResult(111).copy(
+            status = CharacterOperationStatus.FAILED, recoveryStatus = CharacterRecoveryStatus.REQUIRED,
+            message = "원본 복구 필요"))
+        val started = service.startSyncJob(1, CharacterSyncMode.DEEP)
+        val result = service.findSyncJob(1, started.jobId)
+        assertEquals("failed", result.status)
+        assertEquals(0, result.syncedCount)
+        assertEquals(listOf("111"), result.failedCharacterIds)
+        assertEquals("원본 복구 필요", result.message)
+        Mockito.verify(batchDeepSync, Mockito.never()).execute(1, 222)
+    }
+
+    @Test
+    fun `중지 후 순서와 게임 ID가 바뀌어도 저장한 내부 ID로 나머지만 수집한다`() {
+        arrangeDeepSync()
+        Mockito.`when`(batchDeepSync.execute(1, 111)).thenAnswer {
+            service.stopSyncJob(1, 12)
+            deepResult(111)
+        }
+        service.startSyncJob(1, CharacterSyncMode.DEEP)
+        assertEquals("stopped", service.findSyncJob(1, 12).status)
+        assertEquals(1, service.findSyncJob(1, 12).syncedCount)
+        savedCharacters["222"] = savedCharacters.getValue("222").copy(hofCharacterId = "333", rosterOrder = 0)
+        savedCharacters["111"] = savedCharacters.getValue("111").copy(rosterOrder = 1)
+        service.resumeSyncJob(1, 12)
+        assertEquals("completed", service.findSyncJob(1, 12).status)
+        assertEquals(2, service.findSyncJob(1, 12).syncedCount)
+        Mockito.verify(batchDeepSync, Mockito.times(1)).execute(1, 111)
+        Mockito.verify(batchDeepSync, Mockito.times(1)).execute(1, 222)
+        assertEquals(1, gateway.requests.size)
+    }
+
+    @Test
+    fun `상세 동기화 실행 중 깊은 동기화를 요청하면 다른 작업으로 오인하지 않는다`() {
+        arrangeRepositories()
+        val queued = createService(TaskExecutor { })
+        queued.startSyncJob(1)
+        assertFailsWith<app.spammy.hof.common.error.ApiException> { queued.startSyncJob(1, CharacterSyncMode.DEEP) }
+    }
+
+    @Test
+    fun `재시작은 전체 수집을 중지하고 복구 완료된 자식은 중복 수집하지 않는다`() {
+        arrangeDeepSync()
+        savedJobs[12] = CharacterSyncJobEntity(id = 12, account = account, status = CharacterSyncJobStatus.RUNNING,
+            startedAt = now, syncMode = CharacterSyncMode.DEEP, deepSyncTargets = "[111,222]", rosterCount = 2,
+            currentOperationJobId = 111, currentHofCharacterId = "111")
+        Mockito.`when`(syncJobQueryRepository.findActiveDeepSyncs()).thenReturn(listOf(savedJobs.getValue(12)))
+        Mockito.`when`(batchDeepSync.current(1, 111)).thenReturn(deepResult(111))
+        service.markInterruptedDeepSyncs()
+        assertEquals("stopped", service.findSyncJob(1, 12).status)
+        service.resumeSyncJob(1, 12)
+        assertEquals("completed", service.findSyncJob(1, 12).status)
+        assertEquals(2, service.findSyncJob(1, 12).syncedCount)
+    }
+
+    private fun deepResult(id: Long) = CharacterOperationJobResponse(id = id,
+        operationType = CharacterOperationType.DEEP_SYNC, status = CharacterOperationStatus.COMPLETED,
+        sourceCharacterId = null, targetCharacterId = id, updatedAt = now,
+        recoveryStatus = CharacterRecoveryStatus.RESTORED)
+
+    private fun arrangeDeepSync() {
+        arrangeRepositories()
+        for (id in listOf(111L, 222L)) {
+            savedCharacters[id.toString()] = CharacterResponse(id, id.toString(), "캐릭터 $id", "전사", 10, 1, null, revision = now)
+            Mockito.`when`(batchDeepSync.prepare(anySyncJob(), Mockito.eq(id))).thenAnswer {
+                (it.arguments[0] as CharacterSyncJobEntity).currentOperationJobId = id
+                id
+            }
+            Mockito.`when`(batchDeepSync.execute(1, id)).thenReturn(deepResult(id))
+        }
+        Mockito.doAnswer { syncJobRepository.save(it.arguments[0] as CharacterSyncJobEntity); null }
+            .`when`(batchDeepSync).saveProgress(anySyncJob())
+    }
+
     private fun arrangeRepositories() {
         Mockito.`when`(eventService.connect(Mockito.eq(12L), anySyncEvent()))
             .thenReturn(SseEmitter())
@@ -232,6 +334,7 @@ class CharacterSyncJobServiceTest {
                         stopRequested = job.stopRequested,
                         lastCompletedRosterIndex = job.lastCompletedRosterIndex,
                         currentHofCharacterId = job.currentHofCharacterId,
+                        syncMode = job.syncMode,
                     )
                 } else {
                     job

@@ -1,5 +1,7 @@
 package app.spammy.hof.character.controller
 
+import app.spammy.hof.character.entity.CharacterSyncMode
+
 import app.spammy.hof.account.service.HofSessionRecoveryService
 import app.spammy.hof.character.dto.CharacterDetailResponse
 import app.spammy.hof.character.dto.CharacterResponse
@@ -63,12 +65,18 @@ class CharacterController(
      * 캐릭터 동기화 job을 생성하고 즉시 백그라운드 실행한다.
      */
     @PostMapping("/sync-jobs")
-    fun startSyncJob(@CurrentAccountId accountId: Long): CharacterSyncJobResponse =
-        characterSyncJobService.startSyncJob(accountId)
+    fun startSyncJob(
+        @CurrentAccountId accountId: Long,
+        @RequestParam(defaultValue = "DETAIL") mode: CharacterSyncMode,
+    ): CharacterSyncJobResponse = characterSyncJobService.startSyncJob(accountId, mode)
 
     /**
      * 캐릭터 동기화 job의 현재 snapshot을 조회한다.
      */
+    @GetMapping("/sync-jobs/current")
+    fun latestSyncJob(@CurrentAccountId accountId: Long): CharacterSyncJobResponse? =
+        characterSyncJobService.findLatestSyncJob(accountId)
+
     @GetMapping("/sync-jobs/{jobId}")
     fun findSyncJob(
         @CurrentAccountId accountId: Long,

@@ -55,6 +55,16 @@ class CharacterSyncJobEntity(
 
     @Column(name = "current_hof_character_id", length = 50)
     var currentHofCharacterId: String? = null,
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "sync_mode", nullable = false)
+    var syncMode: CharacterSyncMode = CharacterSyncMode.DETAIL,
+
+    @Column(name = "deep_sync_targets", columnDefinition = "text")
+    var deepSyncTargets: String? = null,
+
+    @Column(name = "current_operation_job_id")
+    var currentOperationJobId: Long? = null,
 )
 
 /**
@@ -67,3 +77,5 @@ enum class CharacterSyncJobStatus {
     FAILED,
     STOPPED,
 }
+
+enum class CharacterSyncMode { DETAIL, DEEP }

@@ -66,6 +66,10 @@ abstract class AutomationQuestBattleContinuityTest : AutomationRecoveryFixture()
         verifyQuestBattleDirectResult()
 
     @Test
+    fun `미확정 보류 뒤 같은 진행도를 다시 읽어 새 전투와 다음 판단을 이어간다`() =
+        verifyQuestBattleDirectResult(preexistingHold = true)
+
+    @Test
     fun `수신한 퀘스트 전투 승리의 로컬 완료가 실패해도 원래 결과와 후속 판단을 복구한다`() =
         verifyQuestBattleDirectResult(failFirstApplication = true)
 
@@ -98,6 +102,7 @@ abstract class AutomationQuestBattleContinuityTest : AutomationRecoveryFixture()
         outcomes: List<BattleAutomationRoundOutcome> = listOf(BattleAutomationRoundOutcome.VICTORY),
         expectedVictories: Int = 1,
         receiptStoredBeforeRecovery: Boolean? = null,
+        preexistingHold: Boolean = false,
     ) {
         Mockito.doCallRealMethod().`when`(decisions).select(accountId)
         val questUrl = "https://hof.zerosic.com/index.php?menu=quest"
@@ -203,6 +208,21 @@ abstract class AutomationQuestBattleContinuityTest : AutomationRecoveryFixture()
             HofHttpResponse(200, request.url, body, emptyMap())
         }.`when`(gateway).execute(Mockito.eq(accountId), anyRequest(), Mockito.anyMap())
 
+        val previousIdentity = "held-quest-battle"
+        if (preexistingHold) {
+            val preview = StoredActionConvergenceSelectionFactory().preview(entryId, QuestAction.Battle(
+                quest.questKey, "0", mission.key, mission.type, "battle_map", "0003", "도적소탕",
+                QuestPresetSelection(PresetSelectionMode.PRIMARY, null),
+                missionCurrent = 12, missionRequired = 30,
+            ))
+            val selected = SelectedAutomationAction(entryId, previousIdentity, preview.actionKind, preview.scope,
+                ProductionActionEvidenceInterpreter.VERSION_1, requireNotNull(preview.baselineFingerprint))
+            DefaultAutomationActionConvergenceModule(store, clock).holdUnresolved(accountId, selected,
+                AutomationActionEvidence.ResultUnobserved(clock.now().minusSeconds(1), "외부 관측 지연"),
+                0, clock.now().minusSeconds(181))
+            assertEquals(setOf(selected.baselineFingerprint), store.findSuppressedBaselines(accountId)[selected.scope])
+        }
+
         var failureInjected = false
         var receivedIdentity: String? = null
         if (failFirstApplication) {
@@ -230,6 +250,17 @@ abstract class AutomationQuestBattleContinuityTest : AutomationRecoveryFixture()
         else publisher.publishBatch()
 
         assertEquals(1, battleCount)
+        if (preexistingHold) {
+            val previous = assertNotNull(store.get(accountId, previousIdentity))
+            assertEquals(ActionConvergenceResult.RESULT_UNOBSERVED, previous.result)
+            assertEquals("PENDING_BUDGET_EXHAUSTED", previous.reasonCode)
+            assertEquals(0, previous.successfulObservationCount)
+            assertTrue(store.findSuppressedBaselines(accountId).isEmpty())
+            assertEquals(1, jdbc.queryForObject(
+                "select count(*) from automation_action_convergences c join automation_action_attempts a on a.id = c.attempt_id " +
+                    "where c.account_id = ? and a.execution_identity = ? and c.suppression_released_at is not null",
+                Int::class.java, accountId, previousIdentity))
+        }
         assertFalse(homeAccepted, "첫 판단은 앞선 퀘스트 전투 하나만 제출한다.")
         val identity = assertNotNull(jdbc.queryForObject(
             "select execution_identity from typed_automation_action_runs where account_id = ? and action_kind = 'QUEST_BATTLE'",

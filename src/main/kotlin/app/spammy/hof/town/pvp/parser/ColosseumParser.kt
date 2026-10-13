@@ -5,7 +5,7 @@ import app.spammy.hof.external.parser.HofHtmlParser
 import app.spammy.hof.town.common.model.*
 import app.spammy.hof.town.pvp.model.*
 import java.net.URI
-import java.security.MessageDigest
+import org.jsoup.nodes.FormElement
 import org.jsoup.nodes.Element
 import org.springframework.stereotype.Component
 
@@ -13,41 +13,43 @@ import org.springframework.stereotype.Component
 class ColosseumParser {
     fun parseBattle(html: String, finalUrl: String, page: ParsedTownPage, result: ParsedTownResult? = null): ColosseumBattleSnapshot {
         val doc = HofHtmlParser.parse(html, finalUrl)
-        val semanticTeamForms = page.forms.filter { form ->
-            form.submitFields.singleOrNull()?.let { TEAM.matchesSemantic(it.name, it.value) } == true &&
-                form.candidates.any { it.selectionType == TownSelectionType.CHECKBOX } &&
-                form.candidates.none { it.selectionType == TownSelectionType.RADIO }
-        }
-        val teamForm = semanticTeamForms.singleOrNull() ?: page.forms.singleOrNull { form ->
-            val checkboxes = form.candidates.filter { it.selectionType == TownSelectionType.CHECKBOX }
-            checkboxes.isNotEmpty() && form.candidates.none { it.selectionType == TownSelectionType.RADIO } &&
-                checkboxes.map { it.inputName }.distinct().singleOrNull()?.let(TEAM_FIELD::matches) == true
-        }
-        val challengeForms = page.forms.filter { form ->
-            form.submitFields.singleOrNull()?.let { CHALLENGE.matchesSemantic(it.name, it.value) } == true &&
-                form.candidates.none { it.selectionType == TownSelectionType.CHECKBOX }
+        val teamForm = page.forms.singleOrNull { form ->
+            isRankForm(form) && (TEAM.matches(form.submitLabel) || form.hiddenFields.any { it.name == "SetRankTeam" }) && form.candidates.isNotEmpty() &&
+                form.candidates.all { it.selectionType == TownSelectionType.CHECKBOX && CHARACTER_FIELD.matches(it.inputName) }
         }
         val teamDom = teamForm?.let { findDomForm(doc, it) }
-        val selectedValues = teamDom?.select("input[type=checkbox][checked]")?.map { it.attr("name") to it.attr("value").ifBlank { "on" } }?.toSet().orEmpty()
-        val fighters = teamForm?.let { observedTeamForm -> observedTeamForm.candidates.filter { it.selectionType == TownSelectionType.CHECKBOX }.take(MAX_FIGHTERS).map { candidate ->
-            val row = observedTeamForm.rows.single { it.candidate === candidate }
-            val control = teamDom?.select("input[type=checkbox]")?.singleOrNull { it.attr("name") == candidate.inputName && it.attr("value").ifBlank { "on" } == candidate.inputValue }
+        val fighters = teamForm?.candidates.orEmpty().sortedBy { it.inputPosition }.take(MAX_FIGHTERS).map { candidate ->
+            val control = teamDom?.let(::formControls)?.singleOrNull { it.attr("name") == candidate.inputName }
             val container = control?.closest("td") ?: control?.parent()
-            ColosseumFighter(candidate.id, clean(row.label).take(MAX_TEXT), clean(row.label).take(MAX_TEXT), container?.selectFirst("img")?.absUrl("src")?.ifBlank { null }?.take(MAX_URL), candidate.inputName to candidate.inputValue in selectedValues)
-        } }.orEmpty()
-        val selected = fighters.filter(ColosseumFighter::selected).map(ColosseumFighter::id)
-        val max = teamDom?.select("input[type=checkbox]")?.firstOrNull()?.attr("data-max")?.toIntOrNull()
-            ?: MAX_TEAM.find(clean(doc.text()))?.groupValues?.get(1)?.toIntOrNull() ?: if (teamForm == null) 0 else COLOSSEUM_TEAM_SIZE
-        val stableIds = challengeForms.map { form -> form to stableOpponentId(form) }
-        val uniqueIds = stableIds.mapNotNull { it.second }.groupingBy { it }.eachCount()
-        val opponents = stableIds.mapIndexedNotNull { index, (form, stableId) ->
-            stableId?.takeIf { uniqueIds[it] == 1 } ?: return@mapIndexedNotNull null
-            val dom = findDomForm(doc, form)
-            val context = clean((dom?.closest("tr") ?: dom)?.text().orEmpty()).take(MAX_TEXT)
-            ColosseumOpponent(stableId, context.replace(CHALLENGE, "").trim().ifBlank { "도전자 ${index + 1}" }.take(MAX_TEXT), context)
-        }.take(MAX_OPPONENTS)
-        val actionIds = opponents.associate { opponent -> opponent.id to stableIds.single { it.second == opponent.id }.first.actionId }
-        return ColosseumBattleSnapshot(fighters, selected, if (teamForm == null) 0 else 1, max, opponents, parseBattleResult(doc), result, teamForm?.actionId, actionIds)
+            ColosseumFighter("fighter-${candidate.inputName.removePrefix("char_")}", clean(candidate.label).take(MAX_TEXT), clean(candidate.label).take(MAX_TEXT),
+                container?.selectFirst("img")?.absUrl("src")?.ifBlank { null }?.take(MAX_URL), candidate.selected,
+                candidate.inputName.removePrefix("char_"))
+        }
+        val challengeForm = page.forms.singleOrNull { form ->
+            isRankForm(form) &&
+                form.submitFields.singleOrNull()?.let { it.name == "ChallengeRank" && it.value == "challenge!" } == true &&
+                form.candidates.isEmpty()
+        }
+        val top = parseRankings(doc, "TOP 5")
+        val near = parseRankings(doc, "NEAR 5")
+        val notice = doc.select("#contents").firstOrNull()?.let { NEXT_CHALLENGE.find(clean(it.text()))?.value }
+            ?: NEXT_CHALLENGE.find(clean(doc.text()))?.value
+        return ColosseumBattleSnapshot(fighters, fighters.filter(ColosseumFighter::selected).map(ColosseumFighter::id),
+            COLOSSEUM_TEAM_SIZE, COLOSSEUM_TEAM_SIZE, top, near, challengeForm != null, notice,
+            parseBattleResult(doc), result, teamForm?.takeIf { TEAM.matches(it.submitLabel) }?.actionId,
+            teamForm?.candidates.orEmpty().associate { "fighter-${it.inputName.removePrefix("char_")}" to it.id }, challengeForm?.actionId)
+    }
+
+    private fun parseRankings(doc: org.jsoup.nodes.Document, heading: String): List<ColosseumRanking> {
+        val group = doc.select("div").singleOrNull { clean(it.ownText()) == heading }?.parent() ?: return emptyList()
+        return group.selectFirst("table")?.select("tr")?.mapNotNull { row ->
+            val cells = row.children().filter { it.tagName() == "td" }
+            if (cells.size != 2 || clean(cells[0].text()) == "순위") return@mapNotNull null
+            val trophy = cells[0].selectFirst("img")?.attr("src")?.let { TROPHY.find(it)?.groupValues?.get(1) }
+            val rank = clean(cells[0].text()).ifBlank { trophy?.let { "${it}위" }.orEmpty() }
+            val teams = cells[1].wholeText().lines().map(::clean).filter(String::isNotBlank).map { it.take(MAX_TEXT) }
+            rank.takeIf(String::isNotBlank)?.let { ColosseumRanking(it, teams.take(MAX_OPPONENTS)) }
+        }?.take(5).orEmpty()
     }
 
     fun parseShop(html: String, finalUrl: String, page: ParsedTownPage, result: ParsedTownResult? = null): ColosseumShopSnapshot {
@@ -84,27 +86,51 @@ class ColosseumParser {
     }
 
     private fun parseBattleResult(doc: org.jsoup.nodes.Document): ColosseumBattleResult? {
+        val outcome = doc.select("span,h1,h2,td,div,p").lastOrNull { element ->
+            WINNER.containsMatchIn(clean(element.ownText())) || DRAW.matches(clean(element.ownText()))
+        } ?: return null
+        val summary = clean(outcome.ownText())
+        val victory = WINNER.find(summary)
         val text = clean(doc.text())
-        val victory = WINNER.find(text) ?: return null
-        val summary = clean(victory.value)
-        val turns = TURNS.find(text)?.groupValues?.get(1)?.boundedInt(MAX_TURNS)
-        val hp = HP.findAll(text).map { it.groupValues[1] }.toList()
-        val statuses = STATUS.findAll(text).map { clean(it.groupValues[1]) }.toList()
-        val ownLines = doc.select("h1,h2,h3,li,tr,p,div").map { clean(it.ownText()) }.filter(String::isNotBlank).distinct()
-        val details = ownLines.filter { TURN_NUMBER.containsMatchIn(it) && TURN_ACTION.containsMatchIn(it) }.map { line ->
-            val match = TURN_NUMBER.find(line)
-            ColosseumTurnLine(match?.groupValues?.drop(1)?.firstOrNull(String::isNotBlank)?.boundedInt(MAX_TURNS), line.take(MAX_TEXT))
+        val resultCells = doc.select("td.teams").filter { HP.containsMatchIn(it.text()) && STATUS.containsMatchIn(it.text()) }
+        val labels = doc.select("td").filter { it.text().contains("레벨 합계") && it.text().contains("평균 레벨") }
+            .map { clean(it.wholeText().lineSequence().firstOrNull { line -> line.isNotBlank() }.orEmpty()).take(MAX_TEXT) }
+        val teams = resultCells.takeLast(2).mapIndexed { index, cell ->
+            val value = clean(cell.text())
+            ColosseumBattleTeamResult(labels.getOrNull(index), HP.find(value)?.groupValues?.get(1),
+                STATUS.find(value)?.groupValues?.get(1), DAMAGE.find(value)?.groupValues?.get(1)?.boundedLong())
         }
-        val reward = ownLines.firstOrNull { REWARD_LINE.containsMatchIn(it) && !HP.containsMatchIn(it) }?.take(MAX_TEXT)
-        val winner = victory.groupValues[1].substringAfterLast('》').replace(RANK, "").trim().take(MAX_TEXT)
-        return ColosseumBattleResult(turns, winner, summary.take(MAX_TEXT), hp.getOrNull(0), hp.getOrNull(1), statuses.getOrNull(0)?.take(MAX_TEXT), statuses.getOrNull(1)?.take(MAX_TEXT), DAMAGE.find(text)?.groupValues?.get(1)?.boundedLong(), reward, details.take(MAX_DETAIL))
+        val turns = TURNS.find(text)?.groupValues?.drop(1)?.firstOrNull(String::isNotBlank)?.boundedInt(MAX_TURNS)
+        val reward = doc.select("body *").map { clean(it.ownText()) }
+            .firstOrNull { REWARD_LINE.containsMatchIn(it) && !HP.containsMatchIn(it) }?.take(MAX_TEXT)
+        val detailUrl = doc.select("a[href]").mapNotNull { link ->
+            runCatching { URI(link.absUrl("href")) }.getOrNull()?.takeIf { uri ->
+                uri.scheme == "https" && uri.host == "hof.zerosic.com" && uri.userInfo == null &&
+                    uri.port == -1 && uri.path in setOf("", "/", "/index.php") && DETAIL_QUERY.matches(uri.rawQuery.orEmpty())
+            }?.toString()
+        }.distinct().singleOrNull()
+        return ColosseumBattleResult(turns, victory?.groupValues?.get(1)?.substringAfterLast('》')?.replace(RANK, "")?.trim(),
+            summary.take(MAX_TEXT), teams, reward, detailUrl)
     }
+
+    private fun formControls(form: Element): List<Element> =
+        if (form is FormElement) form.elements().toList() else form.select("input,button,select,textarea").toList()
+
+    private fun isRankForm(form: ParsedTownForm): Boolean =
+        form.method == app.spammy.hof.external.model.HofHttpMethod.POST &&
+            URI(form.actionUrl).rawQuery == "menu=rank"
 
     private fun findDomForm(doc: org.jsoup.nodes.Document, form: ParsedTownForm): Element? = doc.select("form").singleOrNull { dom ->
         val method = if (dom.attr("method").equals("post", true)) "POST" else "GET"
         val action = if (dom.attr("action").isBlank()) doc.location() else URI(doc.location()).resolve(dom.attr("action")).toString()
         method == form.method.name && (action == form.actionUrl || action.substringAfter('?') == form.actionUrl.substringAfter('?')) &&
-            dom.select("input,button").any { el -> form.submitFields.any { it.name == el.attr("name") && it.value == el.attr("value").ifBlank { el.text() } } }
+            (form.submitLabel.isBlank() && formControls(dom).any { it.attr("name") == "SetRankTeam" } ||
+            formControls(dom).any { el ->
+                val type = el.attr("type").lowercase()
+                (type == "submit" || el.tagName() == "button") &&
+                    clean(el.attr("value").ifBlank { el.text() }) == form.submitLabel &&
+                    (form.submitFields.isEmpty() && el.attr("name").isBlank() || form.submitFields.any { it.name == el.attr("name") && it.value == el.attr("value").ifBlank { el.text() } })
+            })
     }
     private fun clean(v: String) = v.replace(Regex("\\s+"), " ").trim()
     private fun css(v: String) = "'${v.replace("'", "\\'")}'"
@@ -124,32 +150,24 @@ class ColosseumParser {
                 .flatMap { source -> ITEM_T_ASSIGNMENT.findAll(source).map { it.groupValues[3] }.toList() }.distinct()
             candidate to (values.singleOrNull() ?: return@mapNotNull null)
         }.toMap()
-    private fun stableOpponentId(form: ParsedTownForm): String? {
-        val fields = form.hiddenFields.filterNot { VOLATILE_FIELD.containsMatchIn(it.name) }
-            .map { clean(it.name) to it.value.trim() }.filter { it.first.isNotBlank() && it.second.isNotBlank() }
-        if (fields.isEmpty()) return null
-        val canonical = fields.sortedWith(compareBy<Pair<String, String>> { it.first }.thenBy { it.second }).joinToString("\u001f") { "${it.first}\u001e${it.second}" }
-        val hash = MessageDigest.getInstance("SHA-256").digest(canonical.toByteArray()).joinToString("") { "%02x".format(it) }
-        return "opponent-${hash.take(32)}"
-    }
     private fun String.boundedInt(max: Int = Int.MAX_VALUE) = replace(",", "").toLongOrNull()?.takeIf { it in 0..max.toLong() }?.toInt()
     private fun String.boundedLong() = replace(",", "").toBigIntegerOrNull()?.takeIf { it.signum() >= 0 && it.bitLength() <= 63 }?.toLong()
     private companion object {
         val TEAM = Regex("(?:set\\s*team|team\\s*setting|팀\\s*(?:설정|저장))", RegexOption.IGNORE_CASE)
-        val TEAM_FIELD = Regex("team(?:\\[\\])?", RegexOption.IGNORE_CASE)
-        val CHALLENGE = Regex("(?:challenge|도전|전투를?\\s*시작)", RegexOption.IGNORE_CASE)
         val TRADE = Regex("(?:create|trade|교환)", RegexOption.IGNORE_CASE)
         val SHOP_TITLE = Regex("콜로세움\\s*교환소|Colosseum\\s*Shop", RegexOption.IGNORE_CASE)
-        val MAX_TEAM = Regex("(?:최대|max)\\s*([0-9]+)", RegexOption.IGNORE_CASE)
-        val TURNS = Regex("(?:Show\\s*Detail\\s*\\(|)([0-9]+)\\s*turns?", RegexOption.IGNORE_CASE)
+        val CHARACTER_FIELD = Regex("char_[0-9]+")
+        val TROPHY = Regex("Thro([1-3])[.]gif", RegexOption.IGNORE_CASE)
+        val NEXT_CHALLENGE = Regex("Time left to Next\\s*:\\s*[0-9]+:[0-9]{2}:[0-9]{2}", RegexOption.IGNORE_CASE)
+        val TURNS = Regex("([0-9]+)\\s*turns?|턴\\s*:\\s*([0-9]+)\\s*/[0-9]+", RegexOption.IGNORE_CASE)
+        val DRAW = Regex(".*(?:무승부|비겼다|draw).*", RegexOption.IGNORE_CASE)
+        val DETAIL_QUERY = Regex("rlog=[0-9]{1,30}")
         val WINNER = Regex("([^<>.!?]{1,120}?)(?:은\\(는\\)|은|는|이|가)?\\s*승리(?:했다|했습니다|!)", RegexOption.IGNORE_CASE)
         val RANK = Regex("\\[[^]]{1,30}]")
         val HP = Regex("(?:남은\\s*)?HP\\s*:?\\s*([0-9,]+\\s*/\\s*[0-9,]+)", RegexOption.IGNORE_CASE)
         val STATUS = Regex("(?:상태|생존자)\\s*:?\\s*([^\\s|·]+)")
         val DAMAGE = Regex("총\\s*(?:데미지|대미지)\\s*:?\\s*([0-9,]+)")
         val REWARD_LINE = Regex("보상|획득|얻었다|얻었습니다")
-        val TURN_ACTION = Regex("(?:공격|피해|데미지|대미지|damage|attack)", RegexOption.IGNORE_CASE)
-        val TURN_NUMBER = Regex("(?:turn|턴)\\s*([0-9]+)|([0-9]+)\\s*(?:turn|턴)", RegexOption.IGNORE_CASE)
         val PRICE = Regex("[$]\\s*([0-9,]+)")
         val PRICE_PREFIX = Regex("^[$]\\s*[0-9,]+\\s*")
         val OWNED = Regex("[x×]\\s*([0-9,]+)", RegexOption.IGNORE_CASE)
@@ -158,9 +176,7 @@ class ColosseumParser {
         val OWNED_CURRENCY = Regex("보유\\s*중|보유량|소지\\s*(?:중|품|재화)")
         val HEADER = Regex("^(제작비|수수료|Item|아이템)(?:\\s+(Item|아이템))?$", RegexOption.IGNORE_CASE)
         val ITEM_T_ASSIGNMENT = Regex("(?:document\\.getElementById\\(\\s*(['\"])ItemT\\1\\s*\\)|(?:document\\.)?ItemT)\\s*\\.value\\s*=\\s*(['\"]?)([A-Za-z0-9_.:-]+)\\2", RegexOption.IGNORE_CASE)
-        val VOLATILE_FIELD = Regex("(?:nonce|token|csrf|session|timestamp|time|captcha|submit|challenge)", RegexOption.IGNORE_CASE)
         const val MAX_TURNS = 10_000
-        const val MAX_DETAIL = 500
         const val MAX_TEXT = 500
         const val MAX_URL = 2_000
         const val MAX_FIGHTERS = 100

@@ -14,6 +14,7 @@ import app.spammy.hof.town.common.model.TownEditableFieldType
 import java.net.URI
 import java.security.MessageDigest
 import org.jsoup.nodes.Element
+import org.jsoup.nodes.FormElement
 import org.springframework.stereotype.Component
 
 @Component
@@ -39,8 +40,10 @@ class HofFormParser {
             HofHttpMethod.GET
         }
         val actionUrl = resolveAction(pageUrl, form.attr("action"))
-        val ownedControls = form.select("input, button, select, textarea")
-            .filter { it.closest("form") === form && !it.hasAttr("disabled") }
+        // table 안의 form은 HTML 복구 과정에서 컨트롤과 떨어질 수 있다.
+        // DOM 자손 대신 브라우저와 같은 폼 소유 관계를 사용한다.
+        val ownedControls = (if (form is FormElement) form.elements() else form.select("input, button, select, textarea"))
+            .filter { !it.hasAttr("disabled") }
         val hiddenFields = ownedControls
             .filter { it.tagName() == "input" && it.attr("type").equals("hidden", ignoreCase = true) }
             .mapNotNull(::namedValue)
@@ -128,7 +131,7 @@ class HofFormParser {
                 control.attr("name").isNotBlank()
         }
         val valueCounts = selectable.groupingBy { it.attr("value").trim().ifBlank { "on" } }.eachCount()
-        val rowElements = form.select("tr").filter { it.closest("form") === form }
+        val rowElements = (form.select("tr").filter { it.closest("form") === form } + selectable.mapNotNull { it.closest("tr") }).distinct()
         val rowControls = rowElements.associateWith { row ->
             selectable.filter { it.closest("tr") === row }.singleOrNull()
         }
@@ -143,7 +146,7 @@ class HofFormParser {
             .forEach { control ->
                 val owner = sequenceOf("td", "li", "label", "div", "p")
                     .mapNotNull(control::closest)
-                    .firstOrNull { it.closest("form") === form }
+                    .firstOrNull { it.closest("form") == null || it.closest("form") === form }
                 rows += (owner ?: control.parent() ?: control).toParsedRow(
                     control,
                     controls,

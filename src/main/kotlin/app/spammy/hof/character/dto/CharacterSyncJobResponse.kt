@@ -1,5 +1,7 @@
 package app.spammy.hof.character.dto
 
+import app.spammy.hof.character.entity.CharacterSyncMode
+
 import java.time.Instant
 
 /**
@@ -19,4 +21,5 @@ data class CharacterSyncJobResponse(
     val stopRequested: Boolean = false,
     val lastCompletedRosterIndex: Int = -1,
     val currentHofCharacterId: String? = null,
+    val syncMode: CharacterSyncMode = CharacterSyncMode.DETAIL,
 )

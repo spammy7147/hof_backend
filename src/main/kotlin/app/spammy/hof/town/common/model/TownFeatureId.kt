@@ -18,7 +18,7 @@ enum class TownFeatureId(
     AUCTION("옥션", "auction", "Auction"),
     AUCTION_MARKET("낙찰 시세", null, "Auction Market", "Market Price"),
 
-    COLOSSEUM_BATTLE("콜로세움 전투", "colosseum", "Colosseum Battle"),
+    COLOSSEUM_BATTLE("콜로세움 전투", "rank", "콜로세움", "Colosseum Battle", "랭킹", "Ranking"),
     COLOSSEUM_EXCHANGE("콜로세움 교환소", "colosseumshop", "Colosseum Shop"),
 
     ADVENTURE_AGENCY("모험 알선소", "quest", "Quest", "Quest Agency"),

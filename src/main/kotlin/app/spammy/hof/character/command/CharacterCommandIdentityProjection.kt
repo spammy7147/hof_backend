@@ -96,6 +96,10 @@ class CharacterCommandIdentityProjection(
             replacementHofCharacterId,
             provisionalCharacterId = provisional?.id,
         )
+        val orderByHofId = rosterIds.withIndex().associate { it.value to it.index }
+        characters.findAllByAccountId(accountId).forEach { character ->
+            orderByHofId[character.hofCharacterId]?.let { character.rosterOrder = it }
+        }
         return CharacterCommandIdentityProjectionResult.Applied
     }
 

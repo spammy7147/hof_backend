@@ -52,6 +52,7 @@ class CharacterLifecycleTransaction(
                 require(userConfirmed || provisional.id == provisionalCharacterId) {
                     "이미 다른 캐릭터로 관측된 HOF ID는 사용자 확인 없이 연결할 수 없습니다."
                 }
+                character.rosterOrder = provisional.rosterOrder ?: character.rosterOrder
                 characters.delete(provisional)
                 characters.flush()
             }

@@ -13,6 +13,25 @@ class HofFormParserTest {
     private val parser = HofFormParser()
 
     @Test
+    fun `table 때문에 DOM에서 떨어진 컨트롤은 원래 폼 소유권과 순서를 유지한다`() {
+        val html = """
+            <table><form method="post" action="?menu=rank">
+            <tr><td>A<input type="checkbox" name="char_101" value="1" checked></td>
+            <td>B<input type="checkbox" name="char_102" value="1"></td></tr></table>
+            <input type="submit" value="SetTeam"><input type="hidden" name="SetRankTeam" value="observed"></form>
+            <form action="?menu=other"><input type="checkbox" name="other" value="9"><input type="submit" name="Other" value="Other"></form>
+        """.trimIndent()
+        val page = parser.parse(html)
+        val team = page.forms.single { it.submitLabel == "SetTeam" }
+        assertEquals(listOf("char_101", "char_102"), team.candidates.map { it.inputName })
+        assertFalse(team.candidates.any { it.inputName == "other" })
+        val submitted = app.spammy.hof.town.common.service.TownActionGuard().guard(page,
+            app.spammy.hof.town.common.model.TownActionRequest(team.actionId,
+                listOf(app.spammy.hof.town.common.model.TownActionSelection(team.candidates.first().id))))
+        assertEquals(listOf("char_101" to "1", "SetRankTeam" to "observed"), submitted.formEntries.map { it.name to it.value })
+    }
+
+    @Test
     fun `only controls owned by selected form become candidates`() {
         val page = parser.parse(fixture("fixtures/town/common/form-boundaries.html"))
 

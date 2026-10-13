@@ -45,7 +45,7 @@ class ConvergencePersistenceTest {
     @Autowired private lateinit var transactions: PlatformTransactionManager
 
     @ParameterizedTest
-    @ValueSource(strings = ["MANUAL", "BASELINE", "RAID"])
+    @ValueSource(strings = ["MANUAL", "BASELINE", "RAID", "QUEST"])
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     fun `보류 해제와 직접 적용이 경합해도 확정 결과를 옛 entity로 덮어쓰지 않는다`(release: String) {
         val now = Instant.parse("2026-09-10T00:00:00Z")
@@ -53,8 +53,10 @@ class ConvergencePersistenceTest {
         val module = DefaultAutomationActionConvergenceModule(store, TimeProvider { now.plusSeconds(2) })
         val (account, entry, attempt) = transaction.execute {
             val (account, entry) = fixture("release-race-$release", now)
-            val selected = SelectedAutomationAction(entry.id, "release-race-$release", AutomationActionKind.RAID_REGISTER,
-                AutomationIsolationScope(AutomationIsolationScopeKind.RAID_ENTRY, "raid-a"), ProductionActionEvidenceInterpreter.VERSION_1, "old-baseline")
+            val kind = if (release == "QUEST") AutomationActionKind.QUEST_BATTLE else AutomationActionKind.RAID_REGISTER
+            val scope = if (release == "QUEST") AutomationIsolationScopeKind.QUEST_TARGET else AutomationIsolationScopeKind.RAID_ENTRY
+            val selected = SelectedAutomationAction(entry.id, "release-race-$release", kind,
+                AutomationIsolationScope(scope, "target-a"), ProductionActionEvidenceInterpreter.VERSION_1, "old-baseline")
             val attempt = store.createOrGet(account.id, selected, now)
             attempt.result = ActionConvergenceResult.HELD
             attempt.submittedAt = now
@@ -73,7 +75,9 @@ class ConvergencePersistenceTest {
                             "MANUAL" -> assertTrue(module.allowFreshDecision(account.id, attempt.attemptId, now.plusSeconds(1)))
                             "BASELINE" -> assertEquals(1, module.observeAuthoritativeBaselines(account.id,
                                 attempt.selection.scope, setOf("new-baseline"), now.plusSeconds(1)))
-                            else -> assertEquals(1, module.allowRaidRegistrationFreshDecision(account.id, entry.id, "raid-a", now.plusSeconds(1)))
+                            "QUEST" -> assertEquals(1, store.releaseQuestBattleSuppressions(account.id, entry.id,
+                                "target-a", "old-baseline", now.plusSeconds(1)))
+                            else -> assertEquals(1, module.allowRaidRegistrationFreshDecision(account.id, entry.id, "target-a", now.plusSeconds(1)))
                         }
                         releaseRead.countDown()
                         check(commitRelease.await(15, TimeUnit.SECONDS))
@@ -349,6 +353,53 @@ class ConvergencePersistenceTest {
         entityManager.flush()
         entityManager.clear()
         assertEquals(emptySet(), reloaded.findPolicyHeldScopes(account.id))
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["HELD", "RESULT_UNOBSERVED", "PENDING", "OTHER_ACCOUNT", "OTHER_ENTRY",
+        "OTHER_QUEST", "OTHER_MISSION", "OTHER_KIND", "UNSUPPORTED", "OBSERVATION_ONLY", "STALE"])
+    fun `진행도 복구는 해당 퀘스트 전투의 종료된 보류만 영구 해제하고 원래 결과를 보존한다`(condition: String) {
+        val now = Instant.parse("2026-10-13T02:00:00Z")
+        val (account, entry) = fixture("quest-release-$condition", now)
+        val (otherAccount, otherEntry) = fixture("other-quest-release-$condition", now)
+        val selected = selection(entry.id, "quest-battle", "quest-a").copy(
+            actionKind = if (condition == "OTHER_KIND") AutomationActionKind.QUEST_CLAIM else AutomationActionKind.QUEST_BATTLE,
+            policyVersion = if (condition == "UNSUPPORTED") "unsupported" else ProductionActionEvidenceInterpreter.VERSION_1,
+            observationOnly = condition == "OBSERVATION_ONLY",
+        )
+        val originalResult = when (condition) {
+            "HELD" -> ActionConvergenceResult.HELD
+            "PENDING" -> ActionConvergenceResult.PENDING
+            else -> ActionConvergenceResult.RESULT_UNOBSERVED
+        }
+        val record = store.createOrGet(account.id, selected, now.minusSeconds(181)).apply {
+            result = originalResult
+            finishedAt = if (condition == "PENDING") null else now.minusSeconds(1)
+            reasonCode = "PENDING_BUDGET_EXHAUSTED"
+        }
+        store.save(record)
+        entityManager.flush()
+        entityManager.clear()
+        val reloaded = JpaConvergenceStore(entityManager)
+        val expected = if (condition in setOf("HELD", "RESULT_UNOBSERVED")) 1 else 0
+        assertEquals(expected, reloaded.releaseQuestBattleSuppressions(
+            if (condition == "OTHER_ACCOUNT") otherAccount.id else account.id,
+            if (condition == "OTHER_ENTRY") otherEntry.id else entry.id,
+            if (condition == "OTHER_QUEST") "quest-b" else "quest-a",
+            if (condition == "OTHER_MISSION") "other-mission-progress" else selected.baselineFingerprint,
+            if (condition == "STALE") now.minusSeconds(2) else now,
+        ))
+        entityManager.flush()
+        entityManager.clear()
+        val persisted = assertNotNull(reloaded.get(record.attemptId))
+        assertEquals(originalResult, persisted.result)
+        assertEquals(record.finishedAt, persisted.finishedAt)
+        assertEquals(record.successfulObservationCount, persisted.successfulObservationCount)
+        assertEquals(record.reasonCode, persisted.reasonCode)
+        assertEquals(expected == 0 && condition != "PENDING",
+            selected.baselineFingerprint in reloaded.findSuppressedBaselines(account.id)[selected.scope].orEmpty())
+        if (expected == 1) assertEquals(0, reloaded.releaseQuestBattleSuppressions(account.id, entry.id,
+            "quest-a", selected.baselineFingerprint, now.plusSeconds(1)))
     }
 
     @ParameterizedTest

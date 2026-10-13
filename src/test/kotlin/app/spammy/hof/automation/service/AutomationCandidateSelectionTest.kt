@@ -141,7 +141,7 @@ class AutomationCandidateSelectionTest {
 
     @ParameterizedTest
     @ValueSource(booleans = [false, true])
-    fun `일반 퀘스트의 막힌 전투 다음 전투를 선택하고 캡차 관문에서는 수락만 선택한다`(sameQuest: Boolean) {
+    fun `보류 전 관측에서는 독립 전투를 선택하고 새 관측에서는 원래 전투를 재판단하되 캡차 관문은 유지한다`(sameQuest: Boolean) {
         configure(AutomationType.QUEST)
         val party = ResolvedAutomationParty(listOf("1"), listOf(BattlePatternLoadRequest("1", 1)))
         val context = QuestAutomationSnapshot(7,
@@ -153,7 +153,8 @@ class AutomationCandidateSelectionTest {
                 QuestAutomationSelection("C", true, emptyList()),
             listOf("A", "B").map { AutomationMapState("battle_map", it, it, true, true, null,
                 null, null, null, BattleMapKeyMode.NOT_REQUIRED, null) },
-            emptyMap(), emptyMap(), emptyList(), now, primaryPresetId = 1, primaryParty = party,
+            // 보류 전에 읽은 상태로는 결과 억제를 해제할 수 없다.
+            emptyMap(), emptyMap(), emptyList(), now.minusSeconds(1), primaryPresetId = 1, primaryParty = party,
             timeSnapshot = AutomationTimeSnapshot(100, 100, now))
         val observed = if (sameQuest) context.copy(
             quests = listOf(context.quests.first().copy(questKey = "shared", missions = context.quests.take(2).flatMap { it.missions }), context.quests.last()),
@@ -172,19 +173,18 @@ class AutomationCandidateSelectionTest {
             hold(next)
             assertEquals("C", assertIs<QuestAction.Accept>(assertIs<AutomationCoordination.Runnable>(selector.select(7)).action).questKey)
             assertEquals(2, store.findSuppressedBaselines(7).values.single().size)
-            val changed = observed.copy(quests = observed.quests.map { quest ->
-                quest.copy(missions = quest.missions.map { mission ->
-                    if (mission.key == "A") mission.copy(progress = QuestProgress(1, 10)) else mission
-                })
-            })
-            Mockito.`when`(loader.loadEntry(7, 10, null, null)).thenReturn(AutomationEntrySnapshot(10, AutomationType.QUEST, quest = changed))
-            assertEquals("A", assertIs<QuestAction.Battle>(assertIs<AutomationCoordination.Runnable>(selector.select(7)).action).missionKey)
-            assertEquals(setOf(requireNotNull(factory.preview(10, next).baselineFingerprint)), store.findSuppressedBaselines(7).values.single())
         }
+        // 진행도가 같아도 보류 뒤 완전하게 다시 읽으면 해당 후보의 새 판단을 허용한다.
+        Mockito.`when`(loader.loadEntry(7, 10, null, null)).thenReturn(
+            AutomationEntrySnapshot(10, AutomationType.QUEST, quest = observed.copy(now = now)))
+        assertEquals("A", assertIs<QuestAction.Battle>(assertIs<AutomationCoordination.Runnable>(selector.select(7)).action).missionKey)
+        if (sameQuest) assertEquals(setOf(requireNotNull(factory.preview(10, next).baselineFingerprint)),
+            store.findSuppressedBaselines(7).values.single())
+        else assertTrue(store.findSuppressedBaselines(7).isEmpty())
         store.openBattleGate(7, 1, "캡차", now)
         assertEquals("C", assertIs<QuestAction.Accept>(assertIs<AutomationCoordination.Runnable>(selector.select(7)).action).questKey)
         Mockito.verifyNoInteractions(progress)
-        assertEquals(1, store.findSuppressedBaselines(7).size)
+        assertEquals(if (sameQuest) 1 else 0, store.findSuppressedBaselines(7).size)
     }
 
     @ParameterizedTest

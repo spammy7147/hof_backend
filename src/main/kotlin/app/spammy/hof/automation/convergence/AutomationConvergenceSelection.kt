@@ -10,6 +10,7 @@ import app.spammy.hof.automation.service.QuestAction
 import app.spammy.hof.automation.service.QuestAutomationSnapshot
 import app.spammy.hof.automation.service.RaidTownAutomationAction
 import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.quest.model.QuestMissionType
 import app.spammy.hof.town.raid.model.RaidAction
 import org.slf4j.LoggerFactory
 
@@ -17,7 +18,7 @@ import org.slf4j.LoggerFactory
 class AutomationConvergenceSelection internal constructor(
     private val accountId: Long,
     private val entryId: Long,
-    quest: QuestAutomationSnapshot?,
+    private val quest: QuestAutomationSnapshot?,
     private val mode: AutomationConvergenceMode?,
     private val convergence: AutomationActionConvergenceModule,
     private val store: ConvergenceStore,
@@ -25,7 +26,8 @@ class AutomationConvergenceSelection internal constructor(
 ) {
     private val factory = StoredActionConvergenceSelectionFactory()
     private val observedScopes = mutableSetOf<AutomationIsolationScope>()
-    private val questBaselines = quest?.let(factory::authoritativeQuestBattleBaselines).orEmpty()
+    private val questBaselines = quest?.takeIf { it.accountId == accountId }
+        ?.let(factory::authoritativeQuestBattleBaselines).orEmpty()
 
     fun block(action: PreparedAutomationAction): ConvergenceSelectionBlock? {
         val preview = factory.preview(entryId, action)
@@ -45,13 +47,24 @@ class AutomationConvergenceSelection internal constructor(
             (action !is RaidTownAutomationAction || action.action != RaidAction.REFRESH)
         ) {
             preview.baselineFingerprint?.let { baseline ->
-                val baselines = (action as? QuestAction.Battle)?.let { questBaselines[it.questKey] }
-                    ?.takeIf { it.isNotEmpty() } ?: setOf(baseline)
-                observeBaselines(preview.scope, baselines)
+                val baselines = if (action is QuestAction.Battle) questBaselines[action.questKey].orEmpty()
+                    else setOf(baseline)
+                if (baselines.isNotEmpty()) observeBaselines(preview.scope, baselines)
             }
         }
         if (store.activeBattleGate(accountId) != null && preview.actionKind.battle) {
             return blocked("CAPTCHA_BATTLE_GATE_BLOCKED", "캡차 해결 전까지 전투 범위만 잠시 건너뜁니다.")
+        }
+        if (action is QuestAction.Battle &&
+            action.missionType in setOf(QuestMissionType.MONSTER_KILL, QuestMissionType.MAP_CLEAR) &&
+            preview.baselineFingerprint in questBaselines[action.questKey].orEmpty()
+        ) {
+            val released = store.releaseQuestBattleSuppressions(accountId, entryId, action.questKey,
+                requireNotNull(preview.baselineFingerprint), requireNotNull(quest).now)
+            if (released > 0) log.info(
+                "Quest battle fresh decision released accountId={} entryId={} questKey={} count={}",
+                accountId, entryId, action.questKey, released,
+            )
         }
         if (preview.baselineFingerprint in store.findSuppressedBaselines(accountId)[preview.scope].orEmpty()) {
             return blocked("CONVERGENCE_SCOPE_BLOCKED",

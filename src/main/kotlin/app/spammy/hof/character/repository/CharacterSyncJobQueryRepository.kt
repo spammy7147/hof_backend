@@ -1,5 +1,7 @@
 package app.spammy.hof.character.repository
 
+import app.spammy.hof.character.entity.CharacterSyncMode
+
 import app.spammy.hof.character.entity.CharacterSyncFailureEntity
 import app.spammy.hof.character.entity.CharacterSyncJobEntity
 import app.spammy.hof.character.entity.QCharacterSyncFailureEntity.characterSyncFailureEntity
@@ -12,6 +14,16 @@ import app.spammy.hof.character.entity.CharacterSyncJobStatus
 class CharacterSyncJobQueryRepository(
     private val queryFactory: JPAQueryFactory,
 ) {
+    fun findNewestByAccountId(accountId: Long): CharacterSyncJobEntity? = queryFactory
+        .selectFrom(characterSyncJobEntity)
+        .where(characterSyncJobEntity.account.id.eq(accountId))
+        .orderBy(characterSyncJobEntity.id.desc()).fetchFirst()
+
+    fun findActiveDeepSyncs(): List<CharacterSyncJobEntity> = queryFactory.selectFrom(characterSyncJobEntity)
+        .where(characterSyncJobEntity.syncMode.eq(CharacterSyncMode.DEEP),
+            characterSyncJobEntity.status.`in`(CharacterSyncJobStatus.PENDING, CharacterSyncJobStatus.RUNNING))
+        .fetch()
+
     fun findNewestActiveByAccountId(accountId: Long): CharacterSyncJobEntity? =
         queryFactory
             .selectFrom(characterSyncJobEntity)

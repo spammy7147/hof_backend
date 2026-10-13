@@ -1,0 +1,24 @@
+<!doctype html><html><body><div id="contents">
+<form action="?menu=rank" method="post">
+<h4>랭킹(Ranking) - <a href="?rank">전 랭킹을 본다</a></h4>
+<div><div>TOP 5</div><table><tr><td>순위</td><td>팀</td></tr>
+<tr><td><img src="./image/icon/Thro1.gif"></td><td>상위팀 (10전 9승 1패)<br>공동팀 (20전 15승 5패)<br></td></tr></table></div>
+<div><div>NEAR 5</div><table><tr><td>순위</td><td>팀</td></tr>
+<tr><td>170위</td><td>인근팀 (100전 10승 90패)<br></td></tr>
+<tr><td>171위</td><td><span class="bold u">《테스트 칭호》내팀</span> (241전 213승 28패)<br></td></tr></table></div>
+<input type="submit" class="btn" value="challenge!" name="ChallengeRank">
+</form>
+<!-- HOF의 table/form 중첩: DOM 자손과 브라우저 폼 소유 컨트롤이 다르다. -->
+<table><form action="?menu=rank" method="post">
+<h4>팀 설정(Team Setting)</h4><p>랭킹 전용의 팀 설정.<br>여기서 설정한 팀에서 싸웁니다.</p>
+<tr>
+<td><div><a href="?char=101"><img src="./image/char/a.gif"></a><div>전사A<br>Lv.60 Social Knight</div><input type="checkbox" id="box1" name="char_101" value="1" checked></div></td>
+<td><div><a href="?char=102"><img src="./image/char/b.gif"></a><div>전사B<br>Lv.60 Cardinal</div><input type="checkbox" id="box2" name="char_102" value="1" checked></div></td>
+<td><div>전사C<br>Lv.60 Mathematician<input type="checkbox" id="box3" name="char_103" value="1" checked></div></td>
+<td><div>전사D<br>Lv.60 Inquisitor<input type="checkbox" id="box4" name="char_104" value="1" checked></div></td>
+<td><div>전사E<br>Lv.60 Snow Witch<input type="checkbox" id="box5" name="char_105" value="1" checked></div></td>
+</tr><tr><td><div>전사F<br>Lv.60 Rogue<input type="checkbox" id="box6" name="char_106" value="1"></div></td></tr>
+</table>
+<input type="submit" class="btn" value="SetTeam">
+<input type="hidden" name="SetRankTeam" value="fixture-trigger">
+</form></div></body></html>

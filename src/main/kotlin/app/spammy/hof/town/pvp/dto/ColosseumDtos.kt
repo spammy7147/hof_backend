@@ -5,28 +5,29 @@ import app.spammy.hof.town.pvp.model.*
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Size
 
-data class ColosseumFighterResponse(val id: String, val label: String, val detail: String?, val imageUrl: String?, val selected: Boolean)
-data class ColosseumOpponentResponse(val id: String, val label: String, val detail: String?)
-data class ColosseumTurnLineResponse(val turn: Int?, val text: String)
+data class ColosseumFighterResponse(val id: String, val label: String, val detail: String?, val imageUrl: String?, val selected: Boolean, val characterId: String?)
+data class ColosseumRankingResponse(val rank: String, val teams: List<String>)
+data class ColosseumBattleTeamResultResponse(val label: String?, val hp: String?, val survivors: String?, val totalDamage: Long?)
 data class ColosseumBattleResultResponse(
-    val turns: Int?, val winner: String?, val summary: String, val playerHp: String?, val opponentHp: String?,
-    val playerStatus: String?, val opponentStatus: String?, val totalDamage: Long?, val reward: String?,
-    val detail: List<ColosseumTurnLineResponse>,
+    val turns: Int?, val winner: String?, val summary: String, val teams: List<ColosseumBattleTeamResultResponse>,
+    val reward: String?, val detailUrl: String?,
 )
 data class ColosseumBattleResponse(
     val fighters: List<ColosseumFighterResponse>, val selectedTeam: List<String>, val minTeamSize: Int, val maxTeamSize: Int,
-    val opponents: List<ColosseumOpponentResponse>, val battleResult: ColosseumBattleResultResponse?, val result: TownActionResultResponse?,
+    val topRankings: List<ColosseumRankingResponse>, val nearRankings: List<ColosseumRankingResponse>,
+    val teamSaveAvailable: Boolean, val challengeAvailable: Boolean, val challengeNotice: String?,
+    val battleResult: ColosseumBattleResultResponse?, val result: TownActionResultResponse?,
 ) {
     companion object { fun from(v: ColosseumBattleSnapshot) = ColosseumBattleResponse(
-        v.fighters.map { ColosseumFighterResponse(it.id, it.label, it.detail, it.imageUrl, it.selected) }, v.selectedTeam,
-        v.minTeamSize, v.maxTeamSize, v.opponents.map { ColosseumOpponentResponse(it.id, it.label, it.detail) },
-        v.battleResult?.let { b -> ColosseumBattleResultResponse(b.turns, b.winner, b.summary, b.playerHp, b.opponentHp, b.playerStatus, b.opponentStatus, b.totalDamage, b.reward, b.detail.map { ColosseumTurnLineResponse(it.turn, it.text) }) },
+        v.fighters.map { ColosseumFighterResponse(it.id, it.label, it.detail, it.imageUrl, it.selected, it.characterId) }, v.selectedTeam,
+        v.minTeamSize, v.maxTeamSize, v.topRankings.map { ColosseumRankingResponse(it.rank, it.teams) },
+        v.nearRankings.map { ColosseumRankingResponse(it.rank, it.teams) }, v.teamActionId != null, v.challengeAvailable, v.challengeNotice,
+        v.battleResult?.let { b -> ColosseumBattleResultResponse(b.turns, b.winner, b.summary, b.teams.map { ColosseumBattleTeamResultResponse(it.label, it.hp, it.survivors, it.totalDamage) }, b.reward, b.detailUrl) },
         v.result?.let(TownActionResultResponse::from),
     ) }
 }
 
-data class SaveColosseumTeamRequest(@field:Size(min = 1, max = 20) val fighterCandidateIds: List<@NotBlank String>)
-data class ChallengeColosseumRequest(@field:NotBlank val opponentCandidateId: String)
+data class SaveColosseumTeamRequest(@field:Size(min = 5, max = 5) val fighterCandidateIds: List<@NotBlank String>)
 
 data class ColosseumShopCategoryResponse(val id: String, val label: String, val current: Boolean)
 data class ColosseumCurrencyResponse(val label: String, val quantity: Int?)

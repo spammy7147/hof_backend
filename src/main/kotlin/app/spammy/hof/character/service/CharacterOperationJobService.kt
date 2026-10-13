@@ -66,6 +66,27 @@ class CharacterOperationJobService(
         return job.toResponse()
     }
 
+    /** 전체 캐릭터 동기화가 같은 실행 스레드에서 순차 처리할 작업을 준비한다. */
+    @Transactional
+    fun prepareDeepSync(accountId: Long, characterId: Long): Long {
+        requireOwnedCharacter(accountId, characterId)
+        return create(accountId, CharacterOperationType.DEEP_SYNC, null, characterId, null).id
+    }
+
+    fun executePreparedDeepSync(accountId: Long, jobId: Long): CharacterOperationJobResponse {
+        val job = load(accountId, jobId)
+        check(job.operationType == CharacterOperationType.DEEP_SYNC)
+        if (job.status == CharacterOperationStatus.PENDING && running.add(jobId)) {
+            try {
+                runCatching { runJob(jobId) }
+                    .onFailure { fail(jobId, it.message ?: "전체 설정 동기화에 실패했습니다.") }
+            } finally {
+                running.remove(jobId)
+            }
+        }
+        return find(accountId, jobId)
+    }
+
     @Transactional
     fun startRestore(accountId: Long, characterId: Long): CharacterOperationJobResponse {
         requireOwnedCharacter(accountId, characterId)

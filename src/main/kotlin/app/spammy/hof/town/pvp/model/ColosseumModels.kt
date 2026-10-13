@@ -8,27 +8,19 @@ data class ColosseumFighter(
     val detail: String?,
     val imageUrl: String?,
     val selected: Boolean,
+    val characterId: String?,
 )
 
-data class ColosseumOpponent(
-    val id: String,
-    val label: String,
-    val detail: String?,
-)
-
-data class ColosseumTurnLine(val turn: Int?, val text: String)
+data class ColosseumRanking(val rank: String, val teams: List<String>)
+data class ColosseumBattleTeamResult(val label: String?, val hp: String?, val survivors: String?, val totalDamage: Long?)
 
 data class ColosseumBattleResult(
     val turns: Int?,
     val winner: String?,
     val summary: String,
-    val playerHp: String?,
-    val opponentHp: String?,
-    val playerStatus: String?,
-    val opponentStatus: String?,
-    val totalDamage: Long?,
+    val teams: List<ColosseumBattleTeamResult>,
     val reward: String?,
-    val detail: List<ColosseumTurnLine>,
+    val detailUrl: String?,
 )
 
 data class ColosseumBattleSnapshot(
@@ -36,11 +28,15 @@ data class ColosseumBattleSnapshot(
     val selectedTeam: List<String>,
     val minTeamSize: Int,
     val maxTeamSize: Int,
-    val opponents: List<ColosseumOpponent>,
+    val topRankings: List<ColosseumRanking>,
+    val nearRankings: List<ColosseumRanking>,
+    val challengeAvailable: Boolean,
+    val challengeNotice: String?,
     val battleResult: ColosseumBattleResult?,
     val result: ParsedTownResult?,
     internal val teamActionId: String?,
-    internal val challengeActionIds: Map<String, String>,
+    internal val teamCandidateIds: Map<String, String>,
+    internal val challengeActionId: String?,
 )
 
 data class ColosseumShopCategory(val id: String, val label: String, val current: Boolean)
