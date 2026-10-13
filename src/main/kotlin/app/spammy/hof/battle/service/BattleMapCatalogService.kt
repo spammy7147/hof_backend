@@ -34,6 +34,10 @@ import org.springframework.transaction.annotation.Transactional
 class BattleMapCatalogService(
     private val transactionService: BattleMapCatalogTransactionService,
 ) {
+    /** 전투 탭에서 최신 상태 조회 전에 보여줄 서버의 전체 맵 카탈로그다. */
+    fun findKnownByCategory(accountId: Long, categoryId: String): List<HofBattleMap> =
+        transactionService.findKnownByCategory(accountId, categoryId)
+
     /**
      * 한 번 파싱한 카테고리 관측 전체를 JVM 공정 락 안에서 DB 상태로 반영한다.
      * commit이 끝난 뒤 보이는 맵 목록을 반환하므로 같은 프로세스의 동시 새로고침이 중간 상태를 읽지 않는다.
@@ -97,6 +101,32 @@ class BattleMapCatalogTransactionService(
     private val timeProvider: TimeProvider,
 ) {
     private val log = LoggerFactory.getLogger(BattleMapCatalogTransactionService::class.java)
+
+    /** 계정에서 아직 관측하지 않은 맵과 사라진 맵도 보존하며, 최신 조회 전에는 선택할 수 없다. */
+    @Transactional(readOnly = true)
+    fun findKnownByCategory(accountId: Long, categoryId: String): List<HofBattleMap> {
+        val now = timeProvider.now()
+        val states = queryRepository.findStatesByAccountIdAndCategoryId(accountId, categoryId)
+            .associateBy { it.battleMap.id }
+        val maps = queryRepository.findMapsByCategoryId(categoryId).map { map ->
+            states[map.id]?.toDomain(now)?.copy(enabled = false) ?: HofBattleMap(
+                categoryId = map.categoryId,
+                mapCode = map.mapCode,
+                name = map.name,
+                groupName = map.group?.name,
+                groupOrder = map.group?.displayOrder ?: 0,
+                mapOrder = map.displayOrder,
+                recommendedLevel = map.group?.recommendedLevel,
+                requiredTime = map.requiredTime,
+                iconUrl = map.iconUrl,
+                enabled = false,
+                rawHref = "",
+            )
+        }
+        val unresolved = queryRepository.findUnresolvedByAccountIdAndCategoryId(accountId, categoryId)
+            .map { it.toDomain(now) }
+        return (maps + unresolved).sortedWith(compareBy<HofBattleMap> { it.groupOrder }.thenBy { it.mapOrder })
+    }
 
     /**
      * 한 계정의 카테고리 관측 전체를 적용하고, 현재 보이는 해결/미해결 트리를 반환한다.

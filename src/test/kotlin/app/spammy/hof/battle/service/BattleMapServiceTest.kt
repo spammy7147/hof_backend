@@ -74,6 +74,9 @@ class BattleMapServiceTest {
     private lateinit var service: BattleMapService
 
     @Autowired
+    private lateinit var catalogService: BattleMapCatalogService
+
+    @Autowired
     private lateinit var capabilityObservationService: BattleMapCapabilityObservationService
 
     @Autowired
@@ -346,6 +349,29 @@ class BattleMapServiceTest {
 
         gateway.defaultBody = directAdventureHtml(sharedCount = 7, includeStale = false)
         assertEquals(listOf("shared01"), service.findMaps(secondAccount.id, ADVENTURE).map { it.mapCode })
+    }
+
+    @Test
+    fun `전체 카탈로그는 미관측 맵과 사라진 맵도 선택 불가 상태로 원본 순서에 보존한다`() {
+        val account = savedAccount("known-map-catalog")
+        gateway.defaultBody = directAdventureHtml(sharedCount = 3, includeStale = true)
+        service.findMaps(account.id, ADVENTURE)
+        gateway.defaultBody = directAdventureHtml(sharedCount = 3, includeStale = false)
+        service.findMaps(account.id, ADVENTURE)
+        val group = savedGroup(ADVENTURE, "미관측 지역", 99)
+        savedMap(ADVENTURE, "never-seen", "미관측 맵", group, 1)
+        gateway.reset()
+
+        val catalog = catalogService.findKnownByCategory(account.id, ADVENTURE)
+
+        val targetCodes = setOf("shared01", "stale01", "never-seen")
+        assertEquals(listOf("shared01", "stale01", "never-seen"), catalog.mapNotNull { it.mapCode }.filter { it in targetCodes })
+        assertEquals(queryRepository.findMapsByCategoryId(ADVENTURE).size, catalog.size)
+        assertTrue(catalog.all { !it.enabled })
+        assertTrue(gateway.requests.isEmpty())
+        val shared = assertNotNull(queryRepository.findMapByCategoryIdAndMapCode(ADVENTURE, "shared01"))
+        assertTrue(assertNotNull(queryRepository.findStateByAccountIdAndMapId(account.id, shared.id)).visible)
+        assertNull(queryRepository.findStateForExecution(account.id, ADVENTURE, "never-seen"))
     }
 
     @Test
