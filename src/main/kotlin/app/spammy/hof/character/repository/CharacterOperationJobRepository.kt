@@ -14,6 +14,15 @@ interface CharacterOperationJobCommandRepository : CommandRepository<CharacterOp
 
 @Repository
 class CharacterOperationJobQueryRepository(private val queryFactory: JPAQueryFactory) {
+    fun findByCharacter(accountId: Long, characterId: Long): List<CharacterOperationJobEntity> = queryFactory
+        .selectFrom(characterOperationJobEntity)
+        .where(characterOperationJobEntity.account.id.eq(accountId),
+            characterOperationJobEntity.targetCharacterId.eq(characterId).or(characterOperationJobEntity.sourceCharacterId.eq(characterId)))
+        .fetch()
+
+    fun findOriginalHofCharacterId(jobId: Long): String? = queryFactory.select(characterRecoveryOriginalEntity.hofCharacterId)
+        .from(characterRecoveryOriginalEntity).where(characterRecoveryOriginalEntity.jobId.eq(jobId)).fetchOne()
+
     fun findLatestSync(accountId: Long, characterId: Long? = null): CharacterOperationJobEntity? = queryFactory
         .selectFrom(characterOperationJobEntity)
         .where(characterOperationJobEntity.account.id.eq(accountId), syncTypes(),

@@ -10,6 +10,7 @@ import app.spammy.hof.character.entity.CharacterOperationJobEntity
 import app.spammy.hof.character.entity.CharacterOperationStatus
 import app.spammy.hof.character.entity.CharacterOperationType
 import app.spammy.hof.character.entity.CharacterRecoveryStatus
+import app.spammy.hof.character.identity.CharacterObservedIdentityService
 import app.spammy.hof.character.repository.CharacterOperationJobCommandRepository
 import app.spammy.hof.character.repository.CharacterOperationJobQueryRepository
 import app.spammy.hof.character.repository.CharacterQueryRepository
@@ -55,6 +56,7 @@ class CharacterOperationJobService(
     @Qualifier("characterSyncTaskExecutor") private val taskExecutor: TaskExecutor,
     private val automation: CharacterOperationAutomation,
     private val automationGate: CharacterAutomationGate,
+    private val observedIdentities: CharacterObservedIdentityService,
 ) {
     private val running = ConcurrentHashMap.newKeySet<Long>()
 
@@ -248,7 +250,8 @@ class CharacterOperationJobService(
             job.message = if (completed) null else "저장 설정 수집을 완료하지 못했지만 원본 설정 복원은 확인했습니다."
             job.updatedAt = timeProvider.now()
             job.finishedAt = job.updatedAt
-            commands.save(job)
+            if (completed) observedIdentities.completeOperation(job.account.id, job.id, job.resultPayload!!, job.updatedAt)
+            else commands.save(job)
             return
         }
         job.status = CharacterOperationStatus.RUNNING
@@ -261,13 +264,8 @@ class CharacterOperationJobService(
                 CharacterOperationType.RESTORE -> runRestore(job, accountId)
                 CharacterOperationType.TRANSFER -> sessionRecovery.execute(accountId) { runTransfer(job, accountId) }
             }
-            // 복구 checkpoint를 저장한 이후의 상태를 읽어 detached job의 오래된 값으로 덮어쓰지 않는다.
-            val completedJob = queries.findById(jobId) ?: return
-            completedJob.status = CharacterOperationStatus.COMPLETED
-            completedJob.resultPayload = resultPayload
-            completedJob.updatedAt = timeProvider.now()
-            completedJob.finishedAt = completedJob.updatedAt
-            commands.save(completedJob)
+            // 최신 checkpoint에서 완료와 자동 ID 연결을 함께 commit해 임시 기록으로 완료가 공개되지 않게 한다.
+            observedIdentities.completeOperation(accountId, jobId, resultPayload, timeProvider.now())
         }
         if (job.operationType == CharacterOperationType.TRANSFER) {
             automationGate.executeJob(accountId, jobId,

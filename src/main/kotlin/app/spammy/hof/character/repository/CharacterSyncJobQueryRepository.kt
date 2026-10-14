@@ -14,13 +14,16 @@ import app.spammy.hof.character.entity.CharacterSyncJobStatus
 class CharacterSyncJobQueryRepository(
     private val queryFactory: JPAQueryFactory,
 ) {
+    fun findByCurrentOperation(operationId: Long): List<CharacterSyncJobEntity> = queryFactory.selectFrom(characterSyncJobEntity)
+        .where(characterSyncJobEntity.currentOperationJobId.eq(operationId)).fetch()
+
     fun findNewestByAccountId(accountId: Long): CharacterSyncJobEntity? = queryFactory
         .selectFrom(characterSyncJobEntity)
         .where(characterSyncJobEntity.account.id.eq(accountId))
         .orderBy(characterSyncJobEntity.id.desc()).fetchFirst()
 
     fun findActiveDeepSyncs(): List<CharacterSyncJobEntity> = queryFactory.selectFrom(characterSyncJobEntity)
-        .where(characterSyncJobEntity.syncMode.eq(CharacterSyncMode.DEEP),
+        .where(characterSyncJobEntity.syncMode.eq(CharacterSyncMode.DEEP).or(characterSyncJobEntity.currentOperationJobId.isNotNull),
             characterSyncJobEntity.status.`in`(CharacterSyncJobStatus.PENDING, CharacterSyncJobStatus.RUNNING))
         .fetch()
 

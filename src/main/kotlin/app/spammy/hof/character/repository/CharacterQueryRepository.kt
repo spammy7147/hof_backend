@@ -43,6 +43,23 @@ import org.springframework.stereotype.Repository
 class CharacterQueryRepository(
     private val queryFactory: JPAQueryFactory,
 ) {
+    /** 자동 연결의 임시 행 삭제 전에 자식 entity를 persistence context에 올리지 않고 비교한다. */
+    fun findPatternIdentityRows(characterId: Long): List<CharacterPatternIdentityRow> = queryFactory.select(
+        characterPatternSlotEntity.slotCode, characterPatternSlotEntity.canLoad,
+        characterPatternSlotEntity.selectedPosition, characterPatternSlotEntity.guardValue,
+        characterSavedPatternRowEntity.rowIndex, characterSavedPatternRowEntity.judge,
+        characterSavedPatternRowEntity.quantity, characterSavedPatternRowEntity.skill,
+    ).from(characterPatternSlotEntity).leftJoin(characterSavedPatternRowEntity)
+        .on(characterSavedPatternRowEntity.patternSlot.id.eq(characterPatternSlotEntity.id))
+        .where(characterPatternSlotEntity.character.id.eq(characterId))
+        .orderBy(characterPatternSlotEntity.slotCode.asc(), characterSavedPatternRowEntity.rowIndex.asc())
+        .fetch().map { row -> CharacterPatternIdentityRow(
+            row.get(characterPatternSlotEntity.slotCode)!!, row.get(characterPatternSlotEntity.canLoad)!!,
+            row.get(characterPatternSlotEntity.selectedPosition), row.get(characterPatternSlotEntity.guardValue),
+            row.get(characterSavedPatternRowEntity.rowIndex), row.get(characterSavedPatternRowEntity.judge),
+            row.get(characterSavedPatternRowEntity.quantity), row.get(characterSavedPatternRowEntity.skill),
+        ) }
+
     fun findSectionState(characterId: Long, section: CharacterSection): CharacterSectionSyncStateEntity? =
         queryFactory.selectFrom(characterSectionSyncStateEntity)
             .where(
@@ -326,3 +343,14 @@ class CharacterQueryRepository(
             .fetch()
     }
 }
+
+data class CharacterPatternIdentityRow(
+    val slotCode: String,
+    val canLoad: Boolean,
+    val selectedPosition: String?,
+    val guardValue: String?,
+    val rowIndex: Int?,
+    val judge: String?,
+    val quantity: String?,
+    val skill: String?,
+)

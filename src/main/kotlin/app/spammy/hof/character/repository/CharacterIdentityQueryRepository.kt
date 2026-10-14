@@ -14,6 +14,9 @@ import org.springframework.stereotype.Repository
 class CharacterIdentityQueryRepository(
     private val queryFactory: JPAQueryFactory,
 ) {
+    fun countHistory(characterId: Long): Long = queryFactory.select(characterHofIdHistoryEntity.count())
+        .from(characterHofIdHistoryEntity).where(characterHofIdHistoryEntity.character.id.eq(characterId)).fetchOne() ?: 0L
+
     fun findByAccountIdAndAnyHofCharacterId(
         accountId: Long,
         hofCharacterId: String,

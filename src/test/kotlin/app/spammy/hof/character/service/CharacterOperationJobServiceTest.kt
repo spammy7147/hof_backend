@@ -60,7 +60,7 @@ class CharacterOperationJobServiceTest {
         Mockito.`when`(queries.findById(job.id)).thenReturn(job)
         Mockito.`when`(queries.findByAccountIdAndId(account.id, job.id)).thenReturn(job)
         val service = CharacterOperationJobService(accounts, characters, commands, queries, fixture.service, transfers,
-            fixture.sessionRecovery, mapper, TimeProvider { now }, SyncTaskExecutor(), automation, automationGate)
+            fixture.sessionRecovery, mapper, TimeProvider { now }, SyncTaskExecutor(), automation, automationGate, observedIdentities = characterOperationCompletion(queries, commands))
 
         service.resumeIncompleteJobs()
 
@@ -79,7 +79,7 @@ class CharacterOperationJobServiceTest {
         val tasks = mutableListOf<Runnable>()
         Mockito.`when`(queries.findRestoreAttempts(job.id)).thenReturn(3)
         val service = CharacterOperationJobService(accounts, characters, commands, queries, deepSync, transfers,
-            sessionRecovery, mapper, TimeProvider { now }, TaskExecutor { tasks += it }, automation, automationGate)
+            sessionRecovery, mapper, TimeProvider { now }, TaskExecutor { tasks += it }, automation, automationGate, observedIdentities = characterOperationCompletion(queries, commands))
 
         val first = service.retryRecovery(account.id, job.id)
         val second = service.retryRecovery(account.id, job.id)
@@ -103,7 +103,7 @@ class CharacterOperationJobServiceTest {
         Mockito.`when`(queries.findByAccountIdAndId(account.id, job.id)).thenReturn(job)
         val tasks = mutableListOf<Runnable>()
         val service = CharacterOperationJobService(accounts, characters, commands, queries, deepSync, transfers,
-            sessionRecovery, mapper, TimeProvider { now }, TaskExecutor { tasks += it }, automation, automationGate)
+            sessionRecovery, mapper, TimeProvider { now }, TaskExecutor { tasks += it }, automation, automationGate, observedIdentities = characterOperationCompletion(queries, commands))
 
         assertEquals(status, service.retryRecovery(account.id, job.id).recoveryStatus)
         assertTrue(tasks.isEmpty())
@@ -118,7 +118,7 @@ class CharacterOperationJobServiceTest {
         Mockito.`when`(queries.findByAccountIdAndId(account.id, job.id)).thenReturn(job)
         val tasks = mutableListOf<Runnable>()
         val service = CharacterOperationJobService(accounts, characters, commands, queries, deepSync, transfers,
-            sessionRecovery, mapper, TimeProvider { now }, TaskExecutor { tasks += it }, automation, automationGate)
+            sessionRecovery, mapper, TimeProvider { now }, TaskExecutor { tasks += it }, automation, automationGate, observedIdentities = characterOperationCompletion(queries, commands))
 
         assertEquals(ErrorCode.CHARACTER_RECOVERY_REQUIRED,
             assertFailsWith<ApiException> { service.retryRecovery(account.id, job.id) }.errorCode)
@@ -148,8 +148,7 @@ class CharacterOperationJobServiceTest {
         val service = CharacterOperationJobService(
             accounts, characters, commands, queries, deepSync, transfers, sessionRecovery,
             mapper, TimeProvider { now }, SyncTaskExecutor(),
-            automation, automationGate,
-        )
+            automation, automationGate, observedIdentities = characterOperationCompletion(queries, commands))
 
         service.resumeIncompleteJobs()
 
@@ -173,7 +172,7 @@ class CharacterOperationJobServiceTest {
         Mockito.`when`(queries.findByAccountIdAndId(account.id, job.id)).thenReturn(job)
         val tasks = mutableListOf<Runnable>()
         val service = CharacterOperationJobService(accounts, characters, commands, queries, deepSync, transfers,
-            sessionRecovery, mapper, TimeProvider { now }, TaskExecutor(tasks::add), automation, automationGate)
+            sessionRecovery, mapper, TimeProvider { now }, TaskExecutor(tasks::add), automation, automationGate, observedIdentities = characterOperationCompletion(queries, commands))
 
         service.resumeIncompleteJobs()
 
@@ -225,8 +224,7 @@ class CharacterOperationJobServiceTest {
             mapper,
             TimeProvider { now },
             SyncTaskExecutor(),
-            automation, automationGate,
-        )
+            automation, automationGate, observedIdentities = characterOperationCompletion(queries, commands))
 
         service.resumeIncompleteJobs()
 
@@ -264,7 +262,7 @@ class CharacterOperationJobServiceTest {
                 CharacterDeepSyncResponse(9L, progress)
             }
         val service = CharacterOperationJobService(accounts, characters, commands, queries, deepSync, transfers,
-            sessionRecovery, mapper, TimeProvider { now }, SyncTaskExecutor(), automation, automationGate)
+            sessionRecovery, mapper, TimeProvider { now }, SyncTaskExecutor(), automation, automationGate, observedIdentities = characterOperationCompletion(queries, commands))
 
         service.resumeIncompleteJobs()
 
@@ -287,7 +285,7 @@ class CharacterOperationJobServiceTest {
         Mockito.`when`(queries.findByAccountIdAndId(account.id, job.id)).thenReturn(job)
         Mockito.`when`(commands.save(anyJob())).thenAnswer { it.arguments[0] }
         val service = CharacterOperationJobService(accounts, characters, commands, queries, deepSync, transfers,
-            sessionRecovery, mapper, TimeProvider { now }, SyncTaskExecutor(), automation, automationGate)
+            sessionRecovery, mapper, TimeProvider { now }, SyncTaskExecutor(), automation, automationGate, observedIdentities = characterOperationCompletion(queries, commands))
 
         service.resumeIncompleteJobs()
 
@@ -339,8 +337,7 @@ class CharacterOperationJobServiceTest {
             mapper,
             TimeProvider { now },
             SyncTaskExecutor(),
-            automation, automationGate,
-        )
+            automation, automationGate, observedIdentities = characterOperationCompletion(queries, commands))
 
         service.resumeIncompleteJobs()
 

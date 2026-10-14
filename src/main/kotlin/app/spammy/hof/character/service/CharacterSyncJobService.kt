@@ -13,6 +13,7 @@ import app.spammy.hof.character.entity.CharacterSyncJobStatus
 import app.spammy.hof.character.entity.CharacterSyncMode
 import app.spammy.hof.character.entity.CharacterOperationStatus
 import app.spammy.hof.character.entity.CharacterRecoveryStatus
+import app.spammy.hof.character.identity.CharacterObservedIdentityService
 import tools.jackson.module.kotlin.jacksonObjectMapper
 import tools.jackson.core.type.TypeReference
 import org.springframework.context.event.EventListener
@@ -59,6 +60,7 @@ class CharacterSyncJobService(
     private val timeProvider: TimeProvider,
     private val mutationFence: AccountHofMutationFence,
     private val batchDeepSync: CharacterBatchDeepSync,
+    private val observedIdentities: CharacterObservedIdentityService,
 ) {
     private val log = LoggerFactory.getLogger(CharacterSyncJobService::class.java)
     private val mapper = jacksonObjectMapper()
@@ -267,6 +269,46 @@ class CharacterSyncJobService(
         mutationFence.execute(accountId) {
             runFencedJob(jobId, job, account, cookies, failures)
         }
+        if (job.status == CharacterSyncJobStatus.STOPPED) return
+        verifyObservedIdentities(job, failures)
+        if (job.status == CharacterSyncJobStatus.STOPPED) return
+        completeJob(job, failures)
+    }
+
+    /** 일시정지 대기는 명단·상세 관측 fence 밖에서 수행해 진행 중인 자동화의 종료를 막지 않는다. */
+    private fun verifyObservedIdentities(job: CharacterSyncJobEntity, failures: MutableList<CharacterSyncFailureEntity>) {
+        val accountId = job.account.id
+        val verified = mutableSetOf<Long>()
+        fun collect(operationId: Long) {
+            val result = batchDeepSync.execute(accountId, operationId)
+            verified += result.targetCharacterId
+            val character = characterService.findAll(accountId).singleOrNull { it.id == result.targetCharacterId }
+            if (result.recoveryStatus != CharacterRecoveryStatus.RESTORED) {
+                character?.let { appendFailure(job, failures, it.hofCharacterId) }
+                error(result.message ?: "동일 캐릭터 확인 중 원본 설정 복구를 완료하지 못했습니다.")
+            }
+            if (result.status != CharacterOperationStatus.COMPLETED) {
+                character?.let { appendFailure(job, failures, it.hofCharacterId) }
+                job.syncedCount = (job.syncedCount - 1).coerceAtLeast(0)
+            }
+            job.currentOperationJobId = null
+            job.currentHofCharacterId = null
+            batchDeepSync.saveProgress(job)
+            eventService.publish(job.toEvent(if (result.status == CharacterOperationStatus.COMPLETED) "characterSynced" else "characterFailed",
+                character, failures.toFailedCharacterIds()))
+        }
+        // 서버 재시작 뒤 이미 복구된 자식은 다시 수집하지 않고 완료 결과만 반영한다.
+        job.currentOperationJobId?.let(::collect)
+        val candidates = characterService.findAll(accountId).filter { it.id !in verified && observedIdentities.canVerify(accountId, it.id) }
+        candidates.forEach { candidate ->
+            if (stopDeepJobIfRequested(job)) return
+            if (!observedIdentities.canVerify(accountId, candidate.id)) return@forEach
+            job.currentHofCharacterId = candidate.hofCharacterId
+            val operationId = batchDeepSync.prepare(job, candidate.id)
+            eventService.publish(job.toEvent("started", candidate, failures.toFailedCharacterIds()))
+            collect(operationId)
+        }
+        stopDeepJobIfRequested(job)
     }
 
     /** 일시정지 대기 전에 fence를 잡지 않는다. 각 자식 작업이 원본 복구까지 보호한다. */
@@ -309,14 +351,19 @@ class CharacterSyncJobService(
             job.currentOperationJobId = null
             job.currentHofCharacterId = null
             saveProgress(job)
-            val refreshed = characterService.findAll(accountId).singleOrNull { it.id == characterId }
+            val refreshed = characterService.findAll(accountId).singleOrNull { it.id == result.targetCharacterId }
             eventService.publish(job.toEvent("characterSynced", refreshed, emptyList()))
         }
+        completeJob(job, emptyList())
+    }
+
+    private fun completeJob(job: CharacterSyncJobEntity, failures: List<CharacterSyncFailureEntity>) {
         job.status = CharacterSyncJobStatus.COMPLETED
         job.finishedAt = timeProvider.now()
         saveProgress(job)
-        eventService.publish(job.toEvent("completed", null, emptyList()))
+        eventService.publish(job.toEvent("completed", null, failures.toFailedCharacterIds()))
         eventService.complete(job.id)
+        log.info("Character sync job complete accountId={} jobId={} rosterCount={}", job.account.id, job.id, job.rosterCount)
     }
 
     private fun stopDeepJobIfRequested(job: CharacterSyncJobEntity): Boolean {
@@ -418,18 +465,6 @@ class CharacterSyncJobService(
             }
         }
 
-        job.status = CharacterSyncJobStatus.COMPLETED
-        job.finishedAt = timeProvider.now()
-        saveProgress(job)
-        eventService.publish(
-            job.toEvent(
-                eventType = "completed",
-                character = null,
-                failedCharacterIds = failures.toFailedCharacterIds(),
-            ),
-        )
-        eventService.complete(job.id)
-        log.info("Character sync job complete accountId={} jobId={} rosterCount={}", accountId, job.id, job.rosterCount)
     }
 
     private fun appendFailure(

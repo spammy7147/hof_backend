@@ -20,6 +20,9 @@ import org.springframework.stereotype.Repository
 class PartyPresetQueryRepository(
     private val queryFactory: JPAQueryFactory,
 ) {
+    fun hasCharacterReference(characterId: Long): Boolean = queryFactory.selectOne().from(partyPresetMemberEntity)
+        .where(partyPresetMemberEntity.character.id.eq(characterId)).fetchFirst() != null
+
     /** 미분류 프리셋을 먼저 두고 폴더 ID, 표시 순서, ID 순으로 안정적으로 반환한다. */
     fun findAllByAccountId(accountId: Long): List<PartyPresetEntity> =
         queryFactory

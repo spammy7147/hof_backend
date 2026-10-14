@@ -29,7 +29,11 @@ class CharacterBatchDeepSync(
     fun saveProgress(job: CharacterSyncJobEntity) {
         checkNotNull(accounts.findByIdForUpdate(job.account.id))
         // 별도 요청으로 저장한 중지 의도를 오래된 진행 객체가 지우지 않게 한다.
-        queries.findById(job.id)?.let { job.stopRequested = it.stopRequested }
+        queries.findById(job.id)?.let {
+            job.stopRequested = it.stopRequested
+            // 자동 재연결이 같은 transaction에서 갱신한 안정 대상 ID를 오래된 실행 객체가 되돌리지 않는다.
+            it.deepSyncTargets?.let { targets -> job.deepSyncTargets = targets }
+        }
         jobs.save(job)
     }
 

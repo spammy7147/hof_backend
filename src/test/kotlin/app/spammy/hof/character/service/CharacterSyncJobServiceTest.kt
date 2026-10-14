@@ -76,6 +76,7 @@ class CharacterSyncJobServiceTest {
         timeProvider = TimeProvider { now },
         mutationFence = app.spammy.hof.town.common.service.AccountHofMutationFence(),
         batchDeepSync = batchDeepSync,
+        observedIdentities = org.mockito.Mockito.mock(app.spammy.hof.character.identity.CharacterObservedIdentityService::class.java),
     )
 
     @Test
