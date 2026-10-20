@@ -30,6 +30,7 @@ import tools.jackson.databind.ObjectMapper
 @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, include = JsonTypeInfo.As.PROPERTY, property = "kind")
 @JsonSubTypes(
     JsonSubTypes.Type(AutomationDirectResponse.QuestPage::class, name = "QUEST_PAGE"),
+    JsonSubTypes.Type(AutomationDirectResponse.Colosseum::class, name = "COLOSSEUM"),
     JsonSubTypes.Type(AutomationDirectResponse.HomePage::class, name = "HOME_PAGE"),
     JsonSubTypes.Type(AutomationDirectResponse.QuestBattle::class, name = "QUEST_BATTLE"),
     JsonSubTypes.Type(AutomationDirectResponse.AdventureBattle::class, name = "ADVENTURE_BATTLE"),
@@ -49,6 +50,8 @@ sealed interface AutomationDirectResponse {
         val questTexts: List<String>,
         val finishedAt: Instant? = null,
     ) : AutomationDirectResponse
+
+    data class Colosseum(val result: app.spammy.hof.town.pvp.dto.ColosseumBattleResultResponse?) : AutomationDirectResponse
 
     data class HomePage(val quests: List<Quest>, val resultStatus: String?) : AutomationDirectResponse {
         data class Quest(
@@ -174,7 +177,7 @@ class AutomationDirectResponseStore(
                         session.workType == AutomationWorkType.HOME_QUEST && session.targetKey == original.scope.key
                     AutomationIsolationScopeKind.RAID_ENTRY ->
                         session.workType == AutomationWorkType.RAID && session.targetKey == original.scope.key
-                    AutomationIsolationScopeKind.FISHING_ENTRY, AutomationIsolationScopeKind.UNION_ENTRY ->
+                    AutomationIsolationScopeKind.COLOSSEUM_ENTRY, AutomationIsolationScopeKind.FISHING_ENTRY, AutomationIsolationScopeKind.UNION_ENTRY ->
                         session.entry.id == original.entryId
                     null -> session.entry.id == row.entry?.id
                 }
@@ -272,6 +275,7 @@ class AutomationDirectResponseStore(
             is AutomationDirectResponse.QuestPage -> require(
                 stored.payload is StoredTypedActionPayload.QuestAccept || stored.payload is StoredTypedActionPayload.QuestClaim,
             ) { "Quest response cannot be attached to a different action kind." }
+            is AutomationDirectResponse.Colosseum -> require(stored.payload is StoredTypedActionPayload.Colosseum) { "콜로세움 응답과 행동이 일치하지 않습니다." }
             is AutomationDirectResponse.HomePage -> require(stored.payload is StoredTypedActionPayload.HomeQuest) {
                 "Home response cannot be attached to a different action kind."
             }

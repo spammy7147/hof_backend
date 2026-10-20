@@ -19,6 +19,7 @@ import app.spammy.hof.automation.service.StoredTypedActionPayload
 import app.spammy.hof.automation.service.StoredTypedAutomationAction
 import app.spammy.hof.town.fishing.model.FishingAction
 import app.spammy.hof.town.raid.model.RaidAction
+import app.spammy.hof.automation.service.ColosseumAutomationAction
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.HexFormat
@@ -115,6 +116,8 @@ class StoredActionConvergenceSelectionFactory {
             action.questKey,
             questBattleBaseline(action.questKey, action.questCycle, action.missionKey, action.missionCurrent, action.missionRequired),
         )
+        is ColosseumAutomationAction -> preview(AutomationActionKind.COLOSSEUM_CHALLENGE,
+            AutomationIsolationScopeKind.COLOSSEUM_ENTRY, entryId.toString(), "colosseum|${action.teamIds.sorted()}" )
         is HomeQuestAutomationAction -> preview(
             if (action.action == HomeQuestAutomationActionType.ACCEPT) {
                 AutomationActionKind.HOME_ACCEPT
@@ -217,6 +220,8 @@ class StoredActionConvergenceSelectionFactory {
             scope(AutomationIsolationScopeKind.QUEST_TARGET, payload.questKey),
             questBattleBaseline(payload.questKey, payload.questCycle, payload.missionKey, payload.observedCurrent, payload.observedRequired),
         )
+        is StoredTypedActionPayload.Colosseum -> Mapping(AutomationActionKind.COLOSSEUM_CHALLENGE,
+            scope(AutomationIsolationScopeKind.COLOSSEUM_ENTRY, stored.entryId.toString()), "colosseum|${payload.teamIds.sorted()}")
         is StoredTypedActionPayload.HomeQuest -> Mapping(
             when (payload.action) {
                 HomeQuestAutomationActionType.ACCEPT -> AutomationActionKind.HOME_ACCEPT

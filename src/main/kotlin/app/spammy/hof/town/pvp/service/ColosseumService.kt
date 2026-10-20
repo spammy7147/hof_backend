@@ -8,6 +8,17 @@ import app.spammy.hof.town.common.service.TownLocationResolver
 import app.spammy.hof.town.pvp.dto.*
 import app.spammy.hof.town.pvp.parser.ColosseumParser
 import org.springframework.stereotype.Service
+import app.spammy.hof.external.model.HofRequestOrigin
+import app.spammy.hof.external.parser.HofHtmlParser
+import app.spammy.hof.town.common.service.TownObservedPageContinuation
+import java.time.Instant
+
+data class ColosseumAutomationObservation(
+    val response: ColosseumBattleResponse,
+    val complete: Boolean,
+    val cooldownUntil: Instant?,
+    internal val continuation: TownObservedPageContinuation? = null,
+)
 
 @Service
 class ColosseumService(
@@ -18,6 +29,31 @@ class ColosseumService(
     fun loadBattle(accountId: Long): ColosseumBattleResponse = executor.loadProjected(accountId, battleUrl()) { html, finalUrl, page ->
         ColosseumBattleResponse.from(parser.parseBattle(html, finalUrl, page))
     }
+
+    fun loadForAutomation(accountId: Long, now: Instant): ColosseumAutomationObservation {
+        val observed = executor.loadContinuableProjected(accountId, battleUrl(), HofRequestOrigin.AUTOMATION) { html, url, page ->
+            val snapshot = parser.parseBattle(html, url, page)
+            val doc = HofHtmlParser.parse(html, url)
+            val complete = snapshot.fighters.isNotEmpty() && doc.select("h4").any { it.text().contains("Ranking", true) }
+            val match = Regex("([0-9]{1,3}):([0-5][0-9]):([0-5][0-9])").find(snapshot.challengeNotice.orEmpty())
+            val seconds = match?.let { it.groupValues[1].toLong() * 3600 + it.groupValues[2].toLong() * 60 + it.groupValues[3].toLong() }
+            ColosseumAutomationObservation(ColosseumBattleResponse.from(snapshot), complete, seconds?.let(now::plusSeconds))
+        }
+        return observed.value.copy(continuation = observed.continuation)
+    }
+
+    fun challengeForAutomation(accountId: Long, observation: ColosseumAutomationObservation, expectedTeam: List<String>): ColosseumBattleResponse =
+        executor.executeObservedProjected(accountId, battleUrl(), HofRequestOrigin.AUTOMATION,
+            observation.continuation ?: invalid("콜로세움의 최신 관측이 없습니다."),
+            resolveAction = { html, url, page ->
+                val snapshot = parser.parseBattle(html, url, page)
+                if (!observation.complete || snapshot.selectedTeam.size != 5 || snapshot.selectedTeam.toSet() != expectedTeam.toSet()) {
+                    invalid("콜로세움 저장 팀이 변경되어 새 판단이 필요합니다.")
+                }
+                TownActionRequest(snapshot.challengeActionId ?: invalid("현재 콜로세움에 도전할 수 없습니다."))
+            },
+            expectedForm = { it.submitFields.singleOrNull()?.name == "ChallengeRank" },
+        ) { html, url, result, page -> ColosseumBattleResponse.from(parser.parseBattle(html, url, page, result)) }
 
     fun saveTeam(accountId: Long, request: SaveColosseumTeamRequest): ColosseumBattleResponse {
         val saved = executor.executeProjectedWithSingleFallbackGet(

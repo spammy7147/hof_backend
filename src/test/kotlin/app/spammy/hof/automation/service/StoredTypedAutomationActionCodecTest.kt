@@ -19,6 +19,16 @@ class StoredTypedAutomationActionCodecTest {
     private val codec = StoredTypedAutomationActionCodec(jacksonObjectMapper())
 
     @Test
+    fun `콜로세움 저장 행동은 5인 팀을 보존하고 잘못된 팀은 거부한다`() {
+        val team = (1..5).map { "fighter-$it" }
+        val action = StoredTypedAutomationAction(12, "colosseum", StoredTypedActionPayload.Colosseum(team))
+        assertEquals(action, codec.decode(codec.encode(action).json))
+        for (invalid in listOf(team.take(4), team + "fighter-6", List(5) { "fighter-1" }, team.dropLast(1) + "unknown")) {
+            assertFailsWith<IllegalArgumentException> { codec.encode(action.copy(payload = StoredTypedActionPayload.Colosseum(invalid))) }
+        }
+    }
+
+    @Test
     fun `round trips the current battle action format with stable fingerprint`() {
         val action = StoredTypedAutomationAction(
             entryId = 12,

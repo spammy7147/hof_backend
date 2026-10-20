@@ -52,6 +52,7 @@ class TypedLiveAutomationSnapshotLoader(
     transactionManager: PlatformTransactionManager? = null,
     private val fishingService: FishingService? = null,
     private val homeService: HomeService? = null,
+    private val colosseumService: app.spammy.hof.town.pvp.service.ColosseumService? = null,
 ) : TypedAutomationSnapshotLoader, DecisionScopedTypedAutomationSnapshotLoader {
     private val readTransaction = transactionManager?.let { TransactionTemplate(it).apply { isReadOnly = true } }
     private val activeDecision = ThreadLocal<DecisionSnapshotLoader?>()
@@ -148,6 +149,7 @@ class TypedLiveAutomationSnapshotLoader(
                 questObservation.complete,
                 if (includesFishing) cache.loadFishing(accountId) else null,
                 if (includesHome) cache.loadHome(accountId) else null,
+                if (config.entries.any { it.enabled && it.type == AutomationType.COLOSSEUM }) cache.loadColosseum(accountId) else null,
             )
         }
     } catch (error: Exception) {
@@ -170,6 +172,12 @@ class TypedLiveAutomationSnapshotLoader(
         private var fishing: FishingAutomationObservation? = null
         private var homeLoaded = false
         private var home: HomeResponse? = null
+        private var colosseum: app.spammy.hof.town.pvp.service.ColosseumAutomationObservation? = null
+
+        fun loadColosseum(accountId: Long): app.spammy.hof.town.pvp.service.ColosseumAutomationObservation? {
+            if (colosseum == null) colosseum = colosseumService?.loadForAutomation(accountId, timeProvider.now())
+            return colosseum
+        }
 
         fun loadFishing(accountId: Long): FishingAutomationObservation? {
             if (!fishingLoaded) {
@@ -280,7 +288,7 @@ class TypedLiveAutomationSnapshotLoader(
         val categories = entries.filter { it.enabled }.flatMap { entry -> when (entry.type) {
             AutomationType.QUEST -> entry.quest.asSequence().filter { it.enabled }
                 .flatMap { it.maps.asSequence() }.map { it.categoryId }.toList()
-            AutomationType.HOME_QUEST -> emptyList()
+            AutomationType.HOME_QUEST, AutomationType.COLOSSEUM -> emptyList()
             AutomationType.BATTLE_MAP -> entry.battle.map { it.categoryId }
             AutomationType.ADVENTURE_MAP -> entry.adventure.map { it.categoryId }
             AutomationType.RAID -> emptyList()
@@ -332,6 +340,7 @@ class TypedLiveAutomationSnapshotLoader(
                     )
                 },
             )
+            AutomationType.COLOSSEUM -> AutomationEntrySnapshot(entry.id, entry.type, colosseum = live.colosseum?.let { ColosseumAutomationSnapshot(accountId, it, now) })
             AutomationType.BATTLE_MAP -> AutomationEntrySnapshot(entry.id, entry.type, battle = battleSnapshot(accountId, entry, states, config, now, timeSnapshot))
             AutomationType.ADVENTURE_MAP -> AutomationEntrySnapshot(entry.id, entry.type, adventure = adventureSnapshot(accountId, entry, states, config, now, timeSnapshot))
             AutomationType.UNION -> AutomationEntrySnapshot(entry.id, entry.type, union = UnionAutomationSnapshot(
@@ -458,14 +467,14 @@ class TypedLiveAutomationSnapshotLoader(
         AutomationType.ADVENTURE_MAP -> copy(adventure = adventure.filter { "${it.categoryId}/${it.mapCode}" == targetKey })
         AutomationType.RAID -> this
         AutomationType.UNION -> copy(union = union.filter { "${it.categoryId}/${it.mapCode}" == targetKey || "${it.categoryId}:${it.mapCode}" == targetKey })
-        AutomationType.FISHING -> this
+        AutomationType.FISHING, AutomationType.COLOSSEUM -> this
     }
 
     private fun categoriesFor(entries: List<DetachedEntry>): List<String> = entries.flatMap { entry ->
         when (entry.type) {
             AutomationType.QUEST -> entry.quest.asSequence().filter { it.enabled }
                 .flatMap { it.maps.asSequence() }.map { it.categoryId }.toList()
-            AutomationType.HOME_QUEST -> emptyList()
+            AutomationType.HOME_QUEST, AutomationType.COLOSSEUM -> emptyList()
             AutomationType.BATTLE_MAP -> entry.battle.map { it.categoryId }
             AutomationType.ADVENTURE_MAP -> entry.adventure.map { it.categoryId }
             AutomationType.RAID -> emptyList()
@@ -500,6 +509,7 @@ class TypedLiveAutomationSnapshotLoader(
         val questPageComplete: Boolean,
         val fishing: FishingAutomationObservation?,
         val home: HomeResponse?,
+        val colosseum: app.spammy.hof.town.pvp.service.ColosseumAutomationObservation?,
     )
 
     private companion object {

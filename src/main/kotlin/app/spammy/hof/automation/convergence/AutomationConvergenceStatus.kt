@@ -166,6 +166,7 @@ class JpaAutomationConvergenceStatusReader(
 
     private fun AutomationIsolationScopeKind.impactLabel(key: String): String = when (this) {
         AutomationIsolationScopeKind.QUEST_TARGET -> "퀘스트 대상 $key"
+        AutomationIsolationScopeKind.COLOSSEUM_ENTRY -> "콜로세움 자동화 $key"
         AutomationIsolationScopeKind.HOME_TARGET -> "자택 퀘스트 대상 $key"
         AutomationIsolationScopeKind.BATTLE_COOLDOWN_SCOPE -> "공유 전투 쿨타임 $key"
         AutomationIsolationScopeKind.UNION_ENTRY -> "유니온 자동화 $key"

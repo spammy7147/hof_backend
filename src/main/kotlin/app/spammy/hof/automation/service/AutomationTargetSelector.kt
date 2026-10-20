@@ -51,6 +51,7 @@ class AutomationTargetSelector(
     private val progressTelemetry: AutomationProgressTelemetry? = null,
     private val decisionJournal: AutomationDecisionJournal? = null,
     private val directResponses: AutomationDirectResponseStore? = null,
+    private val colosseum: AutomationHandler<ColosseumAutomationSnapshot> = ColosseumAutomationHandler(),
 ) : AutomationDecisionSource {
 
     override fun select(accountId: Long): AutomationCoordination {
@@ -533,7 +534,7 @@ class AutomationTargetSelector(
             }
             block == null && failed == null
         }
-        val result = evaluateEntry(entry, quest, battle, adventure, union, fishing, homeQuest, accepts) { gap ->
+        val result = evaluateEntry(entry, quest, battle, adventure, union, fishing, homeQuest, colosseum, accepts) { gap ->
             coordinateObservationGap(entry, gap, selection)
         }
         if (result is AutomationCoordination.Runnable && accepts(result.action)) return result.copy(
@@ -990,6 +991,7 @@ private fun evaluateEntry(
     union: AutomationHandler<UnionAutomationSnapshot>,
     fishing: AutomationHandler<FishingAutomationSnapshot>,
     homeQuest: AutomationHandler<HomeQuestAutomationSnapshot>,
+    colosseum: AutomationHandler<ColosseumAutomationSnapshot>,
     accepts: (PreparedAutomationAction) -> Boolean = { true },
     observationGap: ((HandlerEvaluation.ObservationGap) -> AutomationCoordination)? = null,
 ): AutomationCoordination {
@@ -1003,6 +1005,7 @@ private fun evaluateEntry(
         AutomationType.RAID -> HandlerEvaluation.Skipped
         AutomationType.UNION -> entry.union?.let { union.evaluate(it, accepts) }
         AutomationType.FISHING -> entry.fishing?.let(fishing::evaluate)
+        AutomationType.COLOSSEUM -> entry.colosseum?.let(colosseum::evaluate)
     } ?: HandlerEvaluation.ConfigurationWarning("${entry.type} automation snapshot is missing.")
     val trace = when (evaluation) {
         is HandlerEvaluation.Runnable -> AutomationEvaluationTrace(

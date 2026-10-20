@@ -14,6 +14,14 @@ class ActionEvidencePoliciesTest {
     private val policies: ActionEvidencePolicies = DefaultActionEvidencePolicies()
 
     @Test
+    fun `콜로세움은 완전한 직접 전투 응답만 성공으로 귀속한다`() {
+        val selection = selection(AutomationActionKind.COLOSSEUM_CHALLENGE, "RANKING")
+        assertIs<AutomationActionEvidence.DirectApplied>(policies.evaluate(selection, direct(ColosseumObservedState("terminal", true))))
+        assertIs<AutomationActionEvidence.IncompleteObservation>(policies.evaluate(selection, direct(ColosseumObservedState("incomplete", false), genericSuccess = true)))
+        assertIs<AutomationActionEvidence.IncompleteObservation>(policies.evaluate(selection, fresh(ColosseumObservedState("terminal", true))))
+    }
+
+    @Test
     fun `미지원 정책은 모든 행동의 성공 거절 관문을 새 규칙으로 판정하지 않는다`() {
         val state = QuestObservedState("waiting", true, QuestState.UNAVAILABLE, null)
         for (kind in AutomationActionKind.entries) {

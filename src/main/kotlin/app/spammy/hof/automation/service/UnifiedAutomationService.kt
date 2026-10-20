@@ -402,6 +402,16 @@ class UnifiedAutomationService(
     }
 
     @Transactional
+    fun updateColosseum(accountId: Long, request: UpdateColosseumAutomationRequest): TypedAutomationAggregateResponse {
+        lockTypedAccount(accountId)
+        val entry = requireTypedEntry(accountId, AutomationType.COLOSSEUM)
+        workLifecycle.stopForConfigurationChange(accountId, entry.id, emptySet(), wholeEntry = entry.enabled && !request.enabled)
+        updateTypedEntry(entry, request.enabled)
+        enqueueSettingsWake(accountId)
+        return buildTypedAggregate(accountId)
+    }
+
+    @Transactional
     fun updateHomeQuests(accountId: Long, request: UpdateHomeQuestAutomationRequest): TypedAutomationAggregateResponse {
         lockTypedAccount(accountId)
         val entry = requireTypedEntry(accountId, AutomationType.HOME_QUEST)
@@ -1141,6 +1151,7 @@ class UnifiedAutomationService(
         if (!entry.enabled) return listOfNotNull(minimumTimeWarning)
         val warnings = linkedSetOf<String>()
         when (entry.type) {
+            AutomationType.COLOSSEUM -> Unit
             AutomationType.QUEST -> {
                 if (quests.none { it.enabled }) warnings += "활성화된 퀘스트가 없습니다."
             }

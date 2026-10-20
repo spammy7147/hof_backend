@@ -33,6 +33,7 @@ data class AutomationEntrySnapshot(
     val union: UnionAutomationSnapshot? = null,
     val fishing: FishingAutomationSnapshot? = null,
     val homeQuest: HomeQuestAutomationSnapshot? = null,
+    val colosseum: ColosseumAutomationSnapshot? = null,
     val settingsRevision: Long? = null,
 )
 

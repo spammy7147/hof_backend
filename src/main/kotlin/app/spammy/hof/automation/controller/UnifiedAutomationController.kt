@@ -1,5 +1,6 @@
 package app.spammy.hof.automation.controller
 
+import app.spammy.hof.automation.dto.UpdateColosseumAutomationRequest
 import app.spammy.hof.automation.dto.CreateAutomationEntryRequest
 import app.spammy.hof.automation.dto.ReorderAutomationEntriesRequest
 import app.spammy.hof.automation.dto.MoveMapBetweenGroupsRequest
@@ -71,6 +72,9 @@ class UnifiedAutomationController(
         @CurrentAccountId accountId: Long,
         @Valid @RequestBody request: UpdateQuestAutomationRequest,
     ): TypedAutomationAggregateResponse = service.updateQuest(accountId, request)
+
+    @PutMapping("/colosseum")
+    fun updateColosseum(@CurrentAccountId accountId: Long, @RequestBody request: UpdateColosseumAutomationRequest) = service.updateColosseum(accountId, request)
 
     @PutMapping("/home-quests")
     fun updateHomeQuests(

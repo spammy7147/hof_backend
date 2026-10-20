@@ -18,7 +18,7 @@ import jakarta.persistence.Table
 import jakarta.persistence.Version
 import java.time.Instant
 
-enum class AutomationType { QUEST, HOME_QUEST, BATTLE_MAP, ADVENTURE_MAP, RAID, UNION, FISHING }
+enum class AutomationType { QUEST, HOME_QUEST, BATTLE_MAP, ADVENTURE_MAP, RAID, UNION, FISHING, COLOSSEUM }
 
 fun AutomationType.singletonMarker(): AutomationType? = when (this) {
     AutomationType.BATTLE_MAP, AutomationType.ADVENTURE_MAP -> null

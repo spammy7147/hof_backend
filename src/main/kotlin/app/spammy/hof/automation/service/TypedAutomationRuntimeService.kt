@@ -719,6 +719,7 @@ class TypedAutomationRuntimeService(
         action.updatedAt = now
         state.directResponseYieldRequired = true
         val targetKey = when (val payload = right.checkpoint?.storedAction?.payload) {
+            is StoredTypedActionPayload.Colosseum -> COLOSSEUM_TARGET
             is StoredTypedActionPayload.QuestAccept -> payload.questKey
             is StoredTypedActionPayload.QuestClaim -> payload.questKey
             is StoredTypedActionPayload.HomeQuest -> payload.questId

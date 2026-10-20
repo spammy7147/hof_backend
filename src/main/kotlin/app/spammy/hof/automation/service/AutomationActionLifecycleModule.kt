@@ -183,8 +183,10 @@ class UnifiedAutomationActionLifecycleModule(
     private val sessionRecovery: HofSessionRecoveryExecutor,
     private val timeProvider: TimeProvider,
     private val raidBattlePreSubmitGuard: RaidBattlePreSubmitGuard = RaidBattlePreSubmitGuard.AllowAll,
+    private val colosseumLifecycle: ColosseumAutomationLifecycle? = null,
 ) : AutomationActionLifecycleModule {
     override fun describe(action: PreparedAutomationAction): AutomationActionDescriptor = when (action) {
+        is ColosseumAutomationAction -> requireNotNull(colosseumLifecycle).describe()
         is HomeQuestAutomationAction -> descriptor(action.questId, action.questName, action.action)
         is QuestAction.Accept -> questDescriptor(action.questKey, action.questName, QUEST_ACCEPT_STORAGE_KIND)
         is QuestAction.Claim -> questDescriptor(action.questKey, action.questName, QUEST_CLAIM_STORAGE_KIND)
@@ -217,6 +219,7 @@ class UnifiedAutomationActionLifecycleModule(
         entryId: Long,
         action: PreparedAutomationAction,
     ): ManagedAutomationAction = when (action) {
+        is ColosseumAutomationAction -> requireNotNull(colosseumLifecycle).prepare(accountId, entryId, action)
         is HomeQuestAutomationAction -> prepareHomeQuest(accountId, entryId, action)
         is QuestAction.Accept -> {
             workOwnership.ensure(
@@ -340,6 +343,7 @@ class UnifiedAutomationActionLifecycleModule(
         expectedAccountId: Long,
     ): ManagedAutomationAction {
         require(row.actionKind in setOf(
+                "COLOSSEUM",
                 HOME_QUEST_STORAGE_KIND,
                 QUEST_ACCEPT_STORAGE_KIND,
                 QUEST_CLAIM_STORAGE_KIND,
@@ -360,6 +364,7 @@ class UnifiedAutomationActionLifecycleModule(
     ): ManagedAutomationAction {
         val stored = action
         require(stored.payload.kind() in setOf(
+                "COLOSSEUM",
                 HOME_QUEST_STORAGE_KIND,
                 QUEST_ACCEPT_STORAGE_KIND,
                 QUEST_CLAIM_STORAGE_KIND,
@@ -376,7 +381,8 @@ class UnifiedAutomationActionLifecycleModule(
                 stored.payload.source in MANAGED_BATTLE_MAP_SOURCES,
         ) { "Stored battle source belongs to an unsupported lifecycle family." }
         require(
-            stored.payload is StoredTypedActionPayload.HomeQuest ||
+            stored.payload is StoredTypedActionPayload.Colosseum ||
+                stored.payload is StoredTypedActionPayload.HomeQuest ||
                 stored.payload is StoredTypedActionPayload.QuestAccept ||
                 stored.payload is StoredTypedActionPayload.QuestClaim ||
                 stored.payload is StoredTypedActionPayload.QuestBattle ||
@@ -397,6 +403,7 @@ class UnifiedAutomationActionLifecycleModule(
         fishingObservation: app.spammy.hof.town.fishing.service.FishingAutomationObservation? = null,
     ): ManagedAutomationAction {
         return when (val payload = stored.payload) {
+            is StoredTypedActionPayload.Colosseum -> requireNotNull(colosseumLifecycle).restore(accountId, stored)
             is StoredTypedActionPayload.HomeQuest -> object : ManagedAutomationAction {
                 override val storedAction = stored
                 override val descriptor = payload.descriptor()

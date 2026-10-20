@@ -52,6 +52,7 @@ data class StoredActionPolicyContext(
     JsonSubTypes.Type(StoredTypedActionPayload.QuestClaim::class, name = "QUEST_CLAIM"),
     JsonSubTypes.Type(StoredTypedActionPayload.QuestAccept::class, name = "QUEST_ACCEPT"),
     JsonSubTypes.Type(StoredTypedActionPayload.QuestBattle::class, name = "QUEST_BATTLE"),
+    JsonSubTypes.Type(StoredTypedActionPayload.Colosseum::class, name = "COLOSSEUM"),
     JsonSubTypes.Type(StoredTypedActionPayload.HomeQuest::class, name = "HOME_QUEST"),
     JsonSubTypes.Type(StoredTypedActionPayload.BattleMap::class, name = "BATTLE_MAP"),
     JsonSubTypes.Type(StoredTypedActionPayload.AdventureMap::class, name = "ADVENTURE_MAP"),
@@ -74,6 +75,7 @@ sealed interface StoredTypedActionPayload {
         override val display: StoredActionDisplay? = null,
         val questCycle: String? = null,
     ) : StoredTypedActionPayload
+    data class Colosseum(val teamIds: List<String>, override val display: StoredActionDisplay? = null) : StoredTypedActionPayload
     data class HomeQuest(
         val questId: String,
         val actionId: String,
@@ -190,6 +192,7 @@ class StoredTypedAutomationActionCodec(private val objectMapper: ObjectMapper) {
         when (val payload = action.payload) {
             is StoredTypedActionPayload.QuestClaim -> require(payload.questKey.isNotBlank() && payload.actionNo.isNotBlank())
             is StoredTypedActionPayload.QuestAccept -> require(payload.questKey.isNotBlank() && payload.actionNo.isNotBlank())
+            is StoredTypedActionPayload.Colosseum -> require(payload.teamIds.size == 5 && payload.teamIds.distinct().size == 5 && payload.teamIds.all { it.matches(Regex("fighter-[0-9]+")) })
             is StoredTypedActionPayload.HomeQuest -> require(payload.questId.isNotBlank() && payload.actionId.isNotBlank())
             is StoredTypedActionPayload.QuestBattle -> {
                 require(payload.observedCurrent == null || payload.observedCurrent >= 0)
@@ -232,6 +235,7 @@ internal fun StoredTypedActionPayload.kind(): String = when (this) {
     is StoredTypedActionPayload.QuestClaim -> "QUEST_CLAIM"
     is StoredTypedActionPayload.QuestAccept -> "QUEST_ACCEPT"
     is StoredTypedActionPayload.HomeQuest -> "HOME_QUEST"
+    is StoredTypedActionPayload.Colosseum -> "COLOSSEUM"
     is StoredTypedActionPayload.QuestBattle -> "QUEST_BATTLE"
     is StoredTypedActionPayload.BattleMap -> "BATTLE_MAP"
     is StoredTypedActionPayload.AdventureMap -> "ADVENTURE_MAP"

@@ -18,6 +18,7 @@ enum class AutomationActionKind(val battle: Boolean = false) {
     HOME_ACCEPT,
     HOME_CLAIM,
     MAP_BATTLE(true),
+    COLOSSEUM_CHALLENGE(true),
     ADVENTURE_BATTLE(true),
     UNION_BATTLE(true),
     FISHING_START,
@@ -35,6 +36,7 @@ enum class AutomationActionKind(val battle: Boolean = false) {
 enum class AutomationIsolationScopeKind {
     QUEST_TARGET,
     HOME_TARGET,
+    COLOSSEUM_ENTRY,
     BATTLE_COOLDOWN_SCOPE,
     UNION_ENTRY,
     FISHING_ENTRY,

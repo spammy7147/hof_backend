@@ -8,6 +8,7 @@ import java.util.HexFormat
 object ProductionEvidenceShapes {
     const val QUEST_RESPONSE =
         "QuestResponse|targetPresent|state|actionNoPresent|progressPresent"
+    const val COLOSSEUM_RESPONSE = "ColosseumBattleResponse|terminalResult|turns|teams"
     const val HOME_RESPONSE =
         "HomeResponse|targetPresent|state|actionIdPresent|resultStatus"
     const val BATTLE_RESPONSE =
@@ -39,6 +40,7 @@ object ProductionEvidenceShapes {
     }
 
     private fun responseShape(actionKind: AutomationActionKind): String = when (actionKind) {
+        AutomationActionKind.COLOSSEUM_CHALLENGE -> COLOSSEUM_RESPONSE
         AutomationActionKind.QUEST_ACCEPT,
         AutomationActionKind.QUEST_CLAIM,
         -> QUEST_RESPONSE

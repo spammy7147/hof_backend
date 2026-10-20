@@ -42,6 +42,7 @@ interface AutomationWorkLifecycle {
         holdMessage: String,
     )
     fun completeFishingCycle(accountId: Long, entryId: Long, executionIdentity: String? = null)
+    fun completeColosseumCycle(accountId: Long, entryId: Long, executionIdentity: String? = null) = Unit
     fun completeUnionCycle(accountId: Long, entryId: Long, executionIdentity: String? = null)
     fun completeRaidCycle(accountId: Long, entryId: Long, executionIdentity: String? = null)
     fun stopForConfigurationChange(
@@ -430,6 +431,23 @@ class AutomationWorkSessionService(
             it.entry.id == entryId &&
                 it.workType == AutomationWorkType.FISHING &&
                 it.targetKey == FISHING_CYCLE_TARGET
+        } ?: return
+        val now = timeProvider.now()
+        session.transitionTo(AutomationWorkStatus.COMPLETED)
+        session.nextCheckAt = null
+        session.holdMessage = null
+        session.finishedAt = now
+        session.updatedAt = now
+        commands.save(session)
+        recordOwnershipTransferAfterCommit(AutomationOwnershipTransferReason.COMPLETE, false)
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    override fun completeColosseumCycle(accountId: Long, entryId: Long, executionIdentity: String?) {
+        if (!isRunningRuntime(accountId, executionIdentity)) return
+        val session = queries.lockOpen(accountId).singleOrNull {
+            it.entry.id == entryId &&
+                it.workType == AutomationWorkType.COLOSSEUM
         } ?: return
         val now = timeProvider.now()
         session.transitionTo(AutomationWorkStatus.COMPLETED)

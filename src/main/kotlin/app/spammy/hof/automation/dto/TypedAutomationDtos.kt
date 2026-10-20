@@ -30,6 +30,8 @@ data class MoveMapBetweenGroupsRequest(
     @field:Min(0) val targetExecutionOrder: Int,
 )
 
+data class UpdateColosseumAutomationRequest(val enabled: Boolean)
+
 data class UpdateHomeQuestAutomationRequest(
     val enabled: Boolean,
     @field:Valid @field:Size(max = 100) val quests: List<@Valid HomeQuestSelectionRequest>,

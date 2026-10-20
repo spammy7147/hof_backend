@@ -151,6 +151,29 @@ class ColosseumTest {
         val ambiguous = fixture("shop.html").replace("<input name=\"amount\"", "<input name=\"amount\" value=\"2\"><input name=\"amount\"")
         assertTrue(parser.parseShop(ambiguous, SHOP_URL, forms.parse(ambiguous, SHOP_URL)).items.isEmpty())
     }
+    @Test fun `자동화 관측의 폼으로 팀 필드 없이 도전을 한 번 제출한다`() {
+        val context = service(TownFeatureId.COLOSSEUM_BATTLE, BATTLE_URL, fixture("rank.html"), fixture("rank-result.html"))
+        val observation = context.service.loadForAutomation(7L, Instant.EPOCH)
+        assertTrue(observation.complete)
+        val response = context.service.challengeForAutomation(7L, observation, observation.response.selectedTeam)
+        assertEquals(16, response.battleResult?.turns)
+        assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.POST), context.requests().map { it.method })
+        assertTrue(context.requests().all { it.origin == HofRequestOrigin.AUTOMATION })
+        assertEquals(listOf(HofFormField("ChallengeRank", "challenge!")), context.requests().last().formEntries)
+    }
+    @Test fun `자동화는 변경된 팀과 불완전 관측을 전송 전에 거부한다`() {
+        val context = service(TownFeatureId.COLOSSEUM_BATTLE, BATTLE_URL, fixture("rank.html"))
+        val observation = context.service.loadForAutomation(7L, Instant.EPOCH)
+        assertFails { context.service.challengeForAutomation(7L, observation, listOf("fighter-999")) }
+        assertTrue(context.requests().none { it.method == HofHttpMethod.POST })
+    }
+    @Test fun `자동화 쿨다운은 관측 시각 기준으로 읽고 결과 없는 직접 응답을 성공으로 꾸미지 않는다`() {
+        val html = fixture("rank.html").replace("<h4>랭킹", "<div>Time left to Next : 0:00:30</div><h4>랭킹")
+        val context = service(TownFeatureId.COLOSSEUM_BATTLE, BATTLE_URL, html, "<div id='menu2'>결과 확인 중</div>")
+        val observation = context.service.loadForAutomation(7L, Instant.EPOCH)
+        assertEquals(Instant.EPOCH.plusSeconds(30), observation.cooldownUntil)
+        assertNull(context.service.challengeForAutomation(7L, observation, observation.response.selectedTeam).battleResult)
+    }
     private fun fixture(name: String) = requireNotNull(javaClass.getResource("/fixtures/town/pvp/$name")).readText()
     private fun service(feature: TownFeatureId, url: String, vararg html: String): Context {
         val accounts = Mockito.mock(AccountQueryRepository::class.java)

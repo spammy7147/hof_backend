@@ -51,6 +51,8 @@ data class HomeQuestObservedState(
     val actionId: String?,
 ) : ActionObservedState
 
+data class ColosseumObservedState(override val fingerprint: String, val terminalResult: Boolean) : ActionObservedState
+
 data class BattleObservedState(
     override val fingerprint: String,
     val targetPresent: Boolean,
@@ -168,6 +170,10 @@ class DefaultActionEvidencePolicies : ActionEvidencePolicies {
             return evaluateBattle(selection, observation, state)
         }
         return when (selection.actionKind) {
+            AutomationActionKind.COLOSSEUM_CHALLENGE -> {
+                if (observation.source == ActionEvidenceSource.DIRECT_RESPONSE && (state as? ColosseumObservedState)?.terminalResult == true) directApplied(observation, state)
+                else incomplete(observation, "COLOSSEUM_RESULT_UNOBSERVED")
+            }
             AutomationActionKind.QUEST_ACCEPT,
             AutomationActionKind.QUEST_CLAIM,
             -> evaluateQuest(selection, observation, state)
