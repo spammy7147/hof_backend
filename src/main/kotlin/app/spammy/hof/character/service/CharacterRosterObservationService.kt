@@ -25,13 +25,15 @@ class CharacterRosterObservationService(
         accountId: Long,
         response: HofHttpResponse,
         observedAt: Instant,
-    ): Boolean = mutationFence.execute(accountId) {
-        if (!isHofHome(response.finalUrl)) return@execute false
-        if (!loginStateParser.parse(response.body).isLoggedIn) return@execute false
-        val roster = rosterParser.parse(response.body)
-        if (roster.isEmpty()) return@execute false
+    ): Boolean {
+        if (!isHofHome(response.finalUrl)) return false
+        return mutationFence.execute(accountId) {
+            if (!loginStateParser.parse(response.body).isLoggedIn) return@execute false
+            val roster = rosterParser.parse(response.body)
+            if (roster.isEmpty()) return@execute false
 
-        transactions.record(accountId, roster, observedAt)
+            transactions.record(accountId, roster, observedAt)
+        }
     }
 
     private fun isHofHome(value: String): Boolean = runCatching { URI(value).normalize() }

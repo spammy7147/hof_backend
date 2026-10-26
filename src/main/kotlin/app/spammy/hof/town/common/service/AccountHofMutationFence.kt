@@ -4,11 +4,26 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 import org.springframework.stereotype.Component
+import org.springframework.transaction.support.TransactionSynchronization
+import org.springframework.transaction.support.TransactionSynchronizationManager
 
 /** 같은 계정의 HOF 변경과 로컬 identity 변경이 서로의 검증·반영 사이에 끼어들지 않게 한다. */
 @Component
 class AccountHofMutationFence {
     private val states = ConcurrentHashMap<Long, AccountFenceState>()
+
+    /** DB 잠금 해제 뒤 실제 세션 변경에 앞선 form·쿠키 관측을 무효화한다. rollback도 동일하다. */
+    fun invalidateAfterCompletion(accountId: Long) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(
+                object : TransactionSynchronization {
+                    override fun afterCompletion(status: Int) { execute(accountId) {} }
+                },
+            )
+        } else {
+            execute(accountId) {}
+        }
+    }
 
     fun <T> execute(accountId: Long, action: () -> T): T {
         val state = state(accountId)

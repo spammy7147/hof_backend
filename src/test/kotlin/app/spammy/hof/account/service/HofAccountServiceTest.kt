@@ -12,7 +12,12 @@ import app.spammy.hof.external.client.AccountHofGateway
 import app.spammy.hof.external.client.AccountHofResponseObserver
 import app.spammy.hof.status.service.HofStatusSnapshotService
 import app.spammy.hof.character.service.CharacterRosterObservationService
+import app.spammy.hof.character.service.CharacterRosterObservationTransaction
+import app.spammy.hof.character.service.SessionPatternLoadTracker
+import app.spammy.hof.external.parser.CharacterRosterParser
 import app.spammy.hof.captcha.service.CaptchaPassMaintenanceService
+import app.spammy.hof.town.common.service.AccountHofMutationFence
+import app.spammy.hof.town.common.service.AccountHofObservationInvalidatedException
 import org.springframework.transaction.support.TransactionSynchronizationManager
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.HofHttpMethod
@@ -25,6 +30,8 @@ import org.mockito.Mockito
 import java.time.Instant
 import java.util.Base64
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 
 class HofAccountServiceTest {
     private val now = Instant.parse("2026-07-07T00:00:00Z")
@@ -211,12 +218,60 @@ class HofAccountServiceTest {
             if (completion >= 0) {
                 Mockito.verifyNoInteractions(snapshots, pass, rosters)
                 currentTime = now.plusSeconds(60)
-                TransactionSynchronizationManager.getSynchronizations().single().afterCompletion(completion)
+                TransactionSynchronizationManager.getSynchronizations().forEach { it.afterCompletion(completion) }
             }
 
             Mockito.verify(pass).observe(7L, gateway.loginBody, now, responseAt)
             Mockito.verify(snapshots).observe(7L, gateway.loginBody, now)
             assertEquals(2, gateway.requests.size)
+        } finally {
+            if (completion >= 0) TransactionSynchronizationManager.clearSynchronization()
+        }
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource("false,-1", "false,0", "false,1", "true,-1", "true,0", "true,1")
+    fun `비홈 로그인과 재인증도 과거 쿠키로 준비한 행동을 무효화한다`(reauthenticate: Boolean, completion: Int) {
+        val fence = AccountHofMutationFence()
+        val roster = CharacterRosterObservationService(
+            LoginStateParser(), CharacterRosterParser(), fence,
+            Mockito.mock(CharacterRosterObservationTransaction::class.java),
+        )
+        val observingGateway = AccountHofGateway(
+            gateway,
+            AccountHofResponseObserver(
+                Mockito.mock(HofStatusSnapshotService::class.java), roster,
+                Mockito.mock(CaptchaPassMaintenanceService::class.java),
+            ),
+            TimeProvider { now }, SessionPatternLoadTracker(),
+        )
+        val observedService = HofAccountService(
+            accountRepository, cookieRepository, accountQueryRepository, cookieQueryRepository,
+            accountIdentityService, credentialCipher, cookieCipher, HofRequestFactory(), gateway,
+            observingGateway, LoginStateParser(), TimeProvider { now }, fence,
+        )
+        val account = HofAccountEntity(7L, "observed-user", credentialCipher.encrypt("password"), now)
+        Mockito.`when`(accountQueryRepository.findByLoginId("observed-user")).thenReturn(account)
+        Mockito.`when`(accountQueryRepository.findById(7L)).thenReturn(account)
+        Mockito.`when`(accountQueryRepository.findByIdForUpdate(7L)).thenReturn(account)
+        Mockito.`when`(accountRepository.save(anyAccount())).thenAnswer { it.arguments[0] }
+        Mockito.`when`(cookieRepository.save(anyCookie())).thenAnswer { it.arguments[0] }
+        gateway.loginFinalUrl = "https://hof.zerosic.com/index.php?menu=2"
+        val revision = fence.observe(7L) { "stored-form-and-cookies" }.revision
+        if (completion >= 0) TransactionSynchronizationManager.initSynchronization()
+        try {
+            if (reauthenticate) observedService.reauthenticate(7L)
+            else observedService.authenticate("observed-user", "password")
+            if (completion >= 0) {
+                assertEquals(revision, fence.observe(7L) {}.revision)
+                TransactionSynchronizationManager.getSynchronizations().forEach { it.afterCompletion(completion) }
+            }
+            var submitted = false
+            assertFailsWith<AccountHofObservationInvalidatedException> {
+                fence.executeObserved(7L, revision) { submitted = true }
+            }
+            assertFalse(submitted)
+            assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.POST), gateway.requests.map { it.method })
         } finally {
             if (completion >= 0) TransactionSynchronizationManager.clearSynchronization()
         }
@@ -250,6 +305,7 @@ class HofAccountServiceTest {
         val requests = mutableListOf<HofRequest>()
         val loginBody = """<a href="?char=1683198503393759">소셜</a>"""
         var loginReturned: () -> Unit = {}
+        var loginFinalUrl: String? = null
 
         override fun execute(
             accountId: Long,
@@ -269,7 +325,7 @@ class HofAccountServiceTest {
                 loginReturned()
                 HofHttpResponse(
                     statusCode = 200,
-                    finalUrl = request.url,
+                    finalUrl = loginFinalUrl ?: request.url,
                     body = loginBody,
                     setCookies = mapOf("NO" to "42"),
                 )

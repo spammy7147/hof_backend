@@ -40,6 +40,36 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class CaptchaServiceTest {
+    private val mutationFence = app.spammy.hof.town.common.service.AccountHofMutationFence()
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource("GET,false", "POST,false", "GET,true", "POST,true")
+    fun `캡차 답안 완료는 과거 form과 쿠키로 준비한 행동을 무효화한다`(method: String, deferred: Boolean) {
+        val challenge = pendingChallenge(id = 3L, submitUrl = "https://hof.zerosic.com/pass_check.php", submitMethod = method, answerFieldName = "pass_code", formFields = linkedMapOf("pass_code" to ""))
+        stubOwnedChallenge(3L, challenge)
+        Mockito.`when`(cookieQueryRepository.findByAccountId(1L)).thenReturn(listOf(cookie()))
+        gateway.response = HofHttpResponse(200, "https://hof.zerosic.com/battle.php", "<p>인증 완료</p>", mapOf("PHPSESSID" to "rotated"))
+        val revision = mutationFence.observe(1L) { "stored-form-and-cookies" }.revision
+        if (deferred) org.springframework.transaction.support.TransactionSynchronizationManager.initSynchronization()
+        try {
+            service.submitAnswer(1L, 3L, "1234", 1)
+            if (deferred) {
+                assertEquals(revision, mutationFence.observe(1L) {}.revision)
+                org.springframework.transaction.support.TransactionSynchronizationManager.getSynchronizations().forEach {
+                    it.afterCompletion(org.springframework.transaction.support.TransactionSynchronization.STATUS_COMMITTED)
+                }
+            }
+            var submitted = false
+            assertFailsWith<app.spammy.hof.town.common.service.AccountHofObservationInvalidatedException> {
+                mutationFence.executeObserved(1L, revision) { submitted = true }
+            }
+            assertFalse(submitted)
+            assertEquals(1, gateway.requests.size)
+        } finally {
+            if (deferred) org.springframework.transaction.support.TransactionSynchronizationManager.clearSynchronization()
+        }
+    }
+
     private val now = Instant.parse("2026-07-08T00:00:00Z")
     private val account = HofAccountEntity(
         id = 1L,
@@ -74,6 +104,7 @@ class CaptchaServiceTest {
         timeProvider = TimeProvider { now },
         automationHook = automationHook,
         feedbackCollector = feedbackCollector,
+        mutationFence = mutationFence,
     )
 
     @Test

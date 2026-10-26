@@ -25,6 +25,7 @@ import app.spammy.hof.external.model.HofHttpMethod
 import app.spammy.hof.external.model.HofRequest
 import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.external.parser.LoginStateParser
+import app.spammy.hof.town.common.service.AccountHofMutationFence
 import org.jsoup.nodes.Element
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
@@ -54,6 +55,7 @@ class CaptchaService(
     private val timeProvider: TimeProvider,
     private val automationHook: CaptchaAutomationHook? = null,
     private val feedbackCollector: CaptchaFeedbackCollector? = null,
+    private val mutationFence: AccountHofMutationFence = AccountHofMutationFence(),
 ) {
     /**
      * HOF 응답 HTML에서 캡차/자경단 통행증 신호만 찾아 detected challenge로 저장한다.
@@ -456,7 +458,11 @@ class CaptchaService(
             ),
         )
         val response = runCatching {
-            gateway.execute(challenge.account.id, request, cookies)
+            try {
+                gateway.execute(challenge.account.id, request, cookies)
+            } finally {
+                mutationFence.invalidateAfterCompletion(challenge.account.id)
+            }
         }.getOrElse { error ->
             error.rethrowIfHofControlSignal()
             imageManager.deleteImmediately(challenge.account.id, challenge.id, challenge.preparationVersion)

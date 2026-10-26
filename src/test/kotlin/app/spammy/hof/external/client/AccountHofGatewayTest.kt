@@ -1,6 +1,13 @@
 package app.spammy.hof.external.client
 
 import app.spammy.hof.character.service.CharacterRosterObservationService
+import app.spammy.hof.character.service.CharacterRosterObservationTransaction
+import app.spammy.hof.external.parser.CharacterRosterParser
+import app.spammy.hof.external.parser.LoginStateParser
+import app.spammy.hof.town.common.service.AccountHofMutationFence
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import app.spammy.hof.character.service.SessionPatternLoadTracker
 import app.spammy.hof.captcha.service.CaptchaPassMaintenanceService
 import app.spammy.hof.common.time.TimeProvider
@@ -18,6 +25,43 @@ import org.springframework.transaction.support.TransactionSynchronization
 import org.springframework.transaction.support.TransactionSynchronizationManager
 
 class AccountHofGatewayTest {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource("hunt,false", "menu=buy,false", "hunt,true", "menu=buy,true")
+    fun `맵과 상점 응답은 실제 roster 관측에서도 변경 잠금 해제 전에 반환한다`(query: String, deferred: Boolean) {
+        val fence = AccountHofMutationFence()
+        val transactions = Mockito.mock(CharacterRosterObservationTransaction::class.java)
+        val roster = CharacterRosterObservationService(LoginStateParser(), CharacterRosterParser(), fence, transactions)
+        val actual = AccountHofGateway(raw, AccountHofResponseObserver(snapshots, roster, passMaintenance), TimeProvider { REQUEST_STARTED_AT }, SessionPatternLoadTracker())
+        raw.response = RESPONSE.copy(finalUrl = "${REQUEST.url}?$query")
+        val held = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        Executors.newFixedThreadPool(2).use { pool ->
+            val holder = pool.submit { fence.execute(ACCOUNT_ID) { held.countDown(); check(release.await(5, TimeUnit.SECONDS)) } }
+            check(held.await(2, TimeUnit.SECONDS))
+            val read = pool.submit<HofHttpResponse> {
+                if (deferred) TransactionSynchronizationManager.initSynchronization()
+                try {
+                    actual.execute(ACCOUNT_ID, REQUEST.copy(url = raw.response.finalUrl), COOKIES).also {
+                        if (deferred) TransactionSynchronizationManager.getSynchronizations().single()
+                            .afterCompletion(TransactionSynchronization.STATUS_COMMITTED)
+                    }
+                } finally {
+                    if (deferred) TransactionSynchronizationManager.clearSynchronization()
+                }
+            }
+            try {
+                assertSame(raw.response, read.get(1, TimeUnit.SECONDS))
+                Mockito.verifyNoInteractions(transactions)
+                Mockito.verify(snapshots).observe(ACCOUNT_ID, raw.response.body, REQUEST_STARTED_AT)
+                Mockito.verify(passMaintenance).observe(ACCOUNT_ID, raw.response.body, REQUEST_STARTED_AT, REQUEST_STARTED_AT)
+            } finally {
+                release.countDown()
+                holder.get(2, TimeUnit.SECONDS)
+                read.get(2, TimeUnit.SECONDS)
+            }
+        }
+        assertEquals(1L, fence.observe(ACCOUNT_ID) {}.revision, "무관한 조회는 변경 revision을 증가시키지 않는다")
+    }
     private val snapshots = Mockito.mock(HofStatusSnapshotService::class.java)
     private val characterRosters = Mockito.mock(CharacterRosterObservationService::class.java)
     private val passMaintenance = Mockito.mock(CaptchaPassMaintenanceService::class.java)

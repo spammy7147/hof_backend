@@ -14,6 +14,7 @@ import app.spammy.hof.external.client.HofGateway
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.HofRequestOrigin
 import app.spammy.hof.external.parser.LoginStateParser
+import app.spammy.hof.town.common.service.AccountHofMutationFence
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -37,6 +38,7 @@ class HofAccountService(
     private val accountGateway: AccountHofGateway,
     private val loginStateParser: LoginStateParser,
     private val timeProvider: TimeProvider,
+    private val mutationFence: AccountHofMutationFence = AccountHofMutationFence(),
 ) {
     private val log = LoggerFactory.getLogger(HofAccountService::class.java)
 
@@ -109,6 +111,7 @@ class HofAccountService(
             log.warn("HOF login failed accountId={} loginId={}", account.id, account.loginId)
             throw ApiException(ErrorCode.HOF_LOGIN_FAILED, "HOF 로그인에 실패했습니다.")
         }
+        mutationFence.invalidateAfterCompletion(account.id)
         accountGateway.observe(account.id, loginResponse, loginRequestStartedAt, loginResponseObservedAt)
 
         val managedAccount = accountQueryRepository.findByIdForUpdate(account.id)
