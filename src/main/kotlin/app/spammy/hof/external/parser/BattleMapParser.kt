@@ -238,6 +238,26 @@ class BattleMapParser {
         maps: List<HofBattleMap>,
     ): Boolean = observesCompleteMapPage(html, finalUrl, statusCode, maps, "common", "hunt")
 
+    /** 직접 해역은 그룹 div가 없는 지도다. 올바른 문서와 본문 링크 전체가 관측된 경우만 최신 상태다. */
+    fun observesCompleteOceanMapPage(
+        html: String,
+        finalUrl: String,
+        statusCode: Int,
+        maps: List<HofBattleMap>,
+    ): Boolean {
+        if (statusCode !in 200..299 || finalUrl != "$HOF_BASE_URL?menu=MapSunkenShip") return false
+        val document = org.jsoup.Jsoup.parse(html, HOF_BASE_URL)
+        val contents = document.selectFirst("#contents") ?: return false
+        if (!contents.text().contains("대해") || document.selectFirst("#foot") == null) return false
+        if (!html.trimEnd().endsWith("</html>", ignoreCase = true)) return false
+        val query = Regex("""[?&]common=([^&"'#\s]+)""")
+        val declaredCodes = contents.select("a[href*=common=]").map { link ->
+            query.find(link.attr("href"))?.groupValues?.get(1) ?: return false
+        }.toSet()
+        return declaredCodes.isNotEmpty() && maps.all { it.mapCode != null } &&
+            maps.map { it.mapCode }.toSet() == declaredCodes
+    }
+
     private fun observesCompleteMapPage(
         html: String,
         finalUrl: String,

@@ -77,6 +77,9 @@ class BattleMapService(
     ): List<BattleMapResponse> {
         val snapshot = fetchMapSnapshot(accountId, categoryId, requireObservations = false, origin)
         if (snapshot.observations.isEmpty()) {
+            if (snapshot.category == BattleCategoryId.SCENARIO_OCEAN) {
+                throw ApiException(ErrorCode.HOF_REQUEST_FAILED, "해역 맵의 최신 상태를 완전하게 확인하지 못했습니다.")
+            }
             if (snapshot.category == BattleCategoryId.UNION && snapshot.statusCode in 200..299) {
                 val pageState = battleMapParser.parseUnionPageState(snapshot.responseBody)
                 if (pageState.authoritative) {
@@ -261,17 +264,7 @@ class BattleMapService(
             source.mapQuery,
             cookies.keys.sorted(),
         )
-        val response = gateway.execute(account.id, requestFactory.battleMapPage(source.pageQuery, origin), cookies)
-        val mapPageResponse = source.detailPageQuery
-            ?.takeIf { response.statusCode in 200..299 }
-            ?.let { detailPageQuery ->
-                gateway.execute(
-                    accountId = account.id,
-                    request = requestFactory.battleMapPage(detailPageQuery, origin),
-                    cookies = cookies + response.setCookies,
-                )
-            }
-            ?: response
+        val mapPageResponse = gateway.execute(account.id, requestFactory.battleMapPage(source.pageQuery, origin), cookies)
         if (requireObservations && mapPageResponse.statusCode !in 200..299) {
             if (mapPageResponse.statusCode in 500..599) {
                 throw AdventureMapRefreshException.Retryable(
@@ -302,17 +295,21 @@ class BattleMapService(
         if (login.hasLoginForm && !login.isLoggedIn) {
             throw ApiException(ErrorCode.HOF_SESSION_EXPIRED, "HOF 로그인 세션이 만료되었습니다.")
         }
-        val maps = battleMapParser.parse(
+        val parsedMaps = battleMapParser.parse(
             categoryId = category.value,
             queryName = source.mapQuery,
             html = mapPageResponse.body,
         )
+        // 부분 응답은 카탈로그와 계정별 가능 상태를 갱신하기 전에 버린다. 추측에 따른 상위 페이지 보충은 없다.
+        val maps = if (category == BattleCategoryId.SCENARIO_OCEAN && !battleMapParser.observesCompleteOceanMapPage(
+                mapPageResponse.body, mapPageResponse.finalUrl, mapPageResponse.statusCode, parsedMaps,
+            )
+        ) emptyList() else parsedMaps
         log.info(
-            "Battle map list parsed accountId={} categoryId={} status={} detailPageQuery={} mapCount={}",
+            "Battle map list parsed accountId={} categoryId={} status={} mapCount={}",
             account.id,
             categoryId,
             mapPageResponse.statusCode,
-            source.detailPageQuery,
             maps.size,
         )
 
@@ -374,9 +371,8 @@ class BattleMapService(
             BattleCategoryId.ADVENTURE_MAP -> BattleMapSource(pageQuery = "sp_hunt", mapQuery = "sp_common")
             BattleCategoryId.UNION -> BattleMapSource(pageQuery = "hunt", mapQuery = "union")
             BattleCategoryId.SCENARIO_OCEAN -> BattleMapSource(
-                pageQuery = "raid_hunt",
+                pageQuery = "menu=MapSunkenShip",
                 mapQuery = "common",
-                detailPageQuery = "menu=MapSunkenShip",
             )
             BattleCategoryId.RAID -> BattleMapSource(pageQuery = "raid_hunt", mapQuery = "raid_common")
         }
@@ -384,7 +380,6 @@ class BattleMapService(
     private data class BattleMapSource(
         val pageQuery: String,
         val mapQuery: String,
-        val detailPageQuery: String? = null,
     )
 
     private data class BattleMapSnapshot(

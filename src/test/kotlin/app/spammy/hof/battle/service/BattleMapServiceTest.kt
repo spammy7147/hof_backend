@@ -89,6 +89,9 @@ class BattleMapServiceTest {
     private lateinit var accountRepository: HofAccountRepository
 
     @Autowired
+    private lateinit var cookieQueries: CookieQueryRepository
+
+    @Autowired
     private lateinit var cookieRepository: HofCookieRepository
 
     @Autowired
@@ -638,41 +641,145 @@ class BattleMapServiceTest {
     }
 
     @Test
-    fun fetchesScenarioOceanDetailPageBeforeSynchronizingMaps() {
-        val account = savedAccount("battle-map-scenario")
-        gateway.responsesByUrl["https://hof.zerosic.com/index.php?raid_hunt"] = HofHttpResponse(
-            statusCode = 200,
-            finalUrl = "https://hof.zerosic.com/index.php?raid_hunt",
-            body = """<a href="index.php?menu=MapSunkenShip">대해</a>""",
-            setCookies = mapOf("NO" to "scenario"),
-        )
-        gateway.responsesByUrl["https://hof.zerosic.com/index.php?menu=MapSunkenShip"] = HofHttpResponse(
-            statusCode = 200,
-            finalUrl = "https://hof.zerosic.com/index.php?menu=MapSunkenShip",
-            body = """
-                <div>대해 (적정 레벨 : 40-60) (2)</div>
-                <div id="mapgroup1">
-                  <a href="index.php?common=sea001">Scenario- 대해(난파선 입구)</a>
-                  <a href="index.php?common=sea002">Scenario- 대해(침몰한 갑판)</a>
-                </div>
-            """.trimIndent(),
-            setCookies = emptyMap(),
-        )
+    fun `해역은 상위 페이지 없이 직접 한 번 조회하고 최신 맵을 반환한다`() {
+        val account = savedAccount("battle-map-ocean-direct")
+        gateway.responsesByUrl[OCEAN_URL] = oceanResponse()
 
-        val maps = service.findMaps(account.id, "scenario_ocean")
+        val observed = service.observeCurrentlyAvailableMaps(account.id, "scenario_ocean")
 
-        assertEquals(listOf("sea001", "sea002"), maps.map { it.mapCode })
-        assertEquals("대해", maps.first().groupName)
-        assertTrue(maps.all { it.resolved })
-        assertEquals(
-            listOf(
-                "https://hof.zerosic.com/index.php?raid_hunt",
-                "https://hof.zerosic.com/index.php?menu=MapSunkenShip",
-            ),
-            gateway.requests.map { it.url },
-        )
-        assertEquals(mapOf("PHPSESSID" to "abc", "NO" to "scenario"), gateway.cookies[1])
+        assertEquals(CurrentBattleMapObservationStatus.OBSERVED, observed.status)
+        assertTrue(observed.pageComplete)
+        assertEquals(listOf("Sink01", "Sink03", "Sink02", "Sink04", "Sink05", "Sink06"), observed.maps.map { it.mapCode })
+        assertTrue(observed.maps.all { it.enabled && it.resolved })
+        assertEquals(listOf(OCEAN_URL), gateway.requests.map { it.url })
+        assertEquals(listOf(mapOf("PHPSESSID" to "abc")), gateway.cookies)
     }
+
+    @Test
+    fun `해역 일부 링크만 있는 불완전 응답은 최신 상태로 저장하지 않고 카탈로그를 보존한다`() {
+        val account = savedAccount("battle-map-ocean-incomplete")
+        gateway.responsesByUrl[OCEAN_URL] = oceanResponse()
+        service.findMaps(account.id, "scenario_ocean")
+        gateway.reset()
+        gateway.responsesByUrl[OCEAN_URL] = oceanResponse(completeOceanPage().substringBefore("<div id=\"foot\">"))
+
+        val observed = service.observeCurrentlyAvailableMaps(account.id, "scenario_ocean")
+
+        assertEquals(CurrentBattleMapObservationStatus.INCOMPLETE, observed.status)
+        assertFalse(observed.pageComplete)
+        assertTrue(observed.maps.isEmpty())
+        assertEquals(6, catalogService.findKnownByCategory(account.id, "scenario_ocean").size)
+        assertFailsWith<ApiException> { service.findMaps(account.id, "scenario_ocean") }
+        assertEquals(listOf(OCEAN_URL, OCEAN_URL), gateway.requests.map { it.url })
+    }
+
+    @Test
+    fun `해역 불완전 응답은 기존 목록 API에서도 과거 enabled 상태를 최신으로 반환하지 않는다`() {
+        val account = savedAccount("battle-map-ocean-legacy-incomplete")
+        gateway.responsesByUrl[OCEAN_URL] = oceanResponse()
+        service.findMaps(account.id, "scenario_ocean")
+        gateway.reset()
+        gateway.responsesByUrl[OCEAN_URL] = oceanResponse("<a href='index.php?common=Sink01'>산호 숲</a>")
+
+        val error = assertFailsWith<ApiException> { service.findMaps(account.id, "scenario_ocean") }
+
+        assertEquals(ErrorCode.HOF_REQUEST_FAILED, error.errorCode)
+        assertEquals(6, catalogService.findKnownByCategory(account.id, "scenario_ocean").size)
+        assertEquals(listOf(OCEAN_URL), gateway.requests.map { it.url })
+    }
+
+    @Test
+    fun `해역의 오류와 다른 위치와 미완성 문서에는 보충 조회나 세션 복구를 붙이지 않는다`() {
+        val account = savedAccount("battle-map-ocean-failures")
+        gateway.responsesByUrl[OCEAN_URL] = oceanResponse()
+        service.findMaps(account.id, "scenario_ocean")
+        val auth = Mockito.mock(app.spammy.hof.account.service.HofAccountService::class.java)
+        val controller = app.spammy.hof.battle.controller.BattleMapController(
+            service, app.spammy.hof.account.service.HofSessionRecoveryService(auth), catalogService,
+        )
+        val cases = listOf(
+            oceanResponse(status = 503), oceanResponse(status = 429), oceanResponse(status = 302),
+            oceanResponse(url = "https://unrelated.test/index.php?menu=MapSunkenShip"),
+            oceanResponse(url = "https://hof.zerosic.com/index.php?hunt"),
+            oceanResponse(completeOceanPage().replace("대해", "다른 지역")),
+            oceanResponse(completeOceanPage().replace("id=\"contents\"", "id=\"other\"")),
+            oceanResponse(completeOceanPage().replace("id=\"foot\"", "id=\"other\"")),
+            oceanResponse(completeOceanPage().substringBefore("</body>")),
+            oceanResponse("<html><div id='contents'>대해</div><div id='foot'>footer</div></html>"),
+            oceanResponse(completeOceanPage().replace("common=Sink01", "common=")),
+            oceanResponse(completeOceanPage().replace("</body>", "<a href='?common=outside'>다른 링크</a></body>")),
+        )
+        for ((index, response) in cases.withIndex()) {
+            gateway.reset(); gateway.responsesByUrl[OCEAN_URL] = response
+            val error = assertFailsWith<ApiException>("case $index") { controller.findAvailability(account.id, "scenario_ocean") }
+            assertEquals(ErrorCode.HOF_REQUEST_FAILED, error.errorCode, "case $index")
+            assertEquals(listOf(OCEAN_URL), gateway.requests.map { it.url }, "case $index")
+            assertEquals(6, catalogService.findKnownByCategory(account.id, "scenario_ocean").size)
+        }
+        gateway.reset()
+        gateway.responseProvider = { _, _ -> throw IOException("제어된 전송 실패") }
+        assertFailsWith<IOException> { controller.findAvailability(account.id, "scenario_ocean") }
+        assertEquals(listOf(OCEAN_URL), gateway.requests.map { it.url })
+        Mockito.verifyNoInteractions(auth)
+    }
+
+    @Test
+    fun `해역은 인증 만료 뒤 한 번 복구한 쿠키로 대상만 다시 조회한다`() {
+        val account = savedAccount("battle-map-ocean-recovery")
+        val auth = Mockito.mock(app.spammy.hof.account.service.HofAccountService::class.java)
+        Mockito.doAnswer {
+            cookieQueries.findByAccountId(account.id).single().value = "new-session"
+            account
+        }.`when`(auth).reauthenticate(account.id, app.spammy.hof.external.model.HofRequestOrigin.INTERACTIVE)
+        gateway.responseProvider = { _, cookies ->
+            if (cookies["PHPSESSID"] == "abc") oceanResponse(loginForm()) else oceanResponse()
+        }
+        val controller = app.spammy.hof.battle.controller.BattleMapController(
+            service, app.spammy.hof.account.service.HofSessionRecoveryService(auth), catalogService,
+        )
+
+        val maps = controller.findAvailability(account.id, "scenario_ocean")
+
+        assertEquals(6, maps.size)
+        assertEquals(listOf(OCEAN_URL, OCEAN_URL), gateway.requests.map { it.url })
+        assertEquals(listOf("abc", "new-session"), gateway.cookies.map { it["PHPSESSID"] })
+        Mockito.verify(auth, Mockito.times(1)).reauthenticate(account.id, app.spammy.hof.external.model.HofRequestOrigin.INTERACTIVE)
+    }
+
+    @Test
+    fun `해역 인증이 계속 만료되면 두 번째 대상 조회 뒤 멈춘다`() {
+        val account = savedAccount("battle-map-ocean-recovery-failed")
+        val auth = Mockito.mock(app.spammy.hof.account.service.HofAccountService::class.java)
+        Mockito.`when`(auth.reauthenticate(account.id, app.spammy.hof.external.model.HofRequestOrigin.INTERACTIVE)).thenReturn(account)
+        gateway.responseProvider = { _, _ -> oceanResponse(loginForm()) }
+        val controller = app.spammy.hof.battle.controller.BattleMapController(
+            service, app.spammy.hof.account.service.HofSessionRecoveryService(auth), catalogService,
+        )
+
+        val error = assertFailsWith<ApiException> { controller.findAvailability(account.id, "scenario_ocean") }
+
+        assertEquals(ErrorCode.HOF_SESSION_EXPIRED, error.errorCode)
+        assertEquals(listOf(OCEAN_URL, OCEAN_URL), gateway.requests.map { it.url })
+        Mockito.verify(auth, Mockito.times(1)).reauthenticate(account.id, app.spammy.hof.external.model.HofRequestOrigin.INTERACTIVE)
+    }
+
+    private fun loginForm() = "<form><input name='id'><input name='pass'><input name='Login'></form>"
+
+    private fun oceanResponse(body: String = completeOceanPage(), status: Int = 200, url: String = OCEAN_URL) = HofHttpResponse(
+        statusCode = status, finalUrl = url, body = body, setCookies = emptyMap(),
+    )
+
+    // 공개 맵 이름·순서와 문서 표식은 2026-10-26 원본 관측을 따르며 HTML은 제어 흐름 검사용 합성 fixture다.
+    private fun completeOceanPage(): String = """
+        <html><body><div id="contents"><h2>대해</h2>
+        <a href="index.php?common=Sink01">산호 숲</a>
+        <a href="index.php?common=Sink03">바다 평원</a>
+        <a href="index.php?common=Sink02">불길한 바닥</a>
+        <a href="index.php?common=Sink04">선실 내부</a>
+        <a href="index.php?common=Sink05">침수 구역</a>
+        <a href="index.php?common=Sink06">하부 갑판</a>
+        </div><div id="foot">H.O.F Korean Ver fixture</div></body></html>
+    """.trimIndent()
 
     @Test
     fun currentlyObservedRaidMapsDoNotFallBackToAStaleCatalogEntry() {
@@ -1007,6 +1114,7 @@ class BattleMapServiceTest {
         val responsesByUrl = mutableMapOf<String, HofHttpResponse>()
         var defaultBody: String = ""
         var failure: Exception? = null
+        var responseProvider: ((HofRequest, Map<String, String>) -> HofHttpResponse)? = null
 
         override fun execute(
             accountId: Long,
@@ -1016,7 +1124,7 @@ class BattleMapServiceTest {
             failure?.let { throw it }
             requests += request
             this.cookies += cookies
-            return responsesByUrl[request.url] ?: HofHttpResponse(
+            return responseProvider?.invoke(request, cookies) ?: responsesByUrl[request.url] ?: HofHttpResponse(
                 statusCode = 200,
                 finalUrl = request.url,
                 body = defaultBody,
@@ -1030,11 +1138,13 @@ class BattleMapServiceTest {
             responsesByUrl.clear()
             defaultBody = ""
             failure = null
+            responseProvider = null
         }
     }
 
     private companion object {
         const val ADVENTURE = "adventure_map"
+        const val OCEAN_URL = "https://hof.zerosic.com/index.php?menu=MapSunkenShip"
         val NOW: Instant = Instant.parse("2026-07-08T00:00:00Z")
     }
 
