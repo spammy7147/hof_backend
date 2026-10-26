@@ -1456,7 +1456,7 @@ internal object FreshSchemaContract {
         check("character_equipment_saved_items", "ck_character_equipment_saved_items_order", "item_order >= 0"),
         check(
             "automation_work_sessions", "ck_automation_work_type",
-            "locate(',' || work_type || ',', ',QUEST,HOME_QUEST,BATTLE_MAP,ADVENTURE_MAP,RAID,UNION,FISHING,') > 0",
+            "locate(',' || work_type || ',', ',QUEST,HOME_QUEST,BATTLE_MAP,ADVENTURE_MAP,RAID,UNION,FISHING,COLOSSEUM,') > 0",
         ),
         check(
             "automation_work_sessions", "ck_automation_work_status",
@@ -1620,7 +1620,7 @@ internal object FreshSchemaContract {
         ),
         check(
             "automation_entries", "ck_automation_entries_type",
-            "locate(',' || automation_type || ',', ',QUEST,HOME_QUEST,BATTLE_MAP,ADVENTURE_MAP,RAID,UNION,FISHING,') > 0",
+            "locate(',' || automation_type || ',', ',QUEST,HOME_QUEST,BATTLE_MAP,ADVENTURE_MAP,RAID,UNION,FISHING,COLOSSEUM,') > 0",
         ),
         check("automation_entries", "ck_automation_entries_priority", "priority >= 0"),
         check(

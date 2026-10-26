@@ -114,6 +114,7 @@ class FreshSchemaTest {
                 "63" to "archive defeated battle html",
                 "64" to "archive battle detail pages",
                 "65" to "bulk character deep sync",
+                "66" to "add colosseum automation",
             ),
             flyway.info().applied().map { migration -> migration.version.toString() to migration.description },
         )
@@ -187,6 +188,7 @@ class FreshSchemaTest {
                 "V63__archive_defeated_battle_html.sql",
                 "V64__archive_battle_detail_pages.sql",
                 "V65__bulk_character_deep_sync.sql",
+                "V66__add_colosseum_automation.sql",
                 "V6__learn_shared_battle_cooldowns.sql",
                 "V7__add_automation_wait_reason.sql",
                 "V8__observe_latest_hof_status.sql",
