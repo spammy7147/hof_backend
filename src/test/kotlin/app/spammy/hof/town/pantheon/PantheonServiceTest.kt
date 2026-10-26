@@ -3,6 +3,14 @@ package app.spammy.hof.town.pantheon
 import app.spammy.hof.account.entity.HofAccountEntity
 import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.CookieQueryRepository
+import app.spammy.hof.character.service.CharacterRosterObservationService
+import app.spammy.hof.character.service.CharacterRosterObservationTransaction
+import app.spammy.hof.character.service.SessionPatternLoadTracker
+import app.spammy.hof.common.time.TimeProvider
+import app.spammy.hof.external.client.AccountHofResponseObserver
+import app.spammy.hof.external.client.HofGateway
+import app.spammy.hof.external.parser.CharacterRosterParser
+import app.spammy.hof.status.service.HofStatusSnapshotService
 import app.spammy.hof.external.client.AccountHofGateway
 import app.spammy.hof.external.client.HofRequestFactory
 import app.spammy.hof.external.model.*
@@ -22,6 +30,17 @@ import org.mockito.Mockito
 class PantheonServiceTest {
     private val parser = PantheonParser()
     private val forms = HofFormParser()
+
+    @Test
+    fun `catalog 조회는 선택하지 않은 신전 상세를 읽지 않는다`() {
+        val street = fixture("street.html")
+        val context = service(STREET_URL to street)
+        val response = context.service.street(7L, catalogOnly = true)
+        assertTrue(response.shrines.isNotEmpty())
+        assertTrue(response.shrines.all { it.actions.isEmpty() })
+        assertEquals(listOf(STREET_URL), context.requests().map(HofRequest::url))
+    }
+
 
     @Test
     fun `신전 거리 응답은 각 temple에서 관측된 서로 다른 action만 해당 카드에 포함한다`() {
@@ -113,24 +132,39 @@ class PantheonServiceTest {
         assertEquals(2, context.requests().size)
     }
 
+    @Test
+    fun `행동 결과만 있는 응답은 상세 완료와 구별한다`() {
+        val street = fixture("street.html")
+        val detail = fixture("detail.html")
+        val shrine = parser.parseStreet(street, STREET_URL).shrines.first { it.detailUrl == DETAIL_URL }
+        val action = parser.parseDetail(shrine.id, detail, DETAIL_URL, forms.parse(detail, DETAIL_URL))
+            .actions.single { it.type == ShrineAction.BUY_PRIEST_ITEM }
+        val context = service(STREET_URL to street, DETAIL_URL to detail, DETAIL_URL to "<p>기부 완료</p>")
+        assertFalse(context.service.action(7L, shrine.id, PantheonActionRequest(action.id)).complete)
+        assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.GET, HofHttpMethod.POST), context.requests().map(HofRequest::method))
+    }
+
     private fun service(vararg responses: Pair<String, String>): Context {
         val accounts = Mockito.mock(AccountQueryRepository::class.java)
         val cookies = Mockito.mock(CookieQueryRepository::class.java)
-        val gateway = Mockito.mock(AccountHofGateway::class.java)
+        val raw = Mockito.mock(HofGateway::class.java)
+        val fence = AccountHofMutationFence()
+        val rosters = CharacterRosterObservationService(LoginStateParser(), CharacterRosterParser(), fence, Mockito.mock(CharacterRosterObservationTransaction::class.java))
+        val gateway = AccountHofGateway(raw, AccountHofResponseObserver(Mockito.mock(HofStatusSnapshotService::class.java), rosters), TimeProvider { Instant.EPOCH }, SessionPatternLoadTracker())
         val locations = Mockito.mock(TownLocationResolver::class.java)
         Mockito.`when`(accounts.findById(7L)).thenReturn(HofAccountEntity(7L, "pantheon", "encrypted", Instant.EPOCH))
         Mockito.`when`(cookies.findValueMapByAccountId(7L)).thenReturn(mapOf("PHPSESSID" to "session"))
         Mockito.`when`(locations.resolve(TownFeatureId.PANTHEON, null)).thenReturn(ResolvedTownLocation(TownFeatureId.PANTHEON, STREET_URL))
         val values = responses.map { (url, html) -> HofHttpResponse(200, url, html, emptyMap()) }.toTypedArray()
-        Mockito.`when`(gateway.execute(Mockito.eq(7L), anyRequest(), anyCookies())).thenReturn(values.first(), *values.drop(1).toTypedArray())
+        Mockito.`when`(raw.execute(Mockito.eq(7L), anyRequest(), anyCookies())).thenReturn(values.first(), *values.drop(1).toTypedArray())
         val executor = TownAuthenticatedExecutor(
             accounts, cookies, HofRequestFactory(), gateway, LoginStateParser(), forms,
-            HofResultParser(), TownActionGuard(), app.spammy.hof.town.common.service.AccountHofMutationFence(),
+            HofResultParser(), TownActionGuard(), fence,
         )
-        return Context(PantheonService(executor, locations, parser), gateway)
+        return Context(PantheonService(executor, locations, parser), raw)
     }
 
-    private data class Context(val service: PantheonService, val gateway: AccountHofGateway) {
+    private data class Context(val service: PantheonService, val gateway: HofGateway) {
         fun requests() = Mockito.mockingDetails(gateway).invocations.mapNotNull { it.arguments.getOrNull(1) as? HofRequest }
     }
 

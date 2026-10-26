@@ -76,6 +76,7 @@ class PantheonParser {
             currentJob = CURRENT_JOB.find(text)?.groupValues?.get(1)?.trim()?.take(MAX_FIELD),
             actions = actions,
             result = result,
+            complete = heading != null,
         )
     }
 

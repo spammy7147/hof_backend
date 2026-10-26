@@ -50,4 +50,5 @@ data class PantheonDetailSnapshot(
     val currentJob: String?,
     val actions: List<PantheonAction>,
     val result: ParsedTownResult? = null,
+    val complete: Boolean = true,
 )

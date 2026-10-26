@@ -50,6 +50,7 @@ data class PantheonDetailResponse(
     val currentJob: String?,
     val actions: List<PantheonActionResponse>,
     val result: TownActionResultResponse?,
+    val complete: Boolean = true,
 ) {
     companion object {
         fun from(value: PantheonDetailSnapshot) = PantheonDetailResponse(
@@ -57,6 +58,7 @@ data class PantheonDetailResponse(
             value.alignment, value.domains, value.relation, value.currentJob,
             value.actions.map(PantheonActionResponse::from),
             value.result?.let(TownActionResultResponse::from),
+            value.complete,
         )
     }
 }

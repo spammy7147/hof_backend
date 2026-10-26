@@ -18,8 +18,9 @@ class PantheonService(
     private val locations: TownLocationResolver,
     private val parser: PantheonParser,
 ) {
-    fun street(accountId: Long): PantheonStreetResponse {
+    fun street(accountId: Long, catalogOnly: Boolean = false): PantheonStreetResponse {
         val street = loadStreet(accountId)
+        if (catalogOnly) return PantheonStreetResponse.from(street, emptyMap())
         val actions = street.shrines.associate { shrine ->
             shrine.id to executor.loadProjected(accountId, shrine.detailUrl) { html, finalUrl, page ->
                 parser.parseDetail(shrine.id, html, finalUrl, page).actions

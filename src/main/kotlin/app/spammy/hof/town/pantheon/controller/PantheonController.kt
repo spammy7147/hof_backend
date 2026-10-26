@@ -16,7 +16,9 @@ class PantheonController(
     private val service: PantheonService,
     private val recovery: HofSessionRecoveryService,
 ) {
-    @GetMapping fun street(@CurrentAccountId accountId: Long) = recovery.execute(accountId) { service.street(accountId) }
+    @GetMapping
+    fun street(@CurrentAccountId accountId: Long, @RequestParam(required = false) view: String? = null) =
+        recovery.execute(accountId) { service.street(accountId, catalogOnly = view == "catalog") }
 
     @GetMapping("/{shrineId}")
     fun detail(
