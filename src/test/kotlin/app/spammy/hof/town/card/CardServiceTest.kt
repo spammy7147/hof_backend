@@ -42,6 +42,7 @@ class CardServiceTest {
 
         val response = service.loadUpgradeOptions(7L, CardBaseOptionsRequest(baseId()))
 
+        assertEquals(false, response.optionsRequired)
         assertEquals(baseId(), response.selectedBaseCandidateId)
         assertEquals(listOf("Material Card x3 / ★★"), response.materialCards.map { it.label })
         assertEquals(listOf(HofHttpMethod.GET), captureRequests().map(HofRequest::method))
@@ -63,6 +64,7 @@ class CardServiceTest {
 
         val response = service.loadChangeOptions(7L, CardBaseOptionsRequest(changeBaseId()))
 
+        assertEquals(false, response.optionsRequired)
         assertEquals(changeBaseId(), response.selectedBaseCandidateId)
         assertEquals(listOf("Change Material x4 / ★"), response.materialCards.map { it.label })
         assertEquals(listOf(HofHttpMethod.GET), captureRequests().map(HofRequest::method))

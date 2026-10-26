@@ -25,6 +25,7 @@ data class CardUpgradeResponse(
     val selectionSlots: List<CardSelectionSlotResponse>, val baseCards: List<CardItemResponse>,
     val materialCards: List<CardItemResponse>, val minQuantity: Int, val maxQuantity: Int,
     val history: List<String>, val selectedBaseCandidateId: String?, val result: TownActionResultResponse?,
+    val optionsRequired: Boolean = false,
 ) {
     companion object { fun from(value: CardUpgradeSnapshot) = CardUpgradeResponse(value.selectionSlots.map { CardSelectionSlotResponse(it.id, it.label) }, value.baseCards.map(CardItemResponse::from), value.materialCards.map(CardItemResponse::from), value.minQuantity, value.maxQuantity, value.history, value.selectedBaseCandidateId, value.result?.let(TownActionResultResponse::from)) }
 }
@@ -35,6 +36,7 @@ data class CardChangeResponse(
     val selectionSlots: List<CardSelectionSlotResponse>, val baseCards: List<CardItemResponse>,
     val materialCards: List<CardItemResponse>, val minQuantity: Int, val maxQuantity: Int,
     val history: List<String>, val selectedBaseCandidateId: String?, val result: TownActionResultResponse?,
+    val optionsRequired: Boolean = false,
 ) {
     companion object { fun from(value: CardChangeSnapshot) = CardChangeResponse(value.selectionSlots.map { CardSelectionSlotResponse(it.id, it.label) }, value.baseCards.map(CardItemResponse::from), value.materialCards.map(CardItemResponse::from), value.minQuantity, value.maxQuantity, value.history, value.selectedBaseCandidateId, value.result?.let(TownActionResultResponse::from)) }
 }

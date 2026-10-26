@@ -48,6 +48,19 @@ class ShopServiceTest {
         }
     }
 
+    @Test
+    fun `구매 양식이 없는 응답은 최신 품목 목록으로 확정하지 않는다`() {
+        val url = "https://hof.zerosic.com/index.php?menu=buy"
+        val html = "<p>구매가 처리되었습니다.</p>"
+        val page = HofFormParser().parse(html, url)
+        Mockito.`when`(locations.resolve(TownFeatureId.GENERAL_STORE, null))
+            .thenReturn(ResolvedTownLocation(TownFeatureId.GENERAL_STORE, url))
+        Mockito.doAnswer { invocation ->
+            invocation.getArgument<(String, String, ParsedTownPage) -> ShopResponse>(3).invoke(html, url, page)
+        }.`when`(executor).loadProjected(Mockito.eq(7L), eqString(url), anyOrigin(), anyProjector())
+        assertEquals(true, service.loadShop(7L, ShopId.GENERAL).stale)
+    }
+
     private fun feature(shopId: ShopId) = when (shopId) {
         ShopId.GENERAL -> TownFeatureId.GENERAL_STORE
         ShopId.SUNDRIES -> TownFeatureId.SUNDRIES_STORE

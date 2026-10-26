@@ -101,7 +101,7 @@ class ShopService(
         items = parser.parseCatalog(page).map { item ->
             ShopItemResponse(item.itemKey, item.name, true, item.description, price = item.price, type = item.type)
         },
-        stale = false,
+        stale = parser.purchaseForm(page) == null,
         lastVerifiedAt = null,
     )
 
