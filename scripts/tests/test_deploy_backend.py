@@ -406,6 +406,8 @@ class DeploymentTest(unittest.TestCase):
         for point in ('rm-before', 'rm-after', 'create-before', 'create-after', 'start-before', 'start-after', 'health'):
             with self.subTest(point=point):
                 self.setUp()
+                # This exercises SIGKILL recovery, not cold interpreter startup deadlines.
+                self.env.update(DEPLOY_HEALTH_SECONDS='5', DEPLOY_COMMAND_SECONDS='5')
                 first = self.deploy()
                 self.assertEqual(0, first.returncode, first.stdout + first.stderr)
                 previous = self.state()['containers'][0]
