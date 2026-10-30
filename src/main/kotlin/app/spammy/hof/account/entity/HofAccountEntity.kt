@@ -32,6 +32,9 @@ class HofAccountEntity(
     @Column(name = "last_login_at")
     var lastLoginAt: Instant? = null,
 
+    @Column(name = "applied_automation_preset_id")
+    var appliedAutomationPresetId: Long? = null,
+
     @OneToMany(mappedBy = "account", cascade = [CascadeType.ALL], orphanRemoval = true)
     val cookies: MutableList<HofCookieEntity> = mutableListOf(),
 )

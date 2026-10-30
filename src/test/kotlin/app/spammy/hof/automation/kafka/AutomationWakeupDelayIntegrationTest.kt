@@ -64,6 +64,7 @@ import tools.jackson.databind.ObjectMapper
 abstract class AutomationWakeupDelayIntegrationTest {
     @Autowired private lateinit var runner: UnifiedAutomationRunner
     @Autowired private lateinit var controls: UnifiedAutomationService
+    @Autowired private lateinit var presets: app.spammy.hof.automation.service.AutomationPresetService
     @Autowired private lateinit var lifecycle: TypedAutomationLifecycleBridge
     @Autowired private lateinit var consumed: AutomationConsumedEventService
     @Autowired private lateinit var lease: AccountAutomationLeaseService
@@ -79,6 +80,29 @@ abstract class AutomationWakeupDelayIntegrationTest {
     @MockitoBean private lateinit var gateway: HofGateway
     @MockitoBean private lateinit var preflight: AutomationDailyPreflight
     @MockitoBean private lateinit var authorization: AccountExecutionAuthorizationReader
+
+    @Test
+    fun `프리셋 복원 뒤 일시정지를 유지하고 재개 wake가 행동과 후속 판단까지 이어진다`() {
+        val scenario = createScenario()
+        val preset = presets.save(scenario.accountId, app.spammy.hof.automation.dto.SaveAutomationPresetRequest("낚시"))
+        controls.pauseTyped(scenario.accountId)
+        controls.updateFishing(scenario.accountId, UpdateFishingAutomationRequest(false))
+        val restored = presets.apply(scenario.accountId, preset.id, presets.get(scenario.accountId, preset.id).revision)
+        assertEquals(TypedAutomationLifecycle.PAUSED, restored.runtime.lifecycle)
+        assertTrue(restored.entries.single().enabled)
+        TransactionTemplate(transactions).executeWithoutResult {
+            outboxQuery.deleteUnpublishedWakesForAccount(scenario.accountId)
+        }
+        val result = consumeBacklog(scenario, 3) { index, _ ->
+            if (index == 1) {
+                assertEquals(emptyList(), scenario.posts(), "프리셋 불러오기가 자동 실행을 시작하면 안 된다.")
+                controls.resumeTyped(scenario.accountId)
+            } else {
+                assertEquals(listOf("FStart", "FCatch"), scenario.posts(), "저장 행동을 재생하거나 완료한 낚시를 중복 제출하면 안 된다.")
+            }
+        }
+        assertTrue(result.cycles >= 2, "행동 완료 뒤 후속 wake도 실제 판단에 도달해야 한다.")
+    }
 
     @Test
     fun `느린 HOF 판단을 여러 wake가 깨워도 한 poll의 누적으로 재할당되지 않는다`() {

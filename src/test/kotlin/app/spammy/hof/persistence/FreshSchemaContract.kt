@@ -21,7 +21,7 @@ internal object FreshSchemaContract {
             }
         }
         assertEquals(
-            setOf("payload_json", "direct_response_json"),
+            setOf("payload_json", "direct_response_json", "settings_json"),
             TABLES.values.flatMap { it.columns.keys }.filter { it.endsWith("_json", ignoreCase = true) }.toSet(),
         )
     }
@@ -181,6 +181,7 @@ internal object FreshSchemaContract {
             "hof_accounts",
             serialId(), requiredVarchar("login_id"), requiredVarchar("encrypted_password"),
             requiredInstant("created_at"), optionalInstant("last_login_at"),
+            optionalBigint("applied_automation_preset_id"),
         ),
         table(
             "latest_hof_status",
@@ -442,6 +443,12 @@ internal object FreshSchemaContract {
             "automation_consumed_events",
             requiredVarchar("event_id", 80), requiredInstant("consumed_at"),
             primaryKey = listOf("event_id"),
+        ),
+        table(
+            "automation_presets",
+            serialId(), requiredBigint("account_id"), requiredVarchar("name", 100),
+            requiredText("settings_json"), requiredInteger("entry_count"),
+            requiredInstant("created_at"), requiredInstant("updated_at"), requiredBigint("revision"),
         ),
         table(
             "automation_entries",
@@ -799,6 +806,7 @@ internal object FreshSchemaContract {
     )
 
     private val UNIQUE_KEYS = listOf(
+        key("automation_presets", "uk_automation_presets_account_name", "account_id", "name"),
         key("character_recovery_patterns", "uk_character_recovery_patterns_job_row", "job_id", "row_index"),
         key("character_recovery_equipment", "uk_character_recovery_equipment_job_order", "job_id", "item_order"),
         key("app_releases", "uk_app_releases_platform_version", "platform", "version_code"),
@@ -946,6 +954,8 @@ internal object FreshSchemaContract {
     )
 
     private val FOREIGN_KEYS = listOf(
+        fk("fk_automation_presets_account", "automation_presets.account_id", "hof_accounts.id", DeleteAction.CASCADE),
+        fk("fk_account_applied_automation_preset", "hof_accounts.applied_automation_preset_id", "automation_presets.id", DeleteAction.SET_NULL),
         fk("fk_character_recovery_originals_job", "character_recovery_originals.job_id", "character_operation_jobs.id", DeleteAction.CASCADE),
         fk("fk_character_recovery_patterns_job", "character_recovery_patterns.job_id", "character_recovery_originals.job_id", DeleteAction.CASCADE),
         fk("fk_character_recovery_equipment_job", "character_recovery_equipment.job_id", "character_recovery_originals.job_id", DeleteAction.CASCADE),
@@ -1366,6 +1376,7 @@ internal object FreshSchemaContract {
     )
 
     private val CHECKS = listOf(
+        check("automation_presets", "ck_automation_presets_entry_count", "entry_count between 0 and 100"),
         check("automation_decision_cycles", "ck_automation_history_next_sequence", "next_event_sequence >= 0"),
         check("typed_automation_action_runs", "ck_typed_action_direct_response",
             "(direct_response_json is null and direct_response_fingerprint is null) or (direct_response_json is not null and direct_response_fingerprint is not null and submitted_at is not null)"),

@@ -495,7 +495,8 @@ class AutomationWorkSessionService(
         recordOwnershipTransferAfterCommit(AutomationOwnershipTransferReason.COMPLETE, false)
     }
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    // 설정 변경이 실패하면 작업권·대기 정보도 함께 복원되어야 한다.
+    @Transactional
     override fun stopForConfigurationChange(
         accountId: Long,
         entryId: Long,

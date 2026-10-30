@@ -1227,6 +1227,76 @@ class UnifiedAutomationService(
             if (presetId !in validPresetIds) "선택한 파티의 전투 설정을 확인해 주세요." else null
     }
 
+    /** 조회·검증만 수행하며 현재 설정, 작업권과 outbox를 변경하지 않는다. */
+    @Transactional(readOnly = true)
+    fun validatePresetSettings(accountId: Long, configuration: AutomationPresetSettings) {
+        val entries = configuration.entries
+        rejectDuplicates(entries.filter { !it.type.supportsMultipleEntries() }.map { it.type }, "같은 자동화 유형을 두 번 설정할 수 없습니다.")
+        rejectDuplicates(entries.map { it.sourceEntryId }.filter { it > 0 }, "같은 자동화 항목을 두 번 설정할 수 없습니다.")
+        val references = mutableListOf<TypedMapReference>()
+        entries.forEach { entry ->
+            if (entry.type != AutomationType.BATTLE_MAP && entry.minimumRemainingTime != null) invalid("최소 잔여 Time은 전투맵 묶음에만 설정할 수 있습니다.")
+            if (!entry.type.supportsMultipleEntries() && entry.displayName != null) invalid("맵 묶음에만 이름을 설정할 수 있습니다.")
+            val total = entry.quests.size + entry.homeQuests.size + entry.battleMaps.size + entry.adventureMaps.size +
+                entry.fishingMaps.size + entry.unionMaps.size + entry.raidTargets.size
+            val used = when (val request = entry.toSettingsRequest()) {
+                is UpdateQuestAutomationRequest -> {
+                    rejectDuplicates(request.quests.map { it.questKey }, "같은 퀘스트를 두 번 설정할 수 없습니다.")
+                    request.quests.forEach { quest ->
+                        if (!QuestIdentityFactory.matches(quest.questKey, quest.displayCode, quest.questName)) invalid("퀘스트 식별자가 표시 코드와 이름에 맞지 않습니다.")
+                        references += normalizeQuestMaps(quest.maps).map(::mapReference)
+                    }
+                    entry.quests.size
+                }
+                is UpdateHomeQuestAutomationRequest -> {
+                    rejectDuplicates(request.quests.map { it.questId }, "같은 자택 퀘스트를 두 번 설정할 수 없습니다.")
+                    rejectDuplicates(request.quests.map { it.sourceOrder }, "자택 퀘스트 순서를 중복해서 사용할 수 없습니다.")
+                    entry.homeQuests.size
+                }
+                is UpdateBattleMapGroupRequest -> {
+                    if (request.enabled && request.maps.isEmpty()) invalid("맵이 없는 묶음은 활성화할 수 없습니다.")
+                    if (request.maps.any { it.categoryId in setOf("adventure_map", "union", "raid") }) invalid("전투맵 카테고리의 맵만 설정할 수 있습니다.")
+                    rejectDuplicates(request.maps.map { it.categoryId to it.mapCode }, "같은 맵을 두 번 설정할 수 없습니다.")
+                    references += request.maps.map(::mapReference)
+                    entry.battleMaps.size
+                }
+                is UpdateAdventureMapGroupRequest -> {
+                    if (request.enabled && request.maps.isEmpty()) invalid("맵이 없는 묶음은 활성화할 수 없습니다.")
+                    if (request.maps.any { it.categoryId != "adventure_map" }) invalid("모험맵 카테고리의 맵만 설정할 수 있습니다.")
+                    rejectDuplicates(request.maps.map { it.categoryId to it.mapCode }, "같은 맵을 두 번 설정할 수 없습니다.")
+                    references += request.maps.map(::mapReference)
+                    entry.adventureMaps.size
+                }
+                is UpdateFishingAutomationRequest -> {
+                    if (request.maps.any { it.categoryId != FISHING_BATTLE_CATEGORY }) invalid("낚시 전투 맵만 설정할 수 있습니다.")
+                    rejectDuplicates(request.maps.map { it.executionOrder }, "낚시 맵 실행 순서를 중복해서 사용할 수 없습니다.")
+                    rejectDuplicates(request.maps.map { it.categoryId to it.mapCode }, "같은 낚시 맵을 두 번 설정할 수 없습니다.")
+                    references += request.maps.map { TypedMapReference(it.categoryId, it.mapCode, it.presetMode, it.partyPresetId) }
+                    entry.fishingMaps.size
+                }
+                is UpdateUnionAutomationRequest -> {
+                    if (request.maps.any { it.categoryId != UNION_CATEGORY }) invalid("유니온 카테고리의 맵만 설정할 수 있습니다.")
+                    rejectDuplicates(request.maps.map { it.categoryId to it.mapCode }, "같은 유니온 맵을 두 번 설정할 수 없습니다.")
+                    references += request.maps.map(::mapReference)
+                    entry.unionMaps.size
+                }
+                is UpdateRaidAutomationRequest -> {
+                    rejectDuplicates(request.targets.map { it.raidId }, "같은 레이드를 두 번 설정할 수 없습니다.")
+                    references += request.targets.map { TypedMapReference(RAID_CATEGORY, it.raidId, it.presetMode, it.partyPresetId) }
+                    entry.raidTargets.size
+                }
+                else -> 0
+            }
+            if (used != total) invalid("자동화 유형과 세부 설정이 일치하지 않습니다.")
+        }
+        val battles = entries.flatMap { it.battleMaps }
+        val adventures = entries.flatMap { it.adventureMaps }
+        if (battles.size > MAX_SETTING_ITEMS || adventures.size > MAX_SETTING_ITEMS) invalid("맵은 유형별 전체 묶음을 합쳐 최대 100개까지 저장할 수 있습니다.")
+        rejectDuplicates(battles.map { it.categoryId to it.mapCode }, "같은 전투 맵은 하나의 묶음에만 설정할 수 있습니다.")
+        rejectDuplicates(adventures.map { it.categoryId to it.mapCode }, "같은 모험 맵은 하나의 묶음에만 설정할 수 있습니다.")
+        validateMapAndPresetReferences(accountId, references)
+    }
+
     private fun normalizeQuestMaps(maps: List<QuestMapSettingRequest>): List<QuestMapSettingRequest> {
         if (maps.size > MAX_SETTING_ITEMS) invalid("퀘스트별 맵은 최대 100개까지 저장할 수 있습니다.")
         val normalized = maps.map { map ->
