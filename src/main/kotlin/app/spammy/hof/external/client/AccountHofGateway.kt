@@ -5,6 +5,7 @@ import app.spammy.hof.character.service.SessionPatternLoadTracker
 import app.spammy.hof.external.model.HofHttpResponse
 import app.spammy.hof.external.model.HofRequest
 import java.time.Instant
+import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
 import org.springframework.transaction.support.TransactionSynchronization
 import org.springframework.transaction.support.TransactionSynchronizationManager
@@ -17,6 +18,8 @@ class AccountHofGateway(
     private val timeProvider: TimeProvider,
     private val patternLoads: SessionPatternLoadTracker,
 ) {
+    private val log = LoggerFactory.getLogger(javaClass)
+
     companion object {
         private data class CookieChain(val accountId: Long, val updates: MutableMap<String, String> = linkedMapOf())
         private val cookieChain = ThreadLocal<CookieChain>()
@@ -87,11 +90,15 @@ class AccountHofGateway(
         responseObservedAt: Instant,
         observeCharacterRoster: Boolean,
     ) {
+        val deferredAt = System.nanoTime()
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
             TransactionSynchronizationManager.registerSynchronization(
                 object : TransactionSynchronization {
                     override fun afterCompletion(status: Int) {
-                        observations.observe(accountId, response, requestStartedAt, responseObservedAt, observeCharacterRoster)
+                        recordHofStage(log, accountId, "observation.transactionCompletionWait", deferredAt)
+                        timeHofStage(log, accountId, "observation.afterCompletion") {
+                            observations.observe(accountId, response, requestStartedAt, responseObservedAt, observeCharacterRoster)
+                        }
                     }
                 },
             )

@@ -24,16 +24,16 @@ class AccountHofResponseObserver(
         responseObservedAt: Instant,
         observeCharacterRoster: Boolean,
     ) {
-        runCatching { snapshots.observe(accountId, response.body, requestStartedAt) }
+        runCatching { timeHofStage(log, accountId, "observation.status") { snapshots.observe(accountId, response.body, requestStartedAt) } }
             .onFailure { error ->
                 log.warn("HOF status observation failed accountId={}", accountId, error)
             }
-        runCatching { passMaintenance?.observe(accountId, response.body, requestStartedAt, responseObservedAt) }
+        runCatching { timeHofStage(log, accountId, "observation.pass") { passMaintenance?.observe(accountId, response.body, requestStartedAt, responseObservedAt) } }
             .onFailure { error ->
                 log.warn("HOF pass observation failed accountId={}", accountId, error)
             }
         if (!observeCharacterRoster) return
-        runCatching { characterRosters.observe(accountId, response, requestStartedAt) }
+        runCatching { timeHofStage(log, accountId, "observation.roster") { characterRosters.observe(accountId, response, requestStartedAt) } }
             .onFailure { error ->
                 log.warn("HOF character roster observation failed accountId={}", accountId, error)
             }
