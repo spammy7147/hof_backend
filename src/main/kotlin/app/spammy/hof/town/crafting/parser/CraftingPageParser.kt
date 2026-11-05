@@ -1,6 +1,7 @@
 package app.spammy.hof.town.crafting.parser
 
 import app.spammy.hof.external.parser.HofHtmlParser
+import app.spammy.hof.external.parser.HofMainStatusParser
 
 import org.jsoup.Jsoup
 
@@ -13,6 +14,7 @@ import org.springframework.stereotype.Component
 @Component
 class CraftingPageParser(
     private val formParser: HofFormParser = HofFormParser(),
+    private val statusParser: HofMainStatusParser = HofMainStatusParser(),
 ) {
     fun parse(
         mode: CraftingMode,
@@ -92,10 +94,21 @@ class CraftingPageParser(
             parsedRefineOptions.first to parsedRefineOptions.second.filterKeys { it == 1 }
         } else parsedRefineOptions
         val additional = parseAdditionalMaterials(actionForm, domForm, mode)
-        val remaining = REMAINING_SECONDS.find(clean(document.text()))?.groupValues?.get(1)?.intNumber()
-        val activeText = ACTIVE_JOB.find(clean(document.text()))?.value?.let(::clean)
-        val activeJob = if (mode == CraftingMode.WORKBASE && (remaining != null || activeText != null || completionForm != null)) {
-            ActiveCraftingJob(activeText ?: if (remaining == null) "제작 결과 확인 가능" else "현재 장비를 제작 중입니다.", remaining, completionForm != null)
+        val pageText = clean(document.text())
+        val remaining = REMAINING_SECONDS.find(pageText)?.groupValues?.get(1)?.intNumber()
+            ?: if (mode == CraftingMode.WORKBASE) workRemainingSeconds(statusParser.parse(effectiveHtml).work) else null
+        val activeText = ACTIVE_JOB.find(pageText)?.value?.let(::clean)
+        // WSend는 작업이 없어도 항상 있으므로 작업 존재의 증거로 사용하지 않는다.
+        val activeJob = if (mode == CraftingMode.WORKBASE && (remaining != null || activeText != null)) {
+            ActiveCraftingJob(
+                label = when {
+                    remaining == 0 -> "제작 결과 확인 가능"
+                    activeText != null -> activeText
+                    else -> "현재 장비를 제작 중입니다."
+                },
+                remainingSeconds = remaining,
+                completionAvailable = completionForm != null,
+            )
         } else null
         return CraftingSnapshot(
             mode = mode,
@@ -171,7 +184,8 @@ class CraftingPageParser(
             throw ClarisCraftingContractException("클라리스 분류 계약이 비어 있거나 중복되었습니다.")
         }
         val current = if (categoryCandidateId == null) {
-            val selected = select.`val`().trim()
+            val selected = select.selectFirst("option[selected]")?.attr("value")?.trim()
+                ?: select.`val`().trim()
             categories.singleOrNull { it.value == selected } ?: categories.first()
         } else {
             categories.singleOrNull { it.id == categoryCandidateId }
@@ -420,6 +434,12 @@ class CraftingPageParser(
     }
 
     private fun clean(value: String) = value.replace(Regex("\\s+"), " ").trim()
+    private fun workRemainingSeconds(value: String): Int? {
+        val match = WORK_COUNTDOWN.matchEntire(value) ?: return null
+        val minutes = match.groupValues[1].intNumber() ?: return null
+        val seconds = match.groupValues[2].toIntOrNull()?.takeIf { it in 0..59 } ?: return null
+        return (minutes.toLong() * 60 + seconds).takeIf { it <= Int.MAX_VALUE }?.toInt()
+    }
     private fun String.number() = replace(",", "").toLongOrNull()
     private fun String.intNumber() = number()?.takeIf { it in 0..Int.MAX_VALUE.toLong() }?.toInt()
     private fun cssValue(value: String) = "'${value.replace("'", "\\'")}'"
@@ -434,7 +454,8 @@ class CraftingPageParser(
         val LEADING_PRICE = Regex("^[$]\\s*[\\d,]+\\s*")
         val OWNED = Regex("[x×]\\s*([\\d,]+)", RegexOption.IGNORE_CASE)
         val WORK_SECONDS = Regex("제작\\s*시간\\s*:\\s*([\\d,]+)")
-        val REMAINING_SECONDS = Regex("결과는\\s*([\\d,]+)초\\s*후")
+        val REMAINING_SECONDS = Regex("(?:결과는|제작\\s*완료는)\\s*([\\d,]+)\\s*초\\s*후")
+        val WORK_COUNTDOWN = Regex("([\\d,]+)\\s*:\\s*(\\d{1,2})")
         val ACTIVE_JOB = Regex("현재\\s+장비를\\s+제작\\s+중입니다[^.]*\\.")
         val MAX_QUANTITY = Regex("최대\\s*([\\d,]+)개")
         val HISTORY_WORD = Regex("제련|성공|실패|파괴")

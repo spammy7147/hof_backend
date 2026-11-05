@@ -35,6 +35,33 @@ class CraftingServiceTest {
         CraftingPageParser(),
     )
 
+    @Test fun `상시 완료 버튼이 있어도 대기 제작 시작 진행 결과 확인을 실제 상태로 구분한다`() {
+        val idle = fixture("workbase.html")
+        val started = idle.replace("Work : Nothing", "Work : 5:0")
+            .replace("</body>", "<p>제작 완료는 300초 후에 확인 가능합니다.</p></body>")
+        val running = idle.replace("Work : Nothing", "Work : 4:48")
+        val ready = idle.replace("Work : Nothing", "Work : 0:0")
+        stub(TownFeatureId.WORKBASE, WORK_URL, idle, idle, started, running, ready, idle)
+
+        val initial = service.load(7L, CraftingMode.WORKBASE)
+        assertEquals(null, initial.activeJob)
+        val startedWork = service.startWorkbase(7L, WorkbaseStartRequest(
+            initial.rows.single { it.selectable }.id,
+            requireNotNull(initial.currentCategoryId),
+            1,
+        ))
+        assertEquals(300, startedWork.activeJob?.remainingSeconds)
+        assertEquals(288, service.load(7L, CraftingMode.WORKBASE).activeJob?.remainingSeconds)
+        val completed = service.completeWorkbase(7L)
+        assertEquals(null, completed.activeJob)
+        assertEquals(true, completed.rows.any { it.selectable })
+
+        val requests = captureRequests()
+        assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.GET, HofHttpMethod.POST,
+            HofHttpMethod.GET, HofHttpMethod.GET, HofHttpMethod.POST), requests.map(HofRequest::method))
+        assertEquals(listOf("WSend"), requests.last().formEntries.map { it.name })
+    }
+
     @Test fun `작업장의 분리된 종류를 바꾸고 정적 품목으로 작업을 시작한다`() {
         stub(TownFeatureId.WORKBASE, WORK_URL, fixture("claris-live.html").replace("?menu=sewingshop", "?menu=workbase"))
         val response = service.loadCategory(7L, CraftingMode.WORKBASE, "catalog_type_create:cloak")
@@ -42,6 +69,31 @@ class CraftingServiceTest {
         service.startWorkbase(7L, WorkbaseStartRequest(response.rows.single().id, "catalog_type_create:cloak", 2))
         val posted = captureRequests().last()
         assertEquals("cloak", posted.formEntries.single { it.name == "list_type" }.value)
+        assertEquals("42", posted.formEntries.single { it.name == "ItemT" }.value)
+    }
+
+    @Test fun `작업장의 빈 무기 분류와 전부 및 외투 분류는 각각의 목록을 반환한다`() {
+        val html = fixture("claris-live.html").replace("?menu=sewingshop", "?menu=workbase")
+            .replace("<option value=\"weapon\" selected>", "<option value=\"all\">전부(all)</option><option value=\"weapon\" selected>")
+            .replace("<body>", "<body><form method=\"post\"><input type=\"submit\" name=\"WSend\" value=\"제작 완료\"></form>")
+        stub(TownFeatureId.WORKBASE, WORK_URL, html)
+
+        val initial = service.load(7L, CraftingMode.WORKBASE)
+        assertEquals("catalog_type_create:weapon", initial.currentCategoryId)
+        assertEquals(emptyList(), initial.rows)
+        assertEquals(null, initial.activeJob)
+        val all = service.loadCategory(7L, CraftingMode.WORKBASE, "catalog_type_create:all")
+        assertEquals("catalog_type_create:all", all.currentCategoryId)
+        assertEquals(listOf("Dreamweave Cloak x1"), all.rows.map { it.label })
+        val weapon = service.loadCategory(7L, CraftingMode.WORKBASE, "catalog_type_create:weapon")
+        assertEquals(emptyList(), weapon.rows)
+        val cloak = service.loadCategory(7L, CraftingMode.WORKBASE, "catalog_type_create:cloak")
+        assertEquals(all.rows, cloak.rows)
+        assertEquals(List(4) { HofHttpMethod.GET }, captureRequests().map(HofRequest::method))
+
+        service.startWorkbase(7L, WorkbaseStartRequest(all.rows.single().id, "catalog_type_create:all", 1))
+        val posted = captureRequests().last()
+        assertEquals("all", posted.formEntries.single { it.name == "list_type" }.value)
         assertEquals("42", posted.formEntries.single { it.name == "ItemT" }.value)
     }
 

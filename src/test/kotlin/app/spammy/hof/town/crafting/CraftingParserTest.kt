@@ -37,6 +37,58 @@ class CraftingParserTest {
         assertThat(value.activeJob?.completionAvailable).isTrue()
     }
 
+    @Test fun `완료 form만 있는 화면을 진행 중인 작업으로 판정하지 않는다`() {
+        val html = """<form method="post"><input type="submit" name="WSend" value="제작 완료"></form>"""
+        val value = parser.parse(CraftingMode.WORKBASE, html, URL, forms.parse(html, URL))
+
+        assertThat(value.activeJob).isNull()
+    }
+
+    @Test fun `Work Nothing이면 항상 있는 완료 버튼과 관계없이 제작 목록을 표시한다`() {
+        val value = parse("workbase.html", CraftingMode.WORKBASE)
+
+        assertThat(value.activeJob).isNull()
+        assertThat(value.rows).isNotEmpty()
+        assertThat(value.categories).isNotEmpty()
+    }
+
+    @Test fun `본문에 시간이 없어도 Work 분초에서 진행 중 작업의 남은 시간을 읽는다`() {
+        for ((work, seconds) in listOf("5:0" to 300, "4:48" to 288, "123:45" to 7425)) {
+            val html = resource("workbase.html").replace("Work : Nothing", "Work : $work")
+            val value = parser.parse(CraftingMode.WORKBASE, html, URL, forms.parse(html, URL))
+
+            assertThat(value.activeJob?.remainingSeconds).isEqualTo(seconds)
+            assertThat(value.activeJob?.completionAvailable).isTrue()
+            assertThat(value.activeJob?.label).isEqualTo("현재 장비를 제작 중입니다.")
+        }
+    }
+
+    @Test fun `제작 직후의 제작 완료는 몇 초 후 안내도 남은 시간으로 읽는다`() {
+        val html = """<p>제작 완료는 300초 후에 확인 가능합니다.</p>
+            <form method="post"><input type="submit" name="WSend" value="제작 완료"></form>"""
+        val value = parser.parse(CraftingMode.WORKBASE, html, URL, forms.parse(html, URL))
+
+        assertThat(value.activeJob?.remainingSeconds).isEqualTo(300)
+        assertThat(value.activeJob?.completionAvailable).isTrue()
+    }
+
+    @Test fun `Work 0초는 결과 확인 상태로 보존한다`() {
+        val html = resource("workbase.html").replace("Work : Nothing", "Work : 0:0")
+        val value = parser.parse(CraftingMode.WORKBASE, html, URL, forms.parse(html, URL))
+
+        assertThat(value.activeJob?.remainingSeconds).isZero()
+        assertThat(value.activeJob?.label).isEqualTo("제작 결과 확인 가능")
+    }
+
+    @Test fun `범위를 벗어난 Work 분초는 완료 상태로 추측하지 않는다`() {
+        for (work in listOf("9,999,999,999:0", "1:99")) {
+            val html = resource("workbase.html").replace("Work : Nothing", "Work : $work")
+            val value = parser.parse(CraftingMode.WORKBASE, html, URL, forms.parse(html, URL))
+
+            assertThat(value.activeJob).isNull()
+        }
+    }
+
     @Test fun `클라리스는 같은 행의 고정 ItemT 대입이 있는 radio만 선택 가능하다`() {
         val value = parse("claris.html", CraftingMode.CLARIS)
         assertThat(value.rows.single { it.label.contains("Dreamweave") }.selectable).isTrue()
