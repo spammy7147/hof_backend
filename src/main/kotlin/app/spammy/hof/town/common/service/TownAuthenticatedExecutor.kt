@@ -1,6 +1,8 @@
 package app.spammy.hof.town.common.service
 
 import app.spammy.hof.external.parser.HofHtmlParser
+import app.spammy.hof.external.client.timeHofStage
+import org.slf4j.LoggerFactory
 
 import app.spammy.hof.account.repository.AccountQueryRepository
 import app.spammy.hof.account.repository.CookieQueryRepository
@@ -54,6 +56,8 @@ class TownAuthenticatedExecutor(
     private val actionGuard: TownActionGuard,
     private val mutationFence: AccountHofMutationFence,
 ) {
+    private val log = LoggerFactory.getLogger(javaClass)
+
     /** 여러 GET/POST가 한 의미 명령인 경우 같은 계정의 다른 변경이 중간에 끼어들지 않게 한다. */
     fun <T> executeAccountSequence(accountId: Long, sequence: () -> T): T =
         withAccountActionFence(accountId, sequence)
@@ -82,8 +86,8 @@ class TownAuthenticatedExecutor(
     ): T {
         val context = authenticatedContext(accountId)
         val response = executeAuthenticated(context.account, requestFactory.townPage(pageUrl, origin), context.cookies)
-        val page = formParser.parse(response.body, response.finalUrl)
-        return projector(response.body, response.finalUrl, page)
+        val page = timeHofStage(log, accountId, "town.formParse") { formParser.parse(response.body, response.finalUrl) }
+        return timeHofStage(log, accountId, "town.projection") { projector(response.body, response.finalUrl, page) }
     }
 
     /** 같은 process의 바로 뒤 연속 행동이 이 GET의 form과 cookie chain을 한 번만 소비할 수 있게 한다. */
@@ -100,9 +104,9 @@ class TownAuthenticatedExecutor(
                 requestFactory.townPage(pageUrl, origin),
                 context.cookies,
             )
-            val page = formParser.parse(response.body, response.finalUrl)
+            val page = timeHofStage(log, accountId, "town.formParse") { formParser.parse(response.body, response.finalUrl) }
             ContinuableProjection(
-                value = projector(response.body, response.finalUrl, page),
+                value = timeHofStage(log, accountId, "town.projection") { projector(response.body, response.finalUrl, page) },
                 account = context.account,
                 cookies = context.cookies + response.setCookies + responseCookies,
                 html = response.body,
@@ -138,8 +142,8 @@ class TownAuthenticatedExecutor(
             context.cookies,
         )
         val response = deferred.response
-        val page = formParser.parse(response.body, response.finalUrl)
-        return projector(response.body, response.finalUrl, page)
+        val page = timeHofStage(log, accountId, "town.formParse") { formParser.parse(response.body, response.finalUrl) }
+        return timeHofStage(log, accountId, "town.projection") { projector(response.body, response.finalUrl, page) }
     }
 
     /**
@@ -173,7 +177,7 @@ class TownAuthenticatedExecutor(
         )
         val result = resultParser.parse(actionResponse.body)
         val page = formParser.parse(actionResponse.body, actionResponse.finalUrl)
-        projector(actionResponse.body, actionResponse.finalUrl, result, page)
+        timeHofStage(log, accountId, "town.projection") { projector(actionResponse.body, actionResponse.finalUrl, result, page) }
     }
 
     /**
@@ -231,7 +235,7 @@ class TownAuthenticatedExecutor(
         }
         val result = resultParser.parse(actionResponse.body)
         val page = formParser.parse(actionResponse.body, actionResponse.finalUrl)
-        projector(actionResponse.body, actionResponse.finalUrl, result, page)
+        timeHofStage(log, accountId, "town.projection") { projector(actionResponse.body, actionResponse.finalUrl, result, page) }
     }
 
     /**
@@ -280,7 +284,7 @@ class TownAuthenticatedExecutor(
             context.cookies + current.setCookies,
         )
         val transitionedPage = formParser.parse(transitioned.body, transitioned.finalUrl)
-        projector(transitioned.body, transitioned.finalUrl, transitionedPage)
+        timeHofStage(log, accountId, "town.projection") { projector(transitioned.body, transitioned.finalUrl, transitionedPage) }
     }
 
     /**
@@ -331,7 +335,7 @@ class TownAuthenticatedExecutor(
             context.cookies + current.setCookies,
         )
         val transitionedPage = formParser.parse(transitioned.body, transitioned.finalUrl)
-        projector(transitioned.body, transitioned.finalUrl, transitionedPage)
+        timeHofStage(log, accountId, "town.projection") { projector(transitioned.body, transitioned.finalUrl, transitionedPage) }
     }
 
     fun execute(
@@ -392,7 +396,7 @@ class TownAuthenticatedExecutor(
         )
         val result = resultParser.parse(actionResponse.body)
         val page = formParser.parse(actionResponse.body, actionResponse.finalUrl)
-        projector(actionResponse.body, actionResponse.finalUrl, result, page)
+        timeHofStage(log, accountId, "town.projection") { projector(actionResponse.body, actionResponse.finalUrl, result, page) }
     } }
 
     /**
@@ -429,7 +433,7 @@ class TownAuthenticatedExecutor(
         )
         val result = resultParser.parse(actionResponse.body)
         val actionPage = formParser.parse(actionResponse.body, actionResponse.finalUrl)
-        val projected = projector(actionResponse.body, actionResponse.finalUrl, result, actionPage, true)
+        val projected = timeHofStage(log, accountId, "town.projection") { projector(actionResponse.body, actionResponse.finalUrl, result, actionPage, true) }
         if (acceptsActionResponse(projected)) return@withAccountActionFence projected
 
         val refreshed = executeAuthenticated(
@@ -438,7 +442,7 @@ class TownAuthenticatedExecutor(
             context.cookies + current.setCookies + actionResponse.setCookies,
         )
         val refreshedPage = formParser.parse(refreshed.body, refreshed.finalUrl)
-        projector(refreshed.body, refreshed.finalUrl, result, refreshedPage, false)
+        timeHofStage(log, accountId, "town.projection") { projector(refreshed.body, refreshed.finalUrl, result, refreshedPage, false) }
     }
 
     /**
@@ -498,7 +502,7 @@ class TownAuthenticatedExecutor(
         )
         val result = resultParser.parse(actionResponse.body)
         val page = formParser.parse(actionResponse.body, actionResponse.finalUrl)
-        projector(actionResponse.body, actionResponse.finalUrl, result, page)
+        timeHofStage(log, accountId, "town.projection") { projector(actionResponse.body, actionResponse.finalUrl, result, page) }
     }
 
     /** null은 실제 HOF처럼 이름 없는 submit 하나만 존재하고 제출 필드가 없는 계약을 뜻한다. */
@@ -572,7 +576,7 @@ class TownAuthenticatedExecutor(
         )
         val result = resultParser.parse(actionResponse.body)
         val page = formParser.parse(actionResponse.body, actionResponse.finalUrl)
-        projector(actionResponse.body, actionResponse.finalUrl, result, page)
+        timeHofStage(log, accountId, "town.projection") { projector(actionResponse.body, actionResponse.finalUrl, result, page) }
     }
 
     /**
@@ -668,7 +672,7 @@ class TownAuthenticatedExecutor(
         )
         val result = resultParser.parse(actionResponse.body)
         val page = formParser.parse(actionResponse.body, actionResponse.finalUrl)
-        projector(actionResponse.body, actionResponse.finalUrl, result, page)
+        timeHofStage(log, accountId, "town.projection") { projector(actionResponse.body, actionResponse.finalUrl, result, page) }
     }
 
     /**
@@ -720,8 +724,8 @@ class TownAuthenticatedExecutor(
             context.cookies + current.setCookies,
         )
         val result = resultParser.parse(response.body)
-        val page = formParser.parse(response.body, response.finalUrl)
-        projector(response.body, response.finalUrl, result, page)
+        val page = timeHofStage(log, accountId, "town.formParse") { formParser.parse(response.body, response.finalUrl) }
+        timeHofStage(log, accountId, "town.projection") { projector(response.body, response.finalUrl, result, page) }
     }
 
     private fun ownedControlSignatures(form: org.jsoup.nodes.Element): List<ControlSignature> =
@@ -790,7 +794,7 @@ class TownAuthenticatedExecutor(
         )
         val result = resultParser.parse(actionResponse.body)
         val page = formParser.parse(actionResponse.body, actionResponse.finalUrl)
-        projector(actionResponse.body, actionResponse.finalUrl, result, page)
+        timeHofStage(log, accountId, "town.projection") { projector(actionResponse.body, actionResponse.finalUrl, result, page) }
     }
 
     /**
@@ -847,7 +851,7 @@ class TownAuthenticatedExecutor(
         )
         val result = resultParser.parse(finalResponse.body)
         val page = formParser.parse(finalResponse.body, finalResponse.finalUrl)
-        projector(finalResponse.body, finalResponse.finalUrl, result, page)
+        timeHofStage(log, accountId, "town.projection") { projector(finalResponse.body, finalResponse.finalUrl, result, page) }
     }
 
     /**
@@ -968,7 +972,7 @@ class TownAuthenticatedExecutor(
             }
             val result = resultParser.parse(finalResponse.body)
             val page = formParser.parse(finalResponse.body, finalResponse.finalUrl)
-            projector(finalResponse.body, finalResponse.finalUrl, result, page)
+            timeHofStage(log, accountId, "town.projection") { projector(finalResponse.body, finalResponse.finalUrl, result, page) }
         }
         return if (observation != null) {
             mutationFence.executeObserved(accountId, observation.fenceRevision, sequence)
@@ -1017,8 +1021,8 @@ class TownAuthenticatedExecutor(
             observation.cookies,
         )
         val result = resultParser.parse(response.body)
-        val page = formParser.parse(response.body, response.finalUrl)
-        projector(response.body, response.finalUrl, result, page)
+        val page = timeHofStage(log, accountId, "town.formParse") { formParser.parse(response.body, response.finalUrl) }
+        timeHofStage(log, accountId, "town.projection") { projector(response.body, response.finalUrl, result, page) }
     }
 
     /**
@@ -1100,7 +1104,7 @@ class TownAuthenticatedExecutor(
         }
         val result = resultParser.parse(finalResponse.body)
         val page = formParser.parse(finalResponse.body, finalResponse.finalUrl)
-        projector(finalResponse.body, finalResponse.finalUrl, result, page)
+        timeHofStage(log, accountId, "town.projection") { projector(finalResponse.body, finalResponse.finalUrl, result, page) }
     }
 
     /**
@@ -1120,7 +1124,7 @@ class TownAuthenticatedExecutor(
             followupUrl = null,
             deferCharacterRosterObservation = false,
         )?.let { executed ->
-            projector(executed.actionBody, executed.actionUrl, executed.actionResult, executed.actionPage)
+            timeHofStage(log, accountId, "town.projection") { projector(executed.actionBody, executed.actionUrl, executed.actionResult, executed.actionPage) }
         }
     }
 
@@ -1176,7 +1180,7 @@ class TownAuthenticatedExecutor(
             requestFactory.townPage(pageUrl, HofRequestOrigin.INTERACTIVE),
             continuation.cookies,
         )
-        projector(response.body, response.finalUrl, formParser.parse(response.body, response.finalUrl))
+        timeHofStage(log, continuation.account.id, "town.projection") { projector(response.body, response.finalUrl, formParser.parse(response.body, response.finalUrl)) }
     }
 
     private fun executeResolvedFormSequence(
@@ -1328,7 +1332,7 @@ class TownAuthenticatedExecutor(
         )
         val result = resultParser.parse(finalResponse.body)
         val page = formParser.parse(finalResponse.body, finalResponse.finalUrl)
-        projector(finalResponse.body, finalResponse.finalUrl, result, page)
+        timeHofStage(log, accountId, "town.projection") { projector(finalResponse.body, finalResponse.finalUrl, result, page) }
     }
 
     /**
@@ -1364,7 +1368,7 @@ class TownAuthenticatedExecutor(
             context.cookies + main.setCookies,
         )
         val entryPage = formParser.parse(entryResponse.body, entryResponse.finalUrl)
-        projector(entryResponse.body, entryResponse.finalUrl, entryPage)
+        timeHofStage(log, accountId, "town.projection") { projector(entryResponse.body, entryResponse.finalUrl, entryPage) }
     }
 
     /** 최신 GET과 그 응답의 두 form을 같은 계정 fence 안에서 각각 다시 해석하는 variant다. */
@@ -1426,7 +1430,7 @@ class TownAuthenticatedExecutor(
         )
         val result = resultParser.parse(finalResponse.body)
         val page = formParser.parse(finalResponse.body, finalResponse.finalUrl)
-        projector(finalResponse.body, finalResponse.finalUrl, result, page)
+        timeHofStage(log, accountId, "town.projection") { projector(finalResponse.body, finalResponse.finalUrl, result, page) }
     }
 
     private fun <T> withAccountActionFence(accountId: Long, action: () -> T): T =
