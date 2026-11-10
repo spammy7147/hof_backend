@@ -33,7 +33,7 @@ class TownEntryPageParserTest {
             setOf(
                 "buy", "buy2", "sbuy", "sell", "combine", "auction", "rank", "colosseumshop", "recruit", "quest2",
                 "cardshop", "cardmix", "cardmix2", "cardsell", "fishing", "createF",
-                "stash", "orbboxshop", "sewingshop", "workbase", "refine", "create", "refine2", "create2", "raidpub",
+                "stash", "orbboxshop", "sewingshop", "workcloth", "refine", "create", "refine2", "create2", "raidpub",
                 "restroom", "quest", "legacy", "ann", "soulecho", "pantheon",
             ),
             TownFeatureId.entries.mapNotNull(TownFeatureId::menuCode).toSet(),

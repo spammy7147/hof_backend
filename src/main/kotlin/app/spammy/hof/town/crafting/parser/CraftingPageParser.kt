@@ -37,7 +37,9 @@ class CraftingPageParser(
         val submitForms = effectivePage.forms.filter { form -> form.submitFields.singleOrNull()?.name == contract.submit }
         val itemActionForms = submitForms.filter { form -> form.candidates.any { it.inputName == contract.itemField } }
         val actionForms = itemActionForms.ifEmpty {
-            submitForms.filter { form -> form.candidates.any { it.inputName == contract.categoryField } }
+            // 정적 분류는 선택 불가 품목만 있어도 검증된 제작 form의 표시 행을 보존한다.
+            if (claris != null) submitForms
+            else submitForms.filter { form -> form.candidates.any { it.inputName == contract.categoryField } }
         }
         // HOF는 긴 목록의 위·아래에 동일한 submit 버튼을 반복하기도 한다.
         // HofFormParser는 각 submit을 별도 action으로 보존하므로, 계약이 완전히 같은 변형만 하나로 취급한다.
@@ -80,7 +82,7 @@ class CraftingPageParser(
                 selectable = selectable,
                 detail = label,
                 cost = PRICE.find(label)?.groupValues?.get(1)?.number(),
-                owned = OWNED.find(label)?.groupValues?.get(1)?.intNumber(),
+                owned = OWNED.find(label.substringBefore('/'))?.groupValues?.get(1)?.intNumber(),
                 workSeconds = WORK_SECONDS.find(label)?.groupValues?.get(1)?.intNumber(),
                 itemT = itemT,
             )
@@ -195,14 +197,29 @@ class CraftingPageParser(
         val expected = categories.map(ClarisCategory::value).filterNot { it == CLARIS_ALL_CATEGORY }.toSet()
         if (catalog.keys != expected) throw ClarisCraftingContractException("클라리스 분류와 정적 품목 목록이 일치하지 않습니다.")
         val fragment = if (current.value == CLARIS_ALL_CATEGORY) {
-            categories.asSequence().map(ClarisCategory::value).filterNot { it == CLARIS_ALL_CATEGORY }
-                .joinToString("") { catalog.getValue(it) }
+            val expression = document.select("script").map(Element::data)
+                .mapNotNull { CLARIS_ALL_EXPRESSION.find(it)?.groupValues?.get(1) }.singleOrNull()
+            val order = expression?.let { value ->
+                if (CLARIS_LIST_CALL.replace(value, "").replace("+", "").isNotBlank()) {
+                    throw ClarisCraftingContractException("전부 목록의 결합 표현식을 확인하지 못했습니다.")
+                }
+                CLARIS_LIST_CALL.findAll(value).map { it.groupValues[1] }.toList()
+            } ?: categories.map(ClarisCategory::value).filterNot { it == CLARIS_ALL_CATEGORY }
+            if (order.size != expected.size || order.toSet() != expected) {
+                throw ClarisCraftingContractException("전부 목록의 결합 분류가 일치하지 않습니다.")
+            }
+            order.joinToString("") { catalog.getValue(it) }
         } else catalog.getValue(current.value)
         val actionForm = document.select("form").filter(::isRawClarisActionForm).singleOrNull()
             ?: throw ClarisCraftingContractException("클라리스 제작 양식을 하나로 확인하지 못했습니다.")
         val list = actionForm.select("#list").filter { it.closest("form") === actionForm }.singleOrNull()
             ?: throw ClarisCraftingContractException("클라리스 품목 목록 위치를 하나로 확인하지 못했습니다.")
         list.html("<table>$fragment</table><input type=\"hidden\" name=\"$CLARIS_LIST_FIELD\" value=\"${current.value}\">")
+        // 재봉실은 같은 ItemNo를 ItemT로 구분하므로 각 radio의 DOM 정체성을 보존한다.
+        list.select("input[name=ItemNo]").groupBy { it.attr("value") }.values.filter { it.size > 1 }
+            .forEach { variants -> variants.forEachIndexed { index, input ->
+                input.attr("id", "crafting:${input.attr("value")}:$index")
+            } }
         return MaterializedClaris(document.outerHtml(), categories, current.id)
     }
 
@@ -270,7 +287,8 @@ class CraftingPageParser(
                 it.closest("form") === domForm &&
                 it.attr("value").trim().ifBlank { "on" } == candidate.inputValue
             }
-            val control = controls.singleOrNull() ?: return@mapNotNull null
+            val control = controls.singleOrNull { it.id() == candidate.id }
+                ?: controls.singleOrNull() ?: return@mapNotNull null
             val sources = listOf(control.attr("onclick"), control.closest("tr")?.attr("onclick").orEmpty())
             val assignments = sources.flatMap { source ->
                 ITEM_T_ASSIGNMENT.findAll(source).map { it.groupValues[3] }.toList()
@@ -307,7 +325,7 @@ class CraftingPageParser(
                 selectable = candidate != null && (mode !in ITEM_T_MODES || itemT != null),
                 detail = label,
                 cost = PRICE.find(label)?.groupValues?.get(1)?.number(),
-                owned = OWNED.find(label)?.groupValues?.get(1)?.intNumber(),
+                owned = OWNED.find(label.substringBefore('/'))?.groupValues?.get(1)?.intNumber(),
                 workSeconds = WORK_SECONDS.find(label)?.groupValues?.get(1)?.intNumber(),
                 itemT = itemT,
             )
@@ -467,6 +485,8 @@ class CraftingPageParser(
         val CLARIS_LIST_FUNCTION = Regex("function\\s+Listtype_create\\s*\\([^)]*\\)\\s*\\{([\\s\\S]*?)\\n\\s*\\}\\s*function\\s+ChangeTypecreate\\b")
         val CLARIS_CASE_LABEL = Regex("case\\s+[\"']([A-Za-z0-9_-]{1,80})[\"']\\s*:")
         val CLARIS_CASE_ASSIGNMENT = Regex("case\\s+[\"']([A-Za-z0-9_-]{1,80})[\"']\\s*:\\s*html\\s*=\\s*([\\s\\S]*?)\\s*;\\s*break\\s*;")
+        val CLARIS_ALL_EXPRESSION = Regex("if\\s*\\(\\s*mode\\s*==\\s*['\"]all['\"]\\s*\\)\\s*\\{\\s*html\\s*=\\s*([^;]+);")
+        val CLARIS_LIST_CALL = Regex("Listtype_create\\(\\s*['\"]([A-Za-z0-9_-]{1,80})['\"]\\s*\\)")
         val SAFE_CLARIS_TOKEN = Regex("[A-Za-z0-9_-]{1,80}")
         const val CLARIS_CATEGORY_FIELD = "type_create"
         const val CLARIS_ITEM_T_FIELD = "ItemT"

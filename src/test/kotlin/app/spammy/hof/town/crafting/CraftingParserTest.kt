@@ -10,6 +10,60 @@ class CraftingParserTest {
     private val forms = HofFormParser()
     private val parser = CraftingPageParser()
 
+    @Test fun `전부 목록은 종류 선택기 순서가 아닌 원본의 결합 순서를 따른다`() {
+        val html = resource("claris-live.html")
+            .replace("</select>", "<option value=\"all\">전부(all)</option></select>")
+            .replace("case \"weapon\": html = '';", "case \"weapon\": html = '<tr><td>$ 2</td><td><input type=\"radio\" name=\"ItemNo\" value=\"sword\" onclick=\"document.ItemT.value=0\">Iron Sword</td></tr>';")
+            .replace("function ChangeTypecreate() {}", "function ChangeTypecreate() { if(mode == 'all') { html = Listtype_create('cloak') + Listtype_create('weapon'); } }")
+        for (mode in listOf(CraftingMode.WORKBASE, CraftingMode.CLARIS, CraftingMode.CREATE)) {
+            val category = if (mode == CraftingMode.CLARIS) "type_create:all" else "catalog_type_create:all"
+            val value = parser.parse(mode, html, URL, forms.parse(html, URL), categoryCandidateId = category)
+
+            assertThat(value.rows.map { it.label }).containsExactly("Dreamweave Cloak x1", "Iron Sword")
+        }
+    }
+
+    @Test fun `재봉틀의 같은 ItemNo를 쓰는 소재 변형도 각각 표시하고 선택한다`() {
+        val html = resource("claris-live.html").replace(
+            "Dreamweave Cloak x1</td></tr>'",
+            "Dreamweave Cloak x1</td></tr>' + '<tr><td>$ 1</td><td><input type=\"radio\" name=\"ItemNo\" value=\"cloak\" onclick=\"document.ItemT.value=43\">Moon Cloak</td></tr>'",
+        ).replace("id=\"claris-live-cloak\" ", "")
+        val value = parser.parse(CraftingMode.WORKBASE, html, URL, forms.parse(html, URL), categoryCandidateId = "catalog_type_create:cloak")
+
+        assertThat(value.rows).hasSize(2)
+        assertThat(value.rows.map { it.id }).doesNotHaveDuplicates()
+        assertThat(value.rows.map { it.itemT }).containsExactly("42", "43")
+        assertThat(value.rows).allMatch { it.selectable }
+    }
+
+    @Test fun `분리된 분류의 모든 품목이 선택 불가여도 원본 목록을 보존한다`() {
+        val html = resource("claris-live.html").replace(Regex("<input id=\"claris-live-cloak\"[^>]+>"), "")
+        for (mode in listOf(CraftingMode.WORKBASE, CraftingMode.CLARIS, CraftingMode.CREATE)) {
+            val category = if (mode == CraftingMode.CLARIS) "type_create:cloak" else "catalog_type_create:cloak"
+            val value = parser.parse(mode, html, URL, forms.parse(html, URL), categoryCandidateId = category)
+
+            assertThat(value.currentCategoryId).isEqualTo(category)
+            assertThat(value.rows).hasSize(1)
+            assertThat(value.rows.single().label).isEqualTo("Dreamweave Cloak x1")
+            assertThat(value.rows.single().selectable).isFalse()
+        }
+    }
+
+    @Test fun `제작 재료의 필요 수량을 제작품 보유량으로 해석하지 않는다`() {
+        val html = resource("workbase.html").replace(
+            "Striker Coat (Cloth) x3 [제작 시간: 600]",
+            "Bastard Sword (TwoHandSword) / Atk:150 / Iron Ingot x 50(12831) Weapon Piece x 30(14372) [제작 시간 : 600]",
+        )
+        for (mode in listOf(CraftingMode.WORKBASE, CraftingMode.CLARIS, CraftingMode.CREATE)) {
+            val value = parser.parse(mode, html, URL, forms.parse(html, URL))
+            val sword = value.rows.single { it.label.contains("Bastard Sword") }
+
+            assertThat(sword.owned).isNull()
+            assertThat(sword.detail).contains("Iron Ingot x 50(12831)", "Weapon Piece x 30(14372)")
+            assertThat(sword.workSeconds).isEqualTo(600)
+        }
+    }
+
     @Test fun `작업장과 제작공방의 분리된 정적 종류 목록도 파싱한다`() {
         val html = resource("claris-live.html").replace(
             "<input type=\"submit\" name=\"Create\" value=\"Create\">",

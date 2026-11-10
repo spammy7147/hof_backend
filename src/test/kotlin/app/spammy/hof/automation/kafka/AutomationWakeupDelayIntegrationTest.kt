@@ -5,6 +5,7 @@ import app.spammy.hof.account.entity.HofCookieEntity
 import app.spammy.hof.auth.service.AccountExecutionAuthorizationReader
 import app.spammy.hof.automation.config.AutomationKafkaConfig
 import app.spammy.hof.automation.dto.UpdateFishingAutomationRequest
+import app.spammy.hof.automation.dto.SaveAutomationPresetRequest
 import app.spammy.hof.automation.entity.*
 import app.spammy.hof.automation.history.AutomationDecisionJournal
 import app.spammy.hof.automation.history.AutomationHistoryQuery
@@ -80,6 +81,30 @@ abstract class AutomationWakeupDelayIntegrationTest {
     @MockitoBean private lateinit var gateway: HofGateway
     @MockitoBean private lateinit var preflight: AutomationDailyPreflight
     @MockitoBean private lateinit var authorization: AccountExecutionAuthorizationReader
+
+    @Test
+    fun `프리셋 활성 변경을 실행 중 반영하고 후속 wake가 새 설정으로 판단한다`() {
+        val scenario = createScenario(enabled = false)
+        val original = presets.save(scenario.accountId, SaveAutomationPresetRequest("기본1"))
+        val enabled = presets.save(scenario.accountId, SaveAutomationPresetRequest("기본2",
+            original.settings.copy(entries = original.settings.entries.map { it.copy(enabled = true) })))
+        val result = consumeBacklog(scenario, 3) { index, _ ->
+            when (index) {
+                1 -> {
+                    assertEquals(emptyList(), scenario.posts())
+                    val applied = presets.apply(scenario.accountId, enabled.id, enabled.revision)
+                    assertEquals(TypedAutomationLifecycle.RUNNING, applied.runtime.lifecycle)
+                }
+                2 -> {
+                    assertEquals(listOf("FStart", "FCatch"), scenario.posts())
+                    val applied = presets.apply(scenario.accountId, original.id, original.revision)
+                    assertEquals(TypedAutomationLifecycle.RUNNING, applied.runtime.lifecycle)
+                }
+                3 -> assertEquals(listOf("FStart", "FCatch"), scenario.posts(), "비활성화 뒤 후속 판단은 새 행동을 제출하지 않는다.")
+            }
+        }
+        assertTrue(result.cycles >= 2, "실행 상태 표시가 아니라 후속 wake의 실제 판단을 확인한다.")
+    }
 
     @Test
     fun `프리셋 복원 뒤 일시정지를 유지하고 재개 wake가 행동과 후속 판단까지 이어진다`() {

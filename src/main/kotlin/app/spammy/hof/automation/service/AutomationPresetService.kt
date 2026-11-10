@@ -98,13 +98,36 @@ class AutomationPresetService(
         val preset = queries.findOwned(accountId, presetId) ?: missing()
         requireRevision(preset, revision)
         val runtime = typed.lockRuntimeState(accountId)
-        if (runtime != null && (runtime.lifecycleStatus !in setOf(TypedAutomationLifecycle.PAUSED, TypedAutomationLifecycle.STOPPED)
+        val saved = mapper.readValue(preset.settingsJson, AutomationPresetSettings::class.java).forStorage().entries
+        val current = settings.getTyped(accountId).entries
+        val currentSettings = AutomationPresetSettings.from(current).entries
+        val activationOnly = saved.map { it.copy(enabled = false) } == currentSettings.map { it.copy(enabled = false) }
+        if (!activationOnly && (runtime != null && (runtime.lifecycleStatus !in setOf(TypedAutomationLifecycle.PAUSED, TypedAutomationLifecycle.STOPPED)
                 || runtime.resumeAfterAuth || runtime.leaseUntil?.isAfter(clock.now()) == true)
-            || typed.findActiveTypedAction(accountId) != null || queries.hasExecutionLease(accountId, clock.now())) {
+            || typed.findActiveTypedAction(accountId) != null || queries.hasExecutionLease(accountId, clock.now()))) {
             invalid("자동화를 일시정지하고 진행 중인 행동이 끝난 뒤 프리셋을 불러와 주세요.")
         }
-        val saved = mapper.readValue(preset.settingsJson, AutomationPresetSettings::class.java).entries
-        val current = settings.getTyped(accountId).entries
+        val response = if (activationOnly) {
+            // 실행 중 켜기·끄기는 기존 항목 변경 경로만 사용하고 구성·진행 중인 행동을 재생성하지 않는다.
+            saved.zip(current).filter { (entry, target) -> entry.enabled != target.enabled }
+                .forEach { (entry, target) -> restoreEntry(accountId, target, entry) }
+            settings.getTyped(accountId)
+        } else {
+            replaceConfiguration(accountId, saved, current)
+        }
+        account.appliedAutomationPresetId = preset.id
+        // 새 맵 묶음도 이후 적용에서 같은 항목으로 연결되도록 서버 정체성을 저장한다.
+        preset.settingsJson = mapper.writeValueAsString(AutomationPresetSettings.from(response.entries))
+        preset.updatedAt = clock.now()
+        commands.flush()
+        return AutomationPresetApplyResponse(response, detail(preset))
+    }
+
+    private fun replaceConfiguration(
+        accountId: Long,
+        saved: List<AutomationPresetEntry>,
+        current: List<TypedAutomationEntryResponse>,
+    ): TypedAutomationAggregateResponse {
         val retained = saved.map { entry ->
             current.firstOrNull { it.id == entry.sourceEntryId && it.type == entry.type }
                 ?: current.firstOrNull { it.type == entry.type && it.type !in MAP_GROUP_TYPES }
@@ -127,13 +150,7 @@ class AutomationPresetService(
             restoreEntry(accountId, target, entry)
             target.id
         }
-        val response = settings.reorderEntries(accountId, ReorderAutomationEntriesRequest(targetIds))
-        account.appliedAutomationPresetId = preset.id
-        // 새 맵 묶음도 이후 적용에서 같은 항목으로 연결되도록 서버 정체성을 저장한다.
-        preset.settingsJson = mapper.writeValueAsString(AutomationPresetSettings.from(response.entries))
-        preset.updatedAt = clock.now()
-        commands.flush()
-        return AutomationPresetApplyResponse(response, detail(preset))
+        return settings.reorderEntries(accountId, ReorderAutomationEntriesRequest(targetIds))
     }
 
     private fun restoreEntry(accountId: Long, target: TypedAutomationEntryResponse, saved: AutomationPresetEntry) {

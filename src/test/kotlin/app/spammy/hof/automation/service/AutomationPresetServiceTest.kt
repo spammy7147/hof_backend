@@ -34,6 +34,7 @@ class AutomationPresetServiceTest {
     @Autowired private lateinit var em: EntityManager
     @Autowired private lateinit var transactions: PlatformTransactionManager
     @Autowired private lateinit var jdbc: JdbcTemplate
+    @Autowired private lateinit var codec: StoredTypedAutomationActionCodec
     private val accountIds = mutableListOf<Long>()
     private val mapCodes = mutableListOf<String>()
     private val now = Instant.now()
@@ -155,6 +156,17 @@ class AutomationPresetServiceTest {
         val json = transaction { queries.findOwned(accountId, preset.id)!!.settingsJson }
         assertFalse(json.contains("battleMapProgress"))
         assertFalse(json.contains("lifecycle"))
+        transaction {
+            em.persist(TypedAutomationRuntimeStateEntity(accountId, em.getReference(HofAccountEntity::class.java, accountId),
+                TypedAutomationLifecycle.RUNNING, createdAt = now, updatedAt = now))
+        }
+        val disabled = presets.save(accountId, SaveAutomationPresetRequest("모두 끄기",
+            AutomationPresetSettings.from(restored.entries).let { it.copy(entries = it.entries.map { entry -> entry.copy(enabled = false) }) }))
+        val running = presets.apply(accountId, disabled.id, disabled.revision)
+        assertEquals(TypedAutomationLifecycle.RUNNING, running.runtime.lifecycle)
+        assertEquals(restored.entries.map { it.id }, running.entries.map { it.id })
+        assertTrue(running.entries.all { !it.enabled })
+        assertEquals(disabled.settings, AutomationPresetSettings.from(running.entries))
     }
 
     @Test
@@ -181,10 +193,55 @@ class AutomationPresetServiceTest {
     }
 
     @Test
-    fun `실행 중과 처리 중인 계정은 설정을 바꾸지 않는다`() {
+    fun `실행 중 새 이름으로 저장한 콜로세움 비활성화를 일시정지 없이 반영한다`() {
         val accountId = account()
-        val entry = settings.createEntry(accountId, CreateAutomationEntryRequest(AutomationType.FISHING)).entries.single()
+        settings.createEntry(accountId, CreateAutomationEntryRequest(AutomationType.COLOSSEUM))
+        settings.updateColosseum(accountId, UpdateColosseumAutomationRequest(true))
+        settings.createEntry(accountId, CreateAutomationEntryRequest(AutomationType.FISHING))
+        val original = presets.save(accountId, SaveAutomationPresetRequest("기본1"))
+        val before = settings.getTyped(accountId)
+        val pendingId = transaction {
+            val account = em.getReference(HofAccountEntity::class.java, accountId)
+            em.persist(TypedAutomationRuntimeStateEntity(accountId, account, TypedAutomationLifecycle.RUNNING,
+                leaseToken = "colosseum-inflight", leaseUntil = now.plusSeconds(60), createdAt = now, updatedAt = now))
+            em.persist(AccountAutomationLeaseEntity(accountId, "in-flight", Instant.now().plusSeconds(60), now))
+            val colosseum = before.entries.single { it.type == AutomationType.COLOSSEUM }
+            val stored = StoredTypedAutomationAction(colosseum.id, "colosseum-inflight",
+                StoredTypedActionPayload.Colosseum((1..5).map { "fighter-$it" }))
+            val encoded = codec.encode(stored)
+            val action = TypedAutomationActionRunEntity(account = account,
+                entry = em.getReference(AutomationEntryEntity::class.java, colosseum.id), executionIdentity = stored.executionIdentity,
+                actionKind = "COLOSSEUM", payloadJson = encoded.json, actionFingerprint = encoded.fingerprint,
+                status = TypedAutomationActionStatus.SUBMITTING, leaseToken = "colosseum-inflight",
+                createdAt = now, updatedAt = now, submittedAt = now)
+            em.persist(action)
+            em.flush()
+            action.id
+        }
+        val draft = original.settings.copy(entries = original.settings.entries.map {
+            if (it.type == AutomationType.COLOSSEUM) it.copy(enabled = false) else it
+        })
+        val copied = presets.save(accountId, SaveAutomationPresetRequest("기본2", draft))
+        val applied = presets.applyWithDetail(accountId, copied.id, copied.revision)
+        assertEquals(TypedAutomationLifecycle.RUNNING, applied.automation.runtime.lifecycle)
+        assertFalse(applied.automation.entries.single { it.type == AutomationType.COLOSSEUM }.enabled)
+        assertEquals(before.entries.single { it.type == AutomationType.FISHING }, applied.automation.entries.single { it.type == AutomationType.FISHING })
+        assertEquals(before.entries.map { it.id }, applied.automation.entries.map { it.id })
+        assertTrue(presets.get(accountId, original.id).settings.entries.first().enabled)
+        assertEquals(copied.id, presets.getApplied(accountId)?.id)
+        assertEquals(true, presets.getApplied(accountId)?.matchesCurrent)
+        assertEquals("in-flight", jdbc.queryForObject("select owner_id from account_automation_leases where account_id = ?", String::class.java, accountId))
+        assertEquals("SUBMITTING", jdbc.queryForObject("select status from typed_automation_action_runs where id = ?", String::class.java, pendingId))
+        assertEquals(1, jdbc.queryForObject("select count(*) from typed_automation_action_runs where account_id = ?", Int::class.java, accountId))
+    }
+
+    @Test
+    fun `항목 구성 전체 교체는 실행 중과 처리 중인 계정의 설정을 바꾸지 않는다`() {
+        val accountId = account()
+        settings.createEntry(accountId, CreateAutomationEntryRequest(AutomationType.FISHING))
         val preset = presets.save(accountId, SaveAutomationPresetRequest("낚시"))
+        settings.createEntry(accountId, CreateAutomationEntryRequest(AutomationType.COLOSSEUM))
+        val before = settings.getTyped(accountId).entries
         transaction {
             val account = em.getReference(HofAccountEntity::class.java, accountId)
             em.persist(TypedAutomationRuntimeStateEntity(accountId, account, TypedAutomationLifecycle.RUNNING, createdAt = now, updatedAt = now))
@@ -193,7 +250,7 @@ class AutomationPresetServiceTest {
         settings.pauseTyped(accountId)
         transaction { em.persist(AccountAutomationLeaseEntity(accountId, "in-flight", Instant.now().plusSeconds(60), now)) }
         assertFailsWith<ApiException> { presets.apply(accountId, preset.id, presets.get(accountId, preset.id).revision) }
-        assertEquals(entry, settings.getTyped(accountId).entries.single())
+        assertEquals(before, settings.getTyped(accountId).entries)
     }
 
     @Test

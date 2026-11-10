@@ -10,6 +10,9 @@ import app.spammy.hof.external.parser.LoginStateParser
 import app.spammy.hof.town.common.model.TownFeatureId
 import app.spammy.hof.town.common.parser.HofFormParser
 import app.spammy.hof.town.common.parser.HofResultParser
+import app.spammy.hof.town.common.parser.TownEntryPageParser
+import app.spammy.hof.town.common.repository.TownFeatureLocationRepository
+import app.spammy.hof.town.common.repository.TownFeatureLocationQueryRepository
 import app.spammy.hof.town.common.service.*
 import app.spammy.hof.town.crafting.dto.RefineRequest
 import app.spammy.hof.town.crafting.dto.ClarisCraftRequest
@@ -34,6 +37,60 @@ class CraftingServiceTest {
         locations,
         CraftingPageParser(),
     )
+
+    @Test fun `재봉틀 분류 조회와 소재별 제작 및 완료는 실제 resolver의 workcloth 경로를 사용한다`() {
+        val html = fixture("claris-live.html")
+            .replace("?menu=sewingshop", "?menu=workcloth")
+            .replace("<body>", "<body><form method=\"post\"><input type=\"submit\" name=\"WSend\" value=\"제작 완료\"></form>")
+            .replace("id=\"claris-live-cloak\" ", "")
+            .replace("Dreamweave Cloak x1</td></tr>'", "Dreamweave Cloak x1</td></tr>' + '<tr><td>$ 1</td><td><input type=\"radio\" name=\"ItemNo\" value=\"cloak\" onclick=\"document.ItemT.value=43\">Moon Cloak</td></tr>'")
+        stub(TownFeatureId.WORKBASE, WORK_URL, html)
+        val resolver = TownLocationResolver(
+            Mockito.mock(TownFeatureLocationRepository::class.java),
+            Mockito.mock(TownFeatureLocationQueryRepository::class.java),
+            TownEntryPageParser(),
+        )
+        Mockito.`when`(locations.resolve(TownFeatureId.WORKBASE, null)).thenReturn(resolver.resolve(TownFeatureId.WORKBASE))
+
+        val category = "catalog_type_create:cloak"
+        val loaded = service.loadCategory(7L, CraftingMode.WORKBASE, category)
+        assertEquals(listOf("Dreamweave Cloak x1", "Moon Cloak"), loaded.rows.map { it.label })
+        service.startWorkbase(7L, WorkbaseStartRequest(loaded.rows.last().id, category, 1))
+        service.completeWorkbase(7L)
+
+        val requests = captureRequests()
+        assertEquals(listOf(WORK_URL), requests.map { it.url }.distinct())
+        assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.GET, HofHttpMethod.POST, HofHttpMethod.GET, HofHttpMethod.POST), requests.map(HofRequest::method))
+        assertEquals("43", requests[2].formEntries.single { it.name == "ItemT" }.value)
+        assertEquals("cloak", requests[2].formEntries.single { it.name == "ItemNo" }.value)
+        assertEquals(listOf("WSend"), requests.last().formEntries.map { it.name })
+    }
+
+    @Test fun `작업이 없어도 완료 버튼을 노출하고 수동 호출 때만 WSend를 제출한다`() {
+        val idle = fixture("workbase.html")
+        stub(TownFeatureId.WORKBASE, WORK_URL, idle)
+
+        val initial = service.load(7L, CraftingMode.WORKBASE)
+        assertEquals(null, initial.activeJob)
+        assertEquals(true, initial.completionAvailable)
+        assertEquals(listOf(HofHttpMethod.GET), captureRequests().map(HofRequest::method))
+
+        val completed = service.completeWorkbase(7L)
+        assertEquals(null, completed.activeJob)
+        assertEquals(true, completed.completionAvailable)
+        val requests = captureRequests()
+        assertEquals(listOf(HofHttpMethod.GET, HofHttpMethod.GET, HofHttpMethod.POST), requests.map(HofRequest::method))
+        assertEquals(listOf("WSend"), requests.last().formEntries.map { it.name })
+    }
+
+    @Test fun `원본에 완료 form이 없으면 완료 버튼을 노출하지 않는다`() {
+        val html = fixture("workbase.html").replace(
+            "<form method=\"post\"><input type=\"submit\" name=\"WSend\" value=\"제작 완료\"></form>", "",
+        )
+        stub(TownFeatureId.WORKBASE, WORK_URL, html)
+
+        assertEquals(false, service.load(7L, CraftingMode.WORKBASE).completionAvailable)
+    }
 
     @Test fun `상시 완료 버튼이 있어도 대기 제작 시작 진행 결과 확인을 실제 상태로 구분한다`() {
         val idle = fixture("workbase.html")
@@ -63,7 +120,7 @@ class CraftingServiceTest {
     }
 
     @Test fun `작업장의 분리된 종류를 바꾸고 정적 품목으로 작업을 시작한다`() {
-        stub(TownFeatureId.WORKBASE, WORK_URL, fixture("claris-live.html").replace("?menu=sewingshop", "?menu=workbase"))
+        stub(TownFeatureId.WORKBASE, WORK_URL, fixture("claris-live.html").replace("?menu=sewingshop", "?menu=workcloth"))
         val response = service.loadCategory(7L, CraftingMode.WORKBASE, "catalog_type_create:cloak")
         assertEquals(listOf("무기(weapon)", "외투(cloak)"), response.categories.map { it.label })
         service.startWorkbase(7L, WorkbaseStartRequest(response.rows.single().id, "catalog_type_create:cloak", 2))
@@ -73,7 +130,7 @@ class CraftingServiceTest {
     }
 
     @Test fun `작업장의 빈 무기 분류와 전부 및 외투 분류는 각각의 목록을 반환한다`() {
-        val html = fixture("claris-live.html").replace("?menu=sewingshop", "?menu=workbase")
+        val html = fixture("claris-live.html").replace("?menu=sewingshop", "?menu=workcloth")
             .replace("<option value=\"weapon\" selected>", "<option value=\"all\">전부(all)</option><option value=\"weapon\" selected>")
             .replace("<body>", "<body><form method=\"post\"><input type=\"submit\" name=\"WSend\" value=\"제작 완료\"></form>")
         stub(TownFeatureId.WORKBASE, WORK_URL, html)
@@ -253,7 +310,7 @@ class CraftingServiceTest {
     private fun anyRequest(): HofRequest = Mockito.any(HofRequest::class.java) ?: HofRequest(HofHttpMethod.GET, WORK_URL)
     private fun anyCookies(): Map<String, String> = Mockito.anyMap<String, String>() ?: emptyMap()
     private companion object {
-        const val WORK_URL = "https://hof.zerosic.com/index.php?menu=workbase"
+        const val WORK_URL = "https://hof.zerosic.com/index.php?menu=workcloth"
         const val REFINE_URL = "https://hof.zerosic.com/index.php?menu=refine"
         const val VETERAN_URL = "https://hof.zerosic.com/index.php?menu=refine2"
         const val CREATE_URL = "https://hof.zerosic.com/index.php?menu=create"

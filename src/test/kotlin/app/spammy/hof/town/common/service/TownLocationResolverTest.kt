@@ -32,6 +32,15 @@ class TownLocationResolverTest {
     )
 
     @Test
+    fun `작업장 재봉틀은 기본 작업장이 아닌 workcloth로 직접 진입한다`() {
+        assertEquals(
+            "https://hof.zerosic.com/index.php?menu=workcloth",
+            resolver.resolve(TownFeatureId.WORKBASE).url,
+        )
+        verify(queryRepository, never()).findByFeatureIdForUpdate(TownFeatureId.WORKBASE)
+    }
+
+    @Test
     fun `known feature resolves directly without cache access`() {
         val location = resolver.resolve(TownFeatureId.SUNDRIES_STORE)
 

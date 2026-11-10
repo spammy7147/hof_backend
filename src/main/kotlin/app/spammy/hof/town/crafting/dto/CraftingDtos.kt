@@ -27,6 +27,7 @@ data class CraftingResponse(
     val warningCode: String?,
     val history: List<String>,
     val result: TownActionResultResponse?,
+    val completionAvailable: Boolean,
 ) {
     companion object {
         fun from(value: CraftingSnapshot) = CraftingResponse(
@@ -43,6 +44,7 @@ data class CraftingResponse(
             value.warningCode,
             value.history,
             value.result?.let(TownActionResultResponse::from),
+            value.completionActionId != null,
         )
     }
 }
