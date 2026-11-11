@@ -17,6 +17,8 @@ import jakarta.persistence.ManyToOne
 import jakarta.persistence.Table
 import jakarta.persistence.Version
 import java.time.Instant
+import org.hibernate.annotations.OnDelete
+import org.hibernate.annotations.OnDeleteAction
 
 enum class AutomationType { QUEST, HOME_QUEST, BATTLE_MAP, ADVENTURE_MAP, RAID, UNION, FISHING, COLOSSEUM }
 
@@ -59,6 +61,7 @@ class AutomationEntryEntity(
 class QuestAutomationSelectionEntity(
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     val id: Long = 0,
+    @OnDelete(action = OnDeleteAction.CASCADE)
     @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "automation_entry_id", nullable = false)
     var entry: AutomationEntryEntity,
     @Column(name = "quest_code", nullable = false, length = 100)
@@ -78,6 +81,7 @@ class QuestAutomationSelectionEntity(
 class HomeQuestAutomationSelectionEntity(
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     val id: Long = 0,
+    @OnDelete(action = OnDeleteAction.CASCADE)
     @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "automation_entry_id", nullable = false)
     var entry: AutomationEntryEntity,
     @Column(name = "quest_id", nullable = false, length = 64)
@@ -95,6 +99,7 @@ class HomeQuestAutomationSelectionEntity(
 class QuestAutomationMapEntity(
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     val id: Long = 0,
+    @OnDelete(action = OnDeleteAction.CASCADE)
     @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "quest_selection_id", nullable = false)
     var questSelection: QuestAutomationSelectionEntity,
     @Column(name = "mission_key", nullable = false, length = 100)
@@ -118,6 +123,7 @@ class QuestAutomationMapEntity(
 class BattleAutomationMapEntity(
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     val id: Long = 0,
+    @OnDelete(action = OnDeleteAction.CASCADE)
     @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "automation_entry_id", nullable = false)
     var entry: AutomationEntryEntity,
     @Column(name = "category_id", nullable = false, length = 50)
@@ -141,6 +147,7 @@ class BattleAutomationMapEntity(
 class AdventureAutomationMapEntity(
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     val id: Long = 0,
+    @OnDelete(action = OnDeleteAction.CASCADE)
     @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "automation_entry_id", nullable = false)
     var entry: AutomationEntryEntity,
     @Column(name = "category_id", nullable = false, length = 50)
@@ -162,6 +169,7 @@ class AdventureAutomationMapEntity(
 class UnionAutomationMapEntity(
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     val id: Long = 0,
+    @OnDelete(action = OnDeleteAction.CASCADE)
     @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "automation_entry_id", nullable = false)
     var entry: AutomationEntryEntity,
     @Column(name = "category_id", nullable = false, length = 50)
@@ -181,6 +189,7 @@ class UnionAutomationMapEntity(
 class RaidAutomationTargetEntity(
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     val id: Long = 0,
+    @OnDelete(action = OnDeleteAction.CASCADE)
     @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "automation_entry_id", nullable = false)
     var entry: AutomationEntryEntity,
     @Column(name = "raid_id", nullable = false, length = 200)
@@ -200,6 +209,7 @@ class RaidAutomationTargetEntity(
 class FishingAutomationSettingEntity(
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     val id: Long = 0,
+    @OnDelete(action = OnDeleteAction.CASCADE)
     @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "automation_entry_id", nullable = false)
     var entry: AutomationEntryEntity,
     @Enumerated(EnumType.STRING) @Column(name = "preset_mode", nullable = false, length = 20)
@@ -213,6 +223,7 @@ class FishingAutomationSettingEntity(
 class FishingAutomationMapEntity(
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     val id: Long = 0,
+    @OnDelete(action = OnDeleteAction.CASCADE)
     @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "automation_entry_id", nullable = false)
     var entry: AutomationEntryEntity,
     @Column(name = "category_id", nullable = false, length = 50)
@@ -232,6 +243,7 @@ class FishingAutomationMapEntity(
 class AutomationRotationStateEntity(
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     val id: Long = 0,
+    @OnDelete(action = OnDeleteAction.CASCADE)
     @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "automation_entry_id", nullable = false)
     var entry: AutomationEntryEntity,
     @Column(name = "current_target_key", nullable = false, length = 255)

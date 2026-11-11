@@ -14,6 +14,8 @@ import jakarta.persistence.ManyToOne
 import jakarta.persistence.Table
 import jakarta.persistence.Version
 import java.time.Instant
+import org.hibernate.annotations.OnDelete
+import org.hibernate.annotations.OnDeleteAction
 
 enum class AutomationWorkType { QUEST, HOME_QUEST, BATTLE_MAP, ADVENTURE_MAP, RAID, UNION, FISHING, COLOSSEUM }
 
@@ -37,6 +39,7 @@ class AutomationWorkSessionEntity(
     @JoinColumn(name = "account_id", nullable = false)
     val account: HofAccountEntity,
 
+    @OnDelete(action = OnDeleteAction.CASCADE)
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "automation_entry_id", nullable = false)
     val entry: AutomationEntryEntity,

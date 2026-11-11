@@ -46,6 +46,36 @@ class AutomationPresetServiceTest {
     }
 
     @Test
+    fun `맵이 있는 기존 묶음을 새 프리셋 묶음으로 교체한다`() {
+        val accountId = account()
+        val code = map("battle_map")
+        val original = settings.createEntry(accountId, CreateAutomationEntryRequest(AutomationType.BATTLE_MAP)).entries.single()
+        settings.updateBattleMapGroup(accountId, original.id, UpdateBattleMapGroupRequest(original.settingsRevision, "기존 묶음", true,
+            listOf(BattleMapSettingRequest("battle_map", code, 5, PresetSelectionMode.PRIMARY, null, 0))))
+        val draft = AutomationPresetSettings(listOf(AutomationPresetEntry(0, AutomationType.BATTLE_MAP, true, "새 묶음",
+            battleMaps = listOf(BattleMapSettingResponse("battle_map", code, 7, PresetSelectionMode.PRIMARY, null, 0)))))
+        val saved = presets.save(accountId, SaveAutomationPresetRequest("새 구성", draft))
+        transaction {
+            em.persist(AutomationWorkSessionEntity(account = em.getReference(HofAccountEntity::class.java, accountId),
+                entry = em.getReference(AutomationEntryEntity::class.java, original.id), workType = AutomationWorkType.BATTLE_MAP,
+                targetKey = "battle_map/$code", status = AutomationWorkStatus.WAITING_COOLDOWN, configVersion = "old",
+                targetCount = 5, confirmedCount = 2, createdAt = now, updatedAt = now))
+        }
+
+        val applied = presets.applyWithDetail(accountId, saved.id, saved.revision)
+
+        val entry = applied.automation.entries.single()
+        assertNotEquals(original.id, entry.id)
+        assertEquals("새 묶음", entry.displayName)
+        assertEquals(7, entry.battleMaps.single().dailyTargetCount)
+        assertEquals(code, entry.battleMaps.single().mapCode)
+        assertEquals(TypedAutomationLifecycle.STOPPED, applied.automation.runtime.lifecycle)
+        assertEquals(AutomationPresetSettings.from(applied.automation.entries), applied.preset.settings)
+        assertEquals(true, presets.getApplied(accountId)?.matchesCurrent)
+        assertTrue(work.findWaiting(accountId).isEmpty())
+    }
+
+    @Test
     fun `관측용 맵 이름은 프리셋 설정으로 저장하지 않는다`() {
         val accountId = account()
         val code = map("adventure_map")
@@ -167,6 +197,11 @@ class AutomationPresetServiceTest {
         assertEquals(restored.entries.map { it.id }, running.entries.map { it.id })
         assertTrue(running.entries.all { !it.enabled })
         assertEquals(disabled.settings, AutomationPresetSettings.from(running.entries))
+        settings.pauseTyped(accountId)
+        val empty = presets.save(accountId, SaveAutomationPresetRequest("빈 구성", AutomationPresetSettings(emptyList())))
+        val cleared = presets.apply(accountId, empty.id, empty.revision)
+        assertTrue(cleared.entries.isEmpty(), "모든 유형의 기존 자식 설정을 포함해 구성을 교체해야 한다.")
+        assertEquals(TypedAutomationLifecycle.PAUSED, cleared.runtime.lifecycle)
     }
 
     @Test

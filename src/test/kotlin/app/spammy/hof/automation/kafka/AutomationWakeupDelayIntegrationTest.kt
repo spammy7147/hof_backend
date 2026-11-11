@@ -112,6 +112,14 @@ abstract class AutomationWakeupDelayIntegrationTest {
         val preset = presets.save(scenario.accountId, app.spammy.hof.automation.dto.SaveAutomationPresetRequest("낚시"))
         controls.pauseTyped(scenario.accountId)
         controls.updateFishing(scenario.accountId, UpdateFishingAutomationRequest(false))
+        // 복원에서 제외할 기존 맵 묶음도 있어야 실제 구성 교체와 삭제 경로를 거친다.
+        TransactionTemplate(transactions).executeWithoutResult {
+            val entry = AutomationEntryEntity(account = entityManager.getReference(HofAccountEntity::class.java, scenario.accountId),
+                type = AutomationType.BATTLE_MAP, priority = 1, enabled = false, createdAt = clock.now(), updatedAt = clock.now())
+            entityManager.persist(entry)
+            entityManager.persist(BattleAutomationMapEntity(entry = entry, categoryId = "battle_map", mapCode = "old-map",
+                dailyTargetCount = 1, presetMode = PresetSelectionMode.PRIMARY, executionOrder = 0))
+        }
         val restored = presets.apply(scenario.accountId, preset.id, presets.get(scenario.accountId, preset.id).revision)
         assertEquals(TypedAutomationLifecycle.PAUSED, restored.runtime.lifecycle)
         assertTrue(restored.entries.single().enabled)
